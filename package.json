@@ -1,0 +1,52 @@
+{
+  "name": "murmur",
+  "version": "0.1.0",
+  "description": "An attested autonomous DeFi operator that converts social sentiment and on-chain signals into permission-gated trade execution on Base.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/loop/index.ts",
+    "start": "tsx src/loop/index.ts",
+    "build": "tsc --noEmit",
+    "scout": "tsx src/scout/index.ts",
+    "analyst": "tsx src/analyst/index.ts",
+    "lint": "tsc --noEmit",
+    "dashboard": "vite --config dashboard/vite.config.ts",
+    "dashboard:build": "vite build --config dashboard/vite.config.ts"
+  },
+  "dependencies": {
+    "@x402/core": "^2.7.0",
+    "@x402/evm": "^2.7.0",
+    "@x402/express": "^2.7.0",
+    "date-fns": "^4.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "graphql": "^16.9.0",
+    "graphql-request": "^7.1.0",
+    "lightweight-charts": "^5.1.0",
+    "node-cron": "^3.0.3",
+    "openai": "^4.77.0",
+    "p-limit": "^6.1.0",
+    "p-retry": "^6.2.0",
+    "viem": "^2.21.54",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.10.5",
+    "@types/node-cron": "^3.0.11",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
