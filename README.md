@@ -1,5 +1,8 @@
 # Murmur
 
+<!-- MARKEE:START:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
+<!-- MARKEE:END:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
+
 > *"It hears the market before the market hears itself."*
 
 An autonomous DeFi operator that converts Santiment social sentiment and on-chain signals into permission-gated trade execution on Base Sepolia — with every decision cryptographically signed, stored on Filecoin, and linked to the agent's on-chain identity. The agent's wallet is resolved to a human-readable ENS name at startup, external market context is purchased via Locus (USDC pay-per-request), and decision receipts are exposed as paid API endpoints via the x402 protocol (Merit).
