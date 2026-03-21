@@ -1,9 +1,9 @@
 # Murmur
 
 <!-- MARKEE:START:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
-> 🪧 **[Markee](https://markee.xyz/ecosystem/platforms/github/0x56e7f700bE36b49bB29f384C48318FDab66182d8)** — *This space is available.*
+> 🪧 **[Markee](https://markee.xyz/ecosystem/platforms/github/0x56e7f700be36b49bb29f384c48318fdab66182d8)** — *This space is available.*
 >
-> *Be the first to buy a message for 0.001 ETH on the [Markee App](https://markee.xyz/ecosystem/platforms/github/0x56e7f700bE36b49bB29f384C48318FDab66182d8).*
+> *Be the first to buy a message for 0.001 ETH on the [Markee App](https://markee.xyz/ecosystem/platforms/github/0x56e7f700be36b49bb29f384c48318fdab66182d8).*
 <!-- MARKEE:END:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 
 > *"It hears the market before the market hears itself."*
