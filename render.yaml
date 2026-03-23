@@ -22,6 +22,8 @@ services:
         sync: false
       - key: OPENSERV_API_KEY
         sync: false
+      - key: DASHBOARD_ORIGIN
+        sync: false
       - key: CRON_SCHEDULE
         value: "*/2 * * * *"
       - key: DRY_RUN
