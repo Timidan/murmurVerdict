@@ -60,11 +60,15 @@ const RISK_PRESETS: Record<RiskProfile, { maxSlippageBps: number; maxConcentrati
 
 const sessions = new Map<string, UserSession>(); // token -> session
 const nonces = new Map<string, string>(); // address -> nonce
-let activeSessionToken: string | null = null;
+
+const VALID_RISK_PROFILES: readonly RiskProfile[] = ["conservative", "balanced", "aggressive"] as const;
 
 export function generateNonce(address: Address): string {
+  const key = address.toLowerCase();
+  const existing = nonces.get(key);
+  if (existing) return existing;
   const nonce = randomBytes(16).toString("hex");
-  nonces.set(address.toLowerCase(), nonce);
+  nonces.set(key, nonce);
   return nonce;
 }
 
@@ -90,7 +94,6 @@ export async function verifyAndCreateSession(params: {
   // Check if user already has a session
   for (const [, session] of sessions) {
     if (session.ownerAddress.toLowerCase() === address.toLowerCase()) {
-      activeSessionToken = session.token;
       return session;
     }
   }
@@ -125,7 +128,6 @@ export async function verifyAndCreateSession(params: {
   };
 
   sessions.set(token, session);
-  activeSessionToken = token;
   console.log(`[Session] New session for ${address} → agent wallet ${agentAccount.address}`);
 
   return session;
@@ -135,14 +137,32 @@ export function getSession(token: string): UserSession | null {
   return sessions.get(token) ?? null;
 }
 
-export function getActiveSession(): UserSession | null {
-  if (!activeSessionToken) return null;
-  return sessions.get(activeSessionToken) ?? null;
-}
-
 export function updateSettings(token: string, settings: Partial<UserSettings>): UserSession | null {
   const session = sessions.get(token);
   if (!session) return null;
+
+  // Validate maxTradeUsd: must be a positive number <= 1000
+  if (settings.maxTradeUsd !== undefined) {
+    if (typeof settings.maxTradeUsd !== "number" || !Number.isFinite(settings.maxTradeUsd) ||
+        settings.maxTradeUsd <= 0 || settings.maxTradeUsd > 1000) {
+      return null;
+    }
+  }
+
+  // Validate riskProfile: must be one of the allowed values
+  if (settings.riskProfile !== undefined) {
+    if (!VALID_RISK_PROFILES.includes(settings.riskProfile as RiskProfile)) {
+      return null;
+    }
+  }
+
+  // Validate maxDailyTrades: must be a positive integer <= 100
+  if (settings.maxDailyTrades !== undefined) {
+    if (typeof settings.maxDailyTrades !== "number" || !Number.isInteger(settings.maxDailyTrades) ||
+        settings.maxDailyTrades <= 0 || settings.maxDailyTrades > 100) {
+      return null;
+    }
+  }
 
   if (settings.maxTradeUsd !== undefined) session.settings.maxTradeUsd = settings.maxTradeUsd;
   if (settings.riskProfile !== undefined) session.settings.riskProfile = settings.riskProfile;

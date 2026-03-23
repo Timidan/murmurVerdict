@@ -61,9 +61,9 @@ import {
   getNonceMessage,
   verifyAndCreateSession,
   getSession,
-  getActiveSession,
   updateSettings,
   setAutopilot,
+  type UserSession,
 } from "../session/index.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
@@ -171,6 +171,7 @@ function initPolicy(config: ReturnType<typeof loadConfig>): RiskPolicy {
 
 async function refreshTreasuryState(
   config: ReturnType<typeof loadConfig>,
+  session?: UserSession | null,
 ): Promise<TreasuryState> {
   if (!config.agentPrivateKey || !config.agentAddress) {
     return {
@@ -187,16 +188,15 @@ async function refreshTreasuryState(
       privateKey: config.agentPrivateKey,
     });
 
-    // Use the active user's vault if available, fall back to agent address
-    const activeSession = getActiveSession();
+    // Use the caller's vault if available, fall back to agent address
     let portfolioOwner = config.agentAddress;
-    if (activeSession) {
+    if (session) {
       try {
         const vaultAddr = await publicClient.readContract({
-          address: "0x4cc4e528Ee35Ee11CB1b7843882fdaDb332fF183" as `0x${string}`,
+          address: "0x6008148Bc859a7834A217f268c49b207D18465a3" as `0x${string}`,
           abi: [{ name: "getVault", type: "function", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "address" }] }] as const,
           functionName: "getVault",
-          args: [activeSession.ownerAddress as `0x${string}`],
+          args: [session.ownerAddress as `0x${string}`],
         });
         if (vaultAddr && vaultAddr !== "0x0000000000000000000000000000000000000000") {
           portfolioOwner = vaultAddr as `0x${string}`;
@@ -433,6 +433,7 @@ async function runExecute(
   deliberationResult: Awaited<ReturnType<typeof runDeliberate>>,
   riskGateResult: ReturnType<typeof runRiskGatePhase>,
   config: ReturnType<typeof loadConfig>,
+  session?: UserSession | null,
 ) {
   const { decision } = deliberationResult;
 
@@ -475,23 +476,22 @@ async function runExecute(
     `Executing: ${decision.action.toUpperCase()} ${decision.slug} | $${riskGateResult.effectiveSizeUsd.toFixed(2)}`,
   );
 
-  // Look up the active user's vault from the factory
-  const activeSession = getActiveSession();
+  // Look up the caller's vault from the factory
   let userVault: `0x${string}` | undefined;
-  if (activeSession) {
+  if (session) {
     try {
       const { createPublicClient, http: viemHttp } = await import("viem");
       const { baseSepolia: baseSepoliaChain } = await import("viem/chains");
       const pc = createPublicClient({ chain: baseSepoliaChain, transport: viemHttp(config.baseRpcUrl) });
       const vaultAddr = await pc.readContract({
-        address: "0x4cc4e528Ee35Ee11CB1b7843882fdaDb332fF183" as `0x${string}`,
+        address: "0x6008148Bc859a7834A217f268c49b207D18465a3" as `0x${string}`,
         abi: [{ name: "getVault", type: "function", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "address" }] }] as const,
         functionName: "getVault",
-        args: [activeSession.ownerAddress as `0x${string}`],
+        args: [session.ownerAddress as `0x${string}`],
       });
       if (vaultAddr && vaultAddr !== "0x0000000000000000000000000000000000000000") {
         userVault = vaultAddr as `0x${string}`;
-        log("execute", `Using vault ${userVault} for user ${activeSession.ownerAddress}`);
+        log("execute", `Using vault ${userVault} for user ${session.ownerAddress}`);
       }
     } catch (err) {
       log("execute", `Failed to look up user vault: ${err}`);
@@ -576,6 +576,7 @@ async function runAttest(
 async function runCycle(
   config: ReturnType<typeof loadConfig>,
   triggeredBy: LoopCycle["triggeredBy"] = "cron",
+  session?: UserSession | null,
 ): Promise<LoopCycle> {
   const cycleId = randomUUID();
   const startedAt = new Date().toISOString();
@@ -594,7 +595,7 @@ async function runCycle(
     checkDailyReset();
 
     // ── 2. Refresh treasury + revalue positions with Binance price
-    treasuryState = await refreshTreasuryState(config);
+    treasuryState = await refreshTreasuryState(config, session);
     if (hasPriceData()) {
       const ethPrice = getPriceState().currentPrice;
       const usdcUsd = Number(treasuryState.usdcBalance) / 1e6;
@@ -699,11 +700,12 @@ async function runCycle(
       finalDeliberation,
       riskGateResult,
       config,
+      session,
     );
 
     // ── 9.5 Refresh treasury after trade
     if (executionResult) {
-      treasuryState = await refreshTreasuryState(config);
+      treasuryState = await refreshTreasuryState(config, session);
       log("execute", `Treasury refreshed — $${treasuryState.totalPortfolioUsd.toFixed(2)} total | ${treasuryState.positions.length} positions`);
     }
 
@@ -887,14 +889,18 @@ async function main() {
     });
   });
 
-  wsApp.post("/api/trigger-cycle", async (_req, res) => {
+  wsApp.post("/api/trigger-cycle", async (req, res) => {
+    const token = (req.headers.authorization ?? "").replace("Bearer ", "");
+    const session = getSession(token);
+    if (!session) { res.status(401).json({ error: "Not authenticated" }); return; }
+
     if (isRunning) {
       res.status(409).json({ error: "Cycle already running" });
       return;
     }
     isRunning = true;
     try {
-      const cycle = await runCycle(config, "manual");
+      const cycle = await runCycle(config, "manual", session);
       res.json({ success: true, cycleId: cycle.cycleId, action: cycle.phase });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });

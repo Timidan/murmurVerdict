@@ -5,83 +5,97 @@ interface UseSocketReturn {
   snapshot: DashboardSnapshot | null;
   connected: boolean;
   currentPhase: LoopPhase | null;
+  authFailed: boolean;
 }
 
 const DEFAULT_WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:3001";
 
-export function useSocket(url: string = DEFAULT_WS_URL): UseSocketReturn {
+export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): UseSocketReturn {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [connected, setConnected] = useState(false);
   const [currentPhase, setCurrentPhase] = useState<LoopPhase | null>(null);
+  const [authFailed, setAuthFailed] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const connect = useCallback(() => {
-    // Clean up any existing connection
-    if (wsRef.current) {
-      wsRef.current.close();
+  useEffect(() => {
+    if (!token) {
+      setConnected(false);
+      setAuthFailed(false);
+      return;
     }
 
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
+    // Reset auth failure when token changes
+    setAuthFailed(false);
 
-    ws.onopen = () => {
-      setConnected(true);
-    };
-
-    ws.onclose = () => {
-      setConnected(false);
-      wsRef.current = null;
-      // Auto-reconnect after 3 seconds
-      reconnectTimerRef.current = setTimeout(() => {
-        connect();
-      }, 3000);
-    };
-
-    ws.onerror = () => {
-      // onclose will fire after onerror, triggering reconnect
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data) as WsMessage;
-
-        switch (msg.type) {
-          case "snapshot": {
-            setSnapshot(msg.data);
-            if (msg.data.currentCycle) {
-              setCurrentPhase(msg.data.currentCycle.phase);
-            }
-            break;
-          }
-          case "phase": {
-            setCurrentPhase(msg.data.phase);
-            // Patch snapshot's currentCycle with new phase
-            setSnapshot((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                currentCycle: {
-                  cycleId: msg.data.cycleId,
-                  phase: msg.data.phase,
-                  startedAt: prev.currentCycle?.startedAt ?? msg.data.timestamp,
-                },
-              };
-            });
-            break;
-          }
-          case "trade": {
-            // Trade messages are informational; snapshot will follow
-            break;
-          }
-        }
-      } catch {
-        // Ignore malformed messages
+    function connect() {
+      if (wsRef.current) {
+        wsRef.current.close();
       }
-    };
-  }, [url]);
 
-  useEffect(() => {
+      const wsUrl = `${url}?token=${encodeURIComponent(token!)}`;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+      };
+
+      ws.onclose = (event) => {
+        setConnected(false);
+        wsRef.current = null;
+
+        // 4001 = server rejected our token — don't retry
+        if (event.code === 4001) {
+          setAuthFailed(true);
+          return;
+        }
+
+        // Normal disconnect — reconnect after 3s
+        reconnectTimerRef.current = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => {
+        // onclose will fire after onerror
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data) as WsMessage;
+
+          switch (msg.type) {
+            case "snapshot": {
+              setSnapshot(msg.data);
+              if (msg.data.currentCycle) {
+                setCurrentPhase(msg.data.currentCycle.phase);
+              }
+              break;
+            }
+            case "phase": {
+              setCurrentPhase(msg.data.phase);
+              setSnapshot((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  currentCycle: {
+                    cycleId: msg.data.cycleId,
+                    phase: msg.data.phase,
+                    startedAt: prev.currentCycle?.startedAt ?? msg.data.timestamp,
+                  },
+                };
+              });
+              break;
+            }
+            case "trade": {
+              break;
+            }
+          }
+        } catch {
+          // Ignore malformed messages
+        }
+      };
+    }
+
     connect();
 
     return () => {
@@ -90,9 +104,10 @@ export function useSocket(url: string = DEFAULT_WS_URL): UseSocketReturn {
       }
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
-  }, [connect]);
+  }, [url, token]);
 
-  return { snapshot, connected, currentPhase };
+  return { snapshot, connected, currentPhase, authFailed };
 }

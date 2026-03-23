@@ -55,8 +55,20 @@ export function startX402Server(params: StartX402ServerParams): Server | null {
     });
   });
 
+  // API key auth middleware for paid endpoints
+  const apiKeyGuard: express.RequestHandler = (req, res, next) => {
+    const requiredKey = process.env.X402_API_KEY;
+    if (!requiredKey) { next(); return; } // Dev mode: no key required
+    const provided = req.headers["x-api-key"];
+    if (provided !== requiredKey) {
+      res.status(401).json({ error: "Invalid or missing API key" });
+      return;
+    }
+    next();
+  };
+
   // Paid endpoint: latest receipts
-  app.get("/api/receipts/latest", (req, res) => {
+  app.get("/api/receipts/latest", apiKeyGuard, (req, res) => {
     const limit = parseLimit(req, 5, 20);
     const receipts = [...params.getLatestReceipts()].slice(-limit).reverse();
 
@@ -70,7 +82,7 @@ export function startX402Server(params: StartX402ServerParams): Server | null {
   });
 
   // Paid endpoint: latest signals
-  app.get("/api/signals/latest", (_req, res) => {
+  app.get("/api/signals/latest", apiKeyGuard, (_req, res) => {
     const snapshot = params.getLatestSignalSnapshot();
     const topCandidates = [...snapshot.scoredAssets]
       .filter((a) => a.isCandidate)

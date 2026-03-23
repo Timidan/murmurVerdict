@@ -84,8 +84,11 @@ a{color:inherit;text-decoration:none}
 .lsp-inner{max-width:1100px;margin:0 auto;text-align:center}
 .lsp-label{font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:3px;color:var(--t4);text-transform:uppercase;margin-bottom:28px}
 .lsp-grid{display:flex;gap:40px;align-items:center;justify-content:center;flex-wrap:wrap}
-.lsp-name{font-family:'Geist Mono',monospace;font-size:14px;color:var(--t3);opacity:.5;transition:opacity .2s}
+.lsp-name{opacity:.7;transition:opacity .3s;display:inline-flex;align-items:center;flex-direction:column;gap:8px}
 .lsp-name:hover{opacity:1}
+.lsp-logo{height:40px;width:auto;max-width:120px;object-fit:contain}
+.lsp-logo[data-invert]{filter:invert(1)}
+.lsp-txt{font-family:'Geist Mono',monospace;font-size:11px;color:var(--t4)}
 
 /* ── CTA Band ────────────────────────────────────────────────────────────── */
 .lc{padding:0 40px 100px}
@@ -142,7 +145,15 @@ a{color:inherit;text-decoration:none}
 
 // ASCII_LINES removed — replaced by TetrisMlogo canvas component
 
-const SPONSORS = ["Santiment", "Venice AI", "Filecoin", "Blockscout", "ENS", "OpenServ", "Merit (x402)"];
+const SPONSORS = [
+  { name: "Santiment",    logo: "/logos/santiment.png",   invert: false },
+  { name: "Venice AI",    logo: "/logos/venice.svg",      invert: false },
+  { name: "Filecoin",     logo: "/logos/filecoin.png",    invert: false },
+  { name: "Blockscout",   logo: "/logos/blockscout.svg",  invert: false },
+  { name: "ENS",          logo: "/logos/ens.png",         invert: false },
+  { name: "OpenServ",     logo: "/logos/openserv.png",    invert: true },
+  { name: "Merit (x402)", logo: "/logos/merit.png",       invert: false },
+];
 
 export function Landing() {
   const ref = useRef<HTMLDivElement>(null);
@@ -181,21 +192,24 @@ export function Landing() {
       if (n) {
         const num = parseInt(n);
         const suf = el.getAttribute("data-s") || "";
-        gsap.from({ v: 0 }, {
+        const obj = { v: 0 };
+        gsap.to(obj, {
           v: num, duration: 1.2, ease: "power2.out",
-          scrollTrigger: { trigger: el, start: "top 88%" },
-          onUpdate() { (el as HTMLElement).textContent = Math.round(this.targets()[0].v) + suf; },
+          scrollTrigger: { trigger: el, start: "top 90%" },
+          onUpdate() { (el as HTMLElement).textContent = Math.round(obj.v) + suf; },
         });
       } else {
-        gsap.from(el, { opacity: 0, duration: 0.6, scrollTrigger: { trigger: el, start: "top 88%" } });
+        gsap.fromTo(el, { opacity: 0 }, { opacity: 1, duration: 0.6, scrollTrigger: { trigger: el, start: "top 90%" } });
       }
     });
 
     // Sponsors stagger
-    gsap.from(ref.current!.querySelectorAll(".lsp-name"), {
-      opacity: 0, y: 12, duration: 0.4, stagger: 0.08,
-      scrollTrigger: { trigger: ref.current!.querySelector(".lsp"), start: "top 88%" },
-    });
+    gsap.fromTo(ref.current!.querySelectorAll(".lsp-name"),
+      { opacity: 0, y: 12 },
+      { opacity: 0.7, y: 0, duration: 0.4, stagger: 0.08,
+        scrollTrigger: { trigger: ref.current!.querySelector(".lsp"), start: "top 90%" },
+      },
+    );
 
     // CTA lift
     const cta = ref.current!.querySelector(".lc-inner");
@@ -219,9 +233,9 @@ export function Landing() {
           <span style={{ color: "#a78bfa" }}>MURMUR</span>
         </div>
         <div className="ln-links">
-          <a href="#how">How it works</a>
-          <a href="#features">Features</a>
-          <a href="#built">Built with</a>
+          <a href="#how" onClick={(e) => { e.preventDefault(); document.getElementById("how")?.scrollIntoView({ behavior: "smooth" }); }}>How it works</a>
+          <a href="#features" onClick={(e) => { e.preventDefault(); document.getElementById("features")?.scrollIntoView({ behavior: "smooth" }); }}>Features</a>
+          <a href="#built" onClick={(e) => { e.preventDefault(); document.getElementById("built")?.scrollIntoView({ behavior: "smooth" }); }}>Built with</a>
           <button className="ln-cta" onClick={go}>Launch App</button>
         </div>
       </nav>
@@ -376,7 +390,12 @@ export function Landing() {
         <div className="lsp-inner">
           <div className="lsp-label">Built with</div>
           <div className="lsp-grid">
-            {SPONSORS.map((s) => <span key={s} className="lsp-name">{s}</span>)}
+            {SPONSORS.map((s) => (
+              <span key={s.name} className="lsp-name">
+                <img src={s.logo} alt={s.name} className="lsp-logo" {...(s.invert ? { "data-invert": "" } : {})} />
+                <span className="lsp-txt">{s.name}</span>
+              </span>
+            ))}
           </div>
         </div>
       </section>

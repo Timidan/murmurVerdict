@@ -4,7 +4,6 @@ dotenv.config();
 import {
   createPublicClient,
   createWalletClient,
-  encodeFunctionData,
   formatUnits,
   http,
   maxUint256,
@@ -139,8 +138,10 @@ const TRADE_VAULT_ABI = [
     stateMutability: "nonpayable",
     inputs: [
       { name: "tokenIn", type: "address", internalType: "address" },
+      { name: "tokenOut", type: "address", internalType: "address" },
       { name: "amountIn", type: "uint256", internalType: "uint256" },
-      { name: "routerCalldata", type: "bytes", internalType: "bytes" },
+      { name: "minAmountOut", type: "uint256", internalType: "uint256" },
+      { name: "fee", type: "uint24", internalType: "uint24" },
     ],
     outputs: [],
   },
@@ -721,24 +722,7 @@ async function executeSwap(params: {
     vaultAddress,
   } = params;
 
-  // Build the router calldata — tokens go back to the vault
-  const routerCalldata = encodeFunctionData({
-    abi: SWAP_ROUTER_ABI,
-    functionName: "exactInputSingle",
-    args: [
-      {
-        tokenIn: tokenIn.address,
-        tokenOut: tokenOut.address,
-        fee,
-        recipient: vaultAddress,
-        amountIn,
-        amountOutMinimum,
-        sqrtPriceLimitX96: BigInt(0),
-      },
-    ],
-  });
-
-  // Delegate execution to the vault — it handles approval internally
+  // Delegate execution to the vault — it constructs the swap internally
   const hash = await (
     walletClient as WalletClient & {
       writeContract: (args: unknown) => Promise<Hash>;
@@ -747,7 +731,7 @@ async function executeSwap(params: {
     address: vaultAddress,
     abi: TRADE_VAULT_ABI,
     functionName: "executeTrade",
-    args: [tokenIn.address, amountIn, routerCalldata],
+    args: [tokenIn.address, tokenOut.address, amountIn, amountOutMinimum, fee],
     chain: baseSepolia,
   });
 
@@ -785,18 +769,18 @@ function usdToTokenAmount(usdAmount: number, token: TokenMeta): bigint {
 
 async function resolveAmountIn(params: {
   publicClient: PublicClient;
-  owner: Address;
+  balanceAddress: Address;
   decision: LLMDecision;
   riskGate: RiskGateResult;
   tokenIn: TokenMeta;
 }): Promise<bigint> {
-  const { publicClient, owner, decision, riskGate, tokenIn } = params;
+  const { publicClient, balanceAddress, decision, riskGate, tokenIn } = params;
 
   if (decision.action === "buy") {
     return usdToTokenAmount(riskGate.effectiveSizeUsd, tokenIn);
   }
 
-  const balance = await getTokenBalance(publicClient, tokenIn.address, owner);
+  const balance = await getTokenBalance(publicClient, tokenIn.address, balanceAddress);
 
   if (decision.action === "exit") {
     return balance;
@@ -841,7 +825,7 @@ export async function execute(params: {
 
   const amountIn = await resolveAmountIn({
     publicClient,
-    owner: account.address,
+    balanceAddress: vault,
     decision,
     riskGate,
     tokenIn,

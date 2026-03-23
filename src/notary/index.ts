@@ -45,7 +45,7 @@ const RETRY_DELAY_MS = 1_500;
 // ERC-8004 Registry on Base Mainnet (The Synthesis hackathon registry)
 // Agent registered at: 0x6FFa1e00509d8B625c2F061D7dB07893B37199BC
 const ERC8004_REGISTRY_ADDRESS: Address =
-  "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432";
+  "0xA649254ECC9405C4d48dde88f82e99D53b94097D";
 
 // Lighthouse IPFS/Filecoin gateway
 const LIGHTHOUSE_API_URL = "https://upload.lighthouse.storage";

@@ -15,7 +15,7 @@ import { ConfigPanel } from "./components/ConfigPanel";
 import { MurmurLogo, MurmurLogoInline } from "./components/MurmurLogo";
 
 const API_URL = (import.meta as any).env?.VITE_TRIGGER_URL ?? "http://localhost:3001";
-const VAULT_FACTORY = "0x4cc4e528Ee35Ee11CB1b7843882fdaDb332fF183" as const;
+const VAULT_FACTORY = "0x6008148Bc859a7834A217f268c49b207D18465a3" as const;
 
 const FACTORY_ABI = [{
   name: "getVault",
@@ -36,20 +36,71 @@ interface AuthSession {
   autopilotEnabled: boolean;
 }
 
+type SignMessageAsync = (args: { message: string }) => Promise<`0x${string}`>;
+
+const DEFAULT_SETTINGS = {
+  maxTradeUsd: 5,
+  riskProfile: "balanced" as const,
+  maxDailyTrades: 10,
+};
+
+/** Promise-based deduplication: only one auth flow per address at a time */
+const authInFlight = new Map<string, Promise<AuthSession>>();
+
+function authenticateOnce(address: `0x${string}`, signMessageAsync: SignMessageAsync): Promise<AuthSession> {
+  const key = address.toLowerCase();
+  const existing = authInFlight.get(key);
+  if (existing) return existing;
+
+  const request = (async (): Promise<AuthSession> => {
+    const nonceRes = await fetch(`${API_URL}/api/auth/nonce`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address }),
+    });
+    const nonceBody = await nonceRes.json();
+    if (!nonceRes.ok || !nonceBody?.message) {
+      throw new Error(nonceBody?.error ?? "Failed to fetch nonce.");
+    }
+
+    const signature = await signMessageAsync({ message: nonceBody.message });
+
+    const verifyRes = await fetch(`${API_URL}/api/auth/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address, signature }),
+    });
+    const verifyBody = await verifyRes.json();
+    if (!verifyRes.ok || !verifyBody?.token) {
+      throw new Error(verifyBody?.error ?? "Signature rejected or server error.");
+    }
+
+    return {
+      token: verifyBody.token,
+      agentAddress: verifyBody.agentAddress,
+      settings: verifyBody.settings ?? DEFAULT_SETTINGS,
+      autopilotEnabled: verifyBody.autopilotEnabled ?? true,
+    };
+  })().finally(() => {
+    if (authInFlight.get(key) === request) authInFlight.delete(key);
+  });
+
+  authInFlight.set(key, request);
+  return request;
+}
+
 export function App() {
   const { address, isConnected, connector } = useAccount();
   const { signMessageAsync } = useSignMessage();
-  const { snapshot, connected, currentPhase } = useSocket();
-
   const [session, setSession] = useState<AuthSession | null>(() => {
     try {
       const stored = sessionStorage.getItem("murmur_session");
       return stored ? JSON.parse(stored) : null;
     } catch { return null; }
   });
+  const { snapshot, connected, currentPhase, authFailed } = useSocket(session?.token ?? null);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [signing, setSigning] = useState(false);
-  const [readyToSign, setReadyToSign] = useState(false);
+  const [isSigning, setIsSigning] = useState(false);
 
   // Persist session to sessionStorage
   useEffect(() => {
@@ -59,6 +110,21 @@ export function App() {
       sessionStorage.removeItem("murmur_session");
     }
   }, [session]);
+
+  // Clear stale session when WS auth fails (e.g. after backend restart)
+  useEffect(() => {
+    if (authFailed && session) {
+      setSession(null);
+    }
+  }, [authFailed]);
+
+  // Reset session on disconnect
+  useEffect(() => {
+    if (!isConnected) {
+      setSession(null);
+      setAuthError(null);
+    }
+  }, [isConnected]);
 
   // Look up user's vault from factory
   const { data: userVaultAddr, refetch: refetchVault } = useReadContract({
@@ -72,64 +138,20 @@ export function App() {
     ? (userVaultAddr as string)
     : null;
 
-  // Wait for connector to be fully ready before attempting sign
-  useEffect(() => {
-    if (isConnected && address && connector && !readyToSign) {
-      const timer = setTimeout(() => setReadyToSign(true), 500);
-      return () => clearTimeout(timer);
+  // Manual sign-in — triggered by button click, never by useEffect
+  const handleSignIn = async () => {
+    if (!address || isSigning) return;
+    setIsSigning(true);
+    setAuthError(null);
+    try {
+      const result = await authenticateOnce(address, signMessageAsync);
+      setSession(result);
+    } catch (err: unknown) {
+      setAuthError(err instanceof Error ? err.message : "Signature rejected or server error.");
+    } finally {
+      setIsSigning(false);
     }
-    if (!isConnected) setReadyToSign(false);
-  }, [isConnected, address, connector, readyToSign]);
-
-  // Auto-trigger sign-in when wallet is ready
-  useEffect(() => {
-    if (!readyToSign || !address || session || signing) return;
-
-    const doAuth = async () => {
-      setSigning(true);
-      setAuthError(null);
-      try {
-        // Step 1: get nonce
-        const nonceRes = await fetch(`${API_URL}/api/auth/nonce`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address }),
-        });
-        const { message } = await nonceRes.json();
-
-        // Step 2: sign the message
-        const signature = await signMessageAsync({ message });
-
-        // Step 3: verify signature
-        const verifyRes = await fetch(`${API_URL}/api/auth/verify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address, signature }),
-        });
-        const data = await verifyRes.json();
-
-        setSession({
-          token: data.token,
-          agentAddress: data.agentAddress,
-          settings: data.settings ?? { maxTradeUsd: 5, riskProfile: "balanced", maxDailyTrades: 10 },
-          autopilotEnabled: data.autopilotEnabled ?? true,
-        });
-      } catch (err: any) {
-        setAuthError(err?.message ?? "Signature rejected or server error.");
-      }
-      setSigning(false);
-    };
-
-    doAuth();
-  }, [readyToSign, address]);
-
-  // Reset session on disconnect
-  useEffect(() => {
-    if (!isConnected) {
-      setSession(null);
-      setAuthError(null);
-    }
-  }, [isConnected]);
+  };
 
   // Not connected — show connect screen
   if (!isConnected || !session) {
@@ -149,24 +171,20 @@ export function App() {
           <div className="connect-subtitle">
             Connect your wallet to authenticate and configure your autonomous trading agent.
           </div>
-          {signing && (
-            <div style={{ color: "#71717a", fontSize: 12, letterSpacing: 1 }}>
-              Waiting for signature...
-            </div>
-          )}
           {authError && (
             <div style={{ color: "#ef4444", fontSize: 12, marginBottom: 8 }}>{authError}</div>
           )}
-          {!signing && !isConnected && (
+          {!isConnected && (
             <ConnectButton />
           )}
-          {!signing && isConnected && !session && (
+          {isConnected && !session && (
             <button
               className="header-trigger-btn"
               style={{ padding: "8px 24px", fontSize: 14 }}
-              onClick={() => { setReadyToSign(false); setTimeout(() => setReadyToSign(true), 100); }}
+              disabled={isSigning}
+              onClick={handleSignIn}
             >
-              Sign in to Murmur
+              {isSigning ? "Waiting for signature..." : "Sign in to Murmur"}
             </button>
           )}
         </div>

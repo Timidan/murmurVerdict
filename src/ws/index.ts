@@ -1,18 +1,22 @@
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
+import { URL } from "url";
 import express from "express";
 import type { DashboardSnapshot, WsMessage } from "../types/index.js";
+import { getSession } from "../session/index.js";
 
 let wss: WebSocketServer | null = null;
 let httpServer: Server | null = null;
 let latestSnapshot: DashboardSnapshot | null = null;
 
 // Shared express app for HTTP endpoints on the same port
+const ALLOWED_ORIGIN = process.env.DASHBOARD_ORIGIN || "http://localhost:5173";
+
 const app = express();
 app.use((_req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (_req.method === "OPTIONS") { res.status(204).end(); return; }
   next();
 });
@@ -34,7 +38,15 @@ export function startWsServer(port: number = 3001): WebSocketServer {
 
   wss = new WebSocketServer({ server: httpServer });
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    // Require auth via token query parameter
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const token = url.searchParams.get("token");
+    if (!token || !getSession(token)) {
+      ws.close(4001, "Unauthorized");
+      return;
+    }
+
     console.log(`[WS] Client connected (${wss!.clients.size} total)`);
 
     if (latestSnapshot) {

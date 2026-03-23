@@ -29,8 +29,8 @@ Built for [The Synthesis Hackathon](https://synthesis.devfolio.co) by **Murmur**
 
 | Contract | Address | BaseScan |
 |----------|---------|----------|
-| **VaultFactory** | `0x4cc4e528Ee35Ee11CB1b7843882fdaDb332fF183` | [View](https://sepolia.basescan.org/address/0x4cc4e528Ee35Ee11CB1b7843882fdaDb332fF183) |
-| **TradeVault** (legacy demo) | `0x14114283D2f1471344907061BF49EB15daF9cB1E` | [View](https://sepolia.basescan.org/address/0x14114283D2f1471344907061BF49EB15daF9cB1E) |
+| **VaultFactory** | `0x6008148Bc859a7834A217f268c49b207D18465a3` | [View](https://sepolia.basescan.org/address/0x6008148Bc859a7834A217f268c49b207D18465a3) |
+| **AgentRegistry** | `0xA649254ECC9405C4d48dde88f82e99D53b94097D` | [View](https://basescan.org/address/0xA649254ECC9405C4d48dde88f82e99D53b94097D) |
 | **Agent Wallet** | `0x0a3C305cC7645241AEdE654C75341a3b98aF7d66` | [View](https://sepolia.basescan.org/address/0x0a3C305cC7645241AEdE654C75341a3b98aF7d66) |
 | **USDC (Base Sepolia)** | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | [View](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) |
 | **Uniswap SwapRouter02** | `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` | [View](https://sepolia.basescan.org/address/0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4) |

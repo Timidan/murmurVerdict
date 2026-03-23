@@ -3,6 +3,24 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
+/// @notice Minimal interface for Uniswap V3 SwapRouter exactInputSingle
+interface ISwapRouter {
+    struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    function exactInputSingle(ExactInputSingleParams calldata params)
+        external
+        payable
+        returns (uint256 amountOut);
+}
+
 /**
  * @title TradeVault
  * @notice Per-user vault for autonomous trading. User deposits funds,
@@ -28,7 +46,7 @@ contract TradeVault {
 
     event Deposited(address indexed token, uint256 amount);
     event Withdrawn(address indexed token, uint256 amount);
-    event TradeExecuted(address indexed tokenIn, address indexed tokenOut, uint256 amountIn);
+    event TradeExecuted(address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut);
     event AgentUpdated(address indexed newAgent);
     event Paused();
     event Unpaused();
@@ -60,6 +78,10 @@ contract TradeVault {
         uint256 _maxTradeAmount,
         uint256 _dailyLimit
     ) {
+        require(_owner != address(0), "Zero owner address");
+        require(_agent != address(0), "Zero agent address");
+        require(_router != address(0), "Zero router address");
+
         owner = _owner;
         agent = _agent;
         router = _router;
@@ -68,17 +90,49 @@ contract TradeVault {
         lastResetDay = block.timestamp / 1 days;
     }
 
+    // ─── Internal Safe ERC20 Helpers ────────────────────────────────────────
+
+    function _safeTransfer(address token, address to, uint256 amount) private {
+        (bool success, bytes memory returndata) = token.call(
+            abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
+        );
+        require(
+            success && (returndata.length == 0 || abi.decode(returndata, (bool))),
+            "SafeERC20: transfer failed"
+        );
+    }
+
+    function _safeTransferFrom(address token, address from, address to, uint256 amount) private {
+        (bool success, bytes memory returndata) = token.call(
+            abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, amount)
+        );
+        require(
+            success && (returndata.length == 0 || abi.decode(returndata, (bool))),
+            "SafeERC20: transferFrom failed"
+        );
+    }
+
+    function _safeApprove(address token, address spender, uint256 amount) private {
+        (bool success, bytes memory returndata) = token.call(
+            abi.encodeWithSelector(IERC20.approve.selector, spender, amount)
+        );
+        require(
+            success && (returndata.length == 0 || abi.decode(returndata, (bool))),
+            "SafeERC20: approve failed"
+        );
+    }
+
     // ─── Owner Functions ────────────────────────────────────────────────────
 
     /// @notice Deposit ERC20 tokens into the vault
     function deposit(address token, uint256 amount) external {
-        IERC20(token).transferFrom(msg.sender, address(this), amount);
+        _safeTransferFrom(token, msg.sender, address(this), amount);
         emit Deposited(token, amount);
     }
 
     /// @notice Withdraw tokens back to the owner
     function withdraw(address token, uint256 amount) external onlyOwner {
-        IERC20(token).transfer(owner, amount);
+        _safeTransfer(token, owner, amount);
         emit Withdrawn(token, amount);
     }
 
@@ -86,7 +140,7 @@ contract TradeVault {
     function withdrawAll(address token) external onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
-            IERC20(token).transfer(owner, balance);
+            _safeTransfer(token, owner, balance);
             emit Withdrawn(token, balance);
         }
     }
@@ -118,13 +172,18 @@ contract TradeVault {
 
     // ─── Agent Functions ────────────────────────────────────────────────────
 
-    /// @notice Execute a swap through the approved router
-    /// @dev Agent approves the router, then calls it with arbitrary calldata.
-    ///      Only the pre-approved router address can be called.
+    /// @notice Execute a swap through the approved router using Uniswap V3 exactInputSingle
+    /// @param tokenIn The token to sell
+    /// @param tokenOut The token to buy
+    /// @param amountIn The amount of tokenIn to swap
+    /// @param minAmountOut Minimum amount of tokenOut to receive (slippage protection)
+    /// @param fee The Uniswap V3 pool fee tier (e.g. 500, 3000, 10000)
     function executeTrade(
         address tokenIn,
+        address tokenOut,
         uint256 amountIn,
-        bytes calldata routerCalldata
+        uint256 minAmountOut,
+        uint24 fee
     ) external onlyAgent whenNotPaused {
         // Daily reset
         uint256 currentDay = block.timestamp / 1 days;
@@ -141,13 +200,22 @@ contract TradeVault {
         dailySpent += amountIn;
 
         // Approve router to spend tokenIn
-        IERC20(tokenIn).approve(router, amountIn);
+        _safeApprove(tokenIn, router, amountIn);
 
-        // Execute the swap via the approved router
-        (bool success, ) = router.call(routerCalldata);
-        require(success, "Router call failed");
+        // Execute the swap via Uniswap V3 exactInputSingle
+        uint256 amountOut = ISwapRouter(router).exactInputSingle(
+            ISwapRouter.ExactInputSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                fee: fee,
+                recipient: address(this),
+                amountIn: amountIn,
+                amountOutMinimum: minAmountOut,
+                sqrtPriceLimitX96: 0
+            })
+        );
 
-        emit TradeExecuted(tokenIn, address(0), amountIn);
+        emit TradeExecuted(tokenIn, tokenOut, amountIn, amountOut);
     }
 
     // ─── View Functions ─────────────────────────────────────────────────────

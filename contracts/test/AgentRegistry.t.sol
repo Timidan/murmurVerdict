@@ -7,9 +7,12 @@ import "../src/AgentRegistry.sol";
 contract AgentRegistryTest is Test {
     AgentRegistry registry;
     address agent = address(0xBEEF);
+    address deployer = address(this);
 
     function setUp() public {
         registry = new AgentRegistry();
+        // Authorize the agent so it can attest
+        registry.authorizeAgent(agent);
     }
 
     function test_attest_emits_event() public {
@@ -75,6 +78,8 @@ contract AgentRegistryTest is Test {
 
     function test_different_agents_can_attest_different_hashes() public {
         address agent2 = address(0xCAFE);
+        registry.authorizeAgent(agent2);
+
         bytes32 hash1 = keccak256("r1");
         bytes32 hash2 = keccak256("r2");
 
@@ -86,5 +91,35 @@ contract AgentRegistryTest is Test {
 
         assertEq(registry.attestationCount(agent), 1);
         assertEq(registry.attestationCount(agent2), 1);
+    }
+
+    function test_unauthorized_agent_cannot_attest() public {
+        address unauthorized = address(0xDEAD);
+        vm.prank(unauthorized);
+        vm.expectRevert(AgentRegistry.NotAuthorizedAgent.selector);
+        registry.attest(keccak256("receipt"), "ipfs://Qm1", "buy");
+    }
+
+    function test_revoked_agent_cannot_attest() public {
+        registry.revokeAgent(agent);
+        vm.prank(agent);
+        vm.expectRevert(AgentRegistry.NotAuthorizedAgent.selector);
+        registry.attest(keccak256("receipt"), "ipfs://Qm1", "buy");
+    }
+
+    function test_only_owner_can_authorize() public {
+        vm.prank(agent);
+        vm.expectRevert(AgentRegistry.NotOwner.selector);
+        registry.authorizeAgent(address(0x1234));
+    }
+
+    function test_only_owner_can_revoke() public {
+        vm.prank(agent);
+        vm.expectRevert(AgentRegistry.NotOwner.selector);
+        registry.revokeAgent(agent);
+    }
+
+    function test_owner_is_deployer() public view {
+        assertEq(registry.owner(), deployer);
     }
 }

@@ -50,6 +50,7 @@ const RETRY_DELAY_MS = 1000;
 async function santimentQuery<T>(
   query: string,
   apiKey: string,
+  variables?: Record<string, unknown>,
   retries = MAX_RETRIES
 ): Promise<T> {
   const lastError: Error = new Error("Unknown error");
@@ -62,7 +63,7 @@ async function santimentQuery<T>(
           "Content-Type": "application/json",
           Authorization: `Apikey ${apiKey}`,
         },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify(variables ? { query, variables } : { query }),
       });
 
       if (!res.ok) {
@@ -139,14 +140,9 @@ export async function fetchMetric(params: {
 }): Promise<TimeseriesPoint[]> {
   const { apiKey, metric, slug, from, to, interval = "1d" } = params;
 
-  const query = `{
-    getMetric(metric: "${metric}") {
-      timeseriesData(
-        slug: "${slug}"
-        from: "${toISO(from)}"
-        to: "${toISO(to)}"
-        interval: "${interval}"
-      ) {
+  const query = `query($metric: String!, $slug: String!, $from: DateTime!, $to: DateTime!, $interval: interval!) {
+    getMetric(metric: $metric) {
+      timeseriesData(slug: $slug, from: $from, to: $to, interval: $interval) {
         datetime
         value
       }
@@ -157,7 +153,13 @@ export async function fetchMetric(params: {
     getMetric: { timeseriesData: { datetime: string; value: number }[] } | null;
   };
 
-  const data = await santimentQuery<Response>(query, apiKey);
+  const data = await santimentQuery<Response>(query, apiKey, {
+    metric,
+    slug,
+    from: toISO(from),
+    to: toISO(to),
+    interval,
+  });
 
   if (!data.getMetric) {
     return [];
@@ -185,15 +187,17 @@ export async function fetchAllMetricsForAsset(params: {
   const { apiKey, slug, from, to, interval = "1d", metrics = ALL_METRICS } = params;
 
   // Build a batched query with one alias per metric
+  // Metric names come from hardcoded ALL_METRICS enum, so interpolating them is safe.
+  // Slug/from/to/interval are parameterized via GraphQL variables.
   const aliases = metrics.map((metric, i) => {
     const alias = `m${i}`;
     return `
       ${alias}: getMetric(metric: "${metric}") {
         timeseriesData(
-          slug: "${slug}"
-          from: "${toISO(from)}"
-          to: "${toISO(to)}"
-          interval: "${interval}"
+          slug: $slug
+          from: $from
+          to: $to
+          interval: $interval
         ) {
           datetime
           value
@@ -201,7 +205,14 @@ export async function fetchAllMetricsForAsset(params: {
       }`;
   });
 
-  const query = `{ ${aliases.join("\n")} }`;
+  const query = `query($slug: String!, $from: DateTime!, $to: DateTime!, $interval: interval!) { ${aliases.join("\n")} }`;
+
+  const queryVariables = {
+    slug,
+    from: toISO(from),
+    to: toISO(to),
+    interval,
+  };
 
   type AliasedResponse = Record<
     string,
@@ -210,7 +221,7 @@ export async function fetchAllMetricsForAsset(params: {
 
   let data: AliasedResponse;
   try {
-    data = await santimentQuery<AliasedResponse>(query, apiKey);
+    data = await santimentQuery<AliasedResponse>(query, apiKey, queryVariables);
   } catch (err) {
     console.error(`[Scout] Batch fetch failed for ${slug}:`, (err as Error).message);
     // Fall back to individual fetches

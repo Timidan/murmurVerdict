@@ -5,7 +5,7 @@ import { parseUnits, maxUint256, formatUnits } from "viem";
 const API_URL = (import.meta as any).env?.VITE_TRIGGER_URL ?? "http://localhost:3001";
 
 const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
-const VAULT_FACTORY = "0x4cc4e528Ee35Ee11CB1b7843882fdaDb332fF183" as const;
+const VAULT_FACTORY = "0x6008148Bc859a7834A217f268c49b207D18465a3" as const;
 
 const ERC20_ABI = [
   {
