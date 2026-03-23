@@ -10,11 +10,18 @@ let httpServer: Server | null = null;
 let latestSnapshot: DashboardSnapshot | null = null;
 
 // Shared express app for HTTP endpoints on the same port
-const ALLOWED_ORIGIN = process.env.DASHBOARD_ORIGIN || "http://localhost:5173";
+const ALLOWED_ORIGINS = new Set(
+  (process.env.DASHBOARD_ORIGIN || "http://localhost:5173")
+    .split(",")
+    .map((o) => o.trim()),
+);
 
 const app = express();
 app.use((_req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+  const origin = _req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (_req.method === "OPTIONS") { res.status(204).end(); return; }
