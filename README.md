@@ -8,9 +8,34 @@
 
 > *"It hears the market before the market hears itself."*
 
-An autonomous DeFi operator that converts Santiment social sentiment and on-chain signals into permission-gated trade execution on Base Sepolia — with every decision cryptographically signed, stored on Filecoin, and linked to the agent's on-chain identity. The agent's wallet is resolved to a human-readable ENS name at startup, external market context is purchased via Locus (USDC pay-per-request), and decision receipts are exposed as paid API endpoints via the x402 protocol (Merit).
+An autonomous DeFi operator that converts Santiment social sentiment and on-chain signals into permission-gated trade execution on Base Sepolia — with every decision cryptographically signed, stored on Filecoin, and linked to the agent's on-chain identity. Users connect their wallet via RainbowKit, deposit USDC into a non-custodial TradeVault smart contract, and set their own trading limits — the agent trades through `vault.executeTrade()` within those on-chain enforced bounds. The agent's wallet is resolved to a human-readable ENS name at startup, the agent's capabilities are exposed as an OpenServ multi-agent service, and decision receipts are available as paid API endpoints via the x402 protocol (Merit).
 
 Built for [The Synthesis Hackathon](https://synthesis.devfolio.co) by **Murmur** (AI agent) + **Temitayo Daniel** ([@Timidan_x](https://x.com/Timidan_x)).
+
+---
+
+## User Flow
+
+```
+1. Connect Wallet
+   RainbowKit wallet connect on Base Sepolia.
+   Sign-in-with-wallet: nonce issued, signature verified server-side.
+
+2. Deposit USDC
+   User deposits USDC into their TradeVault contract from the dashboard.
+   Funds remain in a smart contract the user owns — not a hot wallet.
+
+3. Set Parameters
+   Config panel: max trade size, risk profile, max daily trades.
+   Autopilot toggle: enable or disable autonomous trading.
+   "Run cycle" button for instant manual triggers.
+
+4. Agent Trades Autonomously
+   Every 2 minutes: Scout → Analyst → Strategist → Risk Gate → TradeVault.executeTrade()
+   On-chain limits enforce max trade size and daily spending cap.
+   Owner can pause, withdraw, revoke agent, or update limits at any time.
+   Every decision — trade or hold — is attested and stored on Filecoin.
+```
 
 ---
 
@@ -23,18 +48,27 @@ Murmur runs a fully autonomous decision loop every 2 minutes:
 │   SCOUT     │───▶│   ANALYST   │───▶│ STRATEGIST  │───▶│  RISK GATE  │
 │             │    │             │    │             │    │             │
 │  Santiment  │    │  Normalize  │    │  Venice AI  │    │   Risk      │
-│  API fetch  │    │  z-scores   │    │  inference  │    │   Policy    │
-│  9 metrics  │    │  3 playbooks│    │  deliberate │    │  14 checks  │
+│  API fetch  │    │  z-scores   │    │  llama-3.3  │    │   Policy    │
+│  9 metrics  │    │  3 playbooks│    │  -70b infer │    │  14 checks  │
 │  8 assets   │    │  score+rank │    │  thesis     │    │  fast-lane  │
 └─────────────┘    └─────────────┘    └─────────────┘    └──────┬──────┘
+                                                                 │
+                                                    ┌────────────▼────────────┐
+                                                    │      TRADEVAULT         │
+                                                    │                         │
+                                                    │  On-chain vault, user-  │
+                                                    │  controlled limits.     │
+                                                    │  executeTrade() gated   │
+                                                    │  by max size + daily cap│
+                                                    └────────────┬────────────┘
                                                                  │
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐           │
 │   NOTARY    │◀───│  EXECUTOR   │◀───│    QUOTE    │◀──────────┘
 │             │    │             │    │             │
 │  Filecoin   │    │  Uniswap    │    │  Trading    │
 │  receipt    │    │  SwapRouter │    │  API / v3   │
-│  + x402 API │    │  approve +  │    │  on-chain   │
-│  endpoints  │    │  swap       │    │  quoter     │
+│  + x402 API │    │  via vault  │    │  on-chain   │
+│  endpoints  │    │  executeTrade   │  quoter     │
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
@@ -44,9 +78,10 @@ Murmur runs a fully autonomous decision loop every 2 minutes:
 |---|---|---|
 | **Scout** | `src/scout` | Pulls 9 Santiment metrics for 8 Base-tradable assets |
 | **Analyst** | `src/analyst` | Normalizes signals (z-scores, percentiles, ROC) and scores across 3 playbooks |
-| **Strategist** | `src/strategist` | Uses Venice AI to resolve signal ambiguity and produce a constrained decision |
+| **Strategist** | `src/strategist` | Uses Venice AI (`llama-3.3-70b`) to resolve signal ambiguity and produce a constrained decision |
 | **Risk Officer** | `src/risk` | Enforces delegation policy — 14 deterministic checks, fast-lane exit triggers |
-| **Executor / Notary** | `src/executor` + `src/notary` | Swaps on Uniswap, stores decision receipt on Filecoin |
+| **TradeVault** | `contracts/src/TradeVault.sol` | On-chain vault holding user USDC. Agent calls `executeTrade()` — limits enforced at the contract level |
+| **Executor / Notary** | `src/executor` + `src/notary` | Swaps on Uniswap via the vault, stores decision receipt on Filecoin |
 
 ---
 
@@ -138,8 +173,8 @@ Immediate risk-off triggers that skip deliberation:
 
 ### Model Escalation
 
-- Routine cycles: `openai-gpt-54` via Venice AI (fast, cost-efficient)
-- High-conviction cycles (composite score > 0.75): `openai-gpt-54` via Venice AI
+- Routine cycles: `llama-3.3-70b` via Venice AI (fast, cost-efficient)
+- High-conviction cycles (composite score > 0.75): `llama-3.3-70b` via Venice AI
 
 LLM inference is powered by **Venice AI** — private, no-data-retention reasoning for all agent deliberation.
 
@@ -164,7 +199,7 @@ Every cycle — whether it trades or holds — produces a **DecisionReceipt**:
       "thesis": "Social dominance rising...",
       "invalidationCondition": "Exchange inflows spike..."
     },
-    "modelUsed": "openai-gpt-54"
+    "modelUsed": "llama-3.3-70b"
   },
   "riskGate": { "approved": true, "checks": [...] },
   "execution": { "txHash": "0x...", "amountIn": "...", "amountOut": "..." },
@@ -183,17 +218,21 @@ The `receiptHash` is `keccak256(canonicalJson(receipt))`. The full payload is pi
 
 ```
 synth-x/
+├── contracts/
+│   └── src/
+│       └── TradeVault.sol   # Non-custodial vault — user USDC, agent trade access, on-chain limits
 ├── src/
 │   ├── types/          # Shared TypeScript types across all modules
 │   ├── scout/          # Santiment API — signal ingestion
 │   ├── analyst/        # Normalization + 3-playbook scoring engine
-│   ├── strategist/     # Venice AI LLM deliberation
+│   ├── strategist/     # Venice AI LLM deliberation (llama-3.3-70b)
 │   ├── risk/           # Local delegation policy engine — 14 deterministic checks, fast-lane exits
-│   ├── executor/       # Uniswap quote + swap execution on Base
+│   ├── executor/       # Uniswap quote + swap execution via TradeVault on Base
 │   ├── notary/         # Filecoin storage of decision receipts
-│   ├── integrations/   # ENS identity + Locus paid context
+│   ├── integrations/   # ENS identity + OpenServ multi-agent service
 │   ├── api/            # x402 pay-per-request API server
 │   ├── price/          # Binance WebSocket real-time ETH/USD feed
+│   ├── session/        # Wallet auth — nonce generation + signature verification (SIWE)
 │   └── loop/           # Main orchestration loop (cron + event)
 ├── .env                # API keys (never commit)
 ├── .gitignore
@@ -225,11 +264,14 @@ BASE_RPC_URL=https://sepolia.base.org
 VENICE_API_KEY=your_venice_key
 UNISWAP_API_KEY=your_uniswap_key
 FILECOIN_API_TOKEN=your_lighthouse_key
-LOCUS_API_KEY=your_locus_key
+OPENSERV_API_KEY=your_openserv_key
 
 # For live execution
 AGENT_PRIVATE_KEY=0x...
 AGENT_ADDRESS=0x...
+
+# TradeVault — user deposits USDC here; agent trades through the vault
+TRADE_VAULT_ADDRESS=0x14114283D2f1471344907061BF49EB15daF9cB1E
 
 # Optional — defaults shown
 CRON_SCHEDULE="*/2 * * * *"
@@ -241,6 +283,10 @@ DRY_RUN=true
 SKIP_ON_CHAIN=false
 SKIP_FILECOIN=false
 ```
+
+### Wallet connect
+
+The dashboard uses RainbowKit on Base Sepolia. Users must connect their wallet and sign a message to authenticate before accessing the trading interface. The `session/` module handles nonce issuance and signature verification server-side.
 
 ### 3. Run in observation mode (no execution)
 
@@ -294,7 +340,7 @@ This project is submitted to the following tracks:
 | **Autonomous Trading Agent** | Base | Autonomous trading agent deployed on Base with novel signal stack |
 | **Best Use Case with Agentic Storage** | Filecoin | Decision receipts stored on Filecoin Onchain Cloud — verifiable audit trail |
 | **ENS Identity** | ENS | Agent wallet resolved to ENS name at startup — human-readable on-chain identity |
-| **Paid Agent Context** | Locus | Locus wraps external data APIs with USDC payments — Murmur pays for market context before each deliberation |
+| **Multi-Agent Service** | OpenServ | Murmur exposes its capabilities (regime detection, receipt lookup, on-demand analysis) as an OpenServ agent — callable by other agents in multi-agent workflows |
 | **Pay-Per-Request Data** | Merit | x402 protocol exposes decision receipts and signal data as paid API endpoints |
 
 ---
@@ -306,6 +352,7 @@ Murmur is a registered participant in The Synthesis with an ERC-8004 identity on
 - **Registration Tx:** [View on BaseScan](https://sepolia.basescan.org/tx/0x6b642f84e0be8913e2123dbcc64f401832ab06d47c7716abd36a93191b49b72f)
 - **Network:** Base Sepolia
 - **Standard:** [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)
+- **TradeVault Contract:** `0x14114283D2f1471344907061BF49EB15daF9cB1E` on Base Sepolia — [View on BaseScan](https://sepolia.basescan.org/address/0x14114283D2f1471344907061BF49EB15daF9cB1E)
 
 ---
 

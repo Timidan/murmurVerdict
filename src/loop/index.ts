@@ -46,7 +46,7 @@ import {
   MurmurError,
 } from "../types/index.js";
 
-import { startWsServer, broadcastPhase, broadcastSnapshot } from "../ws/index.js";
+import { startWsServer, broadcastPhase, broadcastSnapshot, app as wsApp } from "../ws/index.js";
 import { startPriceFeed, stopPriceFeed, getPriceState, hasPriceData } from "../price/index.js";
 import type { PriceFeedState, AssetRawSignals } from "../types/index.js";
 import {
@@ -54,8 +54,17 @@ import {
   createDefaultEnsResolution,
   resolveAgentEns,
 } from "../integrations/ens.js";
-import { fetchLocusMarketContext } from "../integrations/locus.js";
 import { startX402Server } from "../api/x402.js";
+import { startOpenServAgent } from "../integrations/openserv.js";
+import {
+  generateNonce,
+  getNonceMessage,
+  verifyAndCreateSession,
+  getSession,
+  getActiveSession,
+  updateSettings,
+  setAutopilot,
+} from "../session/index.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
@@ -97,7 +106,6 @@ function loadConfig() {
     dryRun: process.env.DRY_RUN === "true",
     skipOnChain: process.env.SKIP_ON_CHAIN === "true",
     skipFilecoin: process.env.SKIP_FILECOIN === "true",
-    locusApiKey: process.env.LOCUS_API_KEY ?? "",
   };
 }
 
@@ -138,6 +146,9 @@ function buildSnapshot(
     lastDecisions: decisionLog.slice(-20),
     riskGate: lastRiskGate,
     currentCycle,
+    ethPrice: hasPriceData() ? getPriceState().currentPrice : null,
+    regime: detectRegime(lastScoredAssets),
+    latestFilecoinCid: receipts.length > 0 ? (receipts[receipts.length - 1]?.filecoinCid ?? null) : null,
     config: {
       network: "Base Sepolia",
       cronSchedule: config.cronSchedule,
@@ -176,7 +187,24 @@ async function refreshTreasuryState(
       privateKey: config.agentPrivateKey,
     });
 
-    return await refreshPortfolio(publicClient, config.agentAddress);
+    // Use the active user's vault if available, fall back to agent address
+    const activeSession = getActiveSession();
+    let portfolioOwner = config.agentAddress;
+    if (activeSession) {
+      try {
+        const vaultAddr = await publicClient.readContract({
+          address: "0x4cc4e528Ee35Ee11CB1b7843882fdaDb332fF183" as `0x${string}`,
+          abi: [{ name: "getVault", type: "function", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "address" }] }] as const,
+          functionName: "getVault",
+          args: [activeSession.ownerAddress as `0x${string}`],
+        });
+        if (vaultAddr && vaultAddr !== "0x0000000000000000000000000000000000000000") {
+          portfolioOwner = vaultAddr as `0x${string}`;
+        }
+      } catch {}
+    }
+
+    return await refreshPortfolio(publicClient, portfolioOwner);
   } catch (err) {
     console.warn(
       `[Loop] Could not refresh treasury state: ${(err as Error).message}`,
@@ -418,6 +446,17 @@ async function runExecute(
     return null;
   }
 
+  // Guard: can't reduce/exit a position we don't hold
+  if (decision.action === "reduce" || decision.action === "exit") {
+    const hasPosition = treasuryState.positions.some(
+      (p) => p.slug === decision.slug,
+    );
+    if (!hasPosition) {
+      log("execute", `Cannot ${decision.action} ${decision.slug} — no position held, skipping`);
+      return null;
+    }
+  }
+
   if (config.dryRun) {
     log(
       "execute",
@@ -436,12 +475,36 @@ async function runExecute(
     `Executing: ${decision.action.toUpperCase()} ${decision.slug} | $${riskGateResult.effectiveSizeUsd.toFixed(2)}`,
   );
 
+  // Look up the active user's vault from the factory
+  const activeSession = getActiveSession();
+  let userVault: `0x${string}` | undefined;
+  if (activeSession) {
+    try {
+      const { createPublicClient, http: viemHttp } = await import("viem");
+      const { baseSepolia: baseSepoliaChain } = await import("viem/chains");
+      const pc = createPublicClient({ chain: baseSepoliaChain, transport: viemHttp(config.baseRpcUrl) });
+      const vaultAddr = await pc.readContract({
+        address: "0x4cc4e528Ee35Ee11CB1b7843882fdaDb332fF183" as `0x${string}`,
+        abi: [{ name: "getVault", type: "function", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "address" }] }] as const,
+        functionName: "getVault",
+        args: [activeSession.ownerAddress as `0x${string}`],
+      });
+      if (vaultAddr && vaultAddr !== "0x0000000000000000000000000000000000000000") {
+        userVault = vaultAddr as `0x${string}`;
+        log("execute", `Using vault ${userVault} for user ${activeSession.ownerAddress}`);
+      }
+    } catch (err) {
+      log("execute", `Failed to look up user vault: ${err}`);
+    }
+  }
+
   const result = await execute({
     decision,
     riskGate: riskGateResult,
     uniswapApiKey: config.uniswapApiKey,
     rpcUrl: config.baseRpcUrl,
     privateKey: config.agentPrivateKey,
+    vaultAddress: userVault,
   });
 
   log("execute", `✅ Swap confirmed — tx: ${result.txHash}`);
@@ -530,11 +593,27 @@ async function runCycle(
     // ── 1. Daily reset check
     checkDailyReset();
 
-    // ── 2. Refresh treasury
+    // ── 2. Refresh treasury + revalue positions with Binance price
     treasuryState = await refreshTreasuryState(config);
+    if (hasPriceData()) {
+      const ethPrice = getPriceState().currentPrice;
+      const usdcUsd = Number(treasuryState.usdcBalance) / 1e6;
+      let positionsUsd = 0;
+      for (const pos of treasuryState.positions) {
+        if (pos.slug === "ethereum" || pos.slug === "weth") {
+          const amt = Number(pos.amountHeld) / 1e18;
+          const val = amt * ethPrice;
+          pos.usdValueAtEntry = val;
+          positionsUsd += val;
+        } else {
+          positionsUsd += pos.usdValueAtEntry;
+        }
+      }
+      treasuryState.totalPortfolioUsd = usdcUsd + positionsUsd;
+    }
     log(
       "sense",
-      `Treasury: $${treasuryState.totalPortfolioUsd.toFixed(2)} total | USDC: $${(Number(treasuryState.usdcBalance) / 1e6).toFixed(2)}`,
+      `Treasury: $${treasuryState.totalPortfolioUsd.toFixed(2)} total | USDC: $${(Number(treasuryState.usdcBalance) / 1e6).toFixed(2)} | ${treasuryState.positions.length} position(s)`,
     );
 
     // ── 3. Santiment (cached, refreshed every 30 min)
@@ -556,20 +635,8 @@ async function runCycle(
     const regime = detectRegime(scored);
     log("score", `Regime: ${regime.toUpperCase()} | top candidate: ${candidates[0]?.slug ?? "none"}`);
 
-    // ── 5b. Fetch paid external context via Locus
-    const locusContext = await fetchLocusMarketContext({
-      apiKey: config.locusApiKey,
-      candidates: candidates.length > 0 ? candidates : scored.slice(0, 1),
-      cycleId,
-    });
-    const externalContext = locusContext.promptContext;
-    if (locusContext.status === "ready") {
-      log("deliberate", `Locus context ready — ${locusContext.sources.length} source(s)`);
-    } else if (locusContext.status !== "disabled") {
-      log("deliberate", `Locus: ${locusContext.error ?? "unavailable"}`);
-    }
-
     // ── 6. Price-driven deliberation (dual-lane)
+    const externalContext: string | null = null;
     cycle.phase = "deliberate";
     broadcastPhase(cycleId, "deliberate", new Date().toISOString());
 
@@ -596,7 +663,7 @@ async function runCycle(
               ...result.decision,
               action: priceTrigger.action,
               slug: "ethereum" as AssetSlug,
-              sizeBucket: (priceTrigger.confidence >= 0.7 ? "3pct" : "1pct") as "1pct" | "3pct" | "5pct",
+              sizeBucket: (priceTrigger.confidence >= 0.7 ? "5pct" : "3pct") as "1pct" | "3pct" | "5pct",
               confidence: priceTrigger.confidence,
               thesis: `${priceTrigger.reason} | LLM: ${result.decision.thesis}`,
               invalidationCondition: priceTrigger.action === "buy"
@@ -681,6 +748,8 @@ async function runCycle(
       effectiveSizeUsd: riskGateResult.effectiveSizeUsd,
       result: executionResult ? "executed" : riskGateResult.approved ? (config.dryRun ? "dry-run" : "hold") : "blocked",
       pnlPct: null,
+      filecoinCid: receipt?.filecoinCid ?? null,
+      txHash: executionResult?.txHash ?? null,
     };
     decisionLog.push(logEntry);
     if (decisionLog.length > 50) decisionLog = decisionLog.slice(-50);
@@ -718,10 +787,14 @@ async function runStartupChecks(config: ReturnType<typeof loadConfig>) {
   console.log(`  Skip IPFS:   ${config.skipFilecoin}`);
   separator();
 
-  // Validate Santiment key
-  const santimentValid = await validateApiKey(config.santimentApiKey);
-  if (!santimentValid) {
-    throw new MurmurError("Santiment API key is invalid", "STARTUP_ERROR");
+  // Validate Santiment key (don't crash on transient network failure)
+  try {
+    const santimentValid = await validateApiKey(config.santimentApiKey);
+    if (!santimentValid) {
+      console.warn("[Startup] ⚠️  Santiment API key validation failed — will retry on first cycle");
+    }
+  } catch (err) {
+    console.warn(`[Startup] ⚠️  Santiment unreachable: ${(err as Error).message} — will retry on first cycle`);
   }
 
   // Log optional integrations status
@@ -797,8 +870,93 @@ async function main() {
   // Start real-time price feed
   startPriceFeed();
 
-  // Start WebSocket server for dashboard
-  const wsPort = Number(process.env.WS_PORT ?? 3001);
+  // Register trigger endpoints on the shared HTTP server
+  wsApp.get("/api/status", (_req, res) => {
+    res.json({
+      agent: "Murmur",
+      running: isRunning,
+      cycleCount,
+      uptimeSince,
+      ethPrice: hasPriceData() ? getPriceState().currentPrice : null,
+      regime: detectRegime(lastScoredAssets),
+      treasury: treasuryState ? {
+        totalPortfolioUsd: treasuryState.totalPortfolioUsd,
+        usdcBalance: treasuryState.usdcBalance.toString(),
+        positions: treasuryState.positions.length,
+      } : null,
+    });
+  });
+
+  wsApp.post("/api/trigger-cycle", async (_req, res) => {
+    if (isRunning) {
+      res.status(409).json({ error: "Cycle already running" });
+      return;
+    }
+    isRunning = true;
+    try {
+      const cycle = await runCycle(config, "manual");
+      res.json({ success: true, cycleId: cycle.cycleId, action: cycle.phase });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    } finally {
+      isRunning = false;
+    }
+  });
+
+  // ── Auth + Config endpoints ──────────────────────────────────────────────
+  wsApp.post("/api/auth/nonce", (req, res) => {
+    const { address } = req.body as { address: string };
+    if (!address) { res.status(400).json({ error: "address required" }); return; }
+    const nonce = generateNonce(address as `0x${string}`);
+    res.json({ nonce, message: getNonceMessage(nonce) });
+  });
+
+  wsApp.post("/api/auth/verify", async (req, res) => {
+    const { address, signature } = req.body as { address: string; signature: string };
+    if (!address || !signature) { res.status(400).json({ error: "address and signature required" }); return; }
+    const session = await verifyAndCreateSession({
+      address: address as `0x${string}`,
+      signature: signature as `0x${string}`,
+    });
+    if (!session) { res.status(401).json({ error: "Invalid signature" }); return; }
+    res.json({
+      token: session.token,
+      agentAddress: session.agentAddress,
+      settings: session.settings,
+      autopilotEnabled: session.autopilotEnabled,
+    });
+  });
+
+  wsApp.get("/api/me", (req, res) => {
+    const token = (req.headers.authorization ?? "").replace("Bearer ", "");
+    const session = getSession(token);
+    if (!session) { res.status(401).json({ error: "Not authenticated" }); return; }
+    res.json({
+      ownerAddress: session.ownerAddress,
+      agentAddress: session.agentAddress,
+      settings: session.settings,
+      autopilotEnabled: session.autopilotEnabled,
+      cycleCount: session.cycleCount,
+    });
+  });
+
+  wsApp.post("/api/me/config", (req, res) => {
+    const token = (req.headers.authorization ?? "").replace("Bearer ", "");
+    const updated = updateSettings(token, req.body);
+    if (!updated) { res.status(401).json({ error: "Not authenticated" }); return; }
+    res.json({ settings: updated.settings });
+  });
+
+  wsApp.post("/api/me/autopilot", (req, res) => {
+    const token = (req.headers.authorization ?? "").replace("Bearer ", "");
+    const { enabled } = req.body as { enabled: boolean };
+    const updated = setAutopilot(token, enabled);
+    if (!updated) { res.status(401).json({ error: "Not authenticated" }); return; }
+    res.json({ autopilotEnabled: updated.autopilotEnabled });
+  });
+
+  // Start unified HTTP + WebSocket server on one port
+  const wsPort = Number(process.env.PORT ?? process.env.WS_PORT ?? 3001);
   startWsServer(wsPort);
 
   // Start x402 API server for paid data access
@@ -813,6 +971,24 @@ async function main() {
       riskGate: lastRiskGate,
     }),
   });
+
+  // Start OpenServ agent (multi-agent service)
+  try {
+    await startOpenServAgent({
+      runtime: {
+        getReceipts: () => receipts,
+        getLastScoredAssets: () => lastScoredAssets,
+        getLastRiskGate: () => lastRiskGate,
+        getTreasuryState: () => treasuryState ?? null,
+        getCycleCount: () => cycleCount,
+        getDecisionLog: () => decisionLog,
+      },
+      signalWindowDays: config.signalWindowDays,
+      candidateTopN: config.candidateTopN,
+    });
+  } catch (err) {
+    console.warn(`[Startup] OpenServ agent failed to start: ${(err as Error).message} — continuing without it`);
+  }
 
   // Run one cycle immediately on startup
   log("idle", "Running initial cycle on startup...");

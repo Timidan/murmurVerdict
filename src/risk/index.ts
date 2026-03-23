@@ -417,27 +417,27 @@ export function shouldFastLaneExit(scoredAsset: ScoredAsset): {
 } {
   const m = scoredAsset.normalizedSignals.metrics;
 
-  // Fast lane condition 1: exchange inflows spike > 50% in 24h
+  // Fast lane condition 1: exchange inflows spike > 200% in 24h (raised for testnet validation)
   const inflow = m.exchange_inflow_usd;
-  if (inflow && inflow.roc24h !== null && inflow.roc24h > 0.5) {
+  if (inflow && inflow.roc24h !== null && inflow.roc24h > 2.0) {
     return {
       triggered: true,
       reason: `FAST-LANE EXIT: Exchange inflows spiked +${(inflow.roc24h * 100).toFixed(1)}% in 24h — distribution pressure`,
     };
   }
 
-  // Fast lane condition 2: age consumed (dormant circulation) > 100% spike
+  // Fast lane condition 2: age consumed (dormant circulation) > 500% spike (raised for testnet validation)
   const ageConsumed = m.age_consumed;
-  if (ageConsumed && ageConsumed.roc24h !== null && ageConsumed.roc24h > 1.0) {
+  if (ageConsumed && ageConsumed.roc24h !== null && ageConsumed.roc24h > 5.0) {
     return {
       triggered: true,
       reason: `FAST-LANE EXIT: Age consumed spiked +${(ageConsumed.roc24h * 100).toFixed(1)}% — old holders exiting`,
     };
   }
 
-  // Fast lane condition 3: sentiment at extreme euphoria (top 5th percentile)
+  // Fast lane condition 3: sentiment at extreme euphoria (top 1st percentile — raised for testnet validation)
   const sentiment = m.sentiment_weighted_total;
-  if (sentiment && sentiment.percentile > 95) {
+  if (sentiment && sentiment.percentile > 99) {
     return {
       triggered: true,
       reason: `FAST-LANE EXIT: Sentiment at ${sentiment.percentile.toFixed(0)}th percentile — extreme euphoria`,
@@ -448,7 +448,7 @@ export function shouldFastLaneExit(scoredAsset: ScoredAsset): {
   const socialDominance = m.social_dominance_total;
   if (
     socialDominance &&
-    socialDominance.percentile > 90 &&
+    socialDominance.percentile > 98 &&
     ageConsumed &&
     ageConsumed.roc24h !== null &&
     ageConsumed.roc24h > 0.3

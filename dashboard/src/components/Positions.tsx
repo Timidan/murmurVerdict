@@ -1,8 +1,8 @@
 import type { DashboardSnapshot } from "../types";
-import { Sparkline } from "./Sparkline";
 
 interface PositionsProps {
   snapshot: DashboardSnapshot;
+  ethPrice?: number | null;
 }
 
 const SLUG_NAMES: Record<string, string> = {
@@ -16,49 +16,27 @@ const SLUG_NAMES: Record<string, string> = {
   "virtual-protocol": "VRTL",
 };
 
-/** Generate a deterministic random walk from a slug string for sparkline data */
-function mockPriceHistory(slug: string, length = 20): number[] {
-  // Simple hash from slug
-  let hash = 0;
-  for (let i = 0; i < slug.length; i++) {
-    hash = (hash * 31 + slug.charCodeAt(i)) | 0;
-  }
-
-  const data: number[] = [];
-  let value = 100 + (Math.abs(hash) % 50);
-  const seed = Math.abs(hash);
-
-  for (let i = 0; i < length; i++) {
-    // Deterministic pseudo-random noise
-    const noise = Math.sin(seed * (i + 1) * 0.1) * 3 + Math.cos(seed * (i + 1) * 0.07) * 2;
-    value = value + noise;
-    data.push(value);
-  }
-
-  return data;
-}
-
-export function Positions({ snapshot }: PositionsProps) {
+export function Positions({ snapshot, ethPrice }: PositionsProps) {
   const positions = snapshot.treasury.positions;
   const maxPositions = 5;
 
   return (
     <div className="panel">
       <div className="panel-title">
-        OPEN POSITIONS ({positions.length}/{maxPositions})
+        Open Positions ({positions.length}/{maxPositions})
       </div>
       {positions.length === 0 ? (
-        <div className="empty-state">NO POSITIONS</div>
+        <div className="empty-state">No positions</div>
       ) : (
         <table className="term-table">
           <thead>
             <tr>
-              <th>ASSET</th>
-              <th>VALUE</th>
-              <th>RET</th>
-              <th>SCORE</th>
+              <th>Asset</th>
+              <th>Amt</th>
+              <th>Value</th>
+              <th>Ret</th>
+              <th>Score</th>
               <th>TTL</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -67,7 +45,39 @@ export function Positions({ snapshot }: PositionsProps) {
                 (a) => a.slug === pos.slug
               );
               const compositeScore = scored?.compositeScore ?? 0;
-              const entryValue = pos.usdValueAtEntry;
+
+              // Compute human-readable token amount (divide raw by 1e18)
+              const tokenAmount = Number(pos.amountHeld) / 1e18;
+
+              // For ethereum/weth, use live ethPrice to compute USD value when
+              // the on-chain testnet quoter returned 0
+              let entryValue = pos.usdValueAtEntry;
+              if (
+                (pos.slug === "ethereum" || pos.slug === "weth") &&
+                ethPrice &&
+                ethPrice > 0 &&
+                entryValue === 0
+              ) {
+                entryValue = tokenAmount * ethPrice;
+              }
+
+              // Compute return if ethPrice is available and position is ETH
+              let retDisplay: string;
+              let retColor: string;
+              if (
+                (pos.slug === "ethereum" || pos.slug === "weth") &&
+                ethPrice &&
+                ethPrice > 0 &&
+                entryValue > 0
+              ) {
+                const currentValue = ethPrice * tokenAmount;
+                const ret = ((currentValue - entryValue) / entryValue) * 100;
+                retDisplay = `${ret >= 0 ? "+" : ""}${ret.toFixed(1)}%`;
+                retColor = ret >= 0 ? "#22c55e" : "#ef4444";
+              } else {
+                retDisplay = "N/A";
+                retColor = "#3f3f46";
+              }
 
               // Time to live: time since entry
               const entryTime = new Date(pos.entryAt).getTime();
@@ -78,15 +88,20 @@ export function Positions({ snapshot }: PositionsProps) {
                   ? `${Math.floor(hours / 24)}d ${hours % 24}h`
                   : `${hours}h`;
 
-              const sparkData = mockPriceHistory(pos.slug);
+              // Format token amount: show up to 4 significant decimals
+              const amtDisplay =
+                tokenAmount >= 1
+                  ? tokenAmount.toFixed(2)
+                  : tokenAmount.toFixed(4);
 
               return (
                 <tr key={pos.slug}>
                   <td style={{ color: "#e4e4e7" }}>
                     {SLUG_NAMES[pos.slug] ?? pos.slug}
                   </td>
+                  <td style={{ color: "#a1a1aa" }}>{amtDisplay}</td>
                   <td>${entryValue.toFixed(0)}</td>
-                  <td className="green">{"\u2014"}</td>
+                  <td style={{ color: retColor }}>{retDisplay}</td>
                   <td
                     className={
                       compositeScore > 0.3
@@ -99,9 +114,6 @@ export function Positions({ snapshot }: PositionsProps) {
                     {compositeScore.toFixed(2)}
                   </td>
                   <td style={{ color: "#71717a" }}>{ttl}</td>
-                  <td>
-                    <Sparkline data={sparkData} width={40} height={14} />
-                  </td>
                 </tr>
               );
             })}

@@ -1,15 +1,58 @@
 import { useRef } from "react";
+import { useAccount, useReadContract } from "wagmi";
+import { formatUnits } from "viem";
 import type { DashboardSnapshot } from "../types";
 import { Sparkline } from "./Sparkline";
 import { PortfolioChart } from "./PortfolioChart";
 
+const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
+
+const BALANCE_ABI = [{
+  name: "balanceOf",
+  type: "function",
+  stateMutability: "view",
+  inputs: [{ name: "account", type: "address" }],
+  outputs: [{ name: "", type: "uint256" }],
+}] as const;
+
+const VAULT_BALANCE_ABI = [{
+  name: "balanceOf",
+  type: "function",
+  stateMutability: "view",
+  inputs: [{ name: "token", type: "address" }],
+  outputs: [{ name: "", type: "uint256" }],
+}] as const;
+
 interface SummaryProps {
   snapshot: DashboardSnapshot;
+  vaultAddress: string | null;
 }
 
-export function Summary({ snapshot }: SummaryProps) {
+export function Summary({ snapshot, vaultAddress }: SummaryProps) {
+  const { address } = useAccount();
   const navHistory = useRef<number[]>([]);
-  const nav = snapshot.treasury.totalPortfolioUsd;
+
+  // Read user's wallet USDC balance
+  const { data: walletUsdc } = useReadContract({
+    address: USDC_ADDRESS,
+    abi: BALANCE_ABI,
+    functionName: "balanceOf",
+    args: address ? [address] : undefined,
+    query: { enabled: !!address, refetchInterval: 15000 },
+  });
+
+  // Read user's vault USDC balance
+  const { data: vaultUsdc } = useReadContract({
+    address: vaultAddress as `0x${string}` | undefined,
+    abi: VAULT_BALANCE_ABI,
+    functionName: "balanceOf",
+    args: [USDC_ADDRESS],
+    query: { enabled: !!vaultAddress, refetchInterval: 15000 },
+  });
+
+  const walletUsdcNum = walletUsdc ? Number(formatUnits(walletUsdc as bigint, 6)) : 0;
+  const vaultUsdcNum = vaultUsdc ? Number(formatUnits(vaultUsdc as bigint, 6)) : 0;
+  const nav = vaultUsdcNum; // NAV = funds in vault (what the agent trades with)
 
   // Accumulate NAV history from successive snapshots
   if (
@@ -19,9 +62,7 @@ export function Summary({ snapshot }: SummaryProps) {
     navHistory.current = [...navHistory.current, nav].slice(-30);
   }
 
-  // usdcBalance comes as string over WS (bigint serialization)
-  const usdcRaw = Number(snapshot.treasury.usdcBalance) / 1e6;
-  const usdc = formatUsd(usdcRaw);
+  const usdc = formatUsd(walletUsdcNum);
 
   // P&L 24h: sum pnlPct from executed decisions in last 24h
   const now = Date.now();
@@ -37,10 +78,11 @@ export function Summary({ snapshot }: SummaryProps) {
       ? recentExecuted.reduce((sum, d) => sum + (d.pnlPct ?? 0), 0)
       : null;
 
-  // Cap left
-  const capLeft =
-    snapshot.riskGate?.delegationCapRemaining ??
-    snapshot.config.maxNotionalUsd;
+  // Buying power: vault balance minus any open positions, or just vault balance
+  const openPositionValue = snapshot.treasury.positions.reduce(
+    (sum, p) => sum + (p.currentValueUsd ?? 0), 0
+  );
+  const capLeft = Math.max(0, vaultUsdcNum - openPositionValue);
 
   // Daily volume: count executed decisions
   const dailyVol = snapshot.lastDecisions.filter(
@@ -56,7 +98,7 @@ export function Summary({ snapshot }: SummaryProps) {
     <div className="summary-section">
       <div className="summary-row">
         <div className="stat-box">
-          <div className="stat-label">NAV</div>
+          <div className="stat-label">Vault balance</div>
           <div className="stat-value">{formatUsd(nav)}</div>
           {navHistory.current.length >= 3 && (
             <div style={{ marginTop: 4, display: "flex", justifyContent: "center" }}>
@@ -65,26 +107,26 @@ export function Summary({ snapshot }: SummaryProps) {
           )}
         </div>
         <div className="stat-box">
-          <div className="stat-label">USDC</div>
+          <div className="stat-label">Wallet USDC</div>
           <div className="stat-value">{usdc}</div>
         </div>
         <div className="stat-box">
-          <div className="stat-label">P&L 24H</div>
+          <div className="stat-label">P&L 24h</div>
           <div className={`stat-value ${pnl24h !== null ? (pnl24h >= 0 ? "green" : "red") : ""}`}>
-            {pnl24h !== null ? `${pnl24h >= 0 ? "+" : ""}${pnl24h.toFixed(2)}%` : "\u2014"}
+            {pnl24h !== null ? `${pnl24h >= 0 ? "+" : ""}${pnl24h.toFixed(2)}%` : "No exits"}
           </div>
         </div>
         <div className="stat-box">
-          <div className="stat-label">CAP LEFT</div>
+          <div className="stat-label">Buying power</div>
           <div className="stat-value">{formatUsd(capLeft)}</div>
         </div>
         <div className="stat-box">
-          <div className="stat-label">DAILY VOL</div>
+          <div className="stat-label">Trades</div>
           <div className="stat-value">{dailyVol}</div>
           <div className="stat-sub">trades</div>
         </div>
         <div className="stat-box">
-          <div className="stat-label">LAST ACTION</div>
+          <div className="stat-label">Last action</div>
           <div className={`stat-value ${actionColor(lastAction?.action)}`}>
             {lastAction
               ? `${lastAction.action.toUpperCase()} ${slugShort(lastAction.slug)}`
@@ -95,6 +137,16 @@ export function Summary({ snapshot }: SummaryProps) {
               {new Date(lastAction.timestamp).toISOString().slice(11, 16)} UTC
             </div>
           )}
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Eth/Usd</div>
+          <div className="stat-value">{snapshot.ethPrice ? `$${snapshot.ethPrice.toFixed(2)}` : "\u2014"}</div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Regime</div>
+          <div className={`stat-value ${snapshot.regime === "bullish" ? "green" : snapshot.regime === "bearish" ? "red" : ""}`}>
+            {snapshot.regime.toUpperCase()}
+          </div>
         </div>
       </div>
       <PortfolioChart nav={nav} />

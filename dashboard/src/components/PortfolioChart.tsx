@@ -10,35 +10,11 @@ interface NavPoint {
   value: number;
 }
 
-// Generate initial mock data points for the chart
-function generateMockHistory(currentNav: number): NavPoint[] {
-  const points: NavPoint[] = [];
-  const now = Math.floor(Date.now() / 1000);
-  const numPoints = 60;
-  const intervalSec = 60; // 1 minute intervals
-
-  let value = currentNav * 0.97; // start slightly lower
-  for (let i = 0; i < numPoints; i++) {
-    const noise = (Math.random() - 0.48) * currentNav * 0.003;
-    value = value + noise;
-    if (value < currentNav * 0.9) value = currentNav * 0.92;
-    if (value > currentNav * 1.1) value = currentNav * 1.08;
-    points.push({
-      time: now - (numPoints - i) * intervalSec,
-      value,
-    });
-  }
-
-  // Ensure last point matches current NAV
-  points.push({ time: now, value: currentNav });
-  return points;
-}
-
 export function PortfolioChart({ nav }: PortfolioChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<typeof AreaSeries> | null>(null);
-  const [history] = useState<NavPoint[]>(() => generateMockHistory(nav));
+  const seriesRef = useRef<ISeriesApi<any> | null>(null);
+  const [history] = useState<NavPoint[]>([]);
 
   useEffect(() => {
     if (!containerRef.current) return;

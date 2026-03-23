@@ -7,7 +7,9 @@ interface UseSocketReturn {
   currentPhase: LoopPhase | null;
 }
 
-export function useSocket(url: string = "ws://localhost:3001"): UseSocketReturn {
+const DEFAULT_WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:3001";
+
+export function useSocket(url: string = DEFAULT_WS_URL): UseSocketReturn {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [connected, setConnected] = useState(false);
   const [currentPhase, setCurrentPhase] = useState<LoopPhase | null>(null);

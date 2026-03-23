@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: murmur-backend
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: PORT
+        value: "3001"
+      - key: SANTIMENT_API_KEY
+        sync: false
+      - key: VENICE_API_KEY
+        sync: false
+      - key: BASE_RPC_URL
+        sync: false
+      - key: AGENT_PRIVATE_KEY
+        sync: false
+      - key: AGENT_ADDRESS
+        sync: false
+      - key: FILECOIN_API_TOKEN
+        sync: false
+      - key: BASE_MAINNET_RPC_URL
+        sync: false
+      - key: OPENSERV_API_KEY
+        sync: false
+      - key: CRON_SCHEDULE
+        value: "*/2 * * * *"
+      - key: DRY_RUN
+        value: "false"
+      - key: SKIP_ON_CHAIN
+        value: "true"
+      - key: SKIP_FILECOIN
+        value: "false"

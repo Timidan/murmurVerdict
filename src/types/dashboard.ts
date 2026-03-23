@@ -18,6 +18,8 @@ export interface DecisionLogEntry {
   effectiveSizeUsd: number;
   result: "executed" | "blocked" | "hold" | "dry-run";
   pnlPct: number | null;
+  filecoinCid?: string | null;
+  txHash?: string | null;
 }
 
 export interface DashboardSnapshot {
@@ -30,6 +32,9 @@ export interface DashboardSnapshot {
     phase: LoopPhase;
     startedAt: string;
   } | null;
+  ethPrice: number | null;
+  regime: "bullish" | "bearish" | "neutral";
+  latestFilecoinCid: string | null;
   config: {
     network: string;
     cronSchedule: string;

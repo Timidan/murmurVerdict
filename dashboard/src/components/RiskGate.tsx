@@ -15,15 +15,15 @@ export function RiskGate({ riskGate }: RiskGateProps) {
 
   const total = counts.pass + counts.warn + counts.fail;
   const summaryParts: string[] = [];
-  if (counts.pass > 0) summaryParts.push(`${counts.pass}/${total} PASS`);
-  if (counts.warn > 0) summaryParts.push(`${counts.warn} WARN`);
-  if (counts.fail > 0) summaryParts.push(`${counts.fail} FAIL`);
+  if (counts.pass > 0) summaryParts.push(`${counts.pass}/${total} pass`);
+  if (counts.warn > 0) summaryParts.push(`${counts.warn} warn`);
+  if (counts.fail > 0) summaryParts.push(`${counts.fail} fail`);
   const summaryText = summaryParts.join(" | ");
 
   return (
     <div className="panel">
       <div className="panel-title">
-        RISK GATE &mdash; {riskGate ? `${riskGate.checks.length} CHECKS` : "14 CHECKS"}
+        Risk Gate &mdash; {riskGate ? `${riskGate.checks.length} checks` : "14 checks"}
       </div>
       {!riskGate ? (
         <div className="empty-state">Waiting for cycle...</div>
@@ -44,27 +44,27 @@ export function RiskGate({ riskGate }: RiskGateProps) {
           </div>
           <div className="risk-summary">
             <div className="risk-summary-item">
-              <span className="risk-summary-label">STATUS</span>
+              <span className="risk-summary-label">Status</span>
               <span
                 className={`risk-summary-value ${riskGate.approved ? "green" : "red"}`}
               >
-                {riskGate.approved ? "APPROVED" : "BLOCKED"}
+                {riskGate.approved ? "approved" : "blocked"}
               </span>
             </div>
             <div className="risk-summary-item">
-              <span className="risk-summary-label">EFF. SIZE</span>
+              <span className="risk-summary-label">Eff. size</span>
               <span className="risk-summary-value">
                 ${riskGate.effectiveSizeUsd.toFixed(0)}
               </span>
             </div>
             <div className="risk-summary-item">
-              <span className="risk-summary-label">SLIPPAGE</span>
+              <span className="risk-summary-label">Slippage</span>
               <span className="risk-summary-value">
                 {riskGate.maxSlippageBps}bps
               </span>
             </div>
             <div className="risk-summary-item">
-              <span className="risk-summary-label">DELEG. LEFT</span>
+              <span className="risk-summary-label">Deleg. left</span>
               <span className="risk-summary-value">
                 ${riskGate.delegationCapRemaining.toFixed(0)}
               </span>

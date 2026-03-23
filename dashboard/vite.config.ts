@@ -10,6 +10,10 @@ export default defineConfig({
       "@types": path.resolve(__dirname, "../src/types"),
     },
   },
+  build: {
+    outDir: path.resolve(__dirname, "dist"),
+    emptyOutDir: true,
+  },
   server: {
     port: 5173,
   },

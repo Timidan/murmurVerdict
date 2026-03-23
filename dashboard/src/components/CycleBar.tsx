@@ -7,7 +7,7 @@ interface CycleBarProps {
   cycleStartedAt?: string;
 }
 
-const DISPLAY_PHASES = ["SENSE", "NORM", "SCORE", "DELIB", "RISK", "EXEC"] as const;
+const DISPLAY_PHASES = ["Sense", "Norm", "Score", "Delib", "Risk", "Exec"] as const;
 
 /** Map LoopPhase to the display phase index */
 function phaseIndex(phase: LoopPhase): number {
@@ -54,7 +54,7 @@ export function CycleBar({ currentPhase, cycleId, cycleStartedAt }: CycleBarProp
 
   return (
     <div className="cycle-bar">
-      <span className="cycle-id">{cycleId ? `#${cycleId.slice(0, 6)}` : "IDLE"}</span>
+      <span className="cycle-id">{cycleId ? `#${cycleId.slice(0, 6)}` : "Idle"}</span>
       <div className="phase-bars">
         {DISPLAY_PHASES.map((label, i) => {
           let status: "done" | "active" | "pending";

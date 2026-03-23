@@ -4,6 +4,7 @@ dotenv.config();
 import {
   createPublicClient,
   createWalletClient,
+  encodeFunctionData,
   formatUnits,
   http,
   maxUint256,
@@ -125,6 +126,46 @@ const PREFERRED_POOL_FEE: Partial<Record<AssetSlug | "usdc", number>> = {
 
 const UNISWAP_TRADING_API_URL = "https://trade-api.gateway.uniswap.org/v1";
 const REQUEST_TIMEOUT_MS = 30_000;
+
+// ─── TradeVault ────────────────────────────────────────────────────────────────
+
+export const TRADE_VAULT_ADDRESS: Address =
+  "0x14114283D2f1471344907061BF49EB15daF9cB1E";
+
+const TRADE_VAULT_ABI = [
+  {
+    name: "executeTrade",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "tokenIn", type: "address", internalType: "address" },
+      { name: "amountIn", type: "uint256", internalType: "uint256" },
+      { name: "routerCalldata", type: "bytes", internalType: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    name: "balanceOf",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "token", type: "address", internalType: "address" }],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+  },
+  {
+    name: "canTrade",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "amountIn", type: "uint256", internalType: "uint256" }],
+    outputs: [{ name: "", type: "bool", internalType: "bool" }],
+  },
+  {
+    name: "dailyRemaining",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+  },
+] as const;
 
 // ─── ABIs ─────────────────────────────────────────────────────────────────────
 
@@ -398,8 +439,17 @@ export async function getAllBalances(
 export async function refreshPortfolio(
   publicClient: PublicClient,
   ownerAddress: Address,
+  vaultAddress: Address = TRADE_VAULT_ADDRESS,
 ): Promise<TreasuryState> {
-  const usdcBalance = await getUsdcBalance(publicClient, ownerAddress);
+  // Read USDC balance from vault (where deposited funds live)
+  const vaultUsdcBalance = (await publicClient.readContract({
+    address: vaultAddress,
+    abi: TRADE_VAULT_ABI,
+    functionName: "balanceOf",
+    args: [BASE_TOKENS.usdc.address],
+  })) as bigint;
+
+  const usdcBalance = vaultUsdcBalance;
   const usdcUsd = Number(usdcBalance) / 1e6;
 
   const balances = await getAllBalances(publicClient, ownerAddress);
@@ -466,7 +516,6 @@ async function ensureApproval(params: {
     abi: ERC20_ABI,
     functionName: "approve",
     args: [spender, maxUint256],
-    account,
     chain: baseSepolia,
   });
 
@@ -658,6 +707,7 @@ async function executeSwap(params: {
   amountIn: bigint;
   amountOutMinimum: bigint;
   fee: number;
+  vaultAddress: Address;
 }): Promise<Hash> {
   const {
     publicClient,
@@ -668,23 +718,11 @@ async function executeSwap(params: {
     amountIn,
     amountOutMinimum,
     fee,
+    vaultAddress,
   } = params;
 
-  await ensureApproval({
-    publicClient,
-    walletClient,
-    account,
-    tokenAddress: tokenIn.address,
-    spender: UNISWAP_SWAP_ROUTER_02,
-    amount: amountIn,
-  });
-
-  const hash = await (
-    walletClient as WalletClient & {
-      writeContract: (args: unknown) => Promise<Hash>;
-    }
-  ).writeContract({
-    address: UNISWAP_SWAP_ROUTER_02,
+  // Build the router calldata — tokens go back to the vault
+  const routerCalldata = encodeFunctionData({
     abi: SWAP_ROUTER_ABI,
     functionName: "exactInputSingle",
     args: [
@@ -692,13 +730,24 @@ async function executeSwap(params: {
         tokenIn: tokenIn.address,
         tokenOut: tokenOut.address,
         fee,
-        recipient: account,
+        recipient: vaultAddress,
         amountIn,
         amountOutMinimum,
         sqrtPriceLimitX96: BigInt(0),
       },
     ],
-    account,
+  });
+
+  // Delegate execution to the vault — it handles approval internally
+  const hash = await (
+    walletClient as WalletClient & {
+      writeContract: (args: unknown) => Promise<Hash>;
+    }
+  ).writeContract({
+    address: vaultAddress,
+    abi: TRADE_VAULT_ABI,
+    functionName: "executeTrade",
+    args: [tokenIn.address, amountIn, routerCalldata],
     chain: baseSepolia,
   });
 
@@ -764,8 +813,10 @@ export async function execute(params: {
   uniswapApiKey: string;
   rpcUrl: string;
   privateKey: `0x${string}`;
+  vaultAddress?: Address;
 }): Promise<ExecutionResult> {
-  const { decision, riskGate, uniswapApiKey, rpcUrl, privateKey } = params;
+  const { decision, riskGate, uniswapApiKey, rpcUrl, privateKey, vaultAddress: vaultAddr } = params;
+  const vault = vaultAddr ?? TRADE_VAULT_ADDRESS;
 
   if (decision.action === "hold") {
     throw new ExecutionError("Cannot execute a hold decision");
@@ -836,6 +887,7 @@ export async function execute(params: {
     amountIn,
     amountOutMinimum,
     fee,
+    vaultAddress: vault,
   });
 
   const receipt = await waitForReceipt(publicClient, txHash);

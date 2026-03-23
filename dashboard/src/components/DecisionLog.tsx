@@ -18,13 +18,13 @@ const SLUG_SHORT: Record<string, string> = {
 function actionColor(action: string): string {
   switch (action) {
     case "buy":
-      return "amber";
-    case "exit":
       return "green";
+    case "exit":
+      return "red";
     case "reduce":
       return "amber";
     case "hold":
-      return "";
+      return "dim";
     default:
       return "";
   }
@@ -40,13 +40,13 @@ function resultDisplay(entry: DecisionLogEntry): { text: string; className: stri
   }
   switch (entry.result) {
     case "blocked":
-      return { text: "BLOCKED", className: "red" };
+      return { text: "blocked", className: "red" };
     case "dry-run":
-      return { text: "DRY-RUN", className: "blue" };
+      return { text: "dry-run", className: "blue" };
     case "hold":
-      return { text: "HOLD", className: "" };
+      return { text: "hold", className: "" };
     case "executed":
-      return { text: "OK", className: "green" };
+      return { text: "ok", className: "green" };
     default:
       return { text: entry.result, className: "" };
   }
@@ -65,6 +65,16 @@ function relativeTime(timestamp: string): string {
   return `${days}d ago`;
 }
 
+function truncateThesis(thesis: string, maxLen = 60): string {
+  if (thesis.length <= maxLen) return thesis;
+  return thesis.slice(0, maxLen - 1) + "\u2026";
+}
+
+function shortTxHash(hash: string): string {
+  if (hash.length <= 12) return hash;
+  return hash.slice(0, 6) + "\u2026" + hash.slice(-4);
+}
+
 export function DecisionLog({ decisions }: DecisionLogProps) {
   // Newest first
   const sorted = [...decisions].sort(
@@ -73,15 +83,18 @@ export function DecisionLog({ decisions }: DecisionLogProps) {
 
   return (
     <div className="panel">
-      <div className="panel-title">DECISION LOG &mdash; LAST 20 CYCLES</div>
+      <div className="panel-title">Decision Log &mdash; Last 20 Cycles</div>
       <div className="decision-log-entries">
         {/* Header */}
         <div className="decision-entry decision-entry-header">
-          <span>TIME</span>
-          <span>ACTION</span>
-          <span>ASSET</span>
-          <span>THESIS</span>
-          <span>RESULT</span>
+          <span>Time</span>
+          <span>Action</span>
+          <span>Asset</span>
+          <span>Conf</span>
+          <span>Size</span>
+          <span>Thesis</span>
+          <span>Tx</span>
+          <span>Result</span>
         </div>
 
         {sorted.length === 0 ? (
@@ -91,6 +104,12 @@ export function DecisionLog({ decisions }: DecisionLogProps) {
             const timeStr = relativeTime(entry.timestamp);
             const { text: resultText, className: resultClass } =
               resultDisplay(entry);
+
+            const confStr = `${Math.round(entry.confidence * 100)}%`;
+            const sizeStr =
+              entry.effectiveSizeUsd > 0
+                ? `$${entry.effectiveSizeUsd.toFixed(0)}`
+                : "\u2014";
 
             // Alternating row backgrounds
             const rowBg = i % 2 === 0 ? "#0c0c0e" : "#09090b";
@@ -108,8 +127,24 @@ export function DecisionLog({ decisions }: DecisionLogProps) {
                 <span style={{ color: "#e4e4e7" }}>
                   {entry.slug ? SLUG_SHORT[entry.slug] ?? entry.slug : "\u2014"}
                 </span>
+                <span style={{ color: "#71717a" }}>{confStr}</span>
+                <span style={{ color: "#71717a" }}>{sizeStr}</span>
                 <span className="decision-thesis" title={entry.thesis}>
-                  {entry.thesis}
+                  {truncateThesis(entry.thesis)}
+                </span>
+                <span>
+                  {entry.txHash ? (
+                    <a
+                      href={`https://sepolia.basescan.org/tx/${entry.txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: "#60a5fa", textDecoration: "none" }}
+                    >
+                      {shortTxHash(entry.txHash)}
+                    </a>
+                  ) : (
+                    <span style={{ color: "#3f3f46" }}>\u2014</span>
+                  )}
                 </span>
                 <span className={resultClass}>{resultText}</span>
               </div>

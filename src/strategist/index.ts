@@ -31,8 +31,8 @@ export class StrategistError extends MurmurError {
 const VENICE_BASE_URL = process.env.VENICE_BASE_URL ?? "https://api.venice.ai/api/v1";
 
 // Model routing: use a lighter model for routine cycles, escalate for high-stakes
-const ROUTINE_MODEL = "openai-gpt-54";
-const HIGH_STAKES_MODEL = "openai-gpt-54";
+const ROUTINE_MODEL = "llama-3.3-70b";
+const HIGH_STAKES_MODEL = "llama-3.3-70b"; // Venice flagship model
 
 // Escalate to a stronger model if composite score is very high and size is large
 const ESCALATION_SCORE_THRESHOLD = 0.75;
@@ -246,7 +246,6 @@ async function callLLM(params: {
     messages,
     temperature,
     max_tokens: maxTokens,
-    response_format: { type: "json_object" },
   };
 
   const controller = new AbortController();
@@ -521,8 +520,8 @@ export async function deliberate(params: {
       apiKey,
       model,
       messages,
-      temperature: 0.2,
-      maxTokens: 2048,
+      temperature: 0.1,
+      maxTokens: 1024,
     });
   } catch (err) {
     console.error(

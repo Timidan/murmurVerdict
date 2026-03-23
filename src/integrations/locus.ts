@@ -1,6 +1,7 @@
 import { type AssetSlug, type ScoredAsset } from "../types/index.js";
 
-const LOCUS_BASE_URL = "https://api.paywithlocus.com/api/wrapped";
+// Beta API for hackathon participants — production is api.paywithlocus.com
+const LOCUS_BASE_URL = "https://beta-api.paywithlocus.com/api/wrapped";
 const LOCUS_TIMEOUT_MS = 20_000;
 
 const ASSET_LABELS: Record<AssetSlug, string> = {
