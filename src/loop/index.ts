@@ -972,6 +972,9 @@ async function main() {
     console.log(`[Keep-alive] Pinging ${selfUrl} every 25s`);
   }
 
+  // Broadcast an initial snapshot so clients don't stay on skeleton
+  broadcastSnapshot(buildSnapshot(config));
+
   // Start x402 API server for paid data access
   startX402Server({
     agentAddress: agentWallet,
