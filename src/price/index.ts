@@ -1,7 +1,12 @@
 import { WebSocket } from "ws";
 import type { PriceBar, PriceFeedState } from "../types/index.js";
 
-const BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/ethusdt@kline_1m";
+const BINANCE_ENDPOINTS = [
+  "wss://stream.binance.com:9443/ws/ethusdt@kline_1m",
+  "wss://stream.binance.us:9443/ws/ethusd@kline_1m",
+];
+const COINGECKO_FALLBACK = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd";
+
 const MAX_BARS_1M = 10;
 const MAX_BARS_5M = 5;
 
@@ -10,6 +15,9 @@ let bars1m: PriceBar[] = [];
 let currentBar: PriceBar | null = null;
 let currentPrice = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let endpointIndex = 0;
+let wsFailCount = 0;
+let pollingTimer: ReturnType<typeof setInterval> | null = null;
 
 function parseKline(data: any): PriceBar {
   const k = data.k;
@@ -44,15 +52,49 @@ function build5mBars(m1: PriceBar[]): PriceBar[] {
   return result.slice(-MAX_BARS_5M);
 }
 
+// ─── REST polling fallback (CoinGecko) ─────────────────────────────────────
+
+function startPollingFallback() {
+  if (pollingTimer) return;
+  console.log("[Price] Falling back to CoinGecko REST polling (30s interval)");
+
+  const poll = async () => {
+    try {
+      const res = await fetch(COINGECKO_FALLBACK);
+      if (!res.ok) return;
+      const data = await res.json() as Record<string, Record<string, number>>;
+      const price = data?.ethereum?.usd;
+      if (typeof price === "number" && price > 0) {
+        currentPrice = price;
+      }
+    } catch {}
+  };
+
+  poll();
+  pollingTimer = setInterval(poll, 30_000);
+}
+
+function stopPollingFallback() {
+  if (pollingTimer) {
+    clearInterval(pollingTimer);
+    pollingTimer = null;
+  }
+}
+
+// ─── WebSocket connection ───────────────────────────────────────────────────
+
 function connect() {
   if (ws) {
     try { ws.close(); } catch {}
   }
 
-  ws = new WebSocket(BINANCE_WS_URL);
+  const url = BINANCE_ENDPOINTS[endpointIndex]!;
+  ws = new WebSocket(url);
 
   ws.on("open", () => {
-    console.log("[Price] Binance ETH/USDT WebSocket connected");
+    console.log(`[Price] Binance ETH/USDT WebSocket connected (${url})`);
+    wsFailCount = 0;
+    stopPollingFallback();
   });
 
   ws.on("message", (raw: Buffer) => {
@@ -64,12 +106,10 @@ function connect() {
       currentPrice = bar.close;
 
       if (data.k.x) {
-        // Kline closed — finalize bar
         bars1m.push(bar);
         if (bars1m.length > MAX_BARS_1M) bars1m = bars1m.slice(-MAX_BARS_1M);
         currentBar = null;
       } else {
-        // Kline still forming
         currentBar = bar;
       }
     } catch (err) {
@@ -78,8 +118,18 @@ function connect() {
   });
 
   ws.on("close", () => {
-    console.warn("[Price] Binance WS disconnected — reconnecting in 5s");
-    reconnectTimer = setTimeout(connect, 5000);
+    ws = null;
+    wsFailCount++;
+
+    // Try next Binance endpoint
+    if (wsFailCount <= BINANCE_ENDPOINTS.length * 2) {
+      endpointIndex = (endpointIndex + 1) % BINANCE_ENDPOINTS.length;
+      console.warn(`[Price] Binance WS disconnected — trying endpoint ${endpointIndex} in 5s`);
+      reconnectTimer = setTimeout(connect, 5000);
+    } else {
+      // All Binance endpoints exhausted — fall back to REST polling
+      startPollingFallback();
+    }
   });
 
   ws.on("error", (err: Error) => {
@@ -93,6 +143,7 @@ export function startPriceFeed(): void {
 
 export function stopPriceFeed(): void {
   if (reconnectTimer) clearTimeout(reconnectTimer);
+  stopPollingFallback();
   if (ws) {
     try { ws.close(); } catch {}
     ws = null;
