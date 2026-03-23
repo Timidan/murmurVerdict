@@ -965,6 +965,13 @@ async function main() {
   const wsPort = Number(process.env.PORT ?? process.env.WS_PORT ?? 3001);
   startWsServer(wsPort);
 
+  // Self-ping to prevent Render free tier from sleeping
+  if (process.env.RENDER) {
+    const selfUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/healthz`;
+    setInterval(() => { fetch(selfUrl).catch(() => {}); }, 25_000);
+    console.log(`[Keep-alive] Pinging ${selfUrl} every 25s`);
+  }
+
   // Start x402 API server for paid data access
   startX402Server({
     agentAddress: agentWallet,
