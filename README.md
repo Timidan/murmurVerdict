@@ -9,7 +9,7 @@
 >
 > 🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧
 >
-> *Change this message for 0.002 ETH on the [Markee App](https://markee.xyz/ecosystem/platforms/github/0x56e7f700be36b49bb29f384c48318fdab66182d8).*
+> *Change this message for 0.007 ETH on the [Markee App](https://markee.xyz/ecosystem/platforms/github/0x56e7f700be36b49bb29f384c48318fdab66182d8).*
 <!-- MARKEE:END:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 
 ```
