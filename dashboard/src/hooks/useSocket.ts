@@ -27,8 +27,11 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
 
     // Reset auth failure when token changes
     setAuthFailed(false);
+    let disposed = false;
 
     function connect() {
+      if (disposed) return;
+
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -38,10 +41,11 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
       wsRef.current = ws;
 
       ws.onopen = () => {
-        setConnected(true);
+        if (!disposed) setConnected(true);
       };
 
       ws.onclose = (event) => {
+        if (disposed) return;
         setConnected(false);
         wsRef.current = null;
 
@@ -60,6 +64,7 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
       };
 
       ws.onmessage = (event) => {
+        if (disposed) return;
         try {
           const msg = JSON.parse(event.data) as WsMessage;
 
@@ -99,6 +104,7 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
     connect();
 
     return () => {
+      disposed = true;
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
       }
