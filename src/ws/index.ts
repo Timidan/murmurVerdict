@@ -63,7 +63,27 @@ export function startWsServer(port: number = 3001): WebSocketServer {
     ws.on("close", () => {
       console.log(`[WS] Client disconnected (${wss!.clients.size} total)`);
     });
+
+    ws.on("pong", () => {
+      (ws as any).__alive = true;
+    });
+    (ws as any).__alive = true;
   });
+
+  // Ping all clients every 30s to keep connections alive through Render's proxy
+  const pingInterval = setInterval(() => {
+    if (!wss) return;
+    for (const ws of wss.clients) {
+      if ((ws as any).__alive === false) {
+        ws.terminate();
+        continue;
+      }
+      (ws as any).__alive = false;
+      ws.ping();
+    }
+  }, 30_000);
+
+  wss.on("close", () => clearInterval(pingInterval));
 
   httpServer.listen(port, () => {
     console.log(`[WS] Server listening on http://localhost:${port} (HTTP + WebSocket)`);

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { DashboardSnapshot, LoopPhase, WsMessage } from "../types";
 
 interface UseSocketReturn {
@@ -17,6 +17,7 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
   const [authFailed, setAuthFailed] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connIdRef = useRef(0);
 
   useEffect(() => {
     if (!token) {
@@ -27,13 +28,28 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
 
     // Reset auth failure when token changes
     setAuthFailed(false);
+
+    const connId = ++connIdRef.current;
     let disposed = false;
 
+    function clearTimers() {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    }
+
+    function isStale(ws: WebSocket) {
+      return disposed || connIdRef.current !== connId || wsRef.current !== ws;
+    }
+
     function connect() {
-      if (disposed) return;
+      if (disposed || connIdRef.current !== connId) return;
+      clearTimers();
 
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
 
       const wsUrl = `${url}?token=${encodeURIComponent(token!)}`;
@@ -41,11 +57,13 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!disposed) setConnected(true);
+        if (isStale(ws)) return;
+        setConnected(true);
       };
 
       ws.onclose = (event) => {
-        if (disposed) return;
+        if (isStale(ws)) return;
+        clearTimers();
         setConnected(false);
         wsRef.current = null;
 
@@ -64,7 +82,7 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
       };
 
       ws.onmessage = (event) => {
-        if (disposed) return;
+        if (isStale(ws)) return;
         try {
           const msg = JSON.parse(event.data) as WsMessage;
 
@@ -105,9 +123,7 @@ export function useSocket(token: string | null, url: string = DEFAULT_WS_URL): U
 
     return () => {
       disposed = true;
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-      }
+      clearTimers();
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
