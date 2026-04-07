@@ -1,0 +1,4 @@
+{
+  "buildCommand": "vite build --config dashboard/vite.config.ts",
+  "outputDirectory": "dashboard/dist"
+}
