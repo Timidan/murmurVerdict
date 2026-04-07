@@ -16,7 +16,7 @@ export interface DecisionLogEntry {
   confidence: number;
   riskApproved: boolean;
   effectiveSizeUsd: number;
-  result: "executed" | "blocked" | "hold" | "dry-run";
+  result: "executed" | "blocked" | "hold" | "dry-run" | "skipped";
   pnlPct: number | null;
   filecoinCid?: string | null;
   txHash?: string | null;

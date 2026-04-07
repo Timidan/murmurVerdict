@@ -43,6 +43,8 @@ function resultDisplay(entry: DecisionLogEntry): { text: string; className: stri
       return { text: "blocked", className: "red" };
     case "dry-run":
       return { text: "dry-run", className: "blue" };
+    case "skipped":
+      return { text: "skipped", className: "amber" };
     case "hold":
       return { text: "hold", className: "" };
     case "executed":

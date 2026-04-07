@@ -98,16 +98,28 @@ export async function verifyAndCreateSession(params: {
     }
   }
 
-  // Create new agent wallet for this user
-  const agentPrivateKey = generatePrivateKey();
+  // Use the configured on-chain agent when available so the dashboard shows
+  // the address that can actually execute against deployed vaults.
+  const configuredAgentPrivateKey = process.env.AGENT_PRIVATE_KEY?.trim() ?? "";
+  const configuredAgentAddress = process.env.AGENT_ADDRESS?.trim() ?? "";
+  const hasConfiguredAgent =
+    configuredAgentPrivateKey.startsWith("0x") &&
+    configuredAgentAddress.startsWith("0x");
+
+  const agentPrivateKey = hasConfiguredAgent
+    ? (configuredAgentPrivateKey as `0x${string}`)
+    : generatePrivateKey();
   const agentAccount = privateKeyToAccount(agentPrivateKey);
+  const agentAddress = hasConfiguredAgent
+    ? (configuredAgentAddress as Address)
+    : agentAccount.address;
 
   const token = randomUUID();
   const session: UserSession = {
     token,
     ownerAddress: address,
     agentPrivateKey,
-    agentAddress: agentAccount.address,
+    agentAddress,
     settings: { ...DEFAULT_SETTINGS },
     autopilotEnabled: true,
     nonce,
@@ -128,7 +140,7 @@ export async function verifyAndCreateSession(params: {
   };
 
   sessions.set(token, session);
-  console.log(`[Session] New session for ${address} → agent wallet ${agentAccount.address}`);
+  console.log(`[Session] New session for ${address} → agent wallet ${agentAddress}`);
 
   return session;
 }
@@ -180,6 +192,10 @@ export function setAutopilot(token: string, enabled: boolean): UserSession | nul
   session.autopilotEnabled = enabled;
   console.log(`[Session] Autopilot ${enabled ? "enabled" : "disabled"} for ${session.ownerAddress}`);
   return session;
+}
+
+export function getAutopilotSessions(): UserSession[] {
+  return [...sessions.values()].filter((session) => session.autopilotEnabled);
 }
 
 function buildPolicyFromSettings(settings: UserSettings): RiskPolicy {

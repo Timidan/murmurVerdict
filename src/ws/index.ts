@@ -8,6 +8,7 @@ import { getSession } from "../session/index.js";
 let wss: WebSocketServer | null = null;
 let httpServer: Server | null = null;
 let latestSnapshot: DashboardSnapshot | null = null;
+const latestSnapshotsByToken = new Map<string, DashboardSnapshot>();
 
 // Shared express app for HTTP endpoints on the same port
 const ALLOWED_ORIGINS = new Set(
@@ -54,10 +55,13 @@ export function startWsServer(port: number = 3001): WebSocketServer {
       return;
     }
 
+    (ws as WebSocket & { __token?: string }).__token = token;
+
     console.log(`[WS] Client connected (${wss!.clients.size} total)`);
 
-    if (latestSnapshot) {
-      send(ws, { type: "snapshot", data: latestSnapshot });
+    const initialSnapshot = latestSnapshotsByToken.get(token) ?? latestSnapshot;
+    if (initialSnapshot) {
+      send(ws, { type: "snapshot", data: initialSnapshot });
     }
 
     ws.on("close", () => {
@@ -92,11 +96,15 @@ export function startWsServer(port: number = 3001): WebSocketServer {
   return wss;
 }
 
-export function broadcast(message: WsMessage): void {
+export function broadcast(message: WsMessage, token?: string): void {
   if (!wss) return;
 
   if (message.type === "snapshot") {
-    latestSnapshot = message.data;
+    if (token) {
+      latestSnapshotsByToken.set(token, message.data);
+    } else {
+      latestSnapshot = message.data;
+    }
   }
 
   const payload = JSON.stringify(message, (_key, value) =>
@@ -104,21 +112,30 @@ export function broadcast(message: WsMessage): void {
   );
 
   for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
+    const clientToken = (client as WebSocket & { __token?: string }).__token;
+    if (
+      client.readyState === WebSocket.OPEN &&
+      (!token || clientToken === token)
+    ) {
       client.send(payload);
     }
   }
 }
 
-export function broadcastPhase(cycleId: string, phase: string, timestamp: string): void {
+export function broadcastPhase(
+  cycleId: string,
+  phase: string,
+  timestamp: string,
+  token?: string,
+): void {
   broadcast({
     type: "phase",
     data: { cycleId, phase: phase as any, timestamp },
-  });
+  }, token);
 }
 
-export function broadcastSnapshot(snapshot: DashboardSnapshot): void {
-  broadcast({ type: "snapshot", data: snapshot });
+export function broadcastSnapshot(snapshot: DashboardSnapshot, token?: string): void {
+  broadcast({ type: "snapshot", data: snapshot }, token);
 }
 
 export function stopWsServer(): void {

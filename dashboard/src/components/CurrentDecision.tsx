@@ -110,6 +110,8 @@ export function CurrentDecision({ snapshot }: CurrentDecisionProps) {
                   ? "#22c55e"
                   : latest.result === "blocked"
                     ? "#ef4444"
+                    : latest.result === "skipped"
+                      ? "#f59e0b"
                     : "#71717a",
             }}
           >
