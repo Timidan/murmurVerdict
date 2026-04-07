@@ -52,7 +52,17 @@ export function Summary({ snapshot, vaultAddress }: SummaryProps) {
 
   const walletUsdcNum = walletUsdc ? Number(formatUnits(walletUsdc as bigint, 6)) : 0;
   const vaultUsdcNum = vaultUsdc ? Number(formatUnits(vaultUsdc as bigint, 6)) : 0;
-  const nav = vaultUsdcNum; // NAV = funds in vault (what the agent trades with)
+
+  // Compute ETH value held in vault positions using live price
+  const ethPositions = snapshot.treasury.positions.filter(
+    (p) => p.slug === "ethereum" || p.slug === "weth"
+  );
+  const ethTokens = ethPositions.reduce(
+    (sum, p) => sum + Number(p.amountHeld) / 1e18, 0
+  );
+  const ethValueUsd = snapshot.ethPrice ? ethTokens * snapshot.ethPrice : 0;
+
+  const nav = vaultUsdcNum + ethValueUsd; // NAV = USDC + ETH value in vault
 
   // Accumulate NAV history from successive snapshots
   if (
@@ -78,11 +88,8 @@ export function Summary({ snapshot, vaultAddress }: SummaryProps) {
       ? recentExecuted.reduce((sum, d) => sum + (d.pnlPct ?? 0), 0)
       : null;
 
-  // Buying power: vault balance minus any open positions, or just vault balance
-  const openPositionValue = snapshot.treasury.positions.reduce(
-    (sum, p) => sum + (p.currentValueUsd ?? 0), 0
-  );
-  const capLeft = Math.max(0, vaultUsdcNum - openPositionValue);
+  // Buying power: vault USDC minus nothing already deployed (USDC is liquid)
+  const capLeft = vaultUsdcNum;
 
   // Daily volume: count executed decisions
   const dailyVol = snapshot.lastDecisions.filter(
@@ -100,6 +107,14 @@ export function Summary({ snapshot, vaultAddress }: SummaryProps) {
         <div className="stat-box">
           <div className="stat-label">Vault balance</div>
           <div className="stat-value">{formatUsd(nav)}</div>
+          <div className="stat-sub" style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+            <span>{formatUsd(vaultUsdcNum)} USDC</span>
+            {ethTokens > 0 && (
+              <span style={{ color: "#a78bfa" }}>
+                {ethTokens >= 0.01 ? ethTokens.toFixed(4) : ethTokens.toFixed(6)} ETH
+              </span>
+            )}
+          </div>
           {navHistory.current.length >= 3 && (
             <div style={{ marginTop: 4, display: "flex", justifyContent: "center" }}>
               <Sparkline data={navHistory.current} width={60} height={16} filled />
