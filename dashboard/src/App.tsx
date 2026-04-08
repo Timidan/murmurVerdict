@@ -6,6 +6,7 @@ import { Header } from "./components/Header";
 import { CycleBar } from "./components/CycleBar";
 import { Summary } from "./components/Summary";
 import { Positions } from "./components/Positions";
+import { VaultHoldings } from "./components/VaultHoldings";
 // Heatmap removed from dashboard layout
 // RiskGate removed — internal debug info, not useful to end users
 import { DecisionLog } from "./components/DecisionLog";
@@ -237,6 +238,7 @@ export function App() {
                 onAutopilotChange={(autopilotEnabled) => setSession((s) => s ? { ...s, autopilotEnabled } : s)}
                 onVaultCreated={() => refetchVault()}
               />
+              <VaultHoldings vaultAddress={vaultAddress} snapshot={snapshot} />
               <Positions snapshot={snapshot} ethPrice={snapshot.ethPrice} />
             </div>
             <div className="main-grid-right-col">

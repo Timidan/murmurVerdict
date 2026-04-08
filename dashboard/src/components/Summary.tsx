@@ -6,6 +6,7 @@ import { Sparkline } from "./Sparkline";
 import { PortfolioChart } from "./PortfolioChart";
 
 const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
+const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const;
 
 const BALANCE_ABI = [{
   name: "balanceOf",
@@ -41,7 +42,7 @@ export function Summary({ snapshot, vaultAddress }: SummaryProps) {
     query: { enabled: !!address, refetchInterval: 15000 },
   });
 
-  // Read user's vault USDC balance
+  // Read vault USDC balance
   const { data: vaultUsdc } = useReadContract({
     address: vaultAddress as `0x${string}` | undefined,
     abi: VAULT_BALANCE_ABI,
@@ -50,17 +51,21 @@ export function Summary({ snapshot, vaultAddress }: SummaryProps) {
     query: { enabled: !!vaultAddress, refetchInterval: 15000 },
   });
 
+  // Read vault WETH balance directly on-chain
+  const { data: vaultWeth } = useReadContract({
+    address: vaultAddress as `0x${string}` | undefined,
+    abi: VAULT_BALANCE_ABI,
+    functionName: "balanceOf",
+    args: [WETH_ADDRESS],
+    query: { enabled: !!vaultAddress, refetchInterval: 15000 },
+  });
+
   const walletUsdcNum = walletUsdc ? Number(formatUnits(walletUsdc as bigint, 6)) : 0;
   const vaultUsdcNum = vaultUsdc ? Number(formatUnits(vaultUsdc as bigint, 6)) : 0;
 
-  // Compute ETH value held in vault positions using live price
-  const ethPositions = snapshot.treasury.positions.filter(
-    (p) => p.slug === "ethereum" || p.slug === "weth"
-  );
-  const ethTokens = ethPositions.reduce(
-    (sum, p) => sum + Number(p.amountHeld) / 1e18, 0
-  );
-  const ethValueUsd = snapshot.ethPrice ? ethTokens * snapshot.ethPrice : 0;
+  // Compute ETH value from on-chain vault WETH balance
+  const ethTokens = vaultWeth ? Number(formatUnits(vaultWeth as bigint, 18)) : 0;
+  const ethValueUsd = snapshot.ethPrice && ethTokens > 0 ? ethTokens * snapshot.ethPrice : 0;
 
   const nav = vaultUsdcNum + ethValueUsd; // NAV = USDC + ETH value in vault
 
@@ -107,14 +112,6 @@ export function Summary({ snapshot, vaultAddress }: SummaryProps) {
         <div className="stat-box">
           <div className="stat-label">Vault balance</div>
           <div className="stat-value">{formatUsd(nav)}</div>
-          <div className="stat-sub" style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-            <span>{formatUsd(vaultUsdcNum)} USDC</span>
-            {ethTokens > 0 && (
-              <span style={{ color: "#a78bfa" }}>
-                {ethTokens >= 0.01 ? ethTokens.toFixed(4) : ethTokens.toFixed(6)} ETH
-              </span>
-            )}
-          </div>
           {navHistory.current.length >= 3 && (
             <div style={{ marginTop: 4, display: "flex", justifyContent: "center" }}>
               <Sparkline data={navHistory.current} width={60} height={16} filled />
