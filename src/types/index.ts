@@ -16,6 +16,18 @@ export type AssetSlug = (typeof ASSET_UNIVERSE)[number];
 // On Base Sepolia, only WETH has a real token contract + Uniswap pool
 export const TESTNET_UNIVERSE = ["ethereum"] as const satisfies readonly AssetSlug[];
 
+export type UserDataDirection = "bullish" | "bearish" | "neutral";
+
+export interface UserDataPoint {
+  slug: AssetSlug;
+  label: string;
+  value: number;
+  observedAt: string;
+  source?: string;
+  direction?: UserDataDirection;
+  confidence?: number;
+}
+
 export interface AssetConfig {
   slug: AssetSlug;
   ticker: string;
@@ -98,7 +110,7 @@ export interface ScoredAsset {
   isCandidate: boolean;    // passed threshold to go to deliberation
 }
 
-// ─── Deliberation (LLM) ──────────────────────────────────────────────────────
+// ─── Deliberation / Oracle Reasoning ─────────────────────────────────────────
 
 export type TradeAction = "buy" | "reduce" | "exit" | "hold";
 export type SizeBucket = "1pct" | "3pct" | "5pct";
@@ -168,11 +180,11 @@ export interface ExecutionResult {
   executedAt: string;
 }
 
-// ─── Decision Receipt (Notary / Attestation) ─────────────────────────────────
+// ─── Decision Receipt ────────────────────────────────────────────────────────
 
 export interface DecisionReceipt {
   id: string;                         // UUID
-  agentIdentity: `0x${string}`;       // ERC-8004 registered address
+  agentIdentity: `0x${string}`;       // configured agent address
   cycleId: string;                    // unique loop cycle identifier
 
   // What it saw
@@ -187,9 +199,8 @@ export interface DecisionReceipt {
   // What it executed (null if hold)
   execution: ExecutionResult | null;
 
-  // Attestation
+  // Provenance
   receiptHash: `0x${string}`;         // keccak256 of canonical receipt JSON
-  attestationTxHash?: `0x${string}`;  // on-chain ERC-8004 attestation tx
   filecoinCid?: string;               // full receipt stored on Filecoin
 
   // Delegation metadata
@@ -231,7 +242,7 @@ export type LoopPhase =
   | "risk_gate"
   | "quote"
   | "execute"
-  | "attest"
+  | "receipt"
   | "idle";
 
 export interface LoopCycle {
@@ -272,10 +283,6 @@ export interface PriceFeedState {
 export interface MurmurConfig {
   // Santiment
   santimentApiKey: string;
-
-  // Venice / LLM
-  veniceApiKey: string;
-  veniceBaseUrl: string;
 
   // Uniswap
   uniswapApiKey: string;

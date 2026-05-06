@@ -5,7 +5,6 @@ import {
   ASSET_UNIVERSE,
   type AssetSlug,
   type AssetRawSignals,
-  type RawSignal,
   type SantimentMetric,
   type TimeseriesPoint,
   ScoutError,

@@ -63,3 +63,21 @@ contracts/cache/
 contracts/out/
 contracts/broadcast/
 .superpowers/
+
+# Internal launchpad docs (strategy, ops, recruiting, screenshots, briefs)
+# Master never tracked these — kept local. To publish a specific file,
+# use `git add -f <path>`.
+/docs/
+/OPENSERV_MEETING_BRIEF.md
+
+# Smoke / driver scripts colocated with their modules — local-only.
+**/__smoke__.ts
+**/__*_smoke__.ts
+**/__smoke__.tsx
+**/__*_smoke__.tsx
+
+# Local SQLite databases
+/data/
+data/*.db
+data/*.db-journal
+data/*.db-wal
