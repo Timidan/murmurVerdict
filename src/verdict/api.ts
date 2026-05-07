@@ -201,11 +201,21 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   });
 
   router.get("/v1/health", (_req, res) => {
+    // Phase G H1/M2 — surface privacy-stack status without doing the
+    // expensive drand round-trip. /v1/readyz does the actual probes;
+    // /v1/health is cheap.
+    const privacy = {
+      committed_mode_open: process.env.MURMUR_PRIVACY_COMMITTED_OPEN === "1",
+      age_recipient_configured: !!deps.ctx.ageContext,
+      age_fallback_decrypt: !!deps.ctx.ageContext?.identity,
+      drand_configured: !!deps.ctx.drandContext,
+    };
     res.json({
       ok: true,
       schema_version: SCHEMA_VERSION,
       scoring_version: SCORING_VERSION,
       now: nowIso(now()),
+      privacy,
     });
   });
 
@@ -247,12 +257,28 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     }
     const oracleMs = Date.now() - oracleStart;
 
+    // Phase G H1/M2 — privacy stack health. age key custody is a
+    // boot-time check (env var presence); drand requires a live
+    // network probe of the chain's latest beacon. We don't fail
+    // /readyz on drand UNREACHABLE (that's an opt-in upgrade), but
+    // we DO surface the state so operators see the degradation.
+    const privacy = {
+      committed_mode_open: process.env.MURMUR_PRIVACY_COMMITTED_OPEN === "1",
+      age: {
+        recipient_configured: !!deps.ctx.ageContext,
+        fallback_decrypt_enabled: !!deps.ctx.ageContext?.identity,
+        daemon_key_id: deps.ctx.ageContext?.daemon_key_id ?? null,
+      },
+      drand: await probeDrandHealth(deps.ctx.drandContext),
+    };
+
     const ready = dbOk && (oracleStatus === "ok" || oracleStatus === "disabled");
     res.status(ready ? 200 : 503).json({
       ready,
       now: nowIso(now()),
       db: { ok: dbOk, latency_ms: dbMs, error: dbError },
       oracle: { status: oracleStatus, latency_ms: oracleMs, error: oracleError },
+      privacy,
     });
   }));
 
@@ -2124,6 +2150,60 @@ const walletOnlyInitLimiter = (() => {
  * skill format so it drops directly into a Claude / Cursor / OpenServ
  * skill loader; the body is plain markdown so any LLM can act on it.
  */
+/**
+ * Phase G — drand reachability probe for /v1/readyz. Doesn't error out
+ * the readiness check (drand is opt-in, an unavailable drand network
+ * just means committed-mode submissions get age-only envelopes). But
+ * the operator sees the degraded state in the readyz response so
+ * they can investigate.
+ *
+ * Cached result: 30s TTL. Drand mainnet quicknet has a 3s period; we
+ * don't need to hit it on every readyz call.
+ */
+let drandHealthCache: {
+  fetchedAt: number;
+  result: {
+    configured: boolean;
+    reachable: boolean;
+    chain_hash: string | null;
+    latest_round: number | null;
+    period_seconds: number | null;
+    error?: string;
+  };
+} | null = null;
+const DRAND_HEALTH_TTL_MS = 30_000;
+
+async function probeDrandHealth(
+  drandCtx?: import("./drand-envelope.js").DrandContext,
+): Promise<NonNullable<typeof drandHealthCache>["result"]> {
+  if (!drandCtx) {
+    return { configured: false, reachable: false, chain_hash: null, latest_round: null, period_seconds: null };
+  }
+  if (drandHealthCache && Date.now() - drandHealthCache.fetchedAt < DRAND_HEALTH_TTL_MS) {
+    return drandHealthCache.result;
+  }
+  let reachable = false;
+  let latest_round: number | null = null;
+  let error: string | undefined;
+  try {
+    const beacon = await drandCtx.client.latest();
+    reachable = true;
+    latest_round = beacon.round;
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
+  const result = {
+    configured: true,
+    reachable,
+    chain_hash: drandCtx.chain.hash,
+    latest_round,
+    period_seconds: drandCtx.chain.period,
+    ...(error ? { error } : {}),
+  };
+  drandHealthCache = { fetchedAt: Date.now(), result };
+  return result;
+}
+
 function buildSkillMarkdown(apiBase: string): string {
   return `---
 name: murmur-verdict-register
