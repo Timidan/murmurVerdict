@@ -99,6 +99,8 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     ? new Resolver({
         db,
         oracle,
+        ...(ageCtx ? { ageContext: ageCtx } : {}),
+        ...(drandCtx ? { drandContext: drandCtx } : {}),
         onResolved: async (call_id) => {
           // 1. Fan out to SSE subscribers
           try {

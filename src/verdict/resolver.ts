@@ -21,6 +21,9 @@ import {
   submissionsRepo,
   usageRepo,
 } from "./db.js";
+import { loadResolutionSubject } from "./resolution-subject.js";
+import type { AgeContext } from "./age-envelope.js";
+import type { DrandContext } from "./drand-envelope.js";
 import {
   OracleClient,
   OracleError,
@@ -44,6 +47,17 @@ export interface ResolverDeps {
   log?: (line: ResolverLogEvent) => void;
   /** Called for every call that becomes terminal (resolved, oracle_unavailable). */
   onResolved?: (call_id: string) => void | Promise<void>;
+  /**
+   * P2 committed-mode subject loader contexts. When the resolver hits a
+   * committed-mode call past horizon, it tries (in order):
+   *   1. agent reveal already in call_reveals
+   *   2. age envelope decrypt past fallback_after (needs ageContext.identity)
+   *   3. drand timelock decrypt past round (needs drandContext)
+   * Without these, committed calls past horizon stay deferred until
+   * an agent reveals voluntarily.
+   */
+  ageContext?: AgeContext;
+  drandContext?: DrandContext;
 }
 
 export type ResolverLogEvent =
@@ -68,6 +82,8 @@ export class Resolver {
   private readonly now: () => Date;
   private readonly log: (line: ResolverLogEvent) => void;
   private readonly onResolved: NonNullable<ResolverDeps["onResolved"]>;
+  private readonly ageContext: AgeContext | undefined;
+  private readonly drandContext: DrandContext | undefined;
 
   constructor(deps: ResolverDeps) {
     this.db = deps.db;
@@ -76,6 +92,8 @@ export class Resolver {
     this.now = deps.now ?? (() => new Date());
     this.log = deps.log ?? (() => undefined);
     this.onResolved = deps.onResolved ?? (() => undefined);
+    this.ageContext = deps.ageContext;
+    this.drandContext = deps.drandContext;
   }
 
   async tick(): Promise<ResolverTickResult> {
@@ -179,41 +197,129 @@ export class Resolver {
 
       if (outcome.kind === "anchored") {
         const obs = outcome.observation;
-        const r = computeSignedReturn(ctx.side as Side, t0row.p0, obs.price);
+        // P2 Phase C-2: load resolution subject. For committed rows
+        // this prefers the agent's voluntary reveal, falls back to
+        // daemon age decrypt past fallback_after, then drand decrypt
+        // past the bound round. Returns "not_yet_revealable" if the
+        // call is committed but no path is open yet — skip + retry
+        // next tick. Legacy_plaintext rows hydrate from submissions
+        // on first access and behave like agent reveals from then on.
+        const subjectResult = await loadResolutionSubject(this.db, ctx.call_id, {
+          ...(this.ageContext ? { ageCtx: this.ageContext } : {}),
+          ...(this.drandContext ? { drandCtx: this.drandContext } : {}),
+          now: this.now,
+        });
+        if (!subjectResult.ok) {
+          this.log({
+            kind: "still_pending",
+            call_id: ctx.call_id,
+            phase: "t1",
+            reason: `subject:${subjectResult.reason}`,
+          });
+          continue;
+        }
+        const subject = subjectResult.subject;
+        // Use the resolved plaintext (agent-revealed, daemon-decrypted,
+        // drand-decrypted, or legacy-hydrated) as the truth for scoring.
+        // For legacy_plaintext rows this is identical to ctx.* — just
+        // routed through call_reveals so every code path reads from one
+        // place going forward.
+        const r = computeSignedReturn(subject.side, t0row.p0, obs.price);
         const verdictOutcome = outcomeFromSignedReturn(r);
         const score = scoreCall({
-          asset_id: ctx.asset_id as AssetId,
-          horizon_hours: ctx.horizon_hours as HorizonHours,
-          confidence: ctx.confidence,
+          asset_id: subject.asset_id as AssetId,
+          horizon_hours: subject.horizon_hours as HorizonHours,
+          confidence: subject.confidence,
           signed_return: r,
           outcome: verdictOutcome,
         });
 
         const resolved_at = this.nowIso();
         // Look up the issuing agent so the resolution receipt can carry
-        // the wallet binding into its subject. Same additive-optional
-        // shape as acceptance receipts; old receipts re-verify against
-        // their stored canonical_json regardless of whether the schema
-        // gained these fields after-the-fact.
+        // the wallet binding. P2 v2 receipts make these REQUIRED.
         const issuingAgent = agentsRepo.byId(this.db, ctx.agent_id);
-        const resolutionPayload = ResolutionReceiptPayloadSchema.parse({
-          schema_version: SCHEMA_VERSION,
-          scoring_version: SCORING_VERSION,
-          call_id: ctx.call_id,
-          acceptance_receipt_hash: ctx.acceptance_receipt_hash,
-          t0: t0row.t0,
-          p0: t0row.p0,
-          t0_feed: OracleFeedSchema.parse(t0row.feed),
-          t1: obs.feed_timestamp,
-          p1: obs.price,
-          t1_feed: obs.feed,
-          signed_return: r.toFixed(8),
-          outcome: verdictOutcome,
-          call_score: score.call_score,
-          resolved_at,
-          ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
-          ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
-        });
+
+        // Branch: v2 receipt for committed calls (carries reveal block);
+        // v1 receipt for legacy_plaintext.
+        let resolutionPayload: ReturnType<typeof ResolutionReceiptPayloadSchema.parse>;
+        if (subject.source === "legacy_plaintext") {
+          resolutionPayload = ResolutionReceiptPayloadSchema.parse({
+            schema_version: 1,
+            scoring_version: SCORING_VERSION,
+            call_id: ctx.call_id,
+            acceptance_receipt_hash: ctx.acceptance_receipt_hash,
+            t0: t0row.t0,
+            p0: t0row.p0,
+            t0_feed: OracleFeedSchema.parse(t0row.feed),
+            t1: obs.feed_timestamp,
+            p1: obs.price,
+            t1_feed: obs.feed,
+            signed_return: r.toFixed(8),
+            outcome: verdictOutcome,
+            call_score: score.call_score,
+            resolved_at,
+            ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
+            ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
+          });
+        } else {
+          // committed → v2 with reveal block.
+          // Skip emission if commit_hash is missing (shouldn't happen
+          // for committed rows, defensive null-guard).
+          const subRow = this.db
+            .prepare("SELECT commit_hash FROM submissions WHERE call_id = ?")
+            .get(ctx.call_id) as { commit_hash: string | null } | undefined;
+          if (!subRow?.commit_hash) {
+            this.log({
+              kind: "still_pending",
+              call_id: ctx.call_id,
+              phase: "t1",
+              reason: "committed-mode row missing commit_hash",
+            });
+            continue;
+          }
+          if (!issuingAgent?.wallet_address || !issuingAgent.chain_id) {
+            this.log({
+              kind: "still_pending",
+              call_id: ctx.call_id,
+              phase: "t1",
+              reason: "committed-mode row without wallet binding",
+            });
+            continue;
+          }
+          resolutionPayload = ResolutionReceiptPayloadSchema.parse({
+            schema_version: 2,
+            scoring_version: SCORING_VERSION,
+            receipt_kind: "resolution",
+            call_id: ctx.call_id,
+            acceptance_receipt_hash: ctx.acceptance_receipt_hash,
+            commit_hash: subRow.commit_hash,
+            t0: t0row.t0,
+            p0: t0row.p0,
+            t0_feed: OracleFeedSchema.parse(t0row.feed),
+            t1: obs.feed_timestamp,
+            p1: obs.price,
+            t1_feed: obs.feed,
+            signed_return: r.toFixed(8),
+            outcome: verdictOutcome,
+            call_score: score.call_score,
+            resolved_at,
+            agent_wallet: issuingAgent.wallet_address,
+            chain_id: issuingAgent.chain_id,
+            reveal: {
+              revealed_via: subject.source,
+              revealed_at: subject.revealed_at,
+              reveal_hash_valid: subject.reveal_hash_valid,
+              commit_preimage_schema:
+                subject.commit_preimage_schema ?? "murmur-verdict-v0.2-commit@1",
+              plaintext_subject: {
+                side: subject.side,
+                asset_id: subject.asset_id as AssetId,
+                horizon_hours: subject.horizon_hours as HorizonHours,
+                confidence: subject.confidence,
+              },
+            },
+          });
+        }
         const receipt = buildResolutionReceipt(resolutionPayload);
         let cid: string | null = null;
         if (this.pinReceipt) {

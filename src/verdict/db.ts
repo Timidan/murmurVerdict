@@ -1242,7 +1242,12 @@ export interface CallRevealRow {
   commit_preimage_json: string | null;
   commit_preimage_hash: string | null;
   revealed_at: string;
-  revealed_via: "agent" | "daemon_fallback" | "legacy_plaintext" | "fhevm_compute";
+  revealed_via:
+    | "agent"
+    | "daemon_fallback"
+    | "drand_fallback"
+    | "legacy_plaintext"
+    | "fhevm_compute";
   reveal_hash_valid: 0 | 1;
 }
 

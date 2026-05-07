@@ -430,9 +430,10 @@ export type AcceptanceReceiptPayloadV2 = z.infer<
   typeof AcceptanceReceiptPayloadV2Schema
 >;
 
-export const ResolutionReceiptPayloadSchema = z
+// ─── Resolution receipt — v1 (legacy_plaintext) ────────────────────────────
+const ResolutionReceiptPayloadV1Schema = z
   .object({
-    schema_version: z.literal(SCHEMA_VERSION),
+    schema_version: z.literal(1),
     scoring_version: z.literal(SCORING_VERSION),
     call_id: z.string().uuid(),
     acceptance_receipt_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
@@ -446,17 +447,75 @@ export const ResolutionReceiptPayloadSchema = z
     outcome: OutcomeSchema,
     call_score: z.number().nullable(),
     resolved_at: z.string().datetime({ offset: false }),
-    // See note on AcceptanceReceiptPayloadSchema. Same fields, same
-    // optional/additive contract. Old receipts re-verify because the
-    // verifier rehashes the stored canonical_json string, not the
-    // schema-shape. Whatever was canonicalized at write-time is what's
-    // verified at read-time.
+    // P1.5 wallet binding (additive; older receipts may not have it).
     agent_wallet: WalletAddressSchema.optional(),
     chain_id: ChainIdSchema.optional(),
   })
   .strict();
+
+// ─── Resolution receipt — v2 (committed reveal) ────────────────────────────
+//
+// Adds a `reveal` block recording HOW the plaintext was surfaced — agent
+// voluntary reveal, daemon decrypt past grace, drand decrypt past round,
+// or v0.3 fhEVM compute. The plaintext_subject is the D13 fields that
+// the receipt commits to; reveal_hash_valid attests the agent/daemon
+// recomputed keccak256(canonical_json(preimage)) and matched the
+// acceptance receipt's commit.hash.
+//
+// commit_hash is hoisted to the top level so a verifier crawling
+// receipts can chain (acceptance.commit.hash → resolution.commit_hash)
+// without re-fetching the acceptance receipt.
+const ResolutionReceiptPayloadV2Schema = z
+  .object({
+    schema_version: z.literal(2),
+    scoring_version: z.literal(SCORING_VERSION),
+    receipt_kind: z.literal("resolution"),
+    call_id: z.string().uuid(),
+    acceptance_receipt_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
+    commit_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
+    t0: z.string().datetime({ offset: false }),
+    p0: z.string().regex(/^[0-9]+(\.[0-9]+)?$/),
+    t0_feed: OracleFeedSchema,
+    t1: z.string().datetime({ offset: false }),
+    p1: z.string().regex(/^[0-9]+(\.[0-9]+)?$/),
+    t1_feed: OracleFeedSchema,
+    signed_return: z.string().regex(/^-?[0-9]+(\.[0-9]+)?$/),
+    outcome: OutcomeSchema,
+    call_score: z.number().nullable(),
+    resolved_at: z.string().datetime({ offset: false }),
+    agent_wallet: WalletAddressSchema,
+    chain_id: ChainIdSchema,
+    reveal: z
+      .object({
+        revealed_via: z.string(), // string, not enum, per v0.3 compat
+        revealed_at: z.string().datetime({ offset: false }),
+        reveal_hash_valid: z.boolean(),
+        commit_preimage_schema: z.string(),
+        plaintext_subject: z
+          .object({
+            side: z.enum(["BUY", "SELL"]),
+            asset_id: AssetIdSchema,
+            horizon_hours: HorizonHoursSchema,
+            confidence: z.number().min(0.51).max(0.95),
+          })
+          .strict(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const ResolutionReceiptPayloadSchema = z.discriminatedUnion(
+  "schema_version",
+  [ResolutionReceiptPayloadV1Schema, ResolutionReceiptPayloadV2Schema],
+);
 export type ResolutionReceiptPayload = z.infer<
   typeof ResolutionReceiptPayloadSchema
+>;
+export type ResolutionReceiptPayloadV1 = z.infer<
+  typeof ResolutionReceiptPayloadV1Schema
+>;
+export type ResolutionReceiptPayloadV2 = z.infer<
+  typeof ResolutionReceiptPayloadV2Schema
 >;
 
 // ─── Leaderboard view ────────────────────────────────────────────────────────

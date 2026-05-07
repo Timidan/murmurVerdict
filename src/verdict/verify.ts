@@ -42,10 +42,20 @@ export interface VerifyCheck {
     | "resolution_receipt_hash"
     | "signed_return"
     | "outcome"
-    | "call_score";
+    | "call_score"
+    // P2 v2 semantic checks (Codex H3) ────────────────────────────
+    /** v2 acceptance: receipt's commit.hash matches submissions.commit_hash. */
+    | "commit_hash_binding"
+    /** v2: revealed plaintext (in call_reveals) hashes to receipt commit.hash. */
+    | "reveal_canonical_hash"
+    /** v2: receipt's fallback.encrypted_body_hash matches the daemon-stored
+     *  ciphertext hash on call_private_envelopes. */
+    | "envelope_ciphertext_hash"
+    /** v2: receipt's drand.ciphertext_hash matches the stored drand ciphertext. */
+    | "drand_ciphertext_hash";
   status: "match" | "mismatch" | "skipped";
-  stored: string | number | null;
-  recomputed: string | number | null;
+  stored: string | number | boolean | null;
+  recomputed: string | number | boolean | null;
   /** Optional note for skipped/missing data. */
   note?: string;
 }
@@ -106,6 +116,101 @@ export function verifyReceiptChain(
     stored: acceptanceRow.receipt_hash,
     recomputed: recomputedAcceptanceHash,
   });
+
+  // ── v2 semantic checks (Codex Phase B H3) ──
+  // For committed-mode acceptances: the receipt's commit.hash MUST match
+  // the daemon's stored submissions.commit_hash. This catches a tampered
+  // receipt that re-canonicalizes to a valid hash but disagrees with the
+  // DB about WHAT was committed. For v1 (legacy_plaintext) the schema
+  // doesn't have this binding so the check is skipped.
+  if (parsedAcceptance.data.schema_version === 2) {
+    const v2 = parsedAcceptance.data;
+    const commitFromDb = (subRow.commit_hash as string | null) ?? null;
+    checks.push({
+      name: "commit_hash_binding",
+      status:
+        commitFromDb &&
+        commitFromDb.toLowerCase() === v2.commit.hash.toLowerCase()
+          ? "match"
+          : "mismatch",
+      stored: commitFromDb,
+      recomputed: v2.commit.hash,
+    });
+
+    // Receipt's fallback.encrypted_body_hash binds to the on-disk
+    // ciphertext bytes. Re-hash from the call_private_envelopes row.
+    if (v2.fallback) {
+      const envBodyHashRow = db
+        .prepare(
+          "SELECT encrypted_body_hash, drand_ciphertext_hash FROM call_private_envelopes WHERE call_id = ?",
+        )
+        .get(call_id) as
+        | { encrypted_body_hash: string | null; drand_ciphertext_hash: string | null }
+        | undefined;
+      checks.push({
+        name: "envelope_ciphertext_hash",
+        status:
+          envBodyHashRow?.encrypted_body_hash &&
+          envBodyHashRow.encrypted_body_hash.toLowerCase() ===
+            v2.fallback.encrypted_body_hash.toLowerCase()
+            ? "match"
+            : "mismatch",
+        stored: envBodyHashRow?.encrypted_body_hash ?? null,
+        recomputed: v2.fallback.encrypted_body_hash,
+      });
+
+      if (v2.drand) {
+        checks.push({
+          name: "drand_ciphertext_hash",
+          status:
+            envBodyHashRow?.drand_ciphertext_hash &&
+            envBodyHashRow.drand_ciphertext_hash.toLowerCase() ===
+              v2.drand.ciphertext_hash.toLowerCase()
+              ? "match"
+              : "mismatch",
+          stored: envBodyHashRow?.drand_ciphertext_hash ?? null,
+          recomputed: v2.drand.ciphertext_hash,
+        });
+      }
+    }
+
+    // Reveal hash: when the agent (or daemon fallback) revealed the
+    // preimage, the call_reveals row carries the recomputed hash. It
+    // MUST match the receipt's commit.hash. Skipped when the call
+    // hasn't been revealed yet.
+    const revealRow = db
+      .prepare(
+        "SELECT commit_preimage_hash, reveal_hash_valid, revealed_via FROM call_reveals WHERE call_id = ?",
+      )
+      .get(call_id) as
+      | {
+          commit_preimage_hash: string | null;
+          reveal_hash_valid: number;
+          revealed_via: string;
+        }
+      | undefined;
+    if (revealRow?.commit_preimage_hash) {
+      checks.push({
+        name: "reveal_canonical_hash",
+        status:
+          revealRow.commit_preimage_hash.toLowerCase() ===
+            v2.commit.hash.toLowerCase() && revealRow.reveal_hash_valid === 1
+            ? "match"
+            : "mismatch",
+        stored: v2.commit.hash,
+        recomputed: revealRow.commit_preimage_hash,
+        note: `revealed_via=${revealRow.revealed_via}`,
+      });
+    } else {
+      checks.push({
+        name: "reveal_canonical_hash",
+        status: "skipped",
+        stored: v2.commit.hash,
+        recomputed: null,
+        note: "not yet revealed",
+      });
+    }
+  }
 
   // ── Resolution side (skip if unresolved) ──
   const resolutionRow = db
