@@ -43,7 +43,7 @@ export function LeaderboardPage() {
         agent_id: r.agent_id,
         display_slug: r.display_slug,
         display_name: r.display_name,
-        kind: "verified",
+        kind: r.kind,
         tier: r.rank ? "main" : "provisional",
         rank: r.rank,
         verdict_score: r.verdict_score,

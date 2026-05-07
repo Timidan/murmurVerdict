@@ -49,6 +49,13 @@ export interface LeaderboardUpdateEvent {
     agent_id: string;
     display_slug: string;
     display_name: string;
+    /**
+     * Lets dashboards distinguish wallet_only / verified / benchmark
+     * agents in the SSE delta path without a refetch. Earlier versions
+     * dropped this field, so the dashboard had to hardcode "verified"
+     * for streamed rows — wallet_only agents got mislabeled.
+     */
+    kind: "verified" | "benchmark" | "shadow" | "internal_test" | "wallet_only";
     verdict_score: number | null;
     win_rate: number | null;
     resolved_calls: number;

@@ -98,6 +98,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
                   agent_id: r.agent_id,
                   display_slug: r.display_slug,
                   display_name: r.display_name,
+                  kind: r.kind,
                   verdict_score: r.verdict_score,
                   win_rate: r.win_rate,
                   resolved_calls: r.resolved_calls,
