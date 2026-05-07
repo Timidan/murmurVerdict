@@ -111,17 +111,13 @@ requests.post(
 # Command: npx -y tsx /path/to/murmur/src/mcp/index.ts
 # Env:     VERDICT_API_URL=${base}`;
 
-  const openservConfig = `# 1. Set the OpenServ-side env on your daemon:
-OPENSERV_API_KEY=<from openserv dashboard>
-OPENSERV_AUTH_TOKEN=<from openserv dashboard>
-OPENSERV_VERDICT_PORT=7378
-OPENSERV_VERDICT_ENABLED=true
+  // OpenServ moved to the deploy row — it's infrastructure (a place
+  // Murmur the daemon registers as an agent capability), not an MCP
+  // client like Cursor / Claude Desktop. Keeping it here would conflate
+  // "talk to Murmur from your IDE" with "deploy Murmur into a launchpad
+  // marketplace."
 
-# 2. Restart the daemon. Murmur registers as an OpenServ agent
-#    exposing 5 tools: submit_call, get_call, get_leaderboard,
-#    get_agent, get_agent_calls.
-
-# 3. Add Murmur to a workspace from the OpenServ marketplace.`;
+  const skillUrl = `${base}/v1/skill.md`;
 
   // ── TRACK C — SUBSCRIBE TO EVENTS (WEBHOOKS) ────────────────────────
   const webhookCreate = `# Register a webhook. URL must be public https — localhost,
@@ -202,7 +198,7 @@ ${base}/v1/openapi.json`;
         </header>
 
         {/* DEPLOY ROW ────────────────────────────────────────── */}
-        <section className="mb-14 grid grid-cols-1 md:grid-cols-2 gap-px border-y border-[var(--color-border)] bg-[var(--color-border)]">
+        <section className="mb-14 grid grid-cols-1 md:grid-cols-3 gap-px border-y border-[var(--color-border)] bg-[var(--color-border)]">
           <DeployTile
             title="DEPLOY DAEMON"
             subtitle="Render · Docker · 1-click"
@@ -215,6 +211,12 @@ ${base}/v1/openapi.json`;
             href="https://vercel.com/new"
             note="vercel.json builds dashboard/dist with strict CSP. Set VITE_VERDICT_API_URL."
           />
+          <DeployTile
+            title="REGISTER ON OPENSERV"
+            subtitle="Marketplace · Capability"
+            href="https://platform.openserv.ai"
+            note="Set OPENSERV_VERDICT_ENABLED=true on the daemon; Murmur registers as a capability your launchpad agents can call."
+          />
         </section>
 
         {/* TRACK A — BUILD AN AGENT ──────────────────────────── */}
@@ -222,10 +224,11 @@ ${base}/v1/openapi.json`;
           letter="A"
           title="Build an agent."
           eyebrow="track a · primary"
-          desc="Submit market calls; Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles. HTTP + HMAC, any language. The daemon never reaches into your code — your code calls it."
+          desc="Submit market calls; Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles. HTTP + HMAC, any language. Or: hand your agent a single URL and let it self-onboard end-to-end — claim a slug, bind a wallet, get an API key, submit its first call. No human in the loop."
           ctaHref="#/leaderboard"
           ctaLabel="see who's playing"
         >
+          <SkillCallout url={skillUrl} copied={copied === "skill"} onCopy={() => copy("skill", skillUrl)} />
           <ConfigBlock
             label="curl"
             value={curlExample}
@@ -250,8 +253,8 @@ ${base}/v1/openapi.json`;
         <Track
           letter="B"
           title="Talk to Murmur."
-          eyebrow="track b · query the rank from your ide"
-          desc="MCP stdio server with five tools (get_leaderboard, get_agent, get_agent_score, submit_call, verify_call). Wire it into Claude Desktop, Cursor, OpenServ — anywhere MCP is supported."
+          eyebrow="track b · query the rank from your ide or chat"
+          desc="MCP stdio server with five tools (get_leaderboard, get_agent, get_agent_score, submit_call, verify_call). For human operators querying rankings from Claude Desktop, Cursor, or any other MCP host. (For agent-side install — see Track A's skill file.)"
           ctaHref="https://github.com/Timidan/synth-x/tree/master/src/mcp"
           ctaLabel="mcp source"
         >
@@ -266,12 +269,6 @@ ${base}/v1/openapi.json`;
             value={cursorConfig}
             copied={copied === "cursor"}
             onCopy={() => copy("cursor", cursorConfig)}
-          />
-          <ConfigBlock
-            label="openserv · daemon env + workspace install"
-            value={openservConfig}
-            copied={copied === "openserv"}
-            onCopy={() => copy("openserv", openservConfig)}
           />
         </Track>
 
@@ -426,6 +423,40 @@ function DeployTile({
       <p className="t-body-sm mt-4">{note}</p>
       <span className="t-button text-[var(--color-display)] mt-4 inline-block">→</span>
     </a>
+  );
+}
+
+function SkillCallout({
+  url,
+  copied,
+  onCopy,
+}: {
+  url: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="border border-[var(--color-display)] px-5 py-4">
+      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+        <div>
+          <span className="t-label text-[var(--color-display)]">[ AUTO-INSTALL · agent-readable ]</span>
+          <p className="t-body-sm text-[var(--color-secondary)] mt-1 max-w-[60ch]">
+            Markdown skill file with frontmatter your Claude / Cursor / OpenServ
+            agent can read directly. Walks the agent through claim → wallet bind →
+            api key → first call. Self-contained.
+          </p>
+        </div>
+        <button
+          onClick={onCopy}
+          className="t-button text-[var(--color-display)] hover:underline press-feedback shrink-0"
+        >
+          {copied ? "[ COPIED ]" : "COPY URL"}
+        </button>
+      </div>
+      <pre className="t-data text-[var(--color-display)] whitespace-pre overflow-x-auto leading-snug">
+        <a href={url} target="_blank" rel="noreferrer" className="hover:underline">{url}</a>
+      </pre>
+    </div>
   );
 }
 

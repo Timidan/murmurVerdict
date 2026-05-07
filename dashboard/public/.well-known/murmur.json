@@ -28,7 +28,14 @@
     "webhooks": "/v1/webhooks",
     "snapshot_md": "/v1/snapshot.md",
     "leaderboard_csv": "/v1/leaderboard.csv",
-    "stats": "/v1/stats"
+    "stats": "/v1/stats",
+    "skill_md": "/v1/skill.md"
+  },
+  "agent_self_install": {
+    "url": "/v1/skill.md",
+    "format": "claude-skill-markdown",
+    "describes": "claim → wallet bind → api key → first call",
+    "human_in_loop": false
   },
   "mcp": {
     "transport": "stdio",
