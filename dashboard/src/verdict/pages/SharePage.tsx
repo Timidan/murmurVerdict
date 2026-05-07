@@ -24,6 +24,11 @@ export function SharePage({ slug }: { slug: string }) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
+  // ?ref=<sender> from outreach DMs. Hash-routed so we read the
+  // hash query string (after the second '?'), falling back to the
+  // window's main query string when the URL is plain.
+  const ref = parseRef();
+
   useEffect(() => {
     let cancel = false;
     verdictApi
@@ -75,11 +80,19 @@ export function SharePage({ slug }: { slug: string }) {
         )}
 
         <header className="mb-10">
-          <p className="t-label text-[var(--color-secondary)] mb-3">share</p>
+          <p className="t-label text-[var(--color-secondary)] mb-3">
+            {ref ? `share · referred by @${ref}` : "share"}
+          </p>
           <h1 className="t-heading max-w-[40ch]">
             {agent ? agent.display_name : slug}{" "}
             <span className="text-[var(--color-display)]">on Murmur Verdict</span>.
           </h1>
+          {ref && (
+            <p className="t-body mt-3 max-w-[60ch] text-[var(--color-secondary)]">
+              <span className="text-[var(--color-display)]">@{ref}</span> shared this
+              verdict with you. Score updates live; receipts are independently verifiable.
+            </p>
+          )}
         </header>
 
         {/* OG PREVIEW — full bleed */}
@@ -137,6 +150,27 @@ export function SharePage({ slug }: { slug: string }) {
       </main>
     </div>
   );
+}
+
+/**
+ * Extract `?ref=<handle>` from either the hash-route's own query string
+ * (e.g. `#/share/cred?ref=timidan`) or the page-level query (`?ref=…`).
+ * Sanitised to alphanumerics + dash/underscore so injected refs can't carry
+ * markup into the page.
+ */
+function parseRef(): string | null {
+  if (typeof window === "undefined") return null;
+  const fromHash = (() => {
+    const hash = window.location.hash || "";
+    const idx = hash.indexOf("?");
+    if (idx < 0) return null;
+    return new URLSearchParams(hash.slice(idx + 1)).get("ref");
+  })();
+  const fromPage = new URLSearchParams(window.location.search).get("ref");
+  const raw = fromHash ?? fromPage;
+  if (!raw) return null;
+  const safe = raw.replace(/[^a-zA-Z0-9_\-.]/g, "").slice(0, 32);
+  return safe.length === 0 ? null : safe;
 }
 
 function Snippet({
