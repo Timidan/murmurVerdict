@@ -9,6 +9,7 @@ import { Score } from "../components/Score.js";
 import { StatsGrid } from "../components/StatsGrid.js";
 import { CallLog } from "../components/CallLog.js";
 import { PillButton } from "../components/PillButton.js";
+import { EmbedBlock } from "../components/EmbedBlock.js";
 import { useFollow } from "../hooks/useFollow.js";
 
 /**
@@ -175,6 +176,9 @@ export function AgentPage({ slug }: { slug: string }) {
 
             {/* CALLS ────────────────────────────────────────────── */}
             {calls && <CallLog calls={calls} />}
+
+            {/* EMBED ────────────────────────────────────────────── */}
+            <EmbedBlock slug={agent.display_slug} agentName={agent.display_name} />
 
             {/* SHADOW CTA ───────────────────────────────────────── */}
             {agent.kind === "shadow" && (

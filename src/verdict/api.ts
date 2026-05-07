@@ -24,6 +24,7 @@ import { DisputeGroundsSchema, OracleFeedSchema } from "./schema.js";
 import { verifyAgentApiKey } from "./auth.js";
 import { getTodayFeed } from "./feed.js";
 import { verifyReceiptChain, VerifyError } from "./verify.js";
+import { renderBadgeSvg, renderOgSvg } from "./badge.js";
 
 // ─── API surface ─────────────────────────────────────────────────────────────
 //
@@ -278,6 +279,36 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
   router.get("/v1/feed/today", (_req, res) => {
     res.json(getTodayFeed(deps.db, now()));
+  });
+
+  // ── Shareable embed assets — SVG badge + OG social card ──
+  // Both routes are public, cacheable, ETag-aware. No auth: the data
+  // surfaced is the same as /v1/leaderboard. Designed to be dropped
+  // into READMEs / Discord bios / OpenServ profiles / X bios.
+  router.get("/v1/badge/:slug.svg", (req, res) => {
+    const slug = String(req.params.slug ?? "");
+    const { svg, etag } = renderBadgeSvg(deps.db, slug);
+    if (req.header("If-None-Match") === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=300");
+    res.setHeader("ETag", etag);
+    res.send(svg);
+  });
+
+  router.get("/v1/og/:slug.svg", (req, res) => {
+    const slug = String(req.params.slug ?? "");
+    const { svg, etag } = renderOgSvg(deps.db, slug);
+    if (req.header("If-None-Match") === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=120, stale-while-revalidate=600");
+    res.setHeader("ETag", etag);
+    res.send(svg);
   });
 
   // ── /v1/stream — Server-Sent Events fan-out for the live dashboard ──

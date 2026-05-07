@@ -14,12 +14,14 @@
     "smoke": "tsx src/verdict/__smoke__.ts && tsx src/verdict/__db_smoke__.ts && tsx src/verdict/__submissions_smoke__.ts && tsx src/verdict/__resolver_smoke__.ts && tsx src/verdict/__leaderboard_smoke__.ts && tsx src/verdict/__api_smoke__.ts && tsx src/integrations/__oracle_smoke__.ts && tsx src/benchmark/__benchmark_smoke__.ts && tsx src/verdict/__shadow_claim_smoke__.ts && tsx src/integrations/__telegram_smoke__.ts && tsx src/verdict/__disputes_smoke__.ts && tsx src/verdict/__auth_smoke__.ts && tsx src/integrations/__verifiers_smoke__.ts && tsx src/daemon/__daemon_smoke__.ts",
     "smoke:contracts": "forge test --root contracts",
     "dashboard": "vite --config dashboard/vite.config.ts",
-    "dashboard:build": "vite build --config dashboard/vite.config.ts"
+    "dashboard:build": "vite build --config dashboard/vite.config.ts",
+    "mcp": "tsx src/mcp/index.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
     "@fontsource-variable/geist-mono": "^5.2.7",
     "@gsap/react": "^2.1.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@openserv-labs/sdk": "^2.4.1",
     "@phosphor-icons/react": "^2.1.10",
     "@rainbow-me/rainbowkit": "^2.2.10",
