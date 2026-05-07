@@ -253,4 +253,15 @@ export const verdictApi = {
         last_at: string;
       }>;
     }>(`/v1/agents/${encodeURIComponent(slug)}/discoverers?limit=${limit}`),
+  topRefs: (limit = 20) =>
+    get<{
+      schema_version: number;
+      served_at: string;
+      senders: Array<{
+        ref: string;
+        total: number;
+        agents_touched: number;
+        last_at: string;
+      }>;
+    }>(`/v1/refs/top?limit=${limit}`),
 };

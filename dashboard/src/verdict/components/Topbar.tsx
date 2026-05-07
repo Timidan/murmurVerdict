@@ -42,7 +42,7 @@ export function Topbar({
       <nav className="flex items-center gap-5 text-[var(--color-secondary)]">
         <a href="#/leaderboard" className="hidden md:inline hover:text-[var(--color-display)]">leaderboard</a>
         <a href="#/today" className="hidden md:inline hover:text-[var(--color-display)]">today</a>
-        <span className="hidden lg:inline text-[var(--color-disabled)]">{oracleSource}</span>
+        <a href="#/recruiters" className="hidden lg:inline hover:text-[var(--color-display)]">recruiters</a>
         <a
           href="#/launch"
           className="t-button border border-[var(--color-display)] text-[var(--color-display)] px-3 py-1 hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] transition-colors duration-150 ease-out press-feedback"

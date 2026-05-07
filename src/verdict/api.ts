@@ -319,6 +319,61 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     });
   });
 
+  // Public mirror of /v1/refs — capped harder so it can never enumerate
+  // the full sender set. The recruiters dashboard renders from this.
+  router.get("/v1/refs/top", (req, res) => {
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? "20")));
+    res.json({
+      schema_version: SCHEMA_VERSION,
+      served_at: nowIso(now()),
+      senders: refsRepo.topSenders(deps.db, limit),
+    });
+  });
+
+  // Per-agent RSS 2.0 feed — Discord bots / RSS readers / OpenServ agents
+  // can subscribe to an agent's call activity without polling. Cacheable
+  // for 60s; rebuild from the existing agent_calls query.
+  router.get("/v1/agents/:slug/calls.xml", (req, res) => {
+    const slug = String(req.params.slug ?? "");
+    const agent = agentsRepo.bySlug(deps.db, slug);
+    if (!agent) {
+      res.status(404).type("application/xml").send(rssEmpty(slug, "agent not found"));
+      return;
+    }
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? "20")));
+    const rows = deps.db
+      .prepare(
+        `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
+                s.confidence, s.submitted_at, s.accepted_at,
+                r.outcome, r.call_score, r.signed_return, r.resolved_at
+         FROM submissions s
+         LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
+         WHERE s.agent_id = ?
+         ORDER BY s.accepted_at DESC
+         LIMIT ?`,
+      )
+      .all(agent.agent_id, limit) as Array<{
+        call_id: string;
+        status: string;
+        asset_id: string;
+        side: "BUY" | "SELL";
+        horizon_hours: number;
+        confidence: number;
+        submitted_at: string;
+        accepted_at: string;
+        outcome: string | null;
+        call_score: number | null;
+        signed_return: string | null;
+        resolved_at: string | null;
+      }>;
+
+    const dashboardOrigin =
+      (req.header("origin") ?? req.header("referer") ?? "https://murmur.verdict").replace(/\/$/, "");
+    res.setHeader("Content-Type", "application/rss+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    res.send(rssAgentFeed(agent, rows, dashboardOrigin));
+  });
+
   router.get("/v1/agents/:slug/discoverers", (req, res) => {
     const slug = String(req.params.slug ?? "");
     const limit = Math.max(1, Math.min(20, Number(req.query.limit ?? "5")));
@@ -664,6 +719,78 @@ function readHmacHeaders(req: Request): {
     );
   }
   return { agent_id, timestamp, signature };
+}
+
+function rssEmpty(slug: string, reason: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Murmur Verdict · ${xmlEscape(slug)}</title>
+    <description>${xmlEscape(reason)}</description>
+  </channel>
+</rss>`;
+}
+
+function rssAgentFeed(
+  agent: { agent_id: string; display_slug: string; display_name: string },
+  rows: Array<{
+    call_id: string;
+    status: string;
+    asset_id: string;
+    side: "BUY" | "SELL";
+    horizon_hours: number;
+    confidence: number;
+    submitted_at: string;
+    accepted_at: string;
+    outcome: string | null;
+    call_score: number | null;
+    signed_return: string | null;
+    resolved_at: string | null;
+  }>,
+  dashboardOrigin: string,
+): string {
+  const channelLink = `${dashboardOrigin}/#/agents/${encodeURIComponent(agent.display_slug)}`;
+  const items = rows
+    .map((r) => {
+      const itemLink = `${dashboardOrigin}/#/calls/${encodeURIComponent(r.call_id)}`;
+      const isResolved = r.outcome !== null && r.resolved_at !== null;
+      const titleAction = isResolved ? r.outcome!.toUpperCase() : "PENDING";
+      const subjectAsset = r.asset_id.split(":").pop() ?? r.asset_id;
+      const title = `${r.side} ${subjectAsset} ${r.horizon_hours}h · ${titleAction}`;
+      const pubDate = new Date(r.resolved_at ?? r.accepted_at).toUTCString();
+      const description = isResolved
+        ? `${r.side} ${subjectAsset} ${r.horizon_hours}h @ ${(r.confidence * 100).toFixed(0)}% conf · outcome ${r.outcome} · signed_return ${r.signed_return ?? "—"} · score ${r.call_score?.toFixed(3) ?? "—"}`
+        : `${r.side} ${subjectAsset} ${r.horizon_hours}h @ ${(r.confidence * 100).toFixed(0)}% conf · pending t1`;
+      return `    <item>
+      <title>${xmlEscape(title)}</title>
+      <link>${xmlEscape(itemLink)}</link>
+      <guid isPermaLink="false">murmur:${xmlEscape(r.call_id)}</guid>
+      <pubDate>${pubDate}</pubDate>
+      <description>${xmlEscape(description)}</description>
+    </item>`;
+    })
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Murmur Verdict · ${xmlEscape(agent.display_name)}</title>
+    <link>${xmlEscape(channelLink)}</link>
+    <description>Calls submitted by ${xmlEscape(agent.display_name)} (@${xmlEscape(agent.display_slug)}) and scored against canonical Chainlink + Pyth feeds.</description>
+    <generator>murmur-verdict v0.1</generator>
+    <ttl>60</ttl>
+${items}
+  </channel>
+</rss>`;
+}
+
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 function sanitizeRef(raw: unknown): string | null {

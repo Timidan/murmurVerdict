@@ -85,8 +85,19 @@ export function EmbedBlock({ slug, agentName }: EmbedBlockProps) {
         />
       </div>
 
-      <div className="mt-6 t-meta text-[var(--color-disabled)]">
-        Social-card preview: <a href={ogUrl} className="text-[var(--color-secondary)] hover:text-[var(--color-display)]">{ogUrl}</a>
+      <div className="mt-6 flex flex-col gap-1 t-meta text-[var(--color-disabled)]">
+        <span>
+          Social card · {" "}
+          <a href={ogUrl} className="text-[var(--color-secondary)] hover:text-[var(--color-display)]" target="_blank" rel="noreferrer">
+            {ogUrl}
+          </a>
+        </span>
+        <span>
+          RSS · {" "}
+          <a href={`${base}/v1/agents/${slug}/calls.xml`} className="text-[var(--color-secondary)] hover:text-[var(--color-display)]" target="_blank" rel="noreferrer">
+            {base}/v1/agents/{slug}/calls.xml
+          </a>
+        </span>
       </div>
     </section>
   );
