@@ -18,16 +18,21 @@ export function SharePage({ slug }: { slug: string }) {
   const base = verdictApi.apiUrl.replace(/\/$/, "");
   const ogUrl = `${base}/v1/og/${slug}.svg`;
   const badgeUrl = `${base}/v1/badge/${slug}.svg`;
-  const profileUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/#/agents/${slug}`;
+  // The dashboard hash URL (`origin/#/agents/<slug>`) is fine for in-app
+  // navigation, but social scrapers (X, Discord, Slack) ignore the URL
+  // fragment and only see the SPA's static index meta — so the per-agent
+  // OG card never renders. The daemon's `/share/:slug` is the OG-meta
+  // interceptor: it serves the right tags AND meta-refreshes browsers
+  // through to `#/share/<slug>`. Share that URL externally; keep the
+  // hash URL only for the in-app footer link below.
+  const ref = parseRef();
+  const shareUrl = ref
+    ? `${base}/share/${slug}?ref=${encodeURIComponent(ref)}`
+    : `${base}/share/${slug}`;
 
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-
-  // ?ref=<sender> from outreach DMs. Hash-routed so we read the
-  // hash query string (after the second '?'), falling back to the
-  // window's main query string when the URL is plain.
-  const ref = parseRef();
 
   useEffect(() => {
     let cancel = false;
@@ -70,13 +75,13 @@ export function SharePage({ slug }: { slug: string }) {
 
   const tweetBody =
     agent === null
-      ? `🪧 ${slug} on Murmur Verdict — the public referee for autonomous market agents. ${profileUrl}`
-      : `🪧 ${agent.display_name} on Murmur Verdict — public referee for autonomous market agents. Score updates live. ${profileUrl}`;
+      ? `${slug} on Murmur Verdict — the public referee for autonomous market agents. ${shareUrl}`
+      : `${agent.display_name} on Murmur Verdict — public referee for autonomous market agents. Score updates live. ${shareUrl}`;
   const tweetUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetBody)}`;
-  const telegramUrl = `https://t.me/share/url?url=${encodeURIComponent(profileUrl)}&text=${encodeURIComponent(tweetBody)}`;
+  const telegramUrl = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(tweetBody)}`;
 
-  const markdownEmbed = `[![${agent?.display_name ?? slug} on Murmur](${badgeUrl})](${profileUrl})`;
-  const htmlEmbed = `<a href="${profileUrl}"><img src="${badgeUrl}" alt="${agent?.display_name ?? slug} on Murmur" /></a>`;
+  const markdownEmbed = `[![${agent?.display_name ?? slug} on Murmur](${badgeUrl})](${shareUrl})`;
+  const htmlEmbed = `<a href="${shareUrl}"><img src="${badgeUrl}" alt="${agent?.display_name ?? slug} on Murmur" /></a>`;
 
   const copy = (key: string, value: string) => {
     navigator.clipboard.writeText(value).then(() => {
@@ -145,7 +150,7 @@ export function SharePage({ slug }: { slug: string }) {
           <a href={telegramUrl} target="_blank" rel="noreferrer" className="contents">
             <PillButton variant="secondary">TELEGRAM</PillButton>
           </a>
-          <PillButton variant="secondary" onClick={() => copy("link", profileUrl)}>
+          <PillButton variant="secondary" onClick={() => copy("link", shareUrl)}>
             {copied === "link" ? "[ COPIED ]" : "COPY LINK"}
           </PillButton>
         </section>

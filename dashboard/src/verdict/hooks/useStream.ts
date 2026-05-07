@@ -73,89 +73,130 @@ export interface StreamSnapshot {
 
 const RECENT_CAP = 60;
 
+// ─── Module-level singleton ──────────────────────────────────────────────────
+//
+// Earlier versions opened one EventSource per `useStream()` call. The landing
+// page renders ~6 widgets that each subscribe, so a single tab held ~6 SSE
+// connections — close to the per-origin browser limit and 6× the server-side
+// subscriber load. Now every `useStream()` consumer subscribes to the same
+// shared snapshot; the EventSource is opened on the first subscriber and
+// closed when the last one unmounts.
+
+let snapshot: StreamSnapshot = {
+  status: "connecting",
+  leaderboard: null,
+  stats: null,
+  recentCalls: [],
+};
+
+const subscribers = new Set<(s: StreamSnapshot) => void>();
+let es: EventSource | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let attempt = 0;
+
+function broadcast(): void {
+  for (const fn of subscribers) fn(snapshot);
+}
+
+function applyEvent(event: VerdictEvent): void {
+  if (event.type === "leaderboard.update") {
+    snapshot = { ...snapshot, leaderboard: event };
+  } else if (event.type === "stats.tick") {
+    snapshot = { ...snapshot, stats: event };
+  } else {
+    // call.accepted | call.resolved
+    const next = [event, ...snapshot.recentCalls].slice(0, RECENT_CAP);
+    snapshot = { ...snapshot, recentCalls: next };
+  }
+  broadcast();
+}
+
+function setStatus(status: StreamStatus): void {
+  if (snapshot.status === status) return;
+  snapshot = { ...snapshot, status };
+  broadcast();
+}
+
+function connect(): void {
+  if (es) return;
+  setStatus(attempt === 0 ? "connecting" : "reconnecting");
+  es = new EventSource(`${verdictApi.apiUrl}/v1/stream`);
+
+  es.onopen = () => {
+    attempt = 0;
+    setStatus("open");
+  };
+
+  const handle = (e: MessageEvent) => {
+    try {
+      applyEvent(JSON.parse(e.data) as VerdictEvent);
+    } catch {
+      // Malformed frame — ignore.
+    }
+  };
+
+  es.addEventListener("leaderboard.update", handle);
+  es.addEventListener("stats.tick", handle);
+  es.addEventListener("call.accepted", handle);
+  es.addEventListener("call.resolved", handle);
+
+  es.onerror = () => {
+    es?.close();
+    es = null;
+    if (subscribers.size === 0) {
+      // Nobody listening — don't reconnect.
+      setStatus("closed");
+      return;
+    }
+    setStatus("reconnecting");
+    const delay = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
+    attempt += 1;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (subscribers.size > 0) connect();
+    }, delay);
+  };
+}
+
+function disconnect(): void {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  es?.close();
+  es = null;
+  attempt = 0;
+  if (snapshot.status !== "closed") {
+    snapshot = { ...snapshot, status: "closed" };
+    // No broadcast() — the last subscriber just unmounted; nobody to notify.
+  }
+}
+
 /**
  * Subscribe to the daemon's SSE stream. Reconnects with exponential backoff.
- * One EventSource per tab; consumers share the snapshot via React state.
  *
- * Honours `prefers-reduced-motion` only in CSS — the data itself updates the
- * same regardless of motion preference.
+ * One EventSource per *tab*, regardless of how many components call this
+ * hook. The EventSource opens on the first subscriber and closes when the
+ * last one unmounts. Honours `prefers-reduced-motion` only in CSS — the
+ * data itself updates the same regardless of motion preference.
  */
 export function useStream(): StreamSnapshot {
-  const [snapshot, setSnapshot] = useState<StreamSnapshot>({
-    status: "connecting",
-    leaderboard: null,
-    stats: null,
-    recentCalls: [],
-  });
+  const [local, setLocal] = useState<StreamSnapshot>(snapshot);
 
   useEffect(() => {
-    let attempt = 0;
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-
-    const apply = (event: VerdictEvent) => {
-      setSnapshot((prev) => {
-        if (event.type === "leaderboard.update") {
-          return { ...prev, leaderboard: event };
-        }
-        if (event.type === "stats.tick") {
-          return { ...prev, stats: event };
-        }
-        // call.accepted | call.resolved
-        const next = [event, ...prev.recentCalls];
-        return { ...prev, recentCalls: next.slice(0, RECENT_CAP) };
-      });
-    };
-
-    const connect = () => {
-      if (cancelled) return;
-      setSnapshot((prev) => ({
-        ...prev,
-        status: attempt === 0 ? "connecting" : "reconnecting",
-      }));
-
-      es = new EventSource(`${verdictApi.apiUrl}/v1/stream`);
-
-      es.onopen = () => {
-        attempt = 0;
-        setSnapshot((prev) => ({ ...prev, status: "open" }));
-      };
-
-      const handle = (e: MessageEvent) => {
-        try {
-          const payload = JSON.parse(e.data) as VerdictEvent;
-          apply(payload);
-        } catch {
-          // Malformed frame; ignore.
-        }
-      };
-
-      es.addEventListener("leaderboard.update", handle);
-      es.addEventListener("stats.tick", handle);
-      es.addEventListener("call.accepted", handle);
-      es.addEventListener("call.resolved", handle);
-
-      es.onerror = () => {
-        if (cancelled) return;
-        es?.close();
-        es = null;
-        setSnapshot((prev) => ({ ...prev, status: "reconnecting" }));
-        // Exponential backoff capped at 30s.
-        const delay = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
-        attempt += 1;
-        reconnectTimer = setTimeout(connect, delay);
-      };
-    };
-
-    connect();
-
+    const sub = (s: StreamSnapshot) => setLocal(s);
+    subscribers.add(sub);
+    if (subscribers.size === 1) {
+      connect();
+    } else {
+      // Hand the new subscriber the latest snapshot immediately.
+      setLocal(snapshot);
+    }
     return () => {
-      cancelled = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      es?.close();
+      subscribers.delete(sub);
+      if (subscribers.size === 0) disconnect();
     };
   }, []);
 
-  return snapshot;
+  return local;
 }

@@ -237,8 +237,10 @@ export const verdictApi = {
   call: (call_id: string) => get<FullCall>(`/v1/calls/${encodeURIComponent(call_id)}`),
   claimInit: (slug: string, body: { target_identity: { kind: string; value: string }; wallet_to_bind: string }) =>
     post<ClaimInitResponse>(`/v1/agents/${encodeURIComponent(slug)}/claim/init`, body),
-  claimFinalize: (slug: string, body: { challenge_id: string; signature: string; post_url: string }) =>
-    post<ClaimFinalizeResponse>(`/v1/agents/${encodeURIComponent(slug)}/claim/finalize`, body),
+  claimFinalize: (
+    slug: string,
+    body: { challenge_id: string; signature: string; post_url: string; ref?: string },
+  ) => post<ClaimFinalizeResponse>(`/v1/agents/${encodeURIComponent(slug)}/claim/finalize`, body),
   todayFeed: () => get<TodayFeed>(`/v1/feed/today`),
   verifyCall: (call_id: string) => get<VerifyResult>(`/v1/calls/${encodeURIComponent(call_id)}/verify`),
   discoverers: (slug: string, limit = 5) =>

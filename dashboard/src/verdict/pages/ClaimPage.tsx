@@ -37,42 +37,39 @@ export function ClaimPage({ slug }: { slug: string }) {
   const finalize = async () => {
     if (!challenge) return;
     setError(null);
+    // Outreach attribution: if a sender's ?ref click brought this visitor
+    // to /share earlier in the flow, SharePage stickied the (ref, slug)
+    // pair to localStorage. Read it BEFORE the network call so the daemon
+    // can credit the conversion server-side as part of finalize. The
+    // public POST /v1/refs/:ref/conversion was removed — credit is now
+    // tied to the single-use challenge_id and can't be inflated.
+    let ref: string | undefined;
+    try {
+      const raw = window.localStorage.getItem(
+        "murmur-verdict.ref-attribution.v1",
+      );
+      if (raw) {
+        const parsed = JSON.parse(raw) as { ref?: string; agent_slug?: string };
+        if (parsed.ref && parsed.agent_slug === slug) {
+          ref = parsed.ref;
+        }
+      }
+    } catch {
+      // storage disabled / parse error — proceed without ref
+    }
     try {
       const r = await verdictApi.claimFinalize(slug, {
         challenge_id: challenge.challenge_id,
         signature,
         post_url: postUrl,
+        ...(ref ? { ref } : {}),
       });
       setFinalized(r);
       setStage("done");
-      // Outreach attribution: if a sender's ?ref click brought this
-      // visitor to /share earlier in the flow, the (ref, slug) pair was
-      // stickied to localStorage. Fire the conversion ping so the daemon
-      // credits the sender. Best-effort: never block the success path.
       try {
-        const raw = window.localStorage.getItem(
-          "murmur-verdict.ref-attribution.v1",
-        );
-        if (raw) {
-          const parsed = JSON.parse(raw) as { ref?: string; agent_slug?: string };
-          if (parsed.ref && parsed.agent_slug === slug) {
-            const apiBase = verdictApi.apiUrl.replace(/\/$/, "");
-            fetch(
-              `${apiBase}/v1/refs/${encodeURIComponent(parsed.ref)}/conversion`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ agent_slug: slug }),
-                keepalive: true,
-              },
-            ).catch(() => {});
-            window.localStorage.removeItem(
-              "murmur-verdict.ref-attribution.v1",
-            );
-          }
-        }
+        window.localStorage.removeItem("murmur-verdict.ref-attribution.v1");
       } catch {
-        // storage disabled / parse error — continue
+        // storage disabled — silent
       }
     } catch (e) {
       setError((e as Error).message);

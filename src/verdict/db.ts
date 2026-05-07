@@ -1059,21 +1059,29 @@ export const refsRepo = {
     }>;
   },
 
+  /**
+   * Record a successful claim conversion against a (ref, agent_slug) bucket.
+   * Required invariants:
+   *   - the (ref, agent_slug) pair must already have at least one click
+   *     recorded (otherwise we'd let any caller seed an arbitrary credit);
+   *   - per-bucket counter is capped at 1 — claim/finalize is single-use
+   *     per challenge_id, but we additionally clamp here to prevent
+   *     double-credit if anyone ever wires this into a non-idempotent path.
+   * Returns `true` only when the row transitioned from `converted_count=0`
+   * to `converted_count=1`. Existing credits are left untouched.
+   */
   bumpConversion(
     db: Database.Database,
     ref: string,
     agent_slug: string,
     nowIso: string,
   ): boolean {
-    // Only count a conversion against a (ref, agent_slug) pair if a click
-    // was actually recorded earlier — otherwise anyone could call this with
-    // an arbitrary ref and inflate the counter.
     const info = prep(
       db,
       `UPDATE ref_clicks
-       SET converted_count = converted_count + 1,
+       SET converted_count = 1,
            last_conversion_at = ?
-       WHERE ref = ? AND agent_slug = ?`,
+       WHERE ref = ? AND agent_slug = ? AND converted_count = 0`,
     ).run(nowIso, ref, agent_slug);
     return info.changes > 0;
   },

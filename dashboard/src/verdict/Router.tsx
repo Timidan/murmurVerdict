@@ -31,14 +31,19 @@ interface ParsedRoute {
 }
 
 function parseHash(hash: string): ParsedRoute {
-  const path = (hash || "#/").replace(/^#/, "");
+  const raw = (hash || "#/").replace(/^#/, "");
+  // Hash routes can carry their own query string (e.g.
+  // `#/share/cred?ref=timidan` or `#/admin/refs?token=...`). Strip it before
+  // pattern-matching so the slug capture doesn't pick up `?ref=…` etc.
+  const qIdx = raw.indexOf("?");
+  const path = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
   if (path === "/" || path === "") return { name: "landing" };
   if (path === "/today") return { name: "today" };
   if (path === "/leaderboard") return { name: "leaderboard" };
   if (path === "/landing") return { name: "landing" };
   if (path === "/launch") return { name: "launch" };
   if (path === "/recruiters") return { name: "recruiters" };
-  if (path === "/admin/refs" || path.startsWith("/admin/refs?")) return { name: "admin_refs" };
+  if (path === "/admin/refs") return { name: "admin_refs" };
   if (path === "/spec") return { name: "spec" };
   const shareMatch = /^\/share\/([^/]+)$/.exec(path);
   if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };

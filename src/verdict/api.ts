@@ -2,7 +2,9 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import express from "express";
 import type Database from "better-sqlite3";
 import { agentsRepo, refsRepo, resolutionsRepo, submissionsRepo, webhooksRepo } from "./db.js";
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
+import { lookup as dnsLookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { getLeaderboard, get24hVerifiedVolume } from "./leaderboard.js";
 import type { VerdictEventBus } from "./events.js";
 import {
@@ -418,14 +420,19 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   router.post(
     "/v1/webhooks",
     express.json({ limit: "2kb" }),
-    (req, res) => {
+    asyncHandler(async (req, res) => {
       const body = (req.body ?? {}) as { url?: unknown; agent_slug?: unknown };
-      if (typeof body.url !== "string" || !/^https?:\/\//.test(body.url)) {
-        res.status(400).json({ code: "invalid_url", message: "url must be a valid http(s) URL" });
+      if (typeof body.url !== "string") {
+        res.status(400).json({ code: "invalid_url", message: "url must be a string" });
         return;
       }
       if (body.url.length > 2048) {
         res.status(400).json({ code: "invalid_url", message: "url too long" });
+        return;
+      }
+      const validation = await validateWebhookUrl(body.url);
+      if (!validation.ok) {
+        res.status(400).json({ code: "invalid_url", message: validation.reason });
         return;
       }
       let agent_slug: string | null = null;
@@ -439,11 +446,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       const id = randomUUID();
       const secret = randomBytes(24).toString("base64url");
       const created_at = nowIso(now());
-      webhooksRepo.insert(deps.db, { id, agent_slug, url: body.url, secret, created_at });
+      webhooksRepo.insert(deps.db, { id, agent_slug, url: validation.url, secret, created_at });
       res.status(201).json({
         id,
         agent_slug,
-        url: body.url,
+        url: validation.url,
         secret, // returned only once on creation
         created_at,
         verify_signature: {
@@ -453,7 +460,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           body_to_sign: "raw request body",
         },
       });
-    },
+    }),
   );
 
   router.get("/v1/webhooks/:id", (req, res) => {
@@ -480,7 +487,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     // owner of the secret (which only they have, from the create response)
     // is the one who can delete.
     const provided = req.header("X-Murmur-Webhook-Secret");
-    if (provided !== row.secret) {
+    if (!safeStrEq(provided, row.secret)) {
       res.status(403).json({ code: "forbidden", message: "secret mismatch" });
       return;
     }
@@ -494,31 +501,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   // and exposed via /v1/agents/:slug/discoverers (rendered as
   // 'discovered by @sender' on the agent profile) and /v1/refs (admin
   // overview of top recruiters).
-  router.post(
-    "/v1/refs/:ref/conversion",
-    express.json({ limit: "1kb" }),
-    (req, res) => {
-      const ref = sanitizeRef(req.params.ref);
-      if (!ref) {
-        res.status(400).json({ code: "invalid_ref" });
-        return;
-      }
-      const body = (req.body ?? {}) as { agent_slug?: unknown };
-      if (typeof body.agent_slug !== "string" || body.agent_slug.length === 0) {
-        res.status(400).json({ code: "invalid_agent_slug" });
-        return;
-      }
-      const slug = body.agent_slug.slice(0, 64);
-      const counted = refsRepo.bumpConversion(deps.db, ref, slug, nowIso(now()));
-      if (!counted) {
-        // No matching (ref, agent_slug) bucket — no prior click recorded.
-        // Return 202 (accepted but not counted) so callers know.
-        res.status(202).json({ counted: false, reason: "no_prior_click" });
-        return;
-      }
-      res.status(204).end();
-    },
-  );
+  //
+  // Conversions (claim → verified) are NOT exposed as a public POST. They
+  // are credited server-side from the claim/finalize path below — that's
+  // the only place we have proof a real claim succeeded, and it's
+  // single-use per challenge_id so the credit is naturally idempotent.
 
   router.post(
     "/v1/refs/:ref/click",
@@ -540,7 +527,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   );
 
   router.get("/v1/refs", (req, res) => {
-    if (adminToken && req.header("X-Admin-Token") !== adminToken) {
+    if (adminToken && !safeStrEq(req.header("X-Admin-Token"), adminToken)) {
       res.status(403).json({ code: "forbidden", message: "admin token required" });
       return;
     }
@@ -560,7 +547,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       res.status(503).json({ code: "admin_disabled", message: "VERDICT_ADMIN_TOKEN not set" });
       return;
     }
-    if (req.header("X-Admin-Token") !== adminToken) {
+    if (!safeStrEq(req.header("X-Admin-Token"), adminToken)) {
       res.status(403).json({ code: "forbidden", message: "admin token required" });
       return;
     }
@@ -686,12 +673,24 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     const ref = sanitizeRef(req.query.ref);
     const agent = agentsRepo.bySlug(deps.db, slug);
 
-    const dashboardOrigin = String(
-      req.query.dashboard ??
-        process.env.MURMUR_PUBLIC_URL ??
-        req.header("origin") ??
-        "",
-    ).replace(/\/$/, "");
+    // Trust ONLY the operator-configured dashboard origin. Earlier versions
+    // also honored `?dashboard=<url>` and the request `Origin` header, which
+    // turned this endpoint into an open-redirect/phishing primitive (an
+    // attacker could craft `/share/<slug>?dashboard=https://evil` and the
+    // page would meta-refresh to that origin under the daemon's URL). The
+    // dashboard URL is now config-only; with no config we render the OG
+    // page with no redirect target.
+    const dashboardOrigin = (() => {
+      const raw = (process.env.MURMUR_DASHBOARD_URL ?? process.env.MURMUR_PUBLIC_URL ?? "").trim();
+      if (!raw) return "";
+      try {
+        const u = new URL(raw);
+        if (u.protocol !== "https:" && u.protocol !== "http:") return "";
+        return `${u.protocol}//${u.host}`;
+      } catch {
+        return "";
+      }
+    })();
 
     const apiOrigin = `${req.protocol}://${req.get("host")}`;
     const ogPng = `${apiOrigin}/v1/og/${encodeURIComponent(slug)}.png`;
@@ -927,6 +926,24 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         post_url,
         now,
       });
+      // Outreach attribution: if the visitor arrived via /share/<slug>?ref=<sender>,
+      // the dashboard echoes that ref back here. We credit a conversion only
+      // when the (ref, slug) bucket already has at least one click — i.e. the
+      // sender actually drove this visitor. Idempotent (capped at 1) and tied
+      // to a single-use challenge_id, so the credit can't be replayed.
+      const ref = sanitizeRef(body.ref);
+      if (ref) {
+        try {
+          refsRepo.bumpConversion(
+            deps.db,
+            ref,
+            result.display_slug,
+            nowIso(now()),
+          );
+        } catch {
+          // Attribution is best-effort; never block a successful claim.
+        }
+      }
       res.status(200).json(result);
     }),
   );
@@ -979,7 +996,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       }
       const auth = req.header("authorization") ?? "";
       const provided = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-      if (provided !== adminToken) {
+      if (!safeStrEq(provided, adminToken)) {
         throw new VerdictError(
           "admin authorization required",
           ERROR_CODES.agent_not_authorized,
@@ -1258,6 +1275,114 @@ function xmlEscape(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+}
+
+/**
+ * Reject webhook URLs that could be turned into an SSRF/port-scan primitive
+ * once the daemon runs on a public host: non-public schemes, userinfo, and
+ * hostnames that resolve to loopback / link-local / private / reserved IPs.
+ *
+ * Hostname is resolved via dns.lookup at registration time; the returned
+ * canonical URL is what we persist, so subsequent deliveries fetch the same
+ * string we validated. (TOCTOU re-resolution on delivery is left for a
+ * follow-up — the dispatcher already has a 5s timeout cap.)
+ */
+async function validateWebhookUrl(
+  raw: string,
+): Promise<{ ok: true; url: string } | { ok: false; reason: string }> {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: "url must be a valid absolute URL" };
+  }
+  const allowHttp = process.env.WEBHOOK_ALLOW_HTTP === "1";
+  if (parsed.protocol !== "https:" && !(allowHttp && parsed.protocol === "http:")) {
+    return { ok: false, reason: "url must use https://" };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: "url must not contain userinfo" };
+  }
+  const host = parsed.hostname;
+  if (!host) return { ok: false, reason: "url must have a hostname" };
+  // Block obvious internal names regardless of what they resolve to.
+  const lower = host.toLowerCase();
+  if (lower === "localhost" || lower.endsWith(".localhost") || lower.endsWith(".internal")) {
+    return { ok: false, reason: "internal hostname not allowed" };
+  }
+  // If the host is an IP literal, validate directly. Otherwise resolve.
+  const literal = isIP(host);
+  let addresses: Array<{ address: string; family: number }> = [];
+  if (literal) {
+    addresses = [{ address: host, family: literal }];
+  } else {
+    try {
+      addresses = await dnsLookup(host, { all: true });
+    } catch {
+      return { ok: false, reason: "hostname did not resolve" };
+    }
+    if (addresses.length === 0) {
+      return { ok: false, reason: "hostname did not resolve" };
+    }
+  }
+  for (const a of addresses) {
+    if (isPrivateOrReservedIp(a.address)) {
+      return { ok: false, reason: "hostname resolves to a private/reserved address" };
+    }
+  }
+  return { ok: true, url: parsed.toString() };
+}
+
+/**
+ * True if the address is loopback, link-local, RFC1918, CGNAT, broadcast,
+ * multicast, unspecified, IPv6 unique-local, or the cloud-metadata IP.
+ */
+function isPrivateOrReservedIp(address: string): boolean {
+  // Cloud metadata: AWS / GCP / Azure / DigitalOcean all use this.
+  if (address === "169.254.169.254") return true;
+
+  if (isIP(address) === 4) {
+    const parts = address.split(".").map((n) => Number(n));
+    if (parts.length !== 4 || parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) {
+      return true; // malformed → treat as private/reserved
+    }
+    const [a, b] = parts as [number, number, number, number];
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 127) return true; // loopback
+    if (a === 0) return true; // 0.0.0.0/8 unspecified
+    if (a === 169 && b === 254) return true; // link-local
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
+    if (a >= 224) return true; // multicast (224.0.0.0/4) + reserved (240.0.0.0/4)
+    return false;
+  }
+
+  if (isIP(address) === 6) {
+    const lower = address.toLowerCase();
+    if (lower === "::" || lower === "::1") return true; // unspecified, loopback
+    if (lower.startsWith("fe80:")) return true; // link-local
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique-local
+    if (lower.startsWith("ff")) return true; // multicast
+    // IPv4-mapped IPv6: ::ffff:a.b.c.d — re-check the embedded v4 address.
+    const mapped = /^::ffff:([0-9.]+)$/.exec(lower);
+    if (mapped && isIP(mapped[1]) === 4) return isPrivateOrReservedIp(mapped[1]);
+    return false;
+  }
+
+  return true; // unknown family — fail closed
+}
+
+/**
+ * Constant-time equality for short opaque secrets/tokens. Returns false on
+ * length mismatch without comparing — but the compare itself is timing-safe.
+ */
+function safeStrEq(a: string | undefined | null, b: string | undefined | null): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }
 
 function sanitizeRef(raw: unknown): string | null {
