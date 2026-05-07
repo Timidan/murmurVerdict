@@ -24,7 +24,7 @@ import { DisputeGroundsSchema, OracleFeedSchema } from "./schema.js";
 import { verifyAgentApiKey } from "./auth.js";
 import { getTodayFeed } from "./feed.js";
 import { verifyReceiptChain, VerifyError } from "./verify.js";
-import { renderBadgeSvg, renderOgSvg } from "./badge.js";
+import { renderBadgeSvg, renderOgSvg, rasterize } from "./badge.js";
 
 // ─── API surface ─────────────────────────────────────────────────────────────
 //
@@ -413,6 +413,37 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     res.setHeader("Cache-Control", "public, max-age=120, stale-while-revalidate=600");
     res.setHeader("ETag", etag);
     res.send(svg);
+  });
+
+  // PNG variants — needed for X / Discord / Slack OG previews (those
+  // clients don't render SVG inline). Same source layout, rasterised
+  // server-side via resvg.
+  router.get("/v1/badge/:slug.png", (req, res) => {
+    const slug = String(req.params.slug ?? "");
+    const { svg } = renderBadgeSvg(deps.db, slug);
+    const { png, etag } = rasterize(svg, 640);
+    if (req.header("If-None-Match") === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=300");
+    res.setHeader("ETag", etag);
+    res.send(png);
+  });
+
+  router.get("/v1/og/:slug.png", (req, res) => {
+    const slug = String(req.params.slug ?? "");
+    const { svg } = renderOgSvg(deps.db, slug);
+    const { png, etag } = rasterize(svg, 1200);
+    if (req.header("If-None-Match") === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=120, stale-while-revalidate=600");
+    res.setHeader("ETag", etag);
+    res.send(png);
   });
 
   // ── /v1/stream — Server-Sent Events fan-out for the live dashboard ──

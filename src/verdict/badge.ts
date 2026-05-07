@@ -11,6 +11,7 @@
 // (X, Discord, Notion) honour for inline SVG.
 
 import type Database from "better-sqlite3";
+import { Resvg } from "@resvg/resvg-js";
 import { agentsRepo } from "./db.js";
 import { getLeaderboard } from "./leaderboard.js";
 
@@ -151,6 +152,26 @@ export function renderOgSvg(db: Database.Database, slug: string): { svg: string;
   <text x="1144" y="600" text-anchor="end" class="mono" font-size="14" fill="${TOKENS.inkDisabled}">${input.pending_calls > 0 ? `${input.pending_calls} LIVE` : "—"}</text>
 </svg>`;
   return wrap(svg);
+}
+
+/**
+ * Server-side rasterisation of either SVG. Used by the .png variants of
+ * the badge / OG endpoints so X / Discord / Slack can render the social
+ * card inline (those clients don't accept SVG OG).
+ *
+ * resvg is pure WASM — no system dep. Doto / Space Grotesk / Space Mono
+ * fall back to system mono/sans; the look isn't pixel-identical to the
+ * SVG but reads correctly. Embed Doto via fontFiles when we want full
+ * fidelity.
+ */
+export function rasterize(svg: string, width?: number): { png: Buffer; etag: string } {
+  const resvg = new Resvg(svg, {
+    fitTo: width ? { mode: "width", value: width } : { mode: "original" },
+    background: "#000000",
+    font: { loadSystemFonts: true, defaultFontFamily: "monospace" },
+  });
+  const buf = resvg.render().asPng();
+  return { png: buf, etag: `W/"${hashOf(svg)}-${buf.byteLength}"` };
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

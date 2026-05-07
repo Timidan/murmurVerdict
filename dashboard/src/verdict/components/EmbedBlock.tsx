@@ -18,7 +18,9 @@ export function EmbedBlock({ slug, agentName }: EmbedBlockProps) {
   const [copied, setCopied] = useState<string | null>(null);
   const base = verdictApi.apiUrl.replace(/\/$/, "");
   const badgeUrl = `${base}/v1/badge/${slug}.svg`;
+  const badgePngUrl = `${base}/v1/badge/${slug}.png`;
   const ogUrl = `${base}/v1/og/${slug}.svg`;
+  const ogPngUrl = `${base}/v1/og/${slug}.png`;
   const profileUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/#/agents/${slug}`;
 
   const snippets = {
@@ -88,8 +90,20 @@ export function EmbedBlock({ slug, agentName }: EmbedBlockProps) {
       <div className="mt-6 flex flex-col gap-1 t-meta text-[var(--color-disabled)]">
         <span>
           Social card · {" "}
+          <a href={ogPngUrl} className="text-[var(--color-secondary)] hover:text-[var(--color-display)]" target="_blank" rel="noreferrer">
+            png
+          </a>{" · "}
           <a href={ogUrl} className="text-[var(--color-secondary)] hover:text-[var(--color-display)]" target="_blank" rel="noreferrer">
-            {ogUrl}
+            svg
+          </a>
+        </span>
+        <span>
+          Badge · {" "}
+          <a href={badgePngUrl} className="text-[var(--color-secondary)] hover:text-[var(--color-display)]" target="_blank" rel="noreferrer">
+            png
+          </a>{" · "}
+          <a href={badgeUrl} className="text-[var(--color-secondary)] hover:text-[var(--color-display)]" target="_blank" rel="noreferrer">
+            svg
           </a>
         </span>
         <span>

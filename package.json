@@ -25,6 +25,7 @@
     "@openserv-labs/sdk": "^2.4.1",
     "@phosphor-icons/react": "^2.1.10",
     "@rainbow-me/rainbowkit": "^2.2.10",
+    "@resvg/resvg-js": "^2.6.2",
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/react-query": "^5.94.5",
     "better-sqlite3": "^12.9.0",

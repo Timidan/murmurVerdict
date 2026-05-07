@@ -158,7 +158,7 @@ interface RenderedDm {
 
 function renderDm(candidate: Candidate, snapshot: AgentSnapshot): RenderedDm {
   const shareUrl = `${PUBLIC_DASHBOARD_URL}/#/share/${snapshot.display_slug}?ref=${encodeURIComponent(SENDER_REF)}`;
-  const ogUrl = `${PUBLIC_API_URL}/v1/og/${snapshot.display_slug}.svg`;
+  const ogUrl = `${PUBLIC_API_URL}/v1/og/${snapshot.display_slug}.png`;
   const badgeUrl = `${PUBLIC_API_URL}/v1/badge/${snapshot.display_slug}.svg`;
   const agentUrl = `${PUBLIC_DASHBOARD_URL}/#/agents/${snapshot.display_slug}`;
   const claimUrl = `${PUBLIC_DASHBOARD_URL}/#/agents/${snapshot.display_slug}/claim`;
@@ -177,6 +177,7 @@ function renderDm(candidate: Candidate, snapshot: AgentSnapshot): RenderedDm {
     `${claimUrl}`,
     ``,
     `share card: ${shareUrl}`,
+    `social png:  ${ogUrl}`,
   ].join("\n");
 
   return {
