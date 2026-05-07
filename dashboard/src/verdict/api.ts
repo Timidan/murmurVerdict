@@ -46,11 +46,14 @@ export interface AgentProfile {
 export interface AgentCallRow {
   call_id: string;
   status: string;
-  asset_id: string;
-  side: "BUY" | "SELL";
-  horizon_hours: number;
-  confidence: number;
-  submitted_at: string;
+  privacy_mode?: string;
+  commit_hash?: string | null;
+  acceptance_receipt_hash?: string | null;
+  asset_id?: string;
+  side?: "BUY" | "SELL";
+  horizon_hours?: number;
+  confidence?: number;
+  submitted_at?: string;
   accepted_at: string;
   outcome: string | null;
   call_score: number | null;
@@ -63,15 +66,17 @@ export interface FullCall {
     call_id: string;
     agent_id: string;
     client_order_id: string;
-    asset_id: string;
-    side: "BUY" | "SELL";
-    horizon_hours: number;
-    confidence: number;
-    submitted_at: string;
+    privacy_mode?: string;
+    commit_hash?: string | null;
+    asset_id?: string;
+    side?: "BUY" | "SELL";
+    horizon_hours?: number;
+    confidence?: number;
+    submitted_at?: string;
     accepted_at: string;
     status: string;
-    rationale: string | null;
-    strategy_tag: string | null;
+    rationale?: string | null;
+    strategy_tag?: string | null;
   };
   preflight: {
     murmur_score: number;
@@ -136,11 +141,14 @@ export interface TodayFeedRow {
   agent_id: string;
   agent_slug: string;
   agent_kind: string;
-  side: "BUY" | "SELL";
-  asset_id: string;
-  horizon_hours: number;
-  confidence: number;
-  submitted_at: string;
+  privacy_mode: string;
+  commit_hash?: string | null;
+  acceptance_receipt_hash?: string | null;
+  side?: "BUY" | "SELL";
+  asset_id?: string;
+  horizon_hours?: number;
+  confidence?: number;
+  submitted_at?: string;
   accepted_at: string;
   status: string;
   outcome?: string | null;
@@ -179,8 +187,8 @@ export interface TodayFeed {
 export interface VerifyCheck {
   name: string;
   status: "match" | "mismatch" | "skipped";
-  stored: string | number | null;
-  recomputed: string | number | null;
+  stored: string | number | boolean | null;
+  recomputed: string | number | boolean | null;
   note?: string;
 }
 

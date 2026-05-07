@@ -62,6 +62,7 @@ function Empty({ label }: { label: string }) {
 }
 
 function PendingCard({ event }: { event: CallAcceptedEvent }) {
+  const scrubbed = event.privacy_mode === "committed" && event.side === undefined;
   return (
     <li className="border-b border-[var(--color-border)]">
       <a
@@ -76,13 +77,15 @@ function PendingCard({ event }: { event: CallAcceptedEvent }) {
         </div>
         <div className="flex items-center gap-3 t-data text-[var(--color-secondary)]">
           <span className={event.side === "SELL" ? sideTokens.sell : sideTokens.buy}>
-            {event.side}
+            {scrubbed ? "HASH" : event.side}
           </span>
           <span className="text-[var(--color-display)]">
-            {event.asset_id.split(":").pop() ?? event.asset_id}
+            {scrubbed ? "COMMIT" : event.asset_id?.split(":").pop() ?? event.asset_id}
           </span>
-          <span>{event.horizon_hours}H</span>
-          <span>{(event.confidence * 100).toFixed(0)}%</span>
+          <span>{scrubbed ? "sealed" : `${event.horizon_hours}H`}</span>
+          {!scrubbed && event.confidence !== undefined && (
+            <span>{(event.confidence * 100).toFixed(0)}%</span>
+          )}
         </div>
       </a>
     </li>

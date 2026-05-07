@@ -68,14 +68,24 @@ export function CallPage({ callId }: { callId: string }) {
 
         {data && (
           <>
+            {(() => {
+              const scrubbed =
+                data.submission.privacy_mode === "committed" &&
+                data.submission.side === undefined;
+              const subjectLabel = scrubbed
+                ? "COMMITTED · SEALED"
+                : `${data.submission.side} · ${data.submission.asset_id?.split(":").pop()} · ${data.submission.horizon_hours}H`;
+              return (
+                <>
             <header className="mb-10 flex flex-wrap items-baseline justify-between gap-4">
               <div>
                 <p className="t-label text-[var(--color-secondary)] mb-3">
-                  {data.submission.side} · {data.submission.asset_id.split(":").pop()} ·{" "}
-                  {data.submission.horizon_hours}H
+                  {subjectLabel}
                 </p>
                 <h1 className="t-subheading text-[var(--color-display)]">
-                  {data.submission.rationale ?? "(no rationale provided)"}
+                  {scrubbed
+                    ? data.submission.commit_hash ?? "(committed call)"
+                    : data.submission.rationale ?? "(no rationale provided)"}
                 </h1>
               </div>
               <OutcomeChip outcome={data.resolution?.outcome ?? "live"}>
@@ -88,8 +98,18 @@ export function CallPage({ callId }: { callId: string }) {
             <Section title="SUBMISSION">
               <Kv k="call_id" v={data.submission.call_id} mono />
               <Kv k="agent_id" v={data.submission.agent_id} mono />
-              <Kv k="confidence" v={`${(data.submission.confidence * 100).toFixed(0)}%`} />
-              <Kv k="submitted_at" v={data.submission.submitted_at} />
+              {data.submission.privacy_mode && (
+                <Kv k="privacy_mode" v={data.submission.privacy_mode} />
+              )}
+              {data.submission.commit_hash && (
+                <Kv k="commit_hash" v={data.submission.commit_hash} mono />
+              )}
+              {data.submission.confidence !== undefined && (
+                <Kv k="confidence" v={`${(data.submission.confidence * 100).toFixed(0)}%`} />
+              )}
+              {data.submission.submitted_at && (
+                <Kv k="submitted_at" v={data.submission.submitted_at} />
+              )}
               <Kv k="accepted_at" v={data.submission.accepted_at} />
               {data.submission.strategy_tag && (
                 <Kv k="strategy_tag" v={data.submission.strategy_tag} />
@@ -146,6 +166,9 @@ export function CallPage({ callId }: { callId: string }) {
               </PillButton>
               {verify && <VerifyResultCard result={verify} />}
             </div>
+                </>
+              );
+            })()}
           </>
         )}
       </main>

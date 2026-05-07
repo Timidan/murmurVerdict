@@ -53,9 +53,12 @@ export function CallLog({ title = "RECENT CALLS", calls, verifyAffordance = true
 }
 
 function CallRow({ call, verifyAffordance }: { call: AgentCallRow; verifyAffordance: boolean }) {
-  const ts = formatTs(call.submitted_at);
+  const ts = formatTs(call.submitted_at ?? call.accepted_at);
+  const scrubbed = call.privacy_mode === "committed" && call.side === undefined;
   const isSell = call.side === "SELL";
-  const horizon = `${call.horizon_hours}H · ${(call.confidence * 100).toFixed(0)}%`;
+  const horizon = scrubbed
+    ? "sealed"
+    : `${call.horizon_hours}H · ${((call.confidence ?? 0) * 100).toFixed(0)}%`;
   const note = formatNote(call);
 
   return (
@@ -71,10 +74,10 @@ function CallRow({ call, verifyAffordance }: { call: AgentCallRow; verifyAfforda
     >
       <span role="cell" className="t-data text-[var(--color-secondary)]">{ts}</span>
       <span role="cell" className={`t-button ${isSell ? sideTokens.sell : sideTokens.buy}`}>
-        {call.side}
+        {scrubbed ? "HASH" : call.side}
       </span>
       <span role="cell" className="t-data text-[var(--color-display)]">
-        {call.asset_id.split(":").pop() ?? call.asset_id}
+        {scrubbed ? "COMMIT" : call.asset_id?.split(":").pop() ?? call.asset_id}
       </span>
       <span role="cell" className="t-data text-[var(--color-secondary)]">{horizon}</span>
       <span role="cell" className="t-body-sm truncate">{note}</span>
@@ -109,6 +112,9 @@ function formatTs(iso: string): string {
 }
 
 function formatNote(c: AgentCallRow): string {
+  if (c.privacy_mode === "committed" && c.side === undefined) {
+    return c.commit_hash ? `commit ${c.commit_hash.slice(0, 10)}` : "committed";
+  }
   if (!c.outcome && !c.signed_return) return "acceptance";
   if (c.outcome === "void") return "inside void band · ±0%";
   if (c.signed_return) {

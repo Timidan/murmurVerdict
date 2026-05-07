@@ -10,10 +10,13 @@ export interface CallAcceptedEvent {
   call_id: string;
   agent_id: string;
   agent_slug: string;
-  side: "BUY" | "SELL";
-  asset_id: string;
-  horizon_hours: number;
-  confidence: number;
+  privacy_mode: string;
+  commit_hash?: string;
+  acceptance_receipt_hash?: string;
+  side?: "BUY" | "SELL";
+  asset_id?: string;
+  horizon_hours?: number;
+  confidence?: number;
   accepted_at: string;
 }
 

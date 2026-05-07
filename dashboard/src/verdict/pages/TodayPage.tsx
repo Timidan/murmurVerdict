@@ -100,43 +100,52 @@ function FeedSection({
     <section className="border-y border-[var(--color-border)] mb-8">
       <div className="px-6 py-3 t-label">{title}</div>
       <ul className="m-0 p-0 list-none">
-        {rows.map((row, i) => (
-          <li
-            key={row.call_id}
-            className={
-              "grid grid-cols-[110px_70px_60px_90px_1fr_100px] gap-4 px-6 py-3 items-center " +
-              (i > 0 ? "border-t border-[var(--color-border)] " : "")
-            }
-          >
-            <a href={`#/calls/${row.call_id}`} className="contents no-underline press-feedback">
-              <span className="t-data text-[var(--color-secondary)]">
-                {row.submitted_at.slice(11, 19)}
-              </span>
-              <span className={"t-button " + (row.side === "SELL" ? sideTokens.sell : sideTokens.buy)}>
-                {row.side}
-              </span>
-              <span className="t-data text-[var(--color-display)]">
-                {row.asset_id.split(":").pop() ?? row.asset_id}
-              </span>
-              <span className="t-data text-[var(--color-secondary)]">
-                {row.horizon_hours}H · {(row.confidence * 100).toFixed(0)}%
-              </span>
-              <span className="t-body-sm text-[var(--color-secondary)]">
-                @{row.agent_slug}
-              </span>
-              <span className="text-right">
-                <OutcomeChip outcome={pending ? "live" : row.outcome ?? "live"}>
-                  {pending
-                    ? "PEND"
-                    : row.call_score !== null && row.call_score !== undefined
-                    ? `${row.call_score >= 0 ? "+" : ""}${row.call_score.toFixed(3)}`
-                    : (row.outcome ?? "live").toUpperCase()}
-                </OutcomeChip>
-              </span>
-            </a>
-          </li>
-        ))}
+        {rows.map((row, i) => {
+          const scrubbed = isScrubbed(row);
+          return (
+            <li
+              key={row.call_id}
+              className={
+                "grid grid-cols-[110px_70px_60px_90px_1fr_100px] gap-4 px-6 py-3 items-center " +
+                (i > 0 ? "border-t border-[var(--color-border)] " : "")
+              }
+            >
+              <a href={`#/calls/${row.call_id}`} className="contents no-underline press-feedback">
+                <span className="t-data text-[var(--color-secondary)]">
+                  {(row.submitted_at ?? row.accepted_at).slice(11, 19)}
+                </span>
+                <span className={"t-button " + (row.side === "SELL" ? sideTokens.sell : sideTokens.buy)}>
+                  {scrubbed ? "HASH" : row.side}
+                </span>
+                <span className="t-data text-[var(--color-display)]">
+                  {scrubbed ? "COMMIT" : row.asset_id?.split(":").pop() ?? row.asset_id}
+                </span>
+                <span className="t-data text-[var(--color-secondary)]">
+                  {scrubbed
+                    ? "sealed"
+                    : `${row.horizon_hours}H · ${((row.confidence ?? 0) * 100).toFixed(0)}%`}
+                </span>
+                <span className="t-body-sm text-[var(--color-secondary)]">
+                  @{row.agent_slug}
+                </span>
+                <span className="text-right">
+                  <OutcomeChip outcome={pending ? "live" : row.outcome ?? "live"}>
+                    {pending
+                      ? "PEND"
+                      : row.call_score !== null && row.call_score !== undefined
+                      ? `${row.call_score >= 0 ? "+" : ""}${row.call_score.toFixed(3)}`
+                      : (row.outcome ?? "live").toUpperCase()}
+                  </OutcomeChip>
+                </span>
+              </a>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
+}
+
+function isScrubbed(row: TodayFeedRow): boolean {
+  return row.privacy_mode === "committed" && row.side === undefined;
 }

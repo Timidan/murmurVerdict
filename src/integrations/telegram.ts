@@ -4,6 +4,7 @@ import {
   get24hVerifiedVolume,
   getLeaderboard,
 } from "../verdict/leaderboard.js";
+import { projectCallRow } from "../verdict/projections.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -58,15 +59,37 @@ export class TelegramNotifier {
     }
     const agent = agentsRepo.byId(db, full.submission.agent_id);
     if (!agent) return { ok: false, text: "", posted: false, reason: "agent_missing" };
+    const projectionMeta = db
+      .prepare(
+        `SELECT s.privacy_mode, s.commit_hash, cr.reveal_hash_valid
+         FROM submissions s
+         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
+         WHERE s.call_id = ?`,
+      )
+      .get(call_id) as
+      | { privacy_mode: string | null; commit_hash: string | null; reveal_hash_valid: number | null }
+      | undefined;
+    const projected = projectCallRow({
+      call_id: full.submission.call_id,
+      status: full.submission.status,
+      accepted_at: full.submission.accepted_at,
+      privacy_mode: projectionMeta?.privacy_mode ?? null,
+      commit_hash: projectionMeta?.commit_hash ?? null,
+      side: full.submission.side,
+      asset_id: full.submission.asset_id,
+      horizon_hours: full.submission.horizon_hours,
+      confidence: full.submission.confidence,
+      reveal_hash_valid: projectionMeta?.reveal_hash_valid ?? null,
+    });
 
     const lb = getLeaderboard(db);
     const rankRow = lb.find((r) => r.agent_id === agent.agent_id);
     const text = formatResolutionCard({
       agent_kind: agent.kind,
       agent_slug: agent.display_slug,
-      side: full.submission.side,
-      horizon_hours: full.submission.horizon_hours,
-      confidence: full.submission.confidence,
+      side: projected.side as "BUY" | "SELL" | undefined,
+      horizon_hours: projected.horizon_hours,
+      confidence: projected.confidence,
       outcome: full.resolution.outcome,
       signed_return: Number(full.resolution.signed_return),
       call_score: full.resolution.call_score,
@@ -198,9 +221,9 @@ export class TelegramNotifier {
 interface ResolutionCardArgs {
   agent_kind: string;
   agent_slug: string;
-  side: "BUY" | "SELL";
-  horizon_hours: number;
-  confidence: number;
+  side?: "BUY" | "SELL";
+  horizon_hours?: number;
+  confidence?: number;
   outcome: string;
   signed_return: number;
   call_score: number | null;
@@ -214,7 +237,9 @@ interface ResolutionCardArgs {
 export function formatResolutionCard(a: ResolutionCardArgs): string {
   const emoji =
     a.outcome === "win" ? "✅" : a.outcome === "loss" ? "❌" : a.outcome === "void" ? "⚪️" : "⚠️";
-  const conf = (a.confidence * 100).toFixed(0);
+  const subject = a.side && a.horizon_hours && a.confidence !== undefined
+    ? `${a.side} ETH ${a.horizon_hours}h @${(a.confidence * 100).toFixed(0)}%`
+    : `COMMITTED SEALED`;
   const ret = (a.signed_return * 100).toFixed(2);
   const score = a.call_score === null ? "—" : a.call_score.toFixed(3);
   const rankLine = a.rank ? `#${a.rank}` : a.tier;
@@ -223,7 +248,7 @@ export function formatResolutionCard(a: ResolutionCardArgs): string {
     ? `\n— Shadow agent. Claim this profile: ${a.claim_url}`
     : "";
   return [
-    `${emoji} <b>${esc(a.agent_slug)}</b> ${a.side} ETH ${a.horizon_hours}h @${conf}%`,
+    `${emoji} <b>${esc(a.agent_slug)}</b> ${subject}`,
     `→ <b>${a.outcome.toUpperCase()}</b> ${ret}%  · score ${score}  · ${rankLine}`,
     `<a href="${a.call_url}">${shortHash}</a>${shadowLine}`,
   ].join("\n");

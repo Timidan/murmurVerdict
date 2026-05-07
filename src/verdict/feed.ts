@@ -11,8 +11,8 @@ import { projectCallRow, shouldExposePlaintext } from "./projections.js";
 // All three return enough fields to render a card without a second fetch.
 //
 // P2 Phase E: committed-mode rows scrub side / asset_id / horizon_hours /
-// confidence / rationale / strategy_tag / t1_estimate while pending; only
-// commit_hash + acceptance_receipt_hash + privacy_mode are surfaced.
+// confidence / rationale / strategy_tag / t1_estimate until a valid reveal;
+// only commit_hash + acceptance_receipt_hash + privacy_mode are surfaced.
 
 export interface TodayFeedRow {
   call_id: string;
@@ -74,20 +74,21 @@ const MOVERS_LIMIT = 5;
 export function getTodayFeed(db: Database.Database, now: Date = new Date()): TodayFeed {
   const nowIso = now.toISOString().replace(/\.\d+Z$/, "Z");
 
-  // SQL pulls the FULL row including plaintext columns; the
-  // projection helper scrubs them when (privacy_mode='committed' AND
-  // status is pending). One source of truth so feed/api/SSE/RSS/MCP
-  // can't drift apart.
+  // SQL pulls the FULL row including plaintext columns; the projection
+  // helper scrubs committed rows until a valid reveal exists. One source
+  // of truth so feed/api/SSE/RSS/MCP can't drift apart.
   const rawAccepted = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
               s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
-              ar.receipt_hash AS acceptance_receipt_hash
+              ar.receipt_hash AS acceptance_receipt_hash,
+              cr.reveal_hash_valid
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
        LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
+       LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        ORDER BY s.accepted_at DESC
        LIMIT ?`,
     )
@@ -100,12 +101,14 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
-              ar.receipt_hash AS acceptance_receipt_hash
+              ar.receipt_hash AS acceptance_receipt_hash,
+              cr.reveal_hash_valid
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
        LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
+       LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        WHERE s.status IN ('accepted','pending_t0','pending_t1')
-       ORDER BY datetime(s.accepted_at, '+' || s.horizon_hours || ' hours') ASC
+       ORDER BY s.accepted_at DESC
        LIMIT ?`,
     )
     .all(PENDING_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
@@ -117,6 +120,7 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
       shouldExposePlaintext(
         (row.privacy_mode as string | null) ?? null,
         row.status as string,
+        row.reveal_hash_valid as number | null,
       ) &&
       typeof row.horizon_hours === "number"
     ) {
@@ -136,11 +140,13 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
               ar.receipt_hash AS acceptance_receipt_hash,
-              r.outcome, r.signed_return, r.call_score, r.resolved_at
+              r.outcome, r.signed_return, r.call_score, r.resolved_at,
+              cr.reveal_hash_valid
        FROM t1_resolutions r
        JOIN submissions s ON s.call_id = r.call_id
        JOIN agents a ON a.agent_id = s.agent_id
        LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
+       LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        ORDER BY r.resolved_at DESC
        LIMIT ?`,
     )
@@ -236,6 +242,7 @@ function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
       signed_return: row.signed_return as string | null,
       resolved_at: row.resolved_at as string | null,
       submitted_at: row.submitted_at as string | null,
+      reveal_hash_valid: row.reveal_hash_valid as number | null,
     },
     row.agent_slug as string,
   );

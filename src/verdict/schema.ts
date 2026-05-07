@@ -545,10 +545,12 @@ export const LeaderboardRowSchema = z
     last_resolved_at: z.string().datetime({ offset: false }).nullable(),
     /**
      * Reveal reliability for committed-mode agents (D26 axis 1).
-     *   = agent_reveals / (agent_reveals + daemon_fallback_reveals)
+     *   = agent_reveals / (agent_reveals + fallback_reveals)
      * Null when the agent has no committed-mode resolved calls yet.
      * Excludes legacy_plaintext + fhevm_compute so the metric reflects
-     * the v0.2 commit-reveal contract.
+     * the v0.2 commit-reveal contract. The compatibility field named
+     * daemon_fallback_reveals includes both daemon_fallback and
+     * drand_fallback rows.
      */
     reveal_reliability: z.number().min(0).max(1).nullable(),
     agent_reveals: z.number().int().nonnegative(),

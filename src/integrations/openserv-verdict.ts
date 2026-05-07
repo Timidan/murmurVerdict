@@ -12,6 +12,7 @@ import {
 } from "../verdict/schema.js";
 import { submitCall, type SubmissionContext } from "../verdict/submissions.js";
 import { verifyAgentApiKey } from "../verdict/auth.js";
+import { projectCallRow } from "../verdict/projections.js";
 
 // ─── Public params ───────────────────────────────────────────────────────────
 
@@ -38,6 +39,8 @@ const SUBMIT_INPUT = z.object({
   submitted_at: z.string().datetime({ offset: false }),
   rationale: z.string().max(240).optional(),
   strategy_tag: z.enum(REGISTERED_STRATEGY_TAGS).optional(),
+  privacy_mode: z.enum(["committed", "legacy_plaintext"]).optional(),
+  salt: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
 });
 
 const ID_INPUT = z.object({ call_id: z.string().uuid() });
@@ -123,11 +126,54 @@ export async function startVerdictOpenServAgent(
       async run({ args }) {
         const full = resolutionsRepo.loadFullCall(params.db, args.call_id);
         if (!full) return jsonError(404, "not_found", "call not found");
+        const projectionMeta = params.db
+          .prepare(
+            `SELECT s.privacy_mode, s.commit_hash, cr.reveal_hash_valid
+             FROM submissions s
+             LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
+             WHERE s.call_id = ?`,
+          )
+          .get(args.call_id) as
+          | { privacy_mode: string | null; commit_hash: string | null; reveal_hash_valid: number | null }
+          | undefined;
+        const projected = projectCallRow({
+          call_id: full.submission.call_id,
+          status: full.submission.status,
+          accepted_at: full.submission.accepted_at,
+          privacy_mode: projectionMeta?.privacy_mode ?? null,
+          commit_hash: projectionMeta?.commit_hash ?? null,
+          acceptance_receipt_hash: full.acceptance_receipt.hash,
+          side: full.submission.side,
+          asset_id: full.submission.asset_id,
+          horizon_hours: full.submission.horizon_hours,
+          confidence: full.submission.confidence,
+          rationale: full.submission.rationale,
+          strategy_tag: full.submission.strategy_tag,
+          submitted_at: full.submission.submitted_at,
+          reveal_hash_valid: projectionMeta?.reveal_hash_valid ?? null,
+        });
+        const submission = {
+          call_id: full.submission.call_id,
+          agent_id: full.submission.agent_id,
+          client_order_id: full.submission.client_order_id,
+          accepted_at: full.submission.accepted_at,
+          status: full.submission.status,
+          privacy_mode: projected.privacy_mode,
+          commit_hash: projected.commit_hash,
+          ...(projected.side ? { side: projected.side } : {}),
+          ...(projected.asset_id ? { asset_id: projected.asset_id } : {}),
+          ...(projected.horizon_hours !== undefined ? { horizon_hours: projected.horizon_hours } : {}),
+          ...(projected.confidence !== undefined ? { confidence: projected.confidence } : {}),
+          ...(projected.rationale ? { rationale: projected.rationale } : {}),
+          ...(projected.strategy_tag ? { strategy_tag: projected.strategy_tag } : {}),
+          ...(projected.submitted_at ? { submitted_at: projected.submitted_at } : {}),
+        };
         return JSON.stringify({
           kind: "verdict_call",
           schema_version: SCHEMA_VERSION,
           scoring_version: SCORING_VERSION,
           ...full,
+          submission,
         });
       },
     },
@@ -179,21 +225,51 @@ export async function startVerdictOpenServAgent(
         const rows = params.db
           .prepare(
             `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
-                    s.confidence, s.submitted_at, s.accepted_at,
+                    s.confidence, s.rationale, s.strategy_tag,
+                    s.submitted_at, s.accepted_at, s.privacy_mode, s.commit_hash,
+                    ar.receipt_hash AS acceptance_receipt_hash,
+                    cr.reveal_hash_valid,
                     r.outcome, r.call_score, r.signed_return, r.resolved_at
              FROM submissions s
              LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
+             LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
+             LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
              WHERE s.agent_id = ?
              ORDER BY s.accepted_at DESC
              LIMIT ?`,
           )
-          .all(agentRow.agent_id, args.limit ?? 50);
+          .all(agentRow.agent_id, args.limit ?? 50) as Array<Record<string, unknown>>;
+        const calls = rows.map((row) =>
+          projectCallRow(
+            {
+              call_id: row.call_id as string,
+              status: row.status as string,
+              accepted_at: row.accepted_at as string,
+              privacy_mode: row.privacy_mode as string | null,
+              commit_hash: row.commit_hash as string | null,
+              acceptance_receipt_hash: row.acceptance_receipt_hash as string | null,
+              side: row.side as string | null,
+              asset_id: row.asset_id as string | null,
+              horizon_hours: row.horizon_hours as number | null,
+              confidence: row.confidence as number | null,
+              rationale: row.rationale as string | null,
+              strategy_tag: row.strategy_tag as string | null,
+              outcome: row.outcome as string | null,
+              call_score: row.call_score as number | null,
+              signed_return: row.signed_return as string | null,
+              resolved_at: row.resolved_at as string | null,
+              submitted_at: row.submitted_at as string | null,
+              reveal_hash_valid: row.reveal_hash_valid as number | null,
+            },
+            agentRow.display_slug,
+          ),
+        );
         return JSON.stringify({
           kind: "verdict_agent_calls",
           schema_version: SCHEMA_VERSION,
           agent_id: agentRow.agent_id,
           display_slug: agentRow.display_slug,
-          calls: rows,
+          calls,
         });
       },
     },

@@ -549,12 +549,24 @@ export async function submitCall(args: {
   }
 
   submissionsRepo.setStatus(db, call_id, "pending_t0");
+  const isCommittedEvent = privacyModeForRepo === "committed";
   usageRepo.emit(
     db,
     makeUsage(
       identity.agent_id,
       "submission_accepted",
-      { call_id, asset_id: submission.asset_id, side: submission.side, horizon_hours: submission.horizon_hours },
+      isCommittedEvent
+        ? {
+            call_id,
+            privacy_mode: privacyModeForRepo,
+            commit_hash: commitHashForRepo,
+          }
+        : {
+            call_id,
+            asset_id: submission.asset_id,
+            side: submission.side,
+            horizon_hours: submission.horizon_hours,
+          },
       now,
     ),
   );
@@ -563,7 +575,6 @@ export async function submitCall(args: {
   // (Phase E). Subscribers see commit_hash + acceptance_receipt_hash;
   // they can fetch /v1/calls/:id/envelope to attest the ciphertexts
   // committed to. The plaintext only fans out post-horizon.
-  const isCommittedEvent = privacyModeForRepo === "committed";
   ctx.events?.emit({
     type: "call.accepted",
     call_id,

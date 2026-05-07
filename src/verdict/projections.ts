@@ -3,12 +3,12 @@
  *
  * The submissions table still carries plaintext columns (Phase A
  * was additive); the daemon's PUBLIC API surfaces must scrub those
- * columns when (privacy_mode='committed' AND status is pre-horizon).
+ * columns when privacy_mode='committed' until a valid reveal row exists.
  *
- * Once the call is resolved, the plaintext was anchored against
- * canonical oracles and is part of the public score record — no
- * point hiding it. Same for legacy_plaintext rows where the agent
- * never committed to anything.
+ * Normally a resolved committed call has a call_reveals row because the
+ * resolver cannot score without one. The exception is terminal oracle
+ * unavailability, which can happen before horizon and without a reveal.
+ * Status alone is therefore not enough to unhide plaintext.
  *
  * Single helper used from every leak surface (feed.ts, api.ts,
  * events.ts, mcp/, calls.xml RSS) so we don't have N implementations
@@ -39,6 +39,7 @@ export interface CallRowFields {
   signed_return?: string | null;
   resolved_at?: string | null;
   submitted_at?: string | null;
+  reveal_hash_valid?: number | boolean | null;
 }
 
 export interface PublicCallProjection {
@@ -70,16 +71,19 @@ export interface PublicCallProjection {
  * Rules:
  *   - committed-mode + pending status → SCRUB (the whole point of
  *     committed mode is hiding the call until horizon)
- *   - committed-mode + resolved/disputed/re_resolved → REVEAL (post-
- *     horizon, plaintext is on the public oracle record anyway)
+ *   - committed-mode + non-pending status → REVEAL only when a valid
+ *     call_reveals row exists. This prevents oracle_unavailable terminal
+ *     rows from leaking before horizon.
  *   - legacy_plaintext + any status → REVEAL (no commitment was made)
  */
 export function shouldExposePlaintext(
   privacy_mode: string | null | undefined,
   status: string,
+  reveal_hash_valid?: number | boolean | null,
 ): boolean {
   if (privacy_mode !== "committed") return true;
-  return !PENDING_STATUSES.has(status as never);
+  if (PENDING_STATUSES.has(status as never)) return false;
+  return reveal_hash_valid === true || reveal_hash_valid === 1;
 }
 
 /**
@@ -101,7 +105,7 @@ export function projectCallRow(
     commit_hash: row.commit_hash ?? null,
     acceptance_receipt_hash: row.acceptance_receipt_hash ?? null,
   };
-  if (shouldExposePlaintext(privacy_mode, row.status)) {
+  if (shouldExposePlaintext(privacy_mode, row.status, row.reveal_hash_valid)) {
     if (row.side) projection.side = row.side;
     if (row.asset_id) projection.asset_id = row.asset_id;
     if (typeof row.horizon_hours === "number") projection.horizon_hours = row.horizon_hours;
