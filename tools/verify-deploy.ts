@@ -186,6 +186,29 @@ async function main(): Promise<void> {
         return null;
       },
     },
+    {
+      name: "daemon /v1/agents/:slug/agent-card",
+      url: `${args.api}/v1/agents/${args.slug}/agent-card`,
+      expectContentType: /json/,
+      expectBodyMatches: (body) => {
+        if (!/"type"\s*:\s*"ERC-8004:AgentCard"/.test(body)) return "wrong card type";
+        if (!/"services"\s*:/.test(body)) return "missing services array";
+        if (!/"x402Support"\s*:\s*true/.test(body)) return "x402Support not declared true";
+        return null;
+      },
+    },
+    {
+      name: "daemon /v1/skill.md (agent self-onboarding)",
+      url: `${args.api}/v1/skill.md`,
+      expectContentType: /markdown/,
+      expectBodyMatches: (body) => {
+        if (!/^---\nname:\s*murmur-verdict-register/m.test(body))
+          return "missing claude-skill frontmatter";
+        if (!/claim\/wallet-only\/init/.test(body)) return "missing wallet-only init reference";
+        if (!/X-Murmur-Api-Key/i.test(body)) return "skill should describe Bearer auth";
+        return null;
+      },
+    },
     { name: "daemon /v1/stream (SSE handshake)", url: `${args.api}/v1/stream`, expectContentType: /event-stream/ },
     { name: "dashboard /", url: `${args.dashboard}/`, expectContentType: /html/, expectBodyContains: /<div id="root">/ },
     { name: "dashboard /.well-known/murmur.json", url: `${args.dashboard}/.well-known/murmur.json`, expectContentType: /json/, expectBodyContains: /murmur-verdict/ },

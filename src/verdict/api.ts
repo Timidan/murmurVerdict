@@ -316,6 +316,111 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     res.json(publicProfile);
   });
 
+  // ── ERC-8004 agent card (Draft) ──
+  // Machine-readable agent card discoverable by ERC-8004 indexers and
+  // launchpad marketplaces. Shape follows the Draft EIP registration JSON:
+  //   { type, name, description, image?, services[], x402Support, active,
+  //     registrations, supportedTrust? }
+  // - `services` use `endpoint` (NOT `url`) per the canonical spec
+  // - `agentWallet` is reserved on-chain metadata in the spec; NOT included
+  //   here. Off-chain consumers read /v1/agents/:slug for the wallet
+  //   binding (top-level wallet_address + chain_id fields).
+  // - x402Support is declared `true` so AgentKit / x402-aware clients
+  //   know we'll honor 402 receipts on /v1/receipts/:id when v0.3 wires
+  //   the actual middleware. v0.2 ships the declaration only (D8b).
+  // - When v0.3 mints Identity Registry NFTs, tokenURI points here so
+  //   the on-chain identity and the off-chain card stay in sync.
+  router.get("/v1/agents/:slug/agent-card", (req, res) => {
+    const slug = String(req.params.slug ?? "");
+    const row = agentsRepo.bySlug(deps.db, slug);
+    if (!row) {
+      res.status(404).json({ code: ERROR_CODES.unknown_agent, message: "agent not found" });
+      return;
+    }
+    const apiBase = `${req.protocol}://${req.get("host")}`.replace(/\/$/, "");
+    const card = {
+      type: "ERC-8004:AgentCard",
+      // Spec is Draft; pin the version we render against so consumers can
+      // gate on it. Our compatibility layer follows the EIP shape from
+      // late-2025 spec drafts (services use `endpoint`, agentWallet is
+      // reserved for on-chain metadata).
+      spec_version: "erc-8004-draft-2025",
+      name: row.display_name,
+      slug: row.display_slug,
+      description:
+        row.bio ??
+        `Autonomous market-prediction agent registered on Murmur Verdict — scored against canonical Chainlink + Pyth oracles.`,
+      services: [
+        {
+          type: "murmur-verdict.score",
+          name: "Public Verdict score + receipt chain",
+          endpoint: `${apiBase}/v1/agents/${row.display_slug}`,
+          // Read-only profile + recent calls + discoverers; no auth.
+        },
+        {
+          type: "murmur-verdict.calls",
+          name: "Submit a market call",
+          endpoint: `${apiBase}/v1/calls`,
+          // Auth: X-Murmur-Agent-Id + X-Murmur-Api-Key (Bearer).
+        },
+        {
+          type: "murmur-verdict.verify",
+          name: "Re-run the receipt chain verifier",
+          endpoint: `${apiBase}/v1/calls/{call_id}/verify`,
+        },
+        {
+          type: "murmur-verdict.skill",
+          name: "Self-onboarding skill (Claude/Cursor/OpenServ readable)",
+          endpoint: `${apiBase}/v1/skill.md`,
+        },
+      ],
+      // Paper-only declaration today; flips to true wiring when the v0.3
+      // x402 middleware lands on /v1/receipts/:id.
+      x402Support: true,
+      // "active" = this agent CAN submit calls right now. True if the
+      // agent has an issued api_key_hash (verified + wallet_only after
+      // finalize) OR the agent uses env-var keys (benchmark, internal_test).
+      // Shadow agents and unfinalized wallet_only agents return false —
+      // they exist as profiles but can't push fresh data.
+      active:
+        row.api_key_hash !== null ||
+        row.kind === "benchmark" ||
+        row.kind === "internal_test",
+      // Per the EIP, `registrations` is an array of (chain_id,
+      // registration_id) tuples once an agent is on-chain. v0.2 has no
+      // contract deploy yet, so we emit an empty array — consumers know
+      // we plan to register but haven't yet.
+      registrations: [] as Array<{ chain_id: string; registration_id: string }>,
+      // Optional v0.3+ fields surfaced when present. Always included off
+      // the agent row so receipts and the agent card stay consistent.
+      ...(row.wallet_address && row.chain_id
+        ? {
+            // Non-spec sibling field: explicit wallet binding for off-
+            // Murmur consumers that don't want to compose
+            // /v1/agents/:slug. ERC-8004 reserves `agentWallet` for
+            // on-chain metadata, so we expose it under our own key.
+            murmur_wallet: {
+              address: row.wallet_address,
+              chain_id: row.chain_id,
+            },
+          }
+        : {}),
+      // Metadata block: when this card was generated + receipt chain
+      // entry points so verifiers can crawl from here without prior
+      // knowledge of Murmur's API surface.
+      meta: {
+        served_at: nowIso(now()),
+        receipt_chain_entrypoint: `${apiBase}/v1/agents/${row.display_slug}/calls`,
+        openapi: `${apiBase}/v1/openapi.json`,
+        manifest: `${apiBase}/.well-known/murmur.json`,
+      },
+    };
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=120, stale-while-revalidate=600");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.json(card);
+  });
+
   router.get("/v1/agents/:slug/calls", (req, res) => {
     const slug = String(req.params.slug ?? "");
     const agent = agentsRepo.bySlug(deps.db, slug);

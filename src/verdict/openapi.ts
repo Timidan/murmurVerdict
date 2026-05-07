@@ -166,6 +166,17 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           security: [{ hmacAuth: [] }, { apiKeyAuth: [] }],
         },
       },
+      "/v1/agents/{slug}/agent-card": {
+        get: {
+          tags: ["agents"],
+          summary: "ERC-8004 Draft-shaped agent card. Machine-readable card for launchpad indexers; declares services, x402Support, and (when bound) the agent's wallet via the murmur_wallet sibling field.",
+          parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            "200": { description: "Agent card JSON" },
+            "404": { description: "Agent not found" },
+          },
+        },
+      },
       "/v1/agents/{slug}/claim/wallet-only/init": {
         post: {
           tags: ["claim"],

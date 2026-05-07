@@ -33,7 +33,15 @@
     "claim_wallet_only_init": "/v1/agents/{slug}/claim/wallet-only/init",
     "claim_wallet_only_finalize": "/v1/agents/{slug}/claim/wallet-only/finalize",
     "claim_init": "/v1/agents/{slug}/claim/init",
-    "claim_finalize": "/v1/agents/{slug}/claim/finalize"
+    "claim_finalize": "/v1/agents/{slug}/claim/finalize",
+    "agent_card": "/v1/agents/{slug}/agent-card"
+  },
+  "erc_8004": {
+    "supports_draft": "erc-8004-draft-2025",
+    "agent_card_endpoint": "/v1/agents/{slug}/agent-card",
+    "x402_support_declared": true,
+    "registrations_onchain": false,
+    "registration_planned_v0_3": true
   },
   "agent_self_install": {
     "url": "/v1/skill.md",

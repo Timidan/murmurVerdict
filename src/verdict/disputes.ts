@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
+  agentsRepo,
   anchorsRepo,
   disputesRepo,
   resolutionsRepo,
@@ -207,6 +208,11 @@ export class DisputeService {
     }
 
     const resolved_at = nowIso(now);
+    // Pillar-4 wallet binding for replayed resolution receipts. The
+    // disputed agent may have rotated wallets in between original and
+    // replay — use whatever wallet the agent has NOW since this
+    // receipt is the new source of truth post-dispute.
+    const issuingAgent = agentsRepo.byId(this.db, sub.agent_id);
     const payload = ResolutionReceiptPayloadSchema.parse({
       schema_version: SCHEMA_VERSION,
       scoring_version: SCORING_VERSION,
@@ -222,6 +228,8 @@ export class DisputeService {
       outcome: replayOutcome,
       call_score: replayScore.call_score,
       resolved_at,
+      ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
+      ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
     });
     const receipt = buildResolutionReceipt(payload);
 

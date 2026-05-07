@@ -15,6 +15,7 @@ import {
   UsageEvent,
 } from "./schema.js";
 import {
+  agentsRepo,
   anchorsRepo,
   resolutionsRepo,
   submissionsRepo,
@@ -189,6 +190,12 @@ export class Resolver {
         });
 
         const resolved_at = this.nowIso();
+        // Look up the issuing agent so the resolution receipt can carry
+        // the wallet binding into its subject. Same additive-optional
+        // shape as acceptance receipts; old receipts re-verify against
+        // their stored canonical_json regardless of whether the schema
+        // gained these fields after-the-fact.
+        const issuingAgent = agentsRepo.byId(this.db, ctx.agent_id);
         const resolutionPayload = ResolutionReceiptPayloadSchema.parse({
           schema_version: SCHEMA_VERSION,
           scoring_version: SCORING_VERSION,
@@ -204,6 +211,8 @@ export class Resolver {
           outcome: verdictOutcome,
           call_score: score.call_score,
           resolved_at,
+          ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
+          ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
         });
         const receipt = buildResolutionReceipt(resolutionPayload);
         let cid: string | null = null;

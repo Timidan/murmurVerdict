@@ -239,6 +239,10 @@ export async function submitCall(args: {
   const call_id = randomUUID();
   // accepted_at already computed above for dedup; reuse so the receipt records
   // the same instant we used for dedup bucketing.
+  // Pillar-4 marketplace portability: include the issuing agent's wallet +
+  // chain_id in the receipt subject when available. Off-Murmur verifiers can
+  // then attest the (wallet → score) relationship without a daemon round-trip.
+  const issuingAgent = agentsRepo.byId(db, submission.agent_id);
   const acceptancePayload = AcceptanceReceiptPayloadSchema.parse({
     schema_version: SCHEMA_VERSION,
     scoring_version: SCORING_VERSION,
@@ -247,6 +251,8 @@ export async function submitCall(args: {
     oracle_policy: oraclePolicy,
     accepted_at,
     call_id,
+    ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
+    ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
   });
   const receipt = buildAcceptanceReceipt(acceptancePayload);
 

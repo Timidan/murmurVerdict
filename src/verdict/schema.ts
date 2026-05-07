@@ -307,6 +307,15 @@ export const AcceptanceReceiptPayloadSchema = z
     oracle_policy: T0PolicySchema,
     accepted_at: z.string().datetime({ offset: false }),
     call_id: z.string().uuid(),
+    // Pillar-4 marketplace portability: bind the issuing agent's wallet
+    // into the receipt subject so off-Murmur verifiers can attest the
+    // (wallet → score) relationship without a daemon round-trip. Both
+    // fields are optional in v0.2 — receipts written before this field
+    // was added are still valid, since the canonicalizer drops undefined
+    // values and re-hashing a stored canonical_json doesn't depend on
+    // the schema seeing every field. Mandatory at v0.3 fhEVM.
+    agent_wallet: WalletAddressSchema.optional(),
+    chain_id: ChainIdSchema.optional(),
   })
   .strict();
 export type AcceptanceReceiptPayload = z.infer<
@@ -329,6 +338,13 @@ export const ResolutionReceiptPayloadSchema = z
     outcome: OutcomeSchema,
     call_score: z.number().nullable(),
     resolved_at: z.string().datetime({ offset: false }),
+    // See note on AcceptanceReceiptPayloadSchema. Same fields, same
+    // optional/additive contract. Old receipts re-verify because the
+    // verifier rehashes the stored canonical_json string, not the
+    // schema-shape. Whatever was canonicalized at write-time is what's
+    // verified at read-time.
+    agent_wallet: WalletAddressSchema.optional(),
+    chain_id: ChainIdSchema.optional(),
   })
   .strict();
 export type ResolutionReceiptPayload = z.infer<
