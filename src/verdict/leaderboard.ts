@@ -18,7 +18,11 @@ export interface LeaderboardOptions {
   tier?: LeaderboardTier;
 }
 
-const DEFAULT_KINDS: AgentKind[] = ["verified", "benchmark"];
+// wallet_only agents proved control of a wallet via /claim/wallet-only —
+// they're real marketplace participants and appear on the default
+// leaderboard alongside verified (X/Telegram-bound) and benchmark agents.
+// Dashboards distinguish them via the `kind` field on each row.
+const DEFAULT_KINDS: AgentKind[] = ["verified", "benchmark", "wallet_only"];
 
 /**
  * Compute the leaderboard from current DB state. The query joins resolutions

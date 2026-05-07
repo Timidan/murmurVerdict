@@ -80,6 +80,12 @@ function applyMigrations(db: Database.Database): void {
     v = 4;
     set.run("schema_version", String(v));
   }
+
+  if (v < 5) {
+    db.exec(MIGRATION_005);
+    v = 5;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -272,6 +278,54 @@ const MIGRATION_004 = `
   ALTER TABLE ref_clicks ADD COLUMN last_conversion_at    TEXT;
 `;
 
+// ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
+//
+// Three things at once:
+//   1. agents gains `wallet_address` + `chain_id` as top-level columns so
+//      receipt subjects can canonicalize wallet-bound, off-Murmur-verifiable
+//      reputation (pillar 4) without a verified_identities join on every
+//      receipt build.
+//   2. agents.kind enum extended to include `wallet_only` — agents that
+//      self-registered via /claim/wallet-only and proved control of a wallet
+//      but have no public X/Telegram identity. SQLite CHECK constraints
+//      can't be ALTERed in place, so we rebuild the agents table.
+//   3. claim_challenges gains supporting indexes for (status, expires_at)
+//      GC and (target_kind, target_value, status) lookups; abuse forensics
+//      now has the right shape.
+//
+// Foreign keys from submissions/verified_identities/usage_events all point
+// AT agents — we toggle FK enforcement off for the rebuild and back on
+// after rename. None of those tables hold FK references INTO the agents
+// rebuild that need recreation.
+const MIGRATION_005 = `
+  PRAGMA foreign_keys = OFF;
+
+  CREATE TABLE agents_v2 (
+    agent_id        TEXT PRIMARY KEY,
+    display_slug    TEXT UNIQUE NOT NULL COLLATE NOCASE,
+    kind            TEXT NOT NULL CHECK (kind IN ('benchmark','shadow','verified','internal_test','wallet_only')),
+    display_name    TEXT NOT NULL,
+    bio             TEXT,
+    created_at      TEXT NOT NULL,
+    api_key_hash    TEXT,
+    wallet_address  TEXT,
+    chain_id        TEXT
+  );
+  INSERT INTO agents_v2 (agent_id, display_slug, kind, display_name, bio, created_at, api_key_hash)
+    SELECT agent_id, display_slug, kind, display_name, bio, created_at, api_key_hash FROM agents;
+  DROP TABLE agents;
+  ALTER TABLE agents_v2 RENAME TO agents;
+  CREATE INDEX idx_agents_kind ON agents(kind);
+  CREATE INDEX idx_agents_wallet ON agents(wallet_address) WHERE wallet_address IS NOT NULL;
+
+  CREATE INDEX IF NOT EXISTS idx_claim_challenges_status_expires
+    ON claim_challenges(status, expires_at);
+  CREATE INDEX IF NOT EXISTS idx_claim_challenges_target
+    ON claim_challenges(target_kind, target_value, status);
+
+  PRAGMA foreign_keys = ON;
+`;
+
 // ─── Repositories (typed, narrow) ────────────────────────────────────────────
 //
 // Each repository exposes the smallest API the rest of the system needs.
@@ -309,8 +363,8 @@ export const agentsRepo = {
   ): void {
     prep(
       db,
-      `INSERT INTO agents (agent_id, display_slug, kind, display_name, bio, created_at, api_key_hash)
-       VALUES (@agent_id, @display_slug, @kind, @display_name, @bio, @created_at, @api_key_hash)`,
+      `INSERT INTO agents (agent_id, display_slug, kind, display_name, bio, created_at, api_key_hash, wallet_address, chain_id)
+       VALUES (@agent_id, @display_slug, @kind, @display_name, @bio, @created_at, @api_key_hash, @wallet_address, @chain_id)`,
     ).run({
       agent_id: profile.agent_id,
       display_slug: profile.display_slug,
@@ -319,6 +373,8 @@ export const agentsRepo = {
       bio: profile.bio ?? null,
       created_at: profile.created_at,
       api_key_hash,
+      wallet_address: profile.wallet_address ?? null,
+      chain_id: profile.chain_id ?? null,
     });
     for (const id of profile.verified_identities) {
       verifiedIdentitiesRepo.insert(db, profile.agent_id, id);
@@ -357,6 +413,41 @@ export const agentsRepo = {
       db,
       "UPDATE agents SET api_key_hash = ? WHERE agent_id = ?",
     ).run(api_key_hash, agent_id);
+  },
+
+  /**
+   * Bind a wallet to an agent. Idempotent — re-running with the same values
+   * is a no-op. The wallet is expected to be lowercase-normalized (viem's
+   * getAddress(addr).toLowerCase()) by the caller; the schema check enforces
+   * the lowercase form.
+   */
+  setWallet(
+    db: Database.Database,
+    agent_id: string,
+    wallet_address: string,
+    chain_id: string,
+  ): void {
+    prep(
+      db,
+      "UPDATE agents SET wallet_address = ?, chain_id = ? WHERE agent_id = ?",
+    ).run(wallet_address, chain_id, agent_id);
+  },
+
+  /**
+   * Lookup by wallet (lowercase + chain_id) — useful for the upgrade path
+   * where a wallet-only agent later wants to verify a public X identity
+   * and we need to find the existing agent_id.
+   */
+  byWallet(
+    db: Database.Database,
+    wallet_address: string,
+    chain_id: string,
+  ): AgentRow | null {
+    const row = prep(
+      db,
+      "SELECT * FROM agents WHERE wallet_address = ? AND chain_id = ?",
+    ).get(wallet_address, chain_id) as RawAgentRow | undefined;
+    return row ? hydrateAgent(db, row) : null;
   },
 
   countActiveCallsForAgent(db: Database.Database, agent_id: string): number {
@@ -404,6 +495,8 @@ interface RawAgentRow {
   bio: string | null;
   created_at: string;
   api_key_hash: string | null;
+  wallet_address: string | null;
+  chain_id: string | null;
 }
 
 function hydrateAgent(db: Database.Database, row: RawAgentRow): AgentRow {
@@ -417,6 +510,8 @@ function hydrateAgent(db: Database.Database, row: RawAgentRow): AgentRow {
     created_at: row.created_at,
     verified_identities: ids,
     api_key_hash: row.api_key_hash,
+    ...(row.wallet_address ? { wallet_address: row.wallet_address } : {}),
+    ...(row.chain_id ? { chain_id: row.chain_id } : {}),
   };
 }
 
@@ -939,7 +1034,7 @@ export const claimsRepo = {
       wallet_to_bind: c.wallet_to_bind,
       expires_at: c.expires_at,
       status: c.status,
-      created_at: c.expires_at,
+      created_at: c.created_at,
     });
   },
 
@@ -952,6 +1047,69 @@ export const claimsRepo = {
       db,
       "UPDATE claim_challenges SET status = ? WHERE challenge_id = ?",
     ).run(status, challenge_id);
+  },
+
+  /**
+   * Atomically transition a challenge from "pending" to `next` only when its
+   * current status IS still pending. Returns true if the transition happened
+   * (the caller now owns the challenge), false if some other concurrent
+   * finalize already closed it. Use this BEFORE side-effects (issuing API
+   * keys, flipping kind) so two parallel finalizes can't both succeed.
+   */
+  claimIfPending(
+    db: Database.Database,
+    challenge_id: string,
+    next: Exclude<ClaimChallenge["status"], "pending">,
+  ): boolean {
+    const info = prep(
+      db,
+      "UPDATE claim_challenges SET status = ? WHERE challenge_id = ? AND status = 'pending'",
+    ).run(next, challenge_id);
+    return info.changes > 0;
+  },
+
+  /**
+   * Count pending claim_challenges for a (wallet, slug) pair. Used by the
+   * wallet-only init rate-limiter — one pending challenge per pair caps
+   * the abuse vector where an attacker spams init for a slug they don't
+   * actually own.
+   */
+  countPendingForWalletAndAgent(
+    db: Database.Database,
+    wallet: string,
+    agent_id: string,
+    nowIso: string,
+  ): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS n FROM claim_challenges
+       WHERE wallet_to_bind = ? AND agent_id = ?
+         AND status = 'pending' AND expires_at > ?`,
+    ).get(wallet, agent_id, nowIso) as { n: number } | undefined;
+    return row?.n ?? 0;
+  },
+
+  /**
+   * GC sweep: mark expired-but-still-pending rows as expired, and delete
+   * everything older than `keepSinceIso` regardless of status. Keeps
+   * claim_challenges from becoming an infinite log.
+   */
+  gc(
+    db: Database.Database,
+    nowIso: string,
+    keepSinceIso: string,
+  ): { expired: number; deleted: number } {
+    const expired = prep(
+      db,
+      `UPDATE claim_challenges SET status = 'expired'
+       WHERE status = 'pending' AND expires_at <= ?`,
+    ).run(nowIso).changes;
+    const deleted = prep(
+      db,
+      `DELETE FROM claim_challenges
+       WHERE status != 'pending' AND created_at < ?`,
+    ).run(keepSinceIso).changes;
+    return { expired, deleted };
   },
 };
 

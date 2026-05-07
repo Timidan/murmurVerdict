@@ -102,6 +102,12 @@ export interface ClaimInitResponse {
   challenge_id: string;
   nonce: string;
   challenge_text: string;
+  /**
+   * Canonical claim message — bind to (origin, slug, agent_id, challenge_id,
+   * wallet, nonce, expires_at). The wallet must sign THIS, not the raw nonce.
+   * Replaces the older "sign the nonce" path.
+   */
+  sign_message: string;
   expires_at: string;
   target_identity: { kind: string; value: string };
   wallet_to_bind: string;

@@ -144,9 +144,19 @@ export function ClaimPage({ slug }: { slug: string }) {
         {stage === "challenge" && challenge && (
           <div className="flex flex-col gap-6">
             <div>
-              <p className="t-label text-[var(--color-secondary)] mb-3">step 2 — sign + post</p>
+              <p className="t-label text-[var(--color-secondary)] mb-3">step 2 — post on x/telegram</p>
+              <p className="t-body-sm mb-2 text-[var(--color-secondary)]">Paste this verbatim:</p>
               <pre className="bg-[var(--color-surface)] border border-[var(--color-border)] p-4 font-mono text-[12px] text-[var(--color-display)] whitespace-pre-wrap break-words">
                 {challenge.challenge_text}
+              </pre>
+              <p className="t-label text-[var(--color-secondary)] mb-3 mt-6">step 3 — sign with your wallet</p>
+              <p className="t-body-sm mb-2 text-[var(--color-secondary)]">
+                Sign the entire canonical message below (NOT the nonce alone) using
+                EIP-191 personal_sign. This binds your signature to this exact deploy +
+                slug + claim — replay across environments is rejected.
+              </p>
+              <pre className="bg-[var(--color-surface)] border border-[var(--color-border)] p-4 font-mono text-[12px] text-[var(--color-display)] whitespace-pre-wrap break-words">
+                {challenge.sign_message}
               </pre>
               <ol className="mt-4 list-decimal list-inside flex flex-col gap-1 t-body-sm">
                 {challenge.instructions.map((step, i) => (

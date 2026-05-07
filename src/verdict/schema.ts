@@ -61,14 +61,37 @@ export const AgentKindSchema = z.enum([
   "shadow",
   "verified",
   "internal_test",
+  // wallet_only: agents that self-registered via /claim/wallet-only — they
+  // proved control of a wallet but have no public X/Telegram identity.
+  // Marketplace participants; appear on the default leaderboard but are
+  // tagged distinctly from `verified` (which requires public identity).
+  "wallet_only",
 ]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 
+// 3–32 chars, lowercase alphanumeric, single dashes between segments,
+// no leading/trailing dash, no double dashes. Rejects `--`, `-x`, `x-`,
+// `xx`, `__`, uppercase, and slugs longer than 32 chars.
 export const AgentSlugSchema = z
   .string()
   .min(3)
-  .max(48)
-  .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, "lowercase kebab-case");
+  .max(32)
+  .regex(
+    /^[a-z0-9]+(-[a-z0-9]+)*$/,
+    "lowercase alphanumeric segments separated by single dashes",
+  );
+
+// CAIP-2 chain id, e.g. "eip155:8453" (Base mainnet), "eip155:11155111"
+// (Sepolia). Stored as a string so multi-chain identity composes cleanly.
+export const ChainIdSchema = z
+  .string()
+  .regex(/^[a-z0-9]+:[a-zA-Z0-9-]{1,32}$/, "CAIP-2 chain id e.g. eip155:8453");
+
+// Lowercase 0x-prefixed 40-hex string. Validation is at the API edge via
+// viem's getAddress(); this regex is a final-form check after normalization.
+export const WalletAddressSchema = z
+  .string()
+  .regex(/^0x[0-9a-f]{40}$/, "lowercase 0x + 40 hex chars (use viem.getAddress to normalize)");
 
 export const AgentProfileSchema = z.object({
   agent_id: z.string().uuid(),
@@ -78,6 +101,11 @@ export const AgentProfileSchema = z.object({
   bio: z.string().max(280).optional(),
   verified_identities: z.array(VerifiedIdentitySchema).default([]),
   created_at: z.string().datetime({ offset: false }),
+  // Pillar-4 marketplace portability: a wallet-bound agent's receipts
+  // can be verified off-Murmur. Both fields are optional in v0.2 to keep
+  // backwards-compat with pre-migration agents; mandatory at v0.3 fhEVM.
+  wallet_address: WalletAddressSchema.optional(),
+  chain_id: ChainIdSchema.optional(),
 });
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 
@@ -368,6 +396,11 @@ export const ClaimChallengeSchema = z
       .regex(/^0x[a-fA-F0-9]{40}$/, "EIP-55 address"),
     expires_at: z.string().datetime({ offset: false }),
     status: z.enum(["pending", "verified", "expired", "rejected"]),
+    // Storage created_at — set when the challenge row is inserted. Earlier
+    // releases stuffed `expires_at` into the `created_at` column by mistake;
+    // migration 005 leaves legacy rows alone (they expire-and-GC anyway) and
+    // every new row gets the correct creation timestamp.
+    created_at: z.string().datetime({ offset: false }),
   })
   .strict();
 export type ClaimChallenge = z.infer<typeof ClaimChallengeSchema>;

@@ -29,13 +29,20 @@
     "snapshot_md": "/v1/snapshot.md",
     "leaderboard_csv": "/v1/leaderboard.csv",
     "stats": "/v1/stats",
-    "skill_md": "/v1/skill.md"
+    "skill_md": "/v1/skill.md",
+    "claim_wallet_only_init": "/v1/agents/{slug}/claim/wallet-only/init",
+    "claim_wallet_only_finalize": "/v1/agents/{slug}/claim/wallet-only/finalize",
+    "claim_init": "/v1/agents/{slug}/claim/init",
+    "claim_finalize": "/v1/agents/{slug}/claim/finalize"
   },
   "agent_self_install": {
     "url": "/v1/skill.md",
     "format": "claude-skill-markdown",
-    "describes": "claim → wallet bind → api key → first call",
-    "human_in_loop": false
+    "describes": "wallet-only claim → API key → first call",
+    "human_in_loop": false,
+    "auth": "bearer-x-murmur-api-key",
+    "claim_flow": "wallet-only-domain-bound-signature",
+    "primary_tier": "wallet_only"
   },
   "mcp": {
     "transport": "stdio",
