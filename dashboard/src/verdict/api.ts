@@ -241,4 +241,16 @@ export const verdictApi = {
     post<ClaimFinalizeResponse>(`/v1/agents/${encodeURIComponent(slug)}/claim/finalize`, body),
   todayFeed: () => get<TodayFeed>(`/v1/feed/today`),
   verifyCall: (call_id: string) => get<VerifyResult>(`/v1/calls/${encodeURIComponent(call_id)}/verify`),
+  discoverers: (slug: string, limit = 5) =>
+    get<{
+      schema_version: number;
+      slug: string;
+      discoverers: Array<{
+        ref: string;
+        agent_slug: string | null;
+        total: number;
+        first_at: string;
+        last_at: string;
+      }>;
+    }>(`/v1/agents/${encodeURIComponent(slug)}/discoverers?limit=${limit}`),
 };

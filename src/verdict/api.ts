@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import express from "express";
 import type Database from "better-sqlite3";
-import { agentsRepo, resolutionsRepo, submissionsRepo } from "./db.js";
+import { agentsRepo, refsRepo, resolutionsRepo, submissionsRepo } from "./db.js";
 import { getLeaderboard, get24hVerifiedVolume } from "./leaderboard.js";
 import type { VerdictEventBus } from "./events.js";
 import {
@@ -279,6 +279,55 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
   router.get("/v1/feed/today", (_req, res) => {
     res.json(getTodayFeed(deps.db, now()));
+  });
+
+  // ── Outreach attribution ──
+  // The /share/:slug page pings POST /v1/refs/:ref/click on mount when a
+  // ?ref=<sender> param is present. Counts are bucketed by (ref, slug)
+  // and exposed via /v1/agents/:slug/discoverers (rendered as
+  // 'discovered by @sender' on the agent profile) and /v1/refs (admin
+  // overview of top recruiters).
+  router.post(
+    "/v1/refs/:ref/click",
+    express.json({ limit: "1kb" }),
+    (req, res) => {
+      const ref = sanitizeRef(req.params.ref);
+      if (!ref) {
+        res.status(400).json({ code: "invalid_ref", message: "ref must be 1–32 chars [a-zA-Z0-9_.-]" });
+        return;
+      }
+      const body = (req.body ?? {}) as { agent_slug?: unknown };
+      let slug: string | null = null;
+      if (typeof body.agent_slug === "string" && body.agent_slug.length > 0) {
+        slug = body.agent_slug.slice(0, 64);
+      }
+      refsRepo.bumpClick(deps.db, ref, slug, nowIso(now()));
+      res.status(204).end();
+    },
+  );
+
+  router.get("/v1/refs", (req, res) => {
+    if (adminToken && req.header("X-Admin-Token") !== adminToken) {
+      res.status(403).json({ code: "forbidden", message: "admin token required" });
+      return;
+    }
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit ?? "50")));
+    res.json({
+      schema_version: SCHEMA_VERSION,
+      served_at: nowIso(now()),
+      senders: refsRepo.topSenders(deps.db, limit),
+    });
+  });
+
+  router.get("/v1/agents/:slug/discoverers", (req, res) => {
+    const slug = String(req.params.slug ?? "");
+    const limit = Math.max(1, Math.min(20, Number(req.query.limit ?? "5")));
+    const rows = refsRepo.discoverersForAgent(deps.db, slug, limit);
+    res.json({
+      schema_version: SCHEMA_VERSION,
+      slug,
+      discoverers: rows,
+    });
   });
 
   // ── Shareable embed assets — SVG badge + OG social card ──
@@ -615,6 +664,12 @@ function readHmacHeaders(req: Request): {
     );
   }
   return { agent_id, timestamp, signature };
+}
+
+function sanitizeRef(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const safe = raw.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32);
+  return safe.length === 0 ? null : safe;
 }
 
 function writeSseFrame(res: Response, eventName: string, payload: unknown): void {

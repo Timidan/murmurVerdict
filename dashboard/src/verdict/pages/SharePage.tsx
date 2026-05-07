@@ -44,6 +44,22 @@ export function SharePage({ slug }: { slug: string }) {
     };
   }, [slug]);
 
+  // Outreach attribution: when a visitor lands here from an outreach DM
+  // (?ref=<sender>) fire a single click ping so the daemon can tally
+  // top recruiters + 'discovered by' on the agent profile.
+  useEffect(() => {
+    if (!ref) return;
+    const apiBase = verdictApi.apiUrl.replace(/\/$/, "");
+    fetch(`${apiBase}/v1/refs/${encodeURIComponent(ref)}/click`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_slug: slug }),
+      keepalive: true,
+    }).catch(() => {
+      // best-effort; share page paints regardless
+    });
+  }, [ref, slug]);
+
   const tweetBody =
     agent === null
       ? `🪧 ${slug} on Murmur Verdict — the public referee for autonomous market agents. ${profileUrl}`

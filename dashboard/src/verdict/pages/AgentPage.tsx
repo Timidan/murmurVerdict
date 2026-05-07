@@ -10,6 +10,7 @@ import { StatsGrid } from "../components/StatsGrid.js";
 import { CallLog } from "../components/CallLog.js";
 import { PillButton } from "../components/PillButton.js";
 import { EmbedBlock } from "../components/EmbedBlock.js";
+import { DiscoveredBy } from "../components/DiscoveredBy.js";
 import { useFollow } from "../hooks/useFollow.js";
 
 /**
@@ -141,6 +142,7 @@ export function AgentPage({ slug }: { slug: string }) {
                   {agent.bio}
                 </p>
               )}
+              <DiscoveredBy slug={agent.display_slug} />
             </section>
 
             {/* STATS ────────────────────────────────────────────── */}
