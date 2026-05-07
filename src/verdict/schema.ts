@@ -157,6 +157,25 @@ export const SubmittedCallSchema = z
     submitted_at: z.string().datetime({ offset: false }),
     rationale: z.string().max(240).optional(),
     strategy_tag: StrategyTagSchema.optional(),
+    // P2 commit-reveal opt-in. Defaults to undefined → daemon picks
+    // legacy_plaintext for backwards compat. When the agent submits
+    // privacy_mode='committed', the daemon computes commit_hash from
+    // the canonical preimage (D13) using THIS submission's plaintext
+    // plus the agent-supplied salt + daemon-canonical t0, encrypts the
+    // body to its age recipient + drand round, and stores ONLY the
+    // commit_hash + envelope. Public surfaces never see the plaintext.
+    // String, NOT enum, so v0.3 can introduce 'fhevm' without a schema
+    // bump (Codex compat note).
+    privacy_mode: z.string().optional(),
+    // Agent-supplied entropy for the commit preimage. 32 random bytes
+    // hex (64 chars). REQUIRED when privacy_mode='committed'; daemon
+    // rejects with schema_invalid if missing in that mode. Without it
+    // the commit_hash leaks (side, asset, horizon, confidence) via a
+    // ~80k-entry dictionary attack.
+    salt: z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/, "32-byte hex (64 chars, lowercase preferred)")
+      .optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -165,6 +184,13 @@ export const SubmittedCallSchema = z
         code: z.ZodIssueCode.custom,
         message: "rationale or strategy_tag is required",
         path: ["rationale"],
+      });
+    }
+    if (v.privacy_mode === "committed" && !v.salt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "salt is required when privacy_mode is 'committed'",
+        path: ["salt"],
       });
     }
   });
@@ -298,28 +324,110 @@ export type VerdictResolution = z.infer<typeof VerdictResolutionSchema>;
 // These are the EXACT shapes that get keccak256-hashed. Field order does not
 // matter (canonicalization sorts keys), but the field SET is invariant.
 
-export const AcceptanceReceiptPayloadSchema = z
+// ─── Acceptance receipt — v1 (legacy_plaintext) ────────────────────────────
+//
+// Original v0.1 shape: bakes the agent-submitted plaintext envelope into
+// the receipt subject. Still produced for benchmark + shadow-ingestion
+// agents per D20 — those stay legacy_plaintext until v0.3.
+const AcceptanceReceiptPayloadV1Schema = z
   .object({
-    schema_version: z.literal(SCHEMA_VERSION),
+    schema_version: z.literal(1),
     scoring_version: z.literal(SCORING_VERSION),
     submission: SubmittedCallSchema,
     preflight: VerdictPreflightSchema,
     oracle_policy: T0PolicySchema,
     accepted_at: z.string().datetime({ offset: false }),
     call_id: z.string().uuid(),
-    // Pillar-4 marketplace portability: bind the issuing agent's wallet
-    // into the receipt subject so off-Murmur verifiers can attest the
-    // (wallet → score) relationship without a daemon round-trip. Both
-    // fields are optional in v0.2 — receipts written before this field
-    // was added are still valid, since the canonicalizer drops undefined
-    // values and re-hashing a stored canonical_json doesn't depend on
-    // the schema seeing every field. Mandatory at v0.3 fhEVM.
+    // P1.5 wallet binding (optional for v1 since it lands additively on
+    // pre-existing receipts that didn't have it).
     agent_wallet: WalletAddressSchema.optional(),
     chain_id: ChainIdSchema.optional(),
   })
   .strict();
+
+// ─── Acceptance receipt — v2 (committed) ───────────────────────────────────
+//
+// P2 shape: NO plaintext envelope. Only the commit_hash binds the
+// receipt to a specific (side, asset, horizon, confidence, salt, t0)
+// tuple — verifiable at reveal time but not extractable from this
+// receipt alone. Agents in kind ∈ (verified, wallet_only) submit in
+// this mode in v0.2; benchmarks stay v1 (D20).
+//
+// Optional `drand` block is the daemon-less reveal commitment (D21):
+// the encrypted preimage is also tlock-encrypted to a future drand
+// round, so the public can decrypt without the operator's cooperation
+// once that round is past.
+//
+// Optional `fallback` block records the daemon-encrypted age envelope
+// metadata (D14d) — the daemon decrypts this past `fallback_after` if
+// the agent fails to reveal voluntarily.
+//
+// `request_hash` is the ERC-8004 vocabulary (D23): keccak256 of the
+// agent's submission request body. Lets off-Murmur consumers chain
+// receipts to an immutable input.
+const AcceptanceReceiptPayloadV2Schema = z
+  .object({
+    schema_version: z.literal(2),
+    scoring_version: z.literal(SCORING_VERSION),
+    receipt_kind: z.literal("acceptance"),
+    call_id: z.string().uuid(),
+    agent_id: z.string().uuid(),
+    accepted_at: z.string().datetime({ offset: false }),
+    privacy_mode: z.literal("committed"),
+    commit: z
+      .object({
+        hash: z.string().regex(/^0x[0-9a-f]{64}$/),
+        scheme: z.literal("keccak256"),
+        preimage_schema: z.string(), // "murmur-verdict-v0.2-commit@1"
+      })
+      .strict(),
+    preflight: VerdictPreflightSchema,
+    oracle_policy: T0PolicySchema,
+    // Wallet binding REQUIRED in v2 — committed-mode agents are always
+    // wallet-bound (verified or wallet_only kind). Pillar-4 portability
+    // lives or dies on this field.
+    agent_wallet: WalletAddressSchema,
+    chain_id: ChainIdSchema,
+    // ERC-8004 vocabulary (D23). keccak256 of the canonical JSON of the
+    // agent's HTTP submission body. Lets a verifier reconstruct the
+    // input chain without trusting the daemon to keep the request body.
+    request_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
+    // Optional drand/tlock commitment (D21).
+    drand: z
+      .object({
+        chain_hash: z.string(),
+        round: z.number().int().positive(),
+        ciphertext_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
+      })
+      .strict()
+      .optional(),
+    // Optional age fallback envelope binding.
+    fallback: z
+      .object({
+        // String, NOT enum, so v0.3 can introduce 'fhevm-euint' without
+        // a schema migration (Codex P2 plan compatibility note).
+        encrypted_body_alg: z.string(),
+        daemon_key_id: z.string(),
+        encrypted_body_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
+        fallback_after: z.string().datetime({ offset: false }),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export const AcceptanceReceiptPayloadSchema = z.discriminatedUnion(
+  "schema_version",
+  [AcceptanceReceiptPayloadV1Schema, AcceptanceReceiptPayloadV2Schema],
+);
 export type AcceptanceReceiptPayload = z.infer<
   typeof AcceptanceReceiptPayloadSchema
+>;
+export type AcceptanceReceiptPayloadV1 = z.infer<
+  typeof AcceptanceReceiptPayloadV1Schema
+>;
+export type AcceptanceReceiptPayloadV2 = z.infer<
+  typeof AcceptanceReceiptPayloadV2Schema
 >;
 
 export const ResolutionReceiptPayloadSchema = z
