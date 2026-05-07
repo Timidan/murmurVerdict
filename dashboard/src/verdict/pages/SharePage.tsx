@@ -45,8 +45,10 @@ export function SharePage({ slug }: { slug: string }) {
   }, [slug]);
 
   // Outreach attribution: when a visitor lands here from an outreach DM
-  // (?ref=<sender>) fire a single click ping so the daemon can tally
-  // top recruiters + 'discovered by' on the agent profile.
+  // (?ref=<sender>) fire a single click ping AND sticky the (ref, slug)
+  // pair to localStorage. ClaimPage reads it on successful finalize so
+  // the conversion gets credited back to the original sender even after
+  // they navigate away from /share.
   useEffect(() => {
     if (!ref) return;
     const apiBase = verdictApi.apiUrl.replace(/\/$/, "");
@@ -55,9 +57,15 @@ export function SharePage({ slug }: { slug: string }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ agent_slug: slug }),
       keepalive: true,
-    }).catch(() => {
-      // best-effort; share page paints regardless
-    });
+    }).catch(() => {});
+    try {
+      window.localStorage.setItem(
+        "murmur-verdict.ref-attribution.v1",
+        JSON.stringify({ ref, agent_slug: slug, at: Date.now() }),
+      );
+    } catch {
+      // storage disabled / quota — silent fail
+    }
   }, [ref, slug]);
 
   const tweetBody =

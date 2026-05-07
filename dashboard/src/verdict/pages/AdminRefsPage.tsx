@@ -7,6 +7,7 @@ interface FullSender {
   ref: string;
   total: number;
   agents_touched: number;
+  converted: number;
   last_at: string;
 }
 
@@ -116,10 +117,11 @@ export function AdminRefsPage() {
 
         {rows && rows.length > 0 && (
           <section className="border-y border-[var(--color-border)]">
-            <div className="grid grid-cols-[40px_1fr_120px_120px_140px_120px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+            <div className="grid grid-cols-[40px_1fr_120px_100px_100px_140px_100px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
               <span>rank</span>
               <span>sender</span>
               <span className="text-right">clicks</span>
+              <span className="text-right">claims</span>
               <span className="text-right">agents</span>
               <span className="text-right">last seen</span>
               <span className="text-right">actions</span>
@@ -129,7 +131,7 @@ export function AdminRefsPage() {
                 <li
                   key={r.ref}
                   className={
-                    "grid grid-cols-[40px_1fr_120px_120px_140px_120px] gap-4 px-6 py-4 items-center " +
+                    "grid grid-cols-[40px_1fr_120px_100px_100px_140px_100px] gap-4 px-6 py-4 items-center " +
                     (i > 0 ? "border-t border-[var(--color-border)]" : "")
                   }
                 >
@@ -143,6 +145,14 @@ export function AdminRefsPage() {
                     @{r.ref}
                   </a>
                   <span className="t-data text-right text-[var(--color-display)] font-mono">{r.total}</span>
+                  <span
+                    className={
+                      "t-data text-right font-mono " +
+                      (r.converted > 0 ? "text-[var(--color-accent)]" : "text-[var(--color-disabled)]")
+                    }
+                  >
+                    {r.converted}
+                  </span>
                   <span className="t-data text-right text-[var(--color-secondary)]">{r.agents_touched}</span>
                   <span className="t-meta text-right text-[var(--color-disabled)]">
                     {r.last_at?.slice(5, 16).replace("T", " ") ?? "—"}

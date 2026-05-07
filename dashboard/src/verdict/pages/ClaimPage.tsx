@@ -45,6 +45,35 @@ export function ClaimPage({ slug }: { slug: string }) {
       });
       setFinalized(r);
       setStage("done");
+      // Outreach attribution: if a sender's ?ref click brought this
+      // visitor to /share earlier in the flow, the (ref, slug) pair was
+      // stickied to localStorage. Fire the conversion ping so the daemon
+      // credits the sender. Best-effort: never block the success path.
+      try {
+        const raw = window.localStorage.getItem(
+          "murmur-verdict.ref-attribution.v1",
+        );
+        if (raw) {
+          const parsed = JSON.parse(raw) as { ref?: string; agent_slug?: string };
+          if (parsed.ref && parsed.agent_slug === slug) {
+            const apiBase = verdictApi.apiUrl.replace(/\/$/, "");
+            fetch(
+              `${apiBase}/v1/refs/${encodeURIComponent(parsed.ref)}/conversion`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ agent_slug: slug }),
+                keepalive: true,
+              },
+            ).catch(() => {});
+            window.localStorage.removeItem(
+              "murmur-verdict.ref-attribution.v1",
+            );
+          }
+        }
+      } catch {
+        // storage disabled / parse error — continue
+      }
     } catch (e) {
       setError((e as Error).message);
     }

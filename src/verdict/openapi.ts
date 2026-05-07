@@ -166,6 +166,30 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           security: [{ hmacAuth: [] }, { apiKeyAuth: [] }],
         },
       },
+      "/v1/refs/{ref}/conversion": {
+        post: {
+          tags: ["outreach"],
+          summary: "Bump the conversion counter for a sender (called by the dashboard on successful claim finalize). Only counts when a prior click exists for the same (ref, agent_slug).",
+          parameters: [{ name: "ref", in: "path", required: true, schema: { type: "string", maxLength: 32 } }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["agent_slug"],
+                  properties: { agent_slug: { type: "string" } },
+                },
+              },
+            },
+          },
+          responses: {
+            "204": { description: "Counted" },
+            "202": { description: "Accepted but not counted (no prior click)" },
+            "400": { description: "Invalid ref or agent_slug" },
+          },
+        },
+      },
       "/v1/refs/{ref}/click": {
         post: {
           tags: ["outreach"],

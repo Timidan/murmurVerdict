@@ -6,6 +6,7 @@ interface Sender {
   ref: string;
   total: number;
   agents_touched: number;
+  converted: number;
   last_at: string;
 }
 
@@ -63,10 +64,11 @@ function Table({ rows }: { rows: Sender[] }) {
   const max = rows.reduce((m, r) => Math.max(m, r.total), 0) || 1;
   return (
     <section className="border-y border-[var(--color-border)]">
-      <div className="grid grid-cols-[40px_1fr_120px_120px_140px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+      <div className="grid grid-cols-[40px_1fr_120px_120px_120px_140px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
         <span>rank</span>
         <span>sender</span>
         <span className="text-right">clicks</span>
+        <span className="text-right">claims</span>
         <span className="text-right">agents</span>
         <span className="text-right">last seen</span>
       </div>
@@ -78,7 +80,7 @@ function Table({ rows }: { rows: Sender[] }) {
               target="_blank"
               rel="noreferrer"
               className={
-                "grid grid-cols-[40px_1fr_120px_120px_140px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[40px_1fr_120px_120px_120px_140px] gap-4 px-6 py-4 items-center " +
                 "no-underline press-feedback group hover:bg-[white]/[0.02] " +
                 "transition-colors duration-150 ease-out " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
@@ -102,6 +104,14 @@ function Table({ rows }: { rows: Sender[] }) {
                 <span className="t-data text-right text-[var(--color-display)] font-mono">
                   {r.total}
                 </span>
+              </span>
+              <span
+                className={
+                  "t-data text-right font-mono " +
+                  (r.converted > 0 ? "text-[var(--color-accent)]" : "text-[var(--color-disabled)]")
+                }
+              >
+                {r.converted}
               </span>
               <span className="t-data text-right text-[var(--color-secondary)]">
                 {r.agents_touched}

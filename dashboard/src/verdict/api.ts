@@ -261,6 +261,7 @@ export const verdictApi = {
         ref: string;
         total: number;
         agents_touched: number;
+        converted: number;
         last_at: string;
       }>;
     }>(`/v1/refs/top?limit=${limit}`),

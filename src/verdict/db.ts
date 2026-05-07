@@ -74,6 +74,12 @@ function applyMigrations(db: Database.Database): void {
     v = 3;
     set.run("schema_version", String(v));
   }
+
+  if (v < 4) {
+    db.exec(MIGRATION_004);
+    v = 4;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -253,6 +259,17 @@ const MIGRATION_003 = `
     disabled          INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX idx_webhooks_slug ON webhooks(agent_slug);
+`;
+
+// ─── Migration 004 — conversion attribution ──────────────────────────────────
+//
+// Tracks the conversion side of the recruiters game: when a sender's ?ref
+// click leads to a verified claim of the same agent_slug, the (ref, slug)
+// bucket's converted_count goes up. Claim attribution is propagated by the
+// dashboard reading a sticky ref from localStorage at finalize time.
+const MIGRATION_004 = `
+  ALTER TABLE ref_clicks ADD COLUMN converted_count       INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE ref_clicks ADD COLUMN last_conversion_at    TEXT;
 `;
 
 // ─── Repositories (typed, narrow) ────────────────────────────────────────────
@@ -973,6 +990,8 @@ export interface RefClickRow {
   total: number;
   first_at: string;
   last_at: string;
+  converted_count: number;
+  last_conversion_at: string | null;
 }
 
 export const refsRepo = {
@@ -1013,23 +1032,50 @@ export const refsRepo = {
   topSenders(
     db: Database.Database,
     limit = 50,
-  ): Array<{ ref: string; total: number; agents_touched: number; last_at: string }> {
+  ): Array<{
+    ref: string;
+    total: number;
+    agents_touched: number;
+    converted: number;
+    last_at: string;
+  }> {
     return prep(
       db,
       `SELECT ref,
               SUM(total) AS total,
+              SUM(converted_count) AS converted,
               COUNT(DISTINCT agent_slug) AS agents_touched,
               MAX(last_at) AS last_at
        FROM ref_clicks
        GROUP BY ref
-       ORDER BY total DESC, last_at DESC
+       ORDER BY converted DESC, total DESC, last_at DESC
        LIMIT ?`,
     ).all(limit) as Array<{
       ref: string;
       total: number;
       agents_touched: number;
+      converted: number;
       last_at: string;
     }>;
+  },
+
+  bumpConversion(
+    db: Database.Database,
+    ref: string,
+    agent_slug: string,
+    nowIso: string,
+  ): boolean {
+    // Only count a conversion against a (ref, agent_slug) pair if a click
+    // was actually recorded earlier — otherwise anyone could call this with
+    // an arbitrary ref and inflate the counter.
+    const info = prep(
+      db,
+      `UPDATE ref_clicks
+       SET converted_count = converted_count + 1,
+           last_conversion_at = ?
+       WHERE ref = ? AND agent_slug = ?`,
+    ).run(nowIso, ref, agent_slug);
+    return info.changes > 0;
   },
 };
 

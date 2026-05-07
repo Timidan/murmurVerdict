@@ -495,6 +495,32 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   // 'discovered by @sender' on the agent profile) and /v1/refs (admin
   // overview of top recruiters).
   router.post(
+    "/v1/refs/:ref/conversion",
+    express.json({ limit: "1kb" }),
+    (req, res) => {
+      const ref = sanitizeRef(req.params.ref);
+      if (!ref) {
+        res.status(400).json({ code: "invalid_ref" });
+        return;
+      }
+      const body = (req.body ?? {}) as { agent_slug?: unknown };
+      if (typeof body.agent_slug !== "string" || body.agent_slug.length === 0) {
+        res.status(400).json({ code: "invalid_agent_slug" });
+        return;
+      }
+      const slug = body.agent_slug.slice(0, 64);
+      const counted = refsRepo.bumpConversion(deps.db, ref, slug, nowIso(now()));
+      if (!counted) {
+        // No matching (ref, agent_slug) bucket — no prior click recorded.
+        // Return 202 (accepted but not counted) so callers know.
+        res.status(202).json({ counted: false, reason: "no_prior_click" });
+        return;
+      }
+      res.status(204).end();
+    },
+  );
+
+  router.post(
     "/v1/refs/:ref/click",
     express.json({ limit: "1kb" }),
     (req, res) => {
