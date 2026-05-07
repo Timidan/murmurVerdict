@@ -16,6 +16,11 @@ services:
         value: /app/data/verdict.db
       - key: DASHBOARD_ORIGIN
         sync: false
+      # Where /share/:slug should redirect browsers after OG meta. Must be
+      # the Vercel SPA origin, not the daemon's own URL.
+      - key: MURMUR_DASHBOARD_URL
+        sync: false
+      # Back-compat fallback for MURMUR_DASHBOARD_URL.
       - key: MURMUR_PUBLIC_URL
         sync: false
 
