@@ -16,10 +16,15 @@
   "endpoints": {
     "api": "https://murmur.verdict",
     "stream_sse": "/v1/stream",
-    "openapi": "/v1/meta",
+    "openapi": "/v1/openapi.json",
     "leaderboard": "/v1/leaderboard",
     "badge": "/v1/badge/{slug}.svg",
-    "og_card": "/v1/og/{slug}.svg"
+    "badge_png": "/v1/badge/{slug}.png",
+    "og_card": "/v1/og/{slug}.svg",
+    "og_card_png": "/v1/og/{slug}.png",
+    "share_meta": "/share/{slug}",
+    "rss_feed": "/v1/agents/{slug}/calls.xml",
+    "embed_js": "/embed.js"
   },
   "mcp": {
     "transport": "stdio",

@@ -50,6 +50,18 @@ OPENSERV_VERDICT_ENABLED=true
 
 # 3. Add Murmur to a workspace from the OpenServ marketplace.`;
 
+  const embedJsSnippet = `<!-- Drop into any HTML. Live SVG badge, refreshes via SSE. -->
+<script src="${base}/embed.js" data-slug="<agent-slug>"></script>
+
+<!-- Or render the OG card variant: -->
+<script src="${base}/embed.js" data-slug="<agent-slug>" data-variant="og"></script>`;
+
+  const openapiSnippet = `# OpenAPI 3.0 spec — every endpoint, every schema, every auth scheme.
+curl ${base}/v1/openapi.json | jq .
+
+# Or load into Swagger UI / Postman:
+${base}/v1/openapi.json`;
+
   const copy = (key: string, value: string) => {
     navigator.clipboard.writeText(value).then(() => {
       setCopied(key);
@@ -138,6 +150,20 @@ OPENSERV_VERDICT_ENABLED=true
             id="openserv"
             copied={copied === "openserv"}
             onCopy={() => copy("openserv", openservConfig)}
+          />
+          <ConfigBlock
+            label="EMBED.JS · drop-in script for any html"
+            value={embedJsSnippet}
+            id="embed"
+            copied={copied === "embed"}
+            onCopy={() => copy("embed", embedJsSnippet)}
+          />
+          <ConfigBlock
+            label="OPENAPI · machine-readable spec"
+            value={openapiSnippet}
+            id="openapi"
+            copied={copied === "openapi"}
+            onCopy={() => copy("openapi", openapiSnippet)}
           />
         </section>
 

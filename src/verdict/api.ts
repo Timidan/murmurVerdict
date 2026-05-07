@@ -25,6 +25,7 @@ import { verifyAgentApiKey } from "./auth.js";
 import { getTodayFeed } from "./feed.js";
 import { verifyReceiptChain, VerifyError } from "./verify.js";
 import { renderBadgeSvg, renderOgSvg, rasterize } from "./badge.js";
+import { buildOpenApiSpec } from "./openapi.js";
 
 // ─── API surface ─────────────────────────────────────────────────────────────
 //
@@ -126,6 +127,29 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       res.status(status).json(result);
     }),
   );
+
+  // OpenAPI 3.0 spec — the document an OpenServ catalog crawler / Postman /
+  // Swagger UI ingests. Cached lightly so a busy crawler doesn't hammer.
+  router.get("/v1/openapi.json", (req, res) => {
+    const publicUrl =
+      (process.env.MURMUR_PUBLIC_URL?.trim() || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=900");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.json(buildOpenApiSpec({ publicUrl }));
+  });
+
+  // /embed.js — drop-in script that installs a live badge wherever the
+  // script tag sits. Subscribes to /v1/stream so the badge refreshes on
+  // every leaderboard.update without a page reload. ~2 kB ungzipped.
+  router.get("/embed.js", (req, res) => {
+    const publicUrl =
+      (process.env.MURMUR_PUBLIC_URL?.trim() || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+    res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=900");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(EMBED_JS.replace(/__BASE__/g, publicUrl));
+  });
 
   router.get("/v1/health", (_req, res) => {
     res.json({
@@ -897,6 +921,89 @@ ${items}
   </channel>
 </rss>`;
 }
+
+// Drop-in widget. The daemon serves this at /embed.js. Single-file vanilla
+// JS — no build step, no runtime deps. Caller embeds via:
+//   <script src="https://murmur.verdict/embed.js" data-slug="cred"></script>
+// Optional data-* attrs:
+//   data-slug          required, agent slug
+//   data-variant       "badge" (default) | "og"
+//   data-href          override the click-through URL
+//   data-no-live       "true" disables the SSE live-refresh subscription
+const EMBED_JS = `(function () {
+  var BASE = "__BASE__";
+  var script = document.currentScript;
+  if (!script) return;
+  var slug = script.getAttribute("data-slug");
+  if (!slug) {
+    console.warn("[murmur-embed] missing data-slug on the <script> tag");
+    return;
+  }
+  var variant = script.getAttribute("data-variant") || "badge";
+  var href = script.getAttribute("data-href") || (BASE + "/share/" + encodeURIComponent(slug));
+  var live = script.getAttribute("data-no-live") !== "true";
+
+  function build() {
+    var img = document.createElement("img");
+    img.src = BASE + "/v1/" + (variant === "og" ? "og" : "badge") + "/" + encodeURIComponent(slug) + ".svg?t=" + Date.now();
+    img.alt = slug + " on Murmur Verdict";
+    img.loading = "lazy";
+    img.style.display = "inline-block";
+    img.style.maxWidth = "100%";
+    img.style.height = "auto";
+    if (variant === "badge") {
+      img.width = 320;
+      img.height = 80;
+    } else {
+      img.width = 1200;
+      img.height = 630;
+    }
+    var anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.style.display = "inline-block";
+    anchor.style.textDecoration = "none";
+    anchor.appendChild(img);
+    return { anchor: anchor, img: img };
+  }
+
+  var built = build();
+  if (script.parentNode) {
+    script.parentNode.insertBefore(built.anchor, script);
+  }
+
+  if (!live || typeof EventSource === "undefined") return;
+
+  var es;
+  var attempt = 0;
+  function connect() {
+    try {
+      es = new EventSource(BASE + "/v1/stream");
+    } catch (e) {
+      return;
+    }
+    es.addEventListener("leaderboard.update", function () {
+      built.img.src = BASE + "/v1/" + (variant === "og" ? "og" : "badge") + "/" + encodeURIComponent(slug) + ".svg?t=" + Date.now();
+    });
+    es.addEventListener("call.resolved", function (ev) {
+      try {
+        var p = JSON.parse(ev.data || "{}");
+        if (p.agent_slug && p.agent_slug !== slug) return;
+        built.img.src = BASE + "/v1/" + (variant === "og" ? "og" : "badge") + "/" + encodeURIComponent(slug) + ".svg?t=" + Date.now();
+      } catch (e) {}
+    });
+    es.onerror = function () {
+      if (es) es.close();
+      es = null;
+      var delay = Math.min(30000, 1000 * Math.pow(2, Math.min(attempt, 6)));
+      attempt++;
+      setTimeout(connect, delay);
+    };
+  }
+  connect();
+})();
+`;
 
 function escapeHtml(s: string): string {
   return s

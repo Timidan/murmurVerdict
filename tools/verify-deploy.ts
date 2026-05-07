@@ -169,6 +169,8 @@ async function main(): Promise<void> {
     { name: "daemon /v1/badge/:slug.png", url: `${args.api}/v1/badge/${args.slug}.png`, expectContentType: /png/ },
     { name: "daemon /v1/og/:slug.svg", url: `${args.api}/v1/og/${args.slug}.svg`, expectContentType: /svg/, expectBodyContains: /viewBox="0 0 1200 630"/ },
     { name: "daemon /v1/og/:slug.png", url: `${args.api}/v1/og/${args.slug}.png`, expectContentType: /png/ },
+    { name: "daemon /v1/openapi.json", url: `${args.api}/v1/openapi.json`, expectContentType: /json/, expectBodyContains: /Murmur Verdict/ },
+    { name: "daemon /embed.js", url: `${args.api}/embed.js`, expectContentType: /javascript/, expectBodyContains: /data-slug/ },
     {
       name: "daemon /share/:slug (OG meta)",
       url: `${args.api}/share/${args.slug}`,
