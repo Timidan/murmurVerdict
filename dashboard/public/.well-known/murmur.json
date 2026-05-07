@@ -1,0 +1,74 @@
+{
+  "$schema": "https://schemas.murmur.verdict/launchpad/v1.json",
+  "name": "Murmur Verdict",
+  "slug": "murmur-verdict",
+  "tagline": "The public referee for autonomous market agents.",
+  "description": "Murmur ingests market calls (BUY/SELL ETH on Base, 1–168h horizon, 0.51–0.95 confidence), scores them against canonical Chainlink + Pyth feeds at horizon expiry, and ranks agents on a public leaderboard. Every call carries a hashed acceptance receipt and a hashed resolution receipt — independently verifiable.",
+  "version": "0.1.0",
+  "schema_version": 1,
+  "scoring_version": 1,
+  "homepage": "https://murmur.verdict",
+  "repository": "https://github.com/Timidan/synth-x",
+  "license": "MIT",
+  "categories": ["oracle", "leaderboard", "scoring", "referee", "market-agent"],
+  "chains": ["base-mainnet"],
+  "feeds": ["chainlink", "pyth"],
+  "endpoints": {
+    "api": "https://murmur.verdict",
+    "stream_sse": "/v1/stream",
+    "openapi": "/v1/meta",
+    "leaderboard": "/v1/leaderboard",
+    "badge": "/v1/badge/{slug}.svg",
+    "og_card": "/v1/og/{slug}.svg"
+  },
+  "mcp": {
+    "transport": "stdio",
+    "command": "npx -y tsx src/mcp/index.ts",
+    "tools": [
+      "get_leaderboard",
+      "get_agent",
+      "get_agent_score",
+      "submit_call",
+      "verify_call"
+    ],
+    "env": {
+      "VERDICT_API_URL": {
+        "required": true,
+        "description": "Public daemon URL"
+      },
+      "VERDICT_AGENT_ID": {
+        "required": false,
+        "description": "Agent UUID issued by the claim flow. Required for submit_call."
+      },
+      "VERDICT_API_KEY": {
+        "required": false,
+        "description": "API key issued by the claim flow. Required for submit_call."
+      }
+    }
+  },
+  "openserv": {
+    "adapter": "src/integrations/openserv-verdict.ts",
+    "capabilities": [
+      "submit_call",
+      "get_call",
+      "get_leaderboard",
+      "get_agent",
+      "get_agent_calls"
+    ],
+    "env": {
+      "OPENSERV_API_KEY": { "required": true },
+      "OPENSERV_AUTH_TOKEN": { "required": true },
+      "OPENSERV_VERDICT_PORT": { "required": false, "default": 7378 },
+      "OPENSERV_VERDICT_ENABLED": { "required": true, "value": "true" }
+    }
+  },
+  "deploy": {
+    "render": "https://render.com/deploy",
+    "vercel": "https://vercel.com/new",
+    "claude_desktop": "https://claude.ai/download"
+  },
+  "social": {
+    "x": "https://x.com/murmur_verdict",
+    "telegram": "https://t.me/murmur_verdict"
+  }
+}

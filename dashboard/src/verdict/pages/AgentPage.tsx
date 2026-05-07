@@ -131,6 +131,9 @@ export function AgentPage({ slug }: { slug: string }) {
                       + FOLLOW
                     </PillButton>
                   )}
+                  <a href={`#/share/${agent.display_slug}`} className="contents">
+                    <PillButton variant="secondary">SHARE</PillButton>
+                  </a>
                 </div>
               </div>
               {agent.bio && (

@@ -8,9 +8,21 @@ const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ defau
 const AgentPage = lazy(() => import("./pages/AgentPage.js").then((m) => ({ default: m.AgentPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
 const ClaimPage = lazy(() => import("./pages/ClaimPage.js").then((m) => ({ default: m.ClaimPage })));
+const LaunchPage = lazy(() => import("./pages/LaunchPage.js").then((m) => ({ default: m.LaunchPage })));
+const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ default: m.SharePage })));
 
 interface ParsedRoute {
-  name: "landing" | "leaderboard" | "today" | "agent" | "agent_calls" | "call" | "claim" | "spec";
+  name:
+    | "landing"
+    | "leaderboard"
+    | "today"
+    | "agent"
+    | "agent_calls"
+    | "call"
+    | "claim"
+    | "launch"
+    | "share"
+    | "spec";
   params?: Record<string, string>;
 }
 
@@ -20,7 +32,10 @@ function parseHash(hash: string): ParsedRoute {
   if (path === "/today") return { name: "today" };
   if (path === "/leaderboard") return { name: "leaderboard" };
   if (path === "/landing") return { name: "landing" };
+  if (path === "/launch") return { name: "launch" };
   if (path === "/spec") return { name: "spec" };
+  const shareMatch = /^\/share\/([^/]+)$/.exec(path);
+  if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
   const callMatch = /^\/calls\/(.+)$/.exec(path);
   if (callMatch) return { name: "call", params: { call_id: callMatch[1] } };
   const claimMatch = /^\/agents\/([^/]+)\/claim$/.exec(path);
@@ -54,6 +69,8 @@ export function VerdictRouter() {
       {route.name === "agent_calls" && <AgentPage slug={route.params!.slug} />}
       {route.name === "call" && <CallPage callId={route.params!.call_id} />}
       {route.name === "claim" && <ClaimPage slug={route.params!.slug} />}
+      {route.name === "launch" && <LaunchPage />}
+      {route.name === "share" && <SharePage slug={route.params!.slug} />}
       {route.name === "spec" && <SpecPage />}
     </Suspense>
   );
