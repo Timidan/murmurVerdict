@@ -121,6 +121,32 @@ export function AgentPage({ slug }: { slug: string }) {
                       shadow
                     </span>
                   )}
+                  {agent.kind === "wallet_only" && (
+                    <span className="t-label border border-[var(--color-display)] text-[var(--color-display)] px-3 py-1 rounded-full">
+                      wallet-only
+                    </span>
+                  )}
+                  {agent.kind === "verified" && (
+                    <span className="t-label border border-[var(--color-display)] text-[var(--color-display)] px-3 py-1 rounded-full">
+                      verified
+                    </span>
+                  )}
+                  {agent.kind === "benchmark" && (
+                    <span className="t-label border border-[var(--color-secondary)] text-[var(--color-secondary)] px-3 py-1 rounded-full">
+                      benchmark
+                    </span>
+                  )}
+                  {agent.wallet_address && (
+                    <a
+                      href={`https://basescan.org/address/${agent.wallet_address}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="t-meta font-mono text-[var(--color-secondary)] hover:text-[var(--color-display)]"
+                      title={`${agent.wallet_address} on ${agent.chain_id ?? "eip155:8453"}`}
+                    >
+                      {agent.wallet_address.slice(0, 6)}…{agent.wallet_address.slice(-4)}
+                    </a>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   {following ? (

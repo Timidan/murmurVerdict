@@ -5,11 +5,13 @@
 const API_URL = (import.meta.env.VITE_VERDICT_API_URL?.trim() ||
   "http://localhost:8080") as string;
 
+export type AgentKind = "verified" | "benchmark" | "shadow" | "internal_test" | "wallet_only";
+
 export interface LeaderboardRow {
   agent_id: string;
   display_slug: string;
   display_name: string;
-  kind: "verified" | "benchmark" | "shadow" | "internal_test";
+  kind: AgentKind;
   tier: "main" | "provisional";
   rank: number | null;
   verdict_score: number | null;
@@ -35,6 +37,10 @@ export interface AgentProfile {
   bio?: string;
   verified_identities: Array<{ kind: string; value: string; verified_at: string }>;
   created_at: string;
+  /** Lowercase 0x+40hex; top-level since P1.5 phase-1. */
+  wallet_address?: string;
+  /** CAIP-2, e.g. eip155:8453. */
+  chain_id?: string;
 }
 
 export interface AgentCallRow {
@@ -227,7 +233,7 @@ export const verdictApi = {
       `/v1/leaderboard${q ? `?${q}` : ""}`,
     );
   },
-  agentsByKind: (kind: "verified" | "benchmark" | "shadow" | "internal_test", limit = 50) =>
+  agentsByKind: (kind: AgentKind, limit = 50) =>
     get<{
       schema_version: number;
       served_at: string;
