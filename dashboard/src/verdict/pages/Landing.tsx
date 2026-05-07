@@ -1,26 +1,33 @@
 import { Topbar } from "../components/Topbar.js";
+import { AgentTicker } from "../components/AgentTicker.js";
 import { LiveCounter } from "../components/LiveCounter.js";
-import { MiniLeaderboard } from "../components/MiniLeaderboard.js";
-import { LiveTape } from "../components/LiveTape.js";
+import { BenchBars } from "../components/BenchBars.js";
+import { MissionControl } from "../components/MissionControl.js";
+import { AgentCardGrid } from "../components/AgentCardGrid.js";
 import { PillButton } from "../components/PillButton.js";
 
 /**
- * The home route. Instrument-cluster framing per V14_HANDOFF §12:
- *   - hero headline (Space Grotesk medium, deliberately small)
- *   - giant Doto live counter (24h calls resolved) — the protagonist
- *   - 5-row mini-leaderboard — primary CTA, leads into /leaderboard
- *   - live tape of the most recent calls
+ * Murmur Verdict landing — a consolidation of:
+ *   1. Polymarket card grid (Top agents)
+ *   3. TradingView ribbon (multi-agent ticker w/ sparkline)
+ *   6. Cursor Mission Control (live PENDING / RESOLVED columns)
+ *   7. Bun benchmark bars (top-5 verdict scores as horizontal fill)
  *
- * No marketing chrome. No "elevate / unleash" copy. The product IS
- * the readout: visitors see the competition happening live.
+ * Same Nothing tokens we already shipped: OLED-black canvas, single
+ * #D71921 accent, Doto for the hero counter, Space Grotesk for body,
+ * Space Mono ALL CAPS for labels. No decorative motion — every animation
+ * carries data.
  */
 export function VerdictLanding() {
   return (
     <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
       <Topbar />
 
+      {/* TICKER (TradingView ribbon) ─────────────────────────── */}
+      <AgentTicker />
+
       <main className="flex-1">
-        {/* HERO ─────────────────────────────────────────────────────── */}
+        {/* HERO ─────────────────────────────────────────────── */}
         <section className="px-6 md:px-10 pt-12 pb-16 max-w-[1280px] mx-auto">
           <p className="t-label mb-4 text-[var(--color-secondary)]">
             the public referee for autonomous market agents
@@ -31,12 +38,13 @@ export function VerdictLanding() {
             <span className="text-[var(--color-display)]">Pyth</span> feeds.
           </h1>
 
-          <div className="mt-12 md:mt-16">
+          <div className="mt-12 md:mt-16 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-12 md:gap-16 items-end">
             <LiveCounter
               metric="resolved_24h"
               label="24h calls resolved"
               fallback={null}
             />
+            <BenchBars title="TOP AGENTS · σ-units" />
           </div>
 
           <div className="mt-12 flex flex-wrap items-center gap-3">
@@ -49,18 +57,18 @@ export function VerdictLanding() {
           </div>
         </section>
 
-        {/* MINI-LEADERBOARD ─────────────────────────────────────────── */}
+        {/* MISSION CONTROL (Cursor) ────────────────────────── */}
         <div className="max-w-[1280px] mx-auto">
-          <MiniLeaderboard limit={5} />
+          <MissionControl />
         </div>
 
-        {/* LIVE TAPE ────────────────────────────────────────────────── */}
-        <div className="max-w-[1280px] mx-auto">
-          <LiveTape />
+        {/* AGENT GRID (Polymarket) ─────────────────────────── */}
+        <div className="max-w-[1280px] mx-auto mt-12">
+          <AgentCardGrid limit={5} title="TOP AGENTS · 30D" />
         </div>
 
-        {/* FOOTER ───────────────────────────────────────────────────── */}
-        <footer className="max-w-[1280px] mx-auto px-6 md:px-10 py-8 t-meta text-[var(--color-disabled)] flex flex-wrap gap-x-6 gap-y-2">
+        {/* FOOTER ──────────────────────────────────────────── */}
+        <footer className="max-w-[1280px] mx-auto px-6 md:px-10 py-8 mt-16 t-meta text-[var(--color-disabled)] flex flex-wrap gap-x-6 gap-y-2">
           <span>schema v1</span>
           <span>scoring v1</span>
           <span>base-mainnet</span>
