@@ -28,7 +28,17 @@ import { buildAcceptanceReceipt } from "../receipts/verdictReceipt.js";
 import { canonicalHash } from "../receipts/canonical.js";
 import { evaluateRisk, type MarketContext } from "./risk.js";
 import type { VerdictEventBus } from "./events.js";
-import { buildCommit, COMMIT_PREIMAGE_SCHEMA } from "./commit-preimage.js";
+import { buildCommit, COMMIT_PREIMAGE_SCHEMA, REVEAL_GRACE_MS } from "./commit-preimage.js";
+
+/**
+ * Privacy modes the v0.2 daemon accepts at submit. Codex Phase B review
+ * H2: an unrecognized privacy_mode (typo, future v0.3 mode) MUST NOT
+ * silently fall through to legacy plaintext — that's an accidental
+ * privacy downgrade vector. v0.3 will extend this set with 'fhevm' (or
+ * similar) only when the daemon has the corresponding code path; until
+ * then, any string outside this set is rejected with schema_invalid.
+ */
+const ACCEPTED_PRIVACY_MODES = new Set(["committed", "legacy_plaintext"] as const);
 import { encryptEnvelope, type AgeContext } from "./age-envelope.js";
 import { encryptToDrandRound, type DrandContext } from "./drand-envelope.js";
 
@@ -277,7 +287,35 @@ export async function submitCall(args: {
   let commitHashForRepo: string | undefined;
   let commitSchemeForRepo: string | undefined;
 
+  // F3: reject unknown privacy_mode strings BEFORE branching. Closes
+  // the Codex H2 silent-downgrade vector.
+  if (
+    submission.privacy_mode !== undefined &&
+    !ACCEPTED_PRIVACY_MODES.has(submission.privacy_mode as never)
+  ) {
+    throw new VerdictError(
+      `unknown privacy_mode '${submission.privacy_mode}' — must be one of: ${[...ACCEPTED_PRIVACY_MODES].join(", ")}`,
+      ERROR_CODES.schema_invalid,
+      400,
+    );
+  }
+
   if (submission.privacy_mode === "committed") {
+    // F2: gate committed-mode behind a feature flag until Phase E
+    // ships projection scrubbing. Codex Phase B review C2: today the
+    // daemon ACCEPTS committed submits, encrypts the receipt subject
+    // properly, but /v1/feed/today + /v1/agents/:slug/calls + SSE
+    // events + webhooks STILL select plaintext from the submissions
+    // table. The committed path is therefore only meaningful once
+    // those surfaces are scrubbed. Until then, refuse — operator can
+    // opt in for testing via env.
+    if (process.env.MURMUR_PRIVACY_COMMITTED_OPEN !== "1") {
+      throw new VerdictError(
+        "committed-mode submissions are gated until projection scrubbing lands (Phase E); set MURMUR_PRIVACY_COMMITTED_OPEN=1 on the daemon to opt in for testing",
+        ERROR_CODES.agent_not_authorized,
+        503,
+      );
+    }
     const ageCtx = ctx.ageContext;
     if (!ageCtx) {
       throw new VerdictError(
@@ -305,6 +343,11 @@ export async function submitCall(args: {
         400,
       );
     }
+    // F4: lowercase-normalize salt before hashing. Schema accepts
+    // 64-char hex case-insensitive, but commit canonicalization MUST
+    // be byte-stable — agents that uppercase the salt would otherwise
+    // produce a different commit_hash than the daemon. Lowercase wins.
+    const saltLower = submission.salt.toLowerCase();
     const { commit_hash, preimage_canonical } = buildCommit({
       call_id,
       agent_wallet: issuingAgent.wallet_address,
@@ -313,7 +356,7 @@ export async function submitCall(args: {
       asset_id: submission.asset_id,
       horizon_hours: submission.horizon_hours,
       confidence: submission.confidence,
-      salt: submission.salt,
+      salt: saltLower,
       // D16: t0 is daemon-canonical accepted_at. Agent reconstructs the
       // preimage from the response after the fact and verifies the hash.
       t0: accepted_at,
@@ -329,9 +372,10 @@ export async function submitCall(args: {
     });
     const envelopeBytes = new TextEncoder().encode(envelopeBody);
     const encrypted = await encryptEnvelope(ageCtx, envelopeBytes);
-    // fallback_after = accepted_at + horizon + REVEAL_GRACE_SECONDS (D17 = 900s)
+    // fallback_after = accepted_at + horizon + REVEAL_GRACE_MS (D17).
+    // The constant is locked, not configurable — see commit-preimage.ts.
     const fallback_after_ms =
-      now().getTime() + submission.horizon_hours * 3_600_000 + 900_000;
+      now().getTime() + submission.horizon_hours * 3_600_000 + REVEAL_GRACE_MS;
     const fallback_after = new Date(fallback_after_ms)
       .toISOString()
       .replace(/\.\d+Z$/, "Z");

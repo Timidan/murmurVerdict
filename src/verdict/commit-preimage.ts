@@ -27,6 +27,18 @@ export const COMMIT_PREIMAGE_SCHEMA = "murmur-verdict-v0.2-commit@1" as const;
 export const COMMIT_PREIMAGE_VERSION = 1 as const;
 export const COMMIT_PREIMAGE_DOMAIN = "murmur-verdict-v0.2-commit" as const;
 
+/**
+ * Wall-clock seconds past `accepted_at + horizon` after which the
+ * daemon may decrypt the age envelope itself if the agent failed to
+ * reveal voluntarily (D17). Locked at 900s = 15 min. Operator must
+ * NOT make this configurable — the receipt commits to a derived
+ * `fallback_after` field, so changing the constant per-call would
+ * fork the receipt's meaning. v0.3 fhEVM port may revisit; v0.2 is
+ * fixed.
+ */
+export const REVEAL_GRACE_SECONDS = 900 as const;
+export const REVEAL_GRACE_MS = REVEAL_GRACE_SECONDS * 1000;
+
 export interface CommitPreimage {
   v: typeof COMMIT_PREIMAGE_VERSION;
   domain: typeof COMMIT_PREIMAGE_DOMAIN;

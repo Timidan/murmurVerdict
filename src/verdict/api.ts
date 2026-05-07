@@ -993,6 +993,113 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     req.on("error", close);
   });
 
+  // ── Public envelope read (Phase B-3 + Codex F1) ──────────────────────
+  // Returns the encrypted ciphertexts + commit metadata for a committed-
+  // mode call. The whole point of the drand commitment is daemon-less
+  // reveal: anyone with this endpoint's payload + the receipt's
+  // drand.ciphertext_hash can verify the bytes match what the daemon
+  // committed to, then run tlock-decrypt with the released drand
+  // beacon for the bound round. No daemon trust required past round-
+  // emission time.
+  //
+  // For non-committed (legacy_plaintext) calls, returns 404 — there's
+  // no envelope.
+  router.get("/v1/calls/:call_id/envelope", (req, res) => {
+    const call_id = String(req.params.call_id ?? "");
+    const subRow = deps.db
+      .prepare(
+        `SELECT call_id, privacy_mode, commit_hash, commit_scheme
+         FROM submissions WHERE call_id = ?`,
+      )
+      .get(call_id) as
+      | {
+          call_id: string;
+          privacy_mode: string | null;
+          commit_hash: string | null;
+          commit_scheme: string | null;
+        }
+      | undefined;
+    if (!subRow) {
+      res.status(404).json({ code: "not_found", message: "call not found" });
+      return;
+    }
+    if (subRow.privacy_mode !== "committed") {
+      res.status(404).json({
+        code: "no_envelope",
+        message: "call is not committed-mode (no envelope)",
+      });
+      return;
+    }
+    const envRow = deps.db
+      .prepare(
+        `SELECT encrypted_body, encrypted_body_alg, encrypted_body_hash,
+                daemon_key_id, commit_preimage_schema, fallback_after,
+                received_at,
+                drand_chain_hash, drand_round, drand_ciphertext, drand_ciphertext_hash
+         FROM call_private_envelopes WHERE call_id = ?`,
+      )
+      .get(call_id) as
+      | {
+          encrypted_body: string;
+          encrypted_body_alg: string;
+          encrypted_body_hash: string;
+          daemon_key_id: string;
+          commit_preimage_schema: string;
+          fallback_after: string | null;
+          received_at: string;
+          drand_chain_hash: string | null;
+          drand_round: number | null;
+          drand_ciphertext: string | null;
+          drand_ciphertext_hash: string | null;
+        }
+      | undefined;
+    if (!envRow) {
+      res.status(404).json({
+        code: "envelope_missing",
+        message: "envelope row not found for committed call",
+      });
+      return;
+    }
+    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=3600");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.json({
+      schema_version: SCHEMA_VERSION,
+      call_id: subRow.call_id,
+      privacy_mode: subRow.privacy_mode,
+      commit: {
+        hash: subRow.commit_hash,
+        scheme: subRow.commit_scheme,
+        preimage_schema: envRow.commit_preimage_schema,
+      },
+      // age envelope — daemon-trusted decrypt path past fallback_after.
+      // Anyone holding the daemon's age identity can decrypt at any time;
+      // listed here for completeness so a verifier can attest the
+      // ciphertext bytes match the receipt's `fallback.encrypted_body_hash`.
+      age: {
+        encrypted_body: envRow.encrypted_body,
+        encrypted_body_alg: envRow.encrypted_body_alg,
+        encrypted_body_hash: envRow.encrypted_body_hash,
+        daemon_key_id: envRow.daemon_key_id,
+        fallback_after: envRow.fallback_after,
+      },
+      // drand timelock — daemon-LESS decrypt path. Anyone past the
+      // bound round can fetch the drand beacon and decrypt without
+      // operator cooperation. Null when drand was disabled at submit.
+      drand:
+        envRow.drand_chain_hash &&
+        envRow.drand_round !== null &&
+        envRow.drand_ciphertext
+          ? {
+              chain_hash: envRow.drand_chain_hash,
+              round: envRow.drand_round,
+              ciphertext: envRow.drand_ciphertext,
+              ciphertext_hash: envRow.drand_ciphertext_hash,
+            }
+          : null,
+      received_at: envRow.received_at,
+    });
+  });
+
   router.get("/v1/calls/:call_id/verify", (req, res) => {
     const call_id = String(req.params.call_id ?? "");
     try {
