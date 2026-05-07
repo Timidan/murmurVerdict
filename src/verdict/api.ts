@@ -1,7 +1,12 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import express from "express";
 import type Database from "better-sqlite3";
-import { agentsRepo, claimsRepo, refsRepo, resolutionsRepo, submissionsRepo, webhooksRepo } from "./db.js";
+import { agentsRepo, callRevealsRepo, claimsRepo, refsRepo, resolutionsRepo, submissionsRepo, webhooksRepo } from "./db.js";
+import {
+  buildCommitPreimage,
+  computeCommitHash,
+} from "./commit-preimage.js";
+import { canonicalize } from "../receipts/canonical.js";
 import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -992,6 +997,217 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     req.on("close", close);
     req.on("error", close);
   });
+
+  // ── Reveal: agent voluntarily publishes the commit preimage ─────────
+  // POST /v1/calls/:call_id/reveal
+  // Auth: Bearer (X-Murmur-Agent-Id + X-Murmur-Api-Key)
+  // Body: { commit_preimage: <D13 fields>, rationale?, strategy_tag? }
+  //
+  // Flow:
+  //   1. Bearer auth identifies the calling agent.
+  //   2. Look up call; must be privacy_mode='committed' AND owned by
+  //      this agent. Cross-agent reveals are rejected.
+  //   3. The submitted preimage is canonicalized and hashed. The hash
+  //      MUST match the stored submissions.commit_hash (set at submit
+  //      time). Mismatch → 422 commit_mismatch.
+  //   4. Defense-in-depth: preimage.call_id matches URL :call_id;
+  //      preimage.agent_wallet matches the agent's bound wallet;
+  //      preimage.chain_id matches; preimage.t0 matches accepted_at.
+  //      Any mismatch is structurally impossible if the daemon
+  //      computed commit_hash correctly, but check anyway.
+  //   5. Idempotency: if a call_reveals row already exists with the
+  //      SAME preimage hash, return 200 with the existing record.
+  //      Different preimage hash → 409.
+  //   6. Insert call_reveals row (revealed_via='agent',
+  //      reveal_hash_valid=1).
+  //
+  // The reveal is allowed BEFORE t1 too — the agent just shows their
+  // hand early. Public surfaces still scrub pending rows (Phase E);
+  // the reveal is private until resolution.
+  router.post(
+    "/v1/calls/:call_id/reveal",
+    json,
+    asyncHandler(async (req, res) => {
+      const call_id = String(req.params.call_id ?? "");
+      // Auth: Bearer only on this endpoint (no HMAC). Wallet-only +
+      // verified agents both authenticate via X-Murmur-Api-Key.
+      const apiKey = req.header("X-Murmur-Api-Key");
+      const agentIdHdr = req.header("X-Murmur-Agent-Id");
+      if (!apiKey || !agentIdHdr) {
+        throw new VerdictError(
+          "X-Murmur-Agent-Id + X-Murmur-Api-Key required",
+          ERROR_CODES.agent_not_authorized,
+          401,
+        );
+      }
+      const identity = verifyAgentApiKey(deps.db, agentIdHdr, apiKey);
+
+      const subRow = deps.db
+        .prepare(
+          `SELECT call_id, agent_id, privacy_mode, commit_hash, accepted_at
+           FROM submissions WHERE call_id = ?`,
+        )
+        .get(call_id) as
+        | {
+            call_id: string;
+            agent_id: string;
+            privacy_mode: string | null;
+            commit_hash: string | null;
+            accepted_at: string;
+          }
+        | undefined;
+      if (!subRow) {
+        throw new VerdictError("call not found", ERROR_CODES.unknown_agent, 404);
+      }
+      if (subRow.agent_id !== identity.agent_id) {
+        throw new VerdictError(
+          "call not owned by authenticated agent",
+          ERROR_CODES.agent_not_authorized,
+          403,
+        );
+      }
+      if (subRow.privacy_mode !== "committed" || !subRow.commit_hash) {
+        throw new VerdictError(
+          "call is not committed-mode (no preimage to reveal)",
+          ERROR_CODES.schema_invalid,
+          409,
+        );
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const rawPreimage = body.commit_preimage;
+      if (!rawPreimage || typeof rawPreimage !== "object") {
+        throw new VerdictError(
+          "commit_preimage object required",
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+
+      // Validate the preimage shape against the canonical D13 fields.
+      // Lowercase the wallet + salt before hashing — the daemon stored
+      // commit_hash over the lowercase form (see submitCall F4).
+      const preimageInput = rawPreimage as Record<string, unknown>;
+      let normalized: ReturnType<typeof buildCommitPreimage>;
+      try {
+        normalized = buildCommitPreimage({
+          call_id: String(preimageInput.call_id ?? ""),
+          agent_wallet: String(preimageInput.agent_wallet ?? "").toLowerCase(),
+          chain_id: String(preimageInput.chain_id ?? ""),
+          side: preimageInput.side as "BUY" | "SELL",
+          asset_id: String(preimageInput.asset_id ?? ""),
+          horizon_hours: Number(preimageInput.horizon_hours),
+          confidence: Number(preimageInput.confidence),
+          salt: String(preimageInput.salt ?? "").toLowerCase(),
+          t0: String(preimageInput.t0 ?? ""),
+        });
+      } catch (err) {
+        throw new VerdictError(
+          `commit_preimage malformed: ${(err as Error).message}`,
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+
+      // Reject if any of the D13 fields disagree with what the daemon
+      // recorded at submit time. Belt-and-suspenders — commit_hash
+      // alone would catch this, but explicit field checks give better
+      // 4xx messaging for misbehaving agents.
+      if (normalized.call_id !== call_id) {
+        throw new VerdictError(
+          "commit_preimage.call_id does not match URL",
+          ERROR_CODES.schema_invalid,
+          422,
+        );
+      }
+      if (normalized.t0 !== subRow.accepted_at) {
+        throw new VerdictError(
+          "commit_preimage.t0 does not match daemon-canonical accepted_at",
+          ERROR_CODES.schema_invalid,
+          422,
+        );
+      }
+      const issuingAgent = agentsRepo.byId(deps.db, identity.agent_id);
+      if (
+        normalized.agent_wallet !== (issuingAgent?.wallet_address ?? "") ||
+        normalized.chain_id !== (issuingAgent?.chain_id ?? "")
+      ) {
+        throw new VerdictError(
+          "commit_preimage wallet/chain_id does not match the agent's bound wallet",
+          ERROR_CODES.schema_invalid,
+          422,
+        );
+      }
+      const recomputed = computeCommitHash(normalized);
+      if (recomputed.toLowerCase() !== subRow.commit_hash.toLowerCase()) {
+        throw new VerdictError(
+          "commit_preimage hash does not match stored commit_hash (commit_mismatch)",
+          ERROR_CODES.schema_invalid,
+          422,
+        );
+      }
+
+      // Idempotency: existing call_reveals row with identical preimage
+      // hash is a no-op replay. Any other shape is a conflict.
+      const existing = callRevealsRepo.byCallId(deps.db, call_id);
+      if (existing) {
+        if (
+          existing.commit_preimage_hash &&
+          existing.commit_preimage_hash.toLowerCase() === recomputed.toLowerCase()
+        ) {
+          res.status(200).json({
+            call_id,
+            revealed_via: existing.revealed_via,
+            revealed_at: existing.revealed_at,
+            reveal_hash_valid: existing.reveal_hash_valid === 1,
+            note: "idempotent_replay",
+          });
+          return;
+        }
+        throw new VerdictError(
+          "call already revealed with a different preimage",
+          ERROR_CODES.duplicate,
+          409,
+        );
+      }
+
+      const revealed_at = nowIso(now());
+      const rationale =
+        typeof body.rationale === "string" && body.rationale.length > 0
+          ? body.rationale.slice(0, 240)
+          : null;
+      const strategy_tag =
+        typeof body.strategy_tag === "string" && body.strategy_tag.length > 0
+          ? body.strategy_tag.slice(0, 64)
+          : null;
+      callRevealsRepo.insert(deps.db, {
+        call_id,
+        side: normalized.side,
+        asset_id: normalized.asset_id,
+        horizon_hours: normalized.horizon_hours,
+        confidence: normalized.confidence,
+        rationale,
+        strategy_tag,
+        salt: normalized.salt,
+        t0: normalized.t0,
+        agent_wallet: normalized.agent_wallet,
+        chain_id: normalized.chain_id,
+        commit_preimage_json: canonicalize(normalized),
+        commit_preimage_hash: recomputed,
+        revealed_at,
+        revealed_via: "agent",
+        reveal_hash_valid: 1,
+      });
+
+      res.status(201).json({
+        call_id,
+        revealed_via: "agent",
+        revealed_at,
+        reveal_hash_valid: true,
+        commit_hash: subRow.commit_hash,
+      });
+    }),
+  );
 
   // ── Public envelope read (Phase B-3 + Codex F1) ──────────────────────
   // Returns the encrypted ciphertexts + commit metadata for a committed-
