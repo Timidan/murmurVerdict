@@ -1,70 +1,64 @@
 @import "tailwindcss";
 
-@import "@fontsource-variable/geist";
-@import "@fontsource-variable/geist-mono";
+/* Fonts loaded via Google Fonts in dashboard/index.html.
+   Doto requires the variable axis served by Google Fonts; no fontsource
+   package ships it yet. Space Grotesk + Space Mono are available on
+   fontsource but we keep them on Google Fonts for consistency with Doto. */
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Murmur Verdict — token system
-   Adopted verbatim from getdesign.md / linear.app DESIGN.md (alpha, 2026)
-   with two intentional substitutions:
-     - Linear lavender-blue (#5e6ad2) → Emerald oklch(0.78 0.16 152)
-     - Linear Display / Text / Mono → Geist Variable + Geist Mono Variable
-   Reference: docs/launchpad/design-references/linear.DESIGN.md
+   Murmur Verdict — Nothing-canonical token system
+   Source: nothing-design skill (~/.claude/skills/nothing-design/references/tokens.md)
+   Reference mockup: docs/launchpad/ui-explorations.html#v14
+   Spec: docs/launchpad/V14_HANDOFF.md
+
+   Three font families (Nothing discipline cap):
+     - Doto: variable dot-matrix display, used ONLY at 36px+ (Ndot 57 stand-in)
+     - Space Grotesk: UI / body
+     - Space Mono: labels, data, ALL CAPS chrome
+
+   Single chromatic accent: #D71921 (Nothing red).
+   Canvas: pure #000 (OLED). Override of "no pure black" rule —
+   intentional brand choice per V14_HANDOFF.md §3.
    ──────────────────────────────────────────────────────────────────────── */
 
 @theme {
   /* Fonts */
-  --font-sans: "Geist Variable", "SF Pro Display", -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: "Space Grotesk", "DM Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "Space Mono", "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  --font-display: "Doto", "Space Mono", monospace;
 
-  /* Brand & accent — single chromatic */
-  --color-primary: oklch(0.78 0.16 152);            /* emerald-400 */
-  --color-on-primary: #0a0a0c;                       /* near-black on emerald */
-  --color-primary-hover: oklch(0.85 0.13 152);
-  --color-primary-focus: oklch(0.45 0.10 152);
+  /* Surfaces (dark — flagship) */
+  --color-bg: #000000;
+  --color-surface: #111111;
+  --color-raised: #1A1A1A;
+  --color-border: #222222;
+  --color-border-vis: #333333;
 
-  /* Ink scale — exact Linear values */
-  --color-ink: #f7f8f8;
-  --color-ink-muted: #d0d6e0;
-  --color-ink-subtle: #8a8f98;
-  --color-ink-tertiary: #62666d;
+  /* Text scale (4 levels per Nothing discipline) */
+  --color-disabled: #666666;
+  --color-secondary: #999999;
+  --color-primary: #E8E8E8;
+  --color-display: #FFFFFF;
 
-  /* Surfaces — exact Linear values */
-  --color-canvas: #010102;
-  --color-surface-1: #0f1011;
-  --color-surface-2: #141516;
-  --color-surface-3: #18191a;
-  --color-surface-4: #191a1b;
+  /* Single accent — Nothing red. */
+  --color-accent: #D71921;
+  --color-accent-tint: rgba(215, 25, 33, 0.15);
 
-  /* Hairlines — exact Linear values */
-  --color-hairline: #23252a;
-  --color-hairline-strong: #34343a;
-  --color-hairline-tertiary: #3e3e44;
+  /* Status colors (data-encoding only — not part of UI hierarchy) */
+  --color-success: #4A9E5C;
+  --color-warning: #D4A843;
 
-  /* Inverse surfaces (rare — small set of section openers) */
-  --color-inverse-canvas: #ffffff;
-  --color-inverse-surface-1: #f5f6f6;
-  --color-inverse-surface-2: #f6f7f7;
-  --color-inverse-ink: #000000;
-
-  /* Semantic — Linear ships only success on marketing.
-     Murmur needs full outcome semantics (win / loss / void / warn) because
-     the product surfaces resolution outcomes. We use desaturated values that
-     read as natural neighbors of Linear's palette. */
-  --color-win: oklch(0.78 0.16 152);                 /* same as accent */
-  --color-loss: oklch(0.66 0.18 22);                 /* desaturated coral-rose */
-  --color-void: #62666d;                              /* ink-tertiary */
-  --color-warn: oklch(0.79 0.12 80);                  /* warm amber, soft */
+  /* Motion: subtle ease-out only. No spring, no bounce. */
+  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
 
   html, body, #root {
-    background: var(--color-canvas);
-    color: var(--color-ink);
+    background: var(--color-bg);
+    color: var(--color-primary);
     font-family: var(--font-sans);
-    font-feature-settings: "ss01", "cv11", "liga";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     margin: 0;
@@ -73,104 +67,87 @@
   body {
     min-height: 100dvh;
     line-height: 1.5;
-    letter-spacing: -0.05px;          /* Linear body tracking */
     font-size: 16px;
   }
 
   ::selection {
-    background: color-mix(in oklch, var(--color-primary) 24%, transparent);
-    color: var(--color-ink);
+    background: var(--color-accent-tint);
+    color: var(--color-display);
   }
 
-  /* Focus ring — Linear's 2px primary-focus outline at 50% opacity */
   :focus-visible {
-    outline: 2px solid color-mix(in oklch, var(--color-primary-focus) 50%, transparent);
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
+    border-radius: 0;
   }
 
-  /* Mono numerics — tabular */
-  .num, code, pre, kbd, samp {
+  code, pre, kbd, samp {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
-    font-feature-settings: "ss01", "cv11";
   }
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Linear typography tiers — sizes from the spec, families substituted to Geist
+   Type tier classes — Nothing discipline.
+   2 families per screen, 3 sizes max, 2 weights. Use these tier classes —
+   never invent ad-hoc font-size/weight pairs.
    ──────────────────────────────────────────────────────────────────────── */
 
 @layer components {
-  .t-display-xl  { font-size: 80px; font-weight: 600; line-height: 1.05; letter-spacing: -3.0px; }
-  .t-display-lg  { font-size: 56px; font-weight: 600; line-height: 1.10; letter-spacing: -1.8px; }
-  .t-display-md  { font-size: 40px; font-weight: 600; line-height: 1.15; letter-spacing: -1.0px; }
-  .t-headline    { font-size: 28px; font-weight: 600; line-height: 1.20; letter-spacing: -0.6px; }
-  .t-card-title  { font-size: 22px; font-weight: 500; line-height: 1.25; letter-spacing: -0.4px; }
-  .t-subhead     { font-size: 20px; font-weight: 400; line-height: 1.40; letter-spacing: -0.2px; }
-  .t-body-lg     { font-size: 18px; font-weight: 400; line-height: 1.50; letter-spacing: -0.1px; }
-  .t-body        { font-size: 16px; font-weight: 400; line-height: 1.50; letter-spacing: -0.05px; }
-  .t-body-sm     { font-size: 14px; font-weight: 400; line-height: 1.50; letter-spacing: 0; }
-  .t-caption     { font-size: 12px; font-weight: 400; line-height: 1.40; letter-spacing: 0; }
-  .t-button      { font-size: 14px; font-weight: 500; line-height: 1.20; letter-spacing: 0; }
-  /* Eyebrow uses positive tracking — contrast against negative-tracked display marks it as taxonomy */
-  .t-eyebrow     { font-size: 13px; font-weight: 500; line-height: 1.30; letter-spacing: 0.4px; text-transform: uppercase; }
-  .t-mono        { font-family: var(--font-mono); font-size: 13px; font-weight: 400; line-height: 1.50; letter-spacing: 0; }
+  /* DISPLAY — Doto, hero numerals only. Never below 36px. */
+  .t-display    { font-family: var(--font-display); font-weight: 700; line-height: 0.85; letter-spacing: -0.04em; font-size: clamp(96px, 14vw, 200px); color: var(--color-display); }
+  .t-display-md { font-family: var(--font-display); font-weight: 700; line-height: 0.9;  letter-spacing: -0.03em; font-size: clamp(64px, 9vw,  128px); color: var(--color-display); }
 
-  /* Linear scales display-xl from 80px down toward 40px on mobile */
-  @media (max-width: 768px) {
-    .t-display-xl { font-size: 40px; letter-spacing: -1.0px; }
-    .t-display-lg { font-size: 36px; letter-spacing: -1.0px; }
-    .t-display-md { font-size: 28px; letter-spacing: -0.6px; }
-  }
+  /* HEADING — Space Grotesk medium. Page section titles. */
+  .t-heading    { font-family: var(--font-sans); font-weight: 500; font-size: 24px; line-height: 1.2;  letter-spacing: -0.01em; color: var(--color-display); }
+  .t-subheading { font-family: var(--font-sans); font-weight: 500; font-size: 20px; line-height: 1.25; letter-spacing: -0.01em; color: var(--color-display); }
+
+  /* STAT — Space Mono regular. Data readouts in stat cells. */
+  .t-stat-num   { font-family: var(--font-mono); font-weight: 400; font-size: 26px; line-height: 1.1; letter-spacing: -0.02em; color: var(--color-display); font-variant-numeric: tabular-nums; }
+
+  /* BODY — Space Grotesk regular. Descriptions. */
+  .t-body       { font-family: var(--font-sans); font-weight: 400; font-size: 14px; line-height: 1.5;  letter-spacing: 0; color: var(--color-primary); }
+  .t-body-sm    { font-family: var(--font-sans); font-weight: 400; font-size: 13px; line-height: 1.45; letter-spacing: 0; color: var(--color-secondary); }
+
+  /* DATA — Space Mono regular. Timestamps, side, horizon, tabular figures. */
+  .t-data       { font-family: var(--font-mono); font-weight: 400; font-size: 13px; line-height: 1.5; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+
+  /* LABEL — Space Mono bold ALL CAPS. Stat labels, sidebar sections, chips. */
+  .t-label      { font-family: var(--font-mono); font-weight: 700; font-size: 11px; line-height: 1.2;  letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-secondary); }
+
+  /* META — Space Mono regular sentence case. Top bar, crumb, footer hints. */
+  .t-meta       { font-family: var(--font-mono); font-weight: 400; font-size: 12px; line-height: 1.4;  letter-spacing: 0; color: var(--color-secondary); }
+
+  /* BUTTON — Space Mono bold ALL CAPS. */
+  .t-button     { font-family: var(--font-mono); font-weight: 700; font-size: 13px; line-height: 1.2;  letter-spacing: 0.06em; text-transform: uppercase; }
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Motion — Linear's marketing surface uses minimal motion. We add four
-   small primitives only: skeleton shimmer, breathing live dot, subtle
-   marquee for the optional ticker. No scroll-jacking, no parallax.
+   Motion primitives — only on true-live signals.
+   Honor prefers-reduced-motion; all infinite loops gated below.
    ──────────────────────────────────────────────────────────────────────── */
 
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-.skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--color-surface-1) 0%,
-    var(--color-surface-2) 50%,
-    var(--color-surface-1) 100%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 2s ease-in-out infinite;
+@keyframes nothing-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 
-@keyframes breathe {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(0.85); }
+@media (prefers-reduced-motion: no-preference) {
+  .nothing-live {
+    animation: nothing-breathe 1.6s var(--ease-out) infinite;
+  }
 }
+
+/* Live dot — small accent square (not circle, per Nothing's geometric language). */
 .live-dot {
   display: inline-block;
   width: 6px; height: 6px;
-  border-radius: 50%;
-  background: var(--color-primary);
-  animation: breathe 2s ease-in-out infinite;
+  border-radius: 0;
+  background: var(--color-accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .live-dot { animation: nothing-breathe 1.6s var(--ease-out) infinite; }
 }
 
-@keyframes marqueeX {
-  from { transform: translate3d(0, 0, 0); }
-  to { transform: translate3d(-50%, 0, 0); }
-}
-
-/* Optional subtle white edge highlight on lifted panels —
-   Linear's "pixel rendered" feel. Apply via `.lift-edge`. */
-.lift-edge {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-}
-
-/* Force-color-adjust for receipt-style print elements (later use). */
-.print-receipt {
-  color-scheme: light;
-  background: #f4f1ea;
-  color: #1a1814;
-}
+/* Tactile press — Nothing's "percussive, not fluid" rule. */
+.press-feedback:active { transform: translateY(1px); }

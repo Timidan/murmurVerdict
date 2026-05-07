@@ -1,257 +1,180 @@
 import { useState } from "react";
 import { verdictApi, type ClaimInitResponse, type ClaimFinalizeResponse } from "../api.js";
-import { Header } from "../components/Header.js";
-import { cardStyle, colors, containerStyle, fonts, shellStyle } from "../theme.js";
+import { Topbar } from "../components/Topbar.js";
+import { PillButton } from "../components/PillButton.js";
 
-type Step = "init" | "post_then_sign" | "finalize" | "done" | "error";
-
+/**
+ * Two-step claim flow: init → sign → finalize. Pure form, no card chrome.
+ * Underline-style inputs (Nothing canonical) with labels above.
+ */
 export function ClaimPage({ slug }: { slug: string }) {
-  const [step, setStep] = useState<Step>("init");
-  const [identityKind, setIdentityKind] = useState<"x" | "telegram">("x");
-  const [identityValue, setIdentityValue] = useState("");
+  const [stage, setStage] = useState<"init" | "challenge" | "done">("init");
+  const [error, setError] = useState<string | null>(null);
+
+  const [identityKind, setIdentityKind] = useState("x");
+  const [identityValue, setIdentityValue] = useState("@");
   const [wallet, setWallet] = useState("");
-  const [init, setInit] = useState<ClaimInitResponse | null>(null);
+
+  const [challenge, setChallenge] = useState<ClaimInitResponse | null>(null);
   const [signature, setSignature] = useState("");
   const [postUrl, setPostUrl] = useState("");
   const [finalized, setFinalized] = useState<ClaimFinalizeResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
-  async function startInit(e: React.FormEvent) {
-    e.preventDefault();
+  const init = async () => {
     setError(null);
     try {
       const r = await verdictApi.claimInit(slug, {
         target_identity: { kind: identityKind, value: identityValue },
         wallet_to_bind: wallet,
       });
-      setInit(r);
-      setStep("post_then_sign");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "init failed");
-      setStep("error");
+      setChallenge(r);
+      setStage("challenge");
+    } catch (e) {
+      setError((e as Error).message);
     }
-  }
+  };
 
-  async function finalize(e: React.FormEvent) {
-    e.preventDefault();
-    if (!init) return;
+  const finalize = async () => {
+    if (!challenge) return;
     setError(null);
     try {
       const r = await verdictApi.claimFinalize(slug, {
-        challenge_id: init.challenge_id,
+        challenge_id: challenge.challenge_id,
         signature,
         post_url: postUrl,
       });
       setFinalized(r);
-      setStep("done");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "finalize failed");
+      setStage("done");
+    } catch (e) {
+      setError((e as Error).message);
     }
-  }
+  };
 
   return (
-    <div style={shellStyle()}>
-      <div style={containerStyle()}>
-        <Header />
+    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
+      <Topbar
+        crumb={
+          <span>
+            agents <span className="text-[var(--color-border-vis)] mx-2">/</span>
+            <strong className="text-[var(--color-display)] font-bold">{slug}</strong>
+            <span className="text-[var(--color-border-vis)] mx-2">/</span>
+            claim
+          </span>
+        }
+      />
 
-        <h1 style={{ margin: 0 }}>Claim {slug}</h1>
-        <p style={{ color: colors.textDim, marginTop: 0, maxWidth: 720 }}>
-          Bind a wallet to a shadow profile by posting a challenge text on the same external
-          identity that produced the public calls. Once verified, the agent flips to{" "}
-          <code style={{ background: colors.surfaceHi, padding: "1px 6px", borderRadius: 3 }}>verified</code>,
-          your call history counts toward the leaderboard, and you receive an HMAC API key.
-        </p>
+      <main className="flex-1 max-w-[640px] w-full mx-auto px-6 md:px-10 py-12">
+        <header className="mb-10">
+          <p className="t-label text-[var(--color-secondary)] mb-3">claim profile</p>
+          <h1 className="t-heading max-w-[36ch]">graduate <span className="text-[var(--color-display)]">{slug}</span> from shadow to verified.</h1>
+        </header>
 
         {error && (
-          <div style={{ ...cardStyle(), color: colors.warn, fontFamily: fonts.mono }}>{error}</div>
+          <div className="border border-[var(--color-accent)] px-6 py-4 mb-8 t-body-sm text-[var(--color-accent)]">
+            [ERROR] {error}
+          </div>
         )}
 
-        {step === "init" && (
+        {stage === "init" && (
           <form
-            onSubmit={startInit}
-            style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 12 }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              init();
+            }}
+            className="flex flex-col gap-6"
           >
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontFamily: fonts.mono, fontSize: 12, color: colors.textDim, textTransform: "uppercase" }}>
-                identity kind
-              </span>
+            <Field label="identity kind">
               <select
                 value={identityKind}
-                onChange={(e) => setIdentityKind(e.target.value as "x" | "telegram")}
-                style={inputStyle()}
+                onChange={(e) => setIdentityKind(e.target.value)}
+                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
               >
-                <option value="x">x</option>
+                <option value="x">x (twitter)</option>
                 <option value="telegram">telegram</option>
               </select>
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontFamily: fonts.mono, fontSize: 12, color: colors.textDim, textTransform: "uppercase" }}>
-                identity value
-              </span>
+            </Field>
+            <Field label="identity value">
               <input
                 value={identityValue}
                 onChange={(e) => setIdentityValue(e.target.value)}
-                placeholder="@some_handle"
-                style={inputStyle()}
-                required
+                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
+                placeholder="@your_handle"
               />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontFamily: fonts.mono, fontSize: 12, color: colors.textDim, textTransform: "uppercase" }}>
-                wallet to bind
-              </span>
+            </Field>
+            <Field label="wallet to bind">
               <input
                 value={wallet}
                 onChange={(e) => setWallet(e.target.value)}
+                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
                 placeholder="0x…"
-                style={inputStyle()}
-                required
-                pattern="0x[a-fA-F0-9]{40}"
               />
-            </label>
-            <button type="submit" style={primaryButton()}>
-              Generate challenge
-            </button>
+            </Field>
+            <PillButton variant="primary" type="submit">
+              REQUEST CHALLENGE
+            </PillButton>
           </form>
         )}
 
-        {step === "post_then_sign" && init && (
-          <form onSubmit={finalize} style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 12 }}>
+        {stage === "challenge" && challenge && (
+          <div className="flex flex-col gap-6">
             <div>
-              <p style={{ margin: "0 0 8px", color: colors.textDim, fontSize: 13 }}>
-                1. Post this verbatim on{" "}
-                <code style={{ background: colors.surfaceHi, padding: "1px 6px", borderRadius: 3 }}>
-                  {init.target_identity.kind}:{init.target_identity.value}
-                </code>
-                :
-              </p>
-              <pre
-                style={{
-                  margin: 0,
-                  padding: 12,
-                  background: colors.surfaceHi,
-                  borderRadius: 4,
-                  fontFamily: fonts.mono,
-                  fontSize: 13,
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-all",
-                }}
-              >
-                {init.challenge_text}
+              <p className="t-label text-[var(--color-secondary)] mb-3">step 2 — sign + post</p>
+              <pre className="bg-[var(--color-surface)] border border-[var(--color-border)] p-4 font-mono text-[12px] text-[var(--color-display)] whitespace-pre-wrap break-words">
+                {challenge.challenge_text}
               </pre>
-              <p style={{ margin: "12px 0 0", color: colors.textDim, fontSize: 13 }}>
-                2. Sign the nonce{" "}
-                <code style={{ background: colors.surfaceHi, padding: "1px 6px", borderRadius: 3 }}>
-                  {init.nonce}
-                </code>{" "}
-                with{" "}
-                <code style={{ background: colors.surfaceHi, padding: "1px 6px", borderRadius: 3 }}>
-                  {init.wallet_to_bind}
-                </code>{" "}
-                (personal_sign / EIP-191).
-              </p>
-              <p style={{ margin: "12px 0 0", color: colors.textDim, fontSize: 13 }}>
-                Challenge expires {init.expires_at}.
-              </p>
+              <ol className="mt-4 list-decimal list-inside flex flex-col gap-1 t-body-sm">
+                {challenge.instructions.map((step, i) => (
+                  <li key={i}>{step}</li>
+                ))}
+              </ol>
             </div>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontFamily: fonts.mono, fontSize: 12, color: colors.textDim, textTransform: "uppercase" }}>
-                signature (0x… 65 bytes)
-              </span>
+            <Field label="signature (hex)">
               <input
                 value={signature}
                 onChange={(e) => setSignature(e.target.value)}
+                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
                 placeholder="0x…"
-                style={inputStyle()}
-                required
               />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontFamily: fonts.mono, fontSize: 12, color: colors.textDim, textTransform: "uppercase" }}>
-                post url
-              </span>
+            </Field>
+            <Field label="post url">
               <input
                 value={postUrl}
                 onChange={(e) => setPostUrl(e.target.value)}
-                placeholder="https://x.com/handle/status/…"
-                style={inputStyle()}
-                required
+                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
+                placeholder="https://x.com/your_handle/status/…"
               />
-            </label>
-            <button type="submit" style={primaryButton()}>
-              Finalize claim
-            </button>
-          </form>
+            </Field>
+            <PillButton variant="primary" onClick={finalize}>
+              FINALIZE CLAIM
+            </PillButton>
+          </div>
         )}
 
-        {step === "done" && finalized && (
-          <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 12 }}>
-            <h2 style={{ margin: 0, color: colors.accent }}>Claimed.</h2>
-            <p style={{ color: colors.textDim, margin: 0, fontSize: 13 }}>
-              Agent <strong>{finalized.display_slug}</strong> is now <strong>verified</strong>.
-              We imported {finalized.imported_call_ids.length} historical calls; new submissions go
-              through the HMAC pipeline.
+        {stage === "done" && finalized && (
+          <div className="flex flex-col gap-6">
+            <p className="t-label text-[var(--color-display)]">[CLAIMED]</p>
+            <p className="t-body">
+              The agent profile is now verified. Your API key is below — store it
+              securely; it is shown only once.
             </p>
-            <div>
-              <span style={{ fontFamily: fonts.mono, fontSize: 12, color: colors.textDim, textTransform: "uppercase" }}>
-                api key (shown once — save it now)
-              </span>
-              <pre
-                style={{
-                  margin: "4px 0 0",
-                  padding: 12,
-                  background: colors.surfaceHi,
-                  borderRadius: 4,
-                  fontFamily: fonts.mono,
-                  fontSize: 13,
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-all",
-                }}
-              >
-                {finalized.api_key}
-              </pre>
-            </div>
-            <a
-              href={`#/agents/${finalized.display_slug}`}
-              style={{
-                color: colors.accent,
-                fontFamily: fonts.mono,
-                fontSize: 13,
-                textDecoration: "none",
-              }}
-            >
-              → view your agent profile
+            <pre className="bg-[var(--color-surface)] border border-[var(--color-border)] p-4 font-mono text-[12px] text-[var(--color-display)] break-all">
+              {finalized.api_key}
+            </pre>
+            <a href={`#/agents/${finalized.display_slug}`} className="contents">
+              <PillButton variant="primary">SEE AGENT PROFILE</PillButton>
             </a>
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }
 
-function inputStyle(): React.CSSProperties {
-  return {
-    background: colors.surfaceHi,
-    color: colors.text,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 4,
-    padding: "8px 12px",
-    fontFamily: fonts.mono,
-    fontSize: 13,
-    outline: "none",
-  };
-}
-
-function primaryButton(): React.CSSProperties {
-  return {
-    background: colors.accent,
-    color: "#0a0a0c",
-    border: "none",
-    borderRadius: 4,
-    padding: "10px 16px",
-    fontFamily: fonts.mono,
-    fontWeight: 600,
-    cursor: "pointer",
-    alignSelf: "flex-start",
-  };
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-2">
+      <span className="t-label">{label}</span>
+      {children}
+    </label>
+  );
 }

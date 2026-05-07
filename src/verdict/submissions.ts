@@ -25,6 +25,7 @@ import {
 } from "./db.js";
 import { buildAcceptanceReceipt } from "../receipts/verdictReceipt.js";
 import { evaluateRisk, type MarketContext } from "./risk.js";
+import type { VerdictEventBus } from "./events.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -37,6 +38,8 @@ export interface SubmissionContext {
   now?: () => Date;
   /** Per-call oracle policy; defaults to DEFAULT_T0_POLICY. */
   oraclePolicy?: T0Policy;
+  /** Optional event bus for SSE fan-out. Emit on accept; no-op when undefined. */
+  events?: VerdictEventBus;
 }
 
 export interface AuthIdentity {
@@ -322,6 +325,18 @@ export async function submitCall(args: {
       now,
     ),
   );
+
+  ctx.events?.emit({
+    type: "call.accepted",
+    call_id,
+    agent_id: agent.agent_id,
+    agent_slug: agent.display_slug,
+    side: submission.side,
+    asset_id: submission.asset_id,
+    horizon_hours: submission.horizon_hours,
+    confidence: submission.confidence,
+    accepted_at,
+  });
 
   return {
     call: accepted,

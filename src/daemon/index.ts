@@ -6,8 +6,10 @@ import { OracleClient } from "../integrations/oracle.js";
 import { Resolver } from "../verdict/resolver.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import { ClaimService } from "../verdict/claim.js";
-import { agentsRepo, openDb } from "../verdict/db.js";
+import { agentsRepo, openDb, resolutionsRepo, submissionsRepo } from "../verdict/db.js";
 import { hashSharedSecret } from "../verdict/submissions.js";
+import { VerdictEventBus } from "../verdict/events.js";
+import { getLeaderboard } from "../verdict/leaderboard.js";
 import {
   registerBaselines,
   runBaselinesOnce,
@@ -61,11 +63,48 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
 
   const telegram = new TelegramNotifier();
   const oracle = makeOracle();
+  const events = new VerdictEventBus();
   const resolver = oracle
     ? new Resolver({
         db,
         oracle,
         onResolved: async (call_id) => {
+          // 1. Fan out to SSE subscribers
+          try {
+            const full = resolutionsRepo.loadFullCall(db, call_id);
+            const agent = full ? agentsRepo.byId(db, full.submission.agent_id) : null;
+            if (full?.resolution && agent) {
+              events.emit({
+                type: "call.resolved",
+                call_id,
+                agent_id: agent.agent_id,
+                agent_slug: agent.display_slug,
+                outcome: full.resolution.outcome,
+                signed_return: full.resolution.signed_return,
+                call_score: full.resolution.call_score ?? null,
+                resolved_at: full.resolution.resolved_at,
+              });
+              // Resolution typically reorders the leaderboard — push new top.
+              const rows = getLeaderboard(db, { limit: 20 });
+              events.emit({
+                type: "leaderboard.update",
+                served_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+                rows: rows.map((r) => ({
+                  rank: r.rank,
+                  agent_id: r.agent_id,
+                  display_slug: r.display_slug,
+                  display_name: r.display_name,
+                  verdict_score: r.verdict_score,
+                  win_rate: r.win_rate,
+                  resolved_calls: r.resolved_calls,
+                  pending_calls: r.pending_calls,
+                })),
+              });
+            }
+          } catch (err) {
+            console.warn(`[daemon] sse fan-out failed for ${call_id}:`, err);
+          }
+          // 2. Telegram side-effect (existing behavior)
           if (!telegram.isLive()) return;
           const result = await telegram.postResolutionCard(db, call_id);
           if (!result.ok && result.reason) {
@@ -100,7 +139,8 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   app.use(
     createVerdictRouter({
       db,
-      ctx: { marketContext: (asset_id) => market.get(asset_id) },
+      events,
+      ctx: { marketContext: (asset_id) => market.get(asset_id), events },
       oracleProbe: oracle
         ? async () => {
             try {
@@ -162,6 +202,37 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         await runBaselinesOnce({
           db,
           ctx: { marketContext: (asset_id) => market.get(asset_id) },
+        });
+      }),
+    );
+    // Stats heartbeat — emits a `stats.tick` every 10s so the landing-page
+    // hero counter stays current even when no calls flow through. Cheap:
+    // single COUNT-with-WHERE query; no oracle calls.
+    tickers.push(
+      setIntervalGuarded(10_000, "stats", async () => {
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace(/\.\d+Z$/, "Z");
+        const row = db
+          .prepare(
+            `SELECT
+               (SELECT COUNT(*) FROM submissions WHERE accepted_at >= ?) AS accepted_24h,
+               (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ?) AS resolved_24h,
+               (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome = 'win')  AS wins_24h,
+               (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome = 'loss') AS losses_24h,
+               (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome IN ('void','oracle_unavailable')) AS void_24h`,
+          )
+          .get(since, since, since, since, since) as {
+          accepted_24h: number;
+          resolved_24h: number;
+          wins_24h: number;
+          losses_24h: number;
+          void_24h: number;
+        };
+        events.emit({
+          type: "stats.tick",
+          served_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+          ...row,
         });
       }),
     );

@@ -3,6 +3,7 @@ import express from "express";
 import type Database from "better-sqlite3";
 import { agentsRepo, resolutionsRepo, submissionsRepo } from "./db.js";
 import { getLeaderboard, get24hVerifiedVolume } from "./leaderboard.js";
+import type { VerdictEventBus } from "./events.js";
 import {
   ERROR_CODES,
   REGISTERED_STRATEGY_TAGS,
@@ -63,6 +64,11 @@ export interface ApiDeps {
    * v0.1 is admin-correct; token-staked governance ships post-TGE.
    */
   adminToken?: string;
+  /**
+   * Optional event bus for live-streaming. When set, exposes `/v1/stream` (SSE).
+   * When undefined, that route 404s.
+   */
+  events?: VerdictEventBus;
   now?: () => Date;
 }
 
@@ -272,6 +278,72 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
   router.get("/v1/feed/today", (_req, res) => {
     res.json(getTodayFeed(deps.db, now()));
+  });
+
+  // ── /v1/stream — Server-Sent Events fan-out for the live dashboard ──
+  // Spec: docs/launchpad/V14_HANDOFF.md §13.
+  // No auth in v0.1; the data is already public via the read endpoints.
+  // Closes itself if `deps.events` is undefined (smoke / test deployments).
+  router.get("/v1/stream", (req: Request, res: Response) => {
+    const bus = deps.events;
+    if (!bus) {
+      res.status(503).json({
+        code: "stream_unavailable",
+        message: "event bus not configured on this deployment",
+      });
+      return;
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no"); // disable nginx response buffering
+    res.flushHeaders?.();
+
+    // Replay current snapshot once so a freshly-connected client can paint
+    // the leaderboard + 24h stats without a separate REST round-trip.
+    try {
+      const rows = getLeaderboard(deps.db, { limit: 20 });
+      writeSseFrame(res, "leaderboard.update", {
+        type: "leaderboard.update",
+        served_at: nowIso(now()),
+        rows: rows.map((r) => ({
+          rank: r.rank,
+          agent_id: r.agent_id,
+          display_slug: r.display_slug,
+          display_name: r.display_name,
+          verdict_score: r.verdict_score,
+          win_rate: r.win_rate,
+          resolved_calls: r.resolved_calls,
+          pending_calls: r.pending_calls,
+        })),
+      });
+    } catch {
+      // best-effort snapshot; live deltas still flow even if the snapshot fails
+    }
+
+    const unsubscribe = bus.subscribe((event) => {
+      writeSseFrame(res, event.type, event);
+    });
+
+    // Heartbeat every 25s so corporate proxies don't kill the connection
+    // before the first real event arrives.
+    const heartbeat = setInterval(() => {
+      res.write(": heartbeat\n\n");
+    }, 25_000);
+
+    const close = () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+      try {
+        res.end();
+      } catch {
+        // already closed
+      }
+    };
+
+    req.on("close", close);
+    req.on("error", close);
   });
 
   router.get("/v1/calls/:call_id/verify", (req, res) => {
@@ -512,6 +584,13 @@ function readHmacHeaders(req: Request): {
     );
   }
   return { agent_id, timestamp, signature };
+}
+
+function writeSseFrame(res: Response, eventName: string, payload: unknown): void {
+  // Per the SSE wire format: `event:`, `data:`, terminated by a blank line.
+  // The data field must not contain a literal newline; serialize as one line.
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function nowIso(d: Date): string {

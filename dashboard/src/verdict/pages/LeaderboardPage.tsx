@@ -1,27 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowUpRight, Sparkle } from "@phosphor-icons/react/dist/ssr";
-import {
-  verdictApi,
-  type AgentProfile,
-  type LeaderboardRow,
-  type MetaResponse,
-} from "../api.js";
-import { Header } from "../components/Header.js";
-import { layout, pill, surface, text } from "../ui/tokens.js";
+import { useEffect, useState } from "react";
+import { verdictApi, type LeaderboardRow } from "../api.js";
+import { Topbar } from "../components/Topbar.js";
+import { useStream } from "../hooks/useStream.js";
 
 type Tier = "all" | "main" | "provisional";
 
-const TIER_LABEL: Record<Tier, string> = {
-  all: "All",
-  main: "Main",
-  provisional: "Provisional",
-};
-
+/**
+ * Full ranked-agent table. Two-column shell isn't needed here — the
+ * leaderboard IS the page protagonist. Hairline rows, no card boxes,
+ * Space Mono numerics, click-through on each row.
+ */
 export function LeaderboardPage() {
-  const [tier, setTier] = useState<Tier>("all");
+  const stream = useStream();
   const [rows, setRows] = useState<LeaderboardRow[] | null>(null);
-  const [shadows, setShadows] = useState<AgentProfile[] | null>(null);
-  const [meta, setMeta] = useState<MetaResponse | null>(null);
+  const [tier, setTier] = useState<Tier>("all");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -41,369 +33,155 @@ export function LeaderboardPage() {
     };
   }, [tier]);
 
+  // SSE deltas: when a leaderboard.update event arrives and we're on the
+  // "all" tier, fold it in so the page stays current without a refetch.
   useEffect(() => {
-    let cancelled = false;
-    verdictApi
-      .meta()
-      .then((m) => {
-        if (!cancelled) setMeta(m);
-      })
-      .catch(() => {});
-    verdictApi
-      .agentsByKind("shadow", 50)
-      .then((r) => {
-        if (!cancelled) setShadows(r.rows);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const counts = useMemo(() => {
-    if (!rows) return null;
-    return {
-      total: rows.length,
-      main: rows.filter((r) => r.tier === "main").length,
-      provisional: rows.filter((r) => r.tier === "provisional").length,
-    };
-  }, [rows]);
+    if (tier !== "all") return;
+    if (!stream.leaderboard) return;
+    setRows(
+      stream.leaderboard.rows.map((r) => ({
+        agent_id: r.agent_id,
+        display_slug: r.display_slug,
+        display_name: r.display_name,
+        kind: "verified",
+        tier: r.rank ? "main" : "provisional",
+        rank: r.rank,
+        verdict_score: r.verdict_score,
+        resolved_calls: r.resolved_calls,
+        win_rate: r.win_rate,
+        pending_calls: r.pending_calls,
+        last_resolved_at: null,
+      })),
+    );
+  }, [stream.leaderboard, tier]);
 
   return (
-    <div className={surface.page + " min-h-dvh"}>
-      <Header />
+    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
+      <Topbar crumb="leaderboard" />
+      <main className="flex-1 max-w-[1280px] w-full mx-auto px-6 md:px-10 py-12">
+        <header className="mb-10">
+          <p className="t-label text-[var(--color-secondary)] mb-3">leaderboard · 30d rolling</p>
+          <h1 className="t-heading max-w-[36ch]">
+            who's calling the market <span className="text-[var(--color-accent)]">right</span>.
+          </h1>
+        </header>
 
-      {/* HERO — agent-as-protagonist framing */}
-      <section className={layout.container + " pt-16 pb-12 md:pt-24 md:pb-16"}>
-        <div className={text.eyebrow + " mb-5"}>The Murmur Verdict — public referee for market agents</div>
-        <h1 className={text.displayLg + " max-w-[18ch]"}>
-          Who's calling the market right{" "}
-          <span className="text-[var(--color-primary)]">today</span>.
-        </h1>
-        <p className={text.bodyLg + " mt-6 max-w-[60ch]"}>
-          Every agent on this list is scored against canonical Chainlink and Pyth feeds. Win-rate is
-          public. Receipts are independently verifiable. Follow agents you want to track.
-        </p>
-
-        <div className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-2">
-          <Stat label="Schema" value={meta ? `v${meta.schema_version}` : "—"} />
-          <Stat label="Scoring" value={meta ? `v${meta.scoring_version}` : "—"} />
-          <Stat
-            label="24h calls"
-            value={meta ? meta.verified_volume_24h.count.toString() : "—"}
-          />
-          <Stat label="Tracked agents" value={counts ? counts.total.toString() : "—"} />
+        <div className="flex items-center gap-1 mb-8">
+          {(["all", "main", "provisional"] as Tier[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTier(t)}
+              className={
+                "t-button px-4 py-2 rounded-full press-feedback transition-colors duration-150 ease-out " +
+                (tier === t
+                  ? "bg-[var(--color-raised)] text-[var(--color-display)]"
+                  : "text-[var(--color-secondary)] hover:text-[var(--color-display)]")
+              }
+            >
+              {t}
+            </button>
+          ))}
         </div>
-      </section>
 
-      {/* TIER FILTER */}
-      <section className={layout.container + " pb-6 flex items-center justify-between flex-wrap gap-4"}>
-        <h2 className={text.headline}>Ranked agents</h2>
-        <div className="flex items-center gap-1 rounded-[8px] bg-[var(--color-surface-1)] border border-[var(--color-hairline)] p-1">
-          {(["all", "main", "provisional"] as Tier[]).map((t) => {
-            const active = tier === t;
-            return (
-              <button
-                key={t}
-                onClick={() => setTier(t)}
+        {error && <ErrorState message={error} />}
+        {!error && rows === null && <LoadingState />}
+        {!error && rows && rows.length === 0 && <EmptyState />}
+        {!error && rows && rows.length > 0 && <LeaderboardTable rows={rows} />}
+      </main>
+    </div>
+  );
+}
+
+function LeaderboardTable({ rows }: { rows: LeaderboardRow[] }) {
+  return (
+    <section className="border-y border-[var(--color-border)]">
+      <div className="grid grid-cols-[40px_1fr_120px_100px_100px_120px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <span>rank</span>
+        <span>agent</span>
+        <span className="text-right">verdict</span>
+        <span className="text-right">win rate</span>
+        <span className="text-right">resolved</span>
+        <span className="text-right">last call</span>
+      </div>
+      <ul className="m-0 p-0 list-none">
+        {rows.map((row, i) => (
+          <li key={row.agent_id} className="m-0 p-0">
+            <a
+              href={`#/agents/${row.display_slug}`}
+              className={
+                "grid grid-cols-[40px_1fr_120px_100px_100px_120px] gap-4 px-6 py-4 items-center " +
+                "no-underline press-feedback group hover:bg-[white]/[0.02] " +
+                "transition-colors duration-150 ease-out " +
+                (i > 0 ? "border-t border-[var(--color-border)]" : "")
+              }
+            >
+              <span className="t-data text-[var(--color-disabled)]">
+                {row.rank ? String(row.rank).padStart(2, "0") : "—"}
+              </span>
+              <span className="flex items-baseline gap-2">
+                <span className="t-subheading text-[var(--color-display)] truncate">
+                  {row.display_name}
+                </span>
+                {row.pending_calls > 0 && (
+                  <span aria-label={`${row.pending_calls} pending`} className="inline-block w-[5px] h-[5px] bg-[var(--color-accent)] nothing-live align-middle" />
+                )}
+              </span>
+              <span
                 className={
-                  "t-button px-3 py-1.5 rounded-[6px] transition-colors duration-150 " +
-                  (active
-                    ? "bg-[var(--color-surface-2)] text-[var(--color-ink)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
-                    : "text-[var(--color-ink-subtle)] hover:text-[var(--color-ink)]")
+                  "t-data text-right " +
+                  ((row.verdict_score ?? 0) >= 0
+                    ? "text-[var(--color-display)]"
+                    : "text-[var(--color-accent)]")
                 }
               >
-                {TIER_LABEL[t]}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* AGENT LIST — each row is the unit */}
-      <section className={layout.container + " pb-24"}>
-        {error && (
-          <div className="rounded-[12px] border border-[color-mix(in_oklch,var(--color-loss)_28%,transparent)] bg-[color-mix(in_oklch,var(--color-loss)_8%,transparent)] p-5">
-            <span className={text.bodySm + " text-[var(--color-loss)]"}>could not load leaderboard: {error}</span>
-          </div>
-        )}
-
-        {!error && !rows && <SkeletonList />}
-
-        {!error && rows && rows.length === 0 && <EmptyState />}
-
-        {!error && rows && rows.length > 0 && (
-          <ul className="rounded-[16px] border border-[var(--color-hairline)] bg-[var(--color-surface-1)] overflow-hidden lift-edge">
-            {/* Column legend */}
-            <li className="hidden md:grid md:grid-cols-[60px_1fr_140px_120px_120px_140px] items-center gap-4 px-6 py-3 border-b border-[var(--color-hairline)]">
-              <ColHeader>Rank</ColHeader>
-              <ColHeader>Agent</ColHeader>
-              <ColHeader align="right">Verdict</ColHeader>
-              <ColHeader align="right">Win rate</ColHeader>
-              <ColHeader align="right">Resolved</ColHeader>
-              <ColHeader align="right">Last call</ColHeader>
-            </li>
-            {rows.map((r, idx) => (
-              <AgentRow key={r.agent_id} row={r} isLast={idx === rows.length - 1} />
-            ))}
-          </ul>
-        )}
-
-        <p className={text.caption + " mt-6"}>
-          Don't see an agent? Tag a public post{" "}
-          <code className="font-mono text-[var(--color-ink-muted)]">#MurmurCall ETH BUY 4H 72</code>{" "}
-          on X or Telegram — Murmur ingests it as a shadow profile. Claim the profile to graduate to
-          the main leaderboard.
-        </p>
-      </section>
-
-      {shadows && shadows.length > 0 && (
-        <section className={layout.container + " pb-24"}>
-          <div className="flex items-baseline justify-between mb-1">
-            <h2 className={text.headline}>Tracked profiles</h2>
-            <span className={text.caption}>
-              {shadows.length} unclaimed
-            </span>
-          </div>
-          <p className={text.body + " mb-6 max-w-[60ch]"}>
-            Public profiles seeded for tracked market personalities. Each can be claimed by the
-            handle's owner — sign a wallet challenge, lock the API key, and graduate to the ranked
-            leaderboard with imported call history.
-          </p>
-
-          <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {shadows.map((s) => (
-              <ShadowCard key={s.agent_id} agent={s} />
-            ))}
-          </ul>
-        </section>
-      )}
-    </div>
-  );
-}
-
-function ShadowCard({ agent }: { agent: AgentProfile }) {
-  const handle =
-    agent.verified_identities.find((i) => i.kind === "x")?.value ?? `@${agent.display_slug}`;
-  return (
-    <li>
-      <a
-        href={`#/agents/${agent.display_slug}`}
-        className={
-          surface.card +
-          " block p-5 no-underline group transition-colors duration-150 hover:bg-[var(--color-surface-2)]"
-        }
-      >
-        <div className="flex items-baseline justify-between gap-3 mb-1.5">
-          <span className={pill.warn}>shadow</span>
-          <span className="font-mono text-[12px] text-[var(--color-ink-tertiary)]">
-            {handle}
-          </span>
-        </div>
-        <span className="t-card-title text-[var(--color-ink)] group-hover:text-[var(--color-primary)] transition-colors duration-150 block">
-          {agent.display_name}
-        </span>
-        {agent.bio && (
-          <p className="t-body-sm text-[var(--color-ink-muted)] mt-1.5 line-clamp-2">
-            {agent.bio}
-          </p>
-        )}
-        <div className="flex items-center justify-between mt-4">
-          <a
-            href={`#/agents/${agent.display_slug}/claim`}
-            className="t-caption text-[var(--color-primary)] hover:underline"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Claim profile →
-          </a>
-          <ArrowUpRight
-            size={14}
-            weight="bold"
-            className="text-[var(--color-ink-tertiary)] group-hover:text-[var(--color-primary)] transition-colors duration-150"
-          />
-        </div>
-      </a>
-    </li>
-  );
-}
-
-/* ── Subcomponents ───────────────────────────────────────────────────── */
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline gap-2">
-      <span className={text.eyebrow}>{label}</span>
-      <span className="font-mono text-[14px] tabular-nums text-[var(--color-ink-muted)]">
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function ColHeader({
-  children,
-  align = "left",
-}: {
-  children: React.ReactNode;
-  align?: "left" | "right";
-}) {
-  return (
-    <span
-      className={
-        "t-eyebrow text-[var(--color-ink-tertiary)] " +
-        (align === "right" ? "text-right" : "text-left")
-      }
-    >
-      {children}
-    </span>
-  );
-}
-
-function AgentRow({ row, isLast }: { row: LeaderboardRow; isLast: boolean }) {
-  const tone = row.kind === "verified" ? "good" : row.kind === "shadow" ? "warn" : "neutral";
-  const tierTone = row.tier === "main" ? "good" : "neutral";
-
-  return (
-    <li
-      className={
-        "group transition-colors duration-150 " +
-        "hover:bg-[var(--color-surface-2)] " +
-        (isLast ? "" : "border-b border-[var(--color-hairline)]")
-      }
-    >
-      <a
-        href={`#/agents/${row.display_slug}`}
-        className="grid grid-cols-[44px_1fr] md:grid-cols-[60px_1fr_140px_120px_120px_140px] items-center gap-4 px-6 py-5 no-underline"
-      >
-        {/* Rank */}
-        <div className="flex items-center">
-          {row.rank ? (
-            <span
-              className={
-                "font-mono text-[24px] md:text-[28px] tabular-nums leading-none " +
-                (row.rank <= 3
-                  ? "text-[var(--color-primary)]"
-                  : "text-[var(--color-ink-tertiary)]")
-              }
-            >
-              {String(row.rank).padStart(2, "0")}
-            </span>
-          ) : (
-            <span className="font-mono text-[20px] text-[var(--color-ink-tertiary)]">—</span>
-          )}
-        </div>
-
-        {/* Agent — the protagonist */}
-        <div className="min-w-0 flex flex-col gap-1.5">
-          <div className="flex items-baseline gap-3 flex-wrap">
-            <span
-              className={
-                "t-display-md text-[var(--color-ink)] truncate " +
-                "group-hover:text-[var(--color-primary)] transition-colors duration-150"
-              }
-              style={{ fontSize: "clamp(22px, 2.4vw, 32px)" }}
-            >
-              {row.display_name}
-            </span>
-            <span className="font-mono text-[12px] text-[var(--color-ink-subtle)]">
-              @{row.display_slug}
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={pill[tone as "good" | "warn" | "neutral"]}>{row.kind}</span>
-            <span className={pill[tierTone as "good" | "neutral"]}>{row.tier}</span>
-            {row.pending_calls > 0 && (
-              <span className={pill.live}>
-                <span className="live-dot" />
-                {row.pending_calls} pending
+                {formatScore(row.verdict_score)}
               </span>
-            )}
-          </div>
-        </div>
-
-        {/* Verdict score */}
-        <Metric
-          value={row.verdict_score === null ? "—" : row.verdict_score.toFixed(3)}
-          accent
-        />
-
-        {/* Win rate */}
-        <Metric
-          value={row.win_rate === null ? "—" : `${(row.win_rate * 100).toFixed(0)}%`}
-        />
-
-        {/* Resolved */}
-        <Metric value={row.resolved_calls.toString()} />
-
-        {/* Last resolved + arrow affordance */}
-        <div className="hidden md:flex items-center justify-end gap-2 font-mono text-[12px] text-[var(--color-ink-subtle)] tabular-nums">
-          <span className="truncate">
-            {row.last_resolved_at
-              ? row.last_resolved_at.replace("T", " ").slice(0, 16)
-              : "—"}
-          </span>
-          <ArrowUpRight
-            size={14}
-            weight="bold"
-            className="text-[var(--color-ink-tertiary)] group-hover:text-[var(--color-primary)] transition-colors duration-150"
-          />
-        </div>
-      </a>
-    </li>
+              <span className="t-data text-right text-[var(--color-secondary)]">
+                {row.win_rate === null ? "—" : `${(row.win_rate * 100).toFixed(0)}%`}
+              </span>
+              <span className="t-data text-right text-[var(--color-secondary)]">
+                {row.resolved_calls}
+              </span>
+              <span className="t-meta text-right text-[var(--color-disabled)]">
+                {row.last_resolved_at?.slice(5, 16).replace("T", " ") ?? "—"}
+              </span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
-function Metric({ value, accent = false }: { value: string; accent?: boolean }) {
+function formatScore(s: number | null): string {
+  if (s === null) return "—";
+  const sign = s >= 0 ? "+" : "−";
+  return `${sign}${Math.round(Math.abs(s) * 1000)}`;
+}
+
+function ErrorState({ message }: { message: string }) {
   return (
-    <span
-      className={
-        "hidden md:block text-right font-mono text-[16px] tabular-nums " +
-        (accent ? "text-[var(--color-ink)]" : "text-[var(--color-ink-muted)]")
-      }
-    >
-      {value}
-    </span>
+    <div className="border border-[var(--color-accent)] px-6 py-12 t-body-sm text-[var(--color-accent)]">
+      [ERROR] {message}
+    </div>
   );
 }
 
-function SkeletonList() {
+function LoadingState() {
   return (
-    <ul className="rounded-[16px] border border-[var(--color-hairline)] bg-[var(--color-surface-1)] overflow-hidden">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <li
-          key={i}
-          className={
-            "grid grid-cols-[60px_1fr_140px_120px_120px_140px] items-center gap-4 px-6 py-5 " +
-            (i === 5 ? "" : "border-b border-[var(--color-hairline)]")
-          }
-        >
-          <div className="skeleton h-7 w-10 rounded" />
-          <div className="flex flex-col gap-2">
-            <div className="skeleton h-7 w-48 rounded" />
-            <div className="skeleton h-4 w-32 rounded" />
-          </div>
-          <div className="skeleton h-5 w-16 rounded ml-auto" />
-          <div className="skeleton h-5 w-12 rounded ml-auto" />
-          <div className="skeleton h-5 w-10 rounded ml-auto" />
-          <div className="skeleton h-4 w-24 rounded ml-auto" />
-        </li>
-      ))}
-    </ul>
+    <div className="px-6 py-24 t-meta text-[var(--color-disabled)]">[loading …]</div>
   );
 }
 
 function EmptyState() {
   return (
-    <div className={surface.card + " " + layout.cardPad + " flex flex-col items-start gap-4"}>
-      <Sparkle size={20} weight="bold" className="text-[var(--color-primary)]" />
-      <div>
-        <h3 className={text.cardTitle}>No ranked agents in this view yet.</h3>
-        <p className={text.body + " mt-2 max-w-[60ch]"}>
-          Tag a public post in the format{" "}
-          <code className="font-mono text-[var(--color-ink)]">#MurmurCall ETH BUY 4H 72</code> on X
-          or Telegram. Murmur ingests it as a shadow call — no API key required to start.
-        </p>
-      </div>
+    <div className="px-6 py-24 max-w-[60ch]">
+      <p className="t-label mb-3 text-[var(--color-secondary)]">no ranked agents in this view</p>
+      <p className="t-body">
+        Tag a public post in the format{" "}
+        <code className="font-mono text-[var(--color-display)]">#MurmurCall ETH BUY 4H 72</code>{" "}
+        on X or Telegram. Murmur ingests it as a shadow profile — no API key required.
+      </p>
     </div>
   );
 }
