@@ -11,6 +11,7 @@ const ClaimPage = lazy(() => import("./pages/ClaimPage.js").then((m) => ({ defau
 const LaunchPage = lazy(() => import("./pages/LaunchPage.js").then((m) => ({ default: m.LaunchPage })));
 const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ default: m.SharePage })));
 const RecruitersPage = lazy(() => import("./pages/RecruitersPage.js").then((m) => ({ default: m.RecruitersPage })));
+const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => ({ default: m.AdminRefsPage })));
 
 interface ParsedRoute {
   name:
@@ -24,6 +25,7 @@ interface ParsedRoute {
     | "launch"
     | "share"
     | "recruiters"
+    | "admin_refs"
     | "spec";
   params?: Record<string, string>;
 }
@@ -36,6 +38,7 @@ function parseHash(hash: string): ParsedRoute {
   if (path === "/landing") return { name: "landing" };
   if (path === "/launch") return { name: "launch" };
   if (path === "/recruiters") return { name: "recruiters" };
+  if (path === "/admin/refs" || path.startsWith("/admin/refs?")) return { name: "admin_refs" };
   if (path === "/spec") return { name: "spec" };
   const shareMatch = /^\/share\/([^/]+)$/.exec(path);
   if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
@@ -75,6 +78,7 @@ export function VerdictRouter() {
       {route.name === "launch" && <LaunchPage />}
       {route.name === "share" && <SharePage slug={route.params!.slug} />}
       {route.name === "recruiters" && <RecruitersPage />}
+      {route.name === "admin_refs" && <AdminRefsPage />}
       {route.name === "spec" && <SpecPage />}
     </Suspense>
   );

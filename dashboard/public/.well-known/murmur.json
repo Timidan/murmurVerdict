@@ -27,7 +27,8 @@
     "embed_js": "/embed.js",
     "webhooks": "/v1/webhooks",
     "snapshot_md": "/v1/snapshot.md",
-    "leaderboard_csv": "/v1/leaderboard.csv"
+    "leaderboard_csv": "/v1/leaderboard.csv",
+    "stats": "/v1/stats"
   },
   "mcp": {
     "transport": "stdio",

@@ -75,6 +75,13 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           responses: { "200": { description: "text/markdown", content: { "text/markdown": {} } } },
         },
       },
+      "/v1/stats": {
+        get: {
+          tags: ["leaderboard"],
+          summary: "Public aggregates: total agents, calls, resolutions, mean call score, active webhooks, refs.",
+          responses: { "200": { description: "Counts payload" } },
+        },
+      },
       "/v1/leaderboard.csv": {
         get: {
           tags: ["embed"],

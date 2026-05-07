@@ -173,6 +173,7 @@ async function main(): Promise<void> {
     { name: "daemon /embed.js", url: `${args.api}/embed.js`, expectContentType: /javascript/, expectBodyContains: /data-slug/ },
     { name: "daemon /v1/snapshot.md", url: `${args.api}/v1/snapshot.md`, expectContentType: /markdown/, expectBodyContains: /Murmur Verdict/ },
     { name: "daemon /v1/leaderboard.csv", url: `${args.api}/v1/leaderboard.csv`, expectContentType: /csv/, expectBodyContains: /^rank,display_slug/ },
+    { name: "daemon /v1/stats", url: `${args.api}/v1/stats`, expectContentType: /json/, expectBodyContains: /agents_total/ },
     {
       name: "daemon /share/:slug (OG meta)",
       url: `${args.api}/share/${args.slug}`,

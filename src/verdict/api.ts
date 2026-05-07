@@ -306,6 +306,40 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     res.json(getTodayFeed(deps.db, now()));
   });
 
+  // Public aggregates — "Murmur in numbers" for press / dashboards / pitch
+  // decks. Cheap aggregates over the existing tables; cached 60s. Never
+  // surfaces secrets / URLs / personal handles.
+  router.get("/v1/stats", (_req, res) => {
+    const totals = deps.db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM agents)                                   AS agents_total,
+           (SELECT COUNT(*) FROM agents WHERE kind = 'verified')           AS agents_verified,
+           (SELECT COUNT(*) FROM agents WHERE kind = 'shadow')             AS agents_shadow,
+           (SELECT COUNT(*) FROM agents WHERE kind = 'benchmark')          AS agents_benchmark,
+           (SELECT COUNT(*) FROM submissions)                              AS calls_total,
+           (SELECT COUNT(*) FROM submissions WHERE status = 'resolved')    AS calls_resolved,
+           (SELECT COUNT(*) FROM submissions WHERE status IN ('accepted','pending_t0','pending_t1')) AS calls_pending,
+           (SELECT COUNT(*) FROM t1_resolutions WHERE outcome = 'win')     AS wins_total,
+           (SELECT COUNT(*) FROM t1_resolutions WHERE outcome = 'loss')    AS losses_total,
+           (SELECT COUNT(*) FROM t1_resolutions WHERE outcome IN ('void','oracle_unavailable')) AS void_total,
+           (SELECT AVG(call_score) FROM t1_resolutions WHERE call_score IS NOT NULL)             AS mean_call_score,
+           (SELECT COUNT(*) FROM webhooks WHERE disabled = 0)              AS webhooks_active,
+           (SELECT COUNT(*) FROM ref_clicks)                               AS refs_buckets,
+           (SELECT SUM(total) FROM ref_clicks)                             AS refs_clicks_total`,
+      )
+      .get() as Record<string, number | null>;
+
+    res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    res.json({
+      schema_version: SCHEMA_VERSION,
+      scoring_version: SCORING_VERSION,
+      served_at: nowIso(now()),
+      stream_subscribers: deps.events?.subscriberCount() ?? 0,
+      ...Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, v ?? 0])),
+    });
+  });
+
   // Markdown snapshot — daily/weekly digest of the leaderboard formatted
   // for Discord recap channels, blog cross-posts, paste-into-X long-form.
   router.get("/v1/snapshot.md", (_req, res) => {
@@ -490,6 +524,27 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       served_at: nowIso(now()),
       senders: refsRepo.topSenders(deps.db, limit),
     });
+  });
+
+  // Admin-only delete of a sender's ref bucket — used to clear noise / spam
+  // from the recruiters board. Requires the same admin token as the full
+  // listing.
+  router.delete("/v1/refs/:ref", (req, res) => {
+    if (!adminToken) {
+      res.status(503).json({ code: "admin_disabled", message: "VERDICT_ADMIN_TOKEN not set" });
+      return;
+    }
+    if (req.header("X-Admin-Token") !== adminToken) {
+      res.status(403).json({ code: "forbidden", message: "admin token required" });
+      return;
+    }
+    const ref = sanitizeRef(req.params.ref);
+    if (!ref) {
+      res.status(400).json({ code: "invalid_ref" });
+      return;
+    }
+    const info = deps.db.prepare("DELETE FROM ref_clicks WHERE ref = ?").run(ref);
+    res.json({ deleted: info.changes });
   });
 
   // Public mirror of /v1/refs — capped harder so it can never enumerate
