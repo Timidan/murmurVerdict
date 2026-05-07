@@ -17,6 +17,7 @@ import {
 } from "../benchmark/agents.js";
 import { MarketContextProvider } from "./marketContext.js";
 import { loadAgeContextFromEnv } from "../verdict/age-envelope.js";
+import { loadDrandContextFromEnv } from "../verdict/drand-envelope.js";
 import { TelegramNotifier } from "../integrations/telegram.js";
 import { makeProductionVerifier } from "../integrations/postVerifiers.js";
 import { mkdirSync } from "node:fs";
@@ -77,6 +78,19 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     );
   } else {
     console.log("[daemon] age recipient not set; committed-mode submissions disabled");
+  }
+  // P2 phase B-3: optional parallel drand/tlock envelope (D21).
+  // Closes the selective-reveal attack vector — operator can't keep a
+  // committed call hidden past the drand round, even with the age key.
+  const drandCtx = loadDrandContextFromEnv();
+  if (drandCtx) {
+    console.log(
+      `[daemon] drand timelock ready (chain=${drandCtx.chain.hash.slice(0, 12)}…, period=${drandCtx.chain.period}s)`,
+    );
+  } else {
+    console.log(
+      "[daemon] drand disabled (set MURMUR_DRAND_ENABLED=1 for daemon-less reveal)",
+    );
   }
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
   // matching subscription on call.accepted / call.resolved.
@@ -162,6 +176,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         marketContext: (asset_id) => market.get(asset_id),
         events,
         ...(ageCtx ? { ageContext: ageCtx } : {}),
+        ...(drandCtx ? { drandContext: drandCtx } : {}),
       },
       oracleProbe: oracle
         ? async () => {

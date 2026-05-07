@@ -30,6 +30,7 @@ import { evaluateRisk, type MarketContext } from "./risk.js";
 import type { VerdictEventBus } from "./events.js";
 import { buildCommit, COMMIT_PREIMAGE_SCHEMA } from "./commit-preimage.js";
 import { encryptEnvelope, type AgeContext } from "./age-envelope.js";
+import { encryptToDrandRound, type DrandContext } from "./drand-envelope.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -50,6 +51,16 @@ export interface SubmissionContext {
    * submissions are unaffected.
    */
   ageContext?: AgeContext;
+  /**
+   * Optional parallel drand/tlock encryption context (D21). When opted-in
+   * via MURMUR_DRAND_ENABLED, every committed-mode submit ALSO produces
+   * a tlock ciphertext bound to a future drand round. The v2 acceptance
+   * receipt's `drand` block records (chain_hash, round, ciphertext_hash)
+   * so anyone with the receipt can decrypt at the round without daemon
+   * cooperation. drand failures are best-effort: age envelope still
+   * persists, drand ciphertext is just absent.
+   */
+  drandContext?: DrandContext;
   /** Optional event bus for SSE fan-out. Emit on accept; no-op when undefined. */
   events?: VerdictEventBus;
 }
@@ -316,16 +327,40 @@ export async function submitCall(args: {
       rationale: submission.rationale ?? null,
       strategy_tag: submission.strategy_tag ?? null,
     });
-    const encrypted = await encryptEnvelope(
-      ageCtx,
-      new TextEncoder().encode(envelopeBody),
-    );
+    const envelopeBytes = new TextEncoder().encode(envelopeBody);
+    const encrypted = await encryptEnvelope(ageCtx, envelopeBytes);
     // fallback_after = accepted_at + horizon + REVEAL_GRACE_SECONDS (D17 = 900s)
-    const fallback_after = new Date(
-      now().getTime() + submission.horizon_hours * 3_600_000 + 900_000,
-    )
+    const fallback_after_ms =
+      now().getTime() + submission.horizon_hours * 3_600_000 + 900_000;
+    const fallback_after = new Date(fallback_after_ms)
       .toISOString()
       .replace(/\.\d+Z$/, "Z");
+
+    // Optional parallel drand/tlock envelope (D21). Best-effort: a
+    // network failure or schema mismatch falls back to age-only —
+    // the receipt's `drand` block is only emitted on success so a
+    // verifier knows whether the trustless reveal path is available.
+    let drandEnvelope:
+      | { chain_hash: string; round: number; ciphertext: string; ciphertext_hash: `0x${string}` }
+      | null = null;
+    const drandCtx = ctx.drandContext;
+    if (drandCtx?.available) {
+      try {
+        drandEnvelope = await encryptToDrandRound(
+          drandCtx,
+          envelopeBytes,
+          fallback_after_ms,
+        );
+      } catch (err) {
+        // Don't fail the submit — drand is best-effort in v0.2; the
+        // age envelope still lands. Log to stderr so an operator
+        // notices repeated failures (e.g. drand network unreachable).
+        const reason = err instanceof Error ? err.message : "unknown";
+        console.warn(
+          `[submit] drand timelock encrypt failed (call_id=${call_id}): ${reason}`,
+        );
+      }
+    }
     // request_hash (D23) = keccak256 of canonical agent submission body.
     // Lets a verifier chain to an immutable input without trusting the
     // daemon to keep the request body around.
@@ -354,6 +389,15 @@ export async function submitCall(args: {
         encrypted_body_hash: encrypted.encrypted_body_hash,
         fallback_after,
       },
+      ...(drandEnvelope
+        ? {
+            drand: {
+              chain_hash: drandEnvelope.chain_hash,
+              round: drandEnvelope.round,
+              ciphertext_hash: drandEnvelope.ciphertext_hash,
+            },
+          }
+        : {}),
     });
     receipt = buildAcceptanceReceipt(v2payload);
     privacyModeForRepo = "committed";
@@ -367,6 +411,14 @@ export async function submitCall(args: {
       commit_preimage_schema: COMMIT_PREIMAGE_SCHEMA,
       fallback_after,
       received_at: accepted_at,
+      ...(drandEnvelope
+        ? {
+            drand_chain_hash: drandEnvelope.chain_hash,
+            drand_round: drandEnvelope.round,
+            drand_ciphertext: drandEnvelope.ciphertext,
+            drand_ciphertext_hash: drandEnvelope.ciphertext_hash,
+          }
+        : {}),
     };
   } else {
     const v1payload = AcceptanceReceiptPayloadSchema.parse({

@@ -92,6 +92,12 @@ function applyMigrations(db: Database.Database): void {
     v = 6;
     set.run("schema_version", String(v));
   }
+
+  if (v < 7) {
+    db.exec(MIGRATION_007);
+    v = 7;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -352,6 +358,30 @@ const MIGRATION_006 = `
     reveal_hash_valid        INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX idx_call_reveals_revealed_via ON call_reveals(revealed_via);
+`;
+
+// ─── Migration 007 — drand/tlock envelope alongside age (D21) ───────────────
+//
+// Phase B-3 adds a SECOND envelope per committed-mode submission: a
+// drand/tlock ciphertext bound to a future drand round. Once that round
+// is past, anyone can decrypt the envelope using the released drand
+// beacon — no daemon participation required. Closes the selective-
+// reveal attack vector and removes the operator from the trusted set.
+//
+// All columns are NULL-able because:
+//   1. Existing committed envelopes (Phase B-2) don't have drand bindings.
+//   2. drand integration is opt-in via MURMUR_DRAND_ENABLED — when
+//      disabled, only the age envelope is written.
+//   3. v0.3 fhEVM may bind to FHE-derived state instead of drand;
+//      keeping drand_* nullable avoids forcing a rebuild.
+const MIGRATION_007 = `
+  ALTER TABLE call_private_envelopes ADD COLUMN drand_chain_hash TEXT;
+  ALTER TABLE call_private_envelopes ADD COLUMN drand_round INTEGER;
+  ALTER TABLE call_private_envelopes ADD COLUMN drand_ciphertext TEXT;
+  ALTER TABLE call_private_envelopes ADD COLUMN drand_ciphertext_hash TEXT;
+  CREATE INDEX IF NOT EXISTS idx_envelopes_drand_round
+    ON call_private_envelopes(drand_round)
+    WHERE drand_round IS NOT NULL;
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
@@ -655,6 +685,14 @@ export interface AcceptanceWriteInput {
     commit_preimage_schema: string;
     fallback_after: string | null;
     received_at: string;
+    // Optional drand/tlock parallel envelope (Phase B-3). When present,
+    // the v2 acceptance receipt also carries a `drand` block so a
+    // verifier can attest the daemon committed to a specific drand
+    // round at acceptance time.
+    drand_chain_hash?: string;
+    drand_round?: number;
+    drand_ciphertext?: string;
+    drand_ciphertext_hash?: string;
   };
 }
 
@@ -736,12 +774,24 @@ export const submissionsRepo = {
           db,
           `INSERT INTO call_private_envelopes
            (call_id, encrypted_body, encrypted_body_alg, encrypted_body_hash,
-            daemon_key_id, commit_preimage_schema, fallback_after, received_at)
+            daemon_key_id, commit_preimage_schema, fallback_after, received_at,
+            drand_chain_hash, drand_round, drand_ciphertext, drand_ciphertext_hash)
            VALUES (@call_id, @encrypted_body, @encrypted_body_alg, @encrypted_body_hash,
-                   @daemon_key_id, @commit_preimage_schema, @fallback_after, @received_at)`,
+                   @daemon_key_id, @commit_preimage_schema, @fallback_after, @received_at,
+                   @drand_chain_hash, @drand_round, @drand_ciphertext, @drand_ciphertext_hash)`,
         ).run({
           call_id: i.accepted.call_id,
-          ...i.envelope,
+          encrypted_body: i.envelope.encrypted_body,
+          encrypted_body_alg: i.envelope.encrypted_body_alg,
+          encrypted_body_hash: i.envelope.encrypted_body_hash,
+          daemon_key_id: i.envelope.daemon_key_id,
+          commit_preimage_schema: i.envelope.commit_preimage_schema,
+          fallback_after: i.envelope.fallback_after,
+          received_at: i.envelope.received_at,
+          drand_chain_hash: i.envelope.drand_chain_hash ?? null,
+          drand_round: i.envelope.drand_round ?? null,
+          drand_ciphertext: i.envelope.drand_ciphertext ?? null,
+          drand_ciphertext_hash: i.envelope.drand_ciphertext_hash ?? null,
         });
       }
     });
@@ -1109,6 +1159,11 @@ export interface CallPrivateEnvelopeRow {
   commit_preimage_schema: string;
   fallback_after: string | null;
   received_at: string;
+  // Phase B-3: optional parallel drand/tlock envelope (D21).
+  drand_chain_hash?: string | null;
+  drand_round?: number | null;
+  drand_ciphertext?: string | null;
+  drand_ciphertext_hash?: string | null;
 }
 
 export const callPrivateEnvelopesRepo = {
@@ -1117,10 +1172,18 @@ export const callPrivateEnvelopesRepo = {
       db,
       `INSERT INTO call_private_envelopes
        (call_id, encrypted_body, encrypted_body_alg, encrypted_body_hash,
-        daemon_key_id, commit_preimage_schema, fallback_after, received_at)
+        daemon_key_id, commit_preimage_schema, fallback_after, received_at,
+        drand_chain_hash, drand_round, drand_ciphertext, drand_ciphertext_hash)
        VALUES (@call_id, @encrypted_body, @encrypted_body_alg, @encrypted_body_hash,
-               @daemon_key_id, @commit_preimage_schema, @fallback_after, @received_at)`,
-    ).run(row);
+               @daemon_key_id, @commit_preimage_schema, @fallback_after, @received_at,
+               @drand_chain_hash, @drand_round, @drand_ciphertext, @drand_ciphertext_hash)`,
+    ).run({
+      ...row,
+      drand_chain_hash: row.drand_chain_hash ?? null,
+      drand_round: row.drand_round ?? null,
+      drand_ciphertext: row.drand_ciphertext ?? null,
+      drand_ciphertext_hash: row.drand_ciphertext_hash ?? null,
+    });
   },
 
   byCallId(db: Database.Database, call_id: string): CallPrivateEnvelopeRow | null {
