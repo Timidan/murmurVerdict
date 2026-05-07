@@ -638,6 +638,24 @@ export interface AcceptanceWriteInput {
     filecoin_cid?: string;
   };
   dedup_key: string;
+  /**
+   * P2 committed-mode metadata. When `privacy_mode='committed'`, the
+   * caller MUST also pass `commit_hash` (the daemon-computed keccak of
+   * the canonical preimage) and `envelope` (the age-encrypted body).
+   * The transaction writes them atomically alongside the submission row.
+   */
+  privacy_mode?: string;
+  commit_hash?: string;
+  commit_scheme?: string;
+  envelope?: {
+    encrypted_body: string;
+    encrypted_body_alg: string;
+    encrypted_body_hash: string;
+    daemon_key_id: string;
+    commit_preimage_schema: string;
+    fallback_after: string | null;
+    received_at: string;
+  };
 }
 
 export const submissionsRepo = {
@@ -649,10 +667,12 @@ export const submissionsRepo = {
         `INSERT INTO submissions
          (call_id, agent_id, client_order_id, asset_id, side, horizon_hours,
           confidence, submitted_at, accepted_at, status, rationale, strategy_tag,
-          schema_version, scoring_version, dedup_key)
+          schema_version, scoring_version, dedup_key,
+          privacy_mode, commit_hash, commit_scheme)
          VALUES (@call_id, @agent_id, @client_order_id, @asset_id, @side, @horizon_hours,
           @confidence, @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
-          @schema_version, @scoring_version, @dedup_key)`,
+          @schema_version, @scoring_version, @dedup_key,
+          @privacy_mode, @commit_hash, @commit_scheme)`,
       ).run({
         call_id: i.accepted.call_id,
         agent_id: i.accepted.agent_id,
@@ -669,6 +689,9 @@ export const submissionsRepo = {
         schema_version: i.accepted.schema_version,
         scoring_version: i.accepted.scoring_version,
         dedup_key: i.dedup_key,
+        privacy_mode: i.privacy_mode ?? "legacy_plaintext",
+        commit_hash: i.commit_hash ?? null,
+        commit_scheme: i.commit_scheme ?? null,
       });
       prep(
         db,
@@ -703,6 +726,24 @@ export const submissionsRepo = {
         i.receipt.filecoin_cid ?? null,
         i.accepted.accepted_at,
       );
+      // P2 committed-mode: persist the age-encrypted body alongside
+      // the submission row in the same transaction. The plaintext is
+      // STILL written to submissions today (Phase E will scrub public
+      // surfaces, Phase E-cleanup will null the plaintext columns) —
+      // for now the envelope is what receipts and reveals attest to.
+      if (i.envelope) {
+        prep(
+          db,
+          `INSERT INTO call_private_envelopes
+           (call_id, encrypted_body, encrypted_body_alg, encrypted_body_hash,
+            daemon_key_id, commit_preimage_schema, fallback_after, received_at)
+           VALUES (@call_id, @encrypted_body, @encrypted_body_alg, @encrypted_body_hash,
+                   @daemon_key_id, @commit_preimage_schema, @fallback_after, @received_at)`,
+        ).run({
+          call_id: i.accepted.call_id,
+          ...i.envelope,
+        });
+      }
     });
     tx(input);
   },

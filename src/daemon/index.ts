@@ -16,6 +16,7 @@ import {
   runBaselinesOnce,
 } from "../benchmark/agents.js";
 import { MarketContextProvider } from "./marketContext.js";
+import { loadAgeContextFromEnv } from "../verdict/age-envelope.js";
 import { TelegramNotifier } from "../integrations/telegram.js";
 import { makeProductionVerifier } from "../integrations/postVerifiers.js";
 import { mkdirSync } from "node:fs";
@@ -65,6 +66,18 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   const telegram = new TelegramNotifier();
   const oracle = makeOracle();
   const events = new VerdictEventBus();
+  // P2 committed-mode: load the daemon's age recipient at boot so
+  // committed submissions can be encrypted to it. Optional — when
+  // absent, committed-mode submissions return 503 and legacy_plaintext
+  // path is unaffected.
+  const ageCtx = loadAgeContextFromEnv();
+  if (ageCtx) {
+    console.log(
+      `[daemon] age envelope ready (key_id=${ageCtx.daemon_key_id}, fallback_decrypt=${ageCtx.identity ? "enabled" : "disabled"})`,
+    );
+  } else {
+    console.log("[daemon] age recipient not set; committed-mode submissions disabled");
+  }
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
   // matching subscription on call.accepted / call.resolved.
   const webhookDispatcher = startWebhookDispatcher(db, events);
@@ -145,7 +158,11 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     createVerdictRouter({
       db,
       events,
-      ctx: { marketContext: (asset_id) => market.get(asset_id), events },
+      ctx: {
+        marketContext: (asset_id) => market.get(asset_id),
+        events,
+        ...(ageCtx ? { ageContext: ageCtx } : {}),
+      },
       oracleProbe: oracle
         ? async () => {
             try {

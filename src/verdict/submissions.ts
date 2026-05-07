@@ -22,10 +22,14 @@ import {
   isUniqueViolation,
   submissionsRepo,
   usageRepo,
+  type AcceptanceWriteInput,
 } from "./db.js";
 import { buildAcceptanceReceipt } from "../receipts/verdictReceipt.js";
+import { canonicalHash } from "../receipts/canonical.js";
 import { evaluateRisk, type MarketContext } from "./risk.js";
 import type { VerdictEventBus } from "./events.js";
+import { buildCommit, COMMIT_PREIMAGE_SCHEMA } from "./commit-preimage.js";
+import { encryptEnvelope, type AgeContext } from "./age-envelope.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -38,6 +42,14 @@ export interface SubmissionContext {
   now?: () => Date;
   /** Per-call oracle policy; defaults to DEFAULT_T0_POLICY. */
   oraclePolicy?: T0Policy;
+  /**
+   * P2 committed-mode age context. When present, agents may submit with
+   * privacy_mode='committed' and the daemon encrypts the envelope to the
+   * configured age recipient. When absent (no MURMUR_DAEMON_AGE_RECIPIENT),
+   * committed-mode submissions are rejected with 503; legacy_plaintext
+   * submissions are unaffected.
+   */
+  ageContext?: AgeContext;
   /** Optional event bus for SSE fan-out. Emit on accept; no-op when undefined. */
   events?: VerdictEventBus;
 }
@@ -243,18 +255,133 @@ export async function submitCall(args: {
   // chain_id in the receipt subject when available. Off-Murmur verifiers can
   // then attest the (wallet → score) relationship without a daemon round-trip.
   const issuingAgent = agentsRepo.byId(db, submission.agent_id);
-  const acceptancePayload = AcceptanceReceiptPayloadSchema.parse({
-    schema_version: SCHEMA_VERSION,
-    scoring_version: SCORING_VERSION,
-    submission,
-    preflight,
-    oracle_policy: oraclePolicy,
-    accepted_at,
-    call_id,
-    ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
-    ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
-  });
-  const receipt = buildAcceptanceReceipt(acceptancePayload);
+
+  // P2 committed mode: when the agent opted in via privacy_mode='committed',
+  // build a v2 acceptance receipt that omits the plaintext envelope from
+  // the receipt subject and binds to a commit_hash + age envelope instead.
+  // Falls back to v1 (legacy_plaintext) for benchmark/shadow agents (D20).
+  let receipt: { canonical_json: string; receipt_hash: `0x${string}` };
+  let envelopeForRepo: AcceptanceWriteInput["envelope"];
+  let privacyModeForRepo: string = "legacy_plaintext";
+  let commitHashForRepo: string | undefined;
+  let commitSchemeForRepo: string | undefined;
+
+  if (submission.privacy_mode === "committed") {
+    const ageCtx = ctx.ageContext;
+    if (!ageCtx) {
+      throw new VerdictError(
+        "daemon not configured for committed-mode submissions (set MURMUR_DAEMON_AGE_RECIPIENT)",
+        ERROR_CODES.internal_error,
+        503,
+      );
+    }
+    if (
+      !issuingAgent?.wallet_address ||
+      !issuingAgent.chain_id ||
+      !["verified", "wallet_only"].includes(issuingAgent.kind)
+    ) {
+      throw new VerdictError(
+        "committed-mode submissions require kind ∈ (verified, wallet_only) and a wallet binding",
+        ERROR_CODES.agent_not_authorized,
+        403,
+      );
+    }
+    if (!submission.salt) {
+      // Schema-level superRefine should have caught this; defensive recheck.
+      throw new VerdictError(
+        "salt is required for committed-mode submissions",
+        ERROR_CODES.schema_invalid,
+        400,
+      );
+    }
+    const { commit_hash, preimage_canonical } = buildCommit({
+      call_id,
+      agent_wallet: issuingAgent.wallet_address,
+      chain_id: issuingAgent.chain_id,
+      side: submission.side,
+      asset_id: submission.asset_id,
+      horizon_hours: submission.horizon_hours,
+      confidence: submission.confidence,
+      salt: submission.salt,
+      // D16: t0 is daemon-canonical accepted_at. Agent reconstructs the
+      // preimage from the response after the fact and verifies the hash.
+      t0: accepted_at,
+    });
+    // Envelope plaintext = canonical preimage JSON + the not-committed
+    // metadata (rationale, strategy_tag) per D18. Daemon decrypts at
+    // fallback_after if the agent hasn't revealed; agent reveals
+    // voluntarily by re-posting the preimage to /v1/calls/:id/reveal.
+    const envelopeBody = JSON.stringify({
+      preimage_canonical,
+      rationale: submission.rationale ?? null,
+      strategy_tag: submission.strategy_tag ?? null,
+    });
+    const encrypted = await encryptEnvelope(
+      ageCtx,
+      new TextEncoder().encode(envelopeBody),
+    );
+    // fallback_after = accepted_at + horizon + REVEAL_GRACE_SECONDS (D17 = 900s)
+    const fallback_after = new Date(
+      now().getTime() + submission.horizon_hours * 3_600_000 + 900_000,
+    )
+      .toISOString()
+      .replace(/\.\d+Z$/, "Z");
+    // request_hash (D23) = keccak256 of canonical agent submission body.
+    // Lets a verifier chain to an immutable input without trusting the
+    // daemon to keep the request body around.
+    const request_hash = canonicalHash(submission);
+    const v2payload = AcceptanceReceiptPayloadSchema.parse({
+      schema_version: 2,
+      scoring_version: SCORING_VERSION,
+      receipt_kind: "acceptance",
+      call_id,
+      agent_id: submission.agent_id,
+      accepted_at,
+      privacy_mode: "committed",
+      commit: {
+        hash: commit_hash,
+        scheme: "keccak256",
+        preimage_schema: COMMIT_PREIMAGE_SCHEMA,
+      },
+      preflight,
+      oracle_policy: oraclePolicy,
+      agent_wallet: issuingAgent.wallet_address,
+      chain_id: issuingAgent.chain_id,
+      request_hash,
+      fallback: {
+        encrypted_body_alg: encrypted.alg,
+        daemon_key_id: encrypted.daemon_key_id,
+        encrypted_body_hash: encrypted.encrypted_body_hash,
+        fallback_after,
+      },
+    });
+    receipt = buildAcceptanceReceipt(v2payload);
+    privacyModeForRepo = "committed";
+    commitHashForRepo = commit_hash;
+    commitSchemeForRepo = "keccak256";
+    envelopeForRepo = {
+      encrypted_body: encrypted.ciphertext_base64,
+      encrypted_body_alg: encrypted.alg,
+      encrypted_body_hash: encrypted.encrypted_body_hash,
+      daemon_key_id: encrypted.daemon_key_id,
+      commit_preimage_schema: COMMIT_PREIMAGE_SCHEMA,
+      fallback_after,
+      received_at: accepted_at,
+    };
+  } else {
+    const v1payload = AcceptanceReceiptPayloadSchema.parse({
+      schema_version: SCHEMA_VERSION,
+      scoring_version: SCORING_VERSION,
+      submission,
+      preflight,
+      oracle_policy: oraclePolicy,
+      accepted_at,
+      call_id,
+      ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
+      ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
+    });
+    receipt = buildAcceptanceReceipt(v1payload);
+  }
 
   // 8. optional Filecoin pin
   let filecoin_cid: string | null = null;
@@ -298,6 +425,10 @@ export async function submitCall(args: {
         filecoin_cid: filecoin_cid ?? undefined,
       },
       dedup_key,
+      privacy_mode: privacyModeForRepo,
+      ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
+      ...(commitSchemeForRepo ? { commit_scheme: commitSchemeForRepo } : {}),
+      ...(envelopeForRepo ? { envelope: envelopeForRepo } : {}),
     });
   } catch (err) {
     if (isUniqueViolation(err)) {
