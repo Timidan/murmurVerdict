@@ -157,7 +157,11 @@ interface RenderedDm {
 }
 
 function renderDm(candidate: Candidate, snapshot: AgentSnapshot): RenderedDm {
-  const shareUrl = `${PUBLIC_DASHBOARD_URL}/#/share/${snapshot.display_slug}?ref=${encodeURIComponent(SENDER_REF)}`;
+  // The DM body uses the daemon's /share/:slug interceptor (NOT the
+  // dashboard's hash route) so X / Discord / Slack scrapers pick up the
+  // per-agent OG image. The interceptor redirects browsers to the
+  // dashboard's hash route automatically.
+  const shareUrl = `${PUBLIC_API_URL}/share/${snapshot.display_slug}?ref=${encodeURIComponent(SENDER_REF)}`;
   const ogUrl = `${PUBLIC_API_URL}/v1/og/${snapshot.display_slug}.png`;
   const badgeUrl = `${PUBLIC_API_URL}/v1/badge/${snapshot.display_slug}.svg`;
   const agentUrl = `${PUBLIC_DASHBOARD_URL}/#/agents/${snapshot.display_slug}`;

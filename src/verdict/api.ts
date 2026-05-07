@@ -415,6 +415,89 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     res.send(svg);
   });
 
+  // ── /share/:slug — OG-meta interceptor for hash-routed SPA ──
+  //
+  // Twitter / Discord / Slack ignore the URL fragment when scraping link
+  // previews — they only see /index.html, which has static OG meta. To
+  // unfurl per-agent cards correctly, point share links at the daemon's
+  // /share/:slug instead. We respond with a tiny HTML page that:
+  //   - declares og:image / twitter:image pointing at /v1/og/:slug.png
+  //   - declares og:title / og:description per agent
+  //   - meta-refreshes browsers to the dashboard's /#/share/:slug route
+  //   - degrades to a plain anchor for clients that ignore meta-refresh
+  //
+  // No JavaScript, no SSR framework. Just a few hundred bytes of HTML.
+  router.get("/share/:slug", (req, res) => {
+    const slug = String(req.params.slug ?? "");
+    const ref = sanitizeRef(req.query.ref);
+    const agent = agentsRepo.bySlug(deps.db, slug);
+
+    const dashboardOrigin = String(
+      req.query.dashboard ??
+        process.env.MURMUR_PUBLIC_URL ??
+        req.header("origin") ??
+        "",
+    ).replace(/\/$/, "");
+
+    const apiOrigin = `${req.protocol}://${req.get("host")}`;
+    const ogPng = `${apiOrigin}/v1/og/${encodeURIComponent(slug)}.png`;
+    const dashHash = `${dashboardOrigin}/#/share/${encodeURIComponent(slug)}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+
+    const title = agent
+      ? `${agent.display_name} — Murmur Verdict`
+      : `${slug} — Murmur Verdict`;
+    const description = agent
+      ? `Live verdict for ${agent.display_name} (@${agent.display_slug}) — scored against canonical Chainlink + Pyth feeds.`
+      : "The public referee for autonomous market agents.";
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <meta name="description" content="${escapeHtml(description)}" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="${escapeHtml(title)}" />
+  <meta property="og:description" content="${escapeHtml(description)}" />
+  <meta property="og:image" content="${escapeHtml(ogPng)}" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:type" content="image/png" />
+  ${dashboardOrigin ? `<meta property="og:url" content="${escapeHtml(dashHash)}" />` : ""}
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${escapeHtml(title)}" />
+  <meta name="twitter:description" content="${escapeHtml(description)}" />
+  <meta name="twitter:image" content="${escapeHtml(ogPng)}" />
+
+  ${dashboardOrigin ? `<meta http-equiv="refresh" content="0; url=${escapeHtml(dashHash)}" />` : ""}
+  <style>
+    html, body { margin:0; padding:0; background:#000; color:#fff; font-family: ui-monospace, "SF Mono", monospace; }
+    body { display:flex; min-height:100dvh; align-items:center; justify-content:center; padding:48px; }
+    a { color:#fff; }
+    img { max-width:100%; height:auto; display:block; margin:24px auto; }
+    .meta { text-transform:uppercase; letter-spacing:0.16em; font-size:11px; color:#888; }
+  </style>
+</head>
+<body>
+  <div>
+    <div class="meta">murmur.verdict · ${agent ? "agent" : "share"}</div>
+    <h1 style="font-weight:500;font-size:24px;margin:8px 0 0;">${escapeHtml(title)}</h1>
+    <img src="${escapeHtml(ogPng)}" alt="${escapeHtml(title)}" width="1200" height="630" />
+    <p style="font-size:13px;color:#999;">
+      ${dashboardOrigin
+        ? `Redirecting to <a href="${escapeHtml(dashHash)}">${escapeHtml(dashHash)}</a> …`
+        : `Set <code>MURMUR_PUBLIC_URL</code> on the daemon to enable redirect.`}
+    </p>
+  </div>
+</body>
+</html>`);
+  });
+
   // PNG variants — needed for X / Discord / Slack OG previews (those
   // clients don't render SVG inline). Same source layout, rasterised
   // server-side via resvg.
@@ -813,6 +896,15 @@ function rssAgentFeed(
 ${items}
   </channel>
 </rss>`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function xmlEscape(s: string): string {
