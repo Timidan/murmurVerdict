@@ -1,7 +1,16 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import express from "express";
 import type Database from "better-sqlite3";
-import { agentsRepo, callRevealsRepo, claimsRepo, refsRepo, resolutionsRepo, submissionsRepo, webhooksRepo } from "./db.js";
+import {
+  agentsRepo,
+  callRevealsRepo,
+  claimsRepo,
+  refsRepo,
+  resolutionsRepo,
+  submissionsRepo,
+  webhooksRepo,
+  type CallRevealRow,
+} from "./db.js";
 import {
   buildCommitPreimage,
   computeCommitHash,
@@ -15,6 +24,7 @@ import { getLeaderboard, get24hVerifiedVolume } from "./leaderboard.js";
 import type { VerdictEventBus } from "./events.js";
 import {
   AgentSlugSchema,
+  AcceptanceReceiptPayloadSchema,
   ChainIdSchema,
   ERROR_CODES,
   REGISTERED_STRATEGY_TAGS,
@@ -484,10 +494,12 @@ export function createVerdictRouter(deps: ApiDeps): Router {
                 s.submitted_at, s.accepted_at,
                 s.privacy_mode, s.commit_hash,
                 ar.receipt_hash AS acceptance_receipt_hash,
-                r.outcome, r.call_score, r.signed_return, r.resolved_at
+                r.outcome, r.call_score, r.signed_return, r.resolved_at,
+                cr.reveal_hash_valid
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
          LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
+         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.agent_id = ?
          ORDER BY s.accepted_at DESC
          LIMIT ?`,
@@ -514,6 +526,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           signed_return: row.signed_return as string | null,
           resolved_at: row.resolved_at as string | null,
           submitted_at: row.submitted_at as string | null,
+          reveal_hash_valid: row.reveal_hash_valid as number | null,
         },
         agent.display_slug,
       ),
@@ -809,17 +822,18 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
                 s.confidence, s.submitted_at, s.accepted_at,
                 s.privacy_mode, s.commit_hash,
+                cr.reveal_hash_valid,
                 r.outcome, r.call_score, r.signed_return, r.resolved_at
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
+         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.agent_id = ?
          ORDER BY s.accepted_at DESC
          LIMIT ?`,
       )
       .all(agent.agent_id, limit) as Array<Record<string, unknown>>;
-    // Phase E: pending committed-mode rows render as "[committed]" in
-    // the RSS title without leaking side/asset/horizon. Resolved rows
-    // are unchanged (post-horizon plaintext is public).
+    // Phase E: committed-mode rows render as "[committed]" until a valid
+    // reveal row exists, without leaking side/asset/horizon.
     const rows = raw.map((r) => {
       const projected = projectCallRow({
         call_id: r.call_id as string,
@@ -832,6 +846,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         horizon_hours: r.horizon_hours as number | null,
         confidence: r.confidence as number | null,
         submitted_at: r.submitted_at as string | null,
+        reveal_hash_valid: r.reveal_hash_valid as number | null,
       });
       return {
         call_id: projected.call_id,
@@ -843,6 +858,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         horizon_hours: projected.horizon_hours ?? 0,
         confidence: projected.confidence ?? 0,
         submitted_at: projected.submitted_at ?? "",
+        is_committed_scrubbed: projected.side === undefined,
         accepted_at: projected.accepted_at,
         outcome: r.outcome as string | null,
         call_score: r.call_score as number | null,
@@ -1057,6 +1073,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           agent_id: r.agent_id,
           display_slug: r.display_slug,
           display_name: r.display_name,
+          kind: r.kind,
           verdict_score: r.verdict_score,
           win_rate: r.win_rate,
           resolved_calls: r.resolved_calls,
@@ -1137,8 +1154,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
       const subRow = deps.db
         .prepare(
-          `SELECT call_id, agent_id, privacy_mode, commit_hash, accepted_at
-           FROM submissions WHERE call_id = ?`,
+          `SELECT s.call_id, s.agent_id, s.privacy_mode, s.commit_hash, s.accepted_at,
+                  ar.canonical_json AS acceptance_canonical_json
+           FROM submissions s
+           LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
+           WHERE s.call_id = ?`,
         )
         .get(call_id) as
         | {
@@ -1147,6 +1167,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
             privacy_mode: string | null;
             commit_hash: string | null;
             accepted_at: string;
+            acceptance_canonical_json: string | null;
           }
         | undefined;
       if (!subRow) {
@@ -1220,13 +1241,22 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           422,
         );
       }
-      const issuingAgent = agentsRepo.byId(deps.db, identity.agent_id);
+      const acceptanceBinding = parseCommittedAcceptanceBinding(
+        subRow.acceptance_canonical_json,
+      );
+      if (!acceptanceBinding) {
+        throw new VerdictError(
+          "committed-mode call is missing a v2 acceptance wallet binding",
+          ERROR_CODES.schema_invalid,
+          409,
+        );
+      }
       if (
-        normalized.agent_wallet !== (issuingAgent?.wallet_address ?? "") ||
-        normalized.chain_id !== (issuingAgent?.chain_id ?? "")
+        normalized.agent_wallet !== acceptanceBinding.agent_wallet ||
+        normalized.chain_id !== acceptanceBinding.chain_id
       ) {
         throw new VerdictError(
-          "commit_preimage wallet/chain_id does not match the agent's bound wallet",
+          "commit_preimage wallet/chain_id does not match the acceptance receipt",
           ERROR_CODES.schema_invalid,
           422,
         );
@@ -1240,30 +1270,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         );
       }
 
-      // Idempotency: existing call_reveals row with identical preimage
-      // hash is a no-op replay. Any other shape is a conflict.
-      const existing = callRevealsRepo.byCallId(deps.db, call_id);
-      if (existing) {
-        if (
-          existing.commit_preimage_hash &&
-          existing.commit_preimage_hash.toLowerCase() === recomputed.toLowerCase()
-        ) {
-          res.status(200).json({
-            call_id,
-            revealed_via: existing.revealed_via,
-            revealed_at: existing.revealed_at,
-            reveal_hash_valid: existing.reveal_hash_valid === 1,
-            note: "idempotent_replay",
-          });
-          return;
-        }
-        throw new VerdictError(
-          "call already revealed with a different preimage",
-          ERROR_CODES.duplicate,
-          409,
-        );
-      }
-
       const revealed_at = nowIso(now());
       const rationale =
         typeof body.rationale === "string" && body.rationale.length > 0
@@ -1273,7 +1279,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         typeof body.strategy_tag === "string" && body.strategy_tag.length > 0
           ? body.strategy_tag.slice(0, 64)
           : null;
-      callRevealsRepo.insert(deps.db, {
+      const revealRow: CallRevealRow = {
         call_id,
         side: normalized.side,
         asset_id: normalized.asset_id,
@@ -1290,7 +1296,77 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         revealed_at,
         revealed_via: "agent",
         reveal_hash_valid: 1,
-      });
+      };
+
+      // Idempotency: existing call_reveals row with identical preimage
+      // hash is a no-op replay. Any other shape is a conflict.
+      const existing = callRevealsRepo.byCallId(deps.db, call_id);
+      if (existing) {
+        if (existing.reveal_hash_valid === 0) {
+          repairInvalidReveal(deps.db, revealRow);
+          res.status(200).json({
+            call_id,
+            revealed_via: "agent",
+            revealed_at,
+            reveal_hash_valid: true,
+            commit_hash: subRow.commit_hash,
+            note: "repaired_invalid_reveal",
+          });
+          return;
+        }
+        if (
+          existing.commit_preimage_hash &&
+          existing.commit_preimage_hash.toLowerCase() === recomputed.toLowerCase()
+        ) {
+          res.status(200).json({
+            call_id,
+            revealed_via: existing.revealed_via,
+            revealed_at: existing.revealed_at,
+            reveal_hash_valid: true,
+            commit_hash: subRow.commit_hash,
+            note: "idempotent_replay",
+          });
+          return;
+        }
+        throw new VerdictError(
+          "call already revealed with a different preimage",
+          ERROR_CODES.duplicate,
+          409,
+        );
+      }
+
+      try {
+        callRevealsRepo.insert(deps.db, revealRow);
+      } catch (err) {
+        const raced = callRevealsRepo.byCallId(deps.db, call_id);
+        if (raced?.reveal_hash_valid === 0) {
+          repairInvalidReveal(deps.db, revealRow);
+          res.status(200).json({
+            call_id,
+            revealed_via: "agent",
+            revealed_at,
+            reveal_hash_valid: true,
+            commit_hash: subRow.commit_hash,
+            note: "repaired_invalid_reveal_race",
+          });
+          return;
+        }
+        if (
+          raced?.commit_preimage_hash &&
+          raced.commit_preimage_hash.toLowerCase() === recomputed.toLowerCase()
+        ) {
+          res.status(200).json({
+            call_id,
+            revealed_via: raced.revealed_via,
+            revealed_at: raced.revealed_at,
+            reveal_hash_valid: raced.reveal_hash_valid === 1,
+            commit_hash: subRow.commit_hash,
+            note: "idempotent_race",
+          });
+          return;
+        }
+        throw err;
+      }
 
       res.status(201).json({
         call_id,
@@ -1433,15 +1509,18 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       res.status(404).json({ code: "not_found", message: "call not found" });
       return;
     }
-    // Phase E: scrub plaintext from the submission sub-object when
-    // committed AND pending. The acceptance/resolution receipts on
-    // the same response don't carry plaintext for v2 by construction.
+    // Phase E: scrub plaintext from the submission sub-object while a
+    // committed call lacks a valid reveal row. The acceptance receipt on
+    // the same response never carries plaintext for v2 by construction.
     const subRow = deps.db
       .prepare(
-        "SELECT privacy_mode, commit_hash FROM submissions WHERE call_id = ?",
+        `SELECT s.privacy_mode, s.commit_hash, cr.reveal_hash_valid
+         FROM submissions s
+         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
+         WHERE s.call_id = ?`,
       )
       .get(call_id) as
-      | { privacy_mode: string | null; commit_hash: string | null }
+      | { privacy_mode: string | null; commit_hash: string | null; reveal_hash_valid: number | null }
       | undefined;
     const projected = projectCallRow({
       call_id: full.submission.call_id,
@@ -1457,6 +1536,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       rationale: full.submission.rationale,
       strategy_tag: full.submission.strategy_tag,
       submitted_at: full.submission.submitted_at,
+      reveal_hash_valid: subRow?.reveal_hash_valid ?? null,
     });
     const scrubbedSubmission = {
       call_id: full.submission.call_id,
@@ -1832,6 +1912,56 @@ function readHmacHeaders(req: Request): {
   return { agent_id, timestamp, signature };
 }
 
+function parseCommittedAcceptanceBinding(
+  canonical_json: string | null,
+): { agent_wallet: string; chain_id: string } | null {
+  if (!canonical_json) return null;
+  try {
+    const parsed = AcceptanceReceiptPayloadSchema.safeParse(
+      JSON.parse(canonical_json),
+    );
+    if (!parsed.success || parsed.data.schema_version !== 2) return null;
+    return {
+      agent_wallet: parsed.data.agent_wallet,
+      chain_id: parsed.data.chain_id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function repairInvalidReveal(db: Database.Database, row: CallRevealRow): void {
+  const info = db
+    .prepare(
+      `UPDATE call_reveals
+       SET side = @side,
+           asset_id = @asset_id,
+           horizon_hours = @horizon_hours,
+           confidence = @confidence,
+           rationale = @rationale,
+           strategy_tag = @strategy_tag,
+           salt = @salt,
+           t0 = @t0,
+           agent_wallet = @agent_wallet,
+           chain_id = @chain_id,
+           commit_preimage_json = @commit_preimage_json,
+           commit_preimage_hash = @commit_preimage_hash,
+           revealed_at = @revealed_at,
+           revealed_via = @revealed_via,
+           reveal_hash_valid = @reveal_hash_valid
+       WHERE call_id = @call_id
+         AND reveal_hash_valid = 0`,
+    )
+    .run(row);
+  if (info.changes !== 1) {
+    throw new VerdictError(
+      "call already revealed with a different preimage",
+      ERROR_CODES.duplicate,
+      409,
+    );
+  }
+}
+
 function rssEmpty(slug: string, reason: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
@@ -1847,6 +1977,7 @@ function rssAgentFeed(
   rows: Array<{
     call_id: string;
     status: string;
+    is_committed_scrubbed?: boolean;
     asset_id: string;
     side: "BUY" | "SELL";
     horizon_hours: number;
@@ -1866,6 +1997,20 @@ function rssAgentFeed(
       const itemLink = `${dashboardOrigin}/#/calls/${encodeURIComponent(r.call_id)}`;
       const isResolved = r.outcome !== null && r.resolved_at !== null;
       const titleAction = isResolved ? r.outcome!.toUpperCase() : "PENDING";
+      if (r.is_committed_scrubbed) {
+        const title = `[COMMITTED] ${titleAction}`;
+        const description = isResolved
+          ? `committed call · outcome ${r.outcome} · score ${r.call_score?.toFixed(3) ?? "—"}`
+          : `committed call · pending reveal/resolution`;
+        const pubDate = new Date(r.resolved_at ?? r.accepted_at).toUTCString();
+        return `    <item>
+      <title>${xmlEscape(title)}</title>
+      <link>${xmlEscape(itemLink)}</link>
+      <guid isPermaLink="false">murmur:${xmlEscape(r.call_id)}</guid>
+      <pubDate>${pubDate}</pubDate>
+      <description>${xmlEscape(description)}</description>
+    </item>`;
+      }
       const subjectAsset = r.asset_id.split(":").pop() ?? r.asset_id;
       const title = `${r.side} ${subjectAsset} ${r.horizon_hours}h · ${titleAction}`;
       const pubDate = new Date(r.resolved_at ?? r.accepted_at).toUTCString();
@@ -2443,10 +2588,9 @@ AND the daemon goes down.
     embeds the revealed subject under \`reveal.plaintext_subject\`, and
     every public surface unhides side/asset/horizon/confidence.
   - **The receipt chain attests every step.** /v1/calls/<id>/verify
-    runs 9 checks for v2 receipts: acceptance_receipt_hash,
-    commit_hash_binding, envelope_ciphertext_hash, drand_ciphertext_hash,
-    reveal_canonical_hash, plus the resolution-side signed_return /
-    outcome / call_score recomputation.
+    checks v2 acceptance, envelope, reveal, acceptance→resolution link,
+    commit_hash, wallet binding, reveal subject, signed_return, outcome,
+    and call_score.
   - **v0.3 fhEVM port** removes the operator-can-decrypt step entirely:
     calls live encrypted on-chain, score is computed under FHE, only
     the final score is decrypted.

@@ -93,6 +93,15 @@ const TOOLS: Tool[] = [
         confidence: { type: "number", minimum: 0, maximum: 1 },
         rationale: { type: "string" },
         strategy_tag: { type: "string" },
+        privacy_mode: {
+          type: "string",
+          enum: ["committed", "legacy_plaintext"],
+          description: "Use committed with a fresh 64-hex salt to hide the public call envelope until reveal.",
+        },
+        salt: {
+          type: "string",
+          description: "Required for privacy_mode=committed; 32 random bytes as 64 hex chars.",
+        },
       },
     },
   },
@@ -205,6 +214,8 @@ async function submitCallViaApi(args: Record<string, unknown>) {
     submitted_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
     rationale: typeof args.rationale === "string" ? args.rationale : undefined,
     strategy_tag: typeof args.strategy_tag === "string" ? args.strategy_tag : undefined,
+    privacy_mode: typeof args.privacy_mode === "string" ? args.privacy_mode : undefined,
+    salt: typeof args.salt === "string" ? args.salt : undefined,
   };
   return await postJson("/v1/calls", body, {
     "X-Murmur-Agent-Id": VERDICT_AGENT_ID,

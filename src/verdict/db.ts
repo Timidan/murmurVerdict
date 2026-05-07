@@ -888,6 +888,8 @@ export const submissionsRepo = {
     confidence: number;
     accepted_at: string;
     status: CallStatus;
+    privacy_mode: string | null;
+    commit_hash: string | null;
     acceptance_receipt_hash: string;
     primary_feed: string;
     fallback_feed: string;
@@ -900,7 +902,7 @@ export const submissionsRepo = {
       (prep(
         db,
         `SELECT s.call_id, s.agent_id, s.asset_id, s.side, s.horizon_hours,
-                s.confidence, s.accepted_at, s.status,
+                s.confidence, s.accepted_at, s.status, s.privacy_mode, s.commit_hash,
                 r.receipt_hash AS acceptance_receipt_hash,
                 op.primary_feed, op.fallback_feed,
                 op.primary_max_staleness_sec, op.fallback_max_staleness_sec,
@@ -919,6 +921,8 @@ export const submissionsRepo = {
             confidence: number;
             accepted_at: string;
             status: CallStatus;
+            privacy_mode: string | null;
+            commit_hash: string | null;
             acceptance_receipt_hash: string;
             primary_feed: string;
             fallback_feed: string;
@@ -1276,7 +1280,7 @@ export const callRevealsRepo = {
   },
 
   /**
-   * Reveal-reliability counts per agent: (agent_reveals, daemon_reveals).
+   * Reveal-reliability counts per agent: (agent_reveals, fallback_reveals).
    * Excludes legacy_plaintext (v0.1 traffic) and fhevm_compute (v0.3) so
    * the metric reflects the agent's behavior under the v0.2 contract.
    */
@@ -1287,11 +1291,11 @@ export const callRevealsRepo = {
       db,
       `SELECT s.agent_id,
               SUM(CASE WHEN cr.revealed_via = 'agent' THEN 1 ELSE 0 END) AS agent_reveals,
-              SUM(CASE WHEN cr.revealed_via = 'daemon_fallback' THEN 1 ELSE 0 END) AS daemon_reveals
+              SUM(CASE WHEN cr.revealed_via IN ('daemon_fallback','drand_fallback') THEN 1 ELSE 0 END) AS daemon_reveals
        FROM submissions s
        JOIN call_reveals cr ON cr.call_id = s.call_id
        WHERE s.privacy_mode = 'committed'
-         AND cr.revealed_via IN ('agent', 'daemon_fallback')
+         AND cr.revealed_via IN ('agent', 'daemon_fallback', 'drand_fallback')
        GROUP BY s.agent_id`,
     ).all() as Array<{ agent_id: string; agent_reveals: number; daemon_reveals: number }>;
   },

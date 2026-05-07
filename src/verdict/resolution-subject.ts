@@ -102,12 +102,6 @@ export async function loadResolutionSubject(
 ): Promise<SubjectResult> {
   const now = (opts.now ?? (() => new Date()))();
 
-  // (1) call_reveals already exists — fast path.
-  const existing = callRevealsRepo.byCallId(db, call_id);
-  if (existing) {
-    return { ok: true, subject: rowToSubject(existing) };
-  }
-
   // Read the submission row to learn the privacy mode + commit_hash.
   const subRow = db
     .prepare(
@@ -135,6 +129,24 @@ export async function loadResolutionSubject(
   const issuingAgent = agentsRepo.byId(db, subRow.agent_id);
   const agentWallet = issuingAgent?.wallet_address ?? null;
   const chainId = issuingAgent?.chain_id ?? null;
+
+  // (1) call_reveals already exists — fast path, but only if the row still
+  // proves the committed preimage. A stale/corrupt row with
+  // reveal_hash_valid=0 must not drive scoring.
+  const existing = callRevealsRepo.byCallId(db, call_id);
+  if (existing) {
+    if (
+      subRow.privacy_mode === "committed" &&
+      !isValidCommittedReveal(existing, subRow.commit_hash)
+    ) {
+      return {
+        ok: false,
+        reason: "hash_mismatch",
+        detail: "existing call_reveals row does not match commit_hash",
+      };
+    }
+    return { ok: true, subject: rowToSubject(existing) };
+  }
 
   // (4) Legacy plaintext: hydrate call_reveals from submissions row.
   if (subRow.privacy_mode !== "committed") {
@@ -312,6 +324,7 @@ async function materializeFromCiphertext(
   const valid =
     args.commit_hash &&
     recomputed.toLowerCase() === args.commit_hash.toLowerCase();
+  if (!valid) return null;
   const row: CallRevealRow = {
     call_id: args.call_id,
     side: preimageObj.side,
@@ -328,12 +341,49 @@ async function materializeFromCiphertext(
     commit_preimage_hash: recomputed,
     revealed_at: args.nowIso,
     revealed_via: args.revealed_via,
-    reveal_hash_valid: valid ? 1 : 0,
+    reveal_hash_valid: 1,
   };
   insertIfAbsent(args.db, row);
   // Re-read in case a concurrent writer beat us to the insert.
   const final = callRevealsRepo.byCallId(args.db, args.call_id);
-  return final ? rowToSubject(final) : rowToSubject(row);
+  if (final) {
+    return isValidCommittedReveal(final, args.commit_hash)
+      ? rowToSubject(final)
+      : null;
+  }
+  return rowToSubject(row);
+}
+
+function isValidCommittedReveal(
+  row: CallRevealRow,
+  expectedHash: string | null,
+): boolean {
+  if (!expectedHash || row.reveal_hash_valid !== 1 || !row.commit_preimage_hash) {
+    return false;
+  }
+  if (row.commit_preimage_hash.toLowerCase() !== expectedHash.toLowerCase()) {
+    return false;
+  }
+  if (!row.commit_preimage_json) return false;
+  try {
+    const preimage = JSON.parse(row.commit_preimage_json) as ReturnType<
+      typeof buildCommitPreimage
+    >;
+    if (computeCommitHash(preimage).toLowerCase() !== expectedHash.toLowerCase()) {
+      return false;
+    }
+    return (
+      row.side === preimage.side &&
+      row.asset_id === preimage.asset_id &&
+      row.horizon_hours === preimage.horizon_hours &&
+      row.confidence === preimage.confidence &&
+      row.t0 === preimage.t0 &&
+      row.agent_wallet === preimage.agent_wallet &&
+      row.chain_id === preimage.chain_id
+    );
+  } catch {
+    return false;
+  }
 }
 
 function insertIfAbsent(db: Database.Database, row: CallRevealRow): void {

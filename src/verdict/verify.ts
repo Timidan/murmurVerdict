@@ -52,7 +52,15 @@ export interface VerifyCheck {
      *  ciphertext hash on call_private_envelopes. */
     | "envelope_ciphertext_hash"
     /** v2: receipt's drand.ciphertext_hash matches the stored drand ciphertext. */
-    | "drand_ciphertext_hash";
+    | "drand_ciphertext_hash"
+    /** resolution receipt points at the stored acceptance receipt and previous_hash. */
+    | "resolution_acceptance_link"
+    /** v2 resolution commit_hash repeats the v2 acceptance commit hash. */
+    | "resolution_commit_hash_binding"
+    /** v2 resolution wallet/chain repeats the v2 acceptance wallet binding. */
+    | "resolution_wallet_binding"
+    /** v2 resolution reveal block matches the materialized call_reveals row. */
+    | "resolution_reveal_subject";
   status: "match" | "mismatch" | "skipped";
   stored: string | number | boolean | null;
   recomputed: string | number | boolean | null;
@@ -278,6 +286,7 @@ export function verifyReceiptChain(
     if (!parsedResolution.success) {
       throw new VerifyError("resolution payload failed schema", "malformed_data");
     }
+    const resolutionData = parsedResolution.data;
     const recomputedResolutionHash = canonicalHash(parsedResolution.data);
     checks.push({
       name: "resolution_receipt_hash",
@@ -285,6 +294,115 @@ export function verifyReceiptChain(
       stored: resolutionRow.receipt_hash,
       recomputed: recomputedResolutionHash,
     });
+
+    const payloadAcceptanceHash = resolutionData.acceptance_receipt_hash;
+    const previousHash = resolutionRow.previous_hash;
+    const acceptanceLinkOk =
+      payloadAcceptanceHash.toLowerCase() === acceptanceRow.receipt_hash.toLowerCase() &&
+      previousHash?.toLowerCase() === acceptanceRow.receipt_hash.toLowerCase();
+    checks.push({
+      name: "resolution_acceptance_link",
+      status: acceptanceLinkOk ? "match" : "mismatch",
+      stored: previousHash ?? null,
+      recomputed: payloadAcceptanceHash,
+      note: `acceptance=${acceptanceRow.receipt_hash}`,
+    });
+
+    let subjectForScoring: {
+      side: Side;
+      asset_id: AssetId;
+      horizon_hours: HorizonHours;
+      confidence: number;
+    } = {
+      side: subRow.side as Side,
+      asset_id: subRow.asset_id as AssetId,
+      horizon_hours: subRow.horizon_hours as HorizonHours,
+      confidence: subRow.confidence as number,
+    };
+
+    if (resolutionData.schema_version === 2) {
+      if (parsedAcceptance.data.schema_version !== 2) {
+        checks.push({
+          name: "resolution_commit_hash_binding",
+          status: "mismatch",
+          stored: null,
+          recomputed: resolutionData.commit_hash,
+          note: "v2 resolution references a non-v2 acceptance receipt",
+        });
+      } else {
+        checks.push({
+          name: "resolution_commit_hash_binding",
+          status:
+            resolutionData.commit_hash.toLowerCase() ===
+            parsedAcceptance.data.commit.hash.toLowerCase()
+              ? "match"
+              : "mismatch",
+          stored: parsedAcceptance.data.commit.hash,
+          recomputed: resolutionData.commit_hash,
+        });
+        const walletBindingOk =
+          resolutionData.agent_wallet === parsedAcceptance.data.agent_wallet &&
+          resolutionData.chain_id === parsedAcceptance.data.chain_id;
+        checks.push({
+          name: "resolution_wallet_binding",
+          status: walletBindingOk ? "match" : "mismatch",
+          stored: `${parsedAcceptance.data.agent_wallet}:${parsedAcceptance.data.chain_id}`,
+          recomputed: `${resolutionData.agent_wallet}:${resolutionData.chain_id}`,
+        });
+      }
+
+      subjectForScoring = {
+        side: resolutionData.reveal.plaintext_subject.side as Side,
+        asset_id: resolutionData.reveal.plaintext_subject.asset_id as AssetId,
+        horizon_hours: resolutionData.reveal.plaintext_subject.horizon_hours as HorizonHours,
+        confidence: resolutionData.reveal.plaintext_subject.confidence,
+      };
+
+      const revealRow = db
+        .prepare(
+          `SELECT side, asset_id, horizon_hours, confidence,
+                  agent_wallet, chain_id, reveal_hash_valid
+           FROM call_reveals WHERE call_id = ?`,
+        )
+        .get(call_id) as
+        | {
+            side: string;
+            asset_id: string;
+            horizon_hours: number;
+            confidence: number;
+            agent_wallet: string | null;
+            chain_id: string | null;
+            reveal_hash_valid: number;
+          }
+        | undefined;
+      const revealSubjectOk =
+        !!revealRow &&
+        revealRow.reveal_hash_valid === 1 &&
+        resolutionData.reveal.reveal_hash_valid === true &&
+        revealRow.side === resolutionData.reveal.plaintext_subject.side &&
+        revealRow.asset_id === resolutionData.reveal.plaintext_subject.asset_id &&
+        revealRow.horizon_hours === resolutionData.reveal.plaintext_subject.horizon_hours &&
+        revealRow.confidence === resolutionData.reveal.plaintext_subject.confidence &&
+        revealRow.agent_wallet === resolutionData.agent_wallet &&
+        revealRow.chain_id === resolutionData.chain_id;
+      checks.push({
+        name: "resolution_reveal_subject",
+        status: revealSubjectOk ? "match" : "mismatch",
+        stored: revealRow
+          ? `${revealRow.side}:${revealRow.asset_id}:${revealRow.horizon_hours}:${revealRow.confidence}`
+          : null,
+        recomputed: `${resolutionData.reveal.plaintext_subject.side}:${resolutionData.reveal.plaintext_subject.asset_id}:${resolutionData.reveal.plaintext_subject.horizon_hours}:${resolutionData.reveal.plaintext_subject.confidence}`,
+        note: `receipt_reveal_hash_valid=${resolutionData.reveal.reveal_hash_valid}`,
+      });
+    } else if (parsedAcceptance.data.schema_version === 2) {
+      checks.push({
+        name: "resolution_commit_hash_binding",
+        status: "mismatch",
+        stored: parsedAcceptance.data.commit.hash,
+        recomputed: null,
+        note: "v2 acceptance resolved with non-v2 resolution receipt",
+      });
+    }
 
     // Pull t0 anchor for signed-return recomputation.
     const t0Row = db
@@ -297,7 +415,7 @@ export function verifyReceiptChain(
       Number(resolutionRow.p1) > 0
     ) {
       const r = computeSignedReturn(
-        subRow.side as Side,
+        subjectForScoring.side,
         t0Row.p0,
         resolutionRow.p1,
       );
@@ -318,9 +436,9 @@ export function verifyReceiptChain(
       });
 
       const recomputedScore = scoreCall({
-        asset_id: subRow.asset_id as AssetId,
-        horizon_hours: subRow.horizon_hours as HorizonHours,
-        confidence: subRow.confidence as number,
+        asset_id: subjectForScoring.asset_id,
+        horizon_hours: subjectForScoring.horizon_hours,
+        confidence: subjectForScoring.confidence,
         signed_return: r,
         outcome: recomputedOutcome,
       }).call_score;

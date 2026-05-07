@@ -148,8 +148,9 @@ export class Resolver {
           p0: outcome.observation.price,
         });
       } else if (outcome.kind === "oracle_unavailable") {
-        await this.markOracleUnavailable(ctx, "t0");
-        oracleUnavailable++;
+        if (await this.markOracleUnavailable(ctx, "t0")) {
+          oracleUnavailable++;
+        }
       } else {
         if (ctx.status === "accepted") {
           submissionsRepo.setStatus(this.db, ctx.call_id, "pending_t0");
@@ -235,8 +236,10 @@ export class Resolver {
         });
 
         const resolved_at = this.nowIso();
-        // Look up the issuing agent so the resolution receipt can carry
-        // the wallet binding. P2 v2 receipts make these REQUIRED.
+        // Look up the issuing agent so legacy receipts can carry the
+        // current wallet binding when available. Committed v2 receipts use
+        // the wallet embedded in the verified reveal preimage instead; an
+        // admin wallet rotation after submit must not rewrite history.
         const issuingAgent = agentsRepo.byId(this.db, ctx.agent_id);
 
         // Branch: v2 receipt for committed calls (carries reveal block);
@@ -277,12 +280,12 @@ export class Resolver {
             });
             continue;
           }
-          if (!issuingAgent?.wallet_address || !issuingAgent.chain_id) {
+          if (!subject.agent_wallet || !subject.chain_id) {
             this.log({
               kind: "still_pending",
               call_id: ctx.call_id,
               phase: "t1",
-              reason: "committed-mode row without wallet binding",
+              reason: "committed-mode reveal without wallet binding",
             });
             continue;
           }
@@ -303,8 +306,8 @@ export class Resolver {
             outcome: verdictOutcome,
             call_score: score.call_score,
             resolved_at,
-            agent_wallet: issuingAgent.wallet_address,
-            chain_id: issuingAgent.chain_id,
+            agent_wallet: subject.agent_wallet,
+            chain_id: subject.chain_id,
             reveal: {
               revealed_via: subject.source,
               revealed_at: subject.revealed_at,
@@ -383,12 +386,13 @@ export class Resolver {
           });
         }
       } else if (outcome.kind === "oracle_unavailable") {
-        await this.markOracleUnavailable(ctx, "t1");
-        oracleUnavailable++;
-        try {
-          await this.onResolved(ctx.call_id);
-        } catch {
-          // swallow — terminal state already persisted
+        if (await this.markOracleUnavailable(ctx, "t1")) {
+          oracleUnavailable++;
+          try {
+            await this.onResolved(ctx.call_id);
+          } catch {
+            // swallow — terminal state already persisted
+          }
         }
       } else {
         this.log({
@@ -451,9 +455,43 @@ export class Resolver {
   private async markOracleUnavailable(
     ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>,
     phase: "t0" | "t1",
-  ): Promise<void> {
+  ): Promise<boolean> {
     const resolved_at = this.nowIso();
     const t0row = anchorsRepo.getT0(this.db, ctx.call_id);
+    const committedSubject =
+      ctx.privacy_mode === "committed"
+        ? await loadResolutionSubject(this.db, ctx.call_id, {
+            ...(this.ageContext ? { ageCtx: this.ageContext } : {}),
+            ...(this.drandContext ? { drandCtx: this.drandContext } : {}),
+            now: this.now,
+          })
+        : null;
+    if (committedSubject && !committedSubject.ok) {
+      this.log({
+        kind: "still_pending",
+        call_id: ctx.call_id,
+        phase,
+        reason: `subject:${committedSubject.reason}:oracle_unavailable`,
+      });
+      return false;
+    }
+    const subject = committedSubject?.subject ?? null;
+    if (ctx.privacy_mode === "committed") {
+      if (
+        !ctx.commit_hash ||
+        !subject?.agent_wallet ||
+        !subject.chain_id ||
+        !subject.reveal_hash_valid
+      ) {
+        this.log({
+          kind: "still_pending",
+          call_id: ctx.call_id,
+          phase,
+          reason: "committed oracle_unavailable missing valid reveal binding",
+        });
+        return false;
+      }
+    }
     // Build a degenerate resolution receipt so the chain is preserved even when
     // we never anchored. For t0-phase failures, t0/p0/t0_feed are best-effort
     // placeholders; the receipt outcome is what carries semantic weight.
@@ -464,22 +502,58 @@ export class Resolver {
     const p0 = t0row?.p0 ?? placeholderPrice;
     const t0Feed = (t0row?.feed ?? placeholderFeed) as OracleFeed;
 
-    const resolutionPayload = ResolutionReceiptPayloadSchema.parse({
-      schema_version: SCHEMA_VERSION,
-      scoring_version: SCORING_VERSION,
-      call_id: ctx.call_id,
-      acceptance_receipt_hash: ctx.acceptance_receipt_hash,
-      t0: t0Iso,
-      p0,
-      t0_feed: t0Feed,
-      t1: resolved_at,
-      p1: placeholderPrice,
-      t1_feed: t0Feed,
-      signed_return: "0",
-      outcome: "oracle_unavailable",
-      call_score: null,
-      resolved_at,
-    });
+    const resolutionPayload = ResolutionReceiptPayloadSchema.parse(
+      subject
+        ? {
+            schema_version: 2,
+            scoring_version: SCORING_VERSION,
+            receipt_kind: "resolution",
+            call_id: ctx.call_id,
+            acceptance_receipt_hash: ctx.acceptance_receipt_hash,
+            commit_hash: ctx.commit_hash,
+            t0: t0Iso,
+            p0,
+            t0_feed: t0Feed,
+            t1: resolved_at,
+            p1: placeholderPrice,
+            t1_feed: t0Feed,
+            signed_return: "0",
+            outcome: "oracle_unavailable",
+            call_score: null,
+            resolved_at,
+            agent_wallet: subject.agent_wallet,
+            chain_id: subject.chain_id,
+            reveal: {
+              revealed_via: subject.source,
+              revealed_at: subject.revealed_at,
+              reveal_hash_valid: subject.reveal_hash_valid,
+              commit_preimage_schema:
+                subject.commit_preimage_schema ?? "murmur-verdict-v0.2-commit@1",
+              plaintext_subject: {
+                side: subject.side,
+                asset_id: subject.asset_id as AssetId,
+                horizon_hours: subject.horizon_hours as HorizonHours,
+                confidence: subject.confidence,
+              },
+            },
+          }
+        : {
+            schema_version: SCHEMA_VERSION,
+            scoring_version: SCORING_VERSION,
+            call_id: ctx.call_id,
+            acceptance_receipt_hash: ctx.acceptance_receipt_hash,
+            t0: t0Iso,
+            p0,
+            t0_feed: t0Feed,
+            t1: resolved_at,
+            p1: placeholderPrice,
+            t1_feed: t0Feed,
+            signed_return: "0",
+            outcome: "oracle_unavailable",
+            call_score: null,
+            resolved_at,
+          },
+    );
     const receipt = buildResolutionReceipt(resolutionPayload);
     let cid: string | null = null;
     if (this.pinReceipt) {
@@ -522,6 +596,7 @@ export class Resolver {
     });
     tx();
     this.log({ kind: "oracle_unavailable", call_id: ctx.call_id, phase });
+    return true;
   }
 
   // ── helpers ──
