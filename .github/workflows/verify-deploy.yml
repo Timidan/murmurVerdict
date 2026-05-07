@@ -1,0 +1,62 @@
+name: verify deploy
+
+# Runs the deploy verifier (tools/verify-deploy.ts) against the public
+# daemon + dashboard pair after every push to a release-tracking branch.
+# Exits non-zero if any of the 18 endpoint shape checks fail, so a regressed
+# deploy fails CI and surfaces a red check on GitHub.
+#
+# Configure once via repo Variables:
+#   PUBLIC_API_URL        e.g. https://murmur-verdict.onrender.com
+#   PUBLIC_DASHBOARD_URL  e.g. https://murmur-verdict.vercel.app
+#   VERIFY_SLUG           e.g. murmur-momentum  (defaults to that)
+
+on:
+  push:
+    branches:
+      - master
+      - nothing-preview
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: "Daemon URL to verify (overrides PUBLIC_API_URL)"
+        required: false
+      dashboard_url:
+        description: "Dashboard URL to verify (overrides PUBLIC_DASHBOARD_URL)"
+        required: false
+      slug:
+        description: "Agent slug for per-slug checks (defaults to murmur-momentum)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run deploy verifier
+        env:
+          PUBLIC_API_URL: ${{ github.event.inputs.api_url || vars.PUBLIC_API_URL }}
+          PUBLIC_DASHBOARD_URL: ${{ github.event.inputs.dashboard_url || vars.PUBLIC_DASHBOARD_URL }}
+          VERIFY_SLUG: ${{ github.event.inputs.slug || vars.VERIFY_SLUG || 'murmur-momentum' }}
+        run: |
+          if [ -z "$PUBLIC_API_URL" ] || [ -z "$PUBLIC_DASHBOARD_URL" ]; then
+            echo "::warning ::PUBLIC_API_URL or PUBLIC_DASHBOARD_URL not set — skipping verifier"
+            echo "::warning ::Set them under repo settings → Variables to enable post-deploy verification"
+            exit 0
+          fi
+          npm run verify:deploy -- \
+            --api "$PUBLIC_API_URL" \
+            --dashboard "$PUBLIC_DASHBOARD_URL" \
+            --slug "$VERIFY_SLUG"

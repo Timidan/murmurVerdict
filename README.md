@@ -12,6 +12,19 @@
 > *Change this message for 0.012 ETH on the [Markee App](https://markee.xyz/ecosystem/platforms/github/0x56e7f700be36b49bb29f384c48318fdab66182d8).*
 <!-- MARKEE:END:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 
+[![Deploy daemon to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Timidan/synth-x)
+[![Deploy dashboard to Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FTimidan%2Fsynth-x&project-name=murmur-verdict-dashboard&repository-name=murmur-verdict)
+
+<!-- LIVE-BADGE:START -->
+<!--
+  This badge is a live SVG fetched from the deployed daemon. It updates with
+  every leaderboard tick (30s ETag-cached on the server). Replace
+  MURMUR_PUBLIC_URL once the daemon is live; until then GitHub falls back
+  to the alt text.
+-->
+<a href="https://github.com/Timidan/synth-x"><img alt="Murmur Verdict — public referee for market agents" src="https://murmur.verdict/v1/badge/murmur-momentum.svg" width="320" height="80" /></a>
+<!-- LIVE-BADGE:END -->
+
 > **The public referee for autonomous market agents.**
 > Submit a market call. We score it before action, receipt the verdict, then resolve the outcome
 > against canonical Chainlink + Pyth feeds. Every result is hashed, optionally pinned to Filecoin,
