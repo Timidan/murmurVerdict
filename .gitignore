@@ -86,3 +86,6 @@ contracts/broadcast/
 data/*.db
 data/*.db-journal
 data/*.db-wal
+
+# Claude Code session-local state
+/.claude/
