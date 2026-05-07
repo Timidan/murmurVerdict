@@ -86,6 +86,12 @@ function applyMigrations(db: Database.Database): void {
     v = 5;
     set.run("schema_version", String(v));
   }
+
+  if (v < 6) {
+    db.exec(MIGRATION_006);
+    v = 6;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -276,6 +282,76 @@ const MIGRATION_003 = `
 const MIGRATION_004 = `
   ALTER TABLE ref_clicks ADD COLUMN converted_count       INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE ref_clicks ADD COLUMN last_conversion_at    TEXT;
+`;
+
+// ─── Migration 006 — privacy schema foundation (additive) ──────────────────
+//
+// P2 (privacy work) groundwork. Strategy: ship the new shape ALONGSIDE the
+// existing plaintext columns so the daemon keeps working at every commit,
+// then move query sites over phase-by-phase. Plaintext columns on the
+// `submissions` table are NOT touched here — Phase A is purely additive.
+//
+// What this migration does:
+//   1. Adds three privacy columns to `submissions`:
+//        - privacy_mode TEXT — discriminator for the call envelope
+//          ("legacy_plaintext" | "committed" | future modes)
+//        - commit_hash TEXT — keccak256 of the canonical commit preimage,
+//          NULL for legacy rows
+//        - commit_scheme TEXT — version tag of the commit preimage
+//          schema, e.g. "murmur-verdict-v0.2-commit@1"
+//   2. Backfills existing rows to privacy_mode='legacy_plaintext'.
+//   3. CREATEs `call_private_envelopes` (encrypted-to-daemon body, empty
+//      until Phase B writes to it).
+//   4. CREATEs `call_reveals` (plaintext after agent-or-fallback reveal,
+//      empty until Phase C writes to it).
+//   5. Adds an index on commit_hash so verifier-side commit checks stay
+//      O(1).
+//
+// NO CHECK constraints on privacy_mode / commit_scheme / encrypted_body_alg
+// / commit_preimage_schema / revealed_via — the v0.3 fhEVM port introduces
+// new strings (e.g. encrypted_body_alg='fhevm-euint', revealed_via=
+// 'fhevm_compute') without a migration. Codex's compatibility note.
+const MIGRATION_006 = `
+  ALTER TABLE submissions ADD COLUMN privacy_mode TEXT;
+  ALTER TABLE submissions ADD COLUMN commit_hash TEXT;
+  ALTER TABLE submissions ADD COLUMN commit_scheme TEXT;
+  UPDATE submissions SET privacy_mode = 'legacy_plaintext' WHERE privacy_mode IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_submissions_commit_hash ON submissions(commit_hash) WHERE commit_hash IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_submissions_privacy_mode ON submissions(privacy_mode);
+
+  CREATE TABLE call_private_envelopes (
+    call_id                 TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    encrypted_body          TEXT NOT NULL,
+    encrypted_body_alg      TEXT NOT NULL,
+    encrypted_body_hash     TEXT NOT NULL,
+    daemon_key_id           TEXT NOT NULL,
+    commit_preimage_schema  TEXT NOT NULL,
+    fallback_after          TEXT,
+    received_at             TEXT NOT NULL
+  );
+  CREATE INDEX idx_call_private_envelopes_fallback_after
+    ON call_private_envelopes(fallback_after)
+    WHERE fallback_after IS NOT NULL;
+
+  CREATE TABLE call_reveals (
+    call_id                  TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    side                     TEXT NOT NULL,
+    asset_id                 TEXT NOT NULL,
+    horizon_hours            INTEGER NOT NULL,
+    confidence               REAL NOT NULL,
+    rationale                TEXT,
+    strategy_tag             TEXT,
+    salt                     TEXT,
+    t0                       TEXT,
+    agent_wallet             TEXT,
+    chain_id                 TEXT,
+    commit_preimage_json     TEXT,
+    commit_preimage_hash     TEXT,
+    revealed_at              TEXT NOT NULL,
+    revealed_via             TEXT NOT NULL,
+    reveal_hash_valid        INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_call_reveals_revealed_via ON call_reveals(revealed_via);
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
@@ -974,6 +1050,141 @@ export const resolutionsRepo = {
       ...input,
       filecoin_cid: input.filecoin_cid ?? null,
     });
+  },
+};
+
+// ─── Privacy: encrypted call envelopes ──────────────────────────────────────
+//
+// One row per `committed`-mode submission. Carries the daemon-encrypted
+// body that the resolver decrypts at t1+grace IF the agent fails to reveal
+// voluntarily. Empty until Phase B writes to it.
+
+export interface CallPrivateEnvelopeRow {
+  call_id: string;
+  encrypted_body: string;
+  encrypted_body_alg: string;
+  encrypted_body_hash: string;
+  daemon_key_id: string;
+  commit_preimage_schema: string;
+  fallback_after: string | null;
+  received_at: string;
+}
+
+export const callPrivateEnvelopesRepo = {
+  insert(db: Database.Database, row: CallPrivateEnvelopeRow): void {
+    prep(
+      db,
+      `INSERT INTO call_private_envelopes
+       (call_id, encrypted_body, encrypted_body_alg, encrypted_body_hash,
+        daemon_key_id, commit_preimage_schema, fallback_after, received_at)
+       VALUES (@call_id, @encrypted_body, @encrypted_body_alg, @encrypted_body_hash,
+               @daemon_key_id, @commit_preimage_schema, @fallback_after, @received_at)`,
+    ).run(row);
+  },
+
+  byCallId(db: Database.Database, call_id: string): CallPrivateEnvelopeRow | null {
+    const row = prep(
+      db,
+      "SELECT * FROM call_private_envelopes WHERE call_id = ?",
+    ).get(call_id) as CallPrivateEnvelopeRow | undefined;
+    return row ?? null;
+  },
+
+  /**
+   * Pending envelopes whose fallback window has closed and whose call
+   * has NOT been revealed by the agent yet. Resolver iterates this list
+   * to know which envelopes to daemon-decrypt.
+   */
+  listOverdueForFallback(
+    db: Database.Database,
+    nowIso: string,
+  ): CallPrivateEnvelopeRow[] {
+    return prep(
+      db,
+      `SELECT e.* FROM call_private_envelopes e
+       LEFT JOIN call_reveals cr ON cr.call_id = e.call_id
+       WHERE e.fallback_after IS NOT NULL
+         AND e.fallback_after <= ?
+         AND cr.call_id IS NULL`,
+    ).all(nowIso) as CallPrivateEnvelopeRow[];
+  },
+};
+
+// ─── Privacy: revealed call subjects ────────────────────────────────────────
+//
+// One row per call once the plaintext is known — either the agent revealed
+// voluntarily (`revealed_via='agent'`), the daemon decrypted the fallback
+// envelope past grace (`'daemon_fallback'`), the call was a v0.1
+// pre-privacy submission whose plaintext is in `submissions` and was
+// migrated here (`'legacy_plaintext'`), or v0.3 fhEVM compute produced
+// a non-plaintext attestation (`'fhevm_compute'`).
+//
+// `revealed_via` and `reveal_hash_valid` are surfaced on the resolution
+// receipt's `reveal` block so off-Murmur verifiers can attest the
+// commit→reveal binding without trusting the daemon.
+
+export interface CallRevealRow {
+  call_id: string;
+  side: "BUY" | "SELL";
+  asset_id: string;
+  horizon_hours: number;
+  confidence: number;
+  rationale: string | null;
+  strategy_tag: string | null;
+  salt: string | null;
+  t0: string | null;
+  agent_wallet: string | null;
+  chain_id: string | null;
+  commit_preimage_json: string | null;
+  commit_preimage_hash: string | null;
+  revealed_at: string;
+  revealed_via: "agent" | "daemon_fallback" | "legacy_plaintext" | "fhevm_compute";
+  reveal_hash_valid: 0 | 1;
+}
+
+export const callRevealsRepo = {
+  insert(db: Database.Database, row: CallRevealRow): void {
+    prep(
+      db,
+      `INSERT INTO call_reveals
+       (call_id, side, asset_id, horizon_hours, confidence,
+        rationale, strategy_tag, salt, t0, agent_wallet, chain_id,
+        commit_preimage_json, commit_preimage_hash,
+        revealed_at, revealed_via, reveal_hash_valid)
+       VALUES (@call_id, @side, @asset_id, @horizon_hours, @confidence,
+               @rationale, @strategy_tag, @salt, @t0, @agent_wallet, @chain_id,
+               @commit_preimage_json, @commit_preimage_hash,
+               @revealed_at, @revealed_via, @reveal_hash_valid)`,
+    ).run(row);
+  },
+
+  byCallId(db: Database.Database, call_id: string): CallRevealRow | null {
+    const row = prep(
+      db,
+      "SELECT * FROM call_reveals WHERE call_id = ?",
+    ).get(call_id) as CallRevealRow | undefined;
+    return row ?? null;
+  },
+
+  /**
+   * Reveal-reliability counts per agent: (agent_reveals, daemon_reveals).
+   * Excludes legacy_plaintext (v0.1 traffic) and fhevm_compute (v0.3) so
+   * the metric reflects the agent's behavior under the v0.2 contract.
+   */
+  reliabilityByAgent(
+    db: Database.Database,
+  ): Array<{ agent_id: string; agent_reveals: number; daemon_reveals: number }> {
+    return prep(
+      db,
+      `SELECT s.agent_id,
+              SUM(CASE WHEN cr.revealed_via = 'agent' THEN 1 ELSE 0 END) AS agent_reveals,
+              SUM(CASE WHEN cr.revealed_via = 'daemon_fallback' THEN 1 ELSE 0 END) AS daemon_reveals
+       FROM submissions s
+       JOIN call_reveals cr ON cr.call_id = s.call_id
+       WHERE s.privacy_mode = 'committed'
+         AND cr.revealed_via IN ('agent', 'daemon_fallback')
+       GROUP BY s.agent_id`,
+    ).all() as Array<{ agent_id: string; agent_reveals: number; daemon_reveals: number }>;
   },
 };
 
