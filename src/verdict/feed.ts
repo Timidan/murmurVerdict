@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { projectCallRow, shouldExposePlaintext } from "./projections.js";
 
 // ─── /v1/feed/today data shape ────────────────────────────────────────────────
 // Live tape backing the Today page. Three rolling lists:
@@ -8,17 +9,25 @@ import type Database from "better-sqlite3";
 //                         (the suspense surface)
 //   - resolved_recent: last N resolutions (the outcome tape)
 // All three return enough fields to render a card without a second fetch.
+//
+// P2 Phase E: committed-mode rows scrub side / asset_id / horizon_hours /
+// confidence / rationale / strategy_tag / t1_estimate while pending; only
+// commit_hash + acceptance_receipt_hash + privacy_mode are surfaced.
 
 export interface TodayFeedRow {
   call_id: string;
   agent_id: string;
   agent_slug: string;
   agent_kind: string;
-  side: "BUY" | "SELL";
-  asset_id: string;
-  horizon_hours: number;
-  confidence: number;
-  submitted_at: string;
+  privacy_mode: string;
+  commit_hash?: string | null;
+  acceptance_receipt_hash?: string | null;
+  // Plaintext envelope — populated only when shouldExposePlaintext().
+  side?: "BUY" | "SELL";
+  asset_id?: string;
+  horizon_hours?: number;
+  confidence?: number;
+  submitted_at?: string;
   accepted_at: string;
   status: string;
   // Resolved-only
@@ -26,8 +35,8 @@ export interface TodayFeedRow {
   signed_return?: string | null;
   call_score?: number | null;
   resolved_at?: string | null;
-  // Pending-only
-  t1_estimate?: string | null; // accepted_at + horizon_hours, ISO
+  // Pending-only — scrubbed when committed (would leak the horizon)
+  t1_estimate?: string | null;
 }
 
 export interface TodayMover {
@@ -65,48 +74,78 @@ const MOVERS_LIMIT = 5;
 export function getTodayFeed(db: Database.Database, now: Date = new Date()): TodayFeed {
   const nowIso = now.toISOString().replace(/\.\d+Z$/, "Z");
 
-  const acceptedRows = db
+  // SQL pulls the FULL row including plaintext columns; the
+  // projection helper scrubs them when (privacy_mode='committed' AND
+  // status is pending). One source of truth so feed/api/SSE/RSS/MCP
+  // can't drift apart.
+  const rawAccepted = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
-              s.side, s.asset_id, s.horizon_hours, s.confidence,
-              s.submitted_at, s.accepted_at, s.status
+              s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
+              s.submitted_at, s.accepted_at, s.status,
+              s.privacy_mode, s.commit_hash,
+              ar.receipt_hash AS acceptance_receipt_hash
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
+       LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
        ORDER BY s.accepted_at DESC
        LIMIT ?`,
     )
-    .all(ACCEPTED_LIMIT) as TodayFeedRow[];
+    .all(ACCEPTED_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
+  const acceptedRows: TodayFeedRow[] = rawAccepted.map(toFeedRow);
 
-  const pendingRows = db
+  const rawPending = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
-              s.side, s.asset_id, s.horizon_hours, s.confidence,
-              s.submitted_at, s.accepted_at, s.status
+              s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
+              s.submitted_at, s.accepted_at, s.status,
+              s.privacy_mode, s.commit_hash,
+              ar.receipt_hash AS acceptance_receipt_hash
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
+       LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
        WHERE s.status IN ('accepted','pending_t0','pending_t1')
        ORDER BY datetime(s.accepted_at, '+' || s.horizon_hours || ' hours') ASC
        LIMIT ?`,
     )
-    .all(PENDING_LIMIT) as TodayFeedRow[];
-  for (const row of pendingRows) {
-    const t1 = new Date(Date.parse(row.accepted_at) + row.horizon_hours * 3600 * 1000);
-    row.t1_estimate = t1.toISOString().replace(/\.\d+Z$/, "Z");
-  }
+    .all(PENDING_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
+  const pendingRows: TodayFeedRow[] = rawPending.map((row) => {
+    const projected = toFeedRow(row);
+    // t1_estimate leaks horizon, so only emit it when the row's
+    // plaintext is exposed (not committed-pending).
+    if (
+      shouldExposePlaintext(
+        (row.privacy_mode as string | null) ?? null,
+        row.status as string,
+      ) &&
+      typeof row.horizon_hours === "number"
+    ) {
+      const t1 = new Date(
+        Date.parse(row.accepted_at as string) +
+          (row.horizon_hours as number) * 3600 * 1000,
+      );
+      projected.t1_estimate = t1.toISOString().replace(/\.\d+Z$/, "Z");
+    }
+    return projected;
+  });
 
-  const resolvedRows = db
+  const rawResolved = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
-              s.side, s.asset_id, s.horizon_hours, s.confidence,
+              s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
+              s.privacy_mode, s.commit_hash,
+              ar.receipt_hash AS acceptance_receipt_hash,
               r.outcome, r.signed_return, r.call_score, r.resolved_at
        FROM t1_resolutions r
        JOIN submissions s ON s.call_id = r.call_id
        JOIN agents a ON a.agent_id = s.agent_id
+       LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
        ORDER BY r.resolved_at DESC
        LIMIT ?`,
     )
-    .all(RESOLVED_LIMIT) as TodayFeedRow[];
+    .all(RESOLVED_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
+  const resolvedRows: TodayFeedRow[] = rawResolved.map(toFeedRow);
 
   // Movers: agents with the most resolved-call activity in the last 24h.
   // verdict_score and rank come from the live leaderboard; we only join the
@@ -169,4 +208,42 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
     movers,
     totals: totalsRow,
   };
+}
+
+/**
+ * Map a raw SQL row to a TodayFeedRow, scrubbing committed-mode
+ * plaintext from pending rows. agent_id + agent_slug + agent_kind
+ * are passed through (they're public). Plaintext fields are dropped
+ * when shouldExposePlaintext returns false.
+ */
+function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
+  const projected = projectCallRow(
+    {
+      call_id: row.call_id as string,
+      status: row.status as string,
+      accepted_at: row.accepted_at as string,
+      privacy_mode: row.privacy_mode as string | null,
+      commit_hash: row.commit_hash as string | null,
+      acceptance_receipt_hash: row.acceptance_receipt_hash as string | null,
+      side: row.side as string | null,
+      asset_id: row.asset_id as string | null,
+      horizon_hours: row.horizon_hours as number | null,
+      confidence: row.confidence as number | null,
+      rationale: row.rationale as string | null,
+      strategy_tag: row.strategy_tag as string | null,
+      outcome: row.outcome as string | null,
+      call_score: row.call_score as number | null,
+      signed_return: row.signed_return as string | null,
+      resolved_at: row.resolved_at as string | null,
+      submitted_at: row.submitted_at as string | null,
+    },
+    row.agent_slug as string,
+  );
+  return {
+    ...projected,
+    agent_id: row.agent_id as string,
+    agent_slug: row.agent_slug as string,
+    agent_kind: row.agent_kind as string,
+    side: projected.side as TodayFeedRow["side"],
+  } as TodayFeedRow;
 }

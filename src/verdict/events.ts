@@ -23,11 +23,21 @@ export interface CallAcceptedEvent {
   call_id: string;
   agent_id: string;
   agent_slug: string;
-  side: "BUY" | "SELL";
-  asset_id: string;
-  horizon_hours: number;
-  confidence: number;
+  /** "committed" | "legacy_plaintext". Committed-mode calls scrub
+   *  side/asset_id/horizon_hours/confidence below. */
+  privacy_mode: string;
+  /** Present for committed mode; null for legacy. */
+  commit_hash?: string;
+  /** Present for committed mode; null for legacy. */
+  acceptance_receipt_hash?: string;
   accepted_at: string;
+  // Plaintext envelope fields — populated only when privacy_mode is
+  // legacy_plaintext. Committed-mode events scrub these so SSE
+  // subscribers + webhook bridges can't front-run a pending call.
+  side?: "BUY" | "SELL";
+  asset_id?: string;
+  horizon_hours?: number;
+  confidence?: number;
 }
 
 export interface CallResolvedEvent {

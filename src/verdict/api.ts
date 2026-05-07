@@ -7,6 +7,7 @@ import {
   computeCommitHash,
 } from "./commit-preimage.js";
 import { canonicalize } from "../receipts/canonical.js";
+import { projectCallRow } from "./projections.js";
 import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -434,23 +435,52 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       return;
     }
     const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? "50")));
-    const rows = deps.db
+    const rawRows = deps.db
       .prepare(
         `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
-                s.confidence, s.submitted_at, s.accepted_at,
+                s.confidence, s.rationale, s.strategy_tag,
+                s.submitted_at, s.accepted_at,
+                s.privacy_mode, s.commit_hash,
+                ar.receipt_hash AS acceptance_receipt_hash,
                 r.outcome, r.call_score, r.signed_return, r.resolved_at
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
+         LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
          WHERE s.agent_id = ?
          ORDER BY s.accepted_at DESC
          LIMIT ?`,
       )
-      .all(agent.agent_id, limit);
+      .all(agent.agent_id, limit) as Array<Record<string, unknown>>;
+    // Phase E: scrub plaintext on committed-mode pending rows.
+    const calls = rawRows.map((row) =>
+      projectCallRow(
+        {
+          call_id: row.call_id as string,
+          status: row.status as string,
+          accepted_at: row.accepted_at as string,
+          privacy_mode: row.privacy_mode as string | null,
+          commit_hash: row.commit_hash as string | null,
+          acceptance_receipt_hash: row.acceptance_receipt_hash as string | null,
+          side: row.side as string | null,
+          asset_id: row.asset_id as string | null,
+          horizon_hours: row.horizon_hours as number | null,
+          confidence: row.confidence as number | null,
+          rationale: row.rationale as string | null,
+          strategy_tag: row.strategy_tag as string | null,
+          outcome: row.outcome as string | null,
+          call_score: row.call_score as number | null,
+          signed_return: row.signed_return as string | null,
+          resolved_at: row.resolved_at as string | null,
+          submitted_at: row.submitted_at as string | null,
+        },
+        agent.display_slug,
+      ),
+    );
     res.json({
       agent_id: agent.agent_id,
       display_slug: agent.display_slug,
       kind: agent.kind,
-      calls: rows,
+      calls,
     });
   });
 
@@ -732,10 +762,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       return;
     }
     const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? "20")));
-    const rows = deps.db
+    const raw = deps.db
       .prepare(
         `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
                 s.confidence, s.submitted_at, s.accepted_at,
+                s.privacy_mode, s.commit_hash,
                 r.outcome, r.call_score, r.signed_return, r.resolved_at
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
@@ -743,20 +774,40 @@ export function createVerdictRouter(deps: ApiDeps): Router {
          ORDER BY s.accepted_at DESC
          LIMIT ?`,
       )
-      .all(agent.agent_id, limit) as Array<{
-        call_id: string;
-        status: string;
-        asset_id: string;
-        side: "BUY" | "SELL";
-        horizon_hours: number;
-        confidence: number;
-        submitted_at: string;
-        accepted_at: string;
-        outcome: string | null;
-        call_score: number | null;
-        signed_return: string | null;
-        resolved_at: string | null;
-      }>;
+      .all(agent.agent_id, limit) as Array<Record<string, unknown>>;
+    // Phase E: pending committed-mode rows render as "[committed]" in
+    // the RSS title without leaking side/asset/horizon. Resolved rows
+    // are unchanged (post-horizon plaintext is public).
+    const rows = raw.map((r) => {
+      const projected = projectCallRow({
+        call_id: r.call_id as string,
+        status: r.status as string,
+        accepted_at: r.accepted_at as string,
+        privacy_mode: r.privacy_mode as string | null,
+        commit_hash: r.commit_hash as string | null,
+        side: r.side as string | null,
+        asset_id: r.asset_id as string | null,
+        horizon_hours: r.horizon_hours as number | null,
+        confidence: r.confidence as number | null,
+        submitted_at: r.submitted_at as string | null,
+      });
+      return {
+        call_id: projected.call_id,
+        status: projected.status,
+        privacy_mode: projected.privacy_mode,
+        commit_hash: projected.commit_hash,
+        asset_id: projected.asset_id ?? "",
+        side: (projected.side as "BUY" | "SELL" | undefined) ?? "BUY",
+        horizon_hours: projected.horizon_hours ?? 0,
+        confidence: projected.confidence ?? 0,
+        submitted_at: projected.submitted_at ?? "",
+        accepted_at: projected.accepted_at,
+        outcome: r.outcome as string | null,
+        call_score: r.call_score as number | null,
+        signed_return: r.signed_return as string | null,
+        resolved_at: r.resolved_at as string | null,
+      };
+    });
 
     const dashboardOrigin =
       (req.header("origin") ?? req.header("referer") ?? "https://murmur.verdict").replace(/\/$/, "");
@@ -1340,7 +1391,53 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       res.status(404).json({ code: "not_found", message: "call not found" });
       return;
     }
-    res.json(full);
+    // Phase E: scrub plaintext from the submission sub-object when
+    // committed AND pending. The acceptance/resolution receipts on
+    // the same response don't carry plaintext for v2 by construction.
+    const subRow = deps.db
+      .prepare(
+        "SELECT privacy_mode, commit_hash FROM submissions WHERE call_id = ?",
+      )
+      .get(call_id) as
+      | { privacy_mode: string | null; commit_hash: string | null }
+      | undefined;
+    const projected = projectCallRow({
+      call_id: full.submission.call_id,
+      status: full.submission.status,
+      accepted_at: full.submission.accepted_at,
+      privacy_mode: subRow?.privacy_mode ?? null,
+      commit_hash: subRow?.commit_hash ?? null,
+      acceptance_receipt_hash: full.acceptance_receipt.hash,
+      side: full.submission.side,
+      asset_id: full.submission.asset_id,
+      horizon_hours: full.submission.horizon_hours,
+      confidence: full.submission.confidence,
+      rationale: full.submission.rationale,
+      strategy_tag: full.submission.strategy_tag,
+      submitted_at: full.submission.submitted_at,
+    });
+    const scrubbedSubmission = {
+      call_id: full.submission.call_id,
+      agent_id: full.submission.agent_id,
+      client_order_id: full.submission.client_order_id,
+      accepted_at: full.submission.accepted_at,
+      status: full.submission.status,
+      privacy_mode: projected.privacy_mode,
+      commit_hash: projected.commit_hash,
+      // Only present when shouldExposePlaintext returned true.
+      ...(projected.side ? { side: projected.side } : {}),
+      ...(projected.asset_id ? { asset_id: projected.asset_id } : {}),
+      ...(projected.horizon_hours !== undefined
+        ? { horizon_hours: projected.horizon_hours }
+        : {}),
+      ...(projected.confidence !== undefined
+        ? { confidence: projected.confidence }
+        : {}),
+      ...(projected.rationale ? { rationale: projected.rationale } : {}),
+      ...(projected.strategy_tag ? { strategy_tag: projected.strategy_tag } : {}),
+      ...(projected.submitted_at ? { submitted_at: projected.submitted_at } : {}),
+    };
+    res.json({ ...full, submission: scrubbedSubmission });
   });
 
   router.post(

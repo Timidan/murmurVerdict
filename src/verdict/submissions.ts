@@ -559,16 +559,28 @@ export async function submitCall(args: {
     ),
   );
 
+  // Scrub plaintext from the SSE/webhook event when committed-mode
+  // (Phase E). Subscribers see commit_hash + acceptance_receipt_hash;
+  // they can fetch /v1/calls/:id/envelope to attest the ciphertexts
+  // committed to. The plaintext only fans out post-horizon.
+  const isCommittedEvent = privacyModeForRepo === "committed";
   ctx.events?.emit({
     type: "call.accepted",
     call_id,
     agent_id: agent.agent_id,
     agent_slug: agent.display_slug,
-    side: submission.side,
-    asset_id: submission.asset_id,
-    horizon_hours: submission.horizon_hours,
-    confidence: submission.confidence,
+    privacy_mode: privacyModeForRepo,
     accepted_at,
+    ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
+    ...(receipt.receipt_hash ? { acceptance_receipt_hash: receipt.receipt_hash } : {}),
+    ...(isCommittedEvent
+      ? {}
+      : {
+          side: submission.side,
+          asset_id: submission.asset_id,
+          horizon_hours: submission.horizon_hours,
+          confidence: submission.confidence,
+        }),
   });
 
   return {
