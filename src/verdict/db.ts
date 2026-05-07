@@ -68,6 +68,12 @@ function applyMigrations(db: Database.Database): void {
     v = 2;
     set.run("schema_version", String(v));
   }
+
+  if (v < 3) {
+    db.exec(MIGRATION_003);
+    v = 3;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -223,6 +229,30 @@ const MIGRATION_002 = `
   );
   CREATE INDEX idx_ref_clicks_slug ON ref_clicks(agent_slug);
   CREATE INDEX idx_ref_clicks_total ON ref_clicks(total DESC);
+`;
+
+// ─── Migration 003 — webhook subscriptions ───────────────────────────────────
+//
+// Lets clients (Discord / Telegram bots, OpenServ workflows, Zapier, custom
+// servers) subscribe to call.accepted and call.resolved events for one
+// agent (or all agents). Each delivery is signed HMAC-SHA256(secret, body).
+// Failure count + last-delivery timestamps surfaced so subscribers can
+// self-debug.
+
+const MIGRATION_003 = `
+  CREATE TABLE webhooks (
+    id                TEXT PRIMARY KEY,
+    agent_slug        TEXT,                                  -- null = all agents
+    url               TEXT NOT NULL,
+    secret            TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    last_delivery_at  TEXT,
+    last_status       INTEGER,
+    delivery_count    INTEGER NOT NULL DEFAULT 0,
+    failure_count     INTEGER NOT NULL DEFAULT 0,
+    disabled          INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_webhooks_slug ON webhooks(agent_slug);
 `;
 
 // ─── Repositories (typed, narrow) ────────────────────────────────────────────
@@ -1000,6 +1030,84 @@ export const refsRepo = {
       agents_touched: number;
       last_at: string;
     }>;
+  },
+};
+
+// ─── Webhook subscriptions ───────────────────────────────────────────────────
+
+export interface WebhookRow {
+  id: string;
+  agent_slug: string | null;
+  url: string;
+  secret: string;
+  created_at: string;
+  last_delivery_at: string | null;
+  last_status: number | null;
+  delivery_count: number;
+  failure_count: number;
+  disabled: number;
+}
+
+export const webhooksRepo = {
+  insert(
+    db: Database.Database,
+    row: {
+      id: string;
+      agent_slug: string | null;
+      url: string;
+      secret: string;
+      created_at: string;
+    },
+  ): void {
+    prep(
+      db,
+      `INSERT INTO webhooks (id, agent_slug, url, secret, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(row.id, row.agent_slug, row.url, row.secret, row.created_at);
+  },
+
+  byId(db: Database.Database, id: string): WebhookRow | null {
+    const row = prep(
+      db,
+      "SELECT * FROM webhooks WHERE id = ? LIMIT 1",
+    ).get(id) as WebhookRow | undefined;
+    return row ?? null;
+  },
+
+  /** Return active webhooks subscribed to a specific agent (or to all agents). */
+  matchAgent(db: Database.Database, agent_slug: string): WebhookRow[] {
+    return prep(
+      db,
+      `SELECT * FROM webhooks
+       WHERE disabled = 0
+         AND (agent_slug = ? OR agent_slug IS NULL)`,
+    ).all(agent_slug) as WebhookRow[];
+  },
+
+  delete(db: Database.Database, id: string): boolean {
+    const info = prep(
+      db,
+      "DELETE FROM webhooks WHERE id = ?",
+    ).run(id);
+    return info.changes > 0;
+  },
+
+  bumpDelivery(
+    db: Database.Database,
+    id: string,
+    iso: string,
+    status: number,
+    failed: boolean,
+  ): void {
+    prep(
+      db,
+      `UPDATE webhooks
+       SET last_delivery_at = ?,
+           last_status = ?,
+           delivery_count = delivery_count + 1,
+           failure_count = failure_count + CASE WHEN ? THEN 1 ELSE 0 END
+       WHERE id = ?`,
+    ).run(iso, status, failed ? 1 : 0, id);
   },
 };
 

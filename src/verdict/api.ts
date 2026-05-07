@@ -1,7 +1,8 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import express from "express";
 import type Database from "better-sqlite3";
-import { agentsRepo, refsRepo, resolutionsRepo, submissionsRepo } from "./db.js";
+import { agentsRepo, refsRepo, resolutionsRepo, submissionsRepo, webhooksRepo } from "./db.js";
+import { randomUUID, randomBytes } from "node:crypto";
 import { getLeaderboard, get24hVerifiedVolume } from "./leaderboard.js";
 import type { VerdictEventBus } from "./events.js";
 import {
@@ -303,6 +304,86 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
   router.get("/v1/feed/today", (_req, res) => {
     res.json(getTodayFeed(deps.db, now()));
+  });
+
+  // ── Webhooks ──
+  // Discord / Telegram / Zapier / OpenServ workflows / custom servers
+  // can subscribe to call.accepted + call.resolved events for one agent
+  // (or all agents). Each delivery is signed HMAC-SHA256(secret, body)
+  // — subscribers verify via the X-Murmur-Signature: sha256=<hex> header.
+  // No auth on registration in v0.1; abuse handled by failure-count
+  // monitoring + manual disable.
+  router.post(
+    "/v1/webhooks",
+    express.json({ limit: "2kb" }),
+    (req, res) => {
+      const body = (req.body ?? {}) as { url?: unknown; agent_slug?: unknown };
+      if (typeof body.url !== "string" || !/^https?:\/\//.test(body.url)) {
+        res.status(400).json({ code: "invalid_url", message: "url must be a valid http(s) URL" });
+        return;
+      }
+      if (body.url.length > 2048) {
+        res.status(400).json({ code: "invalid_url", message: "url too long" });
+        return;
+      }
+      let agent_slug: string | null = null;
+      if (typeof body.agent_slug === "string" && body.agent_slug.length > 0) {
+        agent_slug = body.agent_slug.slice(0, 64);
+        if (!agentsRepo.bySlug(deps.db, agent_slug)) {
+          res.status(404).json({ code: "unknown_agent", message: "agent_slug not found" });
+          return;
+        }
+      }
+      const id = randomUUID();
+      const secret = randomBytes(24).toString("base64url");
+      const created_at = nowIso(now());
+      webhooksRepo.insert(deps.db, { id, agent_slug, url: body.url, secret, created_at });
+      res.status(201).json({
+        id,
+        agent_slug,
+        url: body.url,
+        secret, // returned only once on creation
+        created_at,
+        verify_signature: {
+          algorithm: "sha256",
+          header: "X-Murmur-Signature",
+          format: "sha256=<hex>",
+          body_to_sign: "raw request body",
+        },
+      });
+    },
+  );
+
+  router.get("/v1/webhooks/:id", (req, res) => {
+    const id = String(req.params.id ?? "");
+    const row = webhooksRepo.byId(deps.db, id);
+    if (!row) {
+      res.status(404).json({ code: "not_found", message: "webhook not found" });
+      return;
+    }
+    // never echo the secret on read
+    const { secret: _ignored, ...publicRow } = row;
+    void _ignored;
+    res.json({ schema_version: SCHEMA_VERSION, webhook: publicRow });
+  });
+
+  router.delete("/v1/webhooks/:id", (req, res) => {
+    const id = String(req.params.id ?? "");
+    const row = webhooksRepo.byId(deps.db, id);
+    if (!row) {
+      res.status(404).json({ code: "not_found", message: "webhook not found" });
+      return;
+    }
+    // Soft-auth via the secret on the X-Murmur-Webhook-Secret header so the
+    // owner of the secret (which only they have, from the create response)
+    // is the one who can delete.
+    const provided = req.header("X-Murmur-Webhook-Secret");
+    if (provided !== row.secret) {
+      res.status(403).json({ code: "forbidden", message: "secret mismatch" });
+      return;
+    }
+    webhooksRepo.delete(deps.db, id);
+    res.status(204).end();
   });
 
   // ── Outreach attribution ──

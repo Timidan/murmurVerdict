@@ -161,6 +161,49 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           responses: { "200": { description: "Senders ranked by clicks × agents touched" } },
         },
       },
+      "/v1/webhooks": {
+        post: {
+          tags: ["stream"],
+          summary: "Subscribe a URL to call.accepted / call.resolved events. Filter by agent_slug or omit for all-agents.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["url"],
+                  properties: {
+                    url: { type: "string", format: "uri" },
+                    agent_slug: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description:
+                "Subscription created. Response includes the secret used to sign deliveries — store it (it is not retrievable later).",
+            },
+            "400": { description: "Invalid URL" },
+            "404": { description: "Unknown agent_slug" },
+          },
+        },
+      },
+      "/v1/webhooks/{id}": {
+        get: {
+          tags: ["stream"],
+          summary: "Inspect a subscription (no secret returned).",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+          responses: { "200": { description: "WebhookRow without secret" }, "404": { description: "Unknown id" } },
+        },
+        delete: {
+          tags: ["stream"],
+          summary: "Unsubscribe. Requires the secret in X-Murmur-Webhook-Secret header.",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+          responses: { "204": { description: "Unsubscribed" }, "403": { description: "Secret mismatch" }, "404": { description: "Unknown id" } },
+        },
+      },
       "/v1/badge/{slug}.svg": {
         get: {
           tags: ["embed"],

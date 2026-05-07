@@ -24,7 +24,8 @@
     "og_card_png": "/v1/og/{slug}.png",
     "share_meta": "/share/{slug}",
     "rss_feed": "/v1/agents/{slug}/calls.xml",
-    "embed_js": "/embed.js"
+    "embed_js": "/embed.js",
+    "webhooks": "/v1/webhooks"
   },
   "mcp": {
     "transport": "stdio",

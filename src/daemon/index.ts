@@ -10,6 +10,7 @@ import { agentsRepo, openDb, resolutionsRepo, submissionsRepo } from "../verdict
 import { hashSharedSecret } from "../verdict/submissions.js";
 import { VerdictEventBus } from "../verdict/events.js";
 import { getLeaderboard } from "../verdict/leaderboard.js";
+import { startWebhookDispatcher } from "../verdict/webhooks.js";
 import {
   registerBaselines,
   runBaselinesOnce,
@@ -64,6 +65,9 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   const telegram = new TelegramNotifier();
   const oracle = makeOracle();
   const events = new VerdictEventBus();
+  // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
+  // matching subscription on call.accepted / call.resolved.
+  const webhookDispatcher = startWebhookDispatcher(db, events);
   const resolver = oracle
     ? new Resolver({
         db,
@@ -266,6 +270,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
 
   const close = async (): Promise<void> => {
     for (const t of tickers) clearInterval(t);
+    webhookDispatcher.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     db.close();
   };
