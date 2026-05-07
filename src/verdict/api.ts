@@ -306,6 +306,74 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     res.json(getTodayFeed(deps.db, now()));
   });
 
+  // Markdown snapshot — daily/weekly digest of the leaderboard formatted
+  // for Discord recap channels, blog cross-posts, paste-into-X long-form.
+  router.get("/v1/snapshot.md", (_req, res) => {
+    const rows = getLeaderboard(deps.db, { limit: 10 });
+    const today = getTodayFeed(deps.db, now());
+    const lines: string[] = [];
+    lines.push(`# Murmur Verdict — daily snapshot`);
+    lines.push(``);
+    lines.push(`*${nowIso(now())}*`);
+    lines.push(``);
+    lines.push(
+      `**24h:** ${today.totals.accepted_24h} accepted · ${today.totals.resolved_24h} resolved · ${today.totals.wins_24h} wins · ${today.totals.losses_24h} losses · ${today.totals.void_24h} void`,
+    );
+    lines.push(``);
+    lines.push(`## Top 10`);
+    lines.push(``);
+    lines.push(`| # | Agent | Verdict | Win rate | Resolved | Pending |`);
+    lines.push(`|---|---|---|---|---|---|`);
+    for (const r of rows) {
+      const rank = r.rank ? String(r.rank).padStart(2, "0") : "—";
+      const verdict =
+        r.verdict_score === null
+          ? "—"
+          : `${r.verdict_score >= 0 ? "+" : "−"}${Math.round(Math.abs(r.verdict_score) * 1000)}σ`;
+      const winRate =
+        r.win_rate === null ? "—" : `${Math.round(r.win_rate * 100)}%`;
+      lines.push(
+        `| ${rank} | ${r.display_name} | ${verdict} | ${winRate} | ${r.resolved_calls} | ${r.pending_calls} |`,
+      );
+    }
+    lines.push(``);
+    lines.push(`---`);
+    lines.push(``);
+    lines.push(`*Calls scored against canonical Chainlink + Pyth feeds. Receipts are independently verifiable.*`);
+    lines.push(``);
+    res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=120, stale-while-revalidate=600");
+    res.send(lines.join("\n"));
+  });
+
+  // CSV export of the leaderboard for spreadsheet integration. Streams
+  // the same data the dashboard renders; no auth, public.
+  router.get("/v1/leaderboard.csv", (req, res) => {
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? "200")));
+    const rows = getLeaderboard(deps.db, { limit });
+    const header = "rank,display_slug,display_name,kind,tier,verdict_score,win_rate,resolved_calls,pending_calls,last_resolved_at";
+    const body = rows
+      .map((r) =>
+        [
+          r.rank ?? "",
+          csvCell(r.display_slug),
+          csvCell(r.display_name),
+          r.kind,
+          r.tier,
+          r.verdict_score ?? "",
+          r.win_rate ?? "",
+          r.resolved_calls,
+          r.pending_calls,
+          r.last_resolved_at ?? "",
+        ].join(","),
+      )
+      .join("\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    res.setHeader("Content-Disposition", "inline; filename=\"leaderboard.csv\"");
+    res.send(`${header}\n${body}\n`);
+  });
+
   // ── Webhooks ──
   // Discord / Telegram / Zapier / OpenServ workflows / custom servers
   // can subscribe to call.accepted + call.resolved events for one agent
@@ -1085,6 +1153,13 @@ const EMBED_JS = `(function () {
   connect();
 })();
 `;
+
+function csvCell(s: string): string {
+  if (/[,"\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
 
 function escapeHtml(s: string): string {
   return s

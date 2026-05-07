@@ -16,7 +16,9 @@
     "dashboard": "vite --config dashboard/vite.config.ts",
     "dashboard:build": "vite build --config dashboard/vite.config.ts",
     "mcp": "tsx src/mcp/index.ts",
-    "verify:deploy": "tsx tools/verify-deploy.ts"
+    "verify:deploy": "tsx tools/verify-deploy.ts",
+    "outreach:kit": "tsx tools/outreach-kit.ts",
+    "outreach:thread": "tsx tools/launch-thread.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",

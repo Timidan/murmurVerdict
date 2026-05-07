@@ -25,7 +25,9 @@
     "share_meta": "/share/{slug}",
     "rss_feed": "/v1/agents/{slug}/calls.xml",
     "embed_js": "/embed.js",
-    "webhooks": "/v1/webhooks"
+    "webhooks": "/v1/webhooks",
+    "snapshot_md": "/v1/snapshot.md",
+    "leaderboard_csv": "/v1/leaderboard.csv"
   },
   "mcp": {
     "transport": "stdio",

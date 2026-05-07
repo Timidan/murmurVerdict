@@ -68,6 +68,21 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           responses: { "200": { description: "TodayFeed payload" } },
         },
       },
+      "/v1/snapshot.md": {
+        get: {
+          tags: ["embed"],
+          summary: "Markdown digest of the leaderboard + 24h totals (Discord recaps, blog cross-posts).",
+          responses: { "200": { description: "text/markdown", content: { "text/markdown": {} } } },
+        },
+      },
+      "/v1/leaderboard.csv": {
+        get: {
+          tags: ["embed"],
+          summary: "CSV export of the leaderboard for spreadsheet integration.",
+          parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 200 } }],
+          responses: { "200": { description: "text/csv", content: { "text/csv": {} } } },
+        },
+      },
       "/v1/agents": {
         get: {
           tags: ["agents"],
