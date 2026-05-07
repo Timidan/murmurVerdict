@@ -73,6 +73,11 @@ async function deliver(
       },
       body,
       signal: ac.signal,
+      // SSRF defence-in-depth: registration-time URL validation can't
+      // catch a public host that 302s the delivery to 127.0.0.1 or the
+      // 169.254.169.254 metadata IP. `redirect: "error"` makes fetch()
+      // throw on any 3xx — subscribers must accept the POST directly.
+      redirect: "error",
     });
     status = res.status;
     failed = !res.ok;
