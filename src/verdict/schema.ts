@@ -531,11 +531,42 @@ export const LeaderboardRowSchema = z
     kind: AgentKindSchema,
     tier: LeaderboardTierSchema,
     rank: z.number().int().positive().nullable(),
+    /** Public predictive score — Brier-derived, 1-sigma lower bound. */
     verdict_score: z.number().nullable(),
+    /**
+     * 95% lower-confidence bound on the mean call_score (Phase F D24).
+     * Marketplace booking sorts by THIS instead of the raw verdict_score
+     * so 20 lucky calls can't outrank 200 stable calls. Pillar-4 gate.
+     */
+    verdict_score_lb: z.number().nullable(),
     resolved_calls: z.number().int().nonnegative(),
     win_rate: z.number().min(0).max(1).nullable(),
     pending_calls: z.number().int().nonnegative(),
     last_resolved_at: z.string().datetime({ offset: false }).nullable(),
+    /**
+     * Reveal reliability for committed-mode agents (D26 axis 1).
+     *   = agent_reveals / (agent_reveals + daemon_fallback_reveals)
+     * Null when the agent has no committed-mode resolved calls yet.
+     * Excludes legacy_plaintext + fhevm_compute so the metric reflects
+     * the v0.2 commit-reveal contract.
+     */
+    reveal_reliability: z.number().min(0).max(1).nullable(),
+    agent_reveals: z.number().int().nonnegative(),
+    daemon_fallback_reveals: z.number().int().nonnegative(),
+    /**
+     * Pillar-4 marketplace booking gate. True iff resolved_calls >=
+     * MIN_RESOLVED_CALLS_FOR_MARKETPLACE_TIER AND verdict_score_lb >= 0.
+     * Stricter than `tier=main`. Marketplace consumers filter on this
+     * before recommending an agent.
+     */
+    marketplace_eligible: z.boolean(),
+    /**
+     * RESERVED axes for v0.3+ (D26 axes 2 + 3). Currently 0 / null;
+     * shape is locked here so the v0.3 fhEVM port can populate them
+     * without a schema bump.
+     */
+    operator_trust_score: z.number().min(0).max(1).nullable().default(null),
+    stake_at_risk: z.string().nullable().default(null),
   })
   .strict();
 export type LeaderboardRow = z.infer<typeof LeaderboardRowSchema>;
@@ -668,5 +699,12 @@ export const CONFIDENCE_MIN = 0.51;
 export const CONFIDENCE_MAX = 0.95;
 export const VOID_BAND = 0.002; // |signed_return| < this → void
 export const MIN_RESOLVED_CALLS_FOR_MAIN_TIER = 20;
+/**
+ * Phase F D25 — pillar-4 marketplace booking gate. Stricter than the
+ * main-tier threshold: 50 resolved calls AND a non-negative
+ * verdict_score_lb. Marketplace consumers should require both before
+ * recommending an agent for a paid booking.
+ */
+export const MIN_RESOLVED_CALLS_FOR_MARKETPLACE_TIER = 50;
 export const SHADOW_CLAIM_LOOKBACK_DAYS = 30;
 export const RATIONALE_MAX_CHARS = 240;

@@ -132,22 +132,50 @@ export function scoreCall(input: CallScoreInput): CallScoreBreakdown {
   };
 }
 
-// ─── Per-agent leaderboard score ─────────────────────────────────────────────
-// verdict_score = mean(call_score) - stdev(call_score) / sqrt(resolved_calls)
-// Only win/loss outcomes count toward `resolved_calls`. void / oracle_unavailable
-// produce null call_score and are excluded.
+// ─── Per-agent leaderboard score (Phase F three-axis) ────────────────────────
+//
+// `verdict_score` is the public-leaderboard-facing predictive metric:
+//   verdict_score = mean(call_score) - stdev(call_score) / sqrt(resolved_calls)
+// (= 1-sigma lower bound of the mean; rewards consistency.)
+//
+// Codex ranking-research recommendation D24: marketplace consumers
+// should sort by a Wilson-style lower confidence bound on the mean
+// instead of the raw mean. With small N, the lower bound is a stricter
+// gate — 20 lucky calls can't outrank 200 stable calls. Public
+// leaderboard keeps `verdict_score` as the headline number; marketplace
+// queries (and Pillar 4 booking) use `verdict_score_lb`.
+//
+// Only win/loss outcomes count toward `resolved_calls`. void /
+// oracle_unavailable produce null call_score and are excluded.
 
 export interface VerdictScoreResult {
   verdict_score: number | null;
+  /**
+   * 95% lower confidence bound on the mean call_score using a
+   * Student-t / normal approximation. Conservative ranking signal for
+   * the marketplace tier (D24).
+   */
+  verdict_score_lb: number | null;
   mean: number | null;
   stdev: number | null;
   resolved_calls: number;
 }
 
+// ~95% one-sided z (1.6449); call_score is bounded [-0.75, 0.25] so
+// using the normal approximation is reasonable past N≥10 and strictly
+// conservative below.
+const Z_95 = 1.6449;
+
 export function computeVerdictScore(callScores: (number | null)[]): VerdictScoreResult {
   const xs = callScores.filter((s): s is number => s !== null);
   if (xs.length === 0) {
-    return { verdict_score: null, mean: null, stdev: null, resolved_calls: 0 };
+    return {
+      verdict_score: null,
+      verdict_score_lb: null,
+      mean: null,
+      stdev: null,
+      resolved_calls: 0,
+    };
   }
   const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
   const variance =
@@ -156,7 +184,17 @@ export function computeVerdictScore(callScores: (number | null)[]): VerdictScore
       : 0;
   const stdev = Math.sqrt(variance);
   const verdict_score = mean - stdev / Math.sqrt(xs.length);
-  return { verdict_score, mean, stdev, resolved_calls: xs.length };
+  // Lower bound: mean - z * sem. Same direction as verdict_score but
+  // wider (more conservative) — uses 1.6449 vs 1.0 multiplier.
+  const sem = stdev / Math.sqrt(xs.length);
+  const verdict_score_lb = mean - Z_95 * sem;
+  return {
+    verdict_score,
+    verdict_score_lb,
+    mean,
+    stdev,
+    resolved_calls: xs.length,
+  };
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

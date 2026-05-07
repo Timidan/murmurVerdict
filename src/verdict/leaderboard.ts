@@ -4,8 +4,10 @@ import {
   LeaderboardRow,
   LeaderboardTier,
   MIN_RESOLVED_CALLS_FOR_MAIN_TIER,
+  MIN_RESOLVED_CALLS_FOR_MARKETPLACE_TIER,
 } from "./schema.js";
 import { computeVerdictScore } from "./scoring.js";
+import { callRevealsRepo } from "./db.js";
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -113,6 +115,21 @@ export function getLeaderboard(
     }
   }
 
+  // Phase F D26 — three-axis reputation. Pull reveal-reliability counts
+  // per agent in one query so we can populate marketplace_eligible +
+  // reveal_reliability without N round-trips.
+  const reliabilityRows = callRevealsRepo.reliabilityByAgent(db);
+  const reliabilityByAgent = new Map<
+    string,
+    { agent_reveals: number; daemon_reveals: number }
+  >();
+  for (const r of reliabilityRows) {
+    reliabilityByAgent.set(r.agent_id, {
+      agent_reveals: r.agent_reveals ?? 0,
+      daemon_reveals: r.daemon_reveals ?? 0,
+    });
+  }
+
   type Computed = LeaderboardRow & { _sortKey: number };
   const all: Computed[] = [];
   for (const a of byAgent.values()) {
@@ -120,6 +137,21 @@ export function getLeaderboard(
     const tier: LeaderboardTier =
       score.resolved_calls >= MIN_RESOLVED_CALLS_FOR_MAIN_TIER ? "main" : "provisional";
     const win_rate = a.wins + a.losses > 0 ? a.wins / (a.wins + a.losses) : null;
+    const reliability = reliabilityByAgent.get(a.agent_id) ?? {
+      agent_reveals: 0,
+      daemon_reveals: 0,
+    };
+    const reliabilityDenom =
+      reliability.agent_reveals + reliability.daemon_reveals;
+    const reveal_reliability =
+      reliabilityDenom > 0
+        ? reliability.agent_reveals / reliabilityDenom
+        : null;
+    // D25: marketplace eligibility — stricter than tier=main.
+    const marketplace_eligible =
+      score.resolved_calls >= MIN_RESOLVED_CALLS_FOR_MARKETPLACE_TIER &&
+      score.verdict_score_lb !== null &&
+      score.verdict_score_lb >= 0;
     all.push({
       agent_id: a.agent_id,
       display_slug: a.display_slug,
@@ -128,10 +160,20 @@ export function getLeaderboard(
       tier,
       rank: null,
       verdict_score: score.verdict_score,
+      verdict_score_lb: score.verdict_score_lb,
       resolved_calls: score.resolved_calls,
       win_rate,
       pending_calls: a.pending,
       last_resolved_at: a.last_resolved_at,
+      reveal_reliability,
+      agent_reveals: reliability.agent_reveals,
+      daemon_fallback_reveals: reliability.daemon_reveals,
+      marketplace_eligible,
+      // D26 axes 2 + 3 — populated in v0.3 once operator_trust + stake
+      // schemas land. Today they're explicitly null so consumers can
+      // distinguish "not yet wired" from "score=0".
+      operator_trust_score: null,
+      stake_at_risk: null,
       _sortKey: score.verdict_score ?? -Infinity,
     });
   }
