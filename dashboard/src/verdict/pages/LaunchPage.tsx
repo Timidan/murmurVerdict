@@ -4,21 +4,94 @@ import { Topbar } from "../components/Topbar.js";
 import { PillButton } from "../components/PillButton.js";
 
 /**
- * /#/launch — the OpenServ-launchpad install moment.
+ * /#/launch — pick your install path.
  *
- * Goal: a curious visitor → installed-and-using in under 60 seconds.
- * Three sections:
- *   1. Hero      what the integration does, one line.
- *   2. Install   MCP config snippet + copy buttons + deploy badges.
- *   3. Try it    inline live demo of a tool call (calls the real API).
+ * Four audience tracks, in priority order:
+ *   A. BUILD AN AGENT     — HTTP + HMAC submit (the primary install for
+ *                           the launchpad audience)
+ *   B. TALK TO MURMUR     — MCP stdio (Cursor / Claude Desktop / OpenServ)
+ *   C. SUBSCRIBE          — Webhooks (Discord / Telegram / Zapier)
+ *   D. VERIFY REPUTATION  — receipt bundle + verifier CLI (copy-only in
+ *                           v0.2; goes live when the agent-card endpoint
+ *                           lands in P1.5)
  *
- * No Doto hero — this is a workshop / install page, not a brag page.
+ * Footer: machine-readable (embed.js + OpenAPI). Then the live demo.
+ *
  * Score-as-protagonist would be wrong here; instructions-as-protagonist.
  */
 export function LaunchPage() {
   const base = verdictApi.apiUrl.replace(/\/$/, "");
   const [copied, setCopied] = useState<string | null>(null);
 
+  // ── TRACK A — BUILD AN AGENT (HTTP + HMAC) ──────────────────────────
+  const curlExample = `# Submit a market call. Body is signed HMAC-SHA256 against your API key.
+# AGENT_ID + API_KEY come from the claim flow at /#/agents/<slug>/claim.
+
+curl -X POST "${base}/v1/calls" \\
+  -H "Content-Type: application/json" \\
+  -H "X-Murmur-Agent-Id: <AGENT_ID>" \\
+  -H "X-Murmur-Signature: sha256=<HMAC_HEX_OF_BODY>" \\
+  -d '{
+    "client_order_id": "<unique-uuid>",
+    "side": "BUY",
+    "asset_id": "ETH",
+    "horizon_hours": 24,
+    "confidence": 70
+  }'`;
+
+  const tsExample = `// npm i undici
+import { request } from "undici";
+import { createHmac, randomUUID } from "node:crypto";
+
+const body = JSON.stringify({
+  client_order_id: randomUUID(),
+  side: "BUY",
+  asset_id: "ETH",
+  horizon_hours: 24,
+  confidence: 70,
+});
+
+const sig = createHmac("sha256", process.env.MURMUR_API_KEY!)
+  .update(body)
+  .digest("hex");
+
+await request("${base}/v1/calls", {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-murmur-agent-id": process.env.MURMUR_AGENT_ID!,
+    "x-murmur-signature": "sha256=" + sig,
+  },
+  body,
+});`;
+
+  const pythonExample = `# pip install requests
+import os, json, uuid, hmac, hashlib, requests
+
+body = json.dumps({
+    "client_order_id": str(uuid.uuid4()),
+    "side": "BUY",
+    "asset_id": "ETH",
+    "horizon_hours": 24,
+    "confidence": 70,
+})
+sig = hmac.new(
+    os.environ["MURMUR_API_KEY"].encode(),
+    body.encode(),
+    hashlib.sha256,
+).hexdigest()
+
+requests.post(
+    "${base}/v1/calls",
+    data=body,
+    headers={
+        "content-type": "application/json",
+        "x-murmur-agent-id": os.environ["MURMUR_AGENT_ID"],
+        "x-murmur-signature": "sha256=" + sig,
+    },
+)`;
+
+  // ── TRACK B — TALK TO MURMUR (MCP) ──────────────────────────────────
   const claudeConfig = `{
   "mcpServers": {
     "murmur-verdict": {
@@ -50,6 +123,46 @@ OPENSERV_VERDICT_ENABLED=true
 
 # 3. Add Murmur to a workspace from the OpenServ marketplace.`;
 
+  // ── TRACK C — SUBSCRIBE TO EVENTS (WEBHOOKS) ────────────────────────
+  const webhookCreate = `# Register a webhook. URL must be public https — localhost,
+# RFC1918, CGNAT, link-local, and cloud-metadata IPs are rejected
+# at registration time AND on each delivery (no redirect chasing).
+
+curl -X POST "${base}/v1/webhooks" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "url": "https://hooks.zapier.com/hooks/<your-id>",
+    "agent_slug": "murmur-momentum"
+  }'
+
+# Response → { id, secret, ... }. Store \`secret\` — it's only
+# returned on creation. Use it to verify deliveries.`;
+
+  const webhookVerify = `// Discord / Slack / Telegram bridge. Verify HMAC, then forward.
+import { createHmac, timingSafeEqual } from "node:crypto";
+import express from "express";
+
+const app = express();
+app.use("/murmur-bridge", express.text({ type: "*/*" }));
+
+app.post("/murmur-bridge", (req, res) => {
+  const raw = req.body as string;
+  const got = (req.header("x-murmur-signature") ?? "").replace(/^sha256=/, "");
+  const want = createHmac("sha256", process.env.MURMUR_HOOK_SECRET!)
+    .update(raw)
+    .digest("hex");
+  if (
+    got.length !== want.length ||
+    !timingSafeEqual(Buffer.from(got, "hex"), Buffer.from(want, "hex"))
+  ) {
+    return res.status(403).end();
+  }
+  const { event } = JSON.parse(raw);
+  // forward event.type === "call.accepted" | "call.resolved"
+  res.status(204).end();
+});`;
+
+  // ── MACHINE-READABLE FOOTER ─────────────────────────────────────────
   const embedJsSnippet = `<!-- Drop into any HTML. Live SVG badge, refreshes via SSE. -->
 <script src="${base}/embed.js" data-slug="<agent-slug>"></script>
 
@@ -75,112 +188,172 @@ ${base}/v1/openapi.json`;
 
       <main className="flex-1 max-w-[1024px] w-full mx-auto px-6 md:px-10 py-12">
         {/* HERO ─────────────────────────────────────────────── */}
-        <header className="mb-12">
-          <p className="t-label text-[var(--color-secondary)] mb-3">launchpad install</p>
+        <header className="mb-14">
+          <p className="t-label text-[var(--color-secondary)] mb-3">install</p>
           <h1 className="t-heading max-w-[40ch]">
-            wire <span className="text-[var(--color-display)]">Murmur</span> into any
-            agent that speaks MCP.
+            plug your agent into <span className="text-[var(--color-display)]">Murmur</span>.
+            pick your audience.
           </h1>
           <p className="t-body mt-4 max-w-[60ch]">
-            One stdio server, five tools, zero servers to host.
-            Works in OpenServ, Claude Desktop, Cursor, Codex, Goose, Continue —
-            anywhere MCP is supported. The agent submits calls; Murmur scores them
-            against canonical Chainlink + Pyth feeds; the leaderboard updates live.
+            Four tracks, four reasons to integrate. Build a market agent that
+            gets scored. Talk to Murmur from your IDE. Subscribe to live events.
+            Verify a third party's reputation without trusting the daemon.
           </p>
         </header>
 
         {/* DEPLOY ROW ────────────────────────────────────────── */}
-        <section className="mb-14 grid grid-cols-1 md:grid-cols-3 gap-px border-y border-[var(--color-border)] bg-[var(--color-border)]">
+        <section className="mb-14 grid grid-cols-1 md:grid-cols-2 gap-px border-y border-[var(--color-border)] bg-[var(--color-border)]">
           <DeployTile
             title="DEPLOY DAEMON"
             subtitle="Render · Docker · 1-click"
             href="https://render.com/deploy"
-            note="render.yaml ships with the repo; one click and you have a public daemon URL."
+            note="render.yaml ships with the repo. One click → public daemon URL."
           />
           <DeployTile
             title="DEPLOY DASHBOARD"
             subtitle="Vercel · Vite · 1-click"
             href="https://vercel.com/new"
-            note="vercel.json builds dashboard/dist with strict CSP. Point VITE_VERDICT_API_URL at the daemon."
-          />
-          <DeployTile
-            title="ADD TO CLAUDE"
-            subtitle="MCP · stdio"
-            href="https://claude.ai/download"
-            note="Drop the config below into claude_desktop_config.json. Restart. Try 'use murmur to find the top agent'."
+            note="vercel.json builds dashboard/dist with strict CSP. Set VITE_VERDICT_API_URL."
           />
         </section>
 
-        {/* TOOLS ─────────────────────────────────────────────── */}
-        <section className="mb-14">
-          <h2 className="t-subheading mb-2">Five tools.</h2>
-          <p className="t-body-sm mb-6">
-            All five run against the same daemon. The first three are anonymous
-            reads; the last two require <code className="font-mono text-[var(--color-display)]">VERDICT_AGENT_ID</code> +{" "}
-            <code className="font-mono text-[var(--color-display)]">VERDICT_API_KEY</code> from the claim flow.
-          </p>
-          <ul className="m-0 p-0 list-none border-y border-[var(--color-border)] divide-y divide-[var(--color-border)]">
-            <ToolRow name="get_leaderboard" desc="List ranked agents — filter by tier, cap by limit." auth="public" />
-            <ToolRow name="get_agent" desc="Profile + recent calls for one agent." auth="public" />
-            <ToolRow name="get_agent_score" desc="Compact single-line lookup (rank + verdict + win rate)." auth="public" />
-            <ToolRow name="submit_call" desc="Submit an HMAC-authed market call to be scored at horizon expiry." auth="api-key" />
-            <ToolRow name="verify_call" desc="Re-run the receipt-chain verifier against a known call_id." auth="public" />
-          </ul>
-        </section>
-
-        {/* CONFIG SNIPPETS ──────────────────────────────────── */}
-        <section className="mb-14 flex flex-col gap-8">
+        {/* TRACK A — BUILD AN AGENT ──────────────────────────── */}
+        <Track
+          letter="A"
+          title="Build an agent."
+          eyebrow="track a · primary"
+          desc="Submit market calls; Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles. HTTP + HMAC, any language. The daemon never reaches into your code — your code calls it."
+          ctaHref="#/leaderboard"
+          ctaLabel="see who's playing"
+        >
           <ConfigBlock
-            label="CLAUDE DESKTOP · claude_desktop_config.json"
+            label="curl"
+            value={curlExample}
+            copied={copied === "curl"}
+            onCopy={() => copy("curl", curlExample)}
+          />
+          <ConfigBlock
+            label="typescript · undici"
+            value={tsExample}
+            copied={copied === "ts"}
+            onCopy={() => copy("ts", tsExample)}
+          />
+          <ConfigBlock
+            label="python · requests"
+            value={pythonExample}
+            copied={copied === "py"}
+            onCopy={() => copy("py", pythonExample)}
+          />
+        </Track>
+
+        {/* TRACK B — TALK TO MURMUR ──────────────────────────── */}
+        <Track
+          letter="B"
+          title="Talk to Murmur."
+          eyebrow="track b · query the rank from your ide"
+          desc="MCP stdio server with five tools (get_leaderboard, get_agent, get_agent_score, submit_call, verify_call). Wire it into Claude Desktop, Cursor, OpenServ — anywhere MCP is supported."
+          ctaHref="https://github.com/Timidan/synth-x/tree/master/src/mcp"
+          ctaLabel="mcp source"
+        >
+          <ConfigBlock
+            label="claude desktop · claude_desktop_config.json"
             value={claudeConfig}
-            id="claude"
             copied={copied === "claude"}
             onCopy={() => copy("claude", claudeConfig)}
           />
           <ConfigBlock
-            label="CURSOR · settings → MCP"
+            label="cursor · settings → mcp"
             value={cursorConfig}
-            id="cursor"
             copied={copied === "cursor"}
             onCopy={() => copy("cursor", cursorConfig)}
           />
           <ConfigBlock
-            label="OPENSERV · daemon env + workspace install"
+            label="openserv · daemon env + workspace install"
             value={openservConfig}
-            id="openserv"
             copied={copied === "openserv"}
             onCopy={() => copy("openserv", openservConfig)}
           />
+        </Track>
+
+        {/* TRACK C — SUBSCRIBE TO EVENTS ─────────────────────── */}
+        <Track
+          letter="C"
+          title="Subscribe to events."
+          eyebrow="track c · webhooks"
+          desc="HMAC-signed POST on call.accepted and call.resolved. Bridge to Discord, Telegram, Zapier, your incident channel — anything with a public https endpoint. Localhost / RFC1918 / metadata IPs are refused at registration AND delivery."
+          ctaHref={`${base}/v1/openapi.json`}
+          ctaLabel="webhook spec"
+        >
           <ConfigBlock
-            label="EMBED.JS · drop-in script for any html"
-            value={embedJsSnippet}
-            id="embed"
-            copied={copied === "embed"}
-            onCopy={() => copy("embed", embedJsSnippet)}
+            label="register"
+            value={webhookCreate}
+            copied={copied === "hook-register"}
+            onCopy={() => copy("hook-register", webhookCreate)}
           />
           <ConfigBlock
-            label="OPENAPI · machine-readable spec"
-            value={openapiSnippet}
-            id="openapi"
-            copied={copied === "openapi"}
-            onCopy={() => copy("openapi", openapiSnippet)}
+            label="verify deliveries · node express"
+            value={webhookVerify}
+            copied={copied === "hook-verify"}
+            onCopy={() => copy("hook-verify", webhookVerify)}
           />
+        </Track>
+
+        {/* TRACK D — VERIFY REPUTATION (preview) ─────────────── */}
+        <section className="mb-14 border-t border-[var(--color-border)] pt-10">
+          <div className="grid grid-cols-[60px_1fr] gap-6">
+            <span className="font-mono text-[48px] leading-none text-[var(--color-disabled)]">D</span>
+            <div>
+              <p className="t-label text-[var(--color-secondary)] mb-2">track d · soon</p>
+              <h2 className="t-subheading mb-3">Verify reputation, off Murmur.</h2>
+              <p className="t-body-sm max-w-[60ch] mb-4">
+                Receipts will be wallet-bound and signed. A small verifier — receipt
+                JSON + our public signing key + canonical oracle observation — will
+                let any marketplace check an agent's score without a daemon round-trip.
+                The agent's reputation moves with their wallet, not with our uptime.
+              </p>
+              <p className="t-meta text-[var(--color-disabled)]">
+                Lands in v0.2 alongside the ERC-8004-shaped agent card at
+                <code className="font-mono text-[var(--color-secondary)] ml-1">/v1/agents/&lt;slug&gt;/agent-card</code>.
+              </p>
+            </div>
+          </div>
         </section>
 
         {/* LIVE DEMO ────────────────────────────────────────── */}
-        <section className="mb-14">
-          <h2 className="t-subheading mb-2">Try a tool — live.</h2>
-          <p className="t-body-sm mb-6">
-            Runs against this deployment's <code className="font-mono text-[var(--color-display)]">/v1/leaderboard</code>.
-            Same payload an MCP client receives.
+        <section className="mb-14 border-t border-[var(--color-border)] pt-10">
+          <p className="t-label text-[var(--color-secondary)] mb-2">try it</p>
+          <h2 className="t-subheading mb-3">A live read against this deployment.</h2>
+          <p className="t-body-sm mb-6 max-w-[60ch]">
+            Hits <code className="font-mono text-[var(--color-display)]">/v1/leaderboard</code> on the daemon backing this page.
+            Same payload an MCP <code className="font-mono">get_leaderboard</code> call returns.
           </p>
           <LiveDemo />
         </section>
 
-        {/* FOOTER ───────────────────────────────────────────── */}
-        <footer className="t-meta text-[var(--color-disabled)] flex flex-wrap gap-x-6 gap-y-2">
+        {/* MACHINE-READABLE FOOTER ──────────────────────────── */}
+        <section className="mb-14 border-t border-[var(--color-border)] pt-10">
+          <p className="t-label text-[var(--color-secondary)] mb-3">machine-readable</p>
+          <div className="flex flex-col gap-6">
+            <ConfigBlock
+              label="embed.js · live svg badge for any html"
+              value={embedJsSnippet}
+              copied={copied === "embed"}
+              onCopy={() => copy("embed", embedJsSnippet)}
+            />
+            <ConfigBlock
+              label="openapi 3.0 · every endpoint, every schema"
+              value={openapiSnippet}
+              copied={copied === "openapi"}
+              onCopy={() => copy("openapi", openapiSnippet)}
+            />
+          </div>
+        </section>
+
+        {/* FOOTER LINKS ─────────────────────────────────────── */}
+        <footer className="t-meta text-[var(--color-disabled)] flex flex-wrap gap-x-6 gap-y-2 border-t border-[var(--color-border)] pt-6">
           <a href="#/leaderboard" className="hover:text-[var(--color-display)]">leaderboard</a>
           <a href="#/today" className="hover:text-[var(--color-display)]">today</a>
+          <a href="#/recruiters" className="hover:text-[var(--color-display)]">recruiters</a>
           <a href="/.well-known/murmur.json" className="hover:text-[var(--color-display)]">manifest</a>
           <a href="https://github.com/Timidan/synth-x" className="hover:text-[var(--color-display)]" target="_blank" rel="noreferrer">github</a>
         </footer>
@@ -189,7 +362,58 @@ ${base}/v1/openapi.json`;
   );
 }
 
-function DeployTile({ title, subtitle, href, note }: { title: string; subtitle: string; href: string; note: string }) {
+function Track({
+  letter,
+  title,
+  eyebrow,
+  desc,
+  ctaHref,
+  ctaLabel,
+  children,
+}: {
+  letter: string;
+  title: string;
+  eyebrow: string;
+  desc: string;
+  ctaHref: string;
+  ctaLabel: string;
+  children: React.ReactNode;
+}) {
+  const external = ctaHref.startsWith("http");
+  return (
+    <section className="mb-14 border-t border-[var(--color-border)] pt-10">
+      <div className="grid grid-cols-[60px_1fr] gap-6 mb-8">
+        <span className="font-mono text-[48px] leading-none text-[var(--color-display)]">{letter}</span>
+        <div>
+          <p className="t-label text-[var(--color-secondary)] mb-2">{eyebrow}</p>
+          <h2 className="t-subheading mb-3">{title}</h2>
+          <p className="t-body-sm max-w-[60ch] mb-4">{desc}</p>
+          <a
+            href={ctaHref}
+            target={external ? "_blank" : undefined}
+            rel={external ? "noreferrer" : undefined}
+            className="t-button text-[var(--color-display)] hover:underline"
+          >
+            {ctaLabel} →
+          </a>
+        </div>
+      </div>
+      <div className="flex flex-col gap-6">{children}</div>
+    </section>
+  );
+}
+
+function DeployTile({
+  title,
+  subtitle,
+  href,
+  note,
+}: {
+  title: string;
+  subtitle: string;
+  href: string;
+  note: string;
+}) {
   return (
     <a
       href={href}
@@ -205,23 +429,6 @@ function DeployTile({ title, subtitle, href, note }: { title: string; subtitle: 
   );
 }
 
-function ToolRow({ name, desc, auth }: { name: string; desc: string; auth: "public" | "api-key" }) {
-  return (
-    <li className="grid grid-cols-[200px_1fr_80px] gap-6 px-1 py-3 items-baseline">
-      <code className="t-data text-[var(--color-display)]">{name}</code>
-      <span className="t-body-sm">{desc}</span>
-      <span
-        className={
-          "t-label justify-self-end " +
-          (auth === "public" ? "text-[var(--color-display)]" : "text-[var(--color-accent)]")
-        }
-      >
-        {auth}
-      </span>
-    </li>
-  );
-}
-
 function ConfigBlock({
   label,
   value,
@@ -230,7 +437,6 @@ function ConfigBlock({
 }: {
   label: string;
   value: string;
-  id: string;
   copied: boolean;
   onCopy: () => void;
 }) {
