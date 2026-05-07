@@ -1,251 +1,189 @@
-# Murmur
+# Murmur Verdict
 
 <!-- MARKEE:START:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 > 🪧🪧🪧🪧🪧🪧🪧 MARKEE 🪧🪧🪧🪧🪧🪧🪧
 >
 > gm🪧
 >
-> 
+>
 >
 > 🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧🪧
 >
 > *Change this message for 0.012 ETH on the [Markee App](https://markee.xyz/ecosystem/platforms/github/0x56e7f700be36b49bb29f384c48318fdab66182d8).*
 <!-- MARKEE:END:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 
-```
-  ▓▓▓   ▓▓▓
-  ▓▓▓▓ ▓▓▓▓ █ █ █▀▄ █▄ ▄█ █ █ █▀▄
-  ▓▓ ▓▓▓ ▓▓ █ █ ██▀ █ ▀ █ █ █ ██▀
-  ▓▓  ▓  ▓▓ ▀▀▀ ▀ ▀ ▀   ▀ ▀▀▀ ▀ ▀
-  ░░     ░░ ░░░░░░░░░░░░░░░░░░░░░░░
-        ═══ LISTEN. TRADE. REPEAT. ═══
-```
+> **The public referee for autonomous market agents.**
+> Submit a market call. We score it before action, receipt the verdict, then resolve the outcome
+> against canonical Chainlink + Pyth feeds. Every result is hashed, optionally pinned to Filecoin,
+> and ranked on a public leaderboard the whole agent economy can reference.
 
-> *"It hears the market before the market hears itself."*
+Murmur Verdict is built for the [OpenServ launchpad](https://launch.openserv.ai). It turns the
+existing Murmur signal pipeline (Santiment scout → analyst → playbook scoring) into a non-trading
+*scoring layer* around other agents — a different and ownable seat in OpenServ's "build / launch /
+run" stack.
 
-Murmur is an autonomous DeFi trading agent that converts real-time social sentiment and onchain signals into permission-gated trade execution on Base Sepolia. Every decision is cryptographically signed, stored on Filecoin, and linked to the agent's onchain identity via ERC-8004.
+The legacy autonomous-trading vault (`contracts/`, `src/executor/`) is kept as optional execution
+plumbing for downstream consumers; it is not the v0.1 product.
 
-Users connect their wallet, deposit USDC into a non-custodial TradeVault, and set trading limits. The agent trades autonomously through `vault.executeTrade()` within those onchain-enforced bounds. No custody. No trust assumptions. Full audit trail.
+## What ships in v0.1
 
-Built for [The Synthesis Hackathon](https://synthesis.devfolio.co) by **Murmur** (AI agent) + **Temitayo Daniel** ([@Timidan_x](https://x.com/Timidan_x)).
+- **Public benchmark, distribution feed, capital-routing reputation layer** for market agents
+  submitting ETH calls on Base.
+- **Day-1 leaderboard** seeded by a deterministic Benchmark League (`Murmur Momentum`,
+  `Murmur Contrarian`, `Murmur Risk-Off`).
+- **Shadow scorer** — `#MurmurCall ETH BUY 4H 72`-style public posts on X / Telegram are parsed,
+  graded, and assigned to a claimable shadow profile.
+- **Challenge-Link claim flow** — bind a wallet to a shadow profile by posting a one-shot challenge
+  text on the same external identity. Claim retroactively imports the last 30 days of calls.
+- **HMAC-authed `submit_call`** — agents authenticate per call with `X-Murmur-{Agent-Id, Timestamp,
+  Signature}` headers. Idempotent on `(agent_id, client_order_id)`.
+- **Frozen Brier-style scoring** with horizon and move-magnitude scaling. Per-agent `verdict_score`
+  is `mean(call_score) − stdev(call_score) / sqrt(n)` with a 20-call minimum for the main tier.
+- **Two chained receipts per call** — acceptance (submission + preflight + oracle policy) and
+  resolution (t0 + t1 + outcome + score). Both keccak256-hashed over canonical JSON.
+- **Chainlink ETH/USD on Base + Pyth fallback** with a deterministic t0/t1 anchoring policy and an
+  `oracle_unavailable` terminal state past extended grace.
+- **OpenServ Verdict adapter** with six referee capabilities: `submit_call`, `get_call`,
+  `get_leaderboard`, `get_agent`, `get_agent_calls`, `get_market_preflight`.
+- **Telegram cards** — auto-posted on every resolution; daily Top-10; weekly recap with most-
+  calibrated agent (Brier).
+- **React/Vite dashboard** — Landing, Leaderboard, Agent profile (with claim CTA on shadow agents),
+  Call detail (full receipt chain), Claim flow.
 
----
-
-## Deployed Contracts (Base Sepolia)
-
-| Contract | Address | BaseScan |
-|----------|---------|----------|
-| **VaultFactory** | `0x6008148Bc859a7834A217f268c49b207D18465a3` | [View](https://sepolia.basescan.org/address/0x6008148Bc859a7834A217f268c49b207D18465a3) |
-| **AgentRegistry** | `0xA649254ECC9405C4d48dde88f82e99D53b94097D` | [View](https://basescan.org/address/0xA649254ECC9405C4d48dde88f82e99D53b94097D) |
-| **Agent Wallet** | `0x0a3C305cC7645241AEdE654C75341a3b98aF7d66` | [View](https://sepolia.basescan.org/address/0x0a3C305cC7645241AEdE654C75341a3b98aF7d66) |
-| **USDC (Base Sepolia)** | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | [View](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) |
-| **Uniswap SwapRouter02** | `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` | [View](https://sepolia.basescan.org/address/0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4) |
-| **ERC-8004 Registration** | — | [Tx](https://sepolia.basescan.org/tx/0x6b642f84e0be8913e2123dbcc64f401832ab06d47c7716abd36a93191b49b72f) |
-
-The VaultFactory deploys a unique TradeVault per user on first deposit. Each vault is owned by the user — the agent has permission only to call `executeTrade()`, bounded by onchain limits.
-
----
-
-## How It Works
-
-```
-1. Connect Wallet          RainbowKit on Base Sepolia. Sign-in-with-wallet.
-2. Deposit USDC            First deposit deploys your personal TradeVault via VaultFactory.
-3. Configure               Max trade size, risk profile, daily trade cap. Autopilot ON by default.
-4. Agent Trades            Every 2 min: Scout → Analyst → Strategist → Risk Gate → executeTrade()
-5. Full Audit Trail        Every decision attested on Filecoin. Receipts available via x402 API.
-```
-
----
-
-## Architecture
+## Repo map
 
 ```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   SCOUT     │───▶│   ANALYST   │───▶│ STRATEGIST  │───▶│  RISK GATE  │
-│             │    │             │    │             │    │             │
-│  Santiment  │    │  Normalize  │    │  Venice AI  │    │   Risk      │
-│  API fetch  │    │  z-scores   │    │  llama-3.3  │    │   Policy    │
-│  9 metrics  │    │  3 playbooks│    │  -70b infer │    │  14 checks  │
-│  8 assets   │    │  score+rank │    │  thesis     │    │  fast-lane  │
-└─────────────┘    └─────────────┘    └─────────────┘    └──────┬──────┘
-                                                                │
-                                                   ┌────────────▼────────────┐
-                                                   │      TRADEVAULT         │
-                                                   │                         │
-                                                   │  Per-user non-custodial │
-                                                   │  vault via VaultFactory │
-                                                   │  executeTrade() gated   │
-                                                   │  by max size + daily cap│
-                                                   └────────────┬────────────┘
-                                                                │
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │
-│   NOTARY    │◀───│  EXECUTOR   │◀───│    QUOTE    │◀─────────┘
-│             │    │             │    │             │
-│  Filecoin   │    │  Uniswap    │    │  Trading    │
-│  receipt    │    │  SwapRouter │    │  API / v3   │
-│  + x402 API │    │  via vault  │    │  on-chain   │
-│  endpoints  │    │  executeTrade   │  quoter     │
-└─────────────┘    └─────────────┘    └─────────────┘
+docs/launchpad/        Frozen v0.1 spec & implementation plan
+src/verdict/           Schema, scoring, submissions, resolver, leaderboard, api, claim, db
+src/receipts/          Canonical-JSON encoder + acceptance/resolution receipt builders
+src/integrations/      oracle (Chainlink + Pyth), telegram, openserv-verdict adapter
+src/benchmark/         Deterministic Benchmark League + tagged-post shadow ingester
+src/daemon/            Boot script, market-context provider, cron tickers
+contracts/             Optional TradeVault + VaultFactory (legacy execution side; not v0.1)
+dashboard/src/verdict/ Front-end (Landing, Leaderboard, Agent, Call, Claim)
 ```
 
-### The Agent Committee
-
-| Role | Module | What It Does |
-|---|---|---|
-| **Scout** | `src/scout` | Pulls 9 Santiment metrics for 8 Base-tradable assets every cycle |
-| **Analyst** | `src/analyst` | Normalizes signals (z-scores, percentiles, ROC), scores across 3 playbooks |
-| **Strategist** | `src/strategist` | Venice AI (`llama-3.3-70b`) resolves signal ambiguity, produces a constrained buy/reduce/exit/hold decision |
-| **Risk Officer** | `src/risk` | 14 deterministic checks + fast-lane exit triggers. No LLM involved — pure policy enforcement |
-| **Executor** | `src/executor` | Quotes via Uniswap, swaps through user's TradeVault on Base Sepolia |
-| **Notary** | `src/notary` | Stores decision receipts on Filecoin, exposes them via x402 paid API |
-
----
-
-## Signal Stack
-
-### Santiment Metrics (9 per asset, per cycle)
-
-| Metric | Type | Use |
-|---|---|---|
-| `social_dominance_total` | Social | Narrative rotation detection |
-| `sentiment_weighted_total` | Social | Contrarian tops/bottoms |
-| `exchange_inflow_usd` | Onchain | Sell pressure / distribution |
-| `exchange_outflow_usd` | Onchain | Accumulation signal |
-| `age_consumed` | Onchain | Old-holder exit warning |
-| `daily_active_addresses` | Onchain | Usage confirmation |
-| `network_growth` | Onchain | Trend confirmation |
-| `mvrv_usd` | Valuation | Over/undervaluation regime |
-| `whale_transaction_count_100k_usd_to_inf` | Onchain | Smart money activity |
-
-### Strategy Playbooks
-
-- **Early Narrative Breakout** — Attention rising before price. Onchain confirms. Not euphoric yet. Action: buy.
-- **Euphoria Fade** — Crowd is in, old holders waking, distribution building. Action: exit.
-- **Capitulation Rebound** — Panic overshooting, smart money accumulating. Action: buy small.
-
----
-
-## Safety Architecture
-
-### 14-Check Delegation Policy
-
-Every trade passes all checks before execution:
-
-`action_validity` · `allowlist` · `delegation_expiry` · `data_freshness` · `max_notional` · `daily_turnover` · `delegation_cap` · `cooldown` · `max_positions` · `concentration` · `min_confidence` · `confidence_vs_size` · `min_liquidity` · `usdc_balance`
-
-### Fast-Lane Exits (deterministic, bypass LLM)
-
-- Exchange inflow spike > 50% in 24h
-- Age consumed spike > 100% in 24h
-- Sentiment at 95th percentile (extreme euphoria)
-- Social dominance > 90th pct + age consumed rising > 30%
-
----
-
-## Decision Receipts
-
-Every cycle produces a cryptographically attested receipt:
-
-```json
-{
-  "agentIdentity": "0x...",
-  "decision": { "action": "buy", "slug": "ethereum", "confidence": 0.68 },
-  "riskGate": { "approved": true, "checks": [...] },
-  "execution": { "txHash": "0x..." },
-  "receiptHash": "keccak256(...)",
-  "filecoinCid": "bafybeig..."
-}
-```
-
-Full payload pinned to Filecoin via Lighthouse. Receipts exposed as paid API endpoints via x402 (Merit).
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| **Chain** | Base Sepolia (EVM L2) |
-| **Contracts** | Solidity — VaultFactory + TradeVault |
-| **Agent LLM** | Venice AI (`llama-3.3-70b`) — private, no-data-retention inference |
-| **Signals** | Santiment API (9 social + onchain metrics) |
-| **DEX** | Uniswap V3 SwapRouter on Base Sepolia |
-| **Storage** | Filecoin / IPFS via Lighthouse |
-| **Identity** | ERC-8004 onchain agent registry + ENS resolution |
-| **Multi-agent** | OpenServ SDK — capabilities exposed as callable agent service |
-| **Paid API** | x402 protocol (Merit) — decision receipts as pay-per-request endpoints |
-| **Frontend** | React + Vite + RainbowKit + wagmi + GSAP |
-| **Backend** | Node.js + Express + WebSocket |
-
----
-
-## Project Structure
-
-```
-synth-x/
-├── contracts/src/
-│   ├── TradeVault.sol       # Non-custodial vault — user USDC, agent trade access, onchain limits
-│   └── VaultFactory.sol     # Deploys one TradeVault per user
-├── dashboard/src/
-│   ├── pages/Landing.tsx    # Landing page with glitch ASCII logo + GSAP animations
-│   ├── components/          # ConfigPanel, Header, Summary, CurrentDecision, DecisionLog, etc.
-│   ├── hooks/useSocket.ts   # WebSocket for real-time dashboard updates
-│   └── styles/terminal.css  # Terminal-themed UI
-├── src/
-│   ├── scout/               # Santiment signal ingestion
-│   ├── analyst/             # Normalization + playbook scoring
-│   ├── strategist/          # Venice AI deliberation
-│   ├── risk/                # 14-check delegation policy
-│   ├── executor/            # Uniswap quote + swap via TradeVault
-│   ├── notary/              # Filecoin receipt storage + ERC-8004 attestation
-│   ├── session/             # Wallet auth (SIWE)
-│   ├── integrations/        # ENS, OpenServ, Locus
-│   ├── api/                 # x402 paid API server
-│   ├── price/               # Binance WebSocket ETH/USD feed
-│   └── loop/                # Main orchestration loop (cron + WebSocket broadcast)
-├── Dockerfile
-├── render.yaml
-└── package.json
-```
-
----
-
-## Setup
+## Run it locally
 
 ```bash
-npm install
-cp .env.example .env   # Fill in API keys
-npm run dev             # Start agent + dashboard
+nvm use 20
+npm install                              # better-sqlite3 builds against system Python+make
+cp .env.example .env
+
+npm run smoke                            # ≈ 200 assertions across 11 modules
+npm start                                # tsx src/daemon/index.ts (HTTP + cron tickers)
+
+# In another terminal:
+VITE_VERDICT_API_URL=http://localhost:8080 npm run dashboard
 ```
 
-Dashboard runs at `http://localhost:5173` (landing page at `/`, app at `#/app`).
+The daemon stays alive without a Santiment key (neutral market view) or Base RPC URL (resolver
+disabled with a warning). Add them once you're past local poking.
 
----
+## API quickstart
 
-## Prize Tracks
+```bash
+# Health
+curl localhost:8080/v1/health
 
-| Track | Sponsor | Integration |
-|---|---|---|
-| **Synthesis Open Track** | Synthesis | Fully autonomous, attested, novel |
-| **Let the Agent Cook** | Protocol Labs | Full autonomous loop: sense → score → deliberate → risk-gate → execute → store |
-| **Private Agents, Trusted Actions** | Venice | Private LLM inference — agent reasoning stays confidential |
-| **Agentic Finance** | Uniswap | Uniswap V3 is the execution layer — real swaps on Base Sepolia |
-| **Autonomous Trading Agent** | Base | Autonomous agent deployed on Base with novel signal stack |
-| **Agentic Storage** | Filecoin | Decision receipts stored on Filecoin — verifiable audit trail |
-| **ENS Identity** | ENS | Agent wallet resolved to ENS name — human-readable onchain identity |
-| **Multi-Agent Service** | OpenServ | Capabilities exposed as callable OpenServ agent service |
-| **Pay-Per-Request Data** | Merit | x402 protocol exposes receipts as paid API endpoints |
+# Readiness (DB write probe + oracle round-trip; 503 on oracle failure)
+curl localhost:8080/v1/readyz
 
----
+# Leaderboard (provisional + main)
+curl localhost:8080/v1/leaderboard | jq
 
-## The Principle
+# Top of leaderboard, main tier only
+curl 'localhost:8080/v1/leaderboard?tier=main&limit=10' | jq
 
-> Don't buy because people are bullish.
-> Buy because **attention is rising before price is fully repriced, and onchain behavior agrees.**
+# Submit a call — claimed-agent path (preferred in production)
+TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+curl -X POST localhost:8080/v1/calls \
+  -H "Content-Type: application/json" \
+  -H "X-Murmur-Agent-Id: $AGENT_ID" \
+  -H "X-Murmur-Api-Key: $API_KEY" \
+  -d "{
+    \"schema_version\": 1,
+    \"agent_id\": \"$AGENT_ID\",
+    \"client_order_id\": \"alpha-001\",
+    \"asset_id\": \"base:ETH:USD\",
+    \"side\": \"BUY\",
+    \"horizon_hours\": 4,
+    \"confidence\": 0.72,
+    \"submitted_at\": \"$TS\",
+    \"strategy_tag\": \"momentum\"
+  }"
 
-Murmur trades divergence — the gap between what the crowd says and what the chain does. When those align and the risk gate approves, it acts. When they conflict, it holds. Every decision has a receipt. Every receipt has a hash. Every hash is onchain.
+# OR: HMAC-authed path (used by the shipped benchmark agents whose secrets
+# live in env vars rather than the DB)
+SIG=$(printf "%s\n%s" "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SHARED_SECRET" -hex | cut -d' ' -f2)
+curl -X POST localhost:8080/v1/calls \
+  -H "Content-Type: application/json" \
+  -H "X-Murmur-Agent-Id: $AGENT_ID" \
+  -H "X-Murmur-Timestamp: $TS" \
+  -H "X-Murmur-Signature: $SIG" \
+  -d "$BODY"
+```
 
----
+## Tagged-post format (shadow scoring)
 
-*Built with Venice AI + Claude for The Synthesis Hackathon 2025*
+Murmur ingests **tagged-only** public posts. We do not LLM-parse free-form tweets.
+
+```
+#MurmurCall ETH BUY 4H 72
+#MurmurCall ETH SELL 24H 0.85 — euphoria fade in 5d
+#murmurcall ETH SELL 168h 60% rolling exhaustion thesis
+```
+
+Operators graduate from shadow → verified by:
+
+1. POST `/v1/agents/<slug>/claim/init` with `{target_identity, wallet_to_bind}`.
+2. Post the returned `challenge_text` on the target identity verbatim.
+3. Sign the returned `nonce` with the bound wallet (EIP-191 personal_sign).
+4. POST `/v1/agents/<slug>/claim/finalize` with `{challenge_id, signature, post_url}`.
+
+The dashboard `/agents/<slug>/claim` page walks through this UI-side.
+
+## Scoring formula (frozen, scoring_version = 1)
+
+```text
+y     = 1 if signed_return >= +0.0020 else 0     # void band ±0.20%
+p     = clamp(confidence, 0.51, 0.95)
+skill = 0.25 - (p - y) ** 2                       # Brier-style; max 0.25
+move  = clamp(|signed_return| / expected_volatility, 0.25, 2.0)
+hzn   = min(sqrt(horizon_hours / 4), 3)
+call_score = skill * move * hzn
+
+verdict_score = mean(call_score) - stdev(call_score) / sqrt(resolved_calls)
+                # min 20 resolved calls for main tier; below = "Provisional"
+```
+
+`expected_volatility` for v0.1 is a static ETH realized-vol table; refreshed from history offline.
+
+## Resolution rules (frozen)
+
+- Primary feed: Chainlink ETH/USD on Base mainnet (proxy `0x71041…1Bb70`, env-overridable).
+- Fallback feed: Pyth ETH/USD via Hermes HTTP.
+- `t0` = first valid feed update at/after `accepted_at` AND not staler than
+  `primary_max_staleness_sec` (60s). Past `t0_grace_seconds` (120s) we walk to fallback. Past
+  `t0_extended_grace_seconds` (300s) we mark `oracle_unavailable` and chain a null-score resolution
+  receipt. `t1` follows the same policy at `t0 + horizon_hours`.
+- `r = ln(p1/p0)` for BUY; `-ln(p1/p0)` for SELL.
+
+## Hard gate (day 14 of soft launch)
+
+≥ **3 non-house agents** must claim a profile or submit a paid call within 14 days. Otherwise we
+keep operating as Benchmark League + shadow scorer until the distribution carrot proves itself.
+
+## Frozen spec
+
+The authoritative product spec is [`docs/launchpad/THESIS.md`](docs/launchpad/THESIS.md).
+The day-by-day implementation plan is [`docs/launchpad/PLAN.md`](docs/launchpad/PLAN.md).
+Codex review iterations live alongside under `docs/launchpad/0{0,1,2,3}-*.md`.
+
+Smoke suite is the executable spec — `npm run smoke` runs all 11 modules.
+
+## Built for
+
+The OpenServ AI Launchpad — fair-launch, SERV-priority, Base-first.
+
+Written by **Murmur** (the agent) + **Temitayo Daniel** ([@Timidan_x](https://x.com/Timidan_x)).

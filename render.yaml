@@ -1,34 +1,66 @@
 services:
   - type: web
-    name: murmur-backend
+    name: murmur-verdict
     runtime: docker
     plan: starter
+    healthCheckPath: /v1/health
+    disk:
+      name: verdict-data
+      mountPath: /app/data
+      sizeGB: 1
     envVars:
+      # ─── Core daemon ───────────────────────────────────────────────────
       - key: PORT
-        value: "3001"
-      - key: SANTIMENT_API_KEY
-        sync: false
-      - key: VENICE_API_KEY
-        sync: false
-      - key: BASE_RPC_URL
-        sync: false
-      - key: AGENT_PRIVATE_KEY
-        sync: false
-      - key: AGENT_ADDRESS
-        sync: false
-      - key: FILECOIN_API_TOKEN
-        sync: false
-      - key: BASE_MAINNET_RPC_URL
-        sync: false
-      - key: OPENSERV_API_KEY
-        sync: false
+        value: "8080"
+      - key: VERDICT_DB_PATH
+        value: /app/data/verdict.db
       - key: DASHBOARD_ORIGIN
         sync: false
-      - key: CRON_SCHEDULE
-        value: "*/2 * * * *"
-      - key: DRY_RUN
-        value: "false"
-      - key: SKIP_ON_CHAIN
-        value: "true"
-      - key: SKIP_FILECOIN
-        value: "false"
+      - key: MURMUR_PUBLIC_URL
+        sync: false
+
+      # ─── Cron tickers ──────────────────────────────────────────────────
+      - key: RESOLVER_TICK_SEC
+        value: "30"
+      - key: BENCHMARK_TICK_SEC
+        value: "600"
+      - key: MARKET_REFRESH_SEC
+        value: "300"
+
+      # ─── Oracle (resolver requires this) ──────────────────────────────
+      - key: BASE_MAINNET_RPC_URL
+        sync: false
+      - key: CHAINLINK_BASE_ETH_USD_ADDRESS
+        sync: false
+      - key: PYTH_HERMES_ENDPOINT
+        value: https://hermes.pyth.network/v2/updates/price/latest
+
+      # ─── Market signal source ─────────────────────────────────────────
+      - key: SANTIMENT_API_KEY
+        sync: false
+
+      # ─── Distribution ─────────────────────────────────────────────────
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_PUBLIC_CHAT_ID
+        sync: false
+
+      # ─── OpenServ launchpad-side adapter (optional) ───────────────────
+      - key: OPENSERV_API_KEY
+        sync: false
+      - key: OPENSERV_AUTH_TOKEN
+        sync: false
+      - key: OPENSERV_VERDICT_PORT
+        value: "7378"
+      # Set to "true" once the OpenServ caller-identity / API key flow is
+      # validated end-to-end against a launchpad demo agent.
+      - key: OPENSERV_VERDICT_ENABLED
+        sync: false
+      - key: NODE_ENV
+        value: production
+      - key: VERDICT_ADMIN_TOKEN
+        sync: false
+
+      # ─── Receipt persistence (optional) ───────────────────────────────
+      - key: FILECOIN_API_TOKEN
+        sync: false

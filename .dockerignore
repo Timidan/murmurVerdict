@@ -1,6 +1,41 @@
+# Dependencies
 node_modules
-dashboard/dist
 dashboard/node_modules
-*.png
+
+# Build outputs
+dashboard/dist
+dist
+build
+out
+
+# Environment files
 .env
+.env.*
+*.env
+dashboard/.env
+dashboard/.env.*
+
+# VCS and editor state
 .git
+.gitignore
+.vscode
+.idea
+
+# Local/cache data
+.cache
+.turbo
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Docs and non-runtime assets
+docs
+contracts
+video
+*.md
+*.excalidraw
+
+# Local binary/media files
+*.png

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 500" width="1500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0a0a18"/>
+      <stop offset="100%" stop-color="#050510"/>
+    </linearGradient>
+  </defs>
+  <rect width="1500" height="500" fill="url(#bg)"/>
+
+  <line x1="174" y1="78" x2="1326" y2="78" stroke="#f472b6" stroke-opacity="0.25" stroke-width="2"/>
+  <line x1="174" y1="346" x2="1326" y2="346" stroke="#67e8f9" stroke-opacity="0.25" stroke-width="2"/>
+
+  <g filter="url(#glow)">
+    <g fill="#f472b6"><rect x="176" y="102" width="28" height="28"/><rect x="208" y="102" width="28" height="28"/><rect x="400" y="102" width="28" height="28"/><rect x="432" y="102" width="28" height="28"/><rect x="176" y="134" width="28" height="28"/><rect x="208" y="134" width="28" height="28"/><rect x="240" y="134" width="28" height="28"/><rect x="368" y="134" width="28" height="28"/><rect x="400" y="134" width="28" height="28"/><rect x="432" y="134" width="28" height="28"/><rect x="176" y="166" width="28" height="28"/><rect x="208" y="166" width="28" height="28"/><rect x="240" y="166" width="28" height="28"/><rect x="272" y="166" width="28" height="28"/><rect x="336" y="166" width="28" height="28"/><rect x="368" y="166" width="28" height="28"/><rect x="400" y="166" width="28" height="28"/><rect x="432" y="166" width="28" height="28"/></g>
+    <g fill="#67e8f9"><rect x="176" y="198" width="28" height="28"/><rect x="208" y="198" width="28" height="28"/><rect x="272" y="198" width="28" height="28"/><rect x="304" y="198" width="28" height="28"/><rect x="336" y="198" width="28" height="28"/><rect x="400" y="198" width="28" height="28"/><rect x="432" y="198" width="28" height="28"/><rect x="176" y="230" width="28" height="28"/><rect x="208" y="230" width="28" height="28"/><rect x="304" y="230" width="28" height="28"/><rect x="400" y="230" width="28" height="28"/><rect x="432" y="230" width="28" height="28"/><rect x="176" y="262" width="28" height="28"/><rect x="208" y="262" width="28" height="28"/><rect x="400" y="262" width="28" height="28"/><rect x="432" y="262" width="28" height="28"/><rect x="176" y="294" width="28" height="28"/><rect x="208" y="294" width="28" height="28"/><rect x="400" y="294" width="28" height="28"/><rect x="432" y="294" width="28" height="28"/></g>
+    <g fill="#a78bfa"><rect x="528" y="198" width="28" height="28"/><rect x="624" y="198" width="28" height="28"/><rect x="528" y="230" width="28" height="28"/><rect x="624" y="230" width="28" height="28"/><rect x="528" y="262" width="28" height="28"/><rect x="624" y="262" width="28" height="28"/><rect x="528" y="294" width="28" height="28"/><rect x="560" y="294" width="28" height="28"/><rect x="592" y="294" width="28" height="28"/><rect x="624" y="294" width="28" height="28"/><rect x="688" y="198" width="28" height="28"/><rect x="752" y="198" width="28" height="28"/><rect x="784" y="198" width="28" height="28"/><rect x="688" y="230" width="28" height="28"/><rect x="720" y="230" width="28" height="28"/><rect x="688" y="262" width="28" height="28"/><rect x="688" y="294" width="28" height="28"/><rect x="848" y="198" width="28" height="28"/><rect x="880" y="198" width="28" height="28"/><rect x="912" y="198" width="28" height="28"/><rect x="944" y="198" width="28" height="28"/><rect x="976" y="198" width="28" height="28"/><rect x="848" y="230" width="28" height="28"/><rect x="912" y="230" width="28" height="28"/><rect x="976" y="230" width="28" height="28"/><rect x="848" y="262" width="28" height="28"/><rect x="912" y="262" width="28" height="28"/><rect x="976" y="262" width="28" height="28"/><rect x="848" y="294" width="28" height="28"/><rect x="912" y="294" width="28" height="28"/><rect x="976" y="294" width="28" height="28"/><rect x="1040" y="198" width="28" height="28"/><rect x="1136" y="198" width="28" height="28"/><rect x="1040" y="230" width="28" height="28"/><rect x="1136" y="230" width="28" height="28"/><rect x="1040" y="262" width="28" height="28"/><rect x="1136" y="262" width="28" height="28"/><rect x="1040" y="294" width="28" height="28"/><rect x="1072" y="294" width="28" height="28"/><rect x="1104" y="294" width="28" height="28"/><rect x="1136" y="294" width="28" height="28"/><rect x="1200" y="198" width="28" height="28"/><rect x="1264" y="198" width="28" height="28"/><rect x="1296" y="198" width="28" height="28"/><rect x="1200" y="230" width="28" height="28"/><rect x="1232" y="230" width="28" height="28"/><rect x="1200" y="262" width="28" height="28"/><rect x="1200" y="294" width="28" height="28"/></g>
+  </g>
+
+  <text x="750" y="384" text-anchor="middle"
+        font-family="JetBrains Mono, Menlo, Consolas, monospace"
+        font-size="32" font-weight="600"
+        fill="#a78bfa" letter-spacing="14">LISTEN.  TRADE.  REPEAT.</text>
+</svg>

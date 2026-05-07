@@ -37,6 +37,14 @@ contract TradeVault {
 
     bool public paused;
 
+    /// @dev token address => whether the vault may trade this token
+    mapping(address => bool) public allowedTokens;
+
+    /// @dev Uniswap V3 fee tier => whether the vault may use this pool fee
+    mapping(uint24 => bool) public allowedFees;
+
+    bool private _locked;
+
     uint256 public maxTradeAmount;  // max per-trade in token decimals
     uint256 public dailyLimit;      // max daily spend in token decimals
     uint256 public dailySpent;      // running daily spend
@@ -51,6 +59,9 @@ contract TradeVault {
     event Paused();
     event Unpaused();
     event LimitsUpdated(uint256 maxTradeAmount, uint256 dailyLimit);
+    event TokenAllowlistUpdated(address indexed token, bool allowed);
+    event FeeAllowlistUpdated(uint24 indexed fee, bool allowed);
+    event EthWithdrawn(uint256 amount);
 
     // ─── Modifiers ──────────────────────────────────────────────────────────
 
@@ -69,6 +80,13 @@ contract TradeVault {
         _;
     }
 
+    modifier nonReentrant() {
+        require(!_locked, "Reentrant call");
+        _locked = true;
+        _;
+        _locked = false;
+    }
+
     // ─── Constructor ────────────────────────────────────────────────────────
 
     constructor(
@@ -76,11 +94,18 @@ contract TradeVault {
         address _agent,
         address _router,
         uint256 _maxTradeAmount,
-        uint256 _dailyLimit
+        uint256 _dailyLimit,
+        address[] memory _allowedTokens,
+        uint24[] memory _allowedFees
     ) {
         require(_owner != address(0), "Zero owner address");
         require(_agent != address(0), "Zero agent address");
         require(_router != address(0), "Zero router address");
+        require(_router.code.length > 0, "Router is not a contract");
+        require(_maxTradeAmount > 0, "Zero max trade amount");
+        require(_dailyLimit >= _maxTradeAmount, "Invalid daily limit");
+        require(_allowedTokens.length > 0, "No allowed tokens");
+        require(_allowedFees.length > 0, "No allowed fee tiers");
 
         owner = _owner;
         agent = _agent;
@@ -88,11 +113,33 @@ contract TradeVault {
         maxTradeAmount = _maxTradeAmount;
         dailyLimit = _dailyLimit;
         lastResetDay = block.timestamp / 1 days;
+
+        for (uint256 i = 0; i < _allowedTokens.length; i++) {
+            address token = _allowedTokens[i];
+            require(token != address(0), "Zero token address");
+            require(token.code.length > 0, "Token is not a contract");
+            require(!allowedTokens[token], "Duplicate token");
+            allowedTokens[token] = true;
+            emit TokenAllowlistUpdated(token, true);
+        }
+
+        for (uint256 i = 0; i < _allowedFees.length; i++) {
+            uint24 fee = _allowedFees[i];
+            require(_isSupportedFee(fee), "Unsupported fee tier");
+            require(!allowedFees[fee], "Duplicate fee tier");
+            allowedFees[fee] = true;
+            emit FeeAllowlistUpdated(fee, true);
+        }
     }
 
     // ─── Internal Safe ERC20 Helpers ────────────────────────────────────────
 
+    function _requireContract(address target, string memory message) private view {
+        require(target.code.length > 0, message);
+    }
+
     function _safeTransfer(address token, address to, uint256 amount) private {
+        _requireContract(token, "Token is not a contract");
         (bool success, bytes memory returndata) = token.call(
             abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
         );
@@ -103,6 +150,7 @@ contract TradeVault {
     }
 
     function _safeTransferFrom(address token, address from, address to, uint256 amount) private {
+        _requireContract(token, "Token is not a contract");
         (bool success, bytes memory returndata) = token.call(
             abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, amount)
         );
@@ -113,6 +161,8 @@ contract TradeVault {
     }
 
     function _safeApprove(address token, address spender, uint256 amount) private {
+        _requireContract(token, "Token is not a contract");
+        _requireContract(spender, "Spender is not a contract");
         (bool success, bytes memory returndata) = token.call(
             abi.encodeWithSelector(IERC20.approve.selector, spender, amount)
         );
@@ -125,19 +175,21 @@ contract TradeVault {
     // ─── Owner Functions ────────────────────────────────────────────────────
 
     /// @notice Deposit ERC20 tokens into the vault
-    function deposit(address token, uint256 amount) external {
+    function deposit(address token, uint256 amount) external onlyOwner nonReentrant {
+        require(amount > 0, "Zero deposit amount");
         _safeTransferFrom(token, msg.sender, address(this), amount);
         emit Deposited(token, amount);
     }
 
     /// @notice Withdraw tokens back to the owner
-    function withdraw(address token, uint256 amount) external onlyOwner {
+    function withdraw(address token, uint256 amount) external onlyOwner nonReentrant {
+        require(amount > 0, "Zero withdraw amount");
         _safeTransfer(token, owner, amount);
         emit Withdrawn(token, amount);
     }
 
     /// @notice Withdraw all of a token back to the owner
-    function withdrawAll(address token) external onlyOwner {
+    function withdrawAll(address token) external onlyOwner nonReentrant {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
             _safeTransfer(token, owner, balance);
@@ -159,15 +211,33 @@ contract TradeVault {
 
     /// @notice Update the authorized agent
     function setAgent(address _agent) external onlyOwner {
+        require(_agent != address(0), "Zero agent address");
         agent = _agent;
         emit AgentUpdated(_agent);
     }
 
     /// @notice Update trade limits
     function setLimits(uint256 _maxTradeAmount, uint256 _dailyLimit) external onlyOwner {
+        require(_maxTradeAmount > 0, "Zero max trade amount");
+        require(_dailyLimit >= _maxTradeAmount, "Invalid daily limit");
         maxTradeAmount = _maxTradeAmount;
         dailyLimit = _dailyLimit;
         emit LimitsUpdated(_maxTradeAmount, _dailyLimit);
+    }
+
+    /// @notice Allow or disallow an ERC20 token for agent-initiated swaps.
+    function setAllowedToken(address token, bool allowed) external onlyOwner {
+        require(token != address(0), "Zero token address");
+        _requireContract(token, "Token is not a contract");
+        allowedTokens[token] = allowed;
+        emit TokenAllowlistUpdated(token, allowed);
+    }
+
+    /// @notice Allow or disallow a Uniswap V3 fee tier for agent-initiated swaps.
+    function setAllowedFee(uint24 fee, bool allowed) external onlyOwner {
+        require(_isSupportedFee(fee), "Unsupported fee tier");
+        allowedFees[fee] = allowed;
+        emit FeeAllowlistUpdated(fee, allowed);
     }
 
     // ─── Agent Functions ────────────────────────────────────────────────────
@@ -184,7 +254,17 @@ contract TradeVault {
         uint256 amountIn,
         uint256 minAmountOut,
         uint24 fee
-    ) external onlyAgent whenNotPaused {
+    ) external onlyAgent whenNotPaused nonReentrant {
+        require(tokenIn != address(0), "Zero tokenIn address");
+        require(tokenOut != address(0), "Zero tokenOut address");
+        require(tokenIn != tokenOut, "Identical tokens");
+        require(amountIn > 0, "Zero trade amount");
+        require(minAmountOut > 0, "Zero min output");
+        require(allowedTokens[tokenIn], "tokenIn not allowed");
+        require(allowedTokens[tokenOut], "tokenOut not allowed");
+        require(allowedFees[fee], "Fee tier not allowed");
+        require(IERC20(tokenIn).balanceOf(address(this)) >= amountIn, "Insufficient balance");
+
         // Daily reset
         uint256 currentDay = block.timestamp / 1 days;
         if (currentDay > lastResetDay) {
@@ -199,7 +279,8 @@ contract TradeVault {
         // Update daily counter
         dailySpent += amountIn;
 
-        // Approve router to spend tokenIn
+        // Approve only the exact trade amount, then clear allowance after the swap.
+        _safeApprove(tokenIn, router, 0);
         _safeApprove(tokenIn, router, amountIn);
 
         // Execute the swap via Uniswap V3 exactInputSingle
@@ -214,6 +295,8 @@ contract TradeVault {
                 sqrtPriceLimitX96: 0
             })
         );
+
+        _safeApprove(tokenIn, router, 0);
 
         emit TradeExecuted(tokenIn, tokenOut, amountIn, amountOut);
     }
@@ -241,6 +324,32 @@ contract TradeVault {
         uint256 spent = currentDay > lastResetDay ? 0 : dailySpent;
         if (spent + amountIn > dailyLimit) return false;
         return true;
+    }
+
+    /// @notice Withdraw native ETH accidentally sent or force-sent to the vault.
+    function withdrawETH(uint256 amount) external onlyOwner nonReentrant {
+        require(amount > 0, "Zero ETH amount");
+        require(address(this).balance >= amount, "Insufficient ETH balance");
+
+        (bool success, ) = owner.call{value: amount}("");
+        require(success, "ETH transfer failed");
+
+        emit EthWithdrawn(amount);
+    }
+
+    /// @notice Withdraw all native ETH from the vault.
+    function withdrawAllETH() external onlyOwner nonReentrant {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No ETH balance");
+
+        (bool success, ) = owner.call{value: balance}("");
+        require(success, "ETH transfer failed");
+
+        emit EthWithdrawn(balance);
+    }
+
+    function _isSupportedFee(uint24 fee) private pure returns (bool) {
+        return fee == 100 || fee == 500 || fee == 3000 || fee == 10000;
     }
 
     // Allow receiving ETH

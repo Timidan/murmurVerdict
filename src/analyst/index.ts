@@ -5,7 +5,6 @@ import {
   type NormalizedMetric,
   type ScoredAsset,
   type PlaybookScore,
-  type StrategyPlaybook,
   type SantimentMetric,
   type TimeseriesPoint,
 } from "../types/index.js";
@@ -451,12 +450,6 @@ function scoreCapitulationRebound(n: NormalizedAssetSignals): PlaybookScore {
 }
 
 // ─── Composite Scoring ────────────────────────────────────────────────────────
-
-const PLAYBOOK_WEIGHTS: Record<StrategyPlaybook, number> = {
-  early_narrative_breakout: 1.0,
-  euphoria_fade: 0.9, // slightly lower — we prefer entries over exits for demo
-  capitulation_rebound: 0.8, // requires more signal confidence
-};
 
 /**
  * Score a single asset across all 3 playbooks and compute a composite score.
