@@ -301,15 +301,30 @@ export type HorizonHours = (typeof HORIZONS_HOURS)[number];
 // ─── SubmittedCall (agent-supplied) ──────────────────────────────────────────
 // Either `rationale` (≤ 240 chars) OR `strategy_tag` MUST be present. This is
 // enforced via .superRefine so spam-empty submissions are rejected at the edge.
+//
+// P3 — markets registry wiring (Codex D1):
+// Two wire shapes are accepted, exactly one per submission:
+//   (legacy)  { asset_id, horizon_hours, ... }    — pre-P3 agents, benchmarks
+//   (market)  { market_id,                ... }   — new agents, multi-asset
+// Both shapes hash deterministically into the request body for v2 receipts;
+// the daemon must NOT mutate the wire payload before computing request_hash.
+// Schema-version stays 1 — no schema_version bump needed (Codex P3 D1).
 
 export const SubmittedCallSchema = z
   .object({
     schema_version: z.literal(SCHEMA_VERSION),
     agent_id: z.string().uuid(),
     client_order_id: z.string().min(8).max(128),
-    asset_id: AssetIdSchema,
+    // Legacy tuple — optional in v0.2.5+ wire shape; required only when
+    // market_id is absent. AssetIdSchema enum is closed; new assets land
+    // via the markets registry, not by extending this enum.
+    asset_id: AssetIdSchema.optional(),
+    horizon_hours: HorizonHoursSchema.optional(),
+    // New shape — registry-driven market identity. Submissions on new
+    // assets (BTC, SOL, BNB) and new horizons (5m/15m) go through this
+    // path. Daemon rejects market_id targeting a non-listed market.
+    market_id: MarketIdSchema.optional(),
     side: SideSchema,
-    horizon_hours: HorizonHoursSchema,
     confidence: z.number().min(0.51).max(0.95),
     submitted_at: z.string().datetime({ offset: false }),
     rationale: z.string().max(240).optional(),
@@ -348,6 +363,37 @@ export const SubmittedCallSchema = z
         code: z.ZodIssueCode.custom,
         message: "salt is required when privacy_mode is 'committed'",
         path: ["salt"],
+      });
+    }
+    // P3 D1: exactly one of {market_id} XOR {asset_id + horizon_hours}.
+    const hasMarket = typeof v.market_id === "string";
+    const hasLegacy =
+      typeof v.asset_id === "string" && typeof v.horizon_hours === "number";
+    if (hasMarket && hasLegacy) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "supply EITHER market_id OR (asset_id + horizon_hours), never both",
+        path: ["market_id"],
+      });
+    }
+    if (!hasMarket && !hasLegacy) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "must supply market_id OR (asset_id + horizon_hours)",
+        path: ["market_id"],
+      });
+    }
+    if (
+      !hasMarket &&
+      typeof v.asset_id === "string" &&
+      typeof v.horizon_hours !== "number"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "horizon_hours required when asset_id is present (legacy shape)",
+        path: ["horizon_hours"],
       });
     }
   });

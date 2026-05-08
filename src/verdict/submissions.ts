@@ -18,7 +18,6 @@ import {
 } from "./schema.js";
 import {
   agentsRepo,
-  buildDedupKey,
   isUniqueViolation,
   submissionsRepo,
   usageRepo,
@@ -28,7 +27,20 @@ import { buildAcceptanceReceipt } from "../receipts/verdictReceipt.js";
 import { canonicalHash } from "../receipts/canonical.js";
 import { evaluateRisk, type MarketContext } from "./risk.js";
 import type { VerdictEventBus } from "./events.js";
-import { buildCommit, COMMIT_PREIMAGE_SCHEMA, REVEAL_GRACE_MS } from "./commit-preimage.js";
+import {
+  buildCommit,
+  buildMarketCommit,
+  COMMIT_PREIMAGE_SCHEMA,
+  MARKET_COMMIT_PREIMAGE_SCHEMA,
+  REVEAL_GRACE_MS,
+} from "./commit-preimage.js";
+import {
+  acceptsSubmissions,
+  buildMarketDedupKey,
+  perMarketDailyCap,
+  resolveMarketFromPayload,
+} from "./markets.js";
+import type { MarketRow } from "./db.js";
 
 /**
  * Privacy modes the v0.2 daemon accepts at submit. Codex Phase B review
@@ -184,9 +196,12 @@ export async function submitCall(args: {
       { issues: parsed.error.format() },
     );
   }
-  const submission: SubmittedCall = parsed.data;
+  const rawSubmission: SubmittedCall = parsed.data;
+  // Codex P3 D1: market_id-bearing payloads use the new commit-preimage
+  // schema; legacy (asset_id, horizon_hours) payloads keep the v0.2 schema.
+  const wireUsedMarketId = typeof rawSubmission.market_id === "string";
 
-  if (submission.agent_id !== identity.agent_id) {
+  if (rawSubmission.agent_id !== identity.agent_id) {
     throw new VerdictError(
       "agent_id in payload does not match auth identity",
       ERROR_CODES.agent_not_authorized,
@@ -204,7 +219,68 @@ export async function submitCall(args: {
     );
   }
 
-  // 3. idempotency on (agent_id, client_order_id)
+  // 3. P3 — resolve market from either wire shape, gate on listed status.
+  const market: MarketRow | null = resolveMarketFromPayload(db, {
+    market_id: rawSubmission.market_id,
+    asset_id: rawSubmission.asset_id,
+    horizon_hours: rawSubmission.horizon_hours,
+  } as Parameters<typeof resolveMarketFromPayload>[1]);
+  if (!market) {
+    usageRepo.emit(
+      db,
+      makeUsage(
+        identity.agent_id,
+        "submission_rejected",
+        { reason: "market_unknown" },
+        now,
+      ),
+    );
+    throw new VerdictError(
+      wireUsedMarketId
+        ? `unknown market_id: ${rawSubmission.market_id}`
+        : `unknown market for (asset_id=${rawSubmission.asset_id}, horizon_hours=${rawSubmission.horizon_hours})`,
+      ERROR_CODES.asset_not_supported,
+      404,
+      { reason: "market_unknown" },
+    );
+  }
+  if (!acceptsSubmissions(market)) {
+    usageRepo.emit(
+      db,
+      makeUsage(
+        identity.agent_id,
+        "submission_rejected",
+        { reason: "market_not_listed", market_id: market.market_id, status: market.status },
+        now,
+      ),
+    );
+    throw new VerdictError(
+      `market ${market.market_id} status=${market.status} (not accepting submissions)`,
+      ERROR_CODES.asset_not_supported,
+      400,
+      {
+        reason: "market_not_listed",
+        market_id: market.market_id,
+        market_status: market.status,
+      },
+    );
+  }
+
+  // P3: normalize the submission shape — fill in whichever side of the
+  // either/or wire shape is missing. Receipts, dedup, and persistence all
+  // see asset_id + horizon_hours + market_id populated. The ORIGINAL wire
+  // shape is preserved in `rawSubmission` for request_hash computation
+  // (committed-mode receipts) so a verifier can recanonicalize the agent's
+  // bytes without daemon mutation.
+  const horizonHoursFromMarket = Math.round(market.horizon_seconds / 3600);
+  const submission: SubmittedCall = {
+    ...rawSubmission,
+    market_id: market.market_id,
+    asset_id: market.asset_id as SubmittedCall["asset_id"],
+    horizon_hours: horizonHoursFromMarket as SubmittedCall["horizon_hours"],
+  };
+
+  // 4. idempotency on (agent_id, client_order_id)
   const existing = submissionsRepo.findByClientOrderId(
     db,
     identity.agent_id,
@@ -214,7 +290,10 @@ export async function submitCall(args: {
     return loadExistingAcceptedCall(db, existing.call_id, true);
   }
 
-  // 4. rate limits
+  // 5. rate limits — layered (Codex P3 D3):
+  //    a. global active per agent (5)
+  //    b. per-asset rolling 24h (24/asset/day, accepted_at-bound)
+  //    c. per-market rolling 24h (24 for legacy ETH, 12 for new markets)
   const activeCount = agentsRepo.countActiveCallsForAgent(db, identity.agent_id);
   if (activeCount >= SUBMISSION_LIMITS.max_active_calls_per_agent) {
     usageRepo.emit(db, makeUsage(identity.agent_id, "submission_rejected", { reason: "max_active" }, now));
@@ -227,31 +306,56 @@ export async function submitCall(args: {
   const since = new Date(now().getTime() - 24 * 60 * 60 * 1000)
     .toISOString()
     .replace(/\.\d+Z$/, "Z");
-  const todayCount = submissionsRepo.countCallsForAgentAssetWindow(
+  const todayAssetCount = submissionsRepo.countCallsForAgentAssetWindow(
     db,
     identity.agent_id,
-    submission.asset_id,
+    submission.asset_id!,
     since,
   );
-  if (todayCount >= SUBMISSION_LIMITS.max_calls_per_asset_per_day) {
-    usageRepo.emit(db, makeUsage(identity.agent_id, "submission_rejected", { reason: "daily_cap" }, now));
+  if (todayAssetCount >= SUBMISSION_LIMITS.max_calls_per_asset_per_day) {
+    usageRepo.emit(db, makeUsage(identity.agent_id, "submission_rejected", { reason: "daily_cap_asset" }, now));
     throw new VerdictError(
       `max ${SUBMISSION_LIMITS.max_calls_per_asset_per_day} calls per asset per day`,
       ERROR_CODES.rate_limited,
       429,
     );
   }
+  const perMarketCap = perMarketDailyCap(market.market_id);
+  const todayMarketCount = submissionsRepo.countCallsForAgentMarketWindow(
+    db,
+    identity.agent_id,
+    market.market_id,
+    since,
+  );
+  if (todayMarketCount >= perMarketCap) {
+    usageRepo.emit(
+      db,
+      makeUsage(
+        identity.agent_id,
+        "submission_rejected",
+        { reason: "daily_cap_market", market_id: market.market_id, cap: perMarketCap },
+        now,
+      ),
+    );
+    throw new VerdictError(
+      `max ${perMarketCap} calls/market/24h on ${market.market_id}`,
+      ERROR_CODES.rate_limited,
+      429,
+      { market_id: market.market_id, cap: perMarketCap },
+    );
+  }
 
-  // 5. dedup — uses SERVER time (accepted_at), not agent-supplied submitted_at,
+  // 6. dedup — uses SERVER time (accepted_at), not agent-supplied submitted_at,
   //    so an agent cannot replay the same call with different submitted_at
-  //    strings and slip past dedup on the wire.
+  //    strings and slip past dedup on the wire. Bucket size = max(300s,
+  //    horizon_seconds/4) per Codex P3 D2.
   const accepted_at = nowIso(now());
-  const dedup_key = buildDedupKey({
+  const dedup_key = buildMarketDedupKey({
     agent_id: identity.agent_id,
-    asset_id: submission.asset_id,
+    market_id: market.market_id,
     side: submission.side,
-    horizon_hours: submission.horizon_hours,
-    submitted_at_iso: accepted_at,
+    horizon_seconds: market.horizon_seconds,
+    accepted_at_iso: accepted_at,
   });
   const dup = submissionsRepo.findByDedupKey(db, dedup_key);
   if (dup) {
@@ -264,9 +368,12 @@ export async function submitCall(args: {
     );
   }
 
-  // 6. preflight via risk evaluator
-  const market = await ctx.marketContext(submission.asset_id);
-  const { preflight } = evaluateRisk(submission, market);
+  // 6. preflight via risk evaluator. P3: submission is post-normalization
+  // so asset_id is always populated; assert non-null for the legacy
+  // marketContext signature. evaluateRisk gets a MarketContext (the legacy
+  // ad-hoc shape); the new MarketRow stays in scope as `market`.
+  const marketCtx = await ctx.marketContext(submission.asset_id!);
+  const { preflight } = evaluateRisk(submission, marketCtx);
 
   // 7. build acceptance receipt
   const call_id = randomUUID();
@@ -348,19 +455,43 @@ export async function submitCall(args: {
     // be byte-stable — agents that uppercase the salt would otherwise
     // produce a different commit_hash than the daemon. Lowercase wins.
     const saltLower = submission.salt.toLowerCase();
-    const { commit_hash, preimage_canonical } = buildCommit({
-      call_id,
-      agent_wallet: issuingAgent.wallet_address,
-      chain_id: issuingAgent.chain_id,
-      side: submission.side,
-      asset_id: submission.asset_id,
-      horizon_hours: submission.horizon_hours,
-      confidence: submission.confidence,
-      salt: saltLower,
-      // D16: t0 is daemon-canonical accepted_at. Agent reconstructs the
-      // preimage from the response after the fact and verifies the hash.
-      t0: accepted_at,
-    });
+
+    // P3 D4: dispatch on the WIRE shape, not the normalized submission.
+    // Agents that submitted with explicit market_id get a v0.2.5 preimage
+    // (market_id + market_config_version). Legacy (asset_id, horizon_hours)
+    // payloads keep emitting the v0.2 schema so existing verifiers and
+    // already-published preimages stay byte-compatible.
+    let commit_hash: `0x${string}`;
+    let preimage_canonical: string;
+    let usedPreimageSchema: string;
+    if (wireUsedMarketId) {
+      ({ commit_hash, preimage_canonical } = buildMarketCommit({
+        call_id,
+        agent_wallet: issuingAgent.wallet_address,
+        chain_id: issuingAgent.chain_id,
+        side: submission.side,
+        market_id: market.market_id,
+        market_config_version: market.market_config_version,
+        confidence: submission.confidence,
+        salt: saltLower,
+        // D16: t0 is daemon-canonical accepted_at.
+        t0: accepted_at,
+      }));
+      usedPreimageSchema = MARKET_COMMIT_PREIMAGE_SCHEMA;
+    } else {
+      ({ commit_hash, preimage_canonical } = buildCommit({
+        call_id,
+        agent_wallet: issuingAgent.wallet_address,
+        chain_id: issuingAgent.chain_id,
+        side: submission.side,
+        asset_id: submission.asset_id!,
+        horizon_hours: submission.horizon_hours!,
+        confidence: submission.confidence,
+        salt: saltLower,
+        t0: accepted_at,
+      }));
+      usedPreimageSchema = COMMIT_PREIMAGE_SCHEMA;
+    }
     // Envelope plaintext = canonical preimage JSON + the not-committed
     // metadata (rationale, strategy_tag) per D18. Daemon decrypts at
     // fallback_after if the agent hasn't revealed; agent reveals
@@ -374,8 +505,10 @@ export async function submitCall(args: {
     const encrypted = await encryptEnvelope(ageCtx, envelopeBytes);
     // fallback_after = accepted_at + horizon + REVEAL_GRACE_MS (D17).
     // The constant is locked, not configurable — see commit-preimage.ts.
+    // P3: read horizon from the market row (not submission.horizon_hours)
+    // so sub-hour markets compute fallback correctly when they're listed.
     const fallback_after_ms =
-      now().getTime() + submission.horizon_hours * 3_600_000 + REVEAL_GRACE_MS;
+      now().getTime() + market.horizon_seconds * 1_000 + REVEAL_GRACE_MS;
     const fallback_after = new Date(fallback_after_ms)
       .toISOString()
       .replace(/\.\d+Z$/, "Z");
@@ -408,7 +541,14 @@ export async function submitCall(args: {
     // request_hash (D23) = keccak256 of canonical agent submission body.
     // Lets a verifier chain to an immutable input without trusting the
     // daemon to keep the request body around.
-    const request_hash = canonicalHash(submission);
+    //
+    // P3: use the RAW wire payload (pre-normalization) so a verifier
+    // re-canonicalizes exactly what the agent sent — never the daemon's
+    // synthesized fields. Agents who sent { market_id } get a request_hash
+    // over { market_id }; agents who sent { asset_id, horizon_hours } get
+    // a request_hash over the legacy tuple. Either reproduces from the
+    // agent's own bytes.
+    const request_hash = canonicalHash(rawSubmission);
     const v2payload = AcceptanceReceiptPayloadSchema.parse({
       schema_version: 2,
       scoring_version: SCORING_VERSION,
@@ -420,7 +560,7 @@ export async function submitCall(args: {
       commit: {
         hash: commit_hash,
         scheme: "keccak256",
-        preimage_schema: COMMIT_PREIMAGE_SCHEMA,
+        preimage_schema: usedPreimageSchema,
       },
       preflight,
       oracle_policy: oraclePolicy,
@@ -452,7 +592,7 @@ export async function submitCall(args: {
       encrypted_body_alg: encrypted.alg,
       encrypted_body_hash: encrypted.encrypted_body_hash,
       daemon_key_id: encrypted.daemon_key_id,
-      commit_preimage_schema: COMMIT_PREIMAGE_SCHEMA,
+      commit_preimage_schema: usedPreimageSchema,
       fallback_after,
       received_at: accepted_at,
       ...(drandEnvelope
@@ -465,10 +605,17 @@ export async function submitCall(args: {
         : {}),
     };
   } else {
+    // v1 (legacy_plaintext) receipts embed the submission verbatim. The
+    // wire schema rejects payloads carrying BOTH market_id and (asset_id,
+    // horizon_hours), so the embedded submission must keep the legacy
+    // shape only — strip market_id, leave asset_id + horizon_hours that
+    // were synthesized during normalization.
+    const v1Submission: SubmittedCall = { ...submission };
+    delete (v1Submission as { market_id?: string }).market_id;
     const v1payload = AcceptanceReceiptPayloadSchema.parse({
       schema_version: SCHEMA_VERSION,
       scoring_version: SCORING_VERSION,
-      submission,
+      submission: v1Submission,
       preflight,
       oracle_policy: oraclePolicy,
       accepted_at,
@@ -522,6 +669,8 @@ export async function submitCall(args: {
       },
       dedup_key,
       privacy_mode: privacyModeForRepo,
+      market_id: market.market_id,
+      market_config_version: market.market_config_version,
       ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
       ...(commitSchemeForRepo ? { commit_scheme: commitSchemeForRepo } : {}),
       ...(envelopeForRepo ? { envelope: envelopeForRepo } : {}),

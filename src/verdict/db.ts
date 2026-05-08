@@ -104,6 +104,12 @@ function applyMigrations(db: Database.Database): void {
     v = 8;
     set.run("schema_version", String(v));
   }
+
+  if (v < 9) {
+    db.exec(MIGRATION_009);
+    v = 9;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -596,6 +602,62 @@ const MIGRATION_008 = `
     ('bnb.7d',   'base:BNB:USD', 'direction_binary',  604800, 'pyth-base-bnb-usd', NULL, 30, NULL, 120, 300, '0.002', NULL, 'brier_direction', 1, 'draft', 'pyth-only', '2026-05-08T00:00:00Z');
 `;
 
+// ─── Migration 009 — backfill market_id on legacy ETH submissions ──────────
+//
+// Migration 008 added `submissions.market_id` as a nullable column. Phase 1
+// of the markets-registry wiring (P3) backfills the unambiguous mappings so
+// every read path can join on submissions.market_id directly without falling
+// back to legacyIdFor() at runtime.
+//
+// Backfill rule (Codex P3 D7):
+//   base:ETH:USD + horizon_hours=1   → market_id='eth.1h'
+//   base:ETH:USD + horizon_hours=4   → market_id='eth.4h'
+//   base:ETH:USD + horizon_hours=24  → market_id='eth.24h'
+//   base:ETH:USD + horizon_hours=168 → market_id='eth.7d'
+//
+// market_config_version is stamped from the market row at the time the
+// migration runs. This is intentional: the resolver / scoring path will
+// honor the per-submission stamp going forward, so a config bump after the
+// backfill date won't retroactively change how legacy calls are scored.
+//
+// Receipts / commit-preimages / envelopes are NOT touched. The legacy v1+v2
+// receipts already issued for these calls keep their original schemas and
+// hashes; they simply now point at a row that has a market_id alongside the
+// (asset_id, horizon_hours) tuple that's still in the receipt subject.
+const MIGRATION_009 = `
+  UPDATE submissions
+  SET
+    market_id = 'eth.1h',
+    market_config_version = (SELECT market_config_version FROM markets WHERE market_id = 'eth.1h')
+  WHERE market_id IS NULL
+    AND asset_id = 'base:ETH:USD'
+    AND horizon_hours = 1;
+
+  UPDATE submissions
+  SET
+    market_id = 'eth.4h',
+    market_config_version = (SELECT market_config_version FROM markets WHERE market_id = 'eth.4h')
+  WHERE market_id IS NULL
+    AND asset_id = 'base:ETH:USD'
+    AND horizon_hours = 4;
+
+  UPDATE submissions
+  SET
+    market_id = 'eth.24h',
+    market_config_version = (SELECT market_config_version FROM markets WHERE market_id = 'eth.24h')
+  WHERE market_id IS NULL
+    AND asset_id = 'base:ETH:USD'
+    AND horizon_hours = 24;
+
+  UPDATE submissions
+  SET
+    market_id = 'eth.7d',
+    market_config_version = (SELECT market_config_version FROM markets WHERE market_id = 'eth.7d')
+  WHERE market_id IS NULL
+    AND asset_id = 'base:ETH:USD'
+    AND horizon_hours = 168;
+`;
+
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
 //
 // Three things at once:
@@ -889,6 +951,11 @@ export interface AcceptanceWriteInput {
   privacy_mode?: string;
   commit_hash?: string;
   commit_scheme?: string;
+  /** P3 — market registry stamps. Both nullable for legacy plaintext flows
+   *  that haven't been backfilled (migration 009 covers ETH; future assets
+   *  populate at submit time). */
+  market_id?: string;
+  market_config_version?: number;
   envelope?: {
     encrypted_body: string;
     encrypted_body_alg: string;
@@ -918,11 +985,13 @@ export const submissionsRepo = {
          (call_id, agent_id, client_order_id, asset_id, side, horizon_hours,
           confidence, submitted_at, accepted_at, status, rationale, strategy_tag,
           schema_version, scoring_version, dedup_key,
-          privacy_mode, commit_hash, commit_scheme)
+          privacy_mode, commit_hash, commit_scheme,
+          market_id, market_config_version)
          VALUES (@call_id, @agent_id, @client_order_id, @asset_id, @side, @horizon_hours,
           @confidence, @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
           @schema_version, @scoring_version, @dedup_key,
-          @privacy_mode, @commit_hash, @commit_scheme)`,
+          @privacy_mode, @commit_hash, @commit_scheme,
+          @market_id, @market_config_version)`,
       ).run({
         call_id: i.accepted.call_id,
         agent_id: i.accepted.agent_id,
@@ -942,6 +1011,8 @@ export const submissionsRepo = {
         privacy_mode: i.privacy_mode ?? "legacy_plaintext",
         commit_hash: i.commit_hash ?? null,
         commit_scheme: i.commit_scheme ?? null,
+        market_id: i.market_id ?? null,
+        market_config_version: i.market_config_version ?? null,
       });
       prep(
         db,
@@ -1044,6 +1115,25 @@ export const submissionsRepo = {
       `SELECT COUNT(*) AS n FROM submissions
        WHERE agent_id = ? AND asset_id = ? AND submitted_at >= ?`,
     ).get(agent_id, asset_id, sinceIso) as { n: number } | undefined;
+    return row?.n ?? 0;
+  },
+
+  /**
+   * P3 D3: per-market rolling 24h count. Bound to accepted_at (server
+   * stamp), not submitted_at, so an agent can't backdate to slip past
+   * the cap. Includes legacy rows backfilled by migration 009.
+   */
+  countCallsForAgentMarketWindow(
+    db: Database.Database,
+    agent_id: string,
+    market_id: string,
+    sinceIso: string,
+  ): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS n FROM submissions
+       WHERE agent_id = ? AND market_id = ? AND accepted_at >= ?`,
+    ).get(agent_id, market_id, sinceIso) as { n: number } | undefined;
     return row?.n ?? 0;
   },
 

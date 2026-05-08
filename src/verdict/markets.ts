@@ -108,3 +108,107 @@ export function acceptsSubmissions(market: MarketRow): boolean {
 export function resolverShouldTick(market: MarketRow): boolean {
   return market.status !== "retired";
 }
+
+// ─── P3 — submit-time market resolution + dedup ─────────────────────────────
+
+/** Either of the two wire shapes a SubmittedCall can carry per Codex P3 D1. */
+export type MarketSelector =
+  | { market_id: string; asset_id?: string; horizon_hours?: number }
+  | { market_id?: undefined; asset_id: string; horizon_hours: number };
+
+/**
+ * Resolve a SubmittedCall payload to its MarketRow. Honors both wire shapes:
+ *   - `market_id` present → direct registry lookup
+ *   - legacy `(asset_id, horizon_hours)` only → synthesize via legacyIdFor
+ * Returns null when no market matches. Caller decides on the error shape
+ * (404 unknown market, 4xx draft market, etc.).
+ */
+export function resolveMarketFromPayload(
+  db: Database.Database,
+  payload: MarketSelector,
+): MarketRow | null {
+  if (payload.market_id) {
+    return marketsRepo.get(db, payload.market_id);
+  }
+  if (payload.asset_id && typeof payload.horizon_hours === "number") {
+    const synthesized = marketsRepo.legacyIdFor(
+      payload.asset_id,
+      payload.horizon_hours,
+    );
+    if (!synthesized) return null;
+    return marketsRepo.get(db, synthesized);
+  }
+  return null;
+}
+
+/**
+ * Dedup bucket size in seconds — Codex P3 D2. Floor at 5 minutes so 5m / 15m
+ * markets don't degrade dedup into a no-op spam control.
+ *
+ * | horizon | bucket |
+ * |---------|--------|
+ * | 5m      | 5m     |
+ * | 15m     | 5m     |
+ * | 1h      | 15m    |
+ * | 4h      | 1h     |
+ * | 24h     | 6h     |
+ * | 7d      | 42h    |
+ *
+ * Volume control belongs to the daily clamps; dedup only catches duplicate
+ * intent inside a coarse window.
+ */
+export const DEDUP_BUCKET_FLOOR_SECONDS = 300;
+export function computeDedupBucketSeconds(horizon_seconds: number): number {
+  return Math.max(
+    DEDUP_BUCKET_FLOOR_SECONDS,
+    Math.floor(horizon_seconds / 4),
+  );
+}
+
+/**
+ * New dedup key shape. Includes market_id (encodes asset + horizon) instead
+ * of carrying both, so the same call on (eth.1h vs eth.4h) buckets cleanly.
+ *
+ * For the four legacy ETH horizons, this produces the SAME bucket boundaries
+ * as the old buildDedupKey() — the bucket math is byte-stable for callers
+ * that already had market_id backfilled by migration 009.
+ */
+export function buildMarketDedupKey(args: {
+  agent_id: string;
+  market_id: string;
+  side: "BUY" | "SELL";
+  horizon_seconds: number;
+  /** Server-stamped accepted_at. NEVER use the agent-supplied submitted_at. */
+  accepted_at_iso: string;
+}): string {
+  const ms = Date.parse(args.accepted_at_iso);
+  if (Number.isNaN(ms)) {
+    throw new Error(
+      `buildMarketDedupKey: invalid accepted_at_iso '${args.accepted_at_iso}'`,
+    );
+  }
+  const bucketSec = computeDedupBucketSeconds(args.horizon_seconds);
+  const bucketMs = bucketSec * 1000;
+  const bucket = Math.floor(ms / bucketMs) * bucketMs;
+  return `${args.agent_id}|${args.market_id}|${args.side}|${bucket}`;
+}
+
+/**
+ * Phase-1 per-market daily cap (Codex P3 D3). Legacy ETH markets keep the
+ * pre-P3 effective cap (24/asset/day, which equals 24/market/day for ETH
+ * since ETH had one market per horizon). New markets get a tighter cap
+ * until we have telemetry to widen it.
+ *
+ * NOTE: this is in addition to the per-asset daily cap (24/asset/day) and
+ * the per-agent active cap (5). Sum across all of an asset's markets still
+ * has to fit under per-asset.
+ */
+const LEGACY_ETH_MARKETS = new Set([
+  "eth.1h",
+  "eth.4h",
+  "eth.24h",
+  "eth.7d",
+]);
+export function perMarketDailyCap(market_id: string): number {
+  return LEGACY_ETH_MARKETS.has(market_id) ? 24 : 12;
+}

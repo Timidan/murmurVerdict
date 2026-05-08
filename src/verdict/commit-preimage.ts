@@ -122,3 +122,88 @@ export function verifyCommitHash(
 ): boolean {
   return computeCommitHash(preimage).toLowerCase() === expected_hash.toLowerCase();
 }
+
+// ─── P3 — market-aware preimage (v0.2.5) ───────────────────────────────────
+//
+// Codex P3 D4: when a submission goes through the explicit market_id wire
+// shape, the commit preimage uses a NEW domain that drops asset_id +
+// horizon_hours and adds market_id + market_config_version. The legacy
+// domain stays unchanged; v1 preimages keep verifying byte-identically
+// after migration.
+//
+// "never reinterpret old commit preimages" — Codex risks. The two domains
+// are wire-distinct (different `domain` strings) so a verifier always
+// knows which schema it's matching. A v0.2 preimage will never collide
+// with a v0.2.5 preimage because the canonical JSON differs at byte 0.
+//
+// market_config_version: stamped into the preimage so a verifier can
+// reproduce the daemon's policy at acceptance time (oracle staleness,
+// void band, etc.). Bumping a market's config doesn't invalidate prior
+// commitments — the on-the-wire receipt carries the original version.
+
+export const MARKET_COMMIT_PREIMAGE_SCHEMA =
+  "murmur-verdict-v0.2.5-commit@1" as const;
+export const MARKET_COMMIT_PREIMAGE_VERSION = 1 as const;
+export const MARKET_COMMIT_PREIMAGE_DOMAIN =
+  "murmur-verdict-v0.2.5-commit" as const;
+
+export interface MarketCommitPreimage {
+  v: typeof MARKET_COMMIT_PREIMAGE_VERSION;
+  domain: typeof MARKET_COMMIT_PREIMAGE_DOMAIN;
+  call_id: string;
+  agent_wallet: string;
+  chain_id: string;
+  side: "BUY" | "SELL";
+  market_id: string;
+  market_config_version: number;
+  confidence: number;
+  salt: string;
+  t0: string;
+}
+
+export function buildMarketCommitPreimage(
+  input: Omit<MarketCommitPreimage, "v" | "domain">,
+): MarketCommitPreimage {
+  return {
+    v: MARKET_COMMIT_PREIMAGE_VERSION,
+    domain: MARKET_COMMIT_PREIMAGE_DOMAIN,
+    call_id: input.call_id,
+    agent_wallet: input.agent_wallet,
+    chain_id: input.chain_id,
+    side: input.side,
+    market_id: input.market_id,
+    market_config_version: input.market_config_version,
+    confidence: input.confidence,
+    salt: input.salt,
+    t0: input.t0,
+  };
+}
+
+export function computeMarketCommitHash(
+  preimage: MarketCommitPreimage,
+): `0x${string}` {
+  return canonicalHash(preimage);
+}
+
+export function buildMarketCommit(
+  input: Omit<MarketCommitPreimage, "v" | "domain">,
+): {
+  preimage: MarketCommitPreimage;
+  preimage_canonical: string;
+  commit_hash: `0x${string}`;
+} {
+  const preimage = buildMarketCommitPreimage(input);
+  const preimage_canonical = canonicalize(preimage);
+  const commit_hash = computeMarketCommitHash(preimage);
+  return { preimage, preimage_canonical, commit_hash };
+}
+
+export function verifyMarketCommitHash(
+  preimage: MarketCommitPreimage,
+  expected_hash: string,
+): boolean {
+  return (
+    computeMarketCommitHash(preimage).toLowerCase() ===
+    expected_hash.toLowerCase()
+  );
+}
