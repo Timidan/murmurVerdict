@@ -314,8 +314,21 @@ export type CallStatus = z.infer<typeof CallStatusSchema>;
 export const SideSchema = z.enum(["BUY", "SELL"]);
 export type Side = z.infer<typeof SideSchema>;
 
-export const HORIZONS_HOURS = [1, 4, 24, 168] as const;
+// Phase 2c relaxed the runtime CHECK on submissions.horizon_hours from
+// IN (1,4,24,168) to >= 0. Phase 2d adds 0 here as a sentinel meaning
+// "sub-hour market, canonical horizon is in horizon_seconds." The four
+// hour-aligned values stay valid; sub-hour callers stamp 0 so v1 receipt
+// subjects (which embed SubmittedCallSchema) parse without conditional
+// schema selection.
+//
+// Note: scoring (see scoring.ts::scoreCall) still uses horizon_hours for
+// the Brier formula. For 0-stamped sub-hour calls the score falls back
+// to the smallest available bucket (1h vol → 0.006). Phase 2e will route
+// scoring through horizon_seconds; until then, sub-hour markets are
+// best treated as unranked.
+export const HORIZONS_HOURS = [0, 1, 4, 24, 168] as const;
 export const HorizonHoursSchema = z.union([
+  z.literal(0),
   z.literal(1),
   z.literal(4),
   z.literal(24),
@@ -447,12 +460,22 @@ export type VerdictPreflight = z.infer<typeof VerdictPreflightSchema>;
 // derivePolicyFromMarket() — receipts for non-ETH markets carry their own
 // feeds, not synthesized ETH. Existing v1 receipts already issued only
 // referenced ETH feeds, which still pass the wider enum.
+//
+// P3 Phase 2d: fallback_feed + fallback_max_staleness_sec are optional.
+// Codex's audit recommended sub-hour markets be Pyth-only (Chainlink Base
+// heartbeat is too coarse for 5m/15m horizons). For markets without a
+// fallback configured (eth.5m, eth.15m, BNB at every horizon), receipts
+// omit those fields entirely. Verifiers reading existing v1 receipts with
+// both fields keep parsing — the .strict() schema accepts the additional
+// fields when they were stamped, and accepts their absence for new
+// sub-hour calls. The pair is enforced together via superRefine: either
+// BOTH fallback fields are present or NEITHER is.
 export const T0PolicySchema = z
   .object({
     primary_feed: OracleFeedSchema,
-    fallback_feed: OracleFeedSchema,
+    fallback_feed: OracleFeedSchema.optional(),
     primary_max_staleness_sec: z.number().int().positive(),
-    fallback_max_staleness_sec: z.number().int().positive(),
+    fallback_max_staleness_sec: z.number().int().positive().optional(),
     t0_grace_seconds: z.number().int().positive(),
     t0_extended_grace_seconds: z.number().int().positive(),
   })
@@ -463,6 +486,19 @@ export const T0PolicySchema = z
         code: z.ZodIssueCode.custom,
         message: "t0_extended_grace_seconds must be ≥ t0_grace_seconds",
         path: ["t0_extended_grace_seconds"],
+      });
+    }
+    // Phase 2d: fallback fields travel as a pair. Permitting one without
+    // the other would leave the resolver in an undefined state when it
+    // walks past primary grace.
+    const hasFallbackFeed = v.fallback_feed !== undefined;
+    const hasFallbackStaleness = v.fallback_max_staleness_sec !== undefined;
+    if (hasFallbackFeed !== hasFallbackStaleness) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "fallback_feed and fallback_max_staleness_sec must both be present, or both absent",
+        path: ["fallback_feed"],
       });
     }
   });

@@ -431,10 +431,20 @@ export class Resolver {
     if (args.elapsedSec > args.policy.t0_extended_grace_seconds) {
       return { kind: "oracle_unavailable" };
     }
-    const useFallback = args.elapsedSec > args.policy.t0_grace_seconds;
-    const feed = useFallback ? args.policy.fallback_feed : args.policy.primary_feed;
+    // Phase 2d: T0Policy fallback fields are optional. For sub-hour Pyth-only
+    // markets we have no second oracle to walk to — keep retrying primary
+    // until t0_extended_grace_seconds expires, then mark oracle_unavailable.
+    // Past primary grace WITH a configured fallback, switch to fallback.
+    const wantFallback = args.elapsedSec > args.policy.t0_grace_seconds;
+    const fallbackConfigured =
+      args.policy.fallback_feed !== undefined &&
+      args.policy.fallback_max_staleness_sec !== undefined;
+    const useFallback = wantFallback && fallbackConfigured;
+    const feed = useFallback
+      ? args.policy.fallback_feed!
+      : args.policy.primary_feed;
     const maxStaleness = useFallback
-      ? args.policy.fallback_max_staleness_sec
+      ? args.policy.fallback_max_staleness_sec!
       : args.policy.primary_max_staleness_sec;
     let obs: OracleObservation;
     try {
@@ -653,13 +663,22 @@ export class Resolver {
   private policyFromCtx(
     ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>,
   ): T0Policy {
+    // Phase 2d: ctx.fallback_feed / fallback_max_staleness_sec are nullable.
+    // T0Policy uses the optional shape — both fields go missing together
+    // for sub-hour Pyth-only markets.
     return {
       primary_feed: ctx.primary_feed as T0Policy["primary_feed"],
-      fallback_feed: ctx.fallback_feed as T0Policy["fallback_feed"],
       primary_max_staleness_sec: ctx.primary_max_staleness_sec,
-      fallback_max_staleness_sec: ctx.fallback_max_staleness_sec,
       t0_grace_seconds: ctx.t0_grace_seconds,
       t0_extended_grace_seconds: ctx.t0_extended_grace_seconds,
+      ...(ctx.fallback_feed !== null && ctx.fallback_max_staleness_sec !== null
+        ? {
+            fallback_feed: ctx.fallback_feed as NonNullable<
+              T0Policy["fallback_feed"]
+            >,
+            fallback_max_staleness_sec: ctx.fallback_max_staleness_sec,
+          }
+        : {}),
     };
   }
 

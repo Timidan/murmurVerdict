@@ -116,6 +116,12 @@ function applyMigrations(db: Database.Database): void {
     v = 10;
     set.run("schema_version", String(v));
   }
+
+  if (v < 11) {
+    db.exec(MIGRATION_011);
+    v = 11;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -760,6 +766,51 @@ const MIGRATION_010 = `
   PRAGMA foreign_keys = ON;
 `;
 
+// ─── Migration 011 — oracle_policies fallback columns nullable ─────────────
+//
+// Phase 2d unlock: sub-hour markets are Pyth-only (Codex audit — Chainlink
+// Base heartbeat is too coarse for 5m/15m horizons). T0PolicySchema now
+// permits omitted fallback fields, but the per-call oracle_policies row
+// still has fallback_feed + fallback_max_staleness_sec NOT NULL from
+// migration 001. Rebuild the table to allow NULLs, preserving every
+// existing row's data byte-identically (all hour-aligned ETH calls have
+// real fallback values; the relaxation only matters for new sub-hour
+// calls).
+//
+// Same FK-cascade pattern as migrations 005 + 010: PRAGMA foreign_keys
+// off, copy, drop, rename, indexes, on. oracle_policies has no
+// dependent tables that reference IT (only submissions has dependents),
+// so this is a clean rebuild.
+const MIGRATION_011 = `
+  PRAGMA foreign_keys = OFF;
+
+  CREATE TABLE oracle_policies_v2 (
+    call_id                       TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    primary_feed                  TEXT NOT NULL,
+    fallback_feed                 TEXT,
+    primary_max_staleness_sec     INTEGER NOT NULL,
+    fallback_max_staleness_sec    INTEGER,
+    t0_grace_seconds              INTEGER NOT NULL,
+    t0_extended_grace_seconds     INTEGER NOT NULL
+  );
+
+  INSERT INTO oracle_policies_v2 (
+    call_id, primary_feed, fallback_feed,
+    primary_max_staleness_sec, fallback_max_staleness_sec,
+    t0_grace_seconds, t0_extended_grace_seconds
+  )
+  SELECT
+    call_id, primary_feed, fallback_feed,
+    primary_max_staleness_sec, fallback_max_staleness_sec,
+    t0_grace_seconds, t0_extended_grace_seconds
+  FROM oracle_policies;
+
+  DROP TABLE oracle_policies;
+  ALTER TABLE oracle_policies_v2 RENAME TO oracle_policies;
+
+  PRAGMA foreign_keys = ON;
+`;
+
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
 //
 // Three things at once:
@@ -1150,7 +1201,19 @@ export const submissionsRepo = {
           fallback_max_staleness_sec, t0_grace_seconds, t0_extended_grace_seconds)
          VALUES (@call_id, @primary_feed, @fallback_feed, @primary_max_staleness_sec,
           @fallback_max_staleness_sec, @t0_grace_seconds, @t0_extended_grace_seconds)`,
-      ).run({ call_id: i.accepted.call_id, ...i.accepted.oracle_policy });
+      ).run({
+        call_id: i.accepted.call_id,
+        primary_feed: i.accepted.oracle_policy.primary_feed,
+        // Phase 2d: nullable fallback for sub-hour Pyth-only markets.
+        fallback_feed: i.accepted.oracle_policy.fallback_feed ?? null,
+        primary_max_staleness_sec:
+          i.accepted.oracle_policy.primary_max_staleness_sec,
+        fallback_max_staleness_sec:
+          i.accepted.oracle_policy.fallback_max_staleness_sec ?? null,
+        t0_grace_seconds: i.accepted.oracle_policy.t0_grace_seconds,
+        t0_extended_grace_seconds:
+          i.accepted.oracle_policy.t0_extended_grace_seconds,
+      });
       prep(
         db,
         `INSERT INTO receipts
@@ -1318,9 +1381,9 @@ export const submissionsRepo = {
     commit_hash: string | null;
     acceptance_receipt_hash: string;
     primary_feed: string;
-    fallback_feed: string;
+    fallback_feed: string | null;
     primary_max_staleness_sec: number;
-    fallback_max_staleness_sec: number;
+    fallback_max_staleness_sec: number | null;
     t0_grace_seconds: number;
     t0_extended_grace_seconds: number;
   } | null {
@@ -1353,9 +1416,10 @@ export const submissionsRepo = {
             commit_hash: string | null;
             acceptance_receipt_hash: string;
             primary_feed: string;
-            fallback_feed: string;
+            // Phase 2d: nullable for sub-hour markets (Pyth-only).
+            fallback_feed: string | null;
             primary_max_staleness_sec: number;
-            fallback_max_staleness_sec: number;
+            fallback_max_staleness_sec: number | null;
             t0_grace_seconds: number;
             t0_extended_grace_seconds: number;
           }

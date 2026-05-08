@@ -69,7 +69,7 @@ export class PolicyDerivationError extends Error {
       | "fallback_oracle_unknown"
       | "fallback_oracle_not_listed"
       | "fallback_feed_unmapped"
-      | "fallback_required_at_v0_2_5",
+      | "fallback_max_staleness_missing",
     public readonly context?: Record<string, unknown>,
   ) {
     super(message);
@@ -120,16 +120,19 @@ function feedForOracle(
 
 /**
  * Derive a per-call T0Policy from the resolved market row + the oracles
- * registry. Fail-closed if either referenced oracle isn't 'listed' — closes
+ * registry. Fail-closed if any referenced oracle isn't 'listed' — closes
  * the Codex-flagged silent-wrong-oracle footgun where a `markets.status`
  * flip on a market whose oracle was draft would let calls mint and resolve
  * against the wrong feed.
  *
- * Phase 2b requires both primary and fallback. Markets without a
- * fallback_oracle_id (e.g., BNB at every horizon since there's no
- * Chainlink Base feed) cannot derive a policy — they stay 'draft' until
- * the fallback story is settled (probably by adding a second Pyth path
- * or relaxing T0PolicySchema to make fallback_feed optional).
+ * Phase 2d: fallback is OPTIONAL. Codex's audit recommended sub-hour
+ * markets be Pyth-only (Chainlink Base heartbeat is too coarse for 5m/15m
+ * horizons). If markets.fallback_oracle_id is null, we derive a policy
+ * without a fallback path; the resolver will only try the primary feed
+ * and mark the call oracle_unavailable past extended grace. The pair
+ * (fallback_oracle_id, fallback_max_staleness_sec) MUST travel together
+ * — having one without the other is a misconfigured market and we
+ * fail closed.
  */
 export function derivePolicyFromMarket(
   db: Database.Database,
@@ -144,27 +147,43 @@ export function derivePolicyFromMarket(
   );
   const primary_feed = feedForOracle(primary, market.market_id, "primary");
 
-  // Fallback (required at v0.2.5)
-  if (!market.fallback_oracle_id || market.fallback_max_staleness_sec === null) {
+  // Fallback — optional at Phase 2d but the two fields must agree.
+  const hasFallbackOracle = market.fallback_oracle_id !== null;
+  const hasFallbackStaleness = market.fallback_max_staleness_sec !== null;
+  if (hasFallbackOracle !== hasFallbackStaleness) {
     throw new PolicyDerivationError(
-      `market ${market.market_id} has no fallback_oracle_id; v0.2.5 requires both primary and fallback`,
+      `market ${market.market_id} has fallback_oracle_id without fallback_max_staleness_sec (or vice versa) — both must travel together`,
       market.market_id,
-      "fallback_required_at_v0_2_5",
+      "fallback_max_staleness_missing",
     );
   }
-  const fallback = loadListedOracle(
-    db,
-    market.fallback_oracle_id,
-    market.market_id,
-    "fallback",
-  );
-  const fallback_feed = feedForOracle(fallback, market.market_id, "fallback");
 
+  if (hasFallbackOracle) {
+    const fallback = loadListedOracle(
+      db,
+      market.fallback_oracle_id!,
+      market.market_id,
+      "fallback",
+    );
+    const fallback_feed = feedForOracle(
+      fallback,
+      market.market_id,
+      "fallback",
+    );
+    return {
+      primary_feed,
+      fallback_feed,
+      primary_max_staleness_sec: market.primary_max_staleness_sec,
+      fallback_max_staleness_sec: market.fallback_max_staleness_sec!,
+      t0_grace_seconds: market.t0_grace_seconds,
+      t0_extended_grace_seconds: market.t0_extended_grace_seconds,
+    };
+  }
+
+  // Pyth-only / no-fallback path — sub-hour markets, BNB markets.
   return {
     primary_feed,
-    fallback_feed,
     primary_max_staleness_sec: market.primary_max_staleness_sec,
-    fallback_max_staleness_sec: market.fallback_max_staleness_sec,
     t0_grace_seconds: market.t0_grace_seconds,
     t0_extended_grace_seconds: market.t0_extended_grace_seconds,
   };

@@ -169,12 +169,19 @@ export class OracleClient {
 
     while (true) {
       const elapsed = this.now().getTime() - start;
-      const useFallback = elapsed >= grace;
+      // Phase 2d: T0Policy fallback fields are optional (sub-hour markets
+      // are Pyth-only). When no fallback is configured, retry primary
+      // until extended grace expires.
+      const wantFallback = elapsed >= grace;
+      const fallbackConfigured =
+        policy.fallback_feed !== undefined &&
+        policy.fallback_max_staleness_sec !== undefined;
+      const useFallback = wantFallback && fallbackConfigured;
       const target: OracleFeed = useFallback
-        ? policy.fallback_feed
+        ? policy.fallback_feed!
         : policy.primary_feed;
       const maxStaleness = useFallback
-        ? policy.fallback_max_staleness_sec
+        ? policy.fallback_max_staleness_sec!
         : policy.primary_max_staleness_sec;
 
       try {
