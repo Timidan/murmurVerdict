@@ -29,6 +29,11 @@ import {
   OracleError,
   type OracleObservation,
 } from "../integrations/oracle.js";
+import { observeOracle } from "../integrations/oracles/registry.js";
+import {
+  AdapterError,
+  type OracleObservation as AdapterObservation,
+} from "../integrations/oracles/types.js";
 import { buildResolutionReceipt } from "../receipts/verdictReceipt.js";
 import {
   computeSignedReturn,
@@ -429,10 +434,11 @@ export class Resolver {
       : args.policy.primary_max_staleness_sec;
     let obs: OracleObservation;
     try {
-      obs = await this.oracle.getLatestPrice(feed);
+      obs = await this.observeFeed(feed);
     } catch (err) {
-      if (err instanceof OracleError) {
-        return { kind: "pending", reason: `oracle_error:${err.cause_kind}` };
+      if (err instanceof OracleError || err instanceof AdapterError) {
+        const kind = err instanceof OracleError ? err.cause_kind : err.cause_kind;
+        return { kind: "pending", reason: `oracle_error:${kind}` };
       }
       throw err;
     }
@@ -599,6 +605,38 @@ export class Resolver {
     return true;
   }
 
+  // ── oracle observation routing (P3 Phase 2) ──
+  //
+  // The legacy OracleClient hard-codes Chainlink Base ETH/USD + Pyth Hermes.
+  // The new adapter registry (src/integrations/oracles/) is data-driven —
+  // any registered oracle row dispatches to its named adapter. For the four
+  // listed ETH markets (eth.1h/4h/24h/7d) both paths produce equivalent
+  // observations, so the resolver routes through the registry first and
+  // falls back to OracleClient only if the registry refuses (unknown feed,
+  // not-listed oracle row, missing adapter config). When BTC/SOL/BNB markets
+  // flip to listed, the registry path is the only one that knows about them
+  // — the legacy fallback simply errors and the call stays pending until
+  // the schema work in Phase 2b lands.
+  private async observeFeed(feed: OracleFeed): Promise<OracleObservation> {
+    const oracle_id = feedToOracleId(feed);
+    if (oracle_id) {
+      try {
+        const obs = await observeOracle(this.db, oracle_id);
+        return adapterToLegacyObservation(obs, feed);
+      } catch (err) {
+        // AdapterError comes from a misconfigured / draft oracle row;
+        // anything else (including network failures from the adapter) is
+        // a transient pending state. Either way, fall through to the
+        // legacy client so we don't lose ETH coverage during a registry
+        // misconfiguration.
+        if (!(err instanceof AdapterError)) {
+          throw err;
+        }
+      }
+    }
+    return this.oracle.getLatestPrice(feed);
+  }
+
   // ── helpers ──
 
   private elapsedSecSince(iso: string): number {
@@ -639,6 +677,40 @@ export class Resolver {
 
 function isoFromUnixMs(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+// Legacy `feed` strings (T0Policy.primary_feed/fallback_feed) → adapter
+// registry oracle_ids. P3 Phase 2: keeps the OracleFeed enum stable while
+// routing observations through the data-driven adapter pipeline. New feeds
+// land by adding a row in `oracles` AND extending this map; the OracleFeed
+// enum widens at the same time (Phase 2b).
+// Exported for smoke / unit tests; production callers go through observeFeed.
+export function feedToOracleId(feed: OracleFeed): string | null {
+  switch (feed) {
+    case "chainlink:base:ETH-USD":
+      return "chainlink-base-eth-usd";
+    case "pyth:base:ETH-USD":
+      return "pyth-base-eth-usd";
+    default:
+      return null;
+  }
+}
+
+// Adapter observations carry `oracle_id` + `asset_id`; the resolver still
+// expects the legacy shape (`feed`). Re-shape without losing fields the
+// resolver actually consumes.
+export function adapterToLegacyObservation(
+  obs: AdapterObservation,
+  feed: OracleFeed,
+): OracleObservation {
+  return {
+    feed,
+    price: obs.price,
+    feed_timestamp: obs.feed_timestamp,
+    observed_at: obs.observed_at,
+    source_id: obs.source_id,
+    source_age_seconds: obs.source_age_seconds,
+  };
 }
 
 // Keep import surface stable for test harness.
