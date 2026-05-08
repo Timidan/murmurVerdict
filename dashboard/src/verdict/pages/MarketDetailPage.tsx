@@ -95,14 +95,12 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
           <>
             {/* HERO ───────────────────────────────────────────────── */}
             <section className="px-6 md:px-10 pt-10 pb-10 border-b border-[var(--color-border)]">
-              <div className="flex items-baseline justify-between gap-6 t-meta mb-4 text-[var(--color-secondary)]">
+              {/* QA finding #4: dropped the duplicate "← back to launch"
+                  inline link. The topbar already shows
+                  "markets / <market_id>" with murmur.verdict as the
+                  canonical home anchor. Two back links was redundant. */}
+              <div className="flex items-baseline gap-6 t-meta mb-4 text-[var(--color-secondary)]">
                 <span>market · {market.market_kind}</span>
-                <a
-                  href="#/launch"
-                  className="t-meta text-[var(--color-secondary)] hover:text-[var(--color-display)] no-underline"
-                >
-                  ← back to launch
-                </a>
               </div>
               <h1 className="t-heading text-[var(--color-display)] font-mono mb-2">
                 {market.market_id}

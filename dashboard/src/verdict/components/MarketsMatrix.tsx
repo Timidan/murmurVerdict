@@ -34,7 +34,24 @@ export function MarketsMatrix() {
     let cancel = false;
     setLoading(true);
     setError(null);
-    fetchMarkets({ status: "listed" })
+
+    // QA finding #1 (cold-start retry): if the daemon was booted AFTER
+    // the dashboard, the first /v1/markets call returns 404 and the
+    // matrix used to render "no markets available" until the user
+    // reloaded. Retry once after 2s before falling to the empty state.
+    const fetchWithColdStartRetry = async (): Promise<MarketRow[]> => {
+      try {
+        return await fetchMarkets({ status: "listed" });
+      } catch (firstErr) {
+        // Wait 2s and try once more — covers daemon coming up after
+        // dashboard. Don't loop further; stale errors should surface.
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (cancel) throw firstErr;
+        return await fetchMarkets({ status: "listed" });
+      }
+    };
+
+    fetchWithColdStartRetry()
       .then(async (rows) => {
         if (cancel) return;
         setMarkets(rows);
@@ -153,7 +170,10 @@ function MarketCard({
       <div className="t-meta text-[var(--color-secondary)] mb-4">
         {assetSlug.toUpperCase()} · {market.market_kind}
       </div>
-      <ol className="m-0 p-0 list-none flex flex-col gap-1">
+      {/* QA finding #3 (card-height alignment): reserve fixed vertical
+          space for three agent rows so dense + empty cards align in the
+          horizontal strip. ~22px per row × 3 + small gap. */}
+      <ol className="m-0 p-0 list-none flex flex-col gap-1 min-h-[72px]">
         {top === null && (
           <li className="t-meta text-[var(--color-disabled)]">[loading…]</li>
         )}
