@@ -775,12 +775,29 @@ const ResolutionReceiptPayloadV2Schema = z
         revealed_at: z.string().datetime({ offset: false }),
         reveal_hash_valid: z.boolean(),
         commit_preimage_schema: z.string(),
+        // P4 Item 4 (Codex audit): plaintext_subject extends additively to
+        // carry the market identity + replay config. Existing receipts
+        // already issued (no market_id) keep parsing — every new field is
+        // optional. New receipts stamp all five so verifiers can replay
+        // outcome+score from the receipt + market_config_history without
+        // ever reading the live markets row. void_band is a decimal
+        // string for canonicalization stability; verifier parses to
+        // float at use-site.
         plaintext_subject: z
           .object({
             side: z.enum(["BUY", "SELL"]),
             asset_id: AssetIdSchema,
             horizon_hours: HorizonHoursSchema,
             confidence: z.number().min(0.51).max(0.95),
+            // Additive market-aware fields; optional for back-compat.
+            market_id: MarketIdSchema.optional(),
+            market_config_version: z.number().int().positive().optional(),
+            horizon_seconds: z.number().int().positive().optional(),
+            scoring_kind: ScoringKindSchema.optional(),
+            void_band: z
+              .string()
+              .regex(/^0(\.[0-9]+)?$|^[1-9][0-9]*(\.[0-9]+)?$/)
+              .optional(),
           })
           .strict(),
       })

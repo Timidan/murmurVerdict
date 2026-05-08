@@ -4,6 +4,7 @@ import {
   agentsRepo,
   anchorsRepo,
   disputesRepo,
+  marketsRepo,
   resolutionsRepo,
   submissionsRepo,
   usageRepo,
@@ -186,13 +187,30 @@ export class DisputeService {
       p0,
       input.replay.t1_replay.p1,
     );
-    const replayOutcome = outcomeFromSignedReturn(r);
+    // P4 Item 4 (Codex audit): replay must use the call's stamped market
+    // policy, NOT the live markets row. Pull the historical snapshot
+    // when the call has a market_id+market_config_version stamped.
+    const histSnapshot =
+      sub.market_id !== null && sub.market_config_version !== null
+        ? marketsRepo.getConfigAt(
+            this.db,
+            sub.market_id,
+            sub.market_config_version,
+          )
+        : null;
+    const replayVoidBand = histSnapshot
+      ? Number(histSnapshot.void_band)
+      : undefined;
+    const replayOutcome = outcomeFromSignedReturn(r, replayVoidBand);
     const replayScore = scoreCall({
       asset_id: sub.asset_id as AssetId,
       horizon_hours: sub.horizon_hours as HorizonHours,
       confidence: sub.confidence,
       signed_return: r,
       outcome: replayOutcome,
+      ...(sub.horizon_seconds !== undefined
+        ? { horizon_seconds: sub.horizon_seconds }
+        : {}),
     });
 
     const same =

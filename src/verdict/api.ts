@@ -1163,6 +1163,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       const subRow = deps.db
         .prepare(
           `SELECT s.call_id, s.agent_id, s.privacy_mode, s.commit_hash, s.accepted_at,
+                  s.market_id, s.market_config_version,
                   ar.canonical_json AS acceptance_canonical_json
            FROM submissions s
            LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
@@ -1175,6 +1176,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
             privacy_mode: string | null;
             commit_hash: string | null;
             accepted_at: string;
+            // P4 Item 4: pulled to cross-check the agent's preimage
+            // claim against what the daemon stamped at acceptance.
+            market_id: string | null;
+            market_config_version: number | null;
             acceptance_canonical_json: string | null;
           }
         | undefined;
@@ -1292,10 +1297,47 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       let revealChainId: string;
 
       if (validated.kind === "market") {
-        const market = marketsRepo.get(deps.db, validated.preimage.market_id);
+        // P4 Item 4 (Codex audit): validate the agent's preimage market_id
+        // + market_config_version against the SUBMISSION ROW (what the
+        // daemon stamped at acceptance), not the live markets registry.
+        // A live-registry-only check would let an agent reveal under a
+        // post-bumpConfig version that wasn't what the daemon committed
+        // to at submit time — silent policy substitution.
+        if (
+          subRow.market_id !== validated.preimage.market_id ||
+          subRow.market_config_version !==
+            validated.preimage.market_config_version
+        ) {
+          throw new VerdictError(
+            "commit_preimage.market_id / market_config_version do not match the submission row",
+            ERROR_CODES.schema_invalid,
+            422,
+            {
+              expected_market_id: subRow.market_id,
+              expected_market_config_version: subRow.market_config_version,
+              got_market_id: validated.preimage.market_id,
+              got_market_config_version:
+                validated.preimage.market_config_version,
+            },
+          );
+        }
+        // For asset_id synthesis on the call_reveals row, the historical
+        // snapshot at the stamped version is the right source — never
+        // the live row (might have drifted via bumpConfig). Fall back
+        // to live registry only if history is missing (shouldn't happen
+        // for any post-migration-012 row).
+        const histSnapshot =
+          subRow.market_id !== null && subRow.market_config_version !== null
+            ? marketsRepo.getConfigAt(
+                deps.db,
+                subRow.market_id,
+                subRow.market_config_version,
+              )
+            : null;
+        const market = histSnapshot ?? marketsRepo.get(deps.db, validated.preimage.market_id);
         if (!market) {
           throw new VerdictError(
-            `commit_preimage.market_id ${validated.preimage.market_id} not in registry`,
+            `commit_preimage.market_id ${validated.preimage.market_id} not in registry or history`,
             ERROR_CODES.asset_not_supported,
             422,
           );

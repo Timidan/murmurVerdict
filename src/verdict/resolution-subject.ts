@@ -78,6 +78,23 @@ export interface ResolutionSubject {
   commit_preimage_schema: string | null;
   revealed_at: string;
   reveal_hash_valid: boolean;
+  // ─── P4 Item 4 (Codex audit): market-aware replay anchors ────────────
+  // Resolver/verify/disputes consume these to recompute outcome + score
+  // from the historical config snapshot, never the live markets row.
+  // Null on pre-Phase-1 legacy rows that haven't been backfilled.
+  /** Stamped market this call targeted. */
+  market_id: string | null;
+  /** Stamped config version at acceptance. Pair with market_id to look
+   *  up the historical snapshot via marketsRepo.getConfigAt. */
+  market_config_version: number | null;
+  /** Canonical horizon at acceptance. Resolver uses this for t1; scoring
+   *  uses it via scoreCall(horizon_seconds). Null on legacy rows. */
+  horizon_seconds: number | null;
+  /** Scoring algorithm declared by the market at acceptance. */
+  scoring_kind: string | null;
+  /** Outcome boundary stamped at acceptance. Decimal string for
+   *  canonicalization stability. Verifiers parse to float at use site. */
+  void_band: string | null;
 }
 
 /**
@@ -108,10 +125,15 @@ export async function loadResolutionSubject(
   const now = (opts.now ?? (() => new Date()))();
 
   // Read the submission row to learn the privacy mode + commit_hash.
+  // P4 Item 4: also pull market_id, market_config_version, horizon_seconds
+  // so the subject can carry per-call replay anchors.
   const subRow = db
     .prepare(
-      `SELECT call_id, agent_id, asset_id, side, horizon_hours, confidence,
-              rationale, strategy_tag, accepted_at, privacy_mode, commit_hash
+      `SELECT call_id, agent_id, asset_id, side,
+              horizon_hours, horizon_seconds,
+              confidence, rationale, strategy_tag, accepted_at,
+              privacy_mode, commit_hash,
+              market_id, market_config_version
        FROM submissions WHERE call_id = ?`,
     )
     .get(call_id) as
@@ -121,12 +143,15 @@ export async function loadResolutionSubject(
         asset_id: string;
         side: "BUY" | "SELL";
         horizon_hours: number;
+        horizon_seconds: number;
         confidence: number;
         rationale: string | null;
         strategy_tag: string | null;
         accepted_at: string;
         privacy_mode: string | null;
         commit_hash: string | null;
+        market_id: string | null;
+        market_config_version: number | null;
       }
     | undefined;
   if (!subRow) return { ok: false, reason: "call_not_found" };
@@ -134,6 +159,13 @@ export async function loadResolutionSubject(
   const issuingAgent = agentsRepo.byId(db, subRow.agent_id);
   const agentWallet = issuingAgent?.wallet_address ?? null;
   const chainId = issuingAgent?.chain_id ?? null;
+
+  // P4 Item 4: build the replay enrichment ONCE here. When the call has
+  // (market_id, market_config_version) stamped, fetch the historical
+  // snapshot from market_config_history (NEVER the live markets row).
+  // For pre-Phase-1 legacy rows without market_id, leave enrichment
+  // null — downstream consumers fall back to global VOID_BAND etc.
+  const enrichment = buildSubjectEnrichment(db, subRow);
 
   // (1) call_reveals already exists — fast path, but only if the row still
   // proves the committed preimage. A stale/corrupt row with
@@ -150,7 +182,7 @@ export async function loadResolutionSubject(
         detail: "existing call_reveals row does not match commit_hash",
       };
     }
-    return { ok: true, subject: rowToSubject(existing) };
+    return { ok: true, subject: rowToSubject(existing, enrichment) };
   }
 
   // (4) Legacy plaintext: hydrate call_reveals from submissions row.
@@ -178,7 +210,7 @@ export async function loadResolutionSubject(
     const final = callRevealsRepo.byCallId(db, call_id);
     return {
       ok: true,
-      subject: final ? rowToSubject(final) : rowToSubject(row),
+      subject: final ? rowToSubject(final, enrichment) : rowToSubject(row, enrichment),
     };
   }
 
@@ -208,6 +240,7 @@ export async function loadResolutionSubject(
         chainId,
         revealed_via: "daemon_fallback",
         nowIso: nowIso(now),
+        enrichment,
       });
       if (subject) return { ok: true, subject };
     } catch {
@@ -238,6 +271,7 @@ export async function loadResolutionSubject(
           chainId,
           revealed_via: "drand_fallback",
           nowIso: nowIso(now),
+          enrichment,
         });
         if (subject) return { ok: true, subject };
       } catch (err) {
@@ -255,7 +289,20 @@ export async function loadResolutionSubject(
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-function rowToSubject(row: CallRevealRow): ResolutionSubject {
+/**
+ * Build a ResolutionSubject from a call_reveals row plus optional market
+ * enrichment from the submissions row + market_config_history. Codex
+ * audit Item 4: the enrichment fields drive resolver outcome / score
+ * recomputation from carried policy, not the live markets row.
+ *
+ * Callers that don't have the enrichment data (legacy back-compat paths)
+ * leave it undefined; the new fields default to null and downstream
+ * consumers fall back to global defaults (VOID_BAND etc).
+ */
+function rowToSubject(
+  row: CallRevealRow,
+  enrichment?: SubjectEnrichment,
+): ResolutionSubject {
   return {
     call_id: row.call_id,
     source: row.revealed_via,
@@ -273,6 +320,67 @@ function rowToSubject(row: CallRevealRow): ResolutionSubject {
       : null,
     revealed_at: row.revealed_at,
     reveal_hash_valid: row.reveal_hash_valid === 1,
+    market_id: enrichment?.market_id ?? null,
+    market_config_version: enrichment?.market_config_version ?? null,
+    horizon_seconds: enrichment?.horizon_seconds ?? null,
+    scoring_kind: enrichment?.scoring_kind ?? null,
+    void_band: enrichment?.void_band ?? null,
+  };
+}
+
+/**
+ * P4 Item 4: per-call market policy snapshot the resolver will carry on
+ * the resolution receipt. Built from:
+ *   1. submissions row (market_id, market_config_version, horizon_seconds)
+ *   2. marketsRepo.getConfigAt(market_id, market_config_version) for
+ *      scoring_kind + void_band (immutable history snapshot)
+ */
+interface SubjectEnrichment {
+  market_id: string | null;
+  market_config_version: number | null;
+  horizon_seconds: number | null;
+  scoring_kind: string | null;
+  void_band: string | null;
+}
+
+/**
+ * P4 Item 4: build per-call SubjectEnrichment from the submission row.
+ * scoring_kind + void_band come from market_config_history at the call's
+ * stamped (market_id, market_config_version) — never the live markets
+ * row. Pre-Phase-1 rows without market_id stamp fall back to nulls;
+ * downstream consumers use global VOID_BAND in that case.
+ */
+function buildSubjectEnrichment(
+  db: Database.Database,
+  subRow: {
+    market_id: string | null;
+    market_config_version: number | null;
+    horizon_seconds: number | null;
+  },
+): SubjectEnrichment {
+  if (
+    !subRow.market_id ||
+    typeof subRow.market_config_version !== "number"
+  ) {
+    return {
+      market_id: subRow.market_id ?? null,
+      market_config_version: subRow.market_config_version ?? null,
+      horizon_seconds: subRow.horizon_seconds ?? null,
+      scoring_kind: null,
+      void_band: null,
+    };
+  }
+  const snapshot = marketsRepo.getConfigAt(
+    db,
+    subRow.market_id,
+    subRow.market_config_version,
+  );
+  return {
+    market_id: subRow.market_id,
+    market_config_version: subRow.market_config_version,
+    horizon_seconds: subRow.horizon_seconds,
+    scoring_kind: snapshot?.scoring_kind ?? null,
+    void_band: snapshot?.void_band ?? null,
   };
 }
 
@@ -310,6 +418,8 @@ interface MaterializeArgs {
   chainId: string | null;
   revealed_via: "daemon_fallback" | "drand_fallback";
   nowIso: string;
+  /** P4 Item 4: per-call market enrichment for the produced subject. */
+  enrichment: SubjectEnrichment;
 }
 
 async function materializeFromCiphertext(
@@ -412,10 +522,10 @@ async function materializeFromCiphertext(
   const final = callRevealsRepo.byCallId(args.db, args.call_id);
   if (final) {
     return isValidCommittedReveal(final, args.commit_hash)
-      ? rowToSubject(final)
+      ? rowToSubject(final, args.enrichment)
       : null;
   }
-  return rowToSubject(row);
+  return rowToSubject(row, args.enrichment);
 }
 
 function isValidCommittedReveal(

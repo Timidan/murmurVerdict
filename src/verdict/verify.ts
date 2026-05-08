@@ -10,6 +10,7 @@ import {
   scoreCall,
 } from "./scoring.js";
 import { parseAndRebuildPreimageByDomain } from "./commit-preimage.js";
+import { marketsRepo } from "./db.js";
 import type { AssetId, HorizonHours, Side } from "./schema.js";
 
 // ─── /v1/calls/:id/verify ─────────────────────────────────────────────────────
@@ -331,11 +332,17 @@ export function verifyReceiptChain(
       note: `acceptance=${acceptanceRow.receipt_hash}`,
     });
 
+    // P4 Item 4: subjectForScoring also carries replay anchors when the
+    // receipt has them. void_band is parsed off plaintext_subject (or
+    // re-pulled from market_config_history if the receipt didn't stamp
+    // it directly — happens for v2 receipts emitted before Item 4).
     let subjectForScoring: {
       side: Side;
       asset_id: AssetId;
       horizon_hours: HorizonHours;
       confidence: number;
+      horizon_seconds?: number;
+      void_band?: number;
     } = {
       side: subRow.side as Side,
       asset_id: subRow.asset_id as AssetId,
@@ -374,11 +381,47 @@ export function verifyReceiptChain(
         });
       }
 
+      const plaintextSubject = resolutionData.reveal.plaintext_subject;
+      // P4 Item 4: when the v2 receipt carries the additive market
+      // anchors, use them. Otherwise fall back to market_config_history
+      // via the carried market_id+market_config_version. NEVER read
+      // the live markets row — a post-acceptance bumpConfig must not
+      // rewrite a verifier's outcome.
+      let carriedHorizonSeconds: number | undefined;
+      let carriedVoidBand: number | undefined;
+      if (plaintextSubject.market_id && plaintextSubject.market_config_version) {
+        carriedHorizonSeconds =
+          plaintextSubject.horizon_seconds ?? undefined;
+        carriedVoidBand = plaintextSubject.void_band
+          ? Number(plaintextSubject.void_band)
+          : undefined;
+        if (carriedHorizonSeconds === undefined || carriedVoidBand === undefined) {
+          const snapshot = marketsRepo.getConfigAt(
+            db,
+            plaintextSubject.market_id,
+            plaintextSubject.market_config_version,
+          );
+          if (snapshot) {
+            if (carriedHorizonSeconds === undefined) {
+              carriedHorizonSeconds = snapshot.horizon_seconds;
+            }
+            if (carriedVoidBand === undefined) {
+              carriedVoidBand = Number(snapshot.void_band);
+            }
+          }
+        }
+      }
       subjectForScoring = {
-        side: resolutionData.reveal.plaintext_subject.side as Side,
-        asset_id: resolutionData.reveal.plaintext_subject.asset_id as AssetId,
-        horizon_hours: resolutionData.reveal.plaintext_subject.horizon_hours as HorizonHours,
-        confidence: resolutionData.reveal.plaintext_subject.confidence,
+        side: plaintextSubject.side as Side,
+        asset_id: plaintextSubject.asset_id as AssetId,
+        horizon_hours: plaintextSubject.horizon_hours as HorizonHours,
+        confidence: plaintextSubject.confidence,
+        ...(carriedHorizonSeconds !== undefined
+          ? { horizon_seconds: carriedHorizonSeconds }
+          : {}),
+        ...(carriedVoidBand !== undefined
+          ? { void_band: carriedVoidBand }
+          : {}),
       };
 
       const revealRow = db
@@ -450,7 +493,15 @@ export function verifyReceiptChain(
         recomputed: recomputedSignedReturn,
       });
 
-      const recomputedOutcome = outcomeFromSignedReturn(r);
+      // P4 Item 4: outcome boundary uses the receipt-carried void_band
+      // (when present) so a post-acceptance bumpConfig cannot rewrite
+      // a verifier's outcome. Falls back to global VOID_BAND when the
+      // receipt is pre-Item-4 (no carried void_band). Same idea for
+      // horizon_seconds → scoreCall.
+      const recomputedOutcome = outcomeFromSignedReturn(
+        r,
+        subjectForScoring.void_band,
+      );
       checks.push({
         name: "outcome",
         status: recomputedOutcome === resolutionRow.outcome ? "match" : "mismatch",
@@ -464,6 +515,9 @@ export function verifyReceiptChain(
         confidence: subjectForScoring.confidence,
         signed_return: r,
         outcome: recomputedOutcome,
+        ...(subjectForScoring.horizon_seconds !== undefined
+          ? { horizon_seconds: subjectForScoring.horizon_seconds }
+          : {}),
       }).call_score;
       const stored = resolutionRow.call_score;
       const matchesScore =

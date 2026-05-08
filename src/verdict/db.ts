@@ -1576,6 +1576,11 @@ export const submissionsRepo = {
     fallback_max_staleness_sec: number | null;
     t0_grace_seconds: number;
     t0_extended_grace_seconds: number;
+    // P4 Item 4: per-call market stamps for dispute / verify replay.
+    // Null on pre-Phase-1 legacy rows; downstream falls back to global
+    // VOID_BAND when null.
+    market_id: string | null;
+    market_config_version: number | null;
   } | null {
     return (
       (prep(
@@ -1583,6 +1588,7 @@ export const submissionsRepo = {
         `SELECT s.call_id, s.agent_id, s.asset_id, s.side,
                 s.horizon_hours, s.horizon_seconds,
                 s.confidence, s.accepted_at, s.status, s.privacy_mode, s.commit_hash,
+                s.market_id, s.market_config_version,
                 r.receipt_hash AS acceptance_receipt_hash,
                 op.primary_feed, op.fallback_feed,
                 op.primary_max_staleness_sec, op.fallback_max_staleness_sec,
@@ -1604,6 +1610,8 @@ export const submissionsRepo = {
             status: CallStatus;
             privacy_mode: string | null;
             commit_hash: string | null;
+            market_id: string | null;
+            market_config_version: number | null;
             acceptance_receipt_hash: string;
             primary_feed: string;
             // Phase 2d: nullable for sub-hour markets (Pyth-only).

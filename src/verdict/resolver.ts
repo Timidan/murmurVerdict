@@ -235,7 +235,14 @@ export class Resolver {
         // routed through call_reveals so every code path reads from one
         // place going forward.
         const r = computeSignedReturn(subject.side, t0row.p0, obs.price);
-        const verdictOutcome = outcomeFromSignedReturn(r);
+        // P4 Item 4 (Codex audit): outcome boundary comes from the
+        // subject's stamped void_band, not the global VOID_BAND. A
+        // post-acceptance bumpConfig must NOT rewrite this call's
+        // outcome. Falls back to global VOID_BAND for legacy rows
+        // without enrichment.
+        const subjectVoidBand =
+          subject.void_band !== null ? Number(subject.void_band) : undefined;
+        const verdictOutcome = outcomeFromSignedReturn(r, subjectVoidBand);
         const score = scoreCall({
           asset_id: subject.asset_id as AssetId,
           horizon_hours: subject.horizon_hours as HorizonHours,
@@ -327,11 +334,32 @@ export class Resolver {
               reveal_hash_valid: subject.reveal_hash_valid,
               commit_preimage_schema:
                 subject.commit_preimage_schema ?? "murmur-verdict-v0.2-commit@1",
+              // P4 Item 4: emit additive market-aware fields on
+              // plaintext_subject when the subject carries enrichment.
+              // Old receipts without these fields keep parsing under
+              // the wider schema; new receipts let verifiers replay
+              // outcome+score from the receipt itself plus
+              // market_config_history (never the live markets row).
               plaintext_subject: {
                 side: subject.side,
                 asset_id: subject.asset_id as AssetId,
                 horizon_hours: subject.horizon_hours as HorizonHours,
                 confidence: subject.confidence,
+                ...(subject.market_id !== null
+                  ? { market_id: subject.market_id }
+                  : {}),
+                ...(subject.market_config_version !== null
+                  ? { market_config_version: subject.market_config_version }
+                  : {}),
+                ...(subject.horizon_seconds !== null
+                  ? { horizon_seconds: subject.horizon_seconds }
+                  : {}),
+                ...(subject.scoring_kind !== null
+                  ? { scoring_kind: subject.scoring_kind }
+                  : {}),
+                ...(subject.void_band !== null
+                  ? { void_band: subject.void_band }
+                  : {}),
               },
             },
           });
@@ -553,11 +581,31 @@ export class Resolver {
               reveal_hash_valid: subject.reveal_hash_valid,
               commit_preimage_schema:
                 subject.commit_preimage_schema ?? "murmur-verdict-v0.2-commit@1",
+              // P4 Item 4: same additive enrichment as the normal
+              // resolution path. oracle_unavailable receipts also carry
+              // the per-call market policy snapshot when available so
+              // verify/disputes can replay this terminal state under
+              // the same rules a successful resolution would have used.
               plaintext_subject: {
                 side: subject.side,
                 asset_id: subject.asset_id as AssetId,
                 horizon_hours: subject.horizon_hours as HorizonHours,
                 confidence: subject.confidence,
+                ...(subject.market_id !== null
+                  ? { market_id: subject.market_id }
+                  : {}),
+                ...(subject.market_config_version !== null
+                  ? { market_config_version: subject.market_config_version }
+                  : {}),
+                ...(subject.horizon_seconds !== null
+                  ? { horizon_seconds: subject.horizon_seconds }
+                  : {}),
+                ...(subject.scoring_kind !== null
+                  ? { scoring_kind: subject.scoring_kind }
+                  : {}),
+                ...(subject.void_band !== null
+                  ? { void_band: subject.void_band }
+                  : {}),
               },
             },
           }

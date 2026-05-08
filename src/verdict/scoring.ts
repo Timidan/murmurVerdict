@@ -81,9 +81,22 @@ export function computeSignedReturn(
 
 // ─── Outcome from signed return ──────────────────────────────────────────────
 
-export function outcomeFromSignedReturn(signed_return: number): Outcome {
-  if (signed_return >= VOID_BAND) return "win";
-  if (signed_return <= -VOID_BAND) return "loss";
+/**
+ * Map a signed return to an outcome via a void band threshold.
+ *
+ * P4 Item 4 (Codex audit): the void_band can now come from the receipt
+ * subject's market_config snapshot. Old receipts (no carried subject)
+ * fall back to the global VOID_BAND constant — that path stays
+ * byte-identical. New receipts pass the per-market void_band stamped
+ * at acceptance, so post-bump policy changes can't retroactively rewrite
+ * a call's outcome.
+ */
+export function outcomeFromSignedReturn(
+  signed_return: number,
+  void_band: number = VOID_BAND,
+): Outcome {
+  if (signed_return >= void_band) return "win";
+  if (signed_return <= -void_band) return "loss";
   return "void";
 }
 
