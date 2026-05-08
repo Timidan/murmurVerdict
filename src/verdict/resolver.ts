@@ -187,8 +187,11 @@ export class Resolver {
       const t0row = anchorsRepo.getT0(this.db, ctx.call_id);
       if (!t0row) continue;
 
+      // Phase 2c: prefer the canonical horizon_seconds (no precision loss
+      // for sub-hour markets). horizon_hours is retained as a back-compat
+      // surface but the t1 anchor uses seconds directly.
       const t1Iso = isoFromUnixMs(
-        Date.parse(t0row.t0) + ctx.horizon_hours * 3600 * 1000,
+        Date.parse(t0row.t0) + ctx.horizon_seconds * 1000,
       );
       const elapsedSinceT1 = this.elapsedSecSince(t1Iso);
       if (elapsedSinceT1 < 0) continue; // not yet

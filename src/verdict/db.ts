@@ -110,6 +110,12 @@ function applyMigrations(db: Database.Database): void {
     v = 9;
     set.run("schema_version", String(v));
   }
+
+  if (v < 10) {
+    db.exec(MIGRATION_010);
+    v = 10;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -658,6 +664,102 @@ const MIGRATION_009 = `
     AND horizon_hours = 168;
 `;
 
+// ─── Migration 010 — submissions table rebuild for sub-hour markets ────────
+//
+// Two coupled changes that both need a table rebuild (SQLite can't ALTER
+// CHECK constraints in place):
+//   1. Drop the legacy CHECK (horizon_hours IN (1,4,24,168)). Sub-hour
+//      markets (5m, 15m) need horizon_hours=0 to be insertable; the old
+//      constraint blocked it. New constraint: horizon_hours >= 0.
+//   2. Add horizon_seconds INTEGER NOT NULL as the canonical horizon
+//      value going forward. horizon_hours is retained for back-compat
+//      with v1 receipt subjects that embed it, but consumers should
+//      prefer horizon_seconds (no precision loss for sub-hour markets).
+//
+// Backfill rule: existing rows have horizon_hours ∈ {1,4,24,168}, so
+// horizon_seconds = horizon_hours * 3600. New writes (post-migration)
+// stamp horizon_seconds directly from markets.horizon_seconds at
+// acceptance. After this, horizon_seconds is the CANONICAL field and
+// horizon_hours is the back-compat surface.
+//
+// FK cascade: submissions has dependents (preflights, oracle_policies,
+// t0_anchors, t1_resolutions, receipts, call_private_envelopes,
+// call_reveals). PRAGMA foreign_keys = OFF for the rebuild — same
+// pattern as migration 005's agents rebuild.
+//
+// What this DOESN'T do:
+//   - Sub-hour markets are still 'draft' (no operator flip)
+//   - T0PolicySchema still requires fallback_feed (BNB markets still
+//     'draft', sub-hour markets need a fallback story before they go
+//     live — likely a Pyth-only relaxation in a follow-on phase)
+//   - Resolver tick frequency unchanged (the sub-hour scaling concern
+//     is deferred until we have meaningful sub-hour traffic)
+const MIGRATION_010 = `
+  PRAGMA foreign_keys = OFF;
+
+  CREATE TABLE submissions_v3 (
+    call_id           TEXT PRIMARY KEY,
+    agent_id          TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    client_order_id   TEXT NOT NULL,
+    asset_id          TEXT NOT NULL,
+    side              TEXT NOT NULL CHECK (side IN ('BUY','SELL')),
+    horizon_hours     INTEGER NOT NULL CHECK (horizon_hours >= 0),
+    horizon_seconds   INTEGER NOT NULL CHECK (horizon_seconds > 0),
+    confidence        REAL NOT NULL CHECK (confidence >= 0.51 AND confidence <= 0.95),
+    submitted_at      TEXT NOT NULL,
+    accepted_at       TEXT NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN ('accepted','pending_t0','pending_t1','resolved','disputed','re_resolved','rejected')),
+    rationale         TEXT,
+    strategy_tag      TEXT,
+    schema_version    INTEGER NOT NULL,
+    scoring_version   INTEGER NOT NULL,
+    dedup_key         TEXT NOT NULL,
+    privacy_mode      TEXT,
+    commit_hash       TEXT,
+    commit_scheme     TEXT,
+    market_id         TEXT,
+    market_config_version INTEGER,
+    prediction_value  TEXT,
+    prediction_low    TEXT,
+    prediction_high   TEXT,
+    round_id          TEXT,
+    UNIQUE(agent_id, client_order_id),
+    UNIQUE(dedup_key)
+  );
+
+  INSERT INTO submissions_v3 (
+    call_id, agent_id, client_order_id, asset_id, side,
+    horizon_hours, horizon_seconds,
+    confidence, submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id
+  )
+  SELECT
+    call_id, agent_id, client_order_id, asset_id, side,
+    horizon_hours, horizon_hours * 3600,
+    confidence, submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id
+  FROM submissions;
+
+  DROP TABLE submissions;
+  ALTER TABLE submissions_v3 RENAME TO submissions;
+
+  CREATE INDEX idx_submissions_agent ON submissions(agent_id);
+  CREATE INDEX idx_submissions_status ON submissions(status);
+  CREATE INDEX idx_submissions_asset_horizon ON submissions(asset_id, horizon_hours);
+  CREATE INDEX idx_submissions_commit_hash ON submissions(commit_hash) WHERE commit_hash IS NOT NULL;
+  CREATE INDEX idx_submissions_privacy_mode ON submissions(privacy_mode);
+  CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
+  CREATE INDEX idx_submissions_round ON submissions(round_id) WHERE round_id IS NOT NULL;
+
+  PRAGMA foreign_keys = ON;
+`;
+
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
 //
 // Three things at once:
@@ -956,6 +1058,11 @@ export interface AcceptanceWriteInput {
    *  populate at submit time). */
   market_id?: string;
   market_config_version?: number;
+  /** P3 Phase 2c — canonical horizon. Caller stamps from
+   *  market.horizon_seconds. Optional in this interface so legacy callers
+   *  that haven't migrated still work; the repo derives from
+   *  horizon_hours * 3600 when absent. */
+  horizon_seconds?: number;
   envelope?: {
     encrypted_body: string;
     encrypted_body_alg: string;
@@ -982,12 +1089,14 @@ export const submissionsRepo = {
       prep(
         db,
         `INSERT INTO submissions
-         (call_id, agent_id, client_order_id, asset_id, side, horizon_hours,
+         (call_id, agent_id, client_order_id, asset_id, side,
+          horizon_hours, horizon_seconds,
           confidence, submitted_at, accepted_at, status, rationale, strategy_tag,
           schema_version, scoring_version, dedup_key,
           privacy_mode, commit_hash, commit_scheme,
           market_id, market_config_version)
-         VALUES (@call_id, @agent_id, @client_order_id, @asset_id, @side, @horizon_hours,
+         VALUES (@call_id, @agent_id, @client_order_id, @asset_id, @side,
+          @horizon_hours, @horizon_seconds,
           @confidence, @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
           @schema_version, @scoring_version, @dedup_key,
           @privacy_mode, @commit_hash, @commit_scheme,
@@ -999,6 +1108,13 @@ export const submissionsRepo = {
         asset_id: i.accepted.asset_id,
         side: i.accepted.side,
         horizon_hours: i.accepted.horizon_hours,
+        // P3 Phase 2c: horizon_seconds is the canonical horizon. Caller
+        // (submitCall) passes it from market.horizon_seconds at acceptance;
+        // for legacy code paths that pre-date Phase 2c, fall back to
+        // horizon_hours * 3600 (always integer for the four legacy ETH
+        // horizons, so byte-stable).
+        horizon_seconds:
+          i.horizon_seconds ?? i.accepted.horizon_hours * 3600,
         confidence: i.accepted.confidence,
         submitted_at: i.accepted.submitted_at,
         accepted_at: i.accepted.accepted_at,
@@ -1194,6 +1310,7 @@ export const submissionsRepo = {
     asset_id: string;
     side: "BUY" | "SELL";
     horizon_hours: number;
+    horizon_seconds: number;
     confidence: number;
     accepted_at: string;
     status: CallStatus;
@@ -1210,7 +1327,8 @@ export const submissionsRepo = {
     return (
       (prep(
         db,
-        `SELECT s.call_id, s.agent_id, s.asset_id, s.side, s.horizon_hours,
+        `SELECT s.call_id, s.agent_id, s.asset_id, s.side,
+                s.horizon_hours, s.horizon_seconds,
                 s.confidence, s.accepted_at, s.status, s.privacy_mode, s.commit_hash,
                 r.receipt_hash AS acceptance_receipt_hash,
                 op.primary_feed, op.fallback_feed,
@@ -1227,6 +1345,7 @@ export const submissionsRepo = {
             asset_id: string;
             side: "BUY" | "SELL";
             horizon_hours: number;
+            horizon_seconds: number;
             confidence: number;
             accepted_at: string;
             status: CallStatus;

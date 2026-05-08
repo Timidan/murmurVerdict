@@ -742,6 +742,10 @@ export async function submitCall(args: {
       privacy_mode: privacyModeForRepo,
       market_id: market.market_id,
       market_config_version: market.market_config_version,
+      // Phase 2c: stamp the canonical horizon directly from the market row
+      // (sub-hour markets need the seconds-precise value; legacy ETH
+      // markets still produce the exact same bytes — 3600/14400/86400/604800).
+      horizon_seconds: market.horizon_seconds,
       ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
       ...(commitSchemeForRepo ? { commit_scheme: commitSchemeForRepo } : {}),
       ...(envelopeForRepo ? { envelope: envelopeForRepo } : {}),
