@@ -271,6 +271,39 @@ export async function submitCall(args: {
       { reason: "market_unknown" },
     );
   }
+  // P3 Phase 2d hardening (Codex audit Bug 1): scoring (scoreCall) still
+  // keys on horizon_hours via the realized-vol table; for sub-hour markets
+  // horizon_hours=0 produces hzn = sqrt(0/4) = 0, which silently zeros every
+  // win/loss call_score. Refuse sub-hour submissions explicitly until Phase
+  // 2e routes scoring through horizon_seconds. Operator-flipped sub-hour
+  // markets bounce here instead of writing call_score=0 calls. The schema
+  // plumbing (Pyth-only T0Policy, horizon_seconds canonical) stays in
+  // place — only the user-facing "accept this call" path is gated.
+  if (market.horizon_seconds < 3600) {
+    usageRepo.emit(
+      db,
+      makeUsage(
+        identity.agent_id,
+        "submission_rejected",
+        {
+          reason: "sub_hour_scoring_pending",
+          market_id: market.market_id,
+          horizon_seconds: market.horizon_seconds,
+        },
+        now,
+      ),
+    );
+    throw new VerdictError(
+      `market ${market.market_id} has horizon_seconds=${market.horizon_seconds} < 3600; sub-hour scoring lands in Phase 2e, submissions blocked until then`,
+      ERROR_CODES.asset_not_supported,
+      400,
+      {
+        reason: "sub_hour_scoring_pending",
+        market_id: market.market_id,
+        horizon_seconds: market.horizon_seconds,
+      },
+    );
+  }
   if (!acceptsSubmissions(market)) {
     usageRepo.emit(
       db,
@@ -898,14 +931,12 @@ function loadExistingAcceptedCall(
       data_freshness_seconds: row.data_freshness_seconds,
       market_regime: row.market_regime,
     },
-    oracle_policy: {
-      primary_feed: row.primary_feed,
-      fallback_feed: row.fallback_feed,
-      primary_max_staleness_sec: row.primary_max_staleness_sec,
-      fallback_max_staleness_sec: row.fallback_max_staleness_sec,
-      t0_grace_seconds: row.t0_grace_seconds,
-      t0_extended_grace_seconds: row.t0_extended_grace_seconds,
-    },
+    // P3 Phase 2d: oracle_policies fallback columns are nullable for
+    // sub-hour Pyth-only markets. T0PolicySchema's optional fields accept
+    // omission/undefined but NOT null; hydrate the conditional shape so
+    // an idempotent retry on a Pyth-only call doesn't blow up at parse
+    // time (Codex audit Bug 4).
+    oracle_policy: buildT0PolicyFromRow(row),
     acceptance_receipt_hash: row.acceptance_receipt_hash,
     acceptance_receipt_cid: row.acceptance_receipt_cid ?? undefined,
   });
@@ -915,5 +946,29 @@ function loadExistingAcceptedCall(
     filecoin_cid: accepted.acceptance_receipt_cid ?? null,
     status: "accepted",
     idempotent_hit,
+  };
+}
+
+/**
+ * Build a T0Policy object from an oracle_policies row read. Sub-hour
+ * Pyth-only markets stamp NULL into fallback_feed + fallback_max_staleness_sec
+ * (migration 011); T0PolicySchema's optional fields accept omission/undefined
+ * but NOT null. This helper translates row nulls → omitted keys so the
+ * caller's Zod parse succeeds (Codex audit Bug 4).
+ */
+function buildT0PolicyFromRow(row: Record<string, unknown>): T0Policy {
+  return {
+    primary_feed: row.primary_feed as T0Policy["primary_feed"],
+    primary_max_staleness_sec: row.primary_max_staleness_sec as number,
+    t0_grace_seconds: row.t0_grace_seconds as number,
+    t0_extended_grace_seconds: row.t0_extended_grace_seconds as number,
+    ...(row.fallback_feed !== null && row.fallback_max_staleness_sec !== null
+      ? {
+          fallback_feed: row.fallback_feed as NonNullable<
+            T0Policy["fallback_feed"]
+          >,
+          fallback_max_staleness_sec: row.fallback_max_staleness_sec as number,
+        }
+      : {}),
   };
 }

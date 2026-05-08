@@ -112,15 +112,55 @@ function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 10) {
-    db.exec(MIGRATION_010);
+    applyTableRebuildMigration(db, MIGRATION_010, () => {
+      set.run("schema_version", "10");
+    });
     v = 10;
-    set.run("schema_version", String(v));
   }
 
   if (v < 11) {
-    db.exec(MIGRATION_011);
+    applyTableRebuildMigration(db, MIGRATION_011, () => {
+      set.run("schema_version", "11");
+    });
     v = 11;
-    set.run("schema_version", String(v));
+  }
+}
+
+/**
+ * P3 Phase 2c+ — atomic table-rebuild migration helper. Codex audit fix.
+ *
+ * Pre-fix: migrations 010 and 011 contained `PRAGMA foreign_keys=OFF` +
+ * raw DDL + `PRAGMA foreign_keys=ON` in a single .exec() string. SQLite's
+ * .exec() runs each semicolon-delimited statement INDEPENDENTLY (no
+ * implicit transaction), so a process crash mid-migration could leave
+ * the rebuild table half-populated — at worst, the original table dropped
+ * but the rename never completed. Permanent data loss.
+ *
+ * Post-fix:
+ *   1. PRAGMA off — must live OUTSIDE any transaction (SQLite no-ops it
+ *      inside one).
+ *   2. better-sqlite3's transaction wrapper runs the whole rebuild +
+ *      schema_meta bump under one BEGIN/COMMIT. Any error rolls back.
+ *      A process crash before COMMIT also rolls back on next open.
+ *   3. PRAGMA on in `finally` so we never leave a connection with FK
+ *      enforcement disabled, even when an error escapes.
+ *   4. Migration SQL bodies start with `DROP TABLE IF EXISTS <_v>`
+ *      so a retry after a half-applied rebuild doesn't fail on the
+ *      orphan temp table.
+ */
+function applyTableRebuildMigration(
+  db: Database.Database,
+  sql: string,
+  bumpSchemaVersion: () => void,
+): void {
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec(sql);
+      bumpSchemaVersion();
+    })();
+  } finally {
+    db.pragma("foreign_keys = ON");
   }
 }
 
@@ -701,7 +741,11 @@ const MIGRATION_009 = `
 //   - Resolver tick frequency unchanged (the sub-hour scaling concern
 //     is deferred until we have meaningful sub-hour traffic)
 const MIGRATION_010 = `
-  PRAGMA foreign_keys = OFF;
+  -- Idempotent retry guard: an interrupted earlier attempt could have left
+  -- this temp table behind. Drop before recreating so a fresh transaction
+  -- can run cleanly. PRAGMA foreign_keys is set OFF in JS BEFORE the
+  -- transaction begins (it can't toggle inside a transaction).
+  DROP TABLE IF EXISTS submissions_v3;
 
   CREATE TABLE submissions_v3 (
     call_id           TEXT PRIMARY KEY,
@@ -762,8 +806,6 @@ const MIGRATION_010 = `
   CREATE INDEX idx_submissions_privacy_mode ON submissions(privacy_mode);
   CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
   CREATE INDEX idx_submissions_round ON submissions(round_id) WHERE round_id IS NOT NULL;
-
-  PRAGMA foreign_keys = ON;
 `;
 
 // ─── Migration 011 — oracle_policies fallback columns nullable ─────────────
@@ -782,7 +824,9 @@ const MIGRATION_010 = `
 // dependent tables that reference IT (only submissions has dependents),
 // so this is a clean rebuild.
 const MIGRATION_011 = `
-  PRAGMA foreign_keys = OFF;
+  -- Same atomicity discipline as 010: idempotent retry guard, JS-side
+  -- PRAGMA + transaction wrapper.
+  DROP TABLE IF EXISTS oracle_policies_v2;
 
   CREATE TABLE oracle_policies_v2 (
     call_id                       TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
@@ -807,8 +851,6 @@ const MIGRATION_011 = `
 
   DROP TABLE oracle_policies;
   ALTER TABLE oracle_policies_v2 RENAME TO oracle_policies;
-
-  PRAGMA foreign_keys = ON;
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────

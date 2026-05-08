@@ -66,9 +66,11 @@ export class PolicyDerivationError extends Error {
       | "primary_oracle_unknown"
       | "primary_oracle_not_listed"
       | "primary_feed_unmapped"
+      | "primary_oracle_asset_mismatch"
       | "fallback_oracle_unknown"
       | "fallback_oracle_not_listed"
       | "fallback_feed_unmapped"
+      | "fallback_oracle_asset_mismatch"
       | "fallback_max_staleness_missing",
     public readonly context?: Record<string, unknown>,
   ) {
@@ -80,23 +82,37 @@ export class PolicyDerivationError extends Error {
 function loadListedOracle(
   db: Database.Database,
   oracle_id: string,
-  market_id: string,
+  market: MarketRow,
   side: "primary" | "fallback",
 ): OracleRow {
   const row = oraclesRepo.get(db, oracle_id);
   if (!row) {
     throw new PolicyDerivationError(
-      `market ${market_id} ${side} oracle ${oracle_id} not in registry`,
-      market_id,
+      `market ${market.market_id} ${side} oracle ${oracle_id} not in registry`,
+      market.market_id,
       side === "primary" ? "primary_oracle_unknown" : "fallback_oracle_unknown",
     );
   }
   if (row.status !== "listed") {
     throw new PolicyDerivationError(
-      `market ${market_id} ${side} oracle ${oracle_id} status=${row.status}; needed 'listed'`,
-      market_id,
+      `market ${market.market_id} ${side} oracle ${oracle_id} status=${row.status}; needed 'listed'`,
+      market.market_id,
       side === "primary" ? "primary_oracle_not_listed" : "fallback_oracle_not_listed",
       { status: row.status },
+    );
+  }
+  // P3 Phase 2d hardening (Codex audit Bug 3): ensure the oracle row's
+  // asset_id matches the market's. A miswired registry row (operator typo
+  // setting a market's primary_oracle_id to an oracle that prices a
+  // different asset) would otherwise silently stamp the wrong feed.
+  if (row.asset_id !== market.asset_id) {
+    throw new PolicyDerivationError(
+      `market ${market.market_id} ${side} oracle ${oracle_id} prices ${row.asset_id}, market is ${market.asset_id}`,
+      market.market_id,
+      side === "primary"
+        ? "primary_oracle_asset_mismatch"
+        : "fallback_oracle_asset_mismatch",
+      { oracle_asset_id: row.asset_id, market_asset_id: market.asset_id },
     );
   }
   return row;
@@ -142,7 +158,7 @@ export function derivePolicyFromMarket(
   const primary = loadListedOracle(
     db,
     market.primary_oracle_id,
-    market.market_id,
+    market,
     "primary",
   );
   const primary_feed = feedForOracle(primary, market.market_id, "primary");
@@ -162,7 +178,7 @@ export function derivePolicyFromMarket(
     const fallback = loadListedOracle(
       db,
       market.fallback_oracle_id!,
-      market.market_id,
+      market,
       "fallback",
     );
     const fallback_feed = feedForOracle(
