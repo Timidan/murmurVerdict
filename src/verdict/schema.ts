@@ -546,6 +546,17 @@ export type VerdictResolution = z.infer<typeof VerdictResolutionSchema>;
 // Original v0.1 shape: bakes the agent-submitted plaintext envelope into
 // the receipt subject. Still produced for benchmark + shadow-ingestion
 // agents per D20 — those stay legacy_plaintext until v0.3.
+//
+// P3 Phase 2a hardening (Codex audit): when an agent submitted with the
+// market_id wire shape but legacy_plaintext mode, the embedded `submission`
+// keeps the legacy shape (asset_id + horizon_hours synthesized from the
+// market) — that's a back-compat requirement of SubmittedCallSchema's
+// exactly-one rule. Without something else surfacing the market_id, the v1
+// receipt has no record of which wire shape the agent used (v1 doesn't
+// carry request_hash). Top-level market_id + market_config_version close
+// that ambiguity additively: old verifiers see legacy fields, new
+// verifiers see the explicit selector + policy version. Both fields are
+// optional so receipts already issued before this change keep parsing.
 const AcceptanceReceiptPayloadV1Schema = z
   .object({
     schema_version: z.literal(1),
@@ -559,6 +570,10 @@ const AcceptanceReceiptPayloadV1Schema = z
     // pre-existing receipts that didn't have it).
     agent_wallet: WalletAddressSchema.optional(),
     chain_id: ChainIdSchema.optional(),
+    // P3 Phase 2a hardening: explicit selector + policy version when the
+    // agent used the market_id wire shape. Optional for back-compat.
+    market_id: MarketIdSchema.optional(),
+    market_config_version: z.number().int().positive().optional(),
   })
   .strict();
 

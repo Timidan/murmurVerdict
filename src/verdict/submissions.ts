@@ -219,7 +219,22 @@ export async function submitCall(args: {
     );
   }
 
-  // 3. P3 — resolve market from either wire shape, gate on listed status.
+  // 3. P3 hardening (Codex audit, post-Phase 2a):
+  //    Idempotency MUST run before the live market lookup + status gate.
+  //    Otherwise a valid retry on an already-accepted client_order_id can
+  //    fail when the market was frozen/retired between attempts. The
+  //    receipt was minted under the old policy; returning the existing
+  //    call is the correct semantics.
+  const existing = submissionsRepo.findByClientOrderId(
+    db,
+    identity.agent_id,
+    rawSubmission.client_order_id,
+  );
+  if (existing) {
+    return loadExistingAcceptedCall(db, existing.call_id, true);
+  }
+
+  // 4. P3 — resolve market from either wire shape, gate on listed status.
   const market: MarketRow | null = resolveMarketFromPayload(db, {
     market_id: rawSubmission.market_id,
     asset_id: rawSubmission.asset_id,
@@ -279,16 +294,6 @@ export async function submitCall(args: {
     asset_id: market.asset_id as SubmittedCall["asset_id"],
     horizon_hours: horizonHoursFromMarket as SubmittedCall["horizon_hours"],
   };
-
-  // 4. idempotency on (agent_id, client_order_id)
-  const existing = submissionsRepo.findByClientOrderId(
-    db,
-    identity.agent_id,
-    submission.client_order_id,
-  );
-  if (existing) {
-    return loadExistingAcceptedCall(db, existing.call_id, true);
-  }
 
   // 5. rate limits — layered (Codex P3 D3):
   //    a. global active per agent (5)
@@ -507,8 +512,15 @@ export async function submitCall(args: {
     // The constant is locked, not configurable — see commit-preimage.ts.
     // P3: read horizon from the market row (not submission.horizon_hours)
     // so sub-hour markets compute fallback correctly when they're listed.
+    //
+    // P3 Phase 2a hardening (Codex audit): anchor fallback_after to the
+    // CAPTURED accepted_at, not a fresh now() call. accepted_at was
+    // stamped above for dedup; reusing it here keeps the receipt's
+    // (accepted_at, fallback_after) pair coherent — a second now() can
+    // drift by ~1s across the boundary, leaving fallback_after slightly
+    // off the receipt-attested anchor.
     const fallback_after_ms =
-      now().getTime() + market.horizon_seconds * 1_000 + REVEAL_GRACE_MS;
+      Date.parse(accepted_at) + market.horizon_seconds * 1_000 + REVEAL_GRACE_MS;
     const fallback_after = new Date(fallback_after_ms)
       .toISOString()
       .replace(/\.\d+Z$/, "Z");
@@ -607,9 +619,11 @@ export async function submitCall(args: {
   } else {
     // v1 (legacy_plaintext) receipts embed the submission verbatim. The
     // wire schema rejects payloads carrying BOTH market_id and (asset_id,
-    // horizon_hours), so the embedded submission must keep the legacy
-    // shape only — strip market_id, leave asset_id + horizon_hours that
-    // were synthesized during normalization.
+    // horizon_hours), so the embedded submission keeps the legacy shape —
+    // strip market_id from the embedded form. For agents that USED the
+    // market_id wire shape, surface it at the receipt's top level
+    // alongside market_config_version so verifiers can reproduce the
+    // submitted selector even though v1 has no request_hash.
     const v1Submission: SubmittedCall = { ...submission };
     delete (v1Submission as { market_id?: string }).market_id;
     const v1payload = AcceptanceReceiptPayloadSchema.parse({
@@ -622,6 +636,12 @@ export async function submitCall(args: {
       call_id,
       ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
       ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
+      ...(wireUsedMarketId
+        ? {
+            market_id: market.market_id,
+            market_config_version: market.market_config_version,
+          }
+        : {}),
     });
     receipt = buildAcceptanceReceipt(v1payload);
   }

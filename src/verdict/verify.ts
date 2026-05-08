@@ -9,6 +9,7 @@ import {
   outcomeFromSignedReturn,
   scoreCall,
 } from "./scoring.js";
+import { parseAndRebuildPreimageByDomain } from "./commit-preimage.js";
 import type { AssetId, HorizonHours, Side } from "./schema.js";
 
 // ─── /v1/calls/:id/verify ─────────────────────────────────────────────────────
@@ -186,28 +187,50 @@ export function verifyReceiptChain(
     // preimage, the call_reveals row carries the recomputed hash. It
     // MUST match the receipt's commit.hash. Skipped when the call
     // hasn't been revealed yet.
+    //
+    // P3 Phase 2a hardening (Codex audit): re-parse + re-validate +
+    // re-hash from the stored canonical JSON. The pre-fix check trusted
+    // the row's commit_preimage_hash column at face value — a tamper
+    // path that mutates commit_preimage_json without updating the hash
+    // would slip through. The stricter check is fail-closed:
+    //   1. Stored hash must equal receipt.commit.hash
+    //   2. Recomputed hash (from canonical JSON) must equal receipt.commit.hash
+    // Either mismatch flags the check.
     const revealRow = db
       .prepare(
-        "SELECT commit_preimage_hash, reveal_hash_valid, revealed_via FROM call_reveals WHERE call_id = ?",
+        "SELECT commit_preimage_hash, commit_preimage_json, reveal_hash_valid, revealed_via FROM call_reveals WHERE call_id = ?",
       )
       .get(call_id) as
       | {
           commit_preimage_hash: string | null;
+          commit_preimage_json: string | null;
           reveal_hash_valid: number;
           revealed_via: string;
         }
       | undefined;
     if (revealRow?.commit_preimage_hash) {
+      const expected = v2.commit.hash.toLowerCase();
+      const storedHashOk =
+        revealRow.commit_preimage_hash.toLowerCase() === expected &&
+        revealRow.reveal_hash_valid === 1;
+      let recomputedHashOk = false;
+      let recomputedHash: string | null = null;
+      if (revealRow.commit_preimage_json) {
+        const validated = parseAndRebuildPreimageByDomain(
+          revealRow.commit_preimage_json,
+        );
+        if (validated) {
+          recomputedHash = validated.hash;
+          recomputedHashOk = validated.hash.toLowerCase() === expected;
+        }
+      }
       checks.push({
         name: "reveal_canonical_hash",
         status:
-          revealRow.commit_preimage_hash.toLowerCase() ===
-            v2.commit.hash.toLowerCase() && revealRow.reveal_hash_valid === 1
-            ? "match"
-            : "mismatch",
-        stored: v2.commit.hash,
-        recomputed: revealRow.commit_preimage_hash,
-        note: `revealed_via=${revealRow.revealed_via}`,
+          storedHashOk && recomputedHashOk ? "match" : "mismatch",
+        stored: revealRow.commit_preimage_hash,
+        recomputed: recomputedHash,
+        note: `revealed_via=${revealRow.revealed_via}; storedHashOk=${storedHashOk} recomputedHashOk=${recomputedHashOk}`,
       });
     } else {
       checks.push({
