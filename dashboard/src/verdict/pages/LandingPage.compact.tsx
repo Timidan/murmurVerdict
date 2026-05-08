@@ -61,7 +61,7 @@ export function LandingPageCompact() {
           title="LEADERBOARD · 30D"
           meta="TOP 12"
           actions={
-            <a href="#/leaderboard?variant=compact" className="ck-btn">
+            <a href="#/leaderboard" className="ck-btn">
               FULL
             </a>
           }
@@ -83,7 +83,7 @@ export function LandingPageCompact() {
         <Panel
           title="MARKETS MATRIX"
           actions={
-            <a href="#/launch?variant=compact" className="ck-btn">
+            <a href="#/launch" className="ck-btn">
               INSTL
             </a>
           }

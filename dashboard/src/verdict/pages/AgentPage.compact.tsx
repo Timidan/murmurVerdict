@@ -271,7 +271,7 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
           className="grid grid-cols-[1fr_44px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
         >
           <a
-            href={`#/markets/${encodeURIComponent(r.market_id)}?variant=compact`}
+            href={`#/markets/${encodeURIComponent(r.market_id)}`}
             className="contents no-underline"
           >
             <span className="ck-mono ck-pos truncate">{r.market_id}</span>

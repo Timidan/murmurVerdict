@@ -1,20 +1,11 @@
 import { useEffect, useState, lazy, Suspense } from "react";
 
-const VerdictLanding = lazy(() => import("./pages/Landing.js").then((m) => ({ default: m.VerdictLanding })));
-const LeaderboardPage = lazy(() =>
-  import("./pages/LeaderboardPage.js").then((m) => ({ default: m.LeaderboardPage })),
-);
 const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ default: m.TodayPage })));
-const AgentPage = lazy(() => import("./pages/AgentPage.js").then((m) => ({ default: m.AgentPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
 const ClaimPage = lazy(() => import("./pages/ClaimPage.js").then((m) => ({ default: m.ClaimPage })));
-const LaunchPage = lazy(() => import("./pages/LaunchPage.js").then((m) => ({ default: m.LaunchPage })));
 const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ default: m.SharePage })));
 const RecruitersPage = lazy(() => import("./pages/RecruitersPage.js").then((m) => ({ default: m.RecruitersPage })));
 const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => ({ default: m.AdminRefsPage })));
-const MarketDetailPage = lazy(() =>
-  import("./pages/MarketDetailPage.js").then((m) => ({ default: m.MarketDetailPage })),
-);
 
 /* ── Variant gate ────────────────────────────────────────────────────────
    `?variant=bold|compact|calm` (passed in the hash query, e.g.
@@ -173,20 +164,16 @@ export function VerdictRouter() {
           <LandingPageBold />
         ) : variant === "calm" ? (
           <LandingPageCalm />
-        ) : variant === "compact" ? (
-          <LandingPageCompact />
         ) : (
-          <VerdictLanding />
+          <LandingPageCompact />
         ))}
       {route.name === "leaderboard" &&
         (variant === "bold" ? (
           <LeaderboardPageBold />
         ) : variant === "calm" ? (
           <LeaderboardPageCalm />
-        ) : variant === "compact" ? (
-          <LeaderboardPageCompact />
         ) : (
-          <LeaderboardPage />
+          <LeaderboardPageCompact />
         ))}
       {route.name === "today" && <TodayPage />}
       {route.name === "agent" &&
@@ -194,20 +181,16 @@ export function VerdictRouter() {
           <AgentPageBold slug={route.params!.slug} />
         ) : variant === "calm" ? (
           <AgentPageCalm slug={route.params!.slug} />
-        ) : variant === "compact" ? (
-          <AgentPageCompact slug={route.params!.slug} />
         ) : (
-          <AgentPage slug={route.params!.slug} />
+          <AgentPageCompact slug={route.params!.slug} />
         ))}
       {route.name === "agent_calls" &&
         (variant === "bold" ? (
           <AgentPageBold slug={route.params!.slug} />
         ) : variant === "calm" ? (
           <AgentPageCalm slug={route.params!.slug} />
-        ) : variant === "compact" ? (
-          <AgentPageCompact slug={route.params!.slug} />
         ) : (
-          <AgentPage slug={route.params!.slug} />
+          <AgentPageCompact slug={route.params!.slug} />
         ))}
       {route.name === "call" && <CallPage callId={route.params!.call_id} />}
       {route.name === "claim" && <ClaimPage slug={route.params!.slug} />}
@@ -216,10 +199,8 @@ export function VerdictRouter() {
           <LaunchPageBold />
         ) : variant === "calm" ? (
           <LaunchPageCalm />
-        ) : variant === "compact" ? (
-          <LaunchPageCompact />
         ) : (
-          <LaunchPage />
+          <LaunchPageCompact />
         ))}
       {route.name === "share" && <SharePage slug={route.params!.slug} />}
       {route.name === "recruiters" && <RecruitersPage />}
@@ -229,10 +210,8 @@ export function VerdictRouter() {
           <MarketDetailPageBold marketId={route.params!.market_id} />
         ) : variant === "calm" ? (
           <MarketDetailPageCalm marketId={route.params!.market_id} />
-        ) : variant === "compact" ? (
-          <MarketDetailPageCompact marketId={route.params!.market_id} />
         ) : (
-          <MarketDetailPage marketId={route.params!.market_id} />
+          <MarketDetailPageCompact marketId={route.params!.market_id} />
         ))}
       {route.name === "spec" && <SpecPage />}
     </Suspense>

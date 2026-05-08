@@ -124,7 +124,7 @@ export function MarketDetailPageCompact({ marketId }: { marketId: string }) {
               title="AGENT LADDER"
               meta={agents ? `${agents.length}` : ""}
               actions={
-                <a href="#/launch?variant=compact" className="ck-btn">
+                <a href="#/launch" className="ck-btn">
                   ALL MARKETS
                 </a>
               }
@@ -241,7 +241,7 @@ function NotFound({ marketId }: { marketId: string }) {
       <p className="ck-mono ck-dim mt-1 leading-tight">
         No market is registered under <span className="ck-pos">{marketId}</span>. It may be retired or stale.
       </p>
-      <a href="#/launch?variant=compact" className="ck-btn mt-2 inline-flex">
+      <a href="#/launch" className="ck-btn mt-2 inline-flex">
         ← BACK TO INSTALL
       </a>
     </div>

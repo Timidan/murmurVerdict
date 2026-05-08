@@ -96,7 +96,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
             className="grid grid-cols-[110px_60px_56px_46px_1fr_60px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
           >
             <a
-              href={`#/markets/${encodeURIComponent(m.market_id)}?variant=compact`}
+              href={`#/markets/${encodeURIComponent(m.market_id)}`}
               className="contents no-underline"
             >
               <span className="ck-mono ck-pos truncate" title={m.market_id}>

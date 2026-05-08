@@ -1,14 +1,8 @@
 import { useEffect, useState } from "react";
 import { verdictApi, type TodayFeed, type TodayFeedRow } from "../api.js";
-import { Topbar } from "../components/Topbar.js";
-import { OutcomeChip } from "../components/OutcomeChip.js";
-import { side as sideTokens } from "../ui/tokens.js";
+import { CompactTopbar } from "../components/compact/Topbar.js";
+import { Panel } from "../components/compact/Panel.js";
 
-/**
- * Today tape — every call accepted or resolved in the last 24h. SSE-fed
- * via /v1/feed/today on first paint, then live via the stream. Pure
- * tabular, no animations.
- */
 export function TodayPage() {
   const [feed, setFeed] = useState<TodayFeed | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -29,120 +23,134 @@ export function TodayPage() {
   }, []);
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
-      <Topbar crumb="today" />
+    <div className="compact-shell min-h-dvh flex flex-col">
+      <CompactTopbar crumb="FEED · LAST 24H" />
 
-      <main className="flex-1 max-w-[1280px] w-full mx-auto px-6 md:px-10 py-12">
-        <header className="mb-8">
-          <p className="t-label text-[var(--color-secondary)] mb-3">today · last 24h</p>
-          <h1 className="t-heading max-w-[36ch]">
-            every call <span className="text-[var(--color-display)]">resolved</span> against an oracle.
-          </h1>
-        </header>
+      {/* STATS RIBBON ───────────────────────────────────────────── */}
+      <section className="grid grid-cols-5 border-b border-[var(--color-border)]">
+        <Stat label="ACC·24H" value={feed?.totals.accepted_24h ?? "—"} />
+        <Stat label="RES·24H" value={feed?.totals.resolved_24h ?? "—"} />
+        <Stat label="WIN·24H" value={feed?.totals.wins_24h ?? "—"} tone="ck-pos" />
+        <Stat
+          label="LOSS·24H"
+          value={feed?.totals.losses_24h ?? "—"}
+          tone={feed && feed.totals.losses_24h > 0 ? "ck-neg" : "ck-dim"}
+        />
+        <Stat label="VOID·24H" value={feed?.totals.void_24h ?? "—"} tone="ck-dim" />
+      </section>
 
-        {error && (
-          <div className="border border-[var(--color-accent)] px-6 py-12 t-body-sm text-[var(--color-accent)]">
-            [ERROR] {error}
-          </div>
-        )}
+      {error && (
+        <div className="px-2 py-2 ck-mono ck-neg border-b border-[var(--color-border)]">
+          [ERROR] {error}
+        </div>
+      )}
 
-        {!error && !feed && (
-          <div className="px-6 py-24 t-meta text-[var(--color-disabled)]">[loading …]</div>
-        )}
+      {!error && !feed && (
+        <div className="px-2 py-4 ck-label ck-dim">[LOADING…]</div>
+      )}
 
-        {feed && (
-          <>
-            <Stats feed={feed} />
-            <FeedSection title="LIVE · PENDING" rows={feed.pending_resolution} pending />
-            <FeedSection title="RESOLVED · LAST 24H" rows={feed.resolved_recent} />
-            <FeedSection title="ACCEPTED · LAST 24H" rows={feed.accepted_recent} />
-          </>
-        )}
-      </main>
+      {feed && (
+        <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 min-h-0">
+          <Panel
+            title="LIVE · PENDING"
+            meta={feed.pending_resolution.length.toString()}
+            className="lg:border-r-0"
+          >
+            <FeedRows rows={feed.pending_resolution} pending />
+          </Panel>
+          <Panel
+            title="RESOLVED · 24H"
+            meta={feed.resolved_recent.length.toString()}
+            className="lg:border-r-0"
+          >
+            <FeedRows rows={feed.resolved_recent} />
+          </Panel>
+          <Panel title="ACCEPTED · 24H" meta={feed.accepted_recent.length.toString()}>
+            <FeedRows rows={feed.accepted_recent} />
+          </Panel>
+        </main>
+      )}
+
+      <footer className="flex items-center gap-3 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">
+        <a href="#/" className="ck-mono ck-dim hover:ck-pos no-underline">
+          ← HOME
+        </a>
+        <span>·</span>
+        <a href="#/leaderboard" className="ck-mono ck-dim hover:ck-pos no-underline">
+          LEADERBOARD
+        </a>
+        <span className="ml-auto ck-mono ck-dim">FEED · 24H ROLLING</span>
+      </footer>
     </div>
   );
 }
 
-function Stats({ feed }: { feed: TodayFeed }) {
+function FeedRows({ rows, pending }: { rows: TodayFeedRow[]; pending?: boolean }) {
+  if (rows.length === 0) {
+    return <div className="px-2 py-3 ck-label ck-dim">[empty]</div>;
+  }
   return (
-    <dl className="grid grid-cols-2 md:grid-cols-5 border-y border-[var(--color-border)] mb-12">
-      <Cell label="accepted" value={feed.totals.accepted_24h} />
-      <Cell label="resolved" value={feed.totals.resolved_24h} />
-      <Cell label="wins" value={feed.totals.wins_24h} />
-      <Cell label="losses" value={feed.totals.losses_24h} accent={feed.totals.losses_24h > 0} />
-      <Cell label="void" value={feed.totals.void_24h} />
-    </dl>
+    <ul className="m-0 p-0 list-none">
+      {rows.map((row) => {
+        const scrubbed = isScrubbed(row);
+        const ts = (row.submitted_at ?? row.accepted_at).slice(11, 19);
+        const sideClass =
+          scrubbed || pending
+            ? "ck-dim"
+            : row.side === "BUY"
+              ? "ck-pos"
+              : row.side === "SELL"
+                ? "ck-neg"
+                : "ck-dim";
+        const outcomeText = pending
+          ? "PEND"
+          : row.call_score !== null && row.call_score !== undefined
+            ? `${row.call_score >= 0 ? "+" : ""}${row.call_score.toFixed(3)}`
+            : (row.outcome ?? "live").toUpperCase();
+        const outcomeTone = pending
+          ? "ck-dim"
+          : row.outcome === "win"
+            ? "ck-pos"
+            : row.outcome === "loss"
+              ? "ck-neg"
+              : "ck-dim";
+        return (
+          <li
+            key={row.call_id}
+            className="grid grid-cols-[60px_36px_46px_1fr_60px] gap-2 px-2 py-1 border-b border-[var(--color-border)] items-center"
+          >
+            <a href={`#/calls/${row.call_id}`} className="contents no-underline">
+              <span className="ck-mono ck-dim">{ts}</span>
+              <span className={"ck-label " + sideClass}>{scrubbed ? "HASH" : row.side}</span>
+              <span className="ck-mono ck-pos truncate">
+                {scrubbed ? "COMMIT" : row.asset_id?.split(":").pop() ?? row.asset_id}
+              </span>
+              <span className="ck-mono ck-dim truncate">@{row.agent_slug}</span>
+              <span className={"ck-mono text-right " + outcomeTone}>{outcomeText}</span>
+            </a>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
-function Cell({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
-  return (
-    <div className="px-6 py-4 border-r border-[var(--color-border)] last:border-r-0 flex flex-col gap-3">
-      <dt className="t-label">{label}</dt>
-      <dd className={"t-stat-num m-0 " + (accent ? "text-[var(--color-accent)]" : "")}>
-        {value.toString().padStart(2, "0")}
-      </dd>
-    </div>
-  );
-}
-
-function FeedSection({
-  title,
-  rows,
-  pending,
+function Stat({
+  label,
+  value,
+  tone = "ck-pos",
 }: {
-  title: string;
-  rows: TodayFeedRow[];
-  pending?: boolean;
+  label: string;
+  value: number | string;
+  tone?: string;
 }) {
-  if (rows.length === 0) return null;
   return (
-    <section className="border-y border-[var(--color-border)] mb-8">
-      <div className="px-6 py-3 t-label">{title}</div>
-      <ul className="m-0 p-0 list-none">
-        {rows.map((row, i) => {
-          const scrubbed = isScrubbed(row);
-          return (
-            <li
-              key={row.call_id}
-              className={
-                "grid grid-cols-[110px_70px_60px_90px_1fr_100px] gap-4 px-6 py-3 items-center " +
-                (i > 0 ? "border-t border-[var(--color-border)] " : "")
-              }
-            >
-              <a href={`#/calls/${row.call_id}`} className="contents no-underline press-feedback">
-                <span className="t-data text-[var(--color-secondary)]">
-                  {(row.submitted_at ?? row.accepted_at).slice(11, 19)}
-                </span>
-                <span className={"t-button " + (row.side === "SELL" ? sideTokens.sell : sideTokens.buy)}>
-                  {scrubbed ? "HASH" : row.side}
-                </span>
-                <span className="t-data text-[var(--color-display)]">
-                  {scrubbed ? "COMMIT" : row.asset_id?.split(":").pop() ?? row.asset_id}
-                </span>
-                <span className="t-data text-[var(--color-secondary)]">
-                  {scrubbed
-                    ? "sealed"
-                    : `${row.horizon_hours}H · ${((row.confidence ?? 0) * 100).toFixed(0)}%`}
-                </span>
-                <span className="t-body-sm text-[var(--color-secondary)]">
-                  @{row.agent_slug}
-                </span>
-                <span className="text-right">
-                  <OutcomeChip outcome={pending ? "live" : row.outcome ?? "live"}>
-                    {pending
-                      ? "PEND"
-                      : row.call_score !== null && row.call_score !== undefined
-                      ? `${row.call_score >= 0 ? "+" : ""}${row.call_score.toFixed(3)}`
-                      : (row.outcome ?? "live").toUpperCase()}
-                  </OutcomeChip>
-                </span>
-              </a>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+    <div className="px-2 py-1.5 border-r border-[var(--color-border)] last:border-r-0 flex flex-col gap-0.5">
+      <span className="ck-label">{label}</span>
+      <span className={"ck-mono " + tone} style={{ fontSize: 14, fontWeight: 700 }}>
+        {value}
+      </span>
+    </div>
   );
 }
 

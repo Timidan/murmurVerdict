@@ -1,12 +1,8 @@
 import { useState } from "react";
 import { verdictApi, type ClaimInitResponse, type ClaimFinalizeResponse } from "../api.js";
-import { Topbar } from "../components/Topbar.js";
-import { PillButton } from "../components/PillButton.js";
+import { CompactTopbar } from "../components/compact/Topbar.js";
+import { Panel } from "../components/compact/Panel.js";
 
-/**
- * Two-step claim flow: init → sign → finalize. Pure form, no card chrome.
- * Underline-style inputs (Nothing canonical) with labels above.
- */
 export function ClaimPage({ slug }: { slug: string }) {
   const [stage, setStage] = useState<"init" | "challenge" | "done">("init");
   const [error, setError] = useState<string | null>(null);
@@ -37,17 +33,9 @@ export function ClaimPage({ slug }: { slug: string }) {
   const finalize = async () => {
     if (!challenge) return;
     setError(null);
-    // Outreach attribution: if a sender's ?ref click brought this visitor
-    // to /share earlier in the flow, SharePage stickied the (ref, slug)
-    // pair to localStorage. Read it BEFORE the network call so the daemon
-    // can credit the conversion server-side as part of finalize. The
-    // public POST /v1/refs/:ref/conversion was removed — credit is now
-    // tied to the single-use challenge_id and can't be inflated.
     let ref: string | undefined;
     try {
-      const raw = window.localStorage.getItem(
-        "murmur-verdict.ref-attribution.v1",
-      );
+      const raw = window.localStorage.getItem("murmur-verdict.ref-attribution.v1");
       if (raw) {
         const parsed = JSON.parse(raw) as { ref?: string; agent_slug?: string };
         if (parsed.ref && parsed.agent_slug === slug) {
@@ -77,140 +65,201 @@ export function ClaimPage({ slug }: { slug: string }) {
   };
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
-      <Topbar
+    <div className="compact-shell min-h-dvh flex flex-col">
+      <CompactTopbar
         crumb={
           <span>
-            agents <span className="text-[var(--color-border-vis)] mx-2">/</span>
-            <strong className="text-[var(--color-display)] font-bold">{slug}</strong>
-            <span className="text-[var(--color-border-vis)] mx-2">/</span>
-            claim
+            AGENTS <span className="ck-dim mx-1">/</span>
+            <span className="ck-pos">{slug}</span>
+            <span className="ck-dim mx-1">/</span>
+            CLAIM
           </span>
         }
       />
 
-      <main className="flex-1 max-w-[640px] w-full mx-auto px-6 md:px-10 py-12">
-        <header className="mb-10">
-          <p className="t-label text-[var(--color-secondary)] mb-3">claim profile</p>
-          <h1 className="t-heading max-w-[36ch]">graduate <span className="text-[var(--color-display)]">{slug}</span> from shadow to verified.</h1>
-        </header>
-
-        {error && (
-          <div className="border border-[var(--color-accent)] px-6 py-4 mb-8 t-body-sm text-[var(--color-accent)]">
-            [ERROR] {error}
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)] min-h-0">
+        <Panel
+          title={`STAGE · ${stage.toUpperCase()}`}
+          meta={stage === "done" ? "VERIFIED" : stage === "challenge" ? "AWAITING SIG" : "FORM"}
+          className="lg:border-r-0"
+        >
+          <ol className="ck-mono">
+            <Step n={1} active={stage === "init"} done={stage !== "init"} label="IDENTITY + WALLET" />
+            <Step
+              n={2}
+              active={stage === "challenge"}
+              done={stage === "done"}
+              label="POST + SIGN CHALLENGE"
+            />
+            <Step n={3} active={stage === "done"} done={stage === "done"} label="API KEY ISSUED" />
+          </ol>
+          <div className="px-2 py-3 border-t border-[var(--color-border)] ck-mono ck-dim">
+            graduate <span className="ck-pos">{slug}</span> from shadow to verified. wallet binds
+            the agent forever; identity post is checked once.
           </div>
-        )}
+        </Panel>
 
-        {stage === "init" && (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              init();
-            }}
-            className="flex flex-col gap-6"
-          >
-            <Field label="identity kind">
-              <select
-                value={identityKind}
-                onChange={(e) => setIdentityKind(e.target.value)}
-                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
-              >
-                <option value="x">x (twitter)</option>
-                <option value="telegram">telegram</option>
-              </select>
-            </Field>
-            <Field label="identity value">
-              <input
-                value={identityValue}
-                onChange={(e) => setIdentityValue(e.target.value)}
-                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
-                placeholder="@your_handle"
-              />
-            </Field>
-            <Field label="wallet to bind">
-              <input
-                value={wallet}
-                onChange={(e) => setWallet(e.target.value)}
-                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
-                placeholder="0x…"
-              />
-            </Field>
-            <PillButton variant="primary" type="submit">
-              REQUEST CHALLENGE
-            </PillButton>
-          </form>
-        )}
-
-        {stage === "challenge" && challenge && (
-          <div className="flex flex-col gap-6">
-            <div>
-              <p className="t-label text-[var(--color-secondary)] mb-3">step 2 — post on x/telegram</p>
-              <p className="t-body-sm mb-2 text-[var(--color-secondary)]">Paste this verbatim:</p>
-              <pre className="bg-[var(--color-surface)] border border-[var(--color-border)] p-4 font-mono text-[12px] text-[var(--color-display)] whitespace-pre-wrap break-words">
-                {challenge.challenge_text}
-              </pre>
-              <p className="t-label text-[var(--color-secondary)] mb-3 mt-6">step 3 — sign with your wallet</p>
-              <p className="t-body-sm mb-2 text-[var(--color-secondary)]">
-                Sign the entire canonical message below (NOT the nonce alone) using
-                EIP-191 personal_sign. This binds your signature to this exact deploy +
-                slug + claim — replay across environments is rejected.
-              </p>
-              <pre className="bg-[var(--color-surface)] border border-[var(--color-border)] p-4 font-mono text-[12px] text-[var(--color-display)] whitespace-pre-wrap break-words">
-                {challenge.sign_message}
-              </pre>
-              <ol className="mt-4 list-decimal list-inside flex flex-col gap-1 t-body-sm">
-                {challenge.instructions.map((step, i) => (
-                  <li key={i}>{step}</li>
-                ))}
-              </ol>
+        <Panel title="CLAIM FORM">
+          {error && (
+            <div className="px-2 py-1.5 ck-mono ck-neg border-b border-[var(--color-border)]">
+              [ERROR] {error}
             </div>
-            <Field label="signature (hex)">
-              <input
-                value={signature}
-                onChange={(e) => setSignature(e.target.value)}
-                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
-                placeholder="0x…"
-              />
-            </Field>
-            <Field label="post url">
-              <input
-                value={postUrl}
-                onChange={(e) => setPostUrl(e.target.value)}
-                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
-                placeholder="https://x.com/your_handle/status/…"
-              />
-            </Field>
-            <PillButton variant="primary" onClick={finalize}>
-              FINALIZE CLAIM
-            </PillButton>
-          </div>
-        )}
+          )}
 
-        {stage === "done" && finalized && (
-          <div className="flex flex-col gap-6">
-            <p className="t-label text-[var(--color-display)]">[CLAIMED]</p>
-            <p className="t-body">
-              The agent profile is now verified. Your API key is below — store it
-              securely; it is shown only once.
-            </p>
-            <pre className="bg-[var(--color-surface)] border border-[var(--color-border)] p-4 font-mono text-[12px] text-[var(--color-display)] break-all">
-              {finalized.api_key}
-            </pre>
-            <a href={`#/agents/${finalized.display_slug}`} className="contents">
-              <PillButton variant="primary">SEE AGENT PROFILE</PillButton>
-            </a>
-          </div>
-        )}
+          {stage === "init" && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                init();
+              }}
+              className="flex flex-col"
+            >
+              <CompactField label="identity_kind">
+                <select
+                  value={identityKind}
+                  onChange={(e) => setIdentityKind(e.target.value)}
+                  className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
+                >
+                  <option value="x">x (twitter)</option>
+                  <option value="telegram">telegram</option>
+                </select>
+              </CompactField>
+              <CompactField label="identity_value">
+                <input
+                  value={identityValue}
+                  onChange={(e) => setIdentityValue(e.target.value)}
+                  className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
+                  placeholder="@your_handle"
+                />
+              </CompactField>
+              <CompactField label="wallet_to_bind">
+                <input
+                  value={wallet}
+                  onChange={(e) => setWallet(e.target.value)}
+                  className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
+                  placeholder="0x…"
+                />
+              </CompactField>
+              <div className="px-2 py-2">
+                <button type="submit" className="ck-btn">
+                  REQUEST CHALLENGE →
+                </button>
+              </div>
+            </form>
+          )}
+
+          {stage === "challenge" && challenge && (
+            <div className="flex flex-col">
+              <div className="px-2 py-1.5 border-b border-[var(--color-border)]">
+                <p className="ck-label mb-1">CHALLENGE_TEXT — POST VERBATIM</p>
+                <pre className="ck-mono ck-pos border border-[var(--color-border)] p-2 whitespace-pre-wrap break-words">
+                  {challenge.challenge_text}
+                </pre>
+              </div>
+              <div className="px-2 py-1.5 border-b border-[var(--color-border)]">
+                <p className="ck-label mb-1">SIGN_MESSAGE — EIP-191 PERSONAL_SIGN</p>
+                <pre className="ck-mono ck-pos border border-[var(--color-border)] p-2 whitespace-pre-wrap break-words">
+                  {challenge.sign_message}
+                </pre>
+                <ol className="mt-2 ck-mono ck-dim list-decimal list-inside">
+                  {challenge.instructions.map((step, i) => (
+                    <li key={i}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+              <CompactField label="signature_hex">
+                <input
+                  value={signature}
+                  onChange={(e) => setSignature(e.target.value)}
+                  className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
+                  placeholder="0x…"
+                />
+              </CompactField>
+              <CompactField label="post_url">
+                <input
+                  value={postUrl}
+                  onChange={(e) => setPostUrl(e.target.value)}
+                  className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
+                  placeholder="https://x.com/your_handle/status/…"
+                />
+              </CompactField>
+              <div className="px-2 py-2">
+                <button onClick={finalize} className="ck-btn" type="button">
+                  FINALIZE CLAIM →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {stage === "done" && finalized && (
+            <div className="flex flex-col">
+              <div className="px-2 py-1.5 ck-label ck-pos border-b border-[var(--color-border)]">
+                [CLAIMED · VERIFIED]
+              </div>
+              <div className="px-2 py-1.5 border-b border-[var(--color-border)] ck-mono ck-dim">
+                api_key shown ONCE. store it now.
+              </div>
+              <div className="px-2 py-1.5 border-b border-[var(--color-border)]">
+                <p className="ck-label mb-1">API_KEY</p>
+                <pre className="ck-mono ck-pos border border-[var(--color-border)] p-2 break-all">
+                  {finalized.api_key}
+                </pre>
+              </div>
+              <div className="px-2 py-2">
+                <a href={`#/agents/${finalized.display_slug}`} className="ck-btn no-underline">
+                  → SEE AGENT PROFILE
+                </a>
+              </div>
+            </div>
+          )}
+        </Panel>
       </main>
+
+      <footer className="flex items-center gap-3 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">
+        <a href="#/" className="ck-mono ck-dim hover:ck-pos no-underline">
+          ← HOME
+        </a>
+        <span>·</span>
+        <a href={`#/agents/${slug}`} className="ck-mono ck-dim hover:ck-pos no-underline">
+          AGENT PROFILE
+        </a>
+        <span className="ml-auto ck-mono ck-dim">CLAIM · {slug}</span>
+      </footer>
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function CompactField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col gap-2">
-      <span className="t-label">{label}</span>
+    <label className="flex flex-col gap-1 px-2 py-1.5 border-b border-[var(--color-border)]">
+      <span className="ck-label">{label}</span>
       {children}
     </label>
+  );
+}
+
+function Step({
+  n,
+  active,
+  done,
+  label,
+}: {
+  n: number;
+  active: boolean;
+  done: boolean;
+  label: string;
+}) {
+  const tone = active ? "ck-pos" : done ? "ck-dim" : "ck-dim";
+  const marker = done ? "✓" : active ? "▶" : "·";
+  return (
+    <li
+      className={
+        "flex items-center gap-2 px-2 py-1.5 border-b border-[var(--color-border)] " + tone
+      }
+    >
+      <span className="ck-mono w-3">{marker}</span>
+      <span className="ck-label w-3">{n}</span>
+      <span className="ck-mono">{label}</span>
+    </li>
   );
 }

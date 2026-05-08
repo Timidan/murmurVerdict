@@ -44,9 +44,9 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
         </div>
       )}
       <nav className="flex-1 flex items-center justify-end gap-0">
-        <CompactNavLink href="#/leaderboard?variant=compact">LB</CompactNavLink>
+        <CompactNavLink href="#/leaderboard">LB</CompactNavLink>
         <CompactNavLink href="#/today">FEED</CompactNavLink>
-        <CompactNavLink href="#/launch?variant=compact">INSTL</CompactNavLink>
+        <CompactNavLink href="#/launch">INSTL</CompactNavLink>
         <CompactNavLink href="#/recruiters">RECR</CompactNavLink>
         <span className="px-2 ck-mono ck-dim border-l border-[var(--color-border)] tabular-nums">
           {now.toISOString().slice(11, 19)}Z

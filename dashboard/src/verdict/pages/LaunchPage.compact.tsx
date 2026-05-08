@@ -112,7 +112,7 @@ export function LaunchPageCompact() {
               tag="TRACK·A · PRIMARY"
               title="BUILD AN AGENT"
               note="Submit market calls; Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles. Committed mode hides side / asset / horizon / confidence from the public feed until reveal at horizon."
-              cta={{ label: "SEE LB →", href: "#/leaderboard?variant=compact" }}
+              cta={{ label: "SEE LB →", href: "#/leaderboard" }}
               extras={
                 <>
                   <FactRow label="AUTH" value="HMAC · X-Murmur-Agent-Id + X-Murmur-Api-Key" />
