@@ -34,6 +34,7 @@ import {
   AdapterError,
   type OracleObservation as AdapterObservation,
 } from "../integrations/oracles/types.js";
+import { feedToOracleId } from "./oracle-routing.js";
 import { buildResolutionReceipt } from "../receipts/verdictReceipt.js";
 import {
   computeSignedReturn,
@@ -618,20 +619,19 @@ export class Resolver {
   // — the legacy fallback simply errors and the call stays pending until
   // the schema work in Phase 2b lands.
   private async observeFeed(feed: OracleFeed): Promise<OracleObservation> {
+    // Phase 2b: every legal OracleFeed has a bidirectional map entry, so
+    // oracle_id is always defined. The legacy OracleClient fallback only
+    // triggers on an AdapterError (registry-level misconfiguration like
+    // draft oracle row or missing config) — at which point the legacy
+    // client knows ETH feeds and errors otherwise; non-ETH calls land
+    // pending and the operator gets a chance to fix the registry.
     const oracle_id = feedToOracleId(feed);
-    if (oracle_id) {
-      try {
-        const obs = await observeOracle(this.db, oracle_id);
-        return adapterToLegacyObservation(obs, feed);
-      } catch (err) {
-        // AdapterError comes from a misconfigured / draft oracle row;
-        // anything else (including network failures from the adapter) is
-        // a transient pending state. Either way, fall through to the
-        // legacy client so we don't lose ETH coverage during a registry
-        // misconfiguration.
-        if (!(err instanceof AdapterError)) {
-          throw err;
-        }
+    try {
+      const obs = await observeOracle(this.db, oracle_id);
+      return adapterToLegacyObservation(obs, feed);
+    } catch (err) {
+      if (!(err instanceof AdapterError)) {
+        throw err;
       }
     }
     return this.oracle.getLatestPrice(feed);
@@ -679,22 +679,10 @@ function isoFromUnixMs(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
 }
 
-// Legacy `feed` strings (T0Policy.primary_feed/fallback_feed) → adapter
-// registry oracle_ids. P3 Phase 2: keeps the OracleFeed enum stable while
-// routing observations through the data-driven adapter pipeline. New feeds
-// land by adding a row in `oracles` AND extending this map; the OracleFeed
-// enum widens at the same time (Phase 2b).
-// Exported for smoke / unit tests; production callers go through observeFeed.
-export function feedToOracleId(feed: OracleFeed): string | null {
-  switch (feed) {
-    case "chainlink:base:ETH-USD":
-      return "chainlink-base-eth-usd";
-    case "pyth:base:ETH-USD":
-      return "pyth-base-eth-usd";
-    default:
-      return null;
-  }
-}
+// (feedToOracleId is imported at the top of the file from oracle-routing.js
+//  AND re-exported below for back-compat with smoke tests that imported it
+//  from resolver.)
+export { feedToOracleId } from "./oracle-routing.js";
 
 // Adapter observations carry `oracle_id` + `asset_id`; the resolver still
 // expects the legacy shape (`feed`). Re-shape without losing fields the

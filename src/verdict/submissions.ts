@@ -5,7 +5,6 @@ import {
   AcceptedCall,
   AcceptedCallSchema,
   CallStatus,
-  DEFAULT_T0_POLICY,
   ERROR_CODES,
   SubmittedCall,
   SubmittedCallSchema,
@@ -40,6 +39,10 @@ import {
   perMarketDailyCap,
   resolveMarketFromPayload,
 } from "./markets.js";
+import {
+  derivePolicyFromMarket,
+  PolicyDerivationError,
+} from "./oracle-routing.js";
 import type { MarketRow } from "./db.js";
 
 /**
@@ -63,7 +66,12 @@ export interface SubmissionContext {
   pinReceipt?: (canonical_json: string) => Promise<string | null>;
   /** Now provider; injectable for tests. */
   now?: () => Date;
-  /** Per-call oracle policy; defaults to DEFAULT_T0_POLICY. */
+  /**
+   * Test-only override. Phase 2b: production submitCall always derives
+   * T0Policy from the resolved market row via derivePolicyFromMarket().
+   * Smoke / unit tests can inject a synthetic policy when bypassing the
+   * markets-registry path.
+   */
   oraclePolicy?: T0Policy;
   /**
    * P2 committed-mode age context. When present, agents may submit with
@@ -183,7 +191,11 @@ export async function submitCall(args: {
 }): Promise<SubmitResult> {
   const { db, ctx, identity, payload } = args;
   const now = ctx.now ?? (() => new Date());
-  const oraclePolicy = ctx.oraclePolicy ?? DEFAULT_T0_POLICY;
+  // Phase 2b: oracle policy is derived from the resolved market row at the
+  // point we know which market this call targets — see derivedOraclePolicy
+  // below. ctx.oraclePolicy survives only as a TEST OVERRIDE (smoke / unit
+  // tests can inject a synthetic T0Policy when the market lookup is being
+  // bypassed). Production never passes ctx.oraclePolicy.
 
   // 1. schema validation
   const parsed = SubmittedCallSchema.safeParse(payload);
@@ -280,6 +292,45 @@ export async function submitCall(args: {
       },
     );
   }
+
+  // Phase 2b: derive the per-call T0Policy from the market's primary +
+  // fallback oracle rows. Fail-closed if either referenced oracle isn't
+  // 'listed' or has no feed-string mapping. This closes the Codex-flagged
+  // silent-wrong-oracle footgun where a market.status flip on a market
+  // whose oracle was draft would let calls mint and resolve against the
+  // wrong feed.
+  let derivedOraclePolicy: T0Policy;
+  try {
+    derivedOraclePolicy = ctx.oraclePolicy ?? derivePolicyFromMarket(db, market);
+  } catch (err) {
+    if (err instanceof PolicyDerivationError) {
+      usageRepo.emit(
+        db,
+        makeUsage(
+          identity.agent_id,
+          "submission_rejected",
+          {
+            reason: "policy_derivation_failed",
+            market_id: market.market_id,
+            cause: err.cause,
+          },
+          now,
+        ),
+      );
+      throw new VerdictError(
+        `cannot mint call on ${market.market_id}: ${err.message}`,
+        ERROR_CODES.asset_not_supported,
+        400,
+        {
+          reason: "policy_derivation_failed",
+          market_id: market.market_id,
+          cause: err.cause,
+        },
+      );
+    }
+    throw err;
+  }
+  const oraclePolicy = derivedOraclePolicy;
 
   // P3: normalize the submission shape — fill in whichever side of the
   // either/or wire shape is missing. Receipts, dedup, and persistence all

@@ -46,9 +46,20 @@ export type StrategyTag = z.infer<typeof StrategyTagSchema>;
 
 // ─── Oracle feed registry ─────────────────────────────────────────────────────
 
+// P3 Phase 2b: enum widened to cover the four seeded assets × Chainlink/Pyth
+// providers. New feeds land by adding a row in `oracles` registry AND a
+// matching enum entry here AND a row in oracle-routing's bidirectional map.
+// The enum stays closed so a typo in a market row's primary_oracle_id
+// surfaces at submit time via derivePolicyFromMarket() rather than the
+// resolver tick.
 export const REGISTERED_ORACLE_FEEDS = [
   "chainlink:base:ETH-USD",
+  "chainlink:base:BTC-USD",
+  "chainlink:base:SOL-USD",
   "pyth:base:ETH-USD",
+  "pyth:base:BTC-USD",
+  "pyth:base:SOL-USD",
+  "pyth:base:BNB-USD",
 ] as const;
 export const OracleFeedSchema = z.enum(REGISTERED_ORACLE_FEEDS);
 export type OracleFeed = z.infer<typeof OracleFeedSchema>;
@@ -431,10 +442,15 @@ export type VerdictPreflight = z.infer<typeof VerdictPreflightSchema>;
 
 // ─── T0 / oracle anchoring policy ────────────────────────────────────────────
 
+// P3 Phase 2b: feeds widened from ETH literals to the full OracleFeedSchema
+// enum. submitCall now derives T0Policy from the resolved market row via
+// derivePolicyFromMarket() — receipts for non-ETH markets carry their own
+// feeds, not synthesized ETH. Existing v1 receipts already issued only
+// referenced ETH feeds, which still pass the wider enum.
 export const T0PolicySchema = z
   .object({
-    primary_feed: z.literal("chainlink:base:ETH-USD"),
-    fallback_feed: z.literal("pyth:base:ETH-USD"),
+    primary_feed: OracleFeedSchema,
+    fallback_feed: OracleFeedSchema,
     primary_max_staleness_sec: z.number().int().positive(),
     fallback_max_staleness_sec: z.number().int().positive(),
     t0_grace_seconds: z.number().int().positive(),
