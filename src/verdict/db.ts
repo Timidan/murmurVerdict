@@ -137,10 +137,15 @@ function applyMigrations(db: Database.Database): void {
 
   if (v < 12) {
     // P4 Phase A — append-only market_config_history. No FK cascade,
-    // no rebuild; plain exec is atomic for the table-create + seed.
-    db.exec(MIGRATION_012);
+    // no rebuild. Codex audit fix: wrap DDL + schema_meta bump in a
+    // single transaction so a crash between them can't leave the table
+    // created with schema_version still at 11 (next openDb would
+    // re-run and fail on duplicate CREATE).
+    db.transaction(() => {
+      db.exec(MIGRATION_012);
+      set.run("schema_version", "12");
+    })();
     v = 12;
-    set.run("schema_version", String(v));
   }
 }
 
@@ -939,23 +944,28 @@ const MIGRATION_011 = `
 // has a history entry. Future bumpConfig calls append the NEW version
 // inside the same transaction as the markets UPDATE.
 const MIGRATION_012 = `
-  CREATE TABLE market_config_history (
+  -- Idempotent on retry: an interrupted previous attempt left the JS-side
+  -- schema_version at 11 but the SQL DDL might have partially run. With
+  -- IF NOT EXISTS on every DDL, a retry inside the new atomic transaction
+  -- wrapper completes cleanly. INSERT OR IGNORE on the seed prevents
+  -- duplicate primary key on a partial seed.
+  CREATE TABLE IF NOT EXISTS market_config_history (
     market_id              TEXT NOT NULL,
     market_config_version  INTEGER NOT NULL,
     snapshot_json          TEXT NOT NULL,
     recorded_at            TEXT NOT NULL,
     PRIMARY KEY (market_id, market_config_version)
   );
-  CREATE INDEX idx_market_config_history_market
+  CREATE INDEX IF NOT EXISTS idx_market_config_history_market
     ON market_config_history(market_id);
 
   -- Truly append-only: refuse UPDATE / DELETE post-insert.
-  CREATE TRIGGER market_config_history_no_update
+  CREATE TRIGGER IF NOT EXISTS market_config_history_no_update
     BEFORE UPDATE ON market_config_history
     BEGIN
       SELECT RAISE(FAIL, 'market_config_history is append-only');
     END;
-  CREATE TRIGGER market_config_history_no_delete
+  CREATE TRIGGER IF NOT EXISTS market_config_history_no_delete
     BEFORE DELETE ON market_config_history
     BEGIN
       SELECT RAISE(FAIL, 'market_config_history is append-only');
@@ -963,7 +973,9 @@ const MIGRATION_012 = `
 
   -- Seed: capture every current market row at its current version.
   -- snapshot_json is built from the live markets columns via JSON1.
-  INSERT INTO market_config_history
+  -- INSERT OR IGNORE for retry safety: a partial seed from a crashed
+  -- previous attempt won't trip the (market_id, version) PK uniqueness.
+  INSERT OR IGNORE INTO market_config_history
     (market_id, market_config_version, snapshot_json, recorded_at)
   SELECT
     market_id,

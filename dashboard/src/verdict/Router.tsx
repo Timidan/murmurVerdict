@@ -52,7 +52,18 @@ function parseHash(hash: string): ParsedRoute {
   const shareMatch = /^\/share\/([^/]+)$/.exec(path);
   if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
   const marketMatch = /^\/markets\/(.+)$/.exec(path);
-  if (marketMatch) return { name: "market", params: { market_id: decodeURIComponent(marketMatch[1]) } };
+  if (marketMatch) {
+    // Codex audit: decodeURIComponent throws on malformed percent
+    // sequences (e.g. "%E0%A4%A"). Fall through to landing instead of
+    // crashing the whole route resolver.
+    let market_id: string;
+    try {
+      market_id = decodeURIComponent(marketMatch[1]);
+    } catch {
+      return { name: "landing" };
+    }
+    return { name: "market", params: { market_id } };
+  }
   const callMatch = /^\/calls\/(.+)$/.exec(path);
   if (callMatch) return { name: "call", params: { call_id: callMatch[1] } };
   const claimMatch = /^\/agents\/([^/]+)\/claim$/.exec(path);
