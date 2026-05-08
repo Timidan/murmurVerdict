@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   fetchMarkets,
   fetchMarketLeaderboard,
   type MarketRow,
   type AgentMarketRow,
 } from "../api.js";
+import { useStream } from "../hooks/useStream.js";
 
 /**
  * Markets matrix — horizontal-scrollable list of LISTED markets, each
@@ -23,6 +24,11 @@ export function MarketsMatrix() {
   >({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Phase 3b follow-up B: layer markets.update SSE deltas on top of the
+  // initial REST fan-out. The `markets` map is keyed by market_id; we
+  // merge into `leaderboards` at render time so a stale REST snapshot
+  // never overwrites a fresher SSE delta.
+  const { markets: liveMarkets } = useStream();
 
   useEffect(() => {
     let cancel = false;
@@ -57,6 +63,16 @@ export function MarketsMatrix() {
       cancel = true;
     };
   }, []);
+
+  // Compose REST baseline with live SSE deltas. SSE wins when present;
+  // backend emits top-5, card slices to top-3.
+  const merged = useMemo<Record<string, AgentMarketRow[]>>(() => {
+    const out: Record<string, AgentMarketRow[]> = { ...leaderboards };
+    for (const [market_id, evt] of Object.entries(liveMarkets)) {
+      out[market_id] = evt.agents.slice(0, 3);
+    }
+    return out;
+  }, [leaderboards, liveMarkets]);
 
   return (
     <section className="border-t border-[var(--color-border)] mt-14 pt-10">
@@ -98,7 +114,7 @@ export function MarketsMatrix() {
           <ul className="m-0 p-0 list-none flex gap-px bg-[var(--color-border)] border-y border-[var(--color-border)] min-w-min">
             {markets.map((m) => (
               <li key={m.market_id} className="bg-[var(--color-bg)] min-w-[260px] max-w-[320px]">
-                <MarketCard market={m} top={leaderboards[m.market_id] ?? null} />
+                <MarketCard market={m} top={merged[m.market_id] ?? null} />
               </li>
             ))}
           </ul>

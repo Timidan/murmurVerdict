@@ -5,13 +5,19 @@
 // fan-out aid only. If we ever add a second replica, replace with Redis
 // pubsub or NATS; the public-facing event names below stay stable.
 
+import type Database from "better-sqlite3";
 import { EventEmitter } from "node:events";
+import {
+  getLeaderboardForMarket,
+  type AgentMarketRow,
+} from "./leaderboard.js";
 
 /** Event names exposed via SSE. Keep in sync with V14_HANDOFF.md §13. */
 export const VERDICT_EVENTS = {
   call_accepted: "call.accepted",
   call_resolved: "call.resolved",
   leaderboard_update: "leaderboard.update",
+  markets_update: "markets.update",
   stats_tick: "stats.tick",
 } as const;
 
@@ -83,10 +89,27 @@ export interface StatsTickEvent {
   void_24h: number;
 }
 
+/**
+ * Per-market top-N snapshot. Fired alongside `leaderboard.update` whenever a
+ * t1 resolution lands on a market — lets dashboards keep the per-market
+ * MarketsMatrix card in sync without polling every market's REST endpoint.
+ *
+ * Subscribers should filter by `market_id` to scope to the market they're
+ * displaying. Legacy submissions without a market_id never trigger this
+ * event (the daemon emits market-scoped events only when a market is known).
+ */
+export interface MarketsUpdateEvent {
+  type: "markets.update";
+  market_id: string;
+  served_at: string;
+  agents: AgentMarketRow[];
+}
+
 export type VerdictEvent =
   | CallAcceptedEvent
   | CallResolvedEvent
   | LeaderboardUpdateEvent
+  | MarketsUpdateEvent
   | StatsTickEvent;
 
 /**
@@ -119,5 +142,33 @@ export class VerdictEventBus {
    */
   subscriberCount(): number {
     return this.emitter.listenerCount("*");
+  }
+
+  /**
+   * Convenience: snapshot the per-market top-5 leaderboard and fan it out as
+   * a `markets.update` SSE event. Called from the resolver's success path
+   * right next to the global `leaderboard.update` emission so both deltas
+   * land in the same tick.
+   *
+   * Best-effort — if `getLeaderboardForMarket` throws (e.g. a transient DB
+   * lock), we log and swallow. The resolver MUST NOT fail because of a
+   * stats fan-out hiccup; the next resolution's emit will catch the
+   * dashboard up.
+   */
+  emitMarketsUpdate(db: Database.Database, market_id: string): void {
+    try {
+      const agents = getLeaderboardForMarket(db, { market_id, limit: 5 });
+      this.emit({
+        type: "markets.update",
+        market_id,
+        served_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+        agents,
+      });
+    } catch (err) {
+      console.warn(
+        `[events] markets.update emit failed for ${market_id}:`,
+        err,
+      );
+    }
   }
 }

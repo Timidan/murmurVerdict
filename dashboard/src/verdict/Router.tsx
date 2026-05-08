@@ -12,6 +12,9 @@ const LaunchPage = lazy(() => import("./pages/LaunchPage.js").then((m) => ({ def
 const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ default: m.SharePage })));
 const RecruitersPage = lazy(() => import("./pages/RecruitersPage.js").then((m) => ({ default: m.RecruitersPage })));
 const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => ({ default: m.AdminRefsPage })));
+const MarketDetailPage = lazy(() =>
+  import("./pages/MarketDetailPage.js").then((m) => ({ default: m.MarketDetailPage })),
+);
 
 interface ParsedRoute {
   name:
@@ -26,6 +29,7 @@ interface ParsedRoute {
     | "share"
     | "recruiters"
     | "admin_refs"
+    | "market"
     | "spec";
   params?: Record<string, string>;
 }
@@ -47,6 +51,8 @@ function parseHash(hash: string): ParsedRoute {
   if (path === "/spec") return { name: "spec" };
   const shareMatch = /^\/share\/([^/]+)$/.exec(path);
   if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
+  const marketMatch = /^\/markets\/(.+)$/.exec(path);
+  if (marketMatch) return { name: "market", params: { market_id: decodeURIComponent(marketMatch[1]) } };
   const callMatch = /^\/calls\/(.+)$/.exec(path);
   if (callMatch) return { name: "call", params: { call_id: callMatch[1] } };
   const claimMatch = /^\/agents\/([^/]+)\/claim$/.exec(path);
@@ -84,6 +90,7 @@ export function VerdictRouter() {
       {route.name === "share" && <SharePage slug={route.params!.slug} />}
       {route.name === "recruiters" && <RecruitersPage />}
       {route.name === "admin_refs" && <AdminRefsPage />}
+      {route.name === "market" && <MarketDetailPage marketId={route.params!.market_id} />}
       {route.name === "spec" && <SpecPage />}
     </Suspense>
   );

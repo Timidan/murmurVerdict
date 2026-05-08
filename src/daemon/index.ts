@@ -134,6 +134,18 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
                   pending_calls: r.pending_calls,
                 })),
               });
+              // Phase 3b follow-up B: per-market delta. Scoped to the call's
+              // market_id so MarketsMatrix cards refresh without a poll.
+              // Legacy rows without market_id (pre-migration 009) skip this —
+              // there's no market surface to update for them.
+              const marketRow = db
+                .prepare(
+                  "SELECT market_id FROM submissions WHERE call_id = ?",
+                )
+                .get(call_id) as { market_id: string | null } | undefined;
+              if (marketRow?.market_id) {
+                events.emitMarketsUpdate(db, marketRow.market_id);
+              }
             }
           } catch (err) {
             console.warn(`[daemon] sse fan-out failed for ${call_id}:`, err);

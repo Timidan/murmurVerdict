@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { verdictApi } from "../api.js";
+import { verdictApi, type AgentMarketRow } from "../api.js";
 
 // Mirrors the union from src/verdict/events.ts on the daemon side.
 // Kept loose here (string fields where the backend uses literals) to
@@ -57,10 +57,18 @@ export interface StatsTickEvent {
   void_24h: number;
 }
 
+export interface MarketsUpdateEvent {
+  type: "markets.update";
+  market_id: string;
+  served_at: string;
+  agents: AgentMarketRow[];
+}
+
 export type VerdictEvent =
   | CallAcceptedEvent
   | CallResolvedEvent
   | LeaderboardUpdateEvent
+  | MarketsUpdateEvent
   | StatsTickEvent;
 
 export type StreamStatus = "connecting" | "open" | "reconnecting" | "closed";
@@ -73,6 +81,12 @@ export interface StreamSnapshot {
   stats: StatsTickEvent | null;
   /** Most recent N calls (newest first). Capped to keep memory steady on long sessions. */
   recentCalls: Array<CallAcceptedEvent | CallResolvedEvent>;
+  /**
+   * Latest per-market top-N snapshot keyed by market_id. Populated as
+   * `markets.update` events arrive — components scoped to a single market
+   * read `markets[their_market_id]` and re-render without a REST refetch.
+   */
+  markets: Record<string, MarketsUpdateEvent>;
 }
 
 const RECENT_CAP = 60;
@@ -91,6 +105,7 @@ let snapshot: StreamSnapshot = {
   leaderboard: null,
   stats: null,
   recentCalls: [],
+  markets: {},
 };
 
 const subscribers = new Set<(s: StreamSnapshot) => void>();
@@ -107,6 +122,12 @@ function applyEvent(event: VerdictEvent): void {
     snapshot = { ...snapshot, leaderboard: event };
   } else if (event.type === "stats.tick") {
     snapshot = { ...snapshot, stats: event };
+  } else if (event.type === "markets.update") {
+    // Per-market delta — keyed map so consumers filter cheaply by market_id.
+    snapshot = {
+      ...snapshot,
+      markets: { ...snapshot.markets, [event.market_id]: event },
+    };
   } else {
     // call.accepted | call.resolved
     const next = [event, ...snapshot.recentCalls].slice(0, RECENT_CAP);
@@ -140,6 +161,7 @@ function connect(): void {
   };
 
   es.addEventListener("leaderboard.update", handle);
+  es.addEventListener("markets.update", handle);
   es.addEventListener("stats.tick", handle);
   es.addEventListener("call.accepted", handle);
   es.addEventListener("call.resolved", handle);
