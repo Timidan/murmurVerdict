@@ -11,15 +11,13 @@ import { decryptEnvelope } from "./age-envelope.js";
 import type { DrandContext } from "./drand-envelope.js";
 import { decryptDrandEnvelope } from "./drand-envelope.js";
 import {
-  buildCommitPreimage,
-  buildMarketCommitPreimage,
-  computeCommitHash,
-  computeMarketCommitHash,
   COMMIT_PREIMAGE_DOMAIN,
   COMMIT_PREIMAGE_SCHEMA,
   MARKET_COMMIT_PREIMAGE_DOMAIN,
   MARKET_COMMIT_PREIMAGE_SCHEMA,
   REVEAL_GRACE_MS,
+  parseAndRebuildPreimage,
+  parseAndRebuildPreimageByDomain,
 } from "./commit-preimage.js";
 
 /**
@@ -281,10 +279,11 @@ function rowToSubject(row: CallRevealRow): ResolutionSubject {
 function safeJsonField(json: string, _field: string): string | null {
   // The commit_preimage_json carries the canonical `domain` field; we
   // surface it back as commit_preimage_schema for the v2 resolution
-  // receipt's `reveal.commit_preimage_schema`. Defensive parse in case
-  // a future schema rotation leaves an old row in place. P3 Phase 1.5:
-  // distinguish v0.2 vs v0.2.5 domains so the resolution receipt names
-  // the right schema.
+  // receipt's `reveal.commit_preimage_schema`.
+  //
+  // P3 Phase 1.5 hardening (Codex audit): unknown / malformed domains
+  // MUST NOT default to legacy. Mislabelling a v0.3+ preimage as v0.2
+  // would surface a wrong schema in the resolution receipt. Fail closed.
   try {
     const parsed = JSON.parse(json) as { domain?: unknown };
     if (parsed && typeof parsed === "object") {
@@ -295,7 +294,7 @@ function safeJsonField(json: string, _field: string): string | null {
         return COMMIT_PREIMAGE_SCHEMA;
       }
     }
-    return COMMIT_PREIMAGE_SCHEMA;
+    return null;
   } catch {
     return null;
   }
@@ -318,9 +317,19 @@ async function materializeFromCiphertext(
 ): Promise<ResolutionSubject | null> {
   // The envelope plaintext was written at submit time as
   // JSON.stringify({ preimage_canonical: <stringified preimage>, rationale, strategy_tag }).
-  // Parse it back, recompute commit_hash from the preimage, verify
-  // against the stored commit_hash on submissions, then write a
+  // Parse it back, run STRICT validation against the schema the daemon
+  // recorded at submit time, recompute the hash from the rebuilt object,
+  // verify against the stored commit_hash on submissions, then write a
   // call_reveals row.
+  //
+  // P3 Phase 1.5 hardening (Codex audit):
+  //   - Dispatch on `args.commit_preimage_schema` (the daemon's record),
+  //     NOT on the parsed envelope's `domain` field. A malformed envelope
+  //     where domain disagrees with the stored schema → reject.
+  //   - Validate via Zod (.strict, all fields constrained). Extra fields,
+  //     wrong types, future v0.3 shapes all fail closed.
+  //   - Persist canonicalize(rebuilt) so the stored bytes are normalized
+  //     regardless of envelope-side anomalies.
   let parsed: { preimage_canonical: string; rationale: string | null; strategy_tag: string | null };
   try {
     parsed = JSON.parse(new TextDecoder().decode(args.envBody)) as typeof parsed;
@@ -328,18 +337,22 @@ async function materializeFromCiphertext(
     return null;
   }
 
-  // P3 Phase 1.5: dispatch on the preimage's `domain` field. v0.2 and
-  // v0.2.5 preimages have wire-distinct domains; we hash with the
-  // matching schema to verify against the stored commit_hash.
-  let parsedRaw: Record<string, unknown>;
-  try {
-    parsedRaw = JSON.parse(parsed.preimage_canonical) as Record<string, unknown>;
-  } catch {
+  const validated = parseAndRebuildPreimage(
+    parsed.preimage_canonical,
+    args.commit_preimage_schema,
+  );
+  if (!validated) return null;
+
+  // Hash equality against the daemon's stored commit_hash is the integrity
+  // anchor. Hash is computed against the REBUILT preimage so a slightly
+  // non-canonical envelope (whitespace, key order) doesn't slip through.
+  if (
+    !args.commit_hash ||
+    validated.hash.toLowerCase() !== args.commit_hash.toLowerCase()
+  ) {
     return null;
   }
-  const preimageDomain = parsedRaw.domain;
 
-  let recomputed: `0x${string}`;
   let revealSide: "BUY" | "SELL";
   let revealAssetId: string;
   let revealHorizonHours: number;
@@ -349,70 +362,29 @@ async function materializeFromCiphertext(
   let revealAgentWallet: string;
   let revealChainId: string;
 
-  if (preimageDomain === MARKET_COMMIT_PREIMAGE_DOMAIN) {
-    let preimageObj: ReturnType<typeof buildMarketCommitPreimage>;
-    try {
-      preimageObj = parsedRaw as unknown as ReturnType<
-        typeof buildMarketCommitPreimage
-      >;
-      // Defensive — ensure required market fields are present.
-      if (
-        typeof preimageObj.market_id !== "string" ||
-        typeof preimageObj.market_config_version !== "number"
-      ) {
-        return null;
-      }
-    } catch {
-      return null;
-    }
-    recomputed = computeMarketCommitHash(preimageObj);
-    if (
-      !args.commit_hash ||
-      recomputed.toLowerCase() !== args.commit_hash.toLowerCase()
-    ) {
-      return null;
-    }
-    const market = marketsRepo.get(args.db, preimageObj.market_id);
+  if (validated.kind === "market") {
+    const market = marketsRepo.get(args.db, validated.preimage.market_id);
     if (!market) return null;
-    revealSide = preimageObj.side;
+    revealSide = validated.preimage.side;
     revealAssetId = market.asset_id;
     // Synthesize legacy horizon_hours for the reveal row (sub-hour
     // markets give 0; not exposed at v0.2.5 since those markets are
     // 'draft').
     revealHorizonHours = Math.round(market.horizon_seconds / 3600);
-    revealConfidence = preimageObj.confidence;
-    revealSalt = preimageObj.salt;
-    revealT0 = preimageObj.t0;
-    revealAgentWallet = preimageObj.agent_wallet;
-    revealChainId = preimageObj.chain_id;
+    revealConfidence = validated.preimage.confidence;
+    revealSalt = validated.preimage.salt;
+    revealT0 = validated.preimage.t0;
+    revealAgentWallet = validated.preimage.agent_wallet;
+    revealChainId = validated.preimage.chain_id;
   } else {
-    let preimageObj: ReturnType<typeof buildCommitPreimage>;
-    try {
-      preimageObj = parsedRaw as unknown as ReturnType<typeof buildCommitPreimage>;
-      if (
-        typeof preimageObj.asset_id !== "string" ||
-        typeof preimageObj.horizon_hours !== "number"
-      ) {
-        return null;
-      }
-    } catch {
-      return null;
-    }
-    recomputed = computeCommitHash(preimageObj);
-    if (
-      !args.commit_hash ||
-      recomputed.toLowerCase() !== args.commit_hash.toLowerCase()
-    ) {
-      return null;
-    }
-    revealSide = preimageObj.side;
-    revealAssetId = preimageObj.asset_id;
-    revealHorizonHours = preimageObj.horizon_hours;
-    revealConfidence = preimageObj.confidence;
-    revealSalt = preimageObj.salt;
-    revealT0 = preimageObj.t0;
-    revealAgentWallet = preimageObj.agent_wallet;
-    revealChainId = preimageObj.chain_id;
+    revealSide = validated.preimage.side;
+    revealAssetId = validated.preimage.asset_id;
+    revealHorizonHours = validated.preimage.horizon_hours;
+    revealConfidence = validated.preimage.confidence;
+    revealSalt = validated.preimage.salt;
+    revealT0 = validated.preimage.t0;
+    revealAgentWallet = validated.preimage.agent_wallet;
+    revealChainId = validated.preimage.chain_id;
   }
 
   const row: CallRevealRow = {
@@ -427,8 +399,10 @@ async function materializeFromCiphertext(
     t0: revealT0,
     agent_wallet: args.agentWallet ?? revealAgentWallet,
     chain_id: args.chainId ?? revealChainId,
-    commit_preimage_json: parsed.preimage_canonical,
-    commit_preimage_hash: recomputed,
+    // Persist the REBUILT canonical, not the original envelope bytes —
+    // belt-and-braces against a non-canonical envelope.
+    commit_preimage_json: validated.canonical,
+    commit_preimage_hash: validated.hash,
     revealed_at: args.nowIso,
     revealed_via: args.revealed_via,
     reveal_hash_valid: 1,
@@ -455,46 +429,36 @@ function isValidCommittedReveal(
     return false;
   }
   if (!row.commit_preimage_json) return false;
-  try {
-    const parsed = JSON.parse(row.commit_preimage_json) as Record<string, unknown>;
-    if (parsed.domain === MARKET_COMMIT_PREIMAGE_DOMAIN) {
-      const preimage = parsed as unknown as ReturnType<
-        typeof buildMarketCommitPreimage
-      >;
-      if (
-        computeMarketCommitHash(preimage).toLowerCase() !==
-        expectedHash.toLowerCase()
-      ) {
-        return false;
-      }
-      // For v0.2.5 reveals, asset_id + horizon_hours on the row are
-      // synthesized from the market — we cross-check side/confidence/
-      // t0/wallet/chain only. asset_id consistency is guaranteed by
-      // the registry lookup at materialization.
-      return (
-        row.side === preimage.side &&
-        row.confidence === preimage.confidence &&
-        row.t0 === preimage.t0 &&
-        row.agent_wallet === preimage.agent_wallet &&
-        row.chain_id === preimage.chain_id
-      );
-    }
-    const preimage = parsed as unknown as ReturnType<typeof buildCommitPreimage>;
-    if (computeCommitHash(preimage).toLowerCase() !== expectedHash.toLowerCase()) {
-      return false;
-    }
-    return (
-      row.side === preimage.side &&
-      row.asset_id === preimage.asset_id &&
-      row.horizon_hours === preimage.horizon_hours &&
-      row.confidence === preimage.confidence &&
-      row.t0 === preimage.t0 &&
-      row.agent_wallet === preimage.agent_wallet &&
-      row.chain_id === preimage.chain_id
-    );
-  } catch {
+  // P3 Phase 1.5: domain-discriminated strict parse. The reveal row
+  // doesn't carry the schema string explicitly, so we read it from
+  // the canonical JSON's `domain` field. Unknown / malformed → reject.
+  const validated = parseAndRebuildPreimageByDomain(row.commit_preimage_json);
+  if (!validated) return false;
+  if (validated.hash.toLowerCase() !== expectedHash.toLowerCase()) {
     return false;
   }
+  if (validated.kind === "market") {
+    // For v0.2.5 reveals, asset_id + horizon_hours on the row are
+    // synthesized from the market at materialization — we cross-check
+    // side/confidence/t0/wallet/chain only. Registry consistency is
+    // the materialize-time invariant.
+    return (
+      row.side === validated.preimage.side &&
+      row.confidence === validated.preimage.confidence &&
+      row.t0 === validated.preimage.t0 &&
+      row.agent_wallet === validated.preimage.agent_wallet &&
+      row.chain_id === validated.preimage.chain_id
+    );
+  }
+  return (
+    row.side === validated.preimage.side &&
+    row.asset_id === validated.preimage.asset_id &&
+    row.horizon_hours === validated.preimage.horizon_hours &&
+    row.confidence === validated.preimage.confidence &&
+    row.t0 === validated.preimage.t0 &&
+    row.agent_wallet === validated.preimage.agent_wallet &&
+    row.chain_id === validated.preimage.chain_id
+  );
 }
 
 function insertIfAbsent(db: Database.Database, row: CallRevealRow): void {

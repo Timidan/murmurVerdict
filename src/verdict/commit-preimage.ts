@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { canonicalHash, canonicalize } from "../receipts/canonical.js";
 
 /**
@@ -206,4 +207,178 @@ export function verifyMarketCommitHash(
     computeMarketCommitHash(preimage).toLowerCase() ===
     expected_hash.toLowerCase()
   );
+}
+
+// ─── Strict runtime validation for stored / decrypted preimages ─────────────
+//
+// P3 Phase 1.5 hardening (Codex audit): hash equality proves what was
+// committed, but doesn't prove the committed object IS a valid preimage of
+// the expected schema. A future v0.3 daemon writing a preimage with new
+// fields, or a malformed envelope, would produce a hash that the integrity
+// check accepts but the materializer mis-renders.
+//
+// These Zod schemas are .strict() so unknown fields cause rejection. They
+// pin every constraint that the build* functions enforce at construction
+// time, so a parsed-and-revalidated object is byte-equivalent to a freshly
+// built one when re-canonicalized.
+
+const HEX64 = /^[0-9a-f]{64}$/;
+const HEX_ADDRESS_LOWER = /^0x[0-9a-f]{40}$/;
+const CAIP_CHAIN = /^[a-z0-9]+:[a-zA-Z0-9-]{1,32}$/;
+const ISO_NO_FRAC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+export const CommitPreimageSchema = z
+  .object({
+    v: z.literal(COMMIT_PREIMAGE_VERSION),
+    domain: z.literal(COMMIT_PREIMAGE_DOMAIN),
+    call_id: z.string().uuid(),
+    agent_wallet: z.string().regex(HEX_ADDRESS_LOWER),
+    chain_id: z.string().regex(CAIP_CHAIN),
+    side: z.enum(["BUY", "SELL"]),
+    asset_id: z.string().min(1),
+    horizon_hours: z.number().int().nonnegative(),
+    confidence: z.number().min(0.51).max(0.95),
+    salt: z.string().regex(HEX64),
+    t0: z.string().regex(ISO_NO_FRAC),
+  })
+  .strict();
+
+export const MarketCommitPreimageSchema = z
+  .object({
+    v: z.literal(MARKET_COMMIT_PREIMAGE_VERSION),
+    domain: z.literal(MARKET_COMMIT_PREIMAGE_DOMAIN),
+    call_id: z.string().uuid(),
+    agent_wallet: z.string().regex(HEX_ADDRESS_LOWER),
+    chain_id: z.string().regex(CAIP_CHAIN),
+    side: z.enum(["BUY", "SELL"]),
+    market_id: z.string().regex(/^[a-z0-9]+(\.[a-z0-9]+)+$/),
+    market_config_version: z.number().int().positive(),
+    confidence: z.number().min(0.51).max(0.95),
+    salt: z.string().regex(HEX64),
+    t0: z.string().regex(ISO_NO_FRAC),
+  })
+  .strict();
+
+export type ValidatedCommitPreimage = z.infer<typeof CommitPreimageSchema>;
+export type ValidatedMarketCommitPreimage = z.infer<
+  typeof MarketCommitPreimageSchema
+>;
+
+/**
+ * Parse + validate the canonical JSON of a stored preimage. Dispatches on
+ * the caller-supplied schema string (the daemon's record of what it wrote
+ * at submit time). Returns null when:
+ *   - the JSON doesn't parse
+ *   - the schema string is unrecognized
+ *   - the parsed object's `domain` field disagrees with the expected schema
+ *   - any field violates the schema (regex, type, range, extra fields)
+ *
+ * Callers should treat null as "do not materialize / do not validate this
+ * reveal" and fail closed. Hash equality is recomputed against the
+ * REBUILT object (built via build* functions from the validated input)
+ * so the persisted canonical_json is normalized regardless of the
+ * envelope's exact byte representation.
+ */
+type ValidatedPreimageOk =
+  | {
+      kind: "legacy";
+      preimage: ValidatedCommitPreimage;
+      canonical: string;
+      hash: `0x${string}`;
+    }
+  | {
+      kind: "market";
+      preimage: ValidatedMarketCommitPreimage;
+      canonical: string;
+      hash: `0x${string}`;
+    };
+
+export function parseAndRebuildPreimageObject(
+  parsed: unknown,
+  expected_schema: string,
+): ValidatedPreimageOk | null {
+  if (expected_schema === MARKET_COMMIT_PREIMAGE_SCHEMA) {
+    const r = MarketCommitPreimageSchema.safeParse(parsed);
+    if (!r.success) return null;
+    const rebuilt = buildMarketCommitPreimage({
+      call_id: r.data.call_id,
+      agent_wallet: r.data.agent_wallet,
+      chain_id: r.data.chain_id,
+      side: r.data.side,
+      market_id: r.data.market_id,
+      market_config_version: r.data.market_config_version,
+      confidence: r.data.confidence,
+      salt: r.data.salt,
+      t0: r.data.t0,
+    });
+    return {
+      kind: "market",
+      preimage: rebuilt,
+      canonical: canonicalize(rebuilt),
+      hash: computeMarketCommitHash(rebuilt),
+    };
+  }
+  if (expected_schema === COMMIT_PREIMAGE_SCHEMA) {
+    const r = CommitPreimageSchema.safeParse(parsed);
+    if (!r.success) return null;
+    const rebuilt = buildCommitPreimage({
+      call_id: r.data.call_id,
+      agent_wallet: r.data.agent_wallet,
+      chain_id: r.data.chain_id,
+      side: r.data.side,
+      asset_id: r.data.asset_id,
+      horizon_hours: r.data.horizon_hours,
+      confidence: r.data.confidence,
+      salt: r.data.salt,
+      t0: r.data.t0,
+    });
+    return {
+      kind: "legacy",
+      preimage: rebuilt,
+      canonical: canonicalize(rebuilt),
+      hash: computeCommitHash(rebuilt),
+    };
+  }
+  return null;
+}
+
+/**
+ * String-input wrapper around parseAndRebuildPreimageObject. JSON.parses
+ * then validates. Used by callers that hold the canonical JSON (envelope
+ * decryption, persisted call_reveals row).
+ */
+export function parseAndRebuildPreimage(
+  canonical_json: string,
+  expected_schema: string,
+): ValidatedPreimageOk | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(canonical_json);
+  } catch {
+    return null;
+  }
+  return parseAndRebuildPreimageObject(parsed, expected_schema);
+}
+
+/**
+ * Domain-discriminated parse without an externally-supplied schema. Used by
+ * isValidCommittedReveal where the row's only schema indicator is the
+ * canonical JSON's `domain` field. Reject unknown domains.
+ */
+export function parseAndRebuildPreimageByDomain(
+  canonical_json: string,
+): ValidatedPreimageOk | null {
+  let parsed: { domain?: unknown };
+  try {
+    parsed = JSON.parse(canonical_json) as { domain?: unknown };
+  } catch {
+    return null;
+  }
+  if (parsed.domain === MARKET_COMMIT_PREIMAGE_DOMAIN) {
+    return parseAndRebuildPreimageObject(parsed, MARKET_COMMIT_PREIMAGE_SCHEMA);
+  }
+  if (parsed.domain === COMMIT_PREIMAGE_DOMAIN) {
+    return parseAndRebuildPreimageObject(parsed, COMMIT_PREIMAGE_SCHEMA);
+  }
+  return null;
 }

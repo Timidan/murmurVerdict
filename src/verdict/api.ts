@@ -13,14 +13,10 @@ import {
   type CallRevealRow,
 } from "./db.js";
 import {
-  buildCommitPreimage,
-  buildMarketCommitPreimage,
-  computeCommitHash,
-  computeMarketCommitHash,
   COMMIT_PREIMAGE_SCHEMA,
   MARKET_COMMIT_PREIMAGE_SCHEMA,
+  parseAndRebuildPreimageObject,
 } from "./commit-preimage.js";
-import { canonicalize } from "../receipts/canonical.js";
 import { projectCallRow } from "./projections.js";
 import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -1207,27 +1203,78 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       // bind (asset_id, horizon_hours); v0.2.5 commits bind (market_id,
       // market_config_version). The daemon recorded which schema it used
       // on the call_private_envelopes row at submit time.
+      //
+      // Hardening (Codex audit P3 1.5): unknown stored schema fails
+      // closed — never default to legacy. Validation runs through the
+      // strict Zod schema (parseAndRebuildPreimageObject) so malformed
+      // agent inputs land as named errors instead of being papered over
+      // by lossy String()/Number() coercion.
       const envSchemaRow = deps.db
         .prepare(
           `SELECT commit_preimage_schema FROM call_private_envelopes WHERE call_id = ?`,
         )
         .get(call_id) as { commit_preimage_schema: string } | undefined;
-      const storedSchema =
-        envSchemaRow?.commit_preimage_schema ?? COMMIT_PREIMAGE_SCHEMA;
+      const storedSchema = envSchemaRow?.commit_preimage_schema;
+      if (
+        storedSchema !== COMMIT_PREIMAGE_SCHEMA &&
+        storedSchema !== MARKET_COMMIT_PREIMAGE_SCHEMA
+      ) {
+        throw new VerdictError(
+          storedSchema
+            ? `unsupported preimage schema on envelope: ${storedSchema}`
+            : "no preimage schema recorded for this call",
+          ERROR_CODES.internal_error,
+          500,
+        );
+      }
 
-      const preimageInput = rawPreimage as Record<string, unknown>;
+      // Lowercase the wallet + salt before validation — the daemon stored
+      // the commit over the lowercase form (see submitCall F4); agents
+      // sending uppercase get normalized once at the edge.
+      const preimageInputRaw = rawPreimage as Record<string, unknown>;
+      const preimageInput: Record<string, unknown> = {
+        ...preimageInputRaw,
+        agent_wallet:
+          typeof preimageInputRaw.agent_wallet === "string"
+            ? preimageInputRaw.agent_wallet.toLowerCase()
+            : preimageInputRaw.agent_wallet,
+        salt:
+          typeof preimageInputRaw.salt === "string"
+            ? preimageInputRaw.salt.toLowerCase()
+            : preimageInputRaw.salt,
+      };
 
-      // Each branch produces:
-      //   `recomputed`            — keccak of canonical preimage JSON
-      //   `revealSide` / `revealConfidence` / `revealSalt` / `revealT0`
-      //                            — for hash-mismatch error messaging + row
-      //   `revealAssetId` / `revealHorizonHours`
-      //                            — synthesized from market on the v0.2.5
-      //                              path; from preimage on legacy
-      //   `revealAgentWallet` / `revealChainId`
-      //                            — wallet binding (cross-checked below)
-      //   `preimageCanonical`     — what we persist on call_reveals
-      let recomputed: `0x${string}`;
+      const validated = parseAndRebuildPreimageObject(
+        preimageInput,
+        storedSchema,
+      );
+      if (!validated) {
+        throw new VerdictError(
+          "commit_preimage malformed or wrong schema",
+          ERROR_CODES.schema_invalid,
+          400,
+          { expected_schema: storedSchema },
+        );
+      }
+
+      // Cross-checks that don't fit in the Zod schema (would couple it to
+      // call-specific runtime state). Hash-only would catch them, but
+      // explicit messages beat hash-mismatch for misbehaving agents.
+      if (validated.preimage.call_id !== call_id) {
+        throw new VerdictError(
+          "commit_preimage.call_id does not match URL",
+          ERROR_CODES.schema_invalid,
+          422,
+        );
+      }
+      if (validated.preimage.t0 !== subRow.accepted_at) {
+        throw new VerdictError(
+          "commit_preimage.t0 does not match daemon-canonical accepted_at",
+          ERROR_CODES.schema_invalid,
+          422,
+        );
+      }
+
       let revealSide: "BUY" | "SELL";
       let revealConfidence: number;
       let revealSalt: string;
@@ -1236,112 +1283,40 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       let revealHorizonHours: number;
       let revealAgentWallet: string;
       let revealChainId: string;
-      let preimageCanonical: string;
 
-      if (storedSchema === MARKET_COMMIT_PREIMAGE_SCHEMA) {
-        let normalized: ReturnType<typeof buildMarketCommitPreimage>;
-        try {
-          normalized = buildMarketCommitPreimage({
-            call_id: String(preimageInput.call_id ?? ""),
-            agent_wallet: String(preimageInput.agent_wallet ?? "").toLowerCase(),
-            chain_id: String(preimageInput.chain_id ?? ""),
-            side: preimageInput.side as "BUY" | "SELL",
-            market_id: String(preimageInput.market_id ?? ""),
-            market_config_version: Number(preimageInput.market_config_version),
-            confidence: Number(preimageInput.confidence),
-            salt: String(preimageInput.salt ?? "").toLowerCase(),
-            t0: String(preimageInput.t0 ?? ""),
-          });
-        } catch (err) {
-          throw new VerdictError(
-            `commit_preimage malformed: ${(err as Error).message}`,
-            ERROR_CODES.schema_invalid,
-            400,
-          );
-        }
-        if (normalized.call_id !== call_id) {
-          throw new VerdictError(
-            "commit_preimage.call_id does not match URL",
-            ERROR_CODES.schema_invalid,
-            422,
-          );
-        }
-        if (normalized.t0 !== subRow.accepted_at) {
-          throw new VerdictError(
-            "commit_preimage.t0 does not match daemon-canonical accepted_at",
-            ERROR_CODES.schema_invalid,
-            422,
-          );
-        }
-        const market = marketsRepo.get(deps.db, normalized.market_id);
+      if (validated.kind === "market") {
+        const market = marketsRepo.get(deps.db, validated.preimage.market_id);
         if (!market) {
           throw new VerdictError(
-            `commit_preimage.market_id ${normalized.market_id} not in registry`,
+            `commit_preimage.market_id ${validated.preimage.market_id} not in registry`,
             ERROR_CODES.asset_not_supported,
             422,
           );
         }
-        recomputed = computeMarketCommitHash(normalized);
-        revealSide = normalized.side;
-        revealConfidence = normalized.confidence;
-        revealSalt = normalized.salt;
-        revealT0 = normalized.t0;
+        revealSide = validated.preimage.side;
+        revealConfidence = validated.preimage.confidence;
+        revealSalt = validated.preimage.salt;
+        revealT0 = validated.preimage.t0;
         revealAssetId = market.asset_id;
         // Synthesize legacy-shape horizon_hours for the call_reveals row.
         // Sub-hour markets give horizon_hours=0; harmless today since
         // those markets aren't 'listed' yet (Phase 2 territory).
         revealHorizonHours = Math.round(market.horizon_seconds / 3600);
-        revealAgentWallet = normalized.agent_wallet;
-        revealChainId = normalized.chain_id;
-        preimageCanonical = canonicalize(normalized);
+        revealAgentWallet = validated.preimage.agent_wallet;
+        revealChainId = validated.preimage.chain_id;
       } else {
-        // Legacy v0.2 path — agents that submitted with (asset_id,
-        // horizon_hours) reveal with the same shape.
-        let normalized: ReturnType<typeof buildCommitPreimage>;
-        try {
-          normalized = buildCommitPreimage({
-            call_id: String(preimageInput.call_id ?? ""),
-            agent_wallet: String(preimageInput.agent_wallet ?? "").toLowerCase(),
-            chain_id: String(preimageInput.chain_id ?? ""),
-            side: preimageInput.side as "BUY" | "SELL",
-            asset_id: String(preimageInput.asset_id ?? ""),
-            horizon_hours: Number(preimageInput.horizon_hours),
-            confidence: Number(preimageInput.confidence),
-            salt: String(preimageInput.salt ?? "").toLowerCase(),
-            t0: String(preimageInput.t0 ?? ""),
-          });
-        } catch (err) {
-          throw new VerdictError(
-            `commit_preimage malformed: ${(err as Error).message}`,
-            ERROR_CODES.schema_invalid,
-            400,
-          );
-        }
-        if (normalized.call_id !== call_id) {
-          throw new VerdictError(
-            "commit_preimage.call_id does not match URL",
-            ERROR_CODES.schema_invalid,
-            422,
-          );
-        }
-        if (normalized.t0 !== subRow.accepted_at) {
-          throw new VerdictError(
-            "commit_preimage.t0 does not match daemon-canonical accepted_at",
-            ERROR_CODES.schema_invalid,
-            422,
-          );
-        }
-        recomputed = computeCommitHash(normalized);
-        revealSide = normalized.side;
-        revealConfidence = normalized.confidence;
-        revealSalt = normalized.salt;
-        revealT0 = normalized.t0;
-        revealAssetId = normalized.asset_id;
-        revealHorizonHours = normalized.horizon_hours;
-        revealAgentWallet = normalized.agent_wallet;
-        revealChainId = normalized.chain_id;
-        preimageCanonical = canonicalize(normalized);
+        revealSide = validated.preimage.side;
+        revealConfidence = validated.preimage.confidence;
+        revealSalt = validated.preimage.salt;
+        revealT0 = validated.preimage.t0;
+        revealAssetId = validated.preimage.asset_id;
+        revealHorizonHours = validated.preimage.horizon_hours;
+        revealAgentWallet = validated.preimage.agent_wallet;
+        revealChainId = validated.preimage.chain_id;
       }
+
+      const recomputed = validated.hash;
+      const preimageCanonical = validated.canonical;
 
       // Wallet binding cross-check is independent of the preimage schema.
       const acceptanceBinding = parseCommittedAcceptanceBinding(
