@@ -1,0 +1,328 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Murmur Verdict — CALM variant tokens
+   Art-gallery aesthetic. Massive whitespace, weight-driven hierarchy,
+   monochrome only, almost-no-monospace, breathing as the only motion.
+
+   Scoped under [data-variant="calm"] so it never bleeds into the default
+   Nothing-canonical surface. The CALM pages render this attribute on
+   their root <div>, so dropping `?variant=calm` swaps the language
+   wholesale without touching the global tokens.
+
+   Source: V14_HANDOFF.md §3 (token rules) — overrides limited to:
+     · typography (Geist-stand-in via Space Grotesk, no monospace numerics)
+     · spacing scale (3× the canonical breathing room)
+     · color (greyscale, NO accent — disabled = opacity, not hue)
+     · motion (fade-in only, gated on prefers-reduced-motion)
+   ────────────────────────────────────────────────────────────────────── */
+
+[data-variant="calm"] {
+  /* Greyscale-only palette. No accent. */
+  --calm-ink: #F5F5F5;
+  --calm-ink-soft: #BDBDBD;
+  --calm-ink-faint: #6E6E6E;
+  --calm-ink-ghost: #2E2E2E;
+  --calm-paper: #050505;
+  --calm-rule: rgba(245, 245, 245, 0.08);
+  --calm-rule-strong: rgba(245, 245, 245, 0.18);
+
+  /* Body font stand-in for Geist (kept within the existing font budget —
+     Space Grotesk + native system stack. No new dependencies). */
+  --calm-font-body: "Space Grotesk", "Inter", system-ui, -apple-system, sans-serif;
+  --calm-font-display: "Space Grotesk", "Inter", system-ui, -apple-system, sans-serif;
+
+  background: var(--calm-paper);
+  color: var(--calm-ink);
+  font-family: var(--calm-font-body);
+  font-feature-settings: "ss01", "ss02";
+  font-variant-numeric: tabular-nums;
+}
+
+[data-variant="calm"] *,
+[data-variant="calm"] *::before,
+[data-variant="calm"] *::after {
+  box-sizing: border-box;
+}
+
+/* ── Typography tier — weight & scale only, no decoration ────────────── */
+
+[data-variant="calm"] .calm-eyebrow {
+  font-family: var(--calm-font-body);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--calm-ink-faint);
+}
+
+[data-variant="calm"] .calm-display {
+  font-family: var(--calm-font-display);
+  font-weight: 300;
+  font-size: clamp(72px, 11vw, 168px);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--calm-ink);
+}
+
+[data-variant="calm"] .calm-display-md {
+  font-family: var(--calm-font-display);
+  font-weight: 300;
+  font-size: clamp(56px, 8vw, 112px);
+  line-height: 0.95;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  color: var(--calm-ink);
+}
+
+[data-variant="calm"] .calm-display-sm {
+  font-family: var(--calm-font-display);
+  font-weight: 300;
+  font-size: clamp(44px, 6vw, 80px);
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--calm-ink);
+}
+
+[data-variant="calm"] .calm-headline {
+  font-family: var(--calm-font-display);
+  font-size: clamp(34px, 4.4vw, 56px);
+  font-weight: 300;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  color: var(--calm-ink);
+}
+
+[data-variant="calm"] .calm-headline-sm {
+  font-family: var(--calm-font-display);
+  font-size: clamp(24px, 2.6vw, 32px);
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  color: var(--calm-ink);
+}
+
+[data-variant="calm"] .calm-body {
+  font-family: var(--calm-font-body);
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.65;
+  letter-spacing: 0;
+  color: var(--calm-ink-soft);
+  max-width: 65ch;
+}
+
+[data-variant="calm"] .calm-body-tight {
+  font-family: var(--calm-font-body);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: var(--calm-ink-soft);
+  max-width: 65ch;
+}
+
+[data-variant="calm"] .calm-stat {
+  font-family: var(--calm-font-display);
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--calm-ink);
+}
+
+[data-variant="calm"] .calm-stat-sm {
+  font-family: var(--calm-font-display);
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--calm-ink);
+}
+
+[data-variant="calm"] .calm-meta {
+  font-family: var(--calm-font-body);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--calm-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-variant="calm"] .calm-kind {
+  font-family: var(--calm-font-body);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--calm-ink-faint);
+}
+
+/* ── Hairlines as the only chrome ────────────────────────────────────── */
+
+[data-variant="calm"] .calm-rule {
+  border-top: 1px solid var(--calm-rule);
+}
+[data-variant="calm"] .calm-rule-bottom {
+  border-bottom: 1px solid var(--calm-rule);
+}
+
+/* ── Buttons — text-link style, no fill, no border ──────────────────── */
+
+[data-variant="calm"] .calm-link {
+  font-family: var(--calm-font-body);
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--calm-ink);
+  text-decoration: none;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4em;
+  transition: opacity 220ms ease;
+}
+[data-variant="calm"] .calm-link::after {
+  content: "→";
+  font-size: 1em;
+  transform: translateX(0);
+  transition: transform 220ms ease;
+}
+[data-variant="calm"] .calm-link:hover::after {
+  transform: translateX(4px);
+}
+[data-variant="calm"] .calm-link[aria-disabled="true"] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+[data-variant="calm"] .calm-button {
+  font-family: var(--calm-font-body);
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--calm-paper);
+  background: var(--calm-ink);
+  border: 0;
+  border-radius: 999px;
+  padding: 14px 28px;
+  cursor: pointer;
+  transition: opacity 220ms ease;
+}
+[data-variant="calm"] .calm-button:hover {
+  opacity: 0.85;
+}
+[data-variant="calm"] .calm-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+[data-variant="calm"] .calm-button-ghost {
+  font-family: var(--calm-font-body);
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--calm-ink);
+  background: transparent;
+  border: 1px solid var(--calm-rule-strong);
+  border-radius: 999px;
+  padding: 13px 27px;
+  cursor: pointer;
+  transition: border-color 220ms ease, color 220ms ease;
+}
+[data-variant="calm"] .calm-button-ghost:hover {
+  border-color: var(--calm-ink);
+}
+[data-variant="calm"] .calm-button-ghost:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Code blocks — recede into the background ───────────────────────── */
+
+[data-variant="calm"] .calm-code-frame {
+  background: rgba(245, 245, 245, 0.025);
+  border: 1px solid var(--calm-rule);
+  border-radius: 4px;
+}
+
+[data-variant="calm"] .calm-code {
+  font-family: ui-monospace, "Space Mono", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--calm-ink-soft);
+}
+
+/* ── Fade-in on scroll for hero numbers (CSS only, no JS) ───────────── */
+
+@keyframes calm-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-variant="calm"] .calm-enter {
+    animation: calm-fade-in 720ms cubic-bezier(0.2, 0.8, 0.25, 1) both;
+  }
+  [data-variant="calm"] .calm-enter-delay-1 { animation-delay: 80ms; }
+  [data-variant="calm"] .calm-enter-delay-2 { animation-delay: 160ms; }
+  [data-variant="calm"] .calm-enter-delay-3 { animation-delay: 240ms; }
+}
+
+/* ── Selection ──────────────────────────────────────────────────────── */
+
+[data-variant="calm"] ::selection {
+  background: var(--calm-ink);
+  color: var(--calm-paper);
+}
+
+/* ── Focus — opacity-driven, monochrome ──────────────────────────────── */
+
+[data-variant="calm"] :focus-visible {
+  outline: 1px solid var(--calm-ink);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+/* ── Breathing-room scale: section-vertical-rhythm helpers ──────────── */
+
+[data-variant="calm"] .calm-section {
+  padding-top: 96px;
+  padding-bottom: 96px;
+}
+
+@media (min-width: 768px) {
+  [data-variant="calm"] .calm-section {
+    padding-top: 120px;
+    padding-bottom: 120px;
+  }
+}
+
+[data-variant="calm"] .calm-section-tight {
+  padding-top: 64px;
+  padding-bottom: 64px;
+}
+
+/* ── Row list — gallery placard style ───────────────────────────────── */
+
+[data-variant="calm"] .calm-row {
+  display: grid;
+  align-items: baseline;
+  padding: 28px 0;
+  text-decoration: none;
+  color: var(--calm-ink);
+  border-top: 1px solid var(--calm-rule);
+  transition: opacity 200ms ease;
+}
+[data-variant="calm"] .calm-row:hover {
+  opacity: 0.65;
+}
+[data-variant="calm"] .calm-row:last-child {
+  border-bottom: 1px solid var(--calm-rule);
+}

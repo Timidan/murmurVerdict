@@ -1,0 +1,71 @@
+import { useEffect, useState } from "react";
+import { useStream } from "../../hooks/useStream.js";
+
+interface CompactTopbarProps {
+  /** Free-text crumb shown after the system identifier (e.g. "LB / TIER:ALL"). */
+  crumb?: React.ReactNode;
+}
+
+/**
+ * COMPACT cockpit chrome — 26px tall, four square LEDs, system name,
+ * UTC clock, terminal nav. Single line, zero padding above/below.
+ */
+export function CompactTopbar({ crumb }: CompactTopbarProps) {
+  const stream = useStream();
+  const live = stream.status === "open";
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <header className="h-[26px] flex items-stretch border-b border-[var(--color-border)] sticky top-0 z-30 bg-[var(--color-bg)]">
+      <div className="flex items-center gap-2 px-2 border-r border-[var(--color-border)]">
+        <span className="inline-flex gap-[3px]" aria-hidden>
+          <span className="w-[5px] h-[5px] bg-[var(--color-display)]" />
+          <span className="w-[5px] h-[5px] bg-[var(--color-display)]" />
+          <span className="w-[5px] h-[5px] bg-[var(--color-display)]" />
+          <span
+            className={
+              "w-[5px] h-[5px] " +
+              (live ? "bg-[var(--color-accent)] ck-dot-live" : "bg-[var(--color-border-vis)]")
+            }
+          />
+        </span>
+        <a href="#/" className="ck-mono ck-pos no-underline">
+          MURMUR.VERDICT
+        </a>
+      </div>
+      {crumb && (
+        <div className="flex items-center px-2 border-r border-[var(--color-border)] ck-label whitespace-nowrap overflow-hidden">
+          {crumb}
+        </div>
+      )}
+      <nav className="flex-1 flex items-center justify-end gap-0">
+        <CompactNavLink href="#/leaderboard?variant=compact">LB</CompactNavLink>
+        <CompactNavLink href="#/today">FEED</CompactNavLink>
+        <CompactNavLink href="#/launch?variant=compact">INSTL</CompactNavLink>
+        <CompactNavLink href="#/recruiters">RECR</CompactNavLink>
+        <span className="px-2 ck-mono ck-dim border-l border-[var(--color-border)] tabular-nums">
+          {now.toISOString().slice(11, 19)}Z
+        </span>
+        <span className={"px-2 ck-label border-l border-[var(--color-border)] " + (live ? "ck-pos" : "ck-neg")}>
+          {live ? "LIVE" : "OFFLINE"}
+        </span>
+      </nav>
+    </header>
+  );
+}
+
+function CompactNavLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      className="px-2 ck-label border-l border-[var(--color-border)] hover:text-[var(--color-display)] no-underline h-full flex items-center"
+    >
+      {children}
+    </a>
+  );
+}

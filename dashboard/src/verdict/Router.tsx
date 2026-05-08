@@ -16,6 +16,83 @@ const MarketDetailPage = lazy(() =>
   import("./pages/MarketDetailPage.js").then((m) => ({ default: m.MarketDetailPage })),
 );
 
+/* ── Variant gate ────────────────────────────────────────────────────────
+   `?variant=bold|compact|calm` (passed in the hash query, e.g.
+   `#/leaderboard?variant=bold`) swaps the default page for a variant
+   sibling file. Each variant subagent owns its own .{variant}.tsx files;
+   this gate keeps the data flow identical and only swaps the JSX.
+   First variant to land owns the convention — be additive, not destructive.
+   ──────────────────────────────────────────────────────────────────── */
+
+const LandingPageBold = lazy(() =>
+  import("./pages/LandingPage.bold.js").then((m) => ({ default: m.LandingPageBold })),
+);
+const LeaderboardPageBold = lazy(() =>
+  import("./pages/LeaderboardPage.bold.js").then((m) => ({ default: m.LeaderboardPageBold })),
+);
+const LaunchPageBold = lazy(() =>
+  import("./pages/LaunchPage.bold.js").then((m) => ({ default: m.LaunchPageBold })),
+);
+const MarketDetailPageBold = lazy(() =>
+  import("./pages/MarketDetailPage.bold.js").then((m) => ({ default: m.MarketDetailPageBold })),
+);
+const AgentPageBold = lazy(() =>
+  import("./pages/AgentPage.bold.js").then((m) => ({ default: m.AgentPageBold })),
+);
+
+const LandingPageCalm = lazy(() =>
+  import("./pages/LandingPage.calm.js").then((m) => ({ default: m.VerdictLandingCalm })),
+);
+const LeaderboardPageCalm = lazy(() =>
+  import("./pages/LeaderboardPage.calm.js").then((m) => ({ default: m.LeaderboardPageCalm })),
+);
+const LaunchPageCalm = lazy(() =>
+  import("./pages/LaunchPage.calm.js").then((m) => ({ default: m.LaunchPageCalm })),
+);
+const MarketDetailPageCalm = lazy(() =>
+  import("./pages/MarketDetailPage.calm.js").then((m) => ({ default: m.MarketDetailPageCalm })),
+);
+const AgentPageCalm = lazy(() =>
+  import("./pages/AgentPage.calm.js").then((m) => ({ default: m.AgentPageCalm })),
+);
+
+const LandingPageCompact = lazy(() =>
+  import("./pages/LandingPage.compact.js").then((m) => ({ default: m.LandingPageCompact })),
+);
+const LeaderboardPageCompact = lazy(() =>
+  import("./pages/LeaderboardPage.compact.js").then((m) => ({ default: m.LeaderboardPageCompact })),
+);
+const LaunchPageCompact = lazy(() =>
+  import("./pages/LaunchPage.compact.js").then((m) => ({ default: m.LaunchPageCompact })),
+);
+const MarketDetailPageCompact = lazy(() =>
+  import("./pages/MarketDetailPage.compact.js").then((m) => ({ default: m.MarketDetailPageCompact })),
+);
+const AgentPageCompact = lazy(() =>
+  import("./pages/AgentPage.compact.js").then((m) => ({ default: m.AgentPageCompact })),
+);
+
+type Variant = "bold" | "calm" | "compact" | null;
+
+function parseVariant(hash: string): Variant {
+  const raw = (hash || "").replace(/^#/, "");
+  const qIdx = raw.indexOf("?");
+  if (qIdx < 0) return null;
+  // Use URLSearchParams against everything after the first `?`. Rolls
+  // safely when the hash has no query string — no throw on malformed.
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(raw.slice(qIdx + 1));
+  } catch {
+    return null;
+  }
+  const v = params.get("variant");
+  if (v === "bold") return "bold";
+  if (v === "calm") return "calm";
+  if (v === "compact") return "compact";
+  return null;
+}
+
 interface ParsedRoute {
   name:
     | "landing"
@@ -87,21 +164,76 @@ export function VerdictRouter() {
   }, []);
 
   const route = parseHash(hash);
+  const variant = parseVariant(hash);
 
   return (
     <Suspense fallback={<div className="min-h-dvh bg-[var(--color-bg)]" />}>
-      {route.name === "landing" && <VerdictLanding />}
-      {route.name === "leaderboard" && <LeaderboardPage />}
+      {route.name === "landing" &&
+        (variant === "bold" ? (
+          <LandingPageBold />
+        ) : variant === "calm" ? (
+          <LandingPageCalm />
+        ) : variant === "compact" ? (
+          <LandingPageCompact />
+        ) : (
+          <VerdictLanding />
+        ))}
+      {route.name === "leaderboard" &&
+        (variant === "bold" ? (
+          <LeaderboardPageBold />
+        ) : variant === "calm" ? (
+          <LeaderboardPageCalm />
+        ) : variant === "compact" ? (
+          <LeaderboardPageCompact />
+        ) : (
+          <LeaderboardPage />
+        ))}
       {route.name === "today" && <TodayPage />}
-      {route.name === "agent" && <AgentPage slug={route.params!.slug} />}
-      {route.name === "agent_calls" && <AgentPage slug={route.params!.slug} />}
+      {route.name === "agent" &&
+        (variant === "bold" ? (
+          <AgentPageBold slug={route.params!.slug} />
+        ) : variant === "calm" ? (
+          <AgentPageCalm slug={route.params!.slug} />
+        ) : variant === "compact" ? (
+          <AgentPageCompact slug={route.params!.slug} />
+        ) : (
+          <AgentPage slug={route.params!.slug} />
+        ))}
+      {route.name === "agent_calls" &&
+        (variant === "bold" ? (
+          <AgentPageBold slug={route.params!.slug} />
+        ) : variant === "calm" ? (
+          <AgentPageCalm slug={route.params!.slug} />
+        ) : variant === "compact" ? (
+          <AgentPageCompact slug={route.params!.slug} />
+        ) : (
+          <AgentPage slug={route.params!.slug} />
+        ))}
       {route.name === "call" && <CallPage callId={route.params!.call_id} />}
       {route.name === "claim" && <ClaimPage slug={route.params!.slug} />}
-      {route.name === "launch" && <LaunchPage />}
+      {route.name === "launch" &&
+        (variant === "bold" ? (
+          <LaunchPageBold />
+        ) : variant === "calm" ? (
+          <LaunchPageCalm />
+        ) : variant === "compact" ? (
+          <LaunchPageCompact />
+        ) : (
+          <LaunchPage />
+        ))}
       {route.name === "share" && <SharePage slug={route.params!.slug} />}
       {route.name === "recruiters" && <RecruitersPage />}
       {route.name === "admin_refs" && <AdminRefsPage />}
-      {route.name === "market" && <MarketDetailPage marketId={route.params!.market_id} />}
+      {route.name === "market" &&
+        (variant === "bold" ? (
+          <MarketDetailPageBold marketId={route.params!.market_id} />
+        ) : variant === "calm" ? (
+          <MarketDetailPageCalm marketId={route.params!.market_id} />
+        ) : variant === "compact" ? (
+          <MarketDetailPageCompact marketId={route.params!.market_id} />
+        ) : (
+          <MarketDetailPage marketId={route.params!.market_id} />
+        ))}
       {route.name === "spec" && <SpecPage />}
     </Suspense>
   );
