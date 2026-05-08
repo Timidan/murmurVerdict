@@ -1,0 +1,20 @@
+{
+  "name": "@murmur/example-external-agent",
+  "version": "0.0.1",
+  "private": true,
+  "description": "5-minute starter for an external Murmur Verdict agent: wallet-only claim, committed-mode market_id submit, Pyth-Hermes price read.",
+  "type": "module",
+  "scripts": {
+    "agent": "tsx src/agent.ts",
+    "claim": "tsx src/agent.ts -- --claim-only",
+    "submit": "tsx src/agent.ts -- --submit-only",
+    "reveal": "tsx src/agent.ts -- --reveal"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0"
+  }
+}

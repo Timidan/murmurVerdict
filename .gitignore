@@ -89,3 +89,8 @@ data/*.db-wal
 
 # Claude Code session-local state
 /.claude/
+
+# Example agent template — runtime artifacts (generated at claim-time)
+examples/external-agent/.env
+examples/external-agent/.agent-state.json
+examples/external-agent/node_modules/
