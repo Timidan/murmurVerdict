@@ -134,6 +134,14 @@ function applyMigrations(db: Database.Database): void {
     );
     v = 11;
   }
+
+  if (v < 12) {
+    // P4 Phase A — append-only market_config_history. No FK cascade,
+    // no rebuild; plain exec is atomic for the table-create + seed.
+    db.exec(MIGRATION_012);
+    v = 12;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -912,6 +920,73 @@ const MIGRATION_011 = `
 
   DROP TABLE oracle_policies;
   ALTER TABLE oracle_policies_v2 RENAME TO oracle_policies;
+`;
+
+// ─── Migration 012 — market_config_history (append-only, P4) ───────────────
+//
+// Phase 4 Codex audit: bumpConfig overwrites the live markets row, but the
+// per-call oracle_policies snapshot only captures the OPV2 fields we picked.
+// For audit-time replay (a verifier reconstructing "what did market X look
+// like at config_version=3?"), we need a versioned history.
+//
+// Shape: one row per (market_id, market_config_version). snapshot_json
+// carries the replay-relevant config: asset_id, market_kind,
+// horizon_seconds, oracle ids, staleness limits, T0 grace fields,
+// void_band, round_cadence_seconds, scoring_kind, market_config_version.
+// Append-only — no UPDATE / DELETE. Triggers enforce that.
+//
+// Seeded from current markets so version=N for every existing row already
+// has a history entry. Future bumpConfig calls append the NEW version
+// inside the same transaction as the markets UPDATE.
+const MIGRATION_012 = `
+  CREATE TABLE market_config_history (
+    market_id              TEXT NOT NULL,
+    market_config_version  INTEGER NOT NULL,
+    snapshot_json          TEXT NOT NULL,
+    recorded_at            TEXT NOT NULL,
+    PRIMARY KEY (market_id, market_config_version)
+  );
+  CREATE INDEX idx_market_config_history_market
+    ON market_config_history(market_id);
+
+  -- Truly append-only: refuse UPDATE / DELETE post-insert.
+  CREATE TRIGGER market_config_history_no_update
+    BEFORE UPDATE ON market_config_history
+    BEGIN
+      SELECT RAISE(FAIL, 'market_config_history is append-only');
+    END;
+  CREATE TRIGGER market_config_history_no_delete
+    BEFORE DELETE ON market_config_history
+    BEGIN
+      SELECT RAISE(FAIL, 'market_config_history is append-only');
+    END;
+
+  -- Seed: capture every current market row at its current version.
+  -- snapshot_json is built from the live markets columns via JSON1.
+  INSERT INTO market_config_history
+    (market_id, market_config_version, snapshot_json, recorded_at)
+  SELECT
+    market_id,
+    market_config_version,
+    json_object(
+      'asset_id', asset_id,
+      'market_kind', market_kind,
+      'horizon_seconds', horizon_seconds,
+      'primary_oracle_id', primary_oracle_id,
+      'fallback_oracle_id', fallback_oracle_id,
+      'primary_max_staleness_sec', primary_max_staleness_sec,
+      'fallback_max_staleness_sec', fallback_max_staleness_sec,
+      't0_grace_seconds', t0_grace_seconds,
+      't0_extended_grace_seconds', t0_extended_grace_seconds,
+      'void_band', void_band,
+      'round_cadence_seconds', round_cadence_seconds,
+      'scoring_kind', scoring_kind,
+      'market_config_version', market_config_version
+    ),
+    -- recorded_at = current time (migration moment); future bumpConfig
+    -- entries get the actual mutation timestamp.
+    strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+  FROM markets;
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
@@ -2456,9 +2531,12 @@ export const marketsRepo = {
   /**
    * Update market_config_version + selected mutable policy fields atomically.
    * Bumps `market_config_version` so existing pending submissions stamped at
-   * the prior version know they were resolved under different rules. Use
-   * sparingly — the canonical answer for "this submission's policy" is the
-   * version stamped on the submission, not the live row.
+   * the prior version know they were resolved under different rules.
+   *
+   * P4 Phase A (Codex audit): bumpConfig now appends the NEW version's
+   * snapshot to market_config_history INSIDE the same transaction as
+   * the markets UPDATE. Audit-time replay can reconstruct the policy at
+   * any version via `getConfigAt(db, market_id, version)`.
    */
   bumpConfig(
     db: Database.Database,
@@ -2483,14 +2561,123 @@ export const marketsRepo = {
     );
     if (fields.length === 0) return;
     const setClause = fields.map((f) => `${f} = @${f}`).join(", ");
-    prep(
+
+    db.transaction(() => {
+      prep(
+        db,
+        `UPDATE markets
+         SET ${setClause}, market_config_version = market_config_version + 1
+         WHERE market_id = @market_id`,
+      ).run({ ...patch, market_id });
+
+      // Append snapshot for the new version. The history row's
+      // market_config_version matches the row that's now live in markets.
+      prep(
+        db,
+        `INSERT INTO market_config_history
+           (market_id, market_config_version, snapshot_json, recorded_at)
+         SELECT
+           market_id,
+           market_config_version,
+           json_object(
+             'asset_id', asset_id,
+             'market_kind', market_kind,
+             'horizon_seconds', horizon_seconds,
+             'primary_oracle_id', primary_oracle_id,
+             'fallback_oracle_id', fallback_oracle_id,
+             'primary_max_staleness_sec', primary_max_staleness_sec,
+             'fallback_max_staleness_sec', fallback_max_staleness_sec,
+             't0_grace_seconds', t0_grace_seconds,
+             't0_extended_grace_seconds', t0_extended_grace_seconds,
+             'void_band', void_band,
+             'round_cadence_seconds', round_cadence_seconds,
+             'scoring_kind', scoring_kind,
+             'market_config_version', market_config_version
+           ),
+           strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+         FROM markets
+         WHERE market_id = @market_id`,
+      ).run({ market_id });
+    })();
+  },
+
+  /**
+   * Look up the historical snapshot of a market at a specific config
+   * version. Returns the snapshot fields parsed from JSON, or null when
+   * the (market_id, version) pair is unknown.
+   *
+   * Audit-time replay path: a v2 receipt carries (market_id,
+   * market_config_version) — verifiers call getConfigAt to get the
+   * exact policy under which the call was minted, regardless of any
+   * later bumpConfig calls.
+   *
+   * Fail-closed: returns null on missing rows. Callers MUST check for
+   * null and refuse to proceed (e.g., disputes / verify replay) rather
+   * than falling back to the live markets row.
+   */
+  getConfigAt(
+    db: Database.Database,
+    market_id: string,
+    market_config_version: number,
+  ): MarketConfigSnapshot | null {
+    const row = prep(
       db,
-      `UPDATE markets
-       SET ${setClause}, market_config_version = market_config_version + 1
-       WHERE market_id = @market_id`,
-    ).run({ ...patch, market_id });
+      `SELECT snapshot_json, recorded_at FROM market_config_history
+       WHERE market_id = ? AND market_config_version = ?`,
+    ).get(market_id, market_config_version) as
+      | { snapshot_json: string; recorded_at: string }
+      | undefined;
+    if (!row) return null;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(row.snapshot_json) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    return {
+      market_id,
+      market_config_version,
+      asset_id: parsed.asset_id as string,
+      market_kind: parsed.market_kind as MarketKind,
+      horizon_seconds: parsed.horizon_seconds as number,
+      primary_oracle_id: parsed.primary_oracle_id as string,
+      fallback_oracle_id: (parsed.fallback_oracle_id as string | null) ?? null,
+      primary_max_staleness_sec: parsed.primary_max_staleness_sec as number,
+      fallback_max_staleness_sec:
+        (parsed.fallback_max_staleness_sec as number | null) ?? null,
+      t0_grace_seconds: parsed.t0_grace_seconds as number,
+      t0_extended_grace_seconds: parsed.t0_extended_grace_seconds as number,
+      void_band: parsed.void_band as string,
+      round_cadence_seconds:
+        (parsed.round_cadence_seconds as number | null) ?? null,
+      scoring_kind: parsed.scoring_kind as ScoringKind,
+      recorded_at: row.recorded_at,
+    };
   },
 };
+
+/**
+ * Replay-safe snapshot of a market's config at a specific version.
+ * Mirrors the columns of MarketRow that affect resolution, plus
+ * recorded_at for audit visibility.
+ */
+export interface MarketConfigSnapshot {
+  market_id: string;
+  market_config_version: number;
+  asset_id: string;
+  market_kind: MarketKind;
+  horizon_seconds: number;
+  primary_oracle_id: string;
+  fallback_oracle_id: string | null;
+  primary_max_staleness_sec: number;
+  fallback_max_staleness_sec: number | null;
+  t0_grace_seconds: number;
+  t0_extended_grace_seconds: number;
+  void_band: string;
+  round_cadence_seconds: number | null;
+  scoring_kind: ScoringKind;
+  recorded_at: string;
+}
 
 const LEGACY_HORIZON_LABELS: Record<number, string> = {
   1: "1h",
