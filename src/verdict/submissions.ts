@@ -271,6 +271,27 @@ export async function submitCall(args: {
       { reason: "market_unknown" },
     );
   }
+  if (!acceptsSubmissions(market)) {
+    usageRepo.emit(
+      db,
+      makeUsage(
+        identity.agent_id,
+        "submission_rejected",
+        { reason: "market_not_listed", market_id: market.market_id, status: market.status },
+        now,
+      ),
+    );
+    throw new VerdictError(
+      `market ${market.market_id} status=${market.status} (not accepting submissions)`,
+      ERROR_CODES.asset_not_supported,
+      400,
+      {
+        reason: "market_not_listed",
+        market_id: market.market_id,
+        market_status: market.status,
+      },
+    );
+  }
   // P3 Phase 2d hardening (Codex audit Bug 1): scoring (scoreCall) still
   // keys on horizon_hours via the realized-vol table; for sub-hour markets
   // horizon_hours=0 produces hzn = sqrt(0/4) = 0, which silently zeros every
@@ -279,6 +300,9 @@ export async function submitCall(args: {
   // markets bounce here instead of writing call_score=0 calls. The schema
   // plumbing (Pyth-only T0Policy, horizon_seconds canonical) stays in
   // place — only the user-facing "accept this call" path is gated.
+  // Ordered AFTER acceptsSubmissions so draft sub-hour markets surface
+  // `market_not_listed` (the operationally meaningful state) instead of
+  // the more confusing `sub_hour_scoring_pending`.
   if (market.horizon_seconds < 3600) {
     usageRepo.emit(
       db,
@@ -301,27 +325,6 @@ export async function submitCall(args: {
         reason: "sub_hour_scoring_pending",
         market_id: market.market_id,
         horizon_seconds: market.horizon_seconds,
-      },
-    );
-  }
-  if (!acceptsSubmissions(market)) {
-    usageRepo.emit(
-      db,
-      makeUsage(
-        identity.agent_id,
-        "submission_rejected",
-        { reason: "market_not_listed", market_id: market.market_id, status: market.status },
-        now,
-      ),
-    );
-    throw new VerdictError(
-      `market ${market.market_id} status=${market.status} (not accepting submissions)`,
-      ERROR_CODES.asset_not_supported,
-      400,
-      {
-        reason: "market_not_listed",
-        market_id: market.market_id,
-        market_status: market.status,
       },
     );
   }
@@ -957,6 +960,13 @@ function loadExistingAcceptedCall(
  * caller's Zod parse succeeds (Codex audit Bug 4).
  */
 function buildT0PolicyFromRow(row: Record<string, unknown>): T0Policy {
+  const hasFeed = row.fallback_feed !== null;
+  const hasStaleness = row.fallback_max_staleness_sec !== null;
+  if (hasFeed !== hasStaleness) {
+    throw new Error(
+      `oracle_policies row has half-configured fallback (fallback_feed=${hasFeed ? "set" : "null"}, fallback_max_staleness_sec=${hasStaleness ? "set" : "null"}); both must be set or both NULL`,
+    );
+  }
   return {
     primary_feed: row.primary_feed as T0Policy["primary_feed"],
     primary_max_staleness_sec: row.primary_max_staleness_sec as number,

@@ -112,16 +112,26 @@ function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 10) {
-    applyTableRebuildMigration(db, MIGRATION_010, () => {
-      set.run("schema_version", "10");
-    });
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_010,
+      () => {
+        set.run("schema_version", "10");
+      },
+      ["submissions", "submissions_v3"],
+    );
     v = 10;
   }
 
   if (v < 11) {
-    applyTableRebuildMigration(db, MIGRATION_011, () => {
-      set.run("schema_version", "11");
-    });
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_011,
+      () => {
+        set.run("schema_version", "11");
+      },
+      ["oracle_policies", "oracle_policies_v2"],
+    );
     v = 11;
   }
 }
@@ -147,12 +157,63 @@ function applyMigrations(db: Database.Database): void {
  *   4. Migration SQL bodies start with `DROP TABLE IF EXISTS <_v>`
  *      so a retry after a half-applied rebuild doesn't fail on the
  *      orphan temp table.
+ *
+ * Pre-transaction recovery (Codex audit follow-up):
+ * Before entering the transaction we inspect the database for the four
+ * possible (original, temp) table states the migration's rebuild pattern
+ * can leave behind after a crash:
+ *
+ *   1. original EXISTS, temp MISSING — clean state. Run normal migration.
+ *   2. original EXISTS, temp EXISTS  — previous run was interrupted before
+ *      the temp got renamed/dropped. The migration's leading
+ *      `DROP TABLE IF EXISTS <temp>` will clean it up safely. Continue.
+ *   3. original MISSING, temp EXISTS — RECOVERABLE. The previous run
+ *      crashed AFTER `DROP TABLE <original>` but BEFORE
+ *      `ALTER TABLE <temp> RENAME TO <original>`. The temp table holds
+ *      the only copy of the data. We rename it back to <original> here
+ *      (one statement, atomic in SQLite) BEFORE the migration runs, so
+ *      the migration's `DROP TABLE IF EXISTS <temp>` becomes a no-op
+ *      and its INSERT-from-original step finds the data again.
+ *   4. original MISSING, temp MISSING — CATASTROPHIC. Both tables are
+ *      gone. We refuse to run rather than silently produce an empty
+ *      rebuilt table; the operator must restore from backup.
+ *
+ * Note: state #3's rename is intentionally OUTSIDE the foreign_keys=OFF
+ * block and OUTSIDE the transaction. ALTER TABLE … RENAME is already
+ * atomic on its own, and we want recovery to be observable in the
+ * sqlite_master state we re-check for state #1 vs #2 once the rename
+ * lands.
  */
-function applyTableRebuildMigration(
+export function applyTableRebuildMigration(
   db: Database.Database,
   sql: string,
   bumpSchemaVersion: () => void,
+  tables: readonly [originalTableName: string, tempTableName: string],
 ): void {
+  const [original, temp] = tables;
+  const tableExists = (name: string): boolean =>
+    !!db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+      .get(name);
+
+  const originalPresent = tableExists(original);
+  const tempPresent = tableExists(temp);
+
+  if (!originalPresent && !tempPresent) {
+    throw new Error(
+      `Table-rebuild migration cannot run: ${original} and ${temp} are both missing; database may be corrupted, manual recovery needed.`,
+    );
+  }
+
+  if (!originalPresent && tempPresent) {
+    // Recoverable orphan from a previous crashed rebuild — rename the
+    // temp table back to the original so the migration's INSERT step
+    // finds the data. Bare identifier interpolation is safe here: the
+    // names come from compile-time string-literal tuples in the call
+    // sites, not user input.
+    db.exec(`ALTER TABLE ${temp} RENAME TO ${original};`);
+  }
+
   db.pragma("foreign_keys = OFF");
   try {
     db.transaction(() => {

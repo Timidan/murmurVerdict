@@ -666,6 +666,13 @@ export class Resolver {
     // Phase 2d: ctx.fallback_feed / fallback_max_staleness_sec are nullable.
     // T0Policy uses the optional shape — both fields go missing together
     // for sub-hour Pyth-only markets.
+    const hasFeed = ctx.fallback_feed !== null;
+    const hasStaleness = ctx.fallback_max_staleness_sec !== null;
+    if (hasFeed !== hasStaleness) {
+      throw new Error(
+        `oracle_policies row for call ${ctx.call_id} has half-configured fallback (fallback_feed=${hasFeed ? "set" : "null"}, fallback_max_staleness_sec=${hasStaleness ? "set" : "null"}); both must be set or both NULL`,
+      );
+    }
     return {
       primary_feed: ctx.primary_feed as T0Policy["primary_feed"],
       primary_max_staleness_sec: ctx.primary_max_staleness_sec,
