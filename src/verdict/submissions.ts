@@ -292,42 +292,11 @@ export async function submitCall(args: {
       },
     );
   }
-  // P3 Phase 2d hardening (Codex audit Bug 1): scoring (scoreCall) still
-  // keys on horizon_hours via the realized-vol table; for sub-hour markets
-  // horizon_hours=0 produces hzn = sqrt(0/4) = 0, which silently zeros every
-  // win/loss call_score. Refuse sub-hour submissions explicitly until Phase
-  // 2e routes scoring through horizon_seconds. Operator-flipped sub-hour
-  // markets bounce here instead of writing call_score=0 calls. The schema
-  // plumbing (Pyth-only T0Policy, horizon_seconds canonical) stays in
-  // place — only the user-facing "accept this call" path is gated.
-  // Ordered AFTER acceptsSubmissions so draft sub-hour markets surface
-  // `market_not_listed` (the operationally meaningful state) instead of
-  // the more confusing `sub_hour_scoring_pending`.
-  if (market.horizon_seconds < 3600) {
-    usageRepo.emit(
-      db,
-      makeUsage(
-        identity.agent_id,
-        "submission_rejected",
-        {
-          reason: "sub_hour_scoring_pending",
-          market_id: market.market_id,
-          horizon_seconds: market.horizon_seconds,
-        },
-        now,
-      ),
-    );
-    throw new VerdictError(
-      `market ${market.market_id} has horizon_seconds=${market.horizon_seconds} < 3600; sub-hour scoring lands in Phase 2e, submissions blocked until then`,
-      ERROR_CODES.asset_not_supported,
-      400,
-      {
-        reason: "sub_hour_scoring_pending",
-        market_id: market.market_id,
-        horizon_seconds: market.horizon_seconds,
-      },
-    );
-  }
+  // P3 Phase 2e: sub-hour scoring is live — scoring routes through
+  // canonical `horizon_seconds` (see scoreCall in scoring.ts). The
+  // Phase 2d submit guard that bounced sub-hour calls is removed; the
+  // schema plumbing (Pyth-only T0Policy, horizon_seconds canonical)
+  // and the new sub-hour volatility buckets close the gap.
 
   // Phase 2b: derive the per-call T0Policy from the market's primary +
   // fallback oracle rows. Fail-closed if either referenced oracle isn't

@@ -11,6 +11,7 @@ import { CallLog } from "../components/CallLog.js";
 import { PillButton } from "../components/PillButton.js";
 import { EmbedBlock } from "../components/EmbedBlock.js";
 import { DiscoveredBy } from "../components/DiscoveredBy.js";
+import { MarketHeatGrid } from "../components/MarketHeatGrid.js";
 import { useFollow } from "../hooks/useFollow.js";
 
 /**
@@ -204,6 +205,9 @@ export function AgentPage({ slug }: { slug: string }) {
                 ]}
               />
             )}
+
+            {/* MARKET HEAT GRID ─────────────────────────────────── */}
+            <MarketHeatGrid slug={agent.display_slug} />
 
             {/* CALLS ────────────────────────────────────────────── */}
             {calls && <CallLog calls={calls} />}

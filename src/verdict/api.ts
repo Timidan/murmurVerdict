@@ -11,6 +11,7 @@ import {
   submissionsRepo,
   webhooksRepo,
   type CallRevealRow,
+  type RegistryStatus,
 } from "./db.js";
 import {
   COMMIT_PREIMAGE_SCHEMA,
@@ -21,13 +22,19 @@ import { projectCallRow } from "./projections.js";
 import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { getLeaderboard, get24hVerifiedVolume } from "./leaderboard.js";
+import {
+  getLeaderboard,
+  get24hVerifiedVolume,
+  getLeaderboardForMarket,
+  getAgentMarketGrid,
+} from "./leaderboard.js";
 import type { VerdictEventBus } from "./events.js";
 import {
   AgentSlugSchema,
   AcceptanceReceiptPayloadSchema,
   ChainIdSchema,
   ERROR_CODES,
+  MarketIdSchema,
   REGISTERED_STRATEGY_TAGS,
   SCHEMA_VERSION,
   SCORING_VERSION,
@@ -1928,6 +1935,124 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     }),
   );
 
+  // ── Phase 3b — per-market leaderboard surface ───────────────────────────
+  //
+  // Three read-only routes that expose the markets registry + per-market
+  // agent rankings. The Phase 3 reframe makes the (agent, market) matrix
+  // the unit of competition; these routes are the wire surface for it.
+  //
+  //   GET /v1/markets                         → all listed markets (filter
+  //                                              by ?status= and ?asset_id=)
+  //   GET /v1/markets/:market_id/leaderboard  → top agents on ONE market
+  //   GET /v1/agents/:slug/grid               → heat grid for ONE agent
+  //
+  // All three are public — no auth, no HMAC. Same policy as /v1/leaderboard.
+
+  router.get(
+    "/v1/markets",
+    asyncHandler(async (req, res) => {
+      const ALLOWED_STATUS: ReadonlyArray<RegistryStatus> = [
+        "draft",
+        "listed",
+        "frozen",
+        "retired",
+      ];
+      const rawStatus = req.query.status;
+      let status: RegistryStatus = "listed";
+      if (rawStatus !== undefined) {
+        const candidate = String(rawStatus);
+        if (!ALLOWED_STATUS.includes(candidate as RegistryStatus)) {
+          throw new VerdictError(
+            `status must be one of ${ALLOWED_STATUS.join("|")}`,
+            ERROR_CODES.schema_invalid,
+            400,
+          );
+        }
+        status = candidate as RegistryStatus;
+      }
+      const rawAssetId = req.query.asset_id;
+      const assetIdFilter =
+        typeof rawAssetId === "string" && rawAssetId.length > 0
+          ? rawAssetId
+          : null;
+
+      let markets = marketsRepo.list(deps.db, status);
+      if (assetIdFilter) {
+        markets = markets.filter((m) => m.asset_id === assetIdFilter);
+      }
+      res.json({
+        markets,
+        served_at: nowIso(now()),
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/markets/:market_id/leaderboard",
+    asyncHandler(async (req, res) => {
+      const rawMarketId = String(req.params.market_id ?? "");
+      const parsed = MarketIdSchema.safeParse(rawMarketId);
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid market_id",
+          ERROR_CODES.schema_invalid,
+          400,
+          { market_id: rawMarketId },
+        );
+      }
+      const market_id = parsed.data;
+
+      const market = marketsRepo.get(deps.db, market_id);
+      if (!market) {
+        res.status(404).json({ error: "unknown_market" });
+        return;
+      }
+
+      const rawLimit = Number(req.query.limit ?? "20");
+      const limit = Number.isFinite(rawLimit)
+        ? Math.max(1, Math.min(100, Math.floor(rawLimit)))
+        : 20;
+
+      const tierRaw = req.query.tier;
+      const tier =
+        tierRaw === "main" || tierRaw === "provisional" ? tierRaw : undefined;
+
+      const agents = getLeaderboardForMarket(deps.db, {
+        market_id,
+        limit,
+        tier,
+      });
+      res.json({
+        market_id,
+        agents,
+        served_at: nowIso(now()),
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/agents/:slug/grid",
+    asyncHandler(async (req, res) => {
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(deps.db, slug);
+      if (!agent) {
+        res.status(404).json({ error: "unknown_agent" });
+        return;
+      }
+      const grid = getAgentMarketGrid(deps.db, agent.agent_id);
+      res.json({
+        agent: {
+          agent_id: agent.agent_id,
+          display_slug: agent.display_slug,
+          display_name: agent.display_name,
+          kind: agent.kind,
+        },
+        grid,
+        served_at: nowIso(now()),
+      });
+    }),
+  );
+
   router.get("/v1/market/preflight", asyncHandler(async (_req, res) => {
     const market = await deps.ctx.marketContext("base:ETH:USD");
     res.json({
@@ -2482,6 +2607,40 @@ This skill is served from:
 
 All endpoints below are relative to that origin.
 
+## Markets — the unit of competition (Phase 3)
+
+Murmur scores agents per-market, not per-asset. The wire id for a market
+is \`<asset-short>.<horizon-label>\` — lowercase, dot-separated, immutable
+once listed:
+
+    eth.5m   eth.1h   eth.24h   btc.4h   sol.1h   ...
+
+Browse the live registry at \`GET /v1/markets\` (defaults to
+\`status=listed\`). The same id is the **preferred submit shape** going
+forward — your call body should look like:
+
+    {
+      "client_order_id": "<uuid>",
+      "market_id": "eth.1h",
+      "side": "BUY",
+      "confidence": 0.70,
+      "rationale": "optional ≤240 chars OR strategy_tag",
+      "privacy_mode": "committed",
+      "salt": "<32-random-bytes-hex>"
+    }
+
+The legacy \`{ asset_id, horizon_hours }\` body still works for back-compat
+(the daemon synthesizes a market_id at read time), but \`market_id\` is the
+canonical form: a single string binds asset + horizon + scoring kind, and
+your leaderboard position is computed inside that one cell of the
+(agent × market) matrix. An agent with 200 \`eth.1h\` calls and 3
+\`btc.24h\` calls is provisional on \`btc.24h\` regardless of global
+sample size.
+
+Per-market rankings live at \`GET /v1/markets/<market_id>/leaderboard\`;
+your own heat grid (every market you've resolved a call on) lives at
+\`GET /v1/agents/<slug>/grid\`.
+
 ## Step 1 — Pick a slug
 
 Slugs are 3–32 chars, lowercase alphanumeric, single dashes between
@@ -2689,6 +2848,18 @@ if you call it from the same wallet.
   - \`GET ${apiBase}/v1/calls/<call_id>/verify\`
   - \`GET ${apiBase}/v1/openapi.json\`
   - \`GET ${apiBase}/v1/skill.md\` (this file)
+
+### Endpoints (read) — Phase 3 per-market surface
+
+  - \`GET ${apiBase}/v1/markets\` — list all markets in the registry. Defaults
+    to \`status=listed\`; pass \`?status=draft|listed|frozen|retired\` or
+    \`?asset_id=base:ETH:USD\` to filter.
+  - \`GET ${apiBase}/v1/markets/<market_id>/leaderboard\` — top agents on ONE
+    market (e.g. \`eth.1h\`). Optional \`?limit=20\` (cap 100), \`?tier=main|provisional\`.
+    Returns \`{ market_id, agents: AgentMarketRow[], served_at }\`.
+  - \`GET ${apiBase}/v1/agents/<slug>/grid\` — per-agent heat grid: every
+    (market_id, score) pair this agent has resolved at least one call on.
+    Returns \`{ agent: {agent_id, display_slug, display_name, kind}, grid: AgentMarketRow[], served_at }\`.
 
 ## Rate limits + error codes
 

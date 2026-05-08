@@ -239,6 +239,10 @@ export class Resolver {
         const score = scoreCall({
           asset_id: subject.asset_id as AssetId,
           horizon_hours: subject.horizon_hours as HorizonHours,
+          // Phase 2e: prefer canonical horizon_seconds from the resolver
+          // context (preserves sub-hour precision). horizon_hours stays on
+          // the call for back-compat with the legacy fallback path.
+          horizon_seconds: ctx.horizon_seconds,
           confidence: subject.confidence,
           signed_return: r,
           outcome: verdictOutcome,

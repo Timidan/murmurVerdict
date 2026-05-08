@@ -2,7 +2,6 @@ import {
   AssetId,
   CONFIDENCE_MAX,
   CONFIDENCE_MIN,
-  HORIZONS_HOURS,
   HorizonHours,
   Outcome,
   SCORING_VERSION,
@@ -17,35 +16,50 @@ import {
 // fall through to the nearest-horizon fallback or the default 0.012.
 // Calibrating new assets is a backfill task, not a launch blocker.
 //
-// P3 Phase 2d: HorizonHoursSchema gained a `0` sentinel for sub-hour
-// markets. expectedVolatility's fallback chain handles unknown horizons
-// (returns the smallest-known bucket or the 0.012 default), so the
-// inner row type stays Partial — sub-hour calls fall back gracefully.
-const REALIZED_VOLATILITY: Partial<Record<AssetId, Partial<Record<HorizonHours, number>>>> = {
+// P3 Phase 2e: Volatility buckets keyed by canonical horizon_seconds.
+// Sub-hour markets (eth.5m, eth.15m) get their own buckets; the
+// nearest-bucket fallback handles in-between horizons gracefully.
+// Sub-hour RMS targets per Codex audit guidance — operators can
+// recalibrate via backfill once we have live data.
+const VOLATILITY_BUCKETS_SECONDS = [300, 900, 3600, 14400, 86400, 604800] as const;
+const REALIZED_VOLATILITY: Partial<Record<AssetId, Partial<Record<number, number>>>> = {
   "base:ETH:USD": {
-    1: 0.006,
-    4: 0.012,
-    24: 0.03,
-    168: 0.075,
+    300: 0.0008,
+    900: 0.0015,
+    3600: 0.006,
+    14400: 0.012,
+    86400: 0.03,
+    604800: 0.075,
   },
 };
 
+export function expectedVolatilityBySeconds(
+  asset_id: AssetId,
+  horizon_seconds: number,
+): number {
+  const row = REALIZED_VOLATILITY[asset_id];
+  if (!row) return 0.012;
+  const direct = row[horizon_seconds];
+  if (direct !== undefined) return direct;
+  // Nearest-larger then nearest-smaller fallback over the keyed buckets.
+  const sorted = [...VOLATILITY_BUCKETS_SECONDS].sort((a, b) => a - b);
+  const larger = sorted.find((h) => h >= horizon_seconds);
+  if (larger !== undefined && row[larger] !== undefined) return row[larger];
+  const smaller = [...sorted].reverse().find((h) => h <= horizon_seconds);
+  if (smaller !== undefined && row[smaller] !== undefined) return row[smaller];
+  return 0.012;
+}
+
+/**
+ * Back-compat surface: keep the (asset_id, horizon_hours) signature for any
+ * legacy caller. Internally forwards to expectedVolatilityBySeconds via
+ * `horizon_hours * 3600`. Phase 2e canonical scoring uses seconds.
+ */
 export function expectedVolatility(
   asset_id: AssetId,
   horizon_hours: HorizonHours,
 ): number {
-  const row = REALIZED_VOLATILITY[asset_id];
-  if (!row) return 0.012;
-  const direct = row[horizon_hours];
-  if (direct !== undefined) return direct;
-
-  // Fallback to nearest-larger horizon, then nearest-smaller; never 0.
-  const sorted = [...HORIZONS_HOURS].sort((a, b) => a - b);
-  const larger = sorted.find((h) => h >= horizon_hours);
-  if (larger !== undefined && row[larger] !== undefined) return row[larger];
-  const smaller = [...sorted].reverse().find((h) => h <= horizon_hours);
-  if (smaller !== undefined && row[smaller] !== undefined) return row[smaller];
-  return 0.012;
+  return expectedVolatilityBySeconds(asset_id, horizon_hours * 3600);
 }
 
 // ─── Signed return ───────────────────────────────────────────────────────────
@@ -84,6 +98,13 @@ export function outcomeFromSignedReturn(signed_return: number): Outcome {
 export interface CallScoreInput {
   asset_id: AssetId;
   horizon_hours: HorizonHours;
+  /**
+   * Phase 2e: canonical horizon for scoring. When present this overrides
+   * `horizon_hours * 3600` (sub-hour precision). When absent (legacy
+   * callers) we fall back to `horizon_hours * 3600` so 1h/4h/24h/7d
+   * inputs produce byte-identical results to pre-Phase-2e scoring.
+   */
+  horizon_seconds?: number;
   confidence: number;
   signed_return: number;
   outcome: Outcome;
@@ -103,8 +124,14 @@ export interface CallScoreBreakdown {
 }
 
 export function scoreCall(input: CallScoreInput): CallScoreBreakdown {
-  const ev = expectedVolatility(input.asset_id, input.horizon_hours);
-  const hzn = Math.min(Math.sqrt(input.horizon_hours / 4), 3);
+  // Phase 2e: scoring keys on canonical horizon_seconds. When the caller
+  // doesn't pass it (legacy code paths), fall back to `horizon_hours * 3600`
+  // so 1h/4h/24h/7d inputs reproduce the pre-Phase-2e numbers exactly.
+  const seconds =
+    input.horizon_seconds ?? input.horizon_hours * 3600;
+  const ev = expectedVolatilityBySeconds(input.asset_id, seconds);
+  // baseline 4h = 14400s; precision-preserving for sub-hour markets.
+  const hzn = Math.min(Math.sqrt(seconds / 14400), 3);
   const p = clamp(input.confidence, CONFIDENCE_MIN, CONFIDENCE_MAX);
 
   if (input.outcome === "void" || input.outcome === "oracle_unavailable") {

@@ -201,6 +201,47 @@ export interface VerifyResult {
   verified_at: string;
 }
 
+/* ── Phase 3b — markets registry + per-(agent, market) grid ─────────────── */
+
+export type MarketStatus = "draft" | "listed" | "frozen" | "retired";
+
+export interface MarketRow {
+  market_id: string; // e.g., "eth.1h"
+  asset_id: string; // e.g., "base:ETH:USD"
+  market_kind: string; // "direction_binary"
+  horizon_seconds: number;
+  primary_oracle_id: string;
+  fallback_oracle_id: string | null;
+  void_band: string; // decimal as string
+  status: MarketStatus;
+  market_config_version: number;
+  // Backend may include additional fields; preserve them through.
+  [extra: string]: unknown;
+}
+
+export interface AgentMarketRow {
+  agent_id: string;
+  display_slug: string;
+  display_name: string;
+  kind: AgentKind;
+  market_id: string;
+  verdict_score: number | null;
+  verdict_score_lb: number | null;
+  resolved_calls: number;
+  pending_calls: number;
+  win_rate: number | null;
+  last_resolved_at: string | null;
+  /** resolved_calls >= 20 */
+  market_main_tier: boolean;
+}
+
+export interface AgentGridSummary {
+  agent_id: string;
+  display_slug: string;
+  display_name: string;
+  kind: AgentKind;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`);
   if (!res.ok) throw new ApiError(`GET ${path} → ${res.status}`, res.status);
@@ -287,4 +328,56 @@ export const verdictApi = {
         last_at: string;
       }>;
     }>(`/v1/refs/top?limit=${limit}`),
+  markets: (opts: { status?: string; asset_id?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.status) params.set("status", opts.status);
+    if (opts.asset_id) params.set("asset_id", opts.asset_id);
+    const q = params.toString();
+    return get<{ markets: MarketRow[]; served_at: string }>(
+      `/v1/markets${q ? `?${q}` : ""}`,
+    );
+  },
+  marketLeaderboard: (
+    market_id: string,
+    opts: { limit?: number; tier?: string } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.tier) params.set("tier", opts.tier);
+    const q = params.toString();
+    return get<{ market_id: string; agents: AgentMarketRow[]; served_at: string }>(
+      `/v1/markets/${encodeURIComponent(market_id)}/leaderboard${q ? `?${q}` : ""}`,
+    );
+  },
+  agentGrid: (slug: string) =>
+    get<{ agent: AgentGridSummary; grid: AgentMarketRow[]; served_at: string }>(
+      `/v1/agents/${encodeURIComponent(slug)}/grid`,
+    ),
 };
+
+/* ── Top-level convenience exports ─────────────────────────────────────── */
+// Mirror the daemon-facing names from V14_HANDOFF so subagent-driven code
+// can `import { fetchMarkets } from "../api"` without going through the
+// `verdictApi.markets(…)` namespace. Both paths return the same payload.
+
+export async function fetchMarkets(
+  opts: { status?: string; asset_id?: string } = {},
+): Promise<MarketRow[]> {
+  const r = await verdictApi.markets(opts);
+  return r.markets;
+}
+
+export async function fetchMarketLeaderboard(
+  market_id: string,
+  opts: { limit?: number; tier?: string } = {},
+): Promise<{ market_id: string; agents: AgentMarketRow[] }> {
+  const r = await verdictApi.marketLeaderboard(market_id, opts);
+  return { market_id: r.market_id, agents: r.agents };
+}
+
+export async function fetchAgentGrid(
+  slug: string,
+): Promise<{ agent: AgentGridSummary; grid: AgentMarketRow[] }> {
+  const r = await verdictApi.agentGrid(slug);
+  return { agent: r.agent, grid: r.grid };
+}

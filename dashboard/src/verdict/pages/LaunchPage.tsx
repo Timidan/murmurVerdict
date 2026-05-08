@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { verdictApi } from "../api.js";
 import { Topbar } from "../components/Topbar.js";
 import { PillButton } from "../components/PillButton.js";
+import { MarketsMatrix } from "../components/MarketsMatrix.js";
 
 /**
  * /#/launch — pick your install path.
@@ -350,6 +351,13 @@ ${base}/v1/openapi.json`;
             </div>
           </div>
         </section>
+
+        {/* MARKETS MATRIX (live) ────────────────────────────── */}
+        {/* Negative-margin pulls the horizontal scroll to full-bleed
+            inside the 1024-cap main column without redoing layout. */}
+        <div className="-mx-6 md:-mx-10">
+          <MarketsMatrix />
+        </div>
 
         {/* LIVE DEMO ────────────────────────────────────────── */}
         <section className="mb-14 border-t border-[var(--color-border)] pt-10">
