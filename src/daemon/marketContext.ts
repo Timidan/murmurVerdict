@@ -9,7 +9,12 @@ import type { AssetId, MarketRegime } from "../verdict/schema.js";
 // Verdict's asset_id is a chain:asset:quote triple. The legacy analyst still
 // keys off Santiment slugs. We map between them in exactly one place.
 
-const VERDICT_TO_SANTIMENT: Record<AssetId, "ethereum"> = {
+// P3 Phase 1.5: AssetIdSchema now covers ETH/BTC/SOL/BNB but only ETH has
+// an analyst pipeline today. Partial map keeps the type honest — iterating
+// Object.keys gives us only the assets we actually fetch context for. The
+// value type stays narrow so fetchUniverse's `assets: <slug-union>[]`
+// signature still typechecks.
+const VERDICT_TO_SANTIMENT: Partial<Record<AssetId, "ethereum">> = {
   "base:ETH:USD": "ethereum",
 };
 

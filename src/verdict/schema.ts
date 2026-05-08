@@ -6,10 +6,24 @@ export const SCHEMA_VERSION = 1 as const;
 export const SCORING_VERSION = 1 as const;
 
 // ─── Asset registry ──────────────────────────────────────────────────────────
-// asset_id = "<chain>:<asset>:<quote>". v0.1 only inserts base:ETH:USD;
-// BTC/SOL etc. become additions, never refactors.
-
-export const REGISTERED_ASSET_IDS = ["base:ETH:USD"] as const;
+// asset_id = "<chain>:<asset>:<quote>".
+//
+// P3 Phase 1.5: extended to cover all four assets seeded by migration 008
+// so legacy-shape submissions (asset_id + horizon_hours) can target BTC,
+// SOL, BNB once the operator flips those markets to 'listed'. The runtime
+// markets registry remains the source of truth for "which assets are
+// listable today" — this enum just bounds the wire format.
+//
+// Adding a new asset: add a row in this enum AND insert assets/oracles/
+// markets registry rows. The enum is intentionally a closed list so a
+// typo in an agent payload is rejected at the daemon edge instead of
+// resolving against a non-existent registry row.
+export const REGISTERED_ASSET_IDS = [
+  "base:ETH:USD",
+  "base:BTC:USD",
+  "base:SOL:USD",
+  "base:BNB:USD",
+] as const;
 export const AssetIdSchema = z.enum(REGISTERED_ASSET_IDS);
 export type AssetId = z.infer<typeof AssetIdSchema>;
 

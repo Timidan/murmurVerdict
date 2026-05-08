@@ -1104,6 +1104,13 @@ export const submissionsRepo = {
     return row ?? null;
   },
 
+  /**
+   * Per-asset rolling 24h count. P3 Phase 1.5 (Codex audit): bound to
+   * `accepted_at`, NOT `submitted_at`. Agent-supplied submitted_at is
+   * untrusted — an agent could otherwise stamp a future timestamp to slip
+   * the cap. The new per-market counter (countCallsForAgentMarketWindow)
+   * already used accepted_at; this brings the per-asset counter in line.
+   */
   countCallsForAgentAssetWindow(
     db: Database.Database,
     agent_id: string,
@@ -1113,7 +1120,7 @@ export const submissionsRepo = {
     const row = prep(
       db,
       `SELECT COUNT(*) AS n FROM submissions
-       WHERE agent_id = ? AND asset_id = ? AND submitted_at >= ?`,
+       WHERE agent_id = ? AND asset_id = ? AND accepted_at >= ?`,
     ).get(agent_id, asset_id, sinceIso) as { n: number } | undefined;
     return row?.n ?? 0;
   },

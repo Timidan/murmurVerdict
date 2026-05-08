@@ -3,6 +3,7 @@ import {
   agentsRepo,
   callPrivateEnvelopesRepo,
   callRevealsRepo,
+  marketsRepo,
   type CallRevealRow,
 } from "./db.js";
 import type { AgeContext } from "./age-envelope.js";
@@ -11,7 +12,13 @@ import type { DrandContext } from "./drand-envelope.js";
 import { decryptDrandEnvelope } from "./drand-envelope.js";
 import {
   buildCommitPreimage,
+  buildMarketCommitPreimage,
   computeCommitHash,
+  computeMarketCommitHash,
+  COMMIT_PREIMAGE_DOMAIN,
+  COMMIT_PREIMAGE_SCHEMA,
+  MARKET_COMMIT_PREIMAGE_DOMAIN,
+  MARKET_COMMIT_PREIMAGE_SCHEMA,
   REVEAL_GRACE_MS,
 } from "./commit-preimage.js";
 
@@ -272,13 +279,23 @@ function rowToSubject(row: CallRevealRow): ResolutionSubject {
 }
 
 function safeJsonField(json: string, _field: string): string | null {
-  // The commit_preimage_json carries the canonical domain field; we
+  // The commit_preimage_json carries the canonical `domain` field; we
   // surface it back as commit_preimage_schema for the v2 resolution
   // receipt's `reveal.commit_preimage_schema`. Defensive parse in case
-  // a future schema rotation leaves an old row in place.
+  // a future schema rotation leaves an old row in place. P3 Phase 1.5:
+  // distinguish v0.2 vs v0.2.5 domains so the resolution receipt names
+  // the right schema.
   try {
-    JSON.parse(json);
-    return "murmur-verdict-v0.2-commit@1";
+    const parsed = JSON.parse(json) as { domain?: unknown };
+    if (parsed && typeof parsed === "object") {
+      if (parsed.domain === MARKET_COMMIT_PREIMAGE_DOMAIN) {
+        return MARKET_COMMIT_PREIMAGE_SCHEMA;
+      }
+      if (parsed.domain === COMMIT_PREIMAGE_DOMAIN) {
+        return COMMIT_PREIMAGE_SCHEMA;
+      }
+    }
+    return COMMIT_PREIMAGE_SCHEMA;
   } catch {
     return null;
   }
@@ -311,32 +328,105 @@ async function materializeFromCiphertext(
     return null;
   }
 
-  let preimageObj: ReturnType<typeof buildCommitPreimage>;
+  // P3 Phase 1.5: dispatch on the preimage's `domain` field. v0.2 and
+  // v0.2.5 preimages have wire-distinct domains; we hash with the
+  // matching schema to verify against the stored commit_hash.
+  let parsedRaw: Record<string, unknown>;
   try {
-    preimageObj = JSON.parse(parsed.preimage_canonical) as ReturnType<
-      typeof buildCommitPreimage
-    >;
+    parsedRaw = JSON.parse(parsed.preimage_canonical) as Record<string, unknown>;
   } catch {
     return null;
   }
+  const preimageDomain = parsedRaw.domain;
 
-  const recomputed = computeCommitHash(preimageObj);
-  const valid =
-    args.commit_hash &&
-    recomputed.toLowerCase() === args.commit_hash.toLowerCase();
-  if (!valid) return null;
+  let recomputed: `0x${string}`;
+  let revealSide: "BUY" | "SELL";
+  let revealAssetId: string;
+  let revealHorizonHours: number;
+  let revealConfidence: number;
+  let revealSalt: string;
+  let revealT0: string;
+  let revealAgentWallet: string;
+  let revealChainId: string;
+
+  if (preimageDomain === MARKET_COMMIT_PREIMAGE_DOMAIN) {
+    let preimageObj: ReturnType<typeof buildMarketCommitPreimage>;
+    try {
+      preimageObj = parsedRaw as unknown as ReturnType<
+        typeof buildMarketCommitPreimage
+      >;
+      // Defensive — ensure required market fields are present.
+      if (
+        typeof preimageObj.market_id !== "string" ||
+        typeof preimageObj.market_config_version !== "number"
+      ) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+    recomputed = computeMarketCommitHash(preimageObj);
+    if (
+      !args.commit_hash ||
+      recomputed.toLowerCase() !== args.commit_hash.toLowerCase()
+    ) {
+      return null;
+    }
+    const market = marketsRepo.get(args.db, preimageObj.market_id);
+    if (!market) return null;
+    revealSide = preimageObj.side;
+    revealAssetId = market.asset_id;
+    // Synthesize legacy horizon_hours for the reveal row (sub-hour
+    // markets give 0; not exposed at v0.2.5 since those markets are
+    // 'draft').
+    revealHorizonHours = Math.round(market.horizon_seconds / 3600);
+    revealConfidence = preimageObj.confidence;
+    revealSalt = preimageObj.salt;
+    revealT0 = preimageObj.t0;
+    revealAgentWallet = preimageObj.agent_wallet;
+    revealChainId = preimageObj.chain_id;
+  } else {
+    let preimageObj: ReturnType<typeof buildCommitPreimage>;
+    try {
+      preimageObj = parsedRaw as unknown as ReturnType<typeof buildCommitPreimage>;
+      if (
+        typeof preimageObj.asset_id !== "string" ||
+        typeof preimageObj.horizon_hours !== "number"
+      ) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+    recomputed = computeCommitHash(preimageObj);
+    if (
+      !args.commit_hash ||
+      recomputed.toLowerCase() !== args.commit_hash.toLowerCase()
+    ) {
+      return null;
+    }
+    revealSide = preimageObj.side;
+    revealAssetId = preimageObj.asset_id;
+    revealHorizonHours = preimageObj.horizon_hours;
+    revealConfidence = preimageObj.confidence;
+    revealSalt = preimageObj.salt;
+    revealT0 = preimageObj.t0;
+    revealAgentWallet = preimageObj.agent_wallet;
+    revealChainId = preimageObj.chain_id;
+  }
+
   const row: CallRevealRow = {
     call_id: args.call_id,
-    side: preimageObj.side,
-    asset_id: preimageObj.asset_id,
-    horizon_hours: preimageObj.horizon_hours,
-    confidence: preimageObj.confidence,
+    side: revealSide,
+    asset_id: revealAssetId,
+    horizon_hours: revealHorizonHours,
+    confidence: revealConfidence,
     rationale: parsed.rationale,
     strategy_tag: parsed.strategy_tag,
-    salt: preimageObj.salt,
-    t0: preimageObj.t0,
-    agent_wallet: args.agentWallet ?? preimageObj.agent_wallet,
-    chain_id: args.chainId ?? preimageObj.chain_id,
+    salt: revealSalt,
+    t0: revealT0,
+    agent_wallet: args.agentWallet ?? revealAgentWallet,
+    chain_id: args.chainId ?? revealChainId,
     commit_preimage_json: parsed.preimage_canonical,
     commit_preimage_hash: recomputed,
     revealed_at: args.nowIso,
@@ -366,9 +456,30 @@ function isValidCommittedReveal(
   }
   if (!row.commit_preimage_json) return false;
   try {
-    const preimage = JSON.parse(row.commit_preimage_json) as ReturnType<
-      typeof buildCommitPreimage
-    >;
+    const parsed = JSON.parse(row.commit_preimage_json) as Record<string, unknown>;
+    if (parsed.domain === MARKET_COMMIT_PREIMAGE_DOMAIN) {
+      const preimage = parsed as unknown as ReturnType<
+        typeof buildMarketCommitPreimage
+      >;
+      if (
+        computeMarketCommitHash(preimage).toLowerCase() !==
+        expectedHash.toLowerCase()
+      ) {
+        return false;
+      }
+      // For v0.2.5 reveals, asset_id + horizon_hours on the row are
+      // synthesized from the market — we cross-check side/confidence/
+      // t0/wallet/chain only. asset_id consistency is guaranteed by
+      // the registry lookup at materialization.
+      return (
+        row.side === preimage.side &&
+        row.confidence === preimage.confidence &&
+        row.t0 === preimage.t0 &&
+        row.agent_wallet === preimage.agent_wallet &&
+        row.chain_id === preimage.chain_id
+      );
+    }
+    const preimage = parsed as unknown as ReturnType<typeof buildCommitPreimage>;
     if (computeCommitHash(preimage).toLowerCase() !== expectedHash.toLowerCase()) {
       return false;
     }

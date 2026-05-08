@@ -13,7 +13,10 @@ import {
 // ─── Realized-volatility table (v0.1, static) ─────────────────────────────────
 // Refreshed by post-launch backfill, never on hot path.
 
-const REALIZED_VOLATILITY: Record<AssetId, Record<HorizonHours, number>> = {
+// P3 Phase 1.5: Partial map — only ETH is calibrated today. BTC/SOL/BNB
+// fall through to the nearest-horizon fallback or the default 0.012.
+// Calibrating new assets is a backfill task, not a launch blocker.
+const REALIZED_VOLATILITY: Partial<Record<AssetId, Record<HorizonHours, number>>> = {
   "base:ETH:USD": {
     1: 0.006,
     4: 0.012,
@@ -27,6 +30,7 @@ export function expectedVolatility(
   horizon_hours: HorizonHours,
 ): number {
   const row = REALIZED_VOLATILITY[asset_id];
+  if (!row) return 0.012;
   const direct = row[horizon_hours];
   if (direct !== undefined) return direct;
 
