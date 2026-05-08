@@ -336,6 +336,41 @@ export function verifyReceiptChain(
     // receipt has them. void_band is parsed off plaintext_subject (or
     // re-pulled from market_config_history if the receipt didn't stamp
     // it directly — happens for v2 receipts emitted before Item 4).
+    //
+    // Codex follow-up F3: also enrich for v1 (legacy_plaintext) receipts
+    // when the submission row has a stamped market_id+market_config_version.
+    // Without this, an operator who runs bumpConfig and then verifies a
+    // v1 benchmark call would see a verify mismatch (global VOID_BAND
+    // boundary, not the call's stamped one). This pulls the historical
+    // snapshot for both v1 and v2 unconditionally as the baseline; v2
+    // receipts can still override with carried fields below.
+    const submissionMarketId = subRow.market_id as string | null;
+    const submissionMarketVersion = subRow.market_config_version as
+      | number
+      | null;
+    const submissionHorizonSeconds = subRow.horizon_seconds as number | null;
+    let baselineHorizonSeconds: number | undefined;
+    let baselineVoidBand: number | undefined;
+    if (
+      submissionMarketId !== null &&
+      typeof submissionMarketVersion === "number"
+    ) {
+      const histSnapshot = marketsRepo.getConfigAt(
+        db,
+        submissionMarketId,
+        submissionMarketVersion,
+      );
+      if (histSnapshot) {
+        baselineHorizonSeconds = histSnapshot.horizon_seconds;
+        baselineVoidBand = Number(histSnapshot.void_band);
+      }
+    }
+    if (baselineHorizonSeconds === undefined && submissionHorizonSeconds) {
+      // Fallback: stamped row but missing history (shouldn't happen post
+      // migration 012). Use the row's own horizon_seconds; void_band
+      // stays undefined → outcomeFromSignedReturn uses global VOID_BAND.
+      baselineHorizonSeconds = submissionHorizonSeconds;
+    }
     let subjectForScoring: {
       side: Side;
       asset_id: AssetId;
@@ -348,6 +383,12 @@ export function verifyReceiptChain(
       asset_id: subRow.asset_id as AssetId,
       horizon_hours: subRow.horizon_hours as HorizonHours,
       confidence: subRow.confidence as number,
+      ...(baselineHorizonSeconds !== undefined
+        ? { horizon_seconds: baselineHorizonSeconds }
+        : {}),
+      ...(baselineVoidBand !== undefined
+        ? { void_band: baselineVoidBand }
+        : {}),
     };
 
     if (resolutionData.schema_version === 2) {

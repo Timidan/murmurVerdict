@@ -19,6 +19,7 @@ import {
   parseAndRebuildPreimage,
   parseAndRebuildPreimageByDomain,
 } from "./commit-preimage.js";
+import { legacyHorizonHoursForMarket } from "./markets.js";
 
 /**
  * Resolution subject loader (P2 Phase C-2).
@@ -375,12 +376,23 @@ function buildSubjectEnrichment(
     subRow.market_id,
     subRow.market_config_version,
   );
+  // Codex follow-up F1: fail closed if a STAMPED row's history is
+  // missing. The submission committed to (market_id, version); audit
+  // replay from a different version (or a fall-through to global
+  // VOID_BAND) would silently rewrite the call's outcome. Better to
+  // refuse to enrich and let the resolver mark this call as deferred
+  // until an operator restores the history row from backup.
+  if (!snapshot) {
+    throw new Error(
+      `market_config_history missing for stamped (market_id=${subRow.market_id}, version=${subRow.market_config_version}); cannot enrich subject`,
+    );
+  }
   return {
     market_id: subRow.market_id,
     market_config_version: subRow.market_config_version,
     horizon_seconds: subRow.horizon_seconds,
-    scoring_kind: snapshot?.scoring_kind ?? null,
-    void_band: snapshot?.void_band ?? null,
+    scoring_kind: snapshot.scoring_kind,
+    void_band: snapshot.void_band,
   };
 }
 
@@ -477,10 +489,11 @@ async function materializeFromCiphertext(
     if (!market) return null;
     revealSide = validated.preimage.side;
     revealAssetId = market.asset_id;
-    // Synthesize legacy horizon_hours for the reveal row (sub-hour
-    // markets give 0; not exposed at v0.2.5 since those markets are
-    // 'draft').
-    revealHorizonHours = Math.round(market.horizon_seconds / 3600);
+    // Codex follow-up F2: explicit fail-closed mapping replaces the
+    // Math.round trap. Forces operators introducing arbitrary horizons
+    // (7m, 90m, etc.) to update HorizonHoursSchema before the call
+    // can mint a v1 receipt with a stamped horizon_hours.
+    revealHorizonHours = legacyHorizonHoursForMarket(market);
     revealConfidence = validated.preimage.confidence;
     revealSalt = validated.preimage.salt;
     revealT0 = validated.preimage.t0;

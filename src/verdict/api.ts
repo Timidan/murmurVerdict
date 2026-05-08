@@ -11,8 +11,10 @@ import {
   submissionsRepo,
   webhooksRepo,
   type CallRevealRow,
+  type MarketRow,
   type RegistryStatus,
 } from "./db.js";
+import { legacyHorizonHoursForMarket } from "./markets.js";
 import {
   COMMIT_PREIMAGE_SCHEMA,
   MARKET_COMMIT_PREIMAGE_SCHEMA,
@@ -1350,7 +1352,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         // Synthesize legacy-shape horizon_hours for the call_reveals row.
         // Sub-hour markets give horizon_hours=0; harmless today since
         // those markets aren't 'listed' yet (Phase 2 territory).
-        revealHorizonHours = Math.round(market.horizon_seconds / 3600);
+        // Codex follow-up F2: explicit fail-closed mapping. Replaces
+        // Math.round(market.horizon_seconds / 3600). For seeded markets
+        // the values match; for arbitrary future horizons this throws
+        // instead of silently choosing the wrong sentinel.
+        revealHorizonHours = legacyHorizonHoursForMarket(market as MarketRow);
         revealAgentWallet = validated.preimage.agent_wallet;
         revealChainId = validated.preimage.chain_id;
       } else {

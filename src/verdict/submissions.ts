@@ -36,6 +36,7 @@ import {
 import {
   acceptsSubmissions,
   buildMarketDedupKey,
+  legacyHorizonHoursForMarket,
   perMarketDailyCap,
   resolveMarketFromPayload,
 } from "./markets.js";
@@ -343,7 +344,11 @@ export async function submitCall(args: {
   // shape is preserved in `rawSubmission` for request_hash computation
   // (committed-mode receipts) so a verifier can recanonicalize the agent's
   // bytes without daemon mutation.
-  const horizonHoursFromMarket = Math.round(market.horizon_seconds / 3600);
+  // Codex follow-up F2: replace Math.round with the explicit fail-closed
+  // mapping. Future arbitrary horizons (e.g. 7m → 0 same as 5m, 90m →
+  // round to 2 which isn't a legal HorizonHours) would silently mint
+  // wrong-shape v1 receipts otherwise.
+  const horizonHoursFromMarket = legacyHorizonHoursForMarket(market);
   const submission: SubmittedCall = {
     ...rawSubmission,
     market_id: market.market_id,

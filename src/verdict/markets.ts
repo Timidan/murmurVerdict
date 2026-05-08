@@ -109,6 +109,34 @@ export function resolverShouldTick(market: MarketRow): boolean {
   return market.status !== "retired";
 }
 
+/**
+ * Codex follow-up F2: replaces the Math.round(horizon_seconds/3600) trap
+ * scattered across submitCall / /reveal / fallback materialization. For
+ * seeded markets the rounding accidentally produced legal values (5m→0,
+ * 15m→0, 1h→1, 4h→4, 24h→24, 7d→168). For any future arbitrary horizon
+ * (e.g. 7m → 0 same as 5m, 90m → 2 not a legal HorizonHours) it would
+ * silently mint receipts with wrong-shape horizon_hours.
+ *
+ * This helper fails closed on horizons that don't map cleanly into the
+ * legacy back-compat surface. Operators introducing a new horizon must
+ * either (a) align with the seeded set, (b) extend HorizonHoursSchema
+ * + add a sentinel mapping here, or (c) accept the call won't carry
+ * a meaningful horizon_hours legacy value.
+ */
+export function legacyHorizonHoursForMarket(
+  market: { market_id: string; horizon_seconds: number },
+): 0 | 1 | 4 | 24 | 168 {
+  const seconds = market.horizon_seconds;
+  if (seconds > 0 && seconds < 3600) return 0; // sub-hour sentinel
+  if (seconds === 3600) return 1;
+  if (seconds === 14400) return 4;
+  if (seconds === 86400) return 24;
+  if (seconds === 604800) return 168;
+  throw new Error(
+    `market ${market.market_id} horizon_seconds=${seconds} does not map to HorizonHoursSchema {0,1,4,24,168}; legacy horizon_hours stamping requires alignment with the schema enum or a new sentinel`,
+  );
+}
+
 // ─── P3 — submit-time market resolution + dedup ─────────────────────────────
 
 /** Either of the two wire shapes a SubmittedCall can carry per Codex P3 D1. */
