@@ -16,7 +16,12 @@ import {
 // P3 Phase 1.5: Partial map — only ETH is calibrated today. BTC/SOL/BNB
 // fall through to the nearest-horizon fallback or the default 0.012.
 // Calibrating new assets is a backfill task, not a launch blocker.
-const REALIZED_VOLATILITY: Partial<Record<AssetId, Record<HorizonHours, number>>> = {
+//
+// P3 Phase 2d: HorizonHoursSchema gained a `0` sentinel for sub-hour
+// markets. expectedVolatility's fallback chain handles unknown horizons
+// (returns the smallest-known bucket or the 0.012 default), so the
+// inner row type stays Partial — sub-hour calls fall back gracefully.
+const REALIZED_VOLATILITY: Partial<Record<AssetId, Partial<Record<HorizonHours, number>>>> = {
   "base:ETH:USD": {
     1: 0.006,
     4: 0.012,
