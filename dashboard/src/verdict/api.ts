@@ -2,8 +2,12 @@
 // All read endpoints are unauthenticated. Writes are HMAC-only and not
 // performed from the dashboard in v0.1.
 
-const API_URL = (import.meta.env.VITE_VERDICT_API_URL?.trim() ||
-  "http://localhost:8080") as string;
+// Codex audit follow-up (post-9ae92a4): default to RELATIVE URLs when
+// VITE_VERDICT_API_URL is unset. The Vite dev proxy + Vercel prod
+// rewrites carry /v1/*, /share, /embed.js to the daemon. Setting
+// VITE_VERDICT_API_URL to an absolute URL is still the escape hatch
+// for split-deploy setups (different origin for dashboard vs daemon).
+const API_URL = (import.meta.env.VITE_VERDICT_API_URL?.trim() || "") as string;
 
 export type AgentKind = "verified" | "benchmark" | "shadow" | "internal_test" | "wallet_only";
 
