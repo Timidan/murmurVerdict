@@ -39,6 +39,163 @@ export const REGISTERED_ORACLE_FEEDS = [
 export const OracleFeedSchema = z.enum(REGISTERED_ORACLE_FEEDS);
 export type OracleFeed = z.infer<typeof OracleFeedSchema>;
 
+// ─── Market registry (multi-asset / multi-horizon / multi-kind) ─────────────
+//
+// Migration 008 introduced data-driven assets/oracles/markets tables. These
+// schemas validate that the rows on the wire (admin upserts, MCP responses,
+// public registry endpoints) match the table shapes. Runtime hot path still
+// uses the `db.ts` repo types directly to avoid a parse on every read.
+//
+// `market_kind` is a string, not an enum at the wire layer, so future kinds
+// (e.g. "depeg_event_v2") can land without a schema bump on the client. The
+// runtime registry is the source of truth — clients reject unknown kinds,
+// the daemon emits known ones.
+
+export const REGISTRY_STATUSES = [
+  "draft",
+  "listed",
+  "frozen",
+  "retired",
+] as const;
+export const RegistryStatusSchema = z.enum(REGISTRY_STATUSES);
+export type RegistryStatus = z.infer<typeof RegistryStatusSchema>;
+
+export const MARKET_KINDS = [
+  "direction_binary",
+  "price_point",
+  "price_bracket",
+  "depeg_threshold",
+] as const;
+export const MarketKindSchema = z.enum(MARKET_KINDS);
+export type MarketKind = z.infer<typeof MarketKindSchema>;
+
+export const SCORING_KINDS = [
+  "brier_direction",
+  "rank_proximity_l1",
+  "bracket_hit",
+  "threshold_hit",
+] as const;
+export const ScoringKindSchema = z.enum(SCORING_KINDS);
+export type ScoringKind = z.infer<typeof ScoringKindSchema>;
+
+export const ORACLE_KINDS = [
+  "chainlink_evm",
+  "pyth_pull",
+  "pyth_solana",
+] as const;
+export const OracleKindSchema = z.enum(ORACLE_KINDS);
+export type OracleKind = z.infer<typeof OracleKindSchema>;
+
+// market_id wire format: <asset-short>.<horizon-label>.
+// horizon-label ∈ {5m, 15m, 1h, 4h, 24h, 7d, ...}. Lowercase ASCII,
+// immutable per Codex audit — never rename a market_id post-launch.
+export const MarketIdSchema = z
+  .string()
+  .min(3)
+  .max(64)
+  .regex(
+    /^[a-z0-9]+(\.[a-z0-9]+)+$/,
+    "lowercase dot-separated segments, e.g. 'eth.5m' or 'btc.1h'",
+  );
+export type MarketId = z.infer<typeof MarketIdSchema>;
+
+export const OracleIdSchema = z
+  .string()
+  .min(3)
+  .max(64)
+  .regex(
+    /^[a-z0-9-]+$/,
+    "lowercase alphanumeric + dashes, e.g. 'pyth-base-eth-usd'",
+  );
+export type OracleId = z.infer<typeof OracleIdSchema>;
+
+export const AssetRecordSchema = z
+  .object({
+    asset_id: z.string().min(1),
+    display_short: z.string().min(1).max(16),
+    display_name: z.string().min(1).max(64),
+    native_chain: z.string().min(1).max(64),
+    pyth_feed_id: z.string().regex(/^0x[0-9a-f]{64}$/).nullable(),
+    chainlink_base_address: z
+      .string()
+      .regex(/^0x[0-9a-fA-F]{40}$/)
+      .nullable(),
+    decimals_hint: z.number().int().min(0).max(36),
+    status: RegistryStatusSchema,
+    notes: z.string().max(512).nullable(),
+    created_at: z.string().datetime({ offset: false }),
+  })
+  .strict();
+export type AssetRecord = z.infer<typeof AssetRecordSchema>;
+
+export const OracleRecordSchema = z
+  .object({
+    oracle_id: OracleIdSchema,
+    asset_id: z.string().min(1),
+    kind: OracleKindSchema,
+    adapter: z.string().min(1).max(64),
+    chain: z.string().min(1).max(64),
+    config_json: z.string(),
+    status: RegistryStatusSchema,
+    created_at: z.string().datetime({ offset: false }),
+  })
+  .strict();
+export type OracleRecord = z.infer<typeof OracleRecordSchema>;
+
+export const MarketRecordSchema = z
+  .object({
+    market_id: MarketIdSchema,
+    asset_id: z.string().min(1),
+    market_kind: MarketKindSchema,
+    horizon_seconds: z.number().int().positive(),
+    primary_oracle_id: OracleIdSchema,
+    fallback_oracle_id: OracleIdSchema.nullable(),
+    primary_max_staleness_sec: z.number().int().positive(),
+    fallback_max_staleness_sec: z.number().int().positive().nullable(),
+    t0_grace_seconds: z.number().int().positive(),
+    t0_extended_grace_seconds: z.number().int().positive(),
+    void_band: z.string().regex(/^0(\.[0-9]+)?$|^[1-9][0-9]*(\.[0-9]+)?$/),
+    round_cadence_seconds: z.number().int().positive().nullable(),
+    scoring_kind: ScoringKindSchema,
+    market_config_version: z.number().int().positive(),
+    status: RegistryStatusSchema,
+    notes: z.string().max(512).nullable(),
+    created_at: z.string().datetime({ offset: false }),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.t0_extended_grace_seconds < v.t0_grace_seconds) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "t0_extended_grace_seconds must be ≥ t0_grace_seconds",
+        path: ["t0_extended_grace_seconds"],
+      });
+    }
+    // direction_binary markets use Brier; the other kinds need their own
+    // scoring functions. Catch a config mismatch at write time.
+    if (v.market_kind === "direction_binary" && v.scoring_kind !== "brier_direction") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "direction_binary markets require scoring_kind=brier_direction",
+        path: ["scoring_kind"],
+      });
+    }
+    // Round-based scoring (rank_proximity_l1, bracket_hit) must declare a
+    // cadence so the resolver knows when to close the cohort.
+    const roundBased =
+      v.scoring_kind === "rank_proximity_l1" ||
+      v.scoring_kind === "bracket_hit";
+    if (roundBased && v.round_cadence_seconds === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "round-based scoring (rank_proximity_l1 / bracket_hit) requires round_cadence_seconds",
+        path: ["round_cadence_seconds"],
+      });
+    }
+  });
+export type MarketRecord = z.infer<typeof MarketRecordSchema>;
+
 // ─── Identity ────────────────────────────────────────────────────────────────
 
 export const VerifiedIdentityKindSchema = z.enum([

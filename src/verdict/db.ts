@@ -98,6 +98,12 @@ function applyMigrations(db: Database.Database): void {
     v = 7;
     set.run("schema_version", String(v));
   }
+
+  if (v < 8) {
+    db.exec(MIGRATION_008);
+    v = 8;
+    set.run("schema_version", String(v));
+  }
 }
 
 // ─── Migration 001 — initial schema ──────────────────────────────────────────
@@ -382,6 +388,212 @@ const MIGRATION_007 = `
   CREATE INDEX IF NOT EXISTS idx_envelopes_drand_round
     ON call_private_envelopes(drand_round)
     WHERE drand_round IS NOT NULL;
+`;
+
+// ─── Migration 008 — multi-asset / multi-market registry + market_kind ────
+//
+// Reframe: today the system is a single market (ETH on Base, four horizons,
+// direction-only). v0.2.5 introduces a registry-driven matrix:
+//   - `assets`  (BTC, ETH, SOL, BNB; oracle metadata; status)
+//   - `oracles` (per-asset Chainlink + Pyth bindings; adapter dispatch)
+//   - `markets` (asset × horizon × market_kind; oracle policy per-market)
+//
+// Adding a new asset/market becomes data, not code. `market_kind` is reserved
+// from the start so the same table holds today's direction_binary calls AND
+// future price_point / price_bracket / depeg_threshold markets without a
+// schema migration. Reserved submission columns (prediction_value,
+// prediction_low, prediction_high, round_id) sit nullable for the same
+// reason — no rebuild when proximity markets land.
+//
+// Submissions gain `market_id` + `market_config_version`. Existing rows stay
+// valid: market_id=NULL means a legacy direction call keyed on
+// (asset_id, horizon_hours). Read-time helpers synthesize market_id for
+// legacy rows ("eth.1h", "eth.4h", "eth.24h", "eth.168h") so feed/leaderboard
+// can present a unified view without rewriting old receipts.
+//
+// Status enum: draft | listed | frozen | retired.
+//   - draft:    in registry but submissions blocked (e.g. operator hasn't
+//               verified Chainlink feed address yet)
+//   - listed:   active, accepts submissions
+//   - frozen:   paused (oracle degraded), can resume; existing pending
+//               calls continue to resolve
+//   - retired:  terminal, never resumes; history preserved for audits
+//
+// Seed data:
+//   - 4 assets (eth, btc, sol, bnb)
+//   - 7 oracles (chainlink-base for eth/btc/sol; pyth-base for all four)
+//   - 24 markets (4 assets × 6 horizons {5m, 15m, 1h, 4h, 24h, 7d}).
+//     Only ETH at {1h, 4h, 24h, 7d} starts `listed` — those match today's
+//     resolver capabilities. New short horizons (5m/15m on ETH, all
+//     horizons on BTC/SOL/BNB) start `draft` until operator validates the
+//     feed and the resolver upgrade lands.
+//
+// Oracle policy per Codex audit:
+//   - <60m horizons: Pyth-pull primary (sub-second), no Chainlink fallback
+//   - ≥60m horizons: Chainlink primary (heartbeat-bounded, on-chain finality),
+//     Pyth fallback (matches v0.2 behavior)
+//
+// Void bands per Codex audit:
+//   - ≤15m: 0.0003 (3 bps) — 5m ETH RMS is ~5-10 bps; 20 bps would void ~99%
+//   - ≥1h:  0.002  (20 bps) — matches v0.2 default
+//   These are starting points; markets.void_band is per-row so operators
+//   can refine without a migration.
+const MIGRATION_008 = `
+  CREATE TABLE assets (
+    asset_id                 TEXT PRIMARY KEY,
+    display_short            TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name             TEXT NOT NULL,
+    native_chain             TEXT NOT NULL,
+    pyth_feed_id             TEXT,
+    chainlink_base_address   TEXT,
+    decimals_hint            INTEGER NOT NULL DEFAULT 8,
+    status                   TEXT NOT NULL DEFAULT 'listed'
+                              CHECK (status IN ('draft','listed','frozen','retired')),
+    notes                    TEXT,
+    created_at               TEXT NOT NULL
+  );
+  CREATE INDEX idx_assets_status ON assets(status);
+
+  CREATE TABLE oracles (
+    oracle_id     TEXT PRIMARY KEY,
+    asset_id      TEXT NOT NULL REFERENCES assets(asset_id),
+    kind          TEXT NOT NULL CHECK (kind IN ('chainlink_evm','pyth_pull','pyth_solana')),
+    adapter       TEXT NOT NULL,
+    chain         TEXT NOT NULL,
+    config_json   TEXT NOT NULL DEFAULT '{}',
+    status        TEXT NOT NULL DEFAULT 'listed'
+                  CHECK (status IN ('draft','listed','frozen','retired')),
+    created_at    TEXT NOT NULL
+  );
+  CREATE INDEX idx_oracles_asset ON oracles(asset_id);
+  CREATE INDEX idx_oracles_status ON oracles(status);
+
+  CREATE TABLE markets (
+    market_id                   TEXT PRIMARY KEY,
+    asset_id                    TEXT NOT NULL REFERENCES assets(asset_id),
+    market_kind                 TEXT NOT NULL DEFAULT 'direction_binary',
+    horizon_seconds             INTEGER NOT NULL CHECK (horizon_seconds > 0),
+    primary_oracle_id           TEXT NOT NULL REFERENCES oracles(oracle_id),
+    fallback_oracle_id          TEXT REFERENCES oracles(oracle_id),
+    primary_max_staleness_sec   INTEGER NOT NULL,
+    fallback_max_staleness_sec  INTEGER,
+    t0_grace_seconds            INTEGER NOT NULL,
+    t0_extended_grace_seconds   INTEGER NOT NULL,
+    void_band                   TEXT NOT NULL,
+    round_cadence_seconds       INTEGER,
+    scoring_kind                TEXT NOT NULL DEFAULT 'brier_direction',
+    market_config_version       INTEGER NOT NULL DEFAULT 1,
+    status                      TEXT NOT NULL DEFAULT 'draft'
+                                CHECK (status IN ('draft','listed','frozen','retired')),
+    notes                       TEXT,
+    created_at                  TEXT NOT NULL
+  );
+  CREATE INDEX idx_markets_asset ON markets(asset_id);
+  CREATE INDEX idx_markets_status ON markets(status);
+  CREATE INDEX idx_markets_kind ON markets(market_kind);
+
+  -- Submissions extension: market_id + reserved proximity columns.
+  -- All nullable so existing rows stay valid; new code opts in.
+  ALTER TABLE submissions ADD COLUMN market_id TEXT;
+  ALTER TABLE submissions ADD COLUMN market_config_version INTEGER;
+  ALTER TABLE submissions ADD COLUMN prediction_value TEXT;
+  ALTER TABLE submissions ADD COLUMN prediction_low TEXT;
+  ALTER TABLE submissions ADD COLUMN prediction_high TEXT;
+  ALTER TABLE submissions ADD COLUMN round_id TEXT;
+  CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
+  CREATE INDEX idx_submissions_round  ON submissions(round_id)  WHERE round_id  IS NOT NULL;
+
+  -- ─── Seed: assets ──────────────────────────────────────────────────────
+  -- Pyth feed IDs are global (same across chains). Chainlink Base addresses
+  -- are operator-verifiable on data.chain.link/feeds/base. BNB has no
+  -- well-known Chainlink Base feed at v0.2.5 cut — Pyth-only by design.
+  INSERT OR IGNORE INTO assets (asset_id, display_short, display_name, native_chain, pyth_feed_id, chainlink_base_address, decimals_hint, status, notes, created_at) VALUES
+    ('base:ETH:USD', 'eth', 'Ethereum', 'ethereum',
+     '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+     '0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70',
+     8, 'listed', 'v0.1 launch asset', '2026-05-08T00:00:00Z'),
+    ('base:BTC:USD', 'btc', 'Bitcoin', 'bitcoin',
+     '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+     '0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F',
+     8, 'listed', 'verify chainlink address before flipping markets to listed', '2026-05-08T00:00:00Z'),
+    ('base:SOL:USD', 'sol', 'Solana', 'solana',
+     '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+     '0x975043adBb80fc32276CbF9Bbcfd4A601a12462D',
+     8, 'listed', 'verify chainlink address before flipping markets to listed', '2026-05-08T00:00:00Z'),
+    ('base:BNB:USD', 'bnb', 'BNB', 'binance-smart-chain',
+     '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+     NULL,
+     8, 'listed', 'no Chainlink Base feed at launch — Pyth-only', '2026-05-08T00:00:00Z');
+
+  -- ─── Seed: oracles ─────────────────────────────────────────────────────
+  -- Chainlink Base feeds (one per ETH/BTC/SOL — none for BNB)
+  INSERT OR IGNORE INTO oracles (oracle_id, asset_id, kind, adapter, chain, config_json, status, created_at) VALUES
+    ('chainlink-base-eth-usd', 'base:ETH:USD', 'chainlink_evm', 'chainlink-evm', 'base',
+     '{"feed_address":"0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70"}', 'listed', '2026-05-08T00:00:00Z'),
+    ('chainlink-base-btc-usd', 'base:BTC:USD', 'chainlink_evm', 'chainlink-evm', 'base',
+     '{"feed_address":"0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F"}', 'draft', '2026-05-08T00:00:00Z'),
+    ('chainlink-base-sol-usd', 'base:SOL:USD', 'chainlink_evm', 'chainlink-evm', 'base',
+     '{"feed_address":"0x975043adBb80fc32276CbF9Bbcfd4A601a12462D"}', 'draft', '2026-05-08T00:00:00Z');
+
+  -- Pyth pull feeds (one per asset; Hermes endpoint global)
+  INSERT OR IGNORE INTO oracles (oracle_id, asset_id, kind, adapter, chain, config_json, status, created_at) VALUES
+    ('pyth-base-eth-usd', 'base:ETH:USD', 'pyth_pull', 'pyth-pull', 'base',
+     '{"price_id":"0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace"}', 'listed', '2026-05-08T00:00:00Z'),
+    ('pyth-base-btc-usd', 'base:BTC:USD', 'pyth_pull', 'pyth-pull', 'base',
+     '{"price_id":"0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"}', 'listed', '2026-05-08T00:00:00Z'),
+    ('pyth-base-sol-usd', 'base:SOL:USD', 'pyth_pull', 'pyth-pull', 'base',
+     '{"price_id":"0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"}', 'listed', '2026-05-08T00:00:00Z'),
+    ('pyth-base-bnb-usd', 'base:BNB:USD', 'pyth_pull', 'pyth-pull', 'base',
+     '{"price_id":"0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f"}', 'listed', '2026-05-08T00:00:00Z');
+
+  -- ─── Seed: markets ─────────────────────────────────────────────────────
+  -- Direction-binary markets only at v0.2.5. ETH at 1h/4h/24h/7d starts
+  -- 'listed' (matches today's resolver). Everything else 'draft' until
+  -- operator validates and the sub-hour resolver upgrade lands.
+  --
+  -- Oracle policy:
+  --   <60m: Pyth primary, no Chainlink fallback (Chainlink heartbeat too coarse)
+  --   ≥60m: Chainlink primary, Pyth fallback (where Chainlink feed exists)
+  --   BNB: Pyth-only at every horizon (no Chainlink Base)
+  --
+  -- Void bands: 0.0003 for ≤15m, 0.002 for ≥1h.
+  -- t0 grace: 60s for sub-hour, 120s for ≥1h. Extended: 2× grace.
+
+  -- ETH markets (4 listed + 2 draft for short horizons)
+  INSERT OR IGNORE INTO markets (market_id, asset_id, market_kind, horizon_seconds, primary_oracle_id, fallback_oracle_id, primary_max_staleness_sec, fallback_max_staleness_sec, t0_grace_seconds, t0_extended_grace_seconds, void_band, round_cadence_seconds, scoring_kind, market_config_version, status, notes, created_at) VALUES
+    ('eth.5m',   'base:ETH:USD', 'direction_binary',     300, 'pyth-base-eth-usd', NULL,                    10, NULL, 30,  60, '0.0003', NULL, 'brier_direction', 1, 'draft',  'sub-hour resolver upgrade required', '2026-05-08T00:00:00Z'),
+    ('eth.15m',  'base:ETH:USD', 'direction_binary',     900, 'pyth-base-eth-usd', NULL,                    15, NULL, 30,  60, '0.0003', NULL, 'brier_direction', 1, 'draft',  'sub-hour resolver upgrade required', '2026-05-08T00:00:00Z'),
+    ('eth.1h',   'base:ETH:USD', 'direction_binary',    3600, 'chainlink-base-eth-usd', 'pyth-base-eth-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'listed', 'maps to legacy horizon_hours=1',     '2026-05-08T00:00:00Z'),
+    ('eth.4h',   'base:ETH:USD', 'direction_binary',   14400, 'chainlink-base-eth-usd', 'pyth-base-eth-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'listed', 'maps to legacy horizon_hours=4',     '2026-05-08T00:00:00Z'),
+    ('eth.24h',  'base:ETH:USD', 'direction_binary',   86400, 'chainlink-base-eth-usd', 'pyth-base-eth-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'listed', 'maps to legacy horizon_hours=24',    '2026-05-08T00:00:00Z'),
+    ('eth.7d',   'base:ETH:USD', 'direction_binary',  604800, 'chainlink-base-eth-usd', 'pyth-base-eth-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'listed', 'maps to legacy horizon_hours=168',   '2026-05-08T00:00:00Z');
+
+  -- BTC markets (all draft; flip to listed once operator verifies Chainlink address + resolver supports asset)
+  INSERT OR IGNORE INTO markets (market_id, asset_id, market_kind, horizon_seconds, primary_oracle_id, fallback_oracle_id, primary_max_staleness_sec, fallback_max_staleness_sec, t0_grace_seconds, t0_extended_grace_seconds, void_band, round_cadence_seconds, scoring_kind, market_config_version, status, notes, created_at) VALUES
+    ('btc.5m',   'base:BTC:USD', 'direction_binary',     300, 'pyth-base-btc-usd', NULL,                    10, NULL, 30,  60, '0.0003', NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('btc.15m',  'base:BTC:USD', 'direction_binary',     900, 'pyth-base-btc-usd', NULL,                    15, NULL, 30,  60, '0.0003', NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('btc.1h',   'base:BTC:USD', 'direction_binary',    3600, 'chainlink-base-btc-usd', 'pyth-base-btc-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('btc.4h',   'base:BTC:USD', 'direction_binary',   14400, 'chainlink-base-btc-usd', 'pyth-base-btc-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('btc.24h',  'base:BTC:USD', 'direction_binary',   86400, 'chainlink-base-btc-usd', 'pyth-base-btc-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('btc.7d',   'base:BTC:USD', 'direction_binary',  604800, 'chainlink-base-btc-usd', 'pyth-base-btc-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z');
+
+  -- SOL markets (all draft; SOL has higher RMS — operator may want wider void_band, default still 3 bps short / 20 bps long)
+  INSERT OR IGNORE INTO markets (market_id, asset_id, market_kind, horizon_seconds, primary_oracle_id, fallback_oracle_id, primary_max_staleness_sec, fallback_max_staleness_sec, t0_grace_seconds, t0_extended_grace_seconds, void_band, round_cadence_seconds, scoring_kind, market_config_version, status, notes, created_at) VALUES
+    ('sol.5m',   'base:SOL:USD', 'direction_binary',     300, 'pyth-base-sol-usd', NULL,                    10, NULL, 30,  60, '0.0003', NULL, 'brier_direction', 1, 'draft', 'higher vol — consider 0.0005 void_band', '2026-05-08T00:00:00Z'),
+    ('sol.15m',  'base:SOL:USD', 'direction_binary',     900, 'pyth-base-sol-usd', NULL,                    15, NULL, 30,  60, '0.0003', NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('sol.1h',   'base:SOL:USD', 'direction_binary',    3600, 'chainlink-base-sol-usd', 'pyth-base-sol-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('sol.4h',   'base:SOL:USD', 'direction_binary',   14400, 'chainlink-base-sol-usd', 'pyth-base-sol-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('sol.24h',  'base:SOL:USD', 'direction_binary',   86400, 'chainlink-base-sol-usd', 'pyth-base-sol-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z'),
+    ('sol.7d',   'base:SOL:USD', 'direction_binary',  604800, 'chainlink-base-sol-usd', 'pyth-base-sol-usd', 60, 30,  120, 300, '0.002',  NULL, 'brier_direction', 1, 'draft', NULL, '2026-05-08T00:00:00Z');
+
+  -- BNB markets (all draft; Pyth-only at every horizon)
+  INSERT OR IGNORE INTO markets (market_id, asset_id, market_kind, horizon_seconds, primary_oracle_id, fallback_oracle_id, primary_max_staleness_sec, fallback_max_staleness_sec, t0_grace_seconds, t0_extended_grace_seconds, void_band, round_cadence_seconds, scoring_kind, market_config_version, status, notes, created_at) VALUES
+    ('bnb.5m',   'base:BNB:USD', 'direction_binary',     300, 'pyth-base-bnb-usd', NULL, 10, NULL, 30,  60, '0.0003', NULL, 'brier_direction', 1, 'draft', 'pyth-only', '2026-05-08T00:00:00Z'),
+    ('bnb.15m',  'base:BNB:USD', 'direction_binary',     900, 'pyth-base-bnb-usd', NULL, 15, NULL, 30,  60, '0.0003', NULL, 'brier_direction', 1, 'draft', 'pyth-only', '2026-05-08T00:00:00Z'),
+    ('bnb.1h',   'base:BNB:USD', 'direction_binary',    3600, 'pyth-base-bnb-usd', NULL, 30, NULL, 120, 300, '0.002', NULL, 'brier_direction', 1, 'draft', 'pyth-only', '2026-05-08T00:00:00Z'),
+    ('bnb.4h',   'base:BNB:USD', 'direction_binary',   14400, 'pyth-base-bnb-usd', NULL, 30, NULL, 120, 300, '0.002', NULL, 'brier_direction', 1, 'draft', 'pyth-only', '2026-05-08T00:00:00Z'),
+    ('bnb.24h',  'base:BNB:USD', 'direction_binary',   86400, 'pyth-base-bnb-usd', NULL, 30, NULL, 120, 300, '0.002', NULL, 'brier_direction', 1, 'draft', 'pyth-only', '2026-05-08T00:00:00Z'),
+    ('bnb.7d',   'base:BNB:USD', 'direction_binary',  604800, 'pyth-base-bnb-usd', NULL, 30, NULL, 120, 300, '0.002', NULL, 'brier_direction', 1, 'draft', 'pyth-only', '2026-05-08T00:00:00Z');
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
@@ -1669,6 +1881,247 @@ export function buildDedupKey(args: {
   const bucket = Math.floor(ms / bucketMs) * bucketMs;
   return `${args.agent_id}|${args.asset_id}|${args.side}|${args.horizon_hours}|${bucket}`;
 }
+
+// ─── Asset / Oracle / Market repos (registry-driven matrix) ─────────────────
+//
+// Read-mostly tables. Migration 008 seeds canonical rows; runtime usage is
+// list/get + occasional admin upsert (CLI/HTTP later). Statements share the
+// prep() cache. Status lifecycle: draft → listed → frozen → retired.
+
+export type RegistryStatus = "draft" | "listed" | "frozen" | "retired";
+
+export interface AssetRow {
+  asset_id: string;
+  display_short: string;
+  display_name: string;
+  native_chain: string;
+  pyth_feed_id: string | null;
+  chainlink_base_address: string | null;
+  decimals_hint: number;
+  status: RegistryStatus;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface OracleRow {
+  oracle_id: string;
+  asset_id: string;
+  kind: "chainlink_evm" | "pyth_pull" | "pyth_solana";
+  adapter: string;
+  chain: string;
+  config_json: string;
+  status: RegistryStatus;
+  created_at: string;
+}
+
+export type MarketKind =
+  | "direction_binary"
+  | "price_point"
+  | "price_bracket"
+  | "depeg_threshold";
+
+export type ScoringKind =
+  | "brier_direction"
+  | "rank_proximity_l1"
+  | "bracket_hit"
+  | "threshold_hit";
+
+export interface MarketRow {
+  market_id: string;
+  asset_id: string;
+  market_kind: MarketKind;
+  horizon_seconds: number;
+  primary_oracle_id: string;
+  fallback_oracle_id: string | null;
+  primary_max_staleness_sec: number;
+  fallback_max_staleness_sec: number | null;
+  t0_grace_seconds: number;
+  t0_extended_grace_seconds: number;
+  void_band: string;
+  round_cadence_seconds: number | null;
+  scoring_kind: ScoringKind;
+  market_config_version: number;
+  status: RegistryStatus;
+  notes: string | null;
+  created_at: string;
+}
+
+export const assetsRepo = {
+  list(db: Database.Database, status?: RegistryStatus): AssetRow[] {
+    const sql = status
+      ? `SELECT * FROM assets WHERE status = ? ORDER BY display_short`
+      : `SELECT * FROM assets ORDER BY display_short`;
+    const stmt = prep(db, sql);
+    return (status ? stmt.all(status) : stmt.all()) as AssetRow[];
+  },
+
+  get(db: Database.Database, asset_id: string): AssetRow | null {
+    return (
+      (prep(db, `SELECT * FROM assets WHERE asset_id = ?`).get(
+        asset_id,
+      ) as AssetRow | undefined) ?? null
+    );
+  },
+
+  bySlug(db: Database.Database, display_short: string): AssetRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM assets WHERE display_short = ? COLLATE NOCASE`,
+      ).get(display_short) as AssetRow | undefined) ?? null
+    );
+  },
+
+  setStatus(
+    db: Database.Database,
+    asset_id: string,
+    status: RegistryStatus,
+  ): void {
+    prep(db, `UPDATE assets SET status = ? WHERE asset_id = ?`).run(
+      status,
+      asset_id,
+    );
+  },
+};
+
+export const oraclesRepo = {
+  list(db: Database.Database, status?: RegistryStatus): OracleRow[] {
+    const sql = status
+      ? `SELECT * FROM oracles WHERE status = ? ORDER BY oracle_id`
+      : `SELECT * FROM oracles ORDER BY oracle_id`;
+    const stmt = prep(db, sql);
+    return (status ? stmt.all(status) : stmt.all()) as OracleRow[];
+  },
+
+  get(db: Database.Database, oracle_id: string): OracleRow | null {
+    return (
+      (prep(db, `SELECT * FROM oracles WHERE oracle_id = ?`).get(
+        oracle_id,
+      ) as OracleRow | undefined) ?? null
+    );
+  },
+
+  listForAsset(db: Database.Database, asset_id: string): OracleRow[] {
+    return prep(
+      db,
+      `SELECT * FROM oracles WHERE asset_id = ? ORDER BY oracle_id`,
+    ).all(asset_id) as OracleRow[];
+  },
+
+  setStatus(
+    db: Database.Database,
+    oracle_id: string,
+    status: RegistryStatus,
+  ): void {
+    prep(db, `UPDATE oracles SET status = ? WHERE oracle_id = ?`).run(
+      status,
+      oracle_id,
+    );
+  },
+};
+
+export const marketsRepo = {
+  list(db: Database.Database, status?: RegistryStatus): MarketRow[] {
+    const sql = status
+      ? `SELECT * FROM markets WHERE status = ? ORDER BY asset_id, horizon_seconds`
+      : `SELECT * FROM markets ORDER BY asset_id, horizon_seconds`;
+    const stmt = prep(db, sql);
+    return (status ? stmt.all(status) : stmt.all()) as MarketRow[];
+  },
+
+  listed(db: Database.Database): MarketRow[] {
+    return this.list(db, "listed");
+  },
+
+  get(db: Database.Database, market_id: string): MarketRow | null {
+    return (
+      (prep(db, `SELECT * FROM markets WHERE market_id = ?`).get(
+        market_id,
+      ) as MarketRow | undefined) ?? null
+    );
+  },
+
+  /**
+   * Read-time helper for legacy submissions (market_id IS NULL): synthesize
+   * a market_id from (asset_id, horizon_hours) so feed/leaderboard can join
+   * unified rows. Mapping is:
+   *   base:ETH:USD + 1h   → eth.1h
+   *   base:ETH:USD + 4h   → eth.4h
+   *   base:ETH:USD + 24h  → eth.24h
+   *   base:ETH:USD + 168h → eth.7d
+   * Returns null for unknown asset/horizon pairs (legacy never had these).
+   */
+  legacyIdFor(asset_id: string, horizon_hours: number): string | null {
+    const horizonLabel = LEGACY_HORIZON_LABELS[horizon_hours];
+    if (!horizonLabel) return null;
+    const slug = LEGACY_ASSET_SHORT[asset_id];
+    if (!slug) return null;
+    return `${slug}.${horizonLabel}`;
+  },
+
+  setStatus(
+    db: Database.Database,
+    market_id: string,
+    status: RegistryStatus,
+  ): void {
+    prep(db, `UPDATE markets SET status = ? WHERE market_id = ?`).run(
+      status,
+      market_id,
+    );
+  },
+
+  /**
+   * Update market_config_version + selected mutable policy fields atomically.
+   * Bumps `market_config_version` so existing pending submissions stamped at
+   * the prior version know they were resolved under different rules. Use
+   * sparingly — the canonical answer for "this submission's policy" is the
+   * version stamped on the submission, not the live row.
+   */
+  bumpConfig(
+    db: Database.Database,
+    market_id: string,
+    patch: Partial<
+      Pick<
+        MarketRow,
+        | "primary_oracle_id"
+        | "fallback_oracle_id"
+        | "primary_max_staleness_sec"
+        | "fallback_max_staleness_sec"
+        | "t0_grace_seconds"
+        | "t0_extended_grace_seconds"
+        | "void_band"
+        | "scoring_kind"
+        | "round_cadence_seconds"
+      >
+    >,
+  ): void {
+    const fields = Object.keys(patch).filter(
+      (k) => (patch as Record<string, unknown>)[k] !== undefined,
+    );
+    if (fields.length === 0) return;
+    const setClause = fields.map((f) => `${f} = @${f}`).join(", ");
+    prep(
+      db,
+      `UPDATE markets
+       SET ${setClause}, market_config_version = market_config_version + 1
+       WHERE market_id = @market_id`,
+    ).run({ ...patch, market_id });
+  },
+};
+
+const LEGACY_HORIZON_LABELS: Record<number, string> = {
+  1: "1h",
+  4: "4h",
+  24: "24h",
+  168: "7d",
+};
+
+const LEGACY_ASSET_SHORT: Record<string, string> = {
+  "base:ETH:USD": "eth",
+  "base:BTC:USD": "btc",
+  "base:SOL:USD": "sol",
+  "base:BNB:USD": "bnb",
+};
 
 // ─── Re-export ground type for migration knowledge ───────────────────────────
 
