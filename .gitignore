@@ -62,6 +62,39 @@ coverage/
 .parcel-cache/
 .eslintcache
 .turbo/
+.vite/
+.vite-temp/
+.esbuild/
+*.tsbuildinfo
+
+# Test / QA artifacts
+playwright-report/
+test-results/
+qa-shots/
+**/qa/
+*.qa.html
+*-screenshots/
+screenshots/
+*.gas-snapshot
+lcov.info
+
+# Codegen artifacts
+artifacts/
+typechain/
+typechain-types/
+crytic-export/
+slither*.json
+
+# Exploration / mockup / scratch — must never be committed.
+# QA, sample HTML, throwaway scripts, mockups, ad-hoc exploration files
+# don't belong in the operational tree.
+*-exploration.*
+*-explorations.*
+*-mockup.*
+*-mockups.*
+*.mock.*
+/tmp-*/
+/scratch-*/
 
 # Foundry
 contracts/cache/
