@@ -24,15 +24,17 @@ services:
       DASHBOARD_ORIGIN: "${DASHBOARD_ORIGIN:-http://localhost:5173}"
       # URL split — keep these distinct or absolute links break:
       #   MURMUR_DASHBOARD_URL → where the dashboard SPA lives. Used by
-      #     /share/:slug for OG meta-refresh into the SPA. Defaults to
-      #     empty here so production operators set their real dashboard
-      #     origin; local dev falls back to the Vite dev server.
+      #     /share/:slug for OG meta-refresh into the SPA. INTENTIONALLY
+      #     unset by default: any non-empty value triggers a 0-second
+      #     redirect, so a self-hosted deploy that hasn't configured a
+      #     dashboard origin must NOT silently redirect to localhost.
+      #     Operators set this explicitly when their dashboard is live.
       #   MURMUR_PUBLIC_URL → where the daemon ITSELF is publicly
       #     reachable. Used by /v1/openapi.json's `servers` block,
       #     /embed.js absolute URLs, Telegram resolution-card links, etc.
       #     Default points at the host-mapped port (8080) so a stock
       #     `docker compose up` emits links the host can hit.
-      MURMUR_DASHBOARD_URL: "${MURMUR_DASHBOARD_URL:-http://localhost:5173}"
+      MURMUR_DASHBOARD_URL: "${MURMUR_DASHBOARD_URL:-}"
       MURMUR_PUBLIC_URL: "${MURMUR_PUBLIC_URL:-http://localhost:8080}"
       WEBHOOK_ALLOW_HTTP: "${WEBHOOK_ALLOW_HTTP:-}"
       BASE_MAINNET_RPC_URL: "${BASE_MAINNET_RPC_URL:-}"
