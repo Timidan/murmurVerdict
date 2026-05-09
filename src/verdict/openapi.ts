@@ -166,6 +166,137 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           security: [{ hmacAuth: [] }, { apiKeyAuth: [] }],
         },
       },
+      "/v2/calls": {
+        post: {
+          tags: ["calls"],
+          summary:
+            "Submit a market call as a universal Commitment (V2 §2.2). Tier-aware auth — casual (Privy or account API key) and legacy (single-key API agents) accepted; wallet HMAC must use /v1/calls until Phase 8 EIP-712.",
+          description:
+            "Body shape: { marketRef:{protocol,sourceId,configVersion}, predictedOutcome:{kind,payoutNumerators,payoutDenominator}, horizon:{iso}, confidence, client_order_id, rationale|strategy_tag }. Auth tiers: Authorization: Bearer <privy-jwt> → casual; X-Murmur-Api-Key → casual or legacy; HMAC → wallet_legacy (rejected 426). Adapter dispatch by marketRef.protocol; only 'native-price' registered at v2.0 (others 422).",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: [
+                    "marketRef",
+                    "predictedOutcome",
+                    "horizon",
+                    "confidence",
+                    "client_order_id",
+                  ],
+                  properties: {
+                    marketRef: {
+                      type: "object",
+                      required: ["protocol", "sourceId", "configVersion"],
+                      properties: {
+                        protocol: { type: "string", example: "native-price" },
+                        sourceId: { type: "string", example: "btc.1h" },
+                        configVersion: { type: "integer", minimum: 0 },
+                      },
+                    },
+                    predictedOutcome: {
+                      type: "object",
+                      required: [
+                        "kind",
+                        "payoutNumerators",
+                        "payoutDenominator",
+                      ],
+                      properties: {
+                        kind: {
+                          type: "string",
+                          enum: ["binary", "categorical", "scalar", "invalid"],
+                        },
+                        payoutNumerators: {
+                          type: "array",
+                          items: { type: "string", pattern: "^[0-9]+$" },
+                          minItems: 1,
+                        },
+                        payoutDenominator: {
+                          type: "string",
+                          pattern: "^[0-9]+$",
+                          example: "1",
+                        },
+                        scalarValue: {
+                          type: "string",
+                          pattern: "^[0-9]+$",
+                          nullable: true,
+                        },
+                      },
+                    },
+                    horizon: {
+                      type: "object",
+                      required: ["iso"],
+                      properties: {
+                        iso: { type: "string", format: "date-time" },
+                        resolvesAfterMin: {
+                          type: "integer",
+                          minimum: 0,
+                        },
+                      },
+                    },
+                    confidence: { type: "number", minimum: 0, maximum: 1 },
+                    client_order_id: {
+                      type: "string",
+                      minLength: 8,
+                      maxLength: 128,
+                    },
+                    rationale: { type: "string", maxLength: 240 },
+                    strategy_tag: {
+                      type: "string",
+                      minLength: 2,
+                      maxLength: 32,
+                    },
+                    submitted_at: {
+                      type: "string",
+                      format: "date-time",
+                    },
+                    privacy_mode: {
+                      type: "string",
+                      enum: ["legacy_plaintext"],
+                      description:
+                        "Casual tier locked to legacy_plaintext at v2.0; committed mode requires Phase 8 wallet auth.",
+                    },
+                  },
+                  additionalProperties: false,
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description:
+                "Accepted call (or idempotent hit). Body: { call_id, acceptance_receipt:{hash}, call, idempotent_hit, tier }.",
+            },
+            "400": {
+              description:
+                "Schema invalid (malformed Commitment, casual tier requesting committed mode, missing rationale/strategy_tag, multi-agent account without slug header).",
+            },
+            "401": { description: "No matching auth tier verified" },
+            "403": { description: "Slug not owned by account" },
+            "404": { description: "marketRef.sourceId not in markets registry" },
+            "409": { description: "Duplicate inside dedup window" },
+            "422": {
+              description:
+                "marketRef.protocol references an adapter not registered in this build",
+            },
+            "426": {
+              description:
+                "Wallet HMAC tier — must use /v1/calls until Phase 8 EIP-712 wallet auth",
+            },
+            "429": { description: "Rate limited" },
+            "503": {
+              description:
+                "Attested tier — Phase 13 wires Olas Service Registry; not enabled in v2.0",
+            },
+          },
+          security: [
+            { privyAuth: [] },
+            { apiKeyAuth: [] },
+          ],
+        },
+      },
       "/v1/agents/{slug}/agent-card": {
         get: {
           tags: ["agents"],
@@ -370,6 +501,13 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           in: "header",
           name: "X-Murmur-Api-Key",
           description: "Issued by the claim flow. Pair with X-Murmur-Agent-Id.",
+        },
+        privyAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+          description:
+            "Privy access token (V2 §7.1 casual tier). Tier-aware dispatcher accepts this on /v2/calls and /v1/account/*. Set X-Murmur-Agent-Slug to disambiguate accounts that own multiple agents.",
         },
       },
     },

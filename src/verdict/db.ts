@@ -1910,6 +1910,20 @@ export interface AcceptanceWriteInput {
    *  the same way migration 016 does. */
   adapter_id?: string | null;
   market_family?: string | null;
+  /** Phase 4 — universal-commitment storage stamps (V2 §2.2). Caller
+   *  (submitCall) derives a {@link Commitment} from the legacy submission
+   *  via `legacySubmissionToCommitment` for /v1 and uses the validated
+   *  v2 body directly for /v2. Both columns persist the wire-shape JSON
+   *  (bigints stringified) so the resolver's universal hot path can read
+   *  them without re-deriving. NULL stays acceptable so smoke / legacy
+   *  paths that haven't migrated still write — Phase 5's resolver falls
+   *  back to {@link legacySubmissionToCommitment} when null.
+   *  Render-only `outcome_labels_json` carries the adapter's labels for
+   *  the payout vector positions (e.g. ['UP','DOWN'] for native-price).
+   */
+  commitment_json?: string | null;
+  predicted_outcome_json?: string | null;
+  outcome_labels_json?: string | null;
   envelope?: {
     encrypted_body: string;
     encrypted_body_alg: string;
@@ -1942,14 +1956,16 @@ export const submissionsRepo = {
           schema_version, scoring_version, dedup_key,
           privacy_mode, commit_hash, commit_scheme,
           market_id, market_config_version,
-          adapter_id, market_family)
+          adapter_id, market_family,
+          commitment_json, predicted_outcome_json, outcome_labels_json)
          VALUES (@call_id, @agent_id, @client_order_id, @asset_id, @side,
           @horizon_hours, @horizon_seconds,
           @confidence, @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
           @schema_version, @scoring_version, @dedup_key,
           @privacy_mode, @commit_hash, @commit_scheme,
           @market_id, @market_config_version,
-          @adapter_id, @market_family)`,
+          @adapter_id, @market_family,
+          @commitment_json, @predicted_outcome_json, @outcome_labels_json)`,
       ).run({
         call_id: i.accepted.call_id,
         agent_id: i.accepted.agent_id,
@@ -1987,6 +2003,14 @@ export const submissionsRepo = {
         // — same fallback as the migration when a market predates adapters.
         adapter_id: i.adapter_id ?? null,
         market_family: i.market_family ?? null,
+        // Phase 4 — universal commitment columns. /v2/calls passes the
+        // body-supplied Commitment (validated by adapter.commitmentSchema);
+        // /v1/calls derives via legacySubmissionToCommitment so the
+        // resolver's universal hot path can read both submit shapes
+        // uniformly without falling back to inverse derivation per call.
+        commitment_json: i.commitment_json ?? null,
+        predicted_outcome_json: i.predicted_outcome_json ?? null,
+        outcome_labels_json: i.outcome_labels_json ?? null,
       });
       prep(
         db,

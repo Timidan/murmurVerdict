@@ -23,7 +23,7 @@ import {
   type AcceptanceWriteInput,
 } from "./db.js";
 import { buildAcceptanceReceipt } from "../receipts/verdictReceipt.js";
-import { canonicalHash } from "../receipts/canonical.js";
+import { canonicalHash, canonicalize } from "../receipts/canonical.js";
 import { evaluateRisk, type MarketContext } from "./risk.js";
 import type { VerdictEventBus } from "./events.js";
 import {
@@ -40,6 +40,11 @@ import {
   perMarketDailyCap,
   resolveMarketFromPayload,
 } from "./markets.js";
+import {
+  legacySubmissionToCommitment,
+  type LegacySubmissionForCommitment,
+} from "./submission-normalizers.js";
+import type { Commitment } from "./markets-core.js";
 import {
   derivePolicyFromMarket,
   PolicyDerivationError,
@@ -189,8 +194,25 @@ export async function submitCall(args: {
   ctx: SubmissionContext;
   identity: AuthIdentity;
   payload: unknown;
+  /**
+   * Phase 4 /v2/calls handoff. When the request entered through the v2
+   * surface, the route handler pre-validates the universal Commitment
+   * via `adapter.commitmentSchema.parse(...)` and passes the resulting
+   * runtime Commitment here. submitCall stamps it verbatim into
+   * `submissions.commitment_json` / `predicted_outcome_json`.
+   *
+   * When omitted (every /v1 path), submitCall derives the Commitment
+   * via `legacySubmissionToCommitment` so legacy + v2 paths produce
+   * byte-identical universal columns for the same fundamental call.
+   */
+  precomputedCommitment?: Commitment;
+  /** Phase 4 — render-only labels for the payout vector positions. Today
+   *  always ['UP','DOWN'] for native-price; future adapters supply their
+   *  own (e.g. ['YES','NO'] or category names). NEVER load-bearing for
+   *  scoring (V2 §2.3); the leaderboard / dashboard just renders them. */
+  outcomeLabels?: readonly string[];
 }): Promise<SubmitResult> {
-  const { db, ctx, identity, payload } = args;
+  const { db, ctx, identity, payload, precomputedCommitment } = args;
   const now = ctx.now ?? (() => new Date());
   // Phase 2b: oracle policy is derived from the resolved market row at the
   // point we know which market this call targets — see derivedOraclePolicy
@@ -739,6 +761,36 @@ export async function submitCall(args: {
     acceptance_receipt_cid: filecoin_cid ?? undefined,
   });
 
+  // Phase 4 — derive (or reuse) the universal Commitment so /v1 and /v2
+  // submit paths produce the same `commitment_json` / `predicted_outcome_json`
+  // shape on disk. The resolver's universal hot path (Phase 5) reads
+  // these columns directly; falling back to legacySubmissionToCommitment
+  // there is the safety net but stamping at submit closes the gap so
+  // every fresh row carries the canonical wire bytes already.
+  //
+  // Committed-mode (privacy_mode='committed') — these columns reveal the
+  // predicted vector, which would defeat commit-reveal privacy. Skip the
+  // stamp so committed rows keep `commitment_json IS NULL` until the
+  // agent reveals.
+  const commitmentForStamp: Commitment | null =
+    privacyModeForRepo === "committed"
+      ? null
+      : (precomputedCommitment ??
+        deriveLegacyCommitment(submission, market, accepted_at));
+  const commitmentJsonStamp = commitmentForStamp
+    ? canonicalize(commitmentToWire(commitmentForStamp))
+    : null;
+  const predictedOutcomeJsonStamp = commitmentForStamp
+    ? canonicalize(commitmentToWire(commitmentForStamp).predictedOutcome)
+    : null;
+  // Render-only label vector. /v2 callers can pass adapter-specific
+  // labels via args.outcomeLabels; legacy /v1 native-price rows default
+  // to the canonical UP/DOWN pair so the dashboard chip code doesn't
+  // need a per-row family fallback.
+  const outcomeLabelsJsonStamp = commitmentForStamp
+    ? JSON.stringify(args.outcomeLabels ?? ["UP", "DOWN"])
+    : null;
+
   try {
     submissionsRepo.acceptCall(db, {
       submission,
@@ -764,6 +816,9 @@ export async function submitCall(args: {
       // migration 016 uses when a market row predates adapter columns.
       adapter_id: market.adapter_id ?? "native-price",
       market_family: market.market_family ?? "financial-direction",
+      commitment_json: commitmentJsonStamp,
+      predicted_outcome_json: predictedOutcomeJsonStamp,
+      outcome_labels_json: outcomeLabelsJsonStamp,
       ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
       ...(commitSchemeForRepo ? { commit_scheme: commitSchemeForRepo } : {}),
       ...(envelopeForRepo ? { envelope: envelopeForRepo } : {}),
@@ -962,5 +1017,83 @@ function buildT0PolicyFromRow(row: Record<string, unknown>): T0Policy {
           fallback_max_staleness_sec: row.fallback_max_staleness_sec as number,
         }
       : {}),
+  };
+}
+
+// ─── Phase 4 — universal Commitment derivation helpers ──────────────────────
+
+/**
+ * Derive a runtime {@link Commitment} from a normalized SubmittedCall +
+ * MarketRow tuple. Legacy /v1 callers don't supply a Commitment on the
+ * wire; we synthesize one here from the legacy fields so /v1 + /v2 paths
+ * agree on the byte shape stamped into `submissions.commitment_json`.
+ *
+ * Mirrors the inverse {@link legacySubmissionToCommitment} (used by the
+ * resolver hot path on rows missing commitment_json) — the two helpers
+ * MUST stay byte-identical or the resolver / submit boundary will see
+ * drift on otherwise-equivalent calls.
+ */
+function deriveLegacyCommitment(
+  submission: SubmittedCall,
+  market: MarketRow,
+  accepted_at_iso: string,
+): Commitment {
+  // accepted_at + horizon_seconds == expected resolution. The Commitment's
+  // `horizon.iso` is render-only (resolver never reads it) so an
+  // approximate ISO is fine; we still match what the resolver-side
+  // synthesizer at submission-normalizers.ts:50 does to keep drift zero.
+  const horizonMs =
+    Date.parse(accepted_at_iso) + market.horizon_seconds * 1000;
+  const expectedIso = new Date(horizonMs)
+    .toISOString()
+    .replace(/\.\d+Z$/, "Z");
+  const legacy: LegacySubmissionForCommitment = {
+    side: submission.side,
+    confidence: submission.confidence,
+    asset_id: submission.asset_id ?? market.asset_id,
+    horizon_hours: submission.horizon_hours ?? Math.round(market.horizon_seconds / 3600),
+    expected_resolves_at_iso: expectedIso,
+    market_id: market.market_id,
+    market_config_version: market.market_config_version,
+  };
+  return legacySubmissionToCommitment(legacy);
+}
+
+/**
+ * Bigint → wire-string transform for canonicalization. {@link canonicalize}
+ * runs through `JSON.stringify` which throws on bigint, so the
+ * payoutNumerators / payoutDenominator / scalarValue fields are pre-mapped
+ * to decimal-digit strings here (round-trips through CommitmentSchema and
+ * back to bigint via {@link parseStoredCommitment}).
+ */
+function commitmentToWire(c: Commitment): {
+  marketRef: { protocol: string; sourceId: string; configVersion: number };
+  predictedOutcome: {
+    kind: string;
+    payoutNumerators: string[];
+    payoutDenominator: string;
+    scalarValue?: string;
+  };
+  horizon: { iso: string; resolvesAfterMin?: number };
+  confidence: number;
+} {
+  return {
+    marketRef: {
+      protocol: c.marketRef.protocol,
+      sourceId: c.marketRef.sourceId,
+      configVersion: c.marketRef.configVersion,
+    },
+    predictedOutcome: {
+      kind: c.predictedOutcome.kind,
+      payoutNumerators: c.predictedOutcome.payoutNumerators.map((n) =>
+        n.toString(),
+      ),
+      payoutDenominator: c.predictedOutcome.payoutDenominator.toString(),
+      ...(c.predictedOutcome.scalarValue !== undefined
+        ? { scalarValue: c.predictedOutcome.scalarValue.toString() }
+        : {}),
+    },
+    horizon: c.horizon,
+    confidence: c.confidence,
   };
 }

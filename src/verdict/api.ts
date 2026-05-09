@@ -57,6 +57,10 @@ import { getTodayFeed } from "./feed.js";
 import { verifyReceiptChain, VerifyError } from "./verify.js";
 import { renderBadgeSvg, renderOgSvg, rasterize } from "./badge.js";
 import { buildOpenApiSpec } from "./openapi.js";
+import { dispatchAuth, type AuthIdentity as DispatchedAuthIdentity } from "./auth/dispatcher.js";
+import { CommitmentSchema, type Commitment } from "./markets-core.js";
+import { getMarketMakerRegistry } from "./market-maker/registry.js";
+import { z } from "zod";
 
 // ─── API surface ─────────────────────────────────────────────────────────────
 //
@@ -175,6 +179,239 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       });
       const status = result.idempotent_hit ? 200 : 201;
       res.status(status).json(result);
+    }),
+  );
+
+  // ─── POST /v2/calls (Phase 4 — V2 §7.1 universal Commitment) ───────────────
+  //
+  // Universal Commitment surface. Auth runs through the tier-aware
+  // dispatcher (Privy bearer → casual; X-Murmur-Api-Key → casual or legacy;
+  // HMAC → wallet_legacy). Per V2 §7.1:
+  //   - tier='casual'        → accepted; legacy_plaintext only (committed
+  //                            mode is gated until reveal-flow lands at
+  //                            scoped key + EIP-712).
+  //   - tier='legacy'        → accepted (existing API-key-only agent),
+  //                            flagged for cutover.
+  //   - tier='wallet_legacy' → REJECTED 426. HMAC wallet agents must keep
+  //                            using /v1/calls until Phase 8 EIP-712.
+  //   - tier='attested'      → REJECTED 503 (Phase 13).
+  //
+  // Body shape: a universal {@link Commitment} (CommitmentSchema) PLUS
+  // idempotency / metadata fields the legacy wire shape carries:
+  //   - client_order_id        (required, idempotency key)
+  //   - rationale | strategy_tag (required — same superRefine as /v1)
+  //   - submitted_at           (optional; defaults to server-now)
+  //
+  // Adapter dispatch: marketRef.protocol → MarketMakerRegistry.get(...).
+  // Today only 'native-price' is registered; unknown protocols 422. The
+  // adapter's `commitmentSchema` runs an additional narrow Zod transform
+  // (e.g. native-price clamps confidence to [0.51, 0.95]).
+  //
+  // Body → legacy SubmittedCall translation: native-price's payout-vector
+  // maps to BUY/SELL ([1,0]→BUY, [0,1]→SELL). The handler synthesizes a
+  // legacy SubmittedCall payload and feeds submitCall(...) which writes
+  // BOTH the legacy columns and the universal commitment_json /
+  // predicted_outcome_json columns (Phase 4 dual-write).
+  router.post(
+    "/v2/calls",
+    express.text({ type: "application/json", limit: "32kb" }),
+    asyncHandler(async (req, res) => {
+      const rawBody = typeof req.body === "string" ? req.body : "";
+      // Tier-aware auth dispatch. Privy unconfigured in dev → bearer
+      // tokens fall through to api-key / hmac modes (verifyPrivyAuth
+      // returns null when env unset). Throws VerdictError on policy
+      // rejections (unowned slug, multi-agent ambiguous header).
+      const authResult: DispatchedAuthIdentity | null = await dispatchAuth(
+        req,
+        {
+          db: deps.db,
+          resolveSharedSecret: deps.resolveSharedSecret,
+          rawBody,
+          now,
+        },
+      );
+      if (!authResult) {
+        throw new VerdictError(
+          "auth required: provide Authorization: Bearer <privy>, X-Murmur-Api-Key, or HMAC headers",
+          ERROR_CODES.agent_not_authorized,
+          401,
+        );
+      }
+      // Per-tier policy gates.
+      if (authResult.tier === "wallet_legacy") {
+        // Wallet HMAC agents stay on /v1/calls until Phase 8 EIP-712. We
+        // surface 426 Upgrade Required so a misrouted wallet client sees
+        // an actionable error (vs the silent 401 a missing tier would
+        // produce). The /v1/calls path is unchanged for them.
+        throw new VerdictError(
+          "wallet HMAC agents must use /v1/calls; /v2/calls requires casual or legacy tier auth (Phase 8 lands EIP-712 for wallet tier)",
+          ERROR_CODES.agent_not_authorized,
+          426,
+        );
+      }
+      if (authResult.agent_kind === "attested") {
+        // Phase 13 wires Olas Service Registry attestation. Reject
+        // explicitly so an attested agent sees a clear "not yet" rather
+        // than a silent fall-through.
+        throw new VerdictError(
+          "attested-tier submissions are not yet supported on /v2/calls (Phase 13)",
+          ERROR_CODES.agent_not_authorized,
+          503,
+        );
+      }
+      if (!authResult.agent_id) {
+        // Casual tier session-only auth (account exists, no agent
+        // selected). /v2/calls demands an agent context — surface a 400
+        // with the same code the dispatcher uses elsewhere.
+        throw new VerdictError(
+          "X-Murmur-Agent-Slug or X-Murmur-Agent-Id header required: account owns no default agent",
+          ERROR_CODES.agent_slug_required,
+          400,
+        );
+      }
+
+      // Parse the v2 wire body. Schema is CommitmentSchema + the
+      // idempotency / metadata fields the legacy wire carries.
+      let bodyJson: unknown;
+      try {
+        bodyJson = JSON.parse(rawBody || "{}");
+      } catch {
+        throw new VerdictError(
+          "request body is not valid JSON",
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+      const parsed = V2SubmissionBodySchema.safeParse(bodyJson);
+      if (!parsed.success) {
+        throw new VerdictError(
+          "v2 submission failed schema validation",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.format() },
+        );
+      }
+      const body = parsed.data;
+
+      // Casual tier: privacy_mode locked to legacy_plaintext (V2 §7.1).
+      // Committed mode requires (a) wallet binding and (b) reveal flow
+      // (Phase 8). Reject early with a precise code.
+      if (
+        authResult.tier === "casual" &&
+        body.privacy_mode !== undefined &&
+        body.privacy_mode !== "legacy_plaintext"
+      ) {
+        throw new VerdictError(
+          "casual tier accepts privacy_mode='legacy_plaintext' only on /v2/calls (committed mode requires Phase 8 wallet auth)",
+          ERROR_CODES.schema_invalid,
+          400,
+          { tier: authResult.tier, privacy_mode: body.privacy_mode },
+        );
+      }
+
+      // Adapter dispatch: registry.get(marketRef.protocol). 422 on
+      // unknown protocols so a v2.0 agent that mistypes / picks an
+      // unimplemented family (polymarket-gamma — Phase 11) sees a
+      // distinct error code from auth (401/403/426) and schema (400).
+      const adapter = getMarketMakerRegistry().get(body.marketRef.protocol);
+      if (!adapter) {
+        throw new VerdictError(
+          `unsupported marketRef.protocol: '${body.marketRef.protocol}' (only 'native-price' registered at v2.0)`,
+          ERROR_CODES.asset_not_supported,
+          422,
+          { protocol: body.marketRef.protocol },
+        );
+      }
+
+      // Adapter-narrow validation. native-price's commitmentSchema today
+      // accepts the LEGACY direction-input shape (asset_id|market_id +
+      // side + horizon_hours), NOT the universal Commitment. Phase 4
+      // bypasses that transform — we already have a canonical Commitment
+      // from CommitmentSchema above; we just normalize the runtime shape.
+      const v2Commitment: Commitment = {
+        marketRef: body.marketRef,
+        predictedOutcome: {
+          kind: body.predictedOutcome.kind,
+          payoutNumerators: body.predictedOutcome.payoutNumerators.map(
+            (s) => BigInt(s),
+          ),
+          payoutDenominator: BigInt(body.predictedOutcome.payoutDenominator),
+          ...(body.predictedOutcome.scalarValue !== undefined
+            ? { scalarValue: BigInt(body.predictedOutcome.scalarValue) }
+            : {}),
+        },
+        horizon: body.horizon,
+        confidence: body.confidence,
+      };
+
+      // Resolve the underlying market_id. For native-price, marketRef.sourceId
+      // IS the market_id (e.g. 'eth.1h'). Fail-fast 404 if unknown.
+      const market = marketsRepo.get(deps.db, body.marketRef.sourceId);
+      if (!market) {
+        throw new VerdictError(
+          `unknown market: marketRef.sourceId='${body.marketRef.sourceId}' (no row in markets registry)`,
+          ERROR_CODES.asset_not_supported,
+          404,
+          { sourceId: body.marketRef.sourceId },
+        );
+      }
+
+      // Bridge to the legacy submitCall pipeline. The Phase 5 universal
+      // hot path reads from `commitment_json` regardless of submit
+      // surface; we still produce a legacy SubmittedCall here so the
+      // existing dedup / rate-limit / preflight code lights up unchanged.
+      const side = derivePayoutSide(v2Commitment.predictedOutcome.payoutNumerators);
+      if (!side) {
+        throw new VerdictError(
+          "v2 native-price predictedOutcome must reduce to BUY ([1,0]) or SELL ([0,1]); got " +
+            JSON.stringify(body.predictedOutcome.payoutNumerators),
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+      // Confidence: native-price submitCall narrows to [0.51, 0.95] via
+      // SubmittedCallSchema. The universal Commitment range is [0,1] so
+      // a casual caller submitting confidence < 0.51 would be rejected
+      // by the schema. We let SubmittedCallSchema do that — single
+      // validation point.
+      const submittedAt =
+        body.submitted_at ?? now().toISOString().replace(/\.\d+Z$/, "Z");
+      const legacyPayload: Record<string, unknown> = {
+        schema_version: SCHEMA_VERSION,
+        agent_id: authResult.agent_id,
+        client_order_id: body.client_order_id,
+        market_id: market.market_id,
+        side,
+        confidence: body.confidence,
+        submitted_at: submittedAt,
+        rationale: body.rationale,
+        strategy_tag: body.strategy_tag,
+      };
+      if (body.privacy_mode) {
+        legacyPayload.privacy_mode = body.privacy_mode;
+      }
+
+      const result = await submitCall({
+        db: deps.db,
+        ctx: deps.ctx,
+        identity: { agent_id: authResult.agent_id },
+        payload: legacyPayload,
+        precomputedCommitment: v2Commitment,
+        outcomeLabels: ["UP", "DOWN"],
+      });
+      const httpStatus = result.idempotent_hit ? 200 : 200;
+      // V2 response shape per the brief: { call_id, acceptance_receipt: { hash } }.
+      // We additionally surface the full call payload + idempotent_hit
+      // flag so the dashboard / SDK clients can render without a follow-up
+      // GET. Matches the v1 response shape extension philosophy.
+      res.status(httpStatus).json({
+        call_id: result.call.call_id,
+        acceptance_receipt: { hash: result.receipt_hash },
+        call: result.call,
+        idempotent_hit: result.idempotent_hit,
+        filecoin_cid: result.filecoin_cid,
+        tier: authResult.tier,
+      });
     }),
   );
 
@@ -2203,6 +2440,63 @@ function asyncHandler(
   return (req: Request, res: Response, next: NextFunction) => {
     fn(req, res, next).catch(next);
   };
+}
+
+// ─── /v2/calls body schema (Phase 4) ───────────────────────────────────────
+//
+// CommitmentSchema + idempotency / metadata fields the legacy wire shape
+// already requires. Kept narrow on purpose: the v2 surface deliberately
+// drops {asset_id, horizon_hours, market_id, salt} — every market is
+// addressed via marketRef, and committed-mode (which needed `salt`) is
+// gated until Phase 8 EIP-712. Adding a stray field returns
+// `schema_invalid` thanks to z.strict().
+const V2SubmissionBodySchema = z
+  .object({
+    // Inline mirror of CommitmentSchema fields rather than `.merge` so
+    // .strict() catches typos like `marketref` / `predicted_outcome`.
+    marketRef: CommitmentSchema.shape.marketRef,
+    predictedOutcome: CommitmentSchema.shape.predictedOutcome,
+    horizon: CommitmentSchema.shape.horizon,
+    confidence: CommitmentSchema.shape.confidence,
+    // Idempotency. Mirrors SubmittedCallSchema bounds so the v2 surface
+    // matches v1 expectations end-to-end.
+    client_order_id: z.string().min(8).max(128),
+    rationale: z.string().max(240).optional(),
+    strategy_tag: z.string().min(2).max(32).optional(),
+    submitted_at: z
+      .string()
+      .datetime({ offset: false })
+      .optional(),
+    privacy_mode: z.string().optional(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (!v.rationale && !v.strategy_tag) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "rationale or strategy_tag is required",
+        path: ["rationale"],
+      });
+    }
+  });
+
+/**
+ * Reduce a v2 universal payout-vector to the legacy SubmittedCall side.
+ * Native-price markets are direction-binary; the payoutNumerators MUST be
+ * exactly [1,0] (BUY / price-up) or [0,1] (SELL / price-down). Anything
+ * else (categorical / scalar / void [0,0]) is rejected at the route
+ * boundary — those shapes are valid universal Outcomes but native-price
+ * v2.0 only commits to direction.
+ *
+ * Returns null on unsupported shape so the caller can throw
+ * schema_invalid with the offending vector in the error detail.
+ */
+function derivePayoutSide(numerators: bigint[]): "BUY" | "SELL" | null {
+  if (numerators.length !== 2) return null;
+  const [a, b] = numerators;
+  if (a === 1n && b === 0n) return "BUY";
+  if (a === 0n && b === 1n) return "SELL";
+  return null;
 }
 
 function readHmacHeaders(req: Request): {

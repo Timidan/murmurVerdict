@@ -5,6 +5,7 @@ import cors from "cors";
 import { OracleClient } from "../integrations/oracle.js";
 import { Resolver } from "../verdict/resolver.js";
 import { createVerdictRouter } from "../verdict/api.js";
+import { accountRouter } from "../verdict/routes/account.js";
 import { ClaimService } from "../verdict/claim.js";
 import { agentsRepo, openDb, resolutionsRepo, submissionsRepo } from "../verdict/db.js";
 import { runPhaseECleanupIfRequested } from "../verdict/phase-e-cleanup.js";
@@ -316,6 +317,14 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       : new ClaimService({ db });
 
   const app = express();
+  // Phase 4 Hardening B — trust the first reverse-proxy hop. The casual
+  // tier (V2 §7.1) lives behind express-rate-limit's IP-keyed buckets
+  // (see src/verdict/routes/account.ts); without trust-proxy, req.ip
+  // collapses to the LB's address and a single IPv4 floods every bucket.
+  // Set to 1 (a single hop) rather than `true` (which is permissive about
+  // X-Forwarded-For spoofing) — Render / Fly / Railway all sit on a
+  // single proxy hop.
+  app.set("trust proxy", 1);
   if (DASHBOARD_ORIGIN === "*") {
     app.use(cors());
   } else {
@@ -366,6 +375,21 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       claim,
     }),
   );
+
+  // Phase 4 — mount the account router (V2 §7.1 casual tier). Routes:
+  //   POST   /v1/account/session                          Privy → account
+  //   POST   /v1/account/agents                           create casual agent
+  //   GET    /v1/account/agents                           list owned agents
+  //   POST   /v1/account/agents/:slug/api-keys            mint scoped key
+  //   DELETE /v1/account/api-keys/:key_id                 rotate (soft delete)
+  //   PATCH  /v1/account/agents/:slug/destination-address §7.4 cooldown
+  //
+  // Each route ships with its own express-rate-limit middleware (in-process
+  // MemoryStore — single-instance; multi-replica requires Redis-backed
+  // store, tracked in scaling research §6). Mounted AFTER the verdict
+  // router so `/v1/calls` / `/v1/agents/...` still resolve to the legacy
+  // handlers — `/v1/account/*` is a fresh path prefix with no collision.
+  app.use(accountRouter({ db }));
 
   const server: Server = await new Promise((resolve, reject) => {
     const s = app.listen(port, () => resolve(s));
