@@ -656,7 +656,7 @@ export interface VerifyResolutionV2Check {
 
 /**
  * Recompute and validate a v2 resolution receipt from its canonical JSON.
- * Returns `passes: true` iff every check is `'match'` (or `'skipped'`).
+ * Returns `passes: true` iff every check is `'match'`.
  *
  * Checks:
  *   1. `canonical_json_round_trip` — re-canonicalizing the parsed payload
@@ -738,15 +738,22 @@ export function verifyResolutionV2(
   // commitment field is the wire shape (bigints stringified) — round-trip
   // through CommitmentSchema then BigInt(). Same for outcome via
   // deserializeOutcome.
+  //
+  // BUG FIX (codex review v2 P2 #3): commitment + outcome are REQUIRED by
+  // buildV2ResolutionReceipt, so a receipt missing either field is malformed
+  // — must hard-fail, not a soft `skipped`. Combined with the predicate fix
+  // below (`passes` only iff every check is `'match'`), this stops the
+  // verifier from rubber-stamping a tampered receipt where commitment or
+  // outcome was stripped after the fact.
   const commitmentWire = parsed["commitment"];
   const outcomeWire = parsed["outcome"];
   if (commitmentWire === undefined || outcomeWire === undefined) {
     checks.push({
       name: "call_score",
-      status: "skipped",
+      status: "mismatch",
       stored: null,
       recomputed: null,
-      note: "commitment or outcome missing from receipt payload",
+      note: "commitment or outcome missing from receipt payload (required field)",
     });
   } else {
     const validatedCommitment = CommitmentSchema.parse(commitmentWire);
@@ -791,6 +798,12 @@ export function verifyResolutionV2(
     });
   }
 
-  const passes = checks.every((c) => c.status !== "mismatch");
+  // BUG FIX (codex review v2 P2 #3): the previous predicate counted 'skipped'
+  // as passing. After the missing-required-field fix above, verifyResolutionV2
+  // no longer emits 'skipped' for any check — every check is either 'match' or
+  // 'mismatch'. Tighten the predicate to require 'match' explicitly so a
+  // future regression that re-introduces a 'skipped' branch can't silently
+  // start rubber-stamping malformed receipts.
+  const passes = checks.every((c) => c.status === "match");
   return { passes, checks };
 }

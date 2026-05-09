@@ -66,18 +66,23 @@ export interface AccountRouterDeps {
  * Resolve the Privy Bearer token from a request → claims → account.
  * Returns null if no Bearer is present or verification failed; the
  * caller decides how to surface that (most routes 403, /session 401).
+ *
+ * BUG FIX (codex review v2 P2 #2): forwards the `created` flag from
+ * getOrCreateAccount so the /v1/account/session handler can branch on
+ * first-time UX without doing its own SELECT-existence check (which
+ * raced against this function's INSERT and always reported created=false).
  */
 async function resolveAccount(
   req: Request,
   db: Database.Database,
-): Promise<{ claims: PrivyClaims; account_id: string } | null> {
+): Promise<{ claims: PrivyClaims; account_id: string; created: boolean } | null> {
   const authz = req.header("Authorization") ?? req.header("authorization");
   if (!authz || !/^Bearer\s+/i.test(authz)) return null;
   const token = authz.replace(/^Bearer\s+/i, "").trim();
   const claims = await verifyPrivyAuth(token);
   if (!claims) return null;
-  const { account_id } = getOrCreateAccount(db, claims);
-  return { claims, account_id };
+  const { account_id, created } = getOrCreateAccount(db, claims);
+  return { claims, account_id, created };
 }
 
 /**
@@ -209,18 +214,14 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
           401,
         );
       }
-      // We need to know whether the row existed before this call. Do a
-      // pre-check. Cheap because privy_user_id is UNIQUE-indexed.
-      const existing = db
-        .prepare("SELECT 1 FROM accounts WHERE privy_user_id = ?")
-        .get(resolved.claims.privy_user_id);
-      const created = !existing;
-      // resolveAccount already upserted; we still call to bump
-      // last_seen_at on the freshly-created row.
-      const { account_id } = getOrCreateAccount(db, resolved.claims);
+      // BUG FIX (codex review v2 P2 #2): the previous implementation did a
+      // SELECT-existence check AFTER resolveAccount had already INSERTed the
+      // row, so `created` was always false for first-time users. The
+      // `created` flag now comes directly from getOrCreateAccount via
+      // resolveAccount — true iff the upsert inserted a fresh row.
       res.status(200).json({
-        account_id,
-        created,
+        account_id: resolved.account_id,
+        created: resolved.created,
         privy_user_id: resolved.claims.privy_user_id,
       });
     }),

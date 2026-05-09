@@ -502,8 +502,31 @@ export interface NativePriceObservationContext {
 export function observeResolutionForCall(
   ctx: NativePriceObservationContext,
 ): Outcome {
-  const signed_return = computeSignedReturnLocal(ctx.side, ctx.t0_p0, ctx.t1_p1);
-  const numerators = signedReturnToPayoutNumerators(signed_return, ctx.void_band);
+  // BUG FIX (codex review v2 P2 #1): the resolved payout vector is keyed on
+  // the ACTUAL price direction ([UP, DOWN]) — independent of the side the
+  // agent predicted. signedReturnToPayoutNumerators expects the BUY-perspective
+  // signed return r = ln(p1/p0). Previously this function passed the
+  // side-adjusted return (which negates for SELL), causing the resolved vector
+  // to flip for SELL calls — a winning SELL on a price drop got recorded as
+  // [1n, 0n] (UP) instead of [0n, 1n] (DOWN). The agent's predicted vector is
+  // [0n, 1n] for SELL, so the wrong resolution vector flipped win <-> loss for
+  // every SELL call.
+  //
+  // Fix: derive numerators from the RAW BUY-perspective return, and keep the
+  // side-adjusted signed_return on `evidence.raw` (matches legacy
+  // `t1_resolutions.signed_return` semantics where r is BUY's = -SELL's).
+  const a = Number(ctx.t0_p0);
+  const b = Number(ctx.t1_p1);
+  if (!(a > 0) || !(b > 0)) {
+    throw new Error("p0 and p1 must be positive decimal strings");
+  }
+  const buyPerspectiveReturn = Math.log(b / a);
+  const numerators = signedReturnToPayoutNumerators(
+    buyPerspectiveReturn,
+    ctx.void_band,
+  );
+  const sideAdjustedReturn =
+    ctx.side === "BUY" ? buyPerspectiveReturn : -buyPerspectiveReturn;
   const resolvedAt = Math.floor(Date.parse(ctx.t1_iso) / 1000);
   return {
     kind: "binary",
@@ -516,7 +539,7 @@ export function observeResolutionForCall(
       raw: {
         p0: ctx.t0_p0,
         p1: ctx.t1_p1,
-        signed_return,
+        signed_return: sideAdjustedReturn,
         void_band: ctx.void_band,
         side: ctx.side,
         t1_feed: ctx.t1_feed,
