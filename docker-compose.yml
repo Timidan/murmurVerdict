@@ -22,8 +22,18 @@ services:
       BENCHMARK_TICK_SEC: "${BENCHMARK_TICK_SEC:-600}"
       MARKET_REFRESH_SEC: "${MARKET_REFRESH_SEC:-300}"
       DASHBOARD_ORIGIN: "${DASHBOARD_ORIGIN:-http://localhost:5173}"
-      MURMUR_DASHBOARD_URL: "${MURMUR_DASHBOARD_URL:-}"
-      MURMUR_PUBLIC_URL: "${MURMUR_PUBLIC_URL:-http://localhost:5173}"
+      # URL split — keep these distinct or absolute links break:
+      #   MURMUR_DASHBOARD_URL → where the dashboard SPA lives. Used by
+      #     /share/:slug for OG meta-refresh into the SPA. Defaults to
+      #     empty here so production operators set their real dashboard
+      #     origin; local dev falls back to the Vite dev server.
+      #   MURMUR_PUBLIC_URL → where the daemon ITSELF is publicly
+      #     reachable. Used by /v1/openapi.json's `servers` block,
+      #     /embed.js absolute URLs, Telegram resolution-card links, etc.
+      #     Default points at the host-mapped port (8080) so a stock
+      #     `docker compose up` emits links the host can hit.
+      MURMUR_DASHBOARD_URL: "${MURMUR_DASHBOARD_URL:-http://localhost:5173}"
+      MURMUR_PUBLIC_URL: "${MURMUR_PUBLIC_URL:-http://localhost:8080}"
       WEBHOOK_ALLOW_HTTP: "${WEBHOOK_ALLOW_HTTP:-}"
       BASE_MAINNET_RPC_URL: "${BASE_MAINNET_RPC_URL:-}"
       CHAINLINK_BASE_ETH_USD_ADDRESS: "${CHAINLINK_BASE_ETH_USD_ADDRESS:-}"

@@ -2103,10 +2103,21 @@ export const submissionsRepo = {
     asset_id: string,
     sinceIso: string,
   ): number {
+    // Phase E hydration: after MURMUR_PHASE_E_CLEANUP=1, asset_id on
+    // committed-mode submissions is NULL — the canonical asset still
+    // lives in call_reveals when reveal_hash_valid=1. LEFT JOIN +
+    // COALESCE keeps cleaned committed rows inside the per-asset rate
+    // cap so an agent can't slip the cap by repeatedly using committed
+    // mode and waiting for the boot-time scrub to drop them out.
+    // Legacy plaintext rows (no call_reveals) fall through to s.asset_id
+    // unchanged.
     const row = prep(
       db,
-      `SELECT COUNT(*) AS n FROM submissions
-       WHERE agent_id = ? AND asset_id = ? AND accepted_at >= ?`,
+      `SELECT COUNT(*) AS n FROM submissions s
+       LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
+       WHERE s.agent_id = ?
+         AND COALESCE(s.asset_id, cr.asset_id) = ?
+         AND s.accepted_at >= ?`,
     ).get(agent_id, asset_id, sinceIso) as { n: number } | undefined;
     return row?.n ?? 0;
   },
@@ -2199,12 +2210,23 @@ export const submissionsRepo = {
     market_id: string | null;
     market_config_version: number | null;
   } | null {
+    // Phase E hydration: after MURMUR_PHASE_E_CLEANUP=1, the plaintext
+    // columns on committed-mode submissions are NULL — the canonical
+    // values still live in call_reveals when reveal_hash_valid=1. The
+    // dispute resolver / replay path consumes these columns, so we
+    // LEFT JOIN call_reveals and COALESCE side / asset_id / confidence /
+    // horizon_hours. Legacy plaintext rows (no call_reveals) fall
+    // through to s.* unchanged.
     return (
       (prep(
         db,
-        `SELECT s.call_id, s.agent_id, s.asset_id, s.side,
-                s.horizon_hours, s.horizon_seconds,
-                s.confidence, s.accepted_at, s.status, s.privacy_mode, s.commit_hash,
+        `SELECT s.call_id, s.agent_id,
+                COALESCE(s.asset_id, cr.asset_id)             AS asset_id,
+                COALESCE(s.side, cr.side)                     AS side,
+                COALESCE(s.horizon_hours, cr.horizon_hours)   AS horizon_hours,
+                s.horizon_seconds,
+                COALESCE(s.confidence, cr.confidence)         AS confidence,
+                s.accepted_at, s.status, s.privacy_mode, s.commit_hash,
                 s.market_id, s.market_config_version,
                 r.receipt_hash AS acceptance_receipt_hash,
                 op.primary_feed, op.fallback_feed,
@@ -2213,6 +2235,7 @@ export const submissionsRepo = {
          FROM submissions s
          JOIN oracle_policies op ON op.call_id = s.call_id
          JOIN receipts r ON r.call_id = s.call_id AND r.kind = 'acceptance'
+         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.call_id = ?`,
       ).get(call_id) as
         | {
