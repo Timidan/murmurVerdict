@@ -292,12 +292,16 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       );
     }
     // Wave 4b-2 — market refresh ticker dropped (no Santiment cache to refresh).
-    // The benchmark ticker stays so legacy benchmark agents are still
-    // registered, but runBaselinesOnce now no-ops when no decision-driving
-    // signal source is wired (see src/benchmark/agents.ts).
+    // Wave 4c-A — baselines re-armed against the same Chainlink/Pyth feeds the
+    // resolver consumes; pass the existing OracleClient instance so baselines
+    // never construct a parallel HTTP/RPC pool. When `oracle` is null (dev
+    // mode without BASE_MAINNET_RPC_URL), runBaselinesOnce no-ops gracefully.
     tickers.push(
       setIntervalGuarded(BENCHMARK_TICK_SEC * 1000, "benchmark", async () => {
-        await runBaselinesOnce({ db });
+        await runBaselinesOnce({
+          db,
+          ...(oracle ? { oracle } : {}),
+        });
       }),
     );
     // Stats heartbeat — emits a `stats.tick` every 10s so the landing-page
