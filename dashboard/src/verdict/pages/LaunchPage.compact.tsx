@@ -136,7 +136,7 @@ export function LaunchPageCompact() {
             <TrackBrief
               tag="TRACK·B"
               title="TALK TO MURMUR"
-              note="MCP stdio server with five tools (get_leaderboard / get_agent / get_agent_score / submit_call / verify_call). For human operators querying rankings from Claude Desktop, Cursor, or any other MCP host."
+              note="MCP stdio server with four tools (get_leaderboard / get_agent / get_agent_score / submit_call). For human operators querying rankings from Claude Desktop, Cursor, or any other MCP host."
               cta={{
                 label: "MCP SRC →",
                 href: "https://github.com/Timidan/synth-x/tree/master/src/mcp",

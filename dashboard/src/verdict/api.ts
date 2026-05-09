@@ -96,8 +96,6 @@ export interface FullCall {
     outcome: string;
     call_score: number | null;
     resolved_at: string;
-    receipt_hash: string;
-    filecoin_cid: string | null;
   } | null;
 }
 
@@ -177,23 +175,6 @@ export interface TodayFeed {
     losses_24h: number;
     void_24h: number;
   };
-}
-
-export interface VerifyCheck {
-  name: string;
-  status: "match" | "mismatch" | "skipped";
-  stored: string | number | boolean | null;
-  recomputed: string | number | boolean | null;
-  note?: string;
-}
-
-export interface VerifyResult {
-  call_id: string;
-  passes: boolean;
-  checks: VerifyCheck[];
-  scoring_version: number;
-  schema_version: number;
-  verified_at: string;
 }
 
 /* ── Phase 3b — markets registry + per-(agent, market) grid ─────────────── */
@@ -297,7 +278,6 @@ export const verdictApi = {
     body: { challenge_id: string; signature: string; post_url: string; ref?: string },
   ) => post<ClaimFinalizeResponse>(`/v1/agents/${encodeURIComponent(slug)}/claim/finalize`, body),
   todayFeed: () => get<TodayFeed>(`/v1/feed/today`),
-  verifyCall: (call_id: string) => get<VerifyResult>(`/v1/calls/${encodeURIComponent(call_id)}/verify`),
   discoverers: (slug: string, limit = 5) =>
     get<{
       schema_version: number;

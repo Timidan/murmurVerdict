@@ -1,13 +1,11 @@
 import { useEffect, useState } from "react";
-import { verdictApi, type FullCall, type VerifyResult } from "../api.js";
+import { verdictApi, type FullCall } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 
 export function CallPage({ callId }: { callId: string }) {
   const [data, setData] = useState<FullCall | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [verify, setVerify] = useState<VerifyResult | null>(null);
-  const [verifying, setVerifying] = useState(false);
 
   useEffect(() => {
     let cancel = false;
@@ -23,18 +21,6 @@ export function CallPage({ callId }: { callId: string }) {
       cancel = true;
     };
   }, [callId]);
-
-  const runVerify = async () => {
-    setVerifying(true);
-    try {
-      const r = await verdictApi.verifyCall(callId);
-      setVerify(r);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setVerifying(false);
-    }
-  };
 
   const scrubbed =
     data?.submission.privacy_mode === "committed" && data.submission.side === undefined;
@@ -109,7 +95,7 @@ export function CallPage({ callId }: { callId: string }) {
               )}
             </Panel>
 
-            <Panel title="ANCHOR · RESOLUTION · VERIFY">
+            <Panel title="ANCHOR · RESOLUTION">
               {data.t0 ? (
                 <>
                   <Kv k="t0" v={data.t0.t0} />
@@ -133,30 +119,10 @@ export function CallPage({ callId }: { callId: string }) {
                     <Kv k="call_score" v={data.resolution.call_score.toFixed(4)} />
                   )}
                   <Kv k="resolved_at" v={data.resolution.resolved_at} />
-                  <Kv k="resolution.hash" v={data.resolution.receipt_hash} mono />
-                  {data.resolution.filecoin_cid && (
-                    <Kv k="resolution.cid" v={data.resolution.filecoin_cid} mono />
-                  )}
                 </>
               ) : (
                 <Kv k="t1" v="awaiting resolution" tone="ck-dim" />
               )}
-              <KvDivider />
-              <div className="flex items-center gap-3 px-2 py-2">
-                <button
-                  className="ck-btn"
-                  onClick={runVerify}
-                  disabled={verifying}
-                  type="button"
-                >
-                  {verifying ? "VERIFYING…" : "[V] VERIFY CALL"}
-                </button>
-                {verify && (
-                  <span className={"ck-label " + (verify.passes ? "ck-pos" : "ck-neg")}>
-                    {verify.passes ? "VERIFIED" : "MISMATCH"} · {verify.checks.length} CHECKS
-                  </span>
-                )}
-              </div>
             </Panel>
           </>
         )}
