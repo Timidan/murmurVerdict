@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { z } from "zod";
 import {
   AcceptanceReceiptPayloadSchema,
   ResolutionReceiptPayloadSchema,
@@ -19,6 +20,43 @@ import {
   type Commitment,
   type Outcome as UniversalOutcome,
 } from "./markets-core.js";
+
+// BUG FIX (codex review v3 P2 #3): Zod schema for the v2 resolution receipt
+// payload. Mirrors the producer-side V2ResolutionReceiptPayload type in
+// src/receipts/verdictReceipt.ts. The verifier MUST validate every required
+// field — previously it only checked the schema marker, so a tampered
+// canonical JSON missing call_score / acceptance_receipt_hash / adapter_id
+// could rubber-stamp through.
+//
+// Required fields (mirror V2ResolutionReceiptPayload):
+//   schema, scoring_version, call_id, acceptance_receipt_hash, commitment,
+//   outcome, payout_vector, call_score (number | null — never undefined),
+//   adapter_id, resolved_at.
+//
+// `commitment` and `outcome` carry the wire-shape Commitment/UniversalOutcome
+// (bigints stringified). The deeper validation (round-tripping bigints) lives
+// in CommitmentSchema below — here we only assert the field is present and
+// is an object so a missing/null commitment fails the shape check fast.
+const V2ResolutionReceiptPayloadSchema = z
+  .object({
+    schema: z.literal("murmur-resolution-v2@1"),
+    scoring_version: z.number(),
+    call_id: z.string().min(1),
+    acceptance_receipt_hash: z.string().min(1),
+    commitment: z.record(z.unknown()),
+    outcome: z.record(z.unknown()),
+    payout_vector: z.array(z.string()),
+    // call_score is REQUIRED by the producer schema but may be null for void
+    // outcomes — `z.number().nullable()` rejects undefined while accepting
+    // both numeric scores and explicit nulls.
+    call_score: z.number().nullable(),
+    adapter_id: z.string().min(1),
+    resolved_at: z.string().min(1),
+  })
+  // Pass-through for forward-compat: extra fields (e.g. future Phase-6
+  // additions) shouldn't fail this verifier. Required fields are still
+  // enforced.
+  .passthrough();
 
 // ─── /v1/calls/:id/verify ─────────────────────────────────────────────────────
 //
@@ -647,6 +685,11 @@ export interface VerifyResolutionV2Check {
     | "canonical_hash"
     | "canonical_json_round_trip"
     | "schema"
+    // BUG FIX (codex review v3 P2 #3): full-payload shape check via Zod.
+    // Replaces the ad-hoc per-field probing that silently coerced missing
+    // fields. Bails the rest of the verifier when the receipt payload
+    // doesn't structurally match V2ResolutionReceiptPayload.
+    | "shape"
     | "call_score";
   status: "match" | "mismatch" | "skipped";
   stored: string | number | boolean | null;
@@ -734,6 +777,38 @@ export function verifyResolutionV2(
     recomputed: "murmur-resolution-v2@1",
   });
 
+  // BUG FIX (codex review v3 P2 #3): full-payload shape validation. Previously
+  // the verifier only checked the `schema` marker, so a tampered canonical
+  // JSON missing required fields (call_score / acceptance_receipt_hash /
+  // adapter_id) could rubber-stamp through. Validate the entire
+  // V2ResolutionReceiptPayload shape via Zod and bail with `shape: mismatch`
+  // when anything's missing or mistyped — call_score recompute below is
+  // meaningless against a malformed receipt anyway.
+  const shapeResult = V2ResolutionReceiptPayloadSchema.safeParse(parsed);
+  if (!shapeResult.success) {
+    const issueSummary = shapeResult.error.issues
+      .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+      .join("; ");
+    checks.push({
+      name: "shape",
+      status: "mismatch",
+      stored: null,
+      recomputed: null,
+      note: `payload shape mismatch: ${issueSummary}`,
+    });
+    // Bail — without a well-formed payload the call_score recompute would
+    // either coerce silently or throw out of band. Still return all checks
+    // collected so far (round_trip, canonical_hash, schema, shape) so the
+    // caller can see exactly which gates failed.
+    return { passes: false, checks };
+  }
+  checks.push({
+    name: "shape",
+    status: "match",
+    stored: null,
+    recomputed: null,
+  });
+
   // Recompute call_score from the embedded Commitment + Outcome. The
   // commitment field is the wire shape (bigints stringified) — round-trip
   // through CommitmentSchema then BigInt(). Same for outcome via
@@ -741,10 +816,9 @@ export function verifyResolutionV2(
   //
   // BUG FIX (codex review v2 P2 #3): commitment + outcome are REQUIRED by
   // buildV2ResolutionReceipt, so a receipt missing either field is malformed
-  // — must hard-fail, not a soft `skipped`. Combined with the predicate fix
-  // below (`passes` only iff every check is `'match'`), this stops the
-  // verifier from rubber-stamping a tampered receipt where commitment or
-  // outcome was stripped after the fact.
+  // — must hard-fail, not a soft `skipped`. The shape check above already
+  // guarantees both are present and object-shaped, so this branch is
+  // defense-in-depth.
   const commitmentWire = parsed["commitment"];
   const outcomeWire = parsed["outcome"];
   if (commitmentWire === undefined || outcomeWire === undefined) {

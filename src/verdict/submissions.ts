@@ -756,6 +756,14 @@ export async function submitCall(args: {
       // (sub-hour markets need the seconds-precise value; legacy ETH
       // markets still produce the exact same bytes — 3600/14400/86400/604800).
       horizon_seconds: market.horizon_seconds,
+      // BUG FIX (codex review v3 P2 #2): stamp adapter_id / market_family
+      // on the submission row at acceptance. Migration 016 covers legacy
+      // rows; without this stamp, fresh submissions accepted post-deploy
+      // would land with NULL adapter_id / market_family and break family
+      // filters + adapter dispatch. Falls back to the same defaults
+      // migration 016 uses when a market row predates adapter columns.
+      adapter_id: market.adapter_id ?? "native-price",
+      market_family: market.market_family ?? "financial-direction",
       ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
       ...(commitSchemeForRepo ? { commit_scheme: commitSchemeForRepo } : {}),
       ...(envelopeForRepo ? { envelope: envelopeForRepo } : {}),

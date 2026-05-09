@@ -1901,6 +1901,15 @@ export interface AcceptanceWriteInput {
    *  that haven't migrated still work; the repo derives from
    *  horizon_hours * 3600 when absent. */
   horizon_seconds?: number;
+  /** FIX 5 / migration 016 — adapter dispatch stamps. Migration 016 backfills
+   *  these on EXISTING rows; new rows must populate at insert time so the
+   *  family / adapter columns aren't NULL after the deploy. Both nullable
+   *  here for resilience: if the caller resolves a market that doesn't
+   *  carry adapter_id (e.g. a forward-compat market row pre-adapter), we
+   *  fall back to ('native-price', 'financial-direction') at the call site
+   *  the same way migration 016 does. */
+  adapter_id?: string | null;
+  market_family?: string | null;
   envelope?: {
     encrypted_body: string;
     encrypted_body_alg: string;
@@ -1932,13 +1941,15 @@ export const submissionsRepo = {
           confidence, submitted_at, accepted_at, status, rationale, strategy_tag,
           schema_version, scoring_version, dedup_key,
           privacy_mode, commit_hash, commit_scheme,
-          market_id, market_config_version)
+          market_id, market_config_version,
+          adapter_id, market_family)
          VALUES (@call_id, @agent_id, @client_order_id, @asset_id, @side,
           @horizon_hours, @horizon_seconds,
           @confidence, @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
           @schema_version, @scoring_version, @dedup_key,
           @privacy_mode, @commit_hash, @commit_scheme,
-          @market_id, @market_config_version)`,
+          @market_id, @market_config_version,
+          @adapter_id, @market_family)`,
       ).run({
         call_id: i.accepted.call_id,
         agent_id: i.accepted.agent_id,
@@ -1967,6 +1978,15 @@ export const submissionsRepo = {
         commit_scheme: i.commit_scheme ?? null,
         market_id: i.market_id ?? null,
         market_config_version: i.market_config_version ?? null,
+        // BUG FIX (codex review v3 P2 #2): stamp adapter_id + market_family
+        // at insert time. Migration 016 backfills legacy rows to
+        // ('native-price', 'financial-direction'); new submissions accepted
+        // after the deploy must populate the same defaults so family
+        // filters and adapter dispatch don't see NULL columns. Caller
+        // (submitCall) passes the values it looked up off the market row
+        // — same fallback as the migration when a market predates adapters.
+        adapter_id: i.adapter_id ?? null,
+        market_family: i.market_family ?? null,
       });
       prep(
         db,

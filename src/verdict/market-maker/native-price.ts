@@ -379,10 +379,89 @@ class NativePriceAdapter implements MarketMakerAdapter {
       return false;
     }
     if (parsed === null || typeof parsed !== "object") return false;
+
+    // BUG FIX (codex review v3 P2 #4): the previous implementation only
+    // checked the canonical hash had a 0x prefix — ANY canonical JSON
+    // (including {}) passed. Validate the parsed payload actually has the
+    // shape NativePriceAdapter.acceptCommitment produces:
+    //   {
+    //     adapter: 'native-price',
+    //     version: '1.0.0',
+    //     accepted_at: <ISO>,
+    //     commitment: {
+    //       marketRef: { protocol: 'native-price', sourceId, configVersion },
+    //       predictedOutcome: { kind, payoutNumerators, payoutDenominator },
+    //       horizon, confidence
+    //     }
+    //   }
+    //
+    // A receipt belonging to a different adapter (e.g. polymarket-gamma)
+    // MUST return false here — that's the "rubber-stamp" the bug fix exists
+    // to prevent. Once the shape is confirmed, the canonical-hash + round-
+    // trip check stays the structural integrity gate (catches tampering
+    // that preserves shape).
+    const shapeOk = isNativePriceAcceptanceReceipt(parsed);
+    if (!shapeOk) return false;
+
     const recomputed = canonicalHash(parsed as Record<string, unknown>);
     const recanonical = canonicalize(parsed as Record<string, unknown>);
     return recanonical === canonicalJson && recomputed.startsWith("0x");
   }
+}
+
+/**
+ * BUG FIX (codex review v3 P2 #4): structural validator for the canonical
+ * JSON {@link NativePriceAdapter.acceptCommitment} produces. Mirrors the
+ * exact key set + literal markers (adapter='native-price',
+ * commitment.marketRef.protocol='native-price') so a receipt belonging to
+ * any other adapter fails this gate.
+ */
+function isNativePriceAcceptanceReceipt(parsed: unknown): boolean {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (obj["adapter"] !== ADAPTER_NAME) return false;
+  if (typeof obj["version"] !== "string") return false;
+  if (typeof obj["accepted_at"] !== "string") return false;
+  const commitment = obj["commitment"];
+  if (
+    commitment === null ||
+    typeof commitment !== "object" ||
+    Array.isArray(commitment)
+  ) {
+    return false;
+  }
+  const c = commitment as Record<string, unknown>;
+  const marketRef = c["marketRef"];
+  if (
+    marketRef === null ||
+    typeof marketRef !== "object" ||
+    Array.isArray(marketRef)
+  ) {
+    return false;
+  }
+  const m = marketRef as Record<string, unknown>;
+  if (m["protocol"] !== SOURCE_PROTOCOL) return false;
+  if (typeof m["sourceId"] !== "string") return false;
+  if (typeof m["configVersion"] !== "number") return false;
+  const predicted = c["predictedOutcome"];
+  if (
+    predicted === null ||
+    typeof predicted !== "object" ||
+    Array.isArray(predicted)
+  ) {
+    return false;
+  }
+  const p = predicted as Record<string, unknown>;
+  if (typeof p["kind"] !== "string") return false;
+  if (!Array.isArray(p["payoutNumerators"])) return false;
+  if (typeof p["payoutDenominator"] !== "string") return false;
+  // horizon + confidence required at the commitment level — accepts any
+  // structurally valid value (Zod re-validation lives on the producer side).
+  if (c["horizon"] === undefined) return false;
+  if (typeof c["confidence"] !== "number") return false;
+  return true;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

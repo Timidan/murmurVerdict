@@ -460,6 +460,23 @@ export class Resolver {
             })
           : null;
 
+        // BUG FIX (codex review v3 P2 #1): pin the v2 sibling receipt to
+        // Filecoin too. Previously only the legacy resolution receipt got
+        // pinned and the resolution_v2 row was inserted with filecoin_cid=NULL,
+        // so v2 receipts always lost their Filecoin provenance. Best-effort
+        // (errors swallowed → cid=null) so a Filecoin outage never blocks
+        // resolution. Awaited BEFORE the transaction starts because
+        // pinReceipt is async and `db.transaction` callbacks must be sync.
+        let v2Cid: string | null = null;
+        if (v2Receipt && this.pinReceipt) {
+          try {
+            v2Cid =
+              (await this.pinReceipt(v2Receipt.canonical_json)) ?? null;
+          } catch {
+            v2Cid = null;
+          }
+        }
+
         const tx = this.db.transaction(() => {
           resolutionsRepo.setResolution(this.db, {
             call_id: ctx.call_id,
@@ -501,6 +518,7 @@ export class Resolver {
               receipt_hash: v2Receipt.receipt_hash,
               call_id: ctx.call_id,
               canonical_json: v2Receipt.canonical_json,
+              filecoin_cid: v2Cid ?? undefined,
               previous_hash: ctx.acceptance_receipt_hash as `0x${string}`,
               created_at: resolved_at,
               kind: "resolution_v2",
