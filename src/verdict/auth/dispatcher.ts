@@ -32,10 +32,16 @@
 import type Database from "better-sqlite3";
 import type { Request } from "express";
 import type { AgentKind } from "../schema.js";
+import { ERROR_CODES, VerdictError } from "../schema.js";
 import { verifyAgentApiKey } from "../auth.js";
 import { verifyHmac } from "../submissions.js";
 import { agentsRepo } from "../db.js";
-import { getAccountForAgent, verifyApiKey as verifyAccountApiKey } from "./accounts.js";
+import {
+  getAccountByPrivyUserId,
+  getAccountForAgent,
+  listAccountAgents,
+  verifyApiKey as verifyAccountApiKey,
+} from "./accounts.js";
 import { verifyPrivyAuth, type PrivyClaims } from "./privy.js";
 
 export type AuthTier =
@@ -84,11 +90,116 @@ export interface DispatchAuthDeps {
 /**
  * Dispatch a request to the highest-priority matching auth tier.
  *
- * Returns null if no auth mode produces a verified identity. Throws
- * ONLY for catastrophic config issues (e.g. DB unavailable mid-lookup) —
- * normal "wrong credentials" returns null so the caller can decide how
- * to surface the failure.
+ * Three return shapes:
+ *   - AuthIdentity  — a verified identity (the request is good).
+ *   - null          — no auth mode produced a verified identity. The
+ *                     caller (Phase 4 route handler) translates to 401.
+ *   - throws VerdictError — the Bearer token verified, but the agent
+ *                     selection is policy-illegal (unowned slug, missing
+ *                     slug when account owns >1 agent, ...). The caller
+ *                     translates to 403/400 using the embedded code.
+ *
+ * Why throw instead of return null on the unowned-slug path:
+ *   If we returned null, the dispatcher would silently fall through to
+ *   the API-key and HMAC modes, giving an attacker who held a valid
+ *   Privy token a free shot at also brute-forcing those. Throwing
+ *   short-circuits the dispatcher — once you authenticated as Account A
+ *   and asked to act as agent B, you don't get a second auth chance.
  */
+/**
+ * Internal: resolve a verified Privy bearer to an AuthIdentity, applying
+ * the §7.1 ownership policy. Pure — no Privy verification, no env reads.
+ * Exported (with __ prefix) so the smoke test can drive every branch
+ * without minting real Privy tokens. Not part of the public auth surface.
+ *
+ * Throws VerdictError on policy rejections; returns AuthIdentity on
+ * success. Never returns null — the caller (dispatchAuth) only invokes
+ * this function once verifyPrivyAuth returned non-null claims.
+ */
+export function __resolveCasualIdentity(
+  db: Database.Database,
+  claims: PrivyClaims,
+  slug: string | undefined,
+): AuthIdentity {
+  const account = getAccountByPrivyUserId(db, claims.privy_user_id);
+  const account_id = account?.account_id;
+
+  // ─── Path A: explicit slug provided ──────────────────────────
+  if (slug) {
+    const agent = agentsRepo.bySlug(db, slug);
+    if (!agent) {
+      // Don't leak which slug exists by returning agent_not_owned;
+      // unknown_agent is the same code we use for non-existent
+      // submissions agents.
+      throw new VerdictError(
+        "unknown agent slug",
+        ERROR_CODES.unknown_agent,
+        404,
+      );
+    }
+    // Ownership enforcement — the heart of BLOCKER #3. Must run
+    // BEFORE we return anything, and must NOT fall through to
+    // other auth modes if it fails.
+    if (!account_id) {
+      throw new VerdictError(
+        "Privy user has no account; call /v1/account/session first",
+        ERROR_CODES.agent_not_owned_by_account,
+        403,
+      );
+    }
+    const owner = getAccountForAgent(db, agent.agent_id);
+    if (owner !== account_id) {
+      throw new VerdictError(
+        "agent not owned by this account",
+        ERROR_CODES.agent_not_owned_by_account,
+        403,
+      );
+    }
+    return {
+      tier: "casual",
+      privy: claims,
+      agent_id: agent.agent_id,
+      agent_kind: agent.kind,
+      account_id,
+    };
+  }
+
+  // ─── Path B: no slug — derive from account's owned agents ───
+  if (!account_id) {
+    // No session yet → only account-management routes can run. Return
+    // tier='casual' with no agent binding; the route layer gates which
+    // routes accept this shape (POST /session, POST /agents create the
+    // first agent, GET /agents list).
+    return { tier: "casual", privy: claims };
+  }
+  const owned = listAccountAgents(db, account_id);
+  if (owned.length === 0) {
+    // Account exists but has no agents yet — same shape as above.
+    return { tier: "casual", privy: claims, account_id };
+  }
+  if (owned.length === 1 && owned[0]) {
+    // Smart default: single-agent accounts don't need to set the
+    // header on every call.
+    const agent = agentsRepo.byId(db, owned[0].agent_id);
+    const out: AuthIdentity = {
+      tier: "casual",
+      privy: claims,
+      account_id,
+      agent_id: owned[0].agent_id,
+    };
+    if (agent) out.agent_kind = agent.kind;
+    return out;
+  }
+  // Multi-agent account with no header → ambiguous. Reject so the
+  // operator must decide which agent acts. Falling back to "first
+  // alphabetically" or similar would mask user error.
+  throw new VerdictError(
+    "X-Murmur-Agent-Slug header required: account owns multiple agents",
+    ERROR_CODES.agent_slug_required,
+    400,
+  );
+}
+
 export async function dispatchAuth(
   req: Request,
   deps: DispatchAuthDeps,
@@ -99,35 +210,10 @@ export async function dispatchAuth(
     const token = authzHeader.replace(/^Bearer\s+/i, "").trim();
     const claims = await verifyPrivyAuth(token);
     if (claims) {
-      // The Privy claims identify the USER, not necessarily an agent.
-      // Phase 4's session route will create/lookup the account and
-      // optionally include an agent slug via X-Murmur-Agent-Slug or
-      // path param. The dispatcher exposes both so the route handler
-      // can decide.
       const slug = req.header("X-Murmur-Agent-Slug");
-      let agent_id: string | undefined;
-      let agent_kind: AgentKind | undefined;
-      if (slug) {
-        const agent = agentsRepo.bySlug(deps.db, slug);
-        if (agent) {
-          agent_id = agent.agent_id;
-          agent_kind = agent.kind;
-        }
-      }
-      // We DON'T eagerly upsert the account here — that's the job of
-      // the /v1/account/session route. The dispatcher's role is to
-      // verify-and-tag, not to mutate state.
-      const identity: AuthIdentity = {
-        tier: "casual",
-        privy: claims,
-      };
-      if (agent_id !== undefined) {
-        identity.agent_id = agent_id;
-      }
-      if (agent_kind !== undefined) {
-        identity.agent_kind = agent_kind;
-      }
-      return identity;
+      // Delegate post-verify policy to the pure function so the smoke
+      // suite can exercise every branch without minting a real token.
+      return __resolveCasualIdentity(deps.db, claims, slug);
     }
     // Bearer present but failed Privy verification — fall through to
     // other modes rather than 403. A client that sends both Bearer +

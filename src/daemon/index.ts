@@ -50,19 +50,44 @@ const DASHBOARD_ORIGIN = (process.env.DASHBOARD_ORIGIN ?? "*").trim();
 //   - On any non-2xx, malformed body, or network blip we return null so the
 //     receipt still persists with filecoin_cid=NULL. The receipt chain hash
 //     is independent of CID — pin failure does not corrupt provenance.
+//   - When FILECOIN_API_TOKEN is set, FILECOIN_PIN_ENDPOINT MUST be HTTPS.
+//     Bearer tokens over plaintext HTTP are exfiltrable on any hop; we fail
+//     CLOSED (disable pinning) rather than ship the token in cleartext. The
+//     no-token path still allows http:// for local testing because there's
+//     nothing secret to leak.
 
-const FILECOIN_PIN_ENDPOINT =
-  process.env.FILECOIN_PIN_ENDPOINT ?? "https://node.lighthouse.storage/api/v0/add";
+const DEFAULT_FILECOIN_PIN_ENDPOINT = "https://node.lighthouse.storage/api/v0/add";
 
-function makePinReceipt(): (canonical_json: string) => Promise<string | null> {
+export function makePinReceipt(): (canonical_json: string) => Promise<string | null> {
+  // Read at call time so tests (and future operator-overridable env) see
+  // up-to-date values rather than the value captured at module load.
+  const endpoint = process.env.FILECOIN_PIN_ENDPOINT ?? DEFAULT_FILECOIN_PIN_ENDPOINT;
   const token = process.env.FILECOIN_API_TOKEN;
   if (!token) {
     // No-op default: callback is wired into Resolver + router for symmetry,
     // but every call resolves to null so filecoin_cid remains NULL.
+    if (!endpoint.startsWith("https://")) {
+      // Local-testing affordance: log so the operator knows the endpoint
+      // is plaintext, but accept silently — no secrets at risk.
+      console.log(
+        `[daemon] pinReceipt no-op (endpoint=${endpoint}; not HTTPS, but no token to leak)`,
+      );
+    }
+    return async () => null;
+  }
+  // Token is set → enforce HTTPS up front so we never send a Bearer over
+  // plaintext. Validate BEFORE creating the closure, log a clear error,
+  // and degrade to the no-op path. Resolver / router stay symmetric;
+  // filecoin_cid stays NULL until the operator fixes the misconfig.
+  if (!endpoint.startsWith("https://")) {
+    console.error(
+      `[daemon] FILECOIN_PIN_ENDPOINT must be HTTPS when FILECOIN_API_TOKEN is set ` +
+        `(got '${endpoint}'); pin will be disabled`,
+    );
     return async () => null;
   }
   console.log(
-    `[daemon] pinReceipt enabled (endpoint=${FILECOIN_PIN_ENDPOINT})`,
+    `[daemon] pinReceipt enabled (endpoint=${endpoint})`,
   );
   return async (canonical_json: string): Promise<string | null> => {
     try {
@@ -72,7 +97,7 @@ function makePinReceipt(): (canonical_json: string) => Promise<string | null> {
         new Blob([canonical_json], { type: "application/json" }),
         "receipt.json",
       );
-      const res = await fetch(FILECOIN_PIN_ENDPOINT, {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: form,

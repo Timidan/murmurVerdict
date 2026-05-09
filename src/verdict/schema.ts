@@ -988,6 +988,18 @@ export const ERROR_CODES = {
   oracle_unavailable: "oracle_unavailable",
   unknown_agent: "unknown_agent",
   agent_not_authorized: "agent_not_authorized",
+  /**
+   * The Privy-authenticated account does not own the agent slug it tried
+   * to act as. Distinct from agent_not_authorized so the dispatcher can
+   * surface a precise reason without leaking whether the slug exists.
+   */
+  agent_not_owned_by_account: "agent_not_owned_by_account",
+  /**
+   * The account owns multiple agents and the request did not specify
+   * which one via X-Murmur-Agent-Slug. Dispatcher rejects with this
+   * code so the caller can prompt for / persist a default.
+   */
+  agent_slug_required: "agent_slug_required",
   asset_not_supported: "asset_not_supported",
   internal_error: "internal_error",
 } as const;

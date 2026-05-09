@@ -26,7 +26,8 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import express from "express";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import {
   AgentSlugSchema,
   ERROR_CODES,
@@ -112,10 +113,83 @@ const SetDestinationSchema = z.object({
   destination_address: WalletAddressSchema,
 });
 
+// ─── Rate limiting (V2 §7.1 + codex review MAJOR finding 8.4) ───────────────
+//
+// All /v1/account/* routes ship with route-level rate limiting BEFORE Phase 4
+// mounts the router, so we never have a dark window where the dispatcher is
+// reachable but unprotected. Per-route limits are tuned to the operation:
+//
+//   POST   /v1/account/session                            30 / min / IP
+//   POST   /v1/account/agents                             10 / min / IP
+//   POST   /v1/account/agents/:slug/api-keys              10 / min / (IP, token)
+//   PATCH  /v1/account/agents/:slug/destination-address    5 / min / (IP, token)
+//   DELETE /v1/account/api-keys/:key_id                   20 / min / (IP, token)
+//   GET    /v1/account/agents                             60 / min / IP
+//
+// IP-only limits cover unauthenticated burst (e.g. mass /session probing).
+// Token-bucket limits gate authenticated bursts so a leaked Privy token
+// can't drain key-mint capacity for everyone behind the same IP (corporate
+// NAT, mobile carriers).
+//
+// State is in-process MemoryStore. Single Render instance today; if Phase 4
+// scales out we need a Redis-backed store (express-rate-limit provides one
+// via @express-rate-limit/redis). Until then, scaling horizontally would
+// reset counters per-instance — flag this concern in the operator runbook
+// before promoting the daemon to multi-replica.
+const ONE_MINUTE_MS = 60 * 1000;
+
+/**
+ * Build a key generator that combines the client IP with a hash of the
+ * Authorization bearer token. Hashes the token (not the cleartext) so the
+ * rate-limiter store doesn't double as a credential cache. When no Bearer
+ * is present (the limiter still runs even on unauth requests) we fall
+ * back to IP-only — this still rate-limits anonymous probing.
+ */
+function ipAndTokenKey(req: Request, _res: Response): string {
+  const authz = req.header("Authorization") ?? req.header("authorization") ?? "";
+  const m = /^Bearer\s+(.+)$/i.exec(authz);
+  // Use express-rate-limit's IPv6-safe IP key generator (an IPv6 address
+  // contains a colon, which clashes with naive concatenation).
+  const ip = ipKeyGenerator(req.ip ?? "unknown");
+  if (!m || !m[1]) return ip;
+  // sha256 → hex first 16 chars: collision space is 2^64, plenty for a
+  // rate-limiting bucket. Caching the hash per-request would help, but
+  // the limiter only runs once per request, so it's a non-issue.
+  const tokenHash = createHash("sha256").update(m[1]).digest("hex").slice(0, 16);
+  return `${ip}:${tokenHash}`;
+}
+
+function makeLimiter(
+  max: number,
+  windowMs: number,
+  perToken: boolean,
+  routeLabel: string,
+) {
+  return rateLimit({
+    windowMs,
+    limit: max,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: perToken
+      ? ipAndTokenKey
+      : (req, _res) => ipKeyGenerator(req.ip ?? "unknown"),
+    message: { error: "rate_limited", code: "rate_limited", route: routeLabel },
+  });
+}
+
 export function createAccountRouter(deps: AccountRouterDeps): Router {
   const router = Router();
   const json = express.json({ limit: "32kb" });
   const { db, now, destinationCooldownMs } = deps;
+
+  // Per-route limiters constructed once per router instance; tests that
+  // build a fresh router per case get a clean window each time.
+  const sessionLimiter = makeLimiter(30, ONE_MINUTE_MS, false, "session");
+  const createAgentLimiter = makeLimiter(10, ONE_MINUTE_MS, false, "create_agent");
+  const listAgentsLimiter = makeLimiter(60, ONE_MINUTE_MS, false, "list_agents");
+  const mintKeyLimiter = makeLimiter(10, ONE_MINUTE_MS, true, "mint_api_key");
+  const rotateKeyLimiter = makeLimiter(20, ONE_MINUTE_MS, true, "rotate_api_key");
+  const destAddrLimiter = makeLimiter(5, ONE_MINUTE_MS, true, "destination_address");
 
   // POST /v1/account/session — exchange Privy JWT for an internal session.
   // Returns { account_id, created } so the dashboard can branch on
@@ -123,6 +197,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   // always succeed for a valid token.
   router.post(
     "/v1/account/session",
+    sessionLimiter,
     json,
     asyncHandler(async (req, res) => {
       const resolved = await resolveAccount(req, db);
@@ -154,6 +229,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   // Body: { display_slug, display_name, bio? }
   router.post(
     "/v1/account/agents",
+    createAgentLimiter,
     json,
     asyncHandler(async (req, res) => {
       const resolved = await resolveAccount(req, db);
@@ -213,6 +289,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   // GET /v1/account/agents — list agents owned by this account.
   router.get(
     "/v1/account/agents",
+    listAgentsLimiter,
     asyncHandler(async (req, res) => {
       const resolved = await resolveAccount(req, db);
       if (!resolved) {
@@ -238,6 +315,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   // returned exactly once and never stored beyond the response stream.
   router.post(
     "/v1/account/agents/:slug/api-keys",
+    mintKeyLimiter,
     json,
     asyncHandler(async (req, res) => {
       const resolved = await resolveAccount(req, db);
@@ -281,6 +359,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   // DELETE /v1/account/api-keys/:key_id — rotate (soft-delete) a key.
   router.delete(
     "/v1/account/api-keys/:key_id",
+    rotateKeyLimiter,
     asyncHandler(async (req, res) => {
       const resolved = await resolveAccount(req, db);
       if (!resolved) {
@@ -308,6 +387,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   // Enforces the §7.4 24h cooldown via setDestinationAddress().
   router.patch(
     "/v1/account/agents/:slug/destination-address",
+    destAddrLimiter,
     json,
     asyncHandler(async (req, res) => {
       const resolved = await resolveAccount(req, db);

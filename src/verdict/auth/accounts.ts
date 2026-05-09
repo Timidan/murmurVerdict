@@ -126,6 +126,22 @@ export function getAccountById(
   return row ?? null;
 }
 
+/**
+ * Read-only lookup by Privy DID. Used by the auth dispatcher, which
+ * must NOT create rows on the verify-and-tag path — only the explicit
+ * /v1/account/session route is allowed to upsert. Returns null when
+ * the user has never opened a session.
+ */
+export function getAccountByPrivyUserId(
+  db: Database.Database,
+  privy_user_id: string,
+): AccountRow | null {
+  const row = db
+    .prepare("SELECT * FROM accounts WHERE privy_user_id = ?")
+    .get(privy_user_id) as AccountRow | undefined;
+  return row ?? null;
+}
+
 // ─── account_agents bridge ────────────────────────────────────────────────
 
 /**
