@@ -77,6 +77,10 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
   // SQL pulls the FULL row including plaintext columns; the projection
   // helper scrubs committed rows until a valid reveal exists. One source
   // of truth so feed/api/SSE/RSS/MCP can't drift apart.
+  // Phase E hydration: after MURMUR_PHASE_E_CLEANUP=1 the plaintext columns
+  // on submissions are NULL for committed-mode rows, but the same plaintext
+  // still lives in call_reveals when reveal_hash_valid=1. We forward both
+  // sets of columns and let projectCallRow COALESCE them.
   const rawAccepted = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
@@ -84,7 +88,13 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
               ar.receipt_hash AS acceptance_receipt_hash,
-              cr.reveal_hash_valid
+              cr.reveal_hash_valid,
+              cr.side          AS revealed_side,
+              cr.asset_id      AS revealed_asset_id,
+              cr.horizon_hours AS revealed_horizon_hours,
+              cr.confidence    AS revealed_confidence,
+              cr.rationale     AS revealed_rationale,
+              cr.strategy_tag  AS revealed_strategy_tag
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
        LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
@@ -102,7 +112,13 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
               ar.receipt_hash AS acceptance_receipt_hash,
-              cr.reveal_hash_valid
+              cr.reveal_hash_valid,
+              cr.side          AS revealed_side,
+              cr.asset_id      AS revealed_asset_id,
+              cr.horizon_hours AS revealed_horizon_hours,
+              cr.confidence    AS revealed_confidence,
+              cr.rationale     AS revealed_rationale,
+              cr.strategy_tag  AS revealed_strategy_tag
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
        LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
@@ -115,18 +131,25 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
   const pendingRows: TodayFeedRow[] = rawPending.map((row) => {
     const projected = toFeedRow(row);
     // t1_estimate leaks horizon, so only emit it when the row's
-    // plaintext is exposed (not committed-pending).
+    // plaintext is exposed (not committed-pending). After Phase E the
+    // submission column is NULL even on revealed rows — fall back to
+    // the call_reveals mirror so the projection stays consistent.
+    const horizon =
+      typeof row.horizon_hours === "number"
+        ? (row.horizon_hours as number)
+        : typeof row.revealed_horizon_hours === "number"
+          ? (row.revealed_horizon_hours as number)
+          : null;
     if (
       shouldExposePlaintext(
         (row.privacy_mode as string | null) ?? null,
         row.status as string,
         row.reveal_hash_valid as number | null,
       ) &&
-      typeof row.horizon_hours === "number"
+      typeof horizon === "number"
     ) {
       const t1 = new Date(
-        Date.parse(row.accepted_at as string) +
-          (row.horizon_hours as number) * 3600 * 1000,
+        Date.parse(row.accepted_at as string) + horizon * 3600 * 1000,
       );
       projected.t1_estimate = t1.toISOString().replace(/\.\d+Z$/, "Z");
     }
@@ -141,7 +164,13 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.privacy_mode, s.commit_hash,
               ar.receipt_hash AS acceptance_receipt_hash,
               r.outcome, r.signed_return, r.call_score, r.resolved_at,
-              cr.reveal_hash_valid
+              cr.reveal_hash_valid,
+              cr.side          AS revealed_side,
+              cr.asset_id      AS revealed_asset_id,
+              cr.horizon_hours AS revealed_horizon_hours,
+              cr.confidence    AS revealed_confidence,
+              cr.rationale     AS revealed_rationale,
+              cr.strategy_tag  AS revealed_strategy_tag
        FROM t1_resolutions r
        JOIN submissions s ON s.call_id = r.call_id
        JOIN agents a ON a.agent_id = s.agent_id
@@ -243,6 +272,14 @@ function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
       resolved_at: row.resolved_at as string | null,
       submitted_at: row.submitted_at as string | null,
       reveal_hash_valid: row.reveal_hash_valid as number | null,
+      // Phase E hydration: forward call_reveals mirror columns so
+      // projectCallRow can COALESCE post-scrub committed rows.
+      revealed_side: row.revealed_side as string | null,
+      revealed_asset_id: row.revealed_asset_id as string | null,
+      revealed_horizon_hours: row.revealed_horizon_hours as number | null,
+      revealed_confidence: row.revealed_confidence as number | null,
+      revealed_rationale: row.revealed_rationale as string | null,
+      revealed_strategy_tag: row.revealed_strategy_tag as string | null,
     },
     row.agent_slug as string,
   );

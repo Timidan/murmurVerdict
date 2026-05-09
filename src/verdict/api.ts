@@ -497,6 +497,9 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       return;
     }
     const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? "50")));
+    // Phase E hydration: pull cr.* mirror columns alongside s.* so the
+    // projection can COALESCE legacy submission plaintext (NULL after
+    // MURMUR_PHASE_E_CLEANUP) with the still-present call_reveals values.
     const rawRows = deps.db
       .prepare(
         `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
@@ -505,7 +508,13 @@ export function createVerdictRouter(deps: ApiDeps): Router {
                 s.privacy_mode, s.commit_hash,
                 ar.receipt_hash AS acceptance_receipt_hash,
                 r.outcome, r.call_score, r.signed_return, r.resolved_at,
-                cr.reveal_hash_valid
+                cr.reveal_hash_valid,
+                cr.side          AS revealed_side,
+                cr.asset_id      AS revealed_asset_id,
+                cr.horizon_hours AS revealed_horizon_hours,
+                cr.confidence    AS revealed_confidence,
+                cr.rationale     AS revealed_rationale,
+                cr.strategy_tag  AS revealed_strategy_tag
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
          LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
@@ -515,7 +524,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
          LIMIT ?`,
       )
       .all(agent.agent_id, limit) as Array<Record<string, unknown>>;
-    // Phase E: scrub plaintext on committed-mode pending rows.
+    // Phase E: scrub plaintext on committed-mode pending rows; hydrate
+    // post-scrub committed rows from call_reveals when reveal_hash_valid=1.
     const calls = rawRows.map((row) =>
       projectCallRow(
         {
@@ -537,6 +547,12 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           resolved_at: row.resolved_at as string | null,
           submitted_at: row.submitted_at as string | null,
           reveal_hash_valid: row.reveal_hash_valid as number | null,
+          revealed_side: row.revealed_side as string | null,
+          revealed_asset_id: row.revealed_asset_id as string | null,
+          revealed_horizon_hours: row.revealed_horizon_hours as number | null,
+          revealed_confidence: row.revealed_confidence as number | null,
+          revealed_rationale: row.revealed_rationale as string | null,
+          revealed_strategy_tag: row.revealed_strategy_tag as string | null,
         },
         agent.display_slug,
       ),
@@ -827,12 +843,19 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       return;
     }
     const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? "20")));
+    // Phase E hydration: pull cr.* mirror columns so the RSS surface stays
+    // populated for committed-mode rows whose submissions plaintext has
+    // been NULL'd by MURMUR_PHASE_E_CLEANUP.
     const raw = deps.db
       .prepare(
         `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
                 s.confidence, s.submitted_at, s.accepted_at,
                 s.privacy_mode, s.commit_hash,
                 cr.reveal_hash_valid,
+                cr.side          AS revealed_side,
+                cr.asset_id      AS revealed_asset_id,
+                cr.horizon_hours AS revealed_horizon_hours,
+                cr.confidence    AS revealed_confidence,
                 r.outcome, r.call_score, r.signed_return, r.resolved_at
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
@@ -843,7 +866,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       )
       .all(agent.agent_id, limit) as Array<Record<string, unknown>>;
     // Phase E: committed-mode rows render as "[committed]" until a valid
-    // reveal row exists, without leaking side/asset/horizon.
+    // reveal row exists, without leaking side/asset/horizon. Once revealed
+    // (reveal_hash_valid=1) the projection hydrates from cr.* columns.
     const rows = raw.map((r) => {
       const projected = projectCallRow({
         call_id: r.call_id as string,
@@ -857,6 +881,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         confidence: r.confidence as number | null,
         submitted_at: r.submitted_at as string | null,
         reveal_hash_valid: r.reveal_hash_valid as number | null,
+        revealed_side: r.revealed_side as string | null,
+        revealed_asset_id: r.revealed_asset_id as string | null,
+        revealed_horizon_hours: r.revealed_horizon_hours as number | null,
+        revealed_confidence: r.revealed_confidence as number | null,
       });
       return {
         call_id: projected.call_id,
@@ -1644,15 +1672,33 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     // Phase E: scrub plaintext from the submission sub-object while a
     // committed call lacks a valid reveal row. The acceptance receipt on
     // the same response never carries plaintext for v2 by construction.
+    // Hydration: forward cr.* mirror columns so post-Phase-E committed
+    // rows still render side/asset/horizon/confidence from call_reveals.
     const subRow = deps.db
       .prepare(
-        `SELECT s.privacy_mode, s.commit_hash, cr.reveal_hash_valid
+        `SELECT s.privacy_mode, s.commit_hash, cr.reveal_hash_valid,
+                cr.side          AS revealed_side,
+                cr.asset_id      AS revealed_asset_id,
+                cr.horizon_hours AS revealed_horizon_hours,
+                cr.confidence    AS revealed_confidence,
+                cr.rationale     AS revealed_rationale,
+                cr.strategy_tag  AS revealed_strategy_tag
          FROM submissions s
          LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.call_id = ?`,
       )
       .get(call_id) as
-      | { privacy_mode: string | null; commit_hash: string | null; reveal_hash_valid: number | null }
+      | {
+          privacy_mode: string | null;
+          commit_hash: string | null;
+          reveal_hash_valid: number | null;
+          revealed_side: string | null;
+          revealed_asset_id: string | null;
+          revealed_horizon_hours: number | null;
+          revealed_confidence: number | null;
+          revealed_rationale: string | null;
+          revealed_strategy_tag: string | null;
+        }
       | undefined;
     const projected = projectCallRow({
       call_id: full.submission.call_id,
@@ -1669,6 +1715,12 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       strategy_tag: full.submission.strategy_tag,
       submitted_at: full.submission.submitted_at,
       reveal_hash_valid: subRow?.reveal_hash_valid ?? null,
+      revealed_side: subRow?.revealed_side ?? null,
+      revealed_asset_id: subRow?.revealed_asset_id ?? null,
+      revealed_horizon_hours: subRow?.revealed_horizon_hours ?? null,
+      revealed_confidence: subRow?.revealed_confidence ?? null,
+      revealed_rationale: subRow?.revealed_rationale ?? null,
+      revealed_strategy_tag: subRow?.revealed_strategy_tag ?? null,
     });
     const scrubbedSubmission = {
       call_id: full.submission.call_id,

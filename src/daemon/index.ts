@@ -87,10 +87,19 @@ export function makePinReceipt(): (canonical_json: string) => Promise<string | n
     );
     return async () => null;
   }
+  // Best-effort timeout. submitCall (acceptance) and the resolver (T1) both
+  // await pinReceipt synchronously, so a slow or blackholed pin endpoint can
+  // stall accepts/resolutions without this guard. Default 5s; operator can
+  // override via MURMUR_PIN_TIMEOUT_MS. We resolve to null on timeout — same
+  // best-effort semantics as any other failure mode (NEVER throws).
+  const timeoutRaw = Number(process.env.MURMUR_PIN_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 5000;
   console.log(
-    `[daemon] pinReceipt enabled (endpoint=${endpoint})`,
+    `[daemon] pinReceipt enabled (endpoint=${endpoint}, timeoutMs=${timeoutMs})`,
   );
   return async (canonical_json: string): Promise<string | null> => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
     try {
       const form = new FormData();
       form.append(
@@ -102,6 +111,7 @@ export function makePinReceipt(): (canonical_json: string) => Promise<string | n
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: form,
+        signal: ac.signal,
       });
       if (!res.ok) {
         console.warn(
@@ -119,11 +129,24 @@ export function makePinReceipt(): (canonical_json: string) => Promise<string | n
       const cid = obj.Hash ?? obj.cid ?? null;
       return typeof cid === "string" && cid.length > 0 ? cid : null;
     } catch (err) {
-      console.warn(
-        "[daemon] pinReceipt failed (best-effort, ignored):",
-        err instanceof Error ? err.message : err,
-      );
+      // AbortError is fetch's signal that we tripped the timeout. Treat it
+      // as a best-effort miss like any other network failure.
+      const isAbort =
+        (err instanceof Error && err.name === "AbortError") ||
+        (typeof err === "object" && err !== null && (err as { name?: string }).name === "AbortError");
+      if (isAbort) {
+        console.warn(
+          `[daemon] pinReceipt timed out after ${timeoutMs}ms (best-effort, ignored)`,
+        );
+      } else {
+        console.warn(
+          "[daemon] pinReceipt failed (best-effort, ignored):",
+          err instanceof Error ? err.message : err,
+        );
+      }
       return null;
+    } finally {
+      clearTimeout(timer);
     }
   };
 }

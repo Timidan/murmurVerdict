@@ -158,41 +158,87 @@ export const CommitmentSchema = z.object({
 /**
  * Half-L1 distance over a CTF payout vector pair, normalized by denominator.
  *
- * `result = sum(|p_i - r_i|) / 2 / denominator`
+ * Predicted and resolved vectors MAY come from different denominators —
+ * e.g. a `[50,50]/100` softmax-style commitment scored against an oracle
+ * one-hot `[1,0]/1`. Subtracting the raw numerators across mismatched
+ * denominators produces nonsense (a half-L1 of 24.5 against a [0,1]
+ * scale, callScore wildly outside [0,1]).
+ *
+ * Fix: rescale both vectors to a common base before subtracting. We
+ * cross-multiply by the OTHER side's denominator, which is always safe
+ * (no precision loss; bigint handles the size) and makes the two
+ * vectors directly comparable on the shared base
+ * `predictedDenominator * resolvedDenominator`:
+ *
+ *   predicted_n[i] = predicted[i] * resolvedDenominator
+ *   resolved_n[i]  = resolved[i]  * predictedDenominator
+ *   result = sum(|predicted_n[i] - resolved_n[i]|) / (2 * predictedDenominator * resolvedDenominator)
  *
  * Returns a number in `[0, 1]` for any well-formed payout vectors:
- *   - `0` when `predicted === resolved`
- *   - `1` when `predicted` and `resolved` are disjoint one-hots
+ *   - `0` when the (rescaled) vectors are equal
+ *   - `1` when they are disjoint one-hots
  *
- * Throws when arrays differ in length or `denominator === 0n` — both
- * conditions are programmer errors at this layer (adapters MUST normalize
- * before calling).
+ * The four-arg form (predicted, resolved, predictedDenominator,
+ * resolvedDenominator) is the canonical entry. Single-denominator callers
+ * may omit `resolvedDenominator`, in which case we assume both vectors
+ * share that base — preserves the legacy contract for callers who already
+ * pass commensurate vectors.
+ *
+ * Throws when arrays differ in length or any denominator is zero — both
+ * conditions are programmer errors at this layer.
  */
 export function halfL1Distance(
   predicted: bigint[],
   resolved: bigint[],
-  denominator: bigint,
+  predictedDenominator: bigint,
+  resolvedDenominator?: bigint,
 ): number {
   if (predicted.length !== resolved.length) {
     throw new Error(
       `halfL1Distance: length mismatch (predicted=${predicted.length}, resolved=${resolved.length})`,
     );
   }
-  if (denominator === 0n) {
+  const dPred = predictedDenominator;
+  const dRes = resolvedDenominator ?? predictedDenominator;
+  if (dPred === 0n || dRes === 0n) {
     throw new Error("halfL1Distance: denominator must be non-zero");
   }
+  // Cross-rescale to a shared base. bigint ops are exact and never
+  // overflow at JS number precision risk here — the final ratio is
+  // computed in Number space, which is fine because the numerator and
+  // denominator share the same magnitude (the shared base) and cancel
+  // back into [0, 1]. For pathologically large denominators we'd lose
+  // precision converting to Number, but the ratio is bounded so the
+  // result still lands in range; only the last few digits drift.
   let absSum = 0n;
   for (let i = 0; i < predicted.length; i++) {
-    const p = predicted[i] ?? 0n;
-    const r = resolved[i] ?? 0n;
+    const p = (predicted[i] ?? 0n) * dRes;
+    const r = (resolved[i] ?? 0n) * dPred;
     const d = p - r;
     absSum += d < 0n ? -d : d;
   }
-  // half-L1: divide by 2 first (bigint), then by denominator (number).
-  // Both operands fit comfortably in JS number range for any realistic
-  // payout vector — CTF numerators are bounded by denominator.
-  const halved = Number(absSum) / 2;
-  return halved / Number(denominator);
+  const commonDenom = dPred * dRes;
+  // Reduce by GCD before converting to Number to keep precision well
+  // away from MAX_SAFE_INTEGER even for large denominators (e.g.
+  // gnosis-style 1e18 bases). gcd(absSum, commonDenom) is always > 0.
+  const g = gcdBig(absSum, commonDenom);
+  const num = absSum / g;
+  const den = commonDenom / g;
+  // half-L1: numerator / 2 / denominator. Numerator may still be huge
+  // post-GCD (worst case = 2 * denominator on a full miss); the ratio
+  // is bounded by 1 so Number conversion is well-conditioned.
+  return Number(num) / 2 / Number(den);
+}
+
+function gcdBig(a: bigint, b: bigint): bigint {
+  let x = a < 0n ? -a : a;
+  let y = b < 0n ? -b : b;
+  while (y !== 0n) {
+    const t = y;
+    y = x % y;
+    x = t;
+  }
+  return x === 0n ? 1n : x;
 }
 
 /**
@@ -223,6 +269,7 @@ export function callScore(c: Commitment, o: Outcome): number {
     halfL1Distance(
       c.predictedOutcome.payoutNumerators,
       o.payoutNumerators,
+      c.predictedOutcome.payoutDenominator,
       o.payoutDenominator,
     )
   );

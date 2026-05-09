@@ -28,6 +28,8 @@ export interface CallRowFields {
   privacy_mode?: string | null;
   commit_hash?: string | null;
   acceptance_receipt_hash?: string | null;
+  // Legacy plaintext columns on `submissions`. After Phase E scrub these are
+  // NULL on committed-mode rows even when reveal_hash_valid=1.
   side?: string | null;
   asset_id?: string | null;
   horizon_hours?: number | null;
@@ -40,6 +42,16 @@ export interface CallRowFields {
   resolved_at?: string | null;
   submitted_at?: string | null;
   reveal_hash_valid?: number | boolean | null;
+  // Mirror columns from `call_reveals`. Read paths LEFT JOIN call_reveals and
+  // forward these so the projection can hydrate post-Phase-E rows whose
+  // submissions plaintext was NULL'd. When reveal_hash_valid is truthy we
+  // prefer the revealed_* values over the (now-NULL) submission columns.
+  revealed_side?: string | null;
+  revealed_asset_id?: string | null;
+  revealed_horizon_hours?: number | null;
+  revealed_confidence?: number | null;
+  revealed_rationale?: string | null;
+  revealed_strategy_tag?: string | null;
 }
 
 export interface PublicCallProjection {
@@ -106,12 +118,35 @@ export function projectCallRow(
     acceptance_receipt_hash: row.acceptance_receipt_hash ?? null,
   };
   if (shouldExposePlaintext(privacy_mode, row.status, row.reveal_hash_valid)) {
-    if (row.side) projection.side = row.side;
-    if (row.asset_id) projection.asset_id = row.asset_id;
-    if (typeof row.horizon_hours === "number") projection.horizon_hours = row.horizon_hours;
-    if (typeof row.confidence === "number") projection.confidence = row.confidence;
-    if (row.rationale) projection.rationale = row.rationale;
-    if (row.strategy_tag) projection.strategy_tag = row.strategy_tag;
+    // Phase E scrubs side/asset_id/horizon_hours/confidence/rationale/
+    // strategy_tag on submissions for committed-mode rows. The plaintext
+    // still lives in call_reveals when reveal_hash_valid=1, so we prefer
+    // the legacy submission columns when present and fall back to the
+    // call_reveals mirror columns. COALESCE is done at the projection
+    // layer so every read path stays consistent without each one knowing
+    // about Phase E.
+    const side = row.side ?? row.revealed_side ?? null;
+    const asset_id = row.asset_id ?? row.revealed_asset_id ?? null;
+    const horizon_hours =
+      typeof row.horizon_hours === "number"
+        ? row.horizon_hours
+        : typeof row.revealed_horizon_hours === "number"
+          ? row.revealed_horizon_hours
+          : null;
+    const confidence =
+      typeof row.confidence === "number"
+        ? row.confidence
+        : typeof row.revealed_confidence === "number"
+          ? row.revealed_confidence
+          : null;
+    const rationale = row.rationale ?? row.revealed_rationale ?? null;
+    const strategy_tag = row.strategy_tag ?? row.revealed_strategy_tag ?? null;
+    if (side) projection.side = side;
+    if (asset_id) projection.asset_id = asset_id;
+    if (typeof horizon_hours === "number") projection.horizon_hours = horizon_hours;
+    if (typeof confidence === "number") projection.confidence = confidence;
+    if (rationale) projection.rationale = rationale;
+    if (strategy_tag) projection.strategy_tag = strategy_tag;
     if (typeof row.submitted_at === "string") projection.submitted_at = row.submitted_at;
     // resolution-side fields surface even when scrubbed since they're
     // post-horizon canonical record. But scoped to non-pending statuses
