@@ -309,14 +309,30 @@ export interface ScoreOutcomeVectorResult {
  * shell from markets-core.callScore for non-void cases and reconciles the three
  * void buckets to the legacy `call_score = null` contract.
  *
- * Void mapping rule (Phase 5 reconciliation, see file comment above):
- *   - outcome.kind === 'invalid'                              → null, void
- *   - outcome.kind === 'binary' AND payoutNumerators=[0n,0n]  → null, void
- *   - any other case                                          → callScore(c, o)
+ * Order of checks (Codex review v5 P2 #2):
  *
- * The kind === 'invalid' branch is fail-closed regardless of payoutNumerators —
- * callScore would fail the kind-equality check anyway when predicted is binary
- * and resolved is invalid, so we short-circuit before that throw.
+ *   0. adapter abstained — `outcome.kind === 'invalid'`            → null, void
+ *      Outcome is structurally a non-score regardless of the
+ *      commitment shape; map to legacy void.
+ *   1. KIND/LENGTH VALIDATION — predicted.kind === resolved.kind
+ *      AND predicted.payoutNumerators.length === resolved.payoutNumerators.length.
+ *      Mismatch → { call_score: null, void: false }. We CANNOT score a
+ *      categorical commitment against a binary outcome (or any other
+ *      shape mismatch); the only structurally-valid response is
+ *      "refuse to score". void=false because the call is not a void
+ *      outcome — it's a malformed pairing. Caller (verifier / replay)
+ *      sees null + void=false and knows to surface a mismatch rather
+ *      than silently filtering the call out of the leaderboard.
+ *   2. binary [0,0] void shortcut → null, void
+ *   3. otherwise → callScore(c, o)
+ *
+ * Why kind FIRST (codex review v5 P2 #2): previously a categorical or
+ * scalar commitment paired with a binary [0,0] outcome short-circuited
+ * to "void" via step 2 — verifier saw call_score=null on both sides
+ * and rubber-stamped the receipt. Validating shape before the void
+ * shortcut means a malformed pairing is reported as null+void=false
+ * (a recognizable mismatch) instead of null+void=true (a successful
+ * void).
  *
  * @param commitment — universal Commitment shape (parsed from
  *                    `submissions.commitment_json` or derived from a legacy row
@@ -328,19 +344,34 @@ export function scoreOutcomeVector(
   commitment: Commitment,
   outcome: UniversalOutcome,
 ): ScoreOutcomeVectorResult {
-  // (a) adapter abstained — invalid outcome, no score.
+  // (0) adapter abstained — invalid outcome, no score. Independent of
+  // commitment shape: callScore would throw kind-mismatch for binary
+  // commitment vs invalid resolved anyway, so fail-closed early.
   if (outcome.kind === "invalid") {
     return { call_score: null, void: true };
   }
-  // (b) binary void: every numerator is zero. Legacy void band hit.
-  // Length guard catches malformed binary outcomes (adapter bug).
+  // (1) Kind + length validation MUST run before the binary [0,0] void
+  // shortcut. Otherwise a categorical/scalar commitment paired with a
+  // binary [0,0] outcome would silently rubber-stamp through as void.
+  if (
+    commitment.predictedOutcome.kind !== outcome.kind ||
+    commitment.predictedOutcome.payoutNumerators.length !==
+      outcome.payoutNumerators.length
+  ) {
+    console.warn(
+      `[scoreOutcomeVector] kind/length mismatch: predicted.kind=${commitment.predictedOutcome.kind} (n=${commitment.predictedOutcome.payoutNumerators.length}) vs resolved.kind=${outcome.kind} (n=${outcome.payoutNumerators.length}); refusing to score`,
+    );
+    return { call_score: null, void: false };
+  }
+  // (2) binary void: every numerator is zero. Legacy void band hit.
+  // We've now confirmed predicted.kind === 'binary' as well.
   if (outcome.kind === "binary" && outcome.payoutNumerators.length === 2) {
     const allZero = outcome.payoutNumerators.every((n) => n === 0n);
     if (allZero) {
       return { call_score: null, void: true };
     }
   }
-  // Non-void: dispatch to the universal multinomial-Brier shell.
+  // (3) Non-void: dispatch to the universal multinomial-Brier shell.
   const score = callScore(commitment, outcome);
   return { call_score: score, void: false };
 }

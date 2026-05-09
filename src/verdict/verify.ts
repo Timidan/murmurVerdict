@@ -690,6 +690,16 @@ export interface VerifyResolutionV2Check {
     // fields. Bails the rest of the verifier when the receipt payload
     // doesn't structurally match V2ResolutionReceiptPayload.
     | "shape"
+    // BUG FIX (codex review v5 P2 #2): commitment ↔ outcome kind/length
+    // consistency. A receipt where predicted.kind !== resolved.kind
+    // (e.g. categorical commitment paired with a binary [0,0] outcome)
+    // is structurally invalid even if call_score=null on both sides.
+    | "commitment_outcome_consistency"
+    // BUG FIX (codex review v5 P2 #3): top-level payout_vector field
+    // must match outcome.payoutNumerators element-by-element. Tampering
+    // the top-level field while leaving the embedded outcome intact
+    // previously slipped past the call_score-only recompute.
+    | "payout_vector_consistency"
     | "call_score";
   status: "match" | "mismatch" | "skipped";
   stored: string | number | boolean | null;
@@ -854,6 +864,62 @@ export function verifyResolutionV2(
       confidence: validatedCommitment.confidence,
     };
     const outcome: UniversalOutcome = deserializeOutcome(outcomeWire);
+
+    // BUG FIX (codex review v5 P2 #2): commitment ↔ outcome shape gate.
+    // Without this gate, a receipt where predicted.kind !== resolved.kind
+    // (e.g. categorical [3,1,0]/4 vs binary [0,0]/1) hits the void
+    // shortcut and reports call_score=null. The producer would have
+    // ALSO recorded null via the same bug. Both sides null → call_score
+    // recompute matches → receipt rubber-stamps. Surface as a discrete
+    // mismatch instead.
+    const kindMatches =
+      commitment.predictedOutcome.kind === outcome.kind;
+    const lengthMatches =
+      commitment.predictedOutcome.payoutNumerators.length ===
+      outcome.payoutNumerators.length;
+    if (!kindMatches || !lengthMatches) {
+      checks.push({
+        name: "commitment_outcome_consistency",
+        status: "mismatch",
+        stored: `predicted=${commitment.predictedOutcome.kind}(n=${commitment.predictedOutcome.payoutNumerators.length}), resolved=${outcome.kind}(n=${outcome.payoutNumerators.length})`,
+        recomputed: null,
+        note: !kindMatches ? "kind mismatch" : "payoutNumerators length mismatch",
+      });
+    } else {
+      checks.push({
+        name: "commitment_outcome_consistency",
+        status: "match",
+        stored: null,
+        recomputed: null,
+      });
+    }
+
+    // BUG FIX (codex review v5 P2 #3): the top-level payout_vector field
+    // must match outcome.payoutNumerators element-by-element. Producer
+    // canonical shape (buildV2ResolutionReceipt) constructs payout_vector
+    // = outcome.payoutNumerators.map(n => n.toString()), so a divergence
+    // means the receipt was tampered (or built incorrectly). The
+    // call_score recompute uses the embedded outcome only, so without
+    // this explicit check a tampered top-level vector would slip past.
+    const canonicalPayoutVector = outcome.payoutNumerators.map((n) =>
+      n.toString(),
+    );
+    const receiptPayoutVector: string[] = shapeResult.data.payout_vector;
+    const payoutVectorMatches =
+      canonicalPayoutVector.length === receiptPayoutVector.length &&
+      canonicalPayoutVector.every(
+        (v, i) => v === receiptPayoutVector[i],
+      );
+    checks.push({
+      name: "payout_vector_consistency",
+      status: payoutVectorMatches ? "match" : "mismatch",
+      stored: receiptPayoutVector.join(","),
+      recomputed: canonicalPayoutVector.join(","),
+      note: payoutVectorMatches
+        ? undefined
+        : "top-level payout_vector diverges from outcome.payoutNumerators",
+    });
+
     const recomputed = scoreOutcomeVector(commitment, outcome);
     const stored = parsed["call_score"];
     const storedScore = typeof stored === "number" ? stored : null;
