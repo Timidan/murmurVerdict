@@ -4,8 +4,8 @@
 #
 # Persistent volume for the SQLite DB is mandatory — see [[mounts]].
 # Set secrets via `fly secrets set KEY=value` (BASE_MAINNET_RPC_URL,
-# SANTIMENT_API_KEY, TELEGRAM_BOT_TOKEN, FILECOIN_API_TOKEN, etc.)
-# rather than env vars in this file.
+# SANTIMENT_API_KEY, TELEGRAM_BOT_TOKEN, etc.) rather than env vars
+# in this file.
 
 app = "murmur-verdict"
 primary_region = "iad"  # or any Fly region

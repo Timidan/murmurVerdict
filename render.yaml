@@ -66,17 +66,6 @@ services:
       - key: VERDICT_ADMIN_TOKEN
         sync: false
 
-      # ─── Receipt persistence (optional) ───────────────────────────────
-      - key: FILECOIN_API_TOKEN
-        sync: false
-      # FILECOIN_PIN_ENDPOINT — defaults to Lighthouse's HTTPS endpoint.
-      # When FILECOIN_API_TOKEN is set, this MUST be https:// — the
-      # daemon refuses to send the bearer over plaintext and falls back
-      # to the no-op (filecoin_cid stays NULL). Without a token, http://
-      # is permitted for local testing only.
-      - key: FILECOIN_PIN_ENDPOINT
-        sync: false
-
       # ─── Privacy + V2 ─────────────────────────────────────────────────
       # Daemon's age recipient (X25519 public key) for committed-mode
       # encryption. When unset, committed-mode submissions return 503 and

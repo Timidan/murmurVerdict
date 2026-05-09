@@ -87,7 +87,6 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
-              ar.receipt_hash AS acceptance_receipt_hash,
               cr.reveal_hash_valid,
               cr.side          AS revealed_side,
               cr.asset_id      AS revealed_asset_id,
@@ -97,7 +96,6 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               cr.strategy_tag  AS revealed_strategy_tag
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
-       LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
        LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        ORDER BY s.accepted_at DESC
        LIMIT ?`,
@@ -111,7 +109,6 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
-              ar.receipt_hash AS acceptance_receipt_hash,
               cr.reveal_hash_valid,
               cr.side          AS revealed_side,
               cr.asset_id      AS revealed_asset_id,
@@ -121,7 +118,6 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               cr.strategy_tag  AS revealed_strategy_tag
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
-       LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
        LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        WHERE s.status IN ('accepted','pending_t0','pending_t1')
        ORDER BY s.accepted_at DESC
@@ -162,7 +158,6 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
-              ar.receipt_hash AS acceptance_receipt_hash,
               r.outcome, r.signed_return, r.call_score, r.resolved_at,
               cr.reveal_hash_valid,
               cr.side          AS revealed_side,
@@ -174,7 +169,6 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
        FROM t1_resolutions r
        JOIN submissions s ON s.call_id = r.call_id
        JOIN agents a ON a.agent_id = s.agent_id
-       LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
        LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        ORDER BY r.resolved_at DESC
        LIMIT ?`,
@@ -259,7 +253,8 @@ function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
       accepted_at: row.accepted_at as string,
       privacy_mode: row.privacy_mode as string | null,
       commit_hash: row.commit_hash as string | null,
-      acceptance_receipt_hash: row.acceptance_receipt_hash as string | null,
+      // Wave 4b: receipts subsystem dropped; projection always emits null.
+      acceptance_receipt_hash: null,
       side: row.side as string | null,
       asset_id: row.asset_id as string | null,
       horizon_hours: row.horizon_hours as number | null,

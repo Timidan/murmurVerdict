@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
-  agentsRepo,
   anchorsRepo,
   disputesRepo,
   marketsRepo,
@@ -16,13 +15,9 @@ import {
   OracleFeed,
   OracleFeedSchema,
   Outcome,
-  ResolutionReceiptPayloadSchema,
-  SCHEMA_VERSION,
-  SCORING_VERSION,
   Side,
   VerdictError,
 } from "./schema.js";
-import { buildResolutionReceipt } from "../receipts/verdictReceipt.js";
 import {
   computeSignedReturn,
   outcomeFromSignedReturn,
@@ -33,8 +28,14 @@ import type { AssetId, HorizonHours } from "./schema.js";
 // ─── Public types ────────────────────────────────────────────────────────────
 
 export interface DisputeFileInput {
-  /** keccak256 of the resolution receipt being disputed. */
-  target_resolution_receipt_hash: `0x${string}`;
+  /**
+   * call_id of the resolution under dispute.
+   *
+   * Wave 4b: receipts subsystem dropped. Disputes now key on the call_id
+   * directly — a call has at most one current resolution, so the lookup is
+   * unambiguous.
+   */
+  target_call_id: string;
   grounds: DisputeGrounds;
   /** Optional human-readable note (≤ 1000 chars). */
   notes?: string;
@@ -67,15 +68,14 @@ export interface DisputeResolveInput {
   replay: ReplayInput;
   /** Whether to accept "no_change" replays (i.e. confirm the original outcome). */
   accept_unchanged?: boolean;
-  pinReceipt?: (canonical_json: string) => Promise<string | null>;
   now?: () => Date;
 }
 
 export interface DisputeResolveResult {
   dispute_id: string;
   status: "upheld" | "rejected";
-  /** New resolution receipt hash if upheld; null if rejected. */
-  new_resolution_receipt_hash: `0x${string}` | null;
+  /** ISO8601 timestamp of the replacement resolution if upheld; null if rejected. */
+  replacement_resolved_at: string | null;
 }
 
 // ─── DisputeService ──────────────────────────────────────────────────────────
@@ -95,12 +95,10 @@ export class DisputeService {
 
   file(input: DisputeFileInput): DisputeFileResult {
     const now = (input.now ?? (() => new Date()))();
-    const target = this.findResolutionByReceiptHash(
-      input.target_resolution_receipt_hash,
-    );
+    const target = this.findResolutionByCallId(input.target_call_id);
     if (!target) {
       throw new VerdictError(
-        "no resolution receipt with that hash",
+        "no resolution found for that call_id",
         ERROR_CODES.unknown_agent,
         404,
       );
@@ -108,14 +106,13 @@ export class DisputeService {
     const filed_at = nowIso(now);
     const dispute: Dispute = {
       dispute_id: randomUUID(),
-      target_resolution_receipt_hash: input.target_resolution_receipt_hash,
+      target_call_id: input.target_call_id,
       grounds: input.grounds,
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
       filed_by: input.filed_by,
       filed_at,
       status: "open",
       resolved_at: null,
-      new_resolution_receipt_hash: null,
     };
     disputesRepo.insert(this.db, dispute);
     usageRepo.emit(this.db, {
@@ -126,7 +123,7 @@ export class DisputeService {
       attributes: {
         dispute_id: dispute.dispute_id,
         grounds: input.grounds,
-        target_resolution_receipt_hash: input.target_resolution_receipt_hash,
+        target_call_id: input.target_call_id,
         filed_by: input.filed_by,
       },
     });
@@ -147,16 +144,17 @@ export class DisputeService {
     }
     disputesRepo.setStatus(this.db, dispute.dispute_id, "replay_in_progress");
 
-    const target = this.findResolutionByReceiptHash(
-      dispute.target_resolution_receipt_hash as `0x${string}`,
-    );
+    const target = this.findResolutionByCallId(dispute.target_call_id);
     if (!target) {
-      disputesRepo.setStatus(this.db, dispute.dispute_id, "rejected", nowIso(now), null);
-      return { dispute_id: dispute.dispute_id, status: "rejected", new_resolution_receipt_hash: null };
+      disputesRepo.setStatus(this.db, dispute.dispute_id, "rejected", nowIso(now));
+      return {
+        dispute_id: dispute.dispute_id,
+        status: "rejected",
+        replacement_resolved_at: null,
+      };
     }
 
     const t0Anchor = anchorsRepo.getT0(this.db, target.call_id);
-    const acceptanceHash = this.loadAcceptanceHash(target.call_id);
 
     const t0_iso = input.replay.t0_override?.t0 ?? t0Anchor?.t0 ?? null;
     const p0 = input.replay.t0_override?.p0 ?? t0Anchor?.p0 ?? null;
@@ -171,7 +169,7 @@ export class DisputeService {
       );
     }
 
-    const t0_feed = OracleFeedSchema.parse(t0_feed_raw);
+    OracleFeedSchema.parse(t0_feed_raw);
     const t1_feed = OracleFeedSchema.parse(input.replay.t1_replay.feed);
 
     const sub = submissionsRepo.loadResolverContext(this.db, target.call_id);
@@ -217,51 +215,20 @@ export class DisputeService {
       replayOutcome === target.outcome &&
       String(input.replay.t1_replay.p1) === String(target.p1);
     if (same && !input.accept_unchanged) {
-      disputesRepo.setStatus(this.db, dispute.dispute_id, "rejected", nowIso(now), null);
+      disputesRepo.setStatus(this.db, dispute.dispute_id, "rejected", nowIso(now));
       return {
         dispute_id: dispute.dispute_id,
         status: "rejected",
-        new_resolution_receipt_hash: null,
+        replacement_resolved_at: null,
       };
     }
 
     const resolved_at = nowIso(now);
-    // Pillar-4 wallet binding for replayed resolution receipts. The
-    // disputed agent may have rotated wallets in between original and
-    // replay — use whatever wallet the agent has NOW since this
-    // receipt is the new source of truth post-dispute.
-    const issuingAgent = agentsRepo.byId(this.db, sub.agent_id);
-    const payload = ResolutionReceiptPayloadSchema.parse({
-      schema_version: SCHEMA_VERSION,
-      scoring_version: SCORING_VERSION,
-      call_id: target.call_id,
-      acceptance_receipt_hash: acceptanceHash,
-      t0: t0_iso,
-      p0,
-      t0_feed,
-      t1: input.replay.t1_replay.t1,
-      p1: input.replay.t1_replay.p1,
-      t1_feed,
-      signed_return: r.toFixed(8),
-      outcome: replayOutcome,
-      call_score: replayScore.call_score,
-      resolved_at,
-      ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
-      ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
-    });
-    const receipt = buildResolutionReceipt(payload);
-
-    let cid: string | null = null;
-    if (input.pinReceipt) {
-      try {
-        cid = (await input.pinReceipt(receipt.canonical_json)) ?? null;
-      } catch {
-        cid = null;
-      }
-    }
 
     const tx = this.db.transaction(() => {
-      // Update primary resolution to the corrected values.
+      // Wave 4b: dispute resolve updates the t1_resolutions row in place.
+      // The receipts table is gone; setResolution's ON CONFLICT clause
+      // overwrites the disputed row with the replay-corrected values.
       resolutionsRepo.setResolution(this.db, {
         call_id: target.call_id,
         t1: input.replay.t1_replay.t1,
@@ -272,24 +239,12 @@ export class DisputeService {
         call_score: replayScore.call_score,
         resolved_at,
       });
-      // Persist a chained re_resolution receipt referencing the OLD resolution
-      // receipt as previous_hash for full audit trail.
-      resolutionsRepo.recordResolutionReceipt(this.db, {
-        receipt_hash: receipt.receipt_hash,
-        call_id: target.call_id,
-        canonical_json: receipt.canonical_json,
-        ...(cid !== null ? { filecoin_cid: cid } : {}),
-        previous_hash: dispute.target_resolution_receipt_hash as `0x${string}`,
-        created_at: resolved_at,
-        kind: "re_resolution",
-      });
       submissionsRepo.setStatus(this.db, target.call_id, "re_resolved");
       disputesRepo.setStatus(
         this.db,
         dispute.dispute_id,
         "upheld",
         resolved_at,
-        receipt.receipt_hash,
       );
       usageRepo.emit(this.db, {
         event_id: randomUUID(),
@@ -300,8 +255,8 @@ export class DisputeService {
           dispute_id: dispute.dispute_id,
           status: "upheld",
           new_outcome: replayOutcome,
-          new_resolution_receipt_hash: receipt.receipt_hash,
-          previous_resolution_receipt_hash: dispute.target_resolution_receipt_hash,
+          target_call_id: target.call_id,
+          replacement_resolved_at: resolved_at,
         },
       });
     });
@@ -310,14 +265,14 @@ export class DisputeService {
     return {
       dispute_id: dispute.dispute_id,
       status: "upheld",
-      new_resolution_receipt_hash: receipt.receipt_hash,
+      replacement_resolved_at: resolved_at,
     };
   }
 
   // ── helpers ──
 
-  private findResolutionByReceiptHash(
-    receipt_hash: `0x${string}`,
+  private findResolutionByCallId(
+    call_id: string,
   ): {
     call_id: string;
     agent_id: string;
@@ -326,34 +281,15 @@ export class DisputeService {
   } | null {
     const row = this.db
       .prepare(
-        `SELECT r.call_id, s.agent_id, t.outcome, t.p1
-         FROM receipts r
-         JOIN submissions s ON s.call_id = r.call_id
-         JOIN t1_resolutions t ON t.call_id = r.call_id
-         WHERE r.receipt_hash = ? AND r.kind IN ('resolution','re_resolution')
-         ORDER BY r.created_at DESC
-         LIMIT 1`,
+        `SELECT t.call_id, s.agent_id, t.outcome, t.p1
+         FROM t1_resolutions t
+         JOIN submissions s ON s.call_id = t.call_id
+         WHERE t.call_id = ?`,
       )
-      .get(receipt_hash) as
+      .get(call_id) as
       | { call_id: string; agent_id: string; outcome: Outcome; p1: string }
       | undefined;
     return row ?? null;
-  }
-
-  private loadAcceptanceHash(call_id: string): `0x${string}` {
-    const row = this.db
-      .prepare(
-        "SELECT receipt_hash FROM receipts WHERE call_id = ? AND kind = 'acceptance'",
-      )
-      .get(call_id) as { receipt_hash: string } | undefined;
-    if (!row) {
-      throw new VerdictError(
-        "no acceptance receipt for call",
-        ERROR_CODES.internal_error,
-        500,
-      );
-    }
-    return row.receipt_hash as `0x${string}`;
   }
 
   private loadDispute(dispute_id: string): Dispute {

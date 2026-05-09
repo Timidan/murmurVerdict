@@ -1,7 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
-  AcceptanceReceiptPayloadSchema,
   AcceptedCall,
   AcceptedCallSchema,
   CallStatus,
@@ -22,7 +21,6 @@ import {
   usageRepo,
   type AcceptanceWriteInput,
 } from "./db.js";
-import { buildAcceptanceReceipt } from "../receipts/verdictReceipt.js";
 import { canonicalHash, canonicalize } from "../receipts/canonical.js";
 import { evaluateRisk, type MarketContext } from "./risk.js";
 import type { VerdictEventBus } from "./events.js";
@@ -68,8 +66,6 @@ import { encryptToDrandRound, type DrandContext } from "./drand-envelope.js";
 export interface SubmissionContext {
   /** Build current market context for the asset; the pipeline is upstream of risk. */
   marketContext: (asset_id: AssetId) => Promise<MarketContext>;
-  /** Optional Filecoin pin; null to skip in v0.1. */
-  pinReceipt?: (canonical_json: string) => Promise<string | null>;
   /** Now provider; injectable for tests. */
   now?: () => Date;
   /**
@@ -107,8 +103,6 @@ export interface AuthIdentity {
 
 export interface SubmitResult {
   call: AcceptedCall;
-  receipt_hash: `0x${string}`;
-  filecoin_cid: string | null;
   status: Extract<CallStatus, "accepted">;
   /** True if an existing call with the same client_order_id was returned. */
   idempotent_hit: boolean;
@@ -463,20 +457,20 @@ export async function submitCall(args: {
   const marketCtx = await ctx.marketContext(submission.asset_id!);
   const { preflight } = evaluateRisk(submission, marketCtx);
 
-  // 7. build acceptance receipt
+  // 7. assign call_id and prep committed-mode envelope (Wave 4b: receipts
+  // were dropped — call_id + reveal + resolution rows are the canonical
+  // evidence trail; no per-call JSON snapshot persists).
   const call_id = randomUUID();
-  // accepted_at already computed above for dedup; reuse so the receipt records
-  // the same instant we used for dedup bucketing.
-  // Pillar-4 marketplace portability: include the issuing agent's wallet +
-  // chain_id in the receipt subject when available. Off-Murmur verifiers can
-  // then attest the (wallet → score) relationship without a daemon round-trip.
+  // accepted_at already computed above for dedup; reuse for the envelope.
+  // Pillar-4 marketplace portability: wallet binding lives on the agent
+  // row directly; off-Murmur verifiers chain (agent_wallet → score) via
+  // the agent profile, not a per-call receipt subject.
   const issuingAgent = agentsRepo.byId(db, submission.agent_id);
 
   // P2 committed mode: when the agent opted in via privacy_mode='committed',
-  // build a v2 acceptance receipt that omits the plaintext envelope from
-  // the receipt subject and binds to a commit_hash + age envelope instead.
-  // Falls back to v1 (legacy_plaintext) for benchmark/shadow agents (D20).
-  let receipt: { canonical_json: string; receipt_hash: `0x${string}` };
+  // build the commit_hash + age envelope. Falls back to legacy_plaintext for
+  // benchmark/shadow agents (D20). Wave 4b — receipt building is gone;
+  // commit_hash itself stays the canonical commitment artifact.
   let envelopeForRepo: AcceptanceWriteInput["envelope"];
   let privacyModeForRepo: string = "legacy_plaintext";
   let commitHashForRepo: string | undefined;
@@ -633,52 +627,11 @@ export async function submitCall(args: {
         );
       }
     }
-    // request_hash (D23) = keccak256 of canonical agent submission body.
-    // Lets a verifier chain to an immutable input without trusting the
-    // daemon to keep the request body around.
-    //
-    // P3: use the RAW wire payload (pre-normalization) so a verifier
-    // re-canonicalizes exactly what the agent sent — never the daemon's
-    // synthesized fields. Agents who sent { market_id } get a request_hash
-    // over { market_id }; agents who sent { asset_id, horizon_hours } get
-    // a request_hash over the legacy tuple. Either reproduces from the
-    // agent's own bytes.
-    const request_hash = canonicalHash(rawSubmission);
-    const v2payload = AcceptanceReceiptPayloadSchema.parse({
-      schema_version: 2,
-      scoring_version: SCORING_VERSION,
-      receipt_kind: "acceptance",
-      call_id,
-      agent_id: submission.agent_id,
-      accepted_at,
-      privacy_mode: "committed",
-      commit: {
-        hash: commit_hash,
-        scheme: "keccak256",
-        preimage_schema: usedPreimageSchema,
-      },
-      preflight,
-      oracle_policy: oraclePolicy,
-      agent_wallet: issuingAgent.wallet_address,
-      chain_id: issuingAgent.chain_id,
-      request_hash,
-      fallback: {
-        encrypted_body_alg: encrypted.alg,
-        daemon_key_id: encrypted.daemon_key_id,
-        encrypted_body_hash: encrypted.encrypted_body_hash,
-        fallback_after,
-      },
-      ...(drandEnvelope
-        ? {
-            drand: {
-              chain_hash: drandEnvelope.chain_hash,
-              round: drandEnvelope.round,
-              ciphertext_hash: drandEnvelope.ciphertext_hash,
-            },
-          }
-        : {}),
-    });
-    receipt = buildAcceptanceReceipt(v2payload);
+    // request_hash (D23) is still computed for committed-mode submissions:
+    // it acts as the authenticated input bind even without a receipt to
+    // anchor it. Future verify endpoints can recompute and compare against
+    // an out-of-band record, but Wave 4b doesn't persist it.
+    void canonicalHash(rawSubmission);
     privacyModeForRepo = "committed";
     commitHashForRepo = commit_hash;
     commitSchemeForRepo = "keccak256";
@@ -699,47 +652,12 @@ export async function submitCall(args: {
           }
         : {}),
     };
-  } else {
-    // v1 (legacy_plaintext) receipts embed the submission verbatim. The
-    // wire schema rejects payloads carrying BOTH market_id and (asset_id,
-    // horizon_hours), so the embedded submission keeps the legacy shape —
-    // strip market_id from the embedded form. For agents that USED the
-    // market_id wire shape, surface it at the receipt's top level
-    // alongside market_config_version so verifiers can reproduce the
-    // submitted selector even though v1 has no request_hash.
-    const v1Submission: SubmittedCall = { ...submission };
-    delete (v1Submission as { market_id?: string }).market_id;
-    const v1payload = AcceptanceReceiptPayloadSchema.parse({
-      schema_version: SCHEMA_VERSION,
-      scoring_version: SCORING_VERSION,
-      submission: v1Submission,
-      preflight,
-      oracle_policy: oraclePolicy,
-      accepted_at,
-      call_id,
-      ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
-      ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
-      ...(wireUsedMarketId
-        ? {
-            market_id: market.market_id,
-            market_config_version: market.market_config_version,
-          }
-        : {}),
-    });
-    receipt = buildAcceptanceReceipt(v1payload);
   }
+  // Legacy plaintext branch falls through with privacyModeForRepo='legacy_plaintext'
+  // — no commit_hash, no envelope. The submissions row carries the call's
+  // canonical state directly; nothing else to stamp.
 
-  // 8. optional Filecoin pin
-  let filecoin_cid: string | null = null;
-  if (ctx.pinReceipt) {
-    try {
-      filecoin_cid = (await ctx.pinReceipt(receipt.canonical_json)) ?? null;
-    } catch {
-      // best-effort; do not block on Filecoin in v0.1
-    }
-  }
-
-  // 9. construct AcceptedCall, validate, persist atomically
+  // 8. construct AcceptedCall, validate, persist atomically
   const accepted: AcceptedCall = AcceptedCallSchema.parse({
     schema_version: SCHEMA_VERSION,
     scoring_version: SCORING_VERSION,
@@ -757,8 +675,6 @@ export async function submitCall(args: {
     status: "accepted",
     preflight,
     oracle_policy: oraclePolicy,
-    acceptance_receipt_hash: receipt.receipt_hash,
-    acceptance_receipt_cid: filecoin_cid ?? undefined,
   });
 
   // Phase 4 — derive (or reuse) the universal Commitment so /v1 and /v2
@@ -795,11 +711,6 @@ export async function submitCall(args: {
     submissionsRepo.acceptCall(db, {
       submission,
       accepted,
-      receipt: {
-        hash: receipt.receipt_hash,
-        canonical_json: receipt.canonical_json,
-        filecoin_cid: filecoin_cid ?? undefined,
-      },
       dedup_key,
       privacy_mode: privacyModeForRepo,
       market_id: market.market_id,
@@ -869,9 +780,9 @@ export async function submitCall(args: {
   );
 
   // Scrub plaintext from the SSE/webhook event when committed-mode
-  // (Phase E). Subscribers see commit_hash + acceptance_receipt_hash;
-  // they can fetch /v1/calls/:id/envelope to attest the ciphertexts
-  // committed to. The plaintext only fans out post-horizon.
+  // (Phase E). Subscribers see commit_hash; they can fetch
+  // /v1/calls/:id/envelope to attest the ciphertexts committed to.
+  // The plaintext only fans out post-horizon.
   ctx.events?.emit({
     type: "call.accepted",
     call_id,
@@ -880,7 +791,6 @@ export async function submitCall(args: {
     privacy_mode: privacyModeForRepo,
     accepted_at,
     ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
-    ...(receipt.receipt_hash ? { acceptance_receipt_hash: receipt.receipt_hash } : {}),
     ...(isCommittedEvent
       ? {}
       : {
@@ -893,8 +803,6 @@ export async function submitCall(args: {
 
   return {
     call: accepted,
-    receipt_hash: receipt.receipt_hash,
-    filecoin_cid,
     status: "accepted",
     idempotent_hit: false,
   };
@@ -926,19 +834,17 @@ function loadExistingAcceptedCall(
   call_id: string,
   idempotent_hit: boolean,
 ): SubmitResult {
-  // For v0.1 we reload the receipt + accepted snapshot via raw queries; this
-  // is intentionally minimal — full hydrators land alongside the read API in
-  // a later iteration.
+  // Wave 4b — receipts subsystem is gone; idempotent retries hydrate from
+  // the submissions row alone. The call_id is the only canonical identifier
+  // an old client expected back from this path.
   const stmt = db.prepare(`
     SELECT s.*, p.murmur_score, p.murmur_playbook, p.risk_flags_json,
            p.data_freshness_seconds, p.market_regime,
            op.primary_feed, op.fallback_feed, op.primary_max_staleness_sec,
-           op.fallback_max_staleness_sec, op.t0_grace_seconds, op.t0_extended_grace_seconds,
-           r.receipt_hash AS acceptance_receipt_hash, r.filecoin_cid AS acceptance_receipt_cid
+           op.fallback_max_staleness_sec, op.t0_grace_seconds, op.t0_extended_grace_seconds
     FROM submissions s
     JOIN preflights p ON p.call_id = s.call_id
     JOIN oracle_policies op ON op.call_id = s.call_id
-    LEFT JOIN receipts r ON r.call_id = s.call_id AND r.kind = 'acceptance'
     WHERE s.call_id = ?
   `);
   const row = stmt.get(call_id) as Record<string, unknown> | undefined;
@@ -977,13 +883,9 @@ function loadExistingAcceptedCall(
     // an idempotent retry on a Pyth-only call doesn't blow up at parse
     // time (Codex audit Bug 4).
     oracle_policy: buildT0PolicyFromRow(row),
-    acceptance_receipt_hash: row.acceptance_receipt_hash,
-    acceptance_receipt_cid: row.acceptance_receipt_cid ?? undefined,
   });
   return {
     call: accepted,
-    receipt_hash: accepted.acceptance_receipt_hash as `0x${string}`,
-    filecoin_cid: accepted.acceptance_receipt_cid ?? null,
     status: "accepted",
     idempotent_hit,
   };

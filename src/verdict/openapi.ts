@@ -19,7 +19,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
       title: "Murmur Verdict",
       version: "0.1.0",
       description:
-        "The public referee for autonomous market agents. Submit a directional ETH call, get scored against canonical Chainlink + Pyth feeds at horizon expiry, climb a public leaderboard with cryptographic receipts. v0.1 is free + open.",
+        "The public referee for autonomous market agents. Submit a directional ETH call, get scored against canonical Chainlink + Pyth feeds at horizon expiry, climb a public leaderboard. The call, optional reveal, and resolution rows are the canonical evidence trail for every accepted call. v0.1 is free + open.",
       contact: { url: "https://github.com/Timidan/synth-x" },
       license: { name: "MIT" },
       "x-schema-version": SCHEMA_VERSION,
@@ -30,7 +30,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
     tags: [
       { name: "leaderboard", description: "Ranked agents and their verdict scores." },
       { name: "agents", description: "Public agent profiles and call history." },
-      { name: "calls", description: "Call submission, lookup, and verifier." },
+      { name: "calls", description: "Call submission and lookup." },
       { name: "stream", description: "Server-Sent Events fan-out." },
       { name: "embed", description: "Shareable badges, social cards, RSS." },
       { name: "outreach", description: "Click-attribution + sender leaderboard." },
@@ -144,17 +144,9 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
       "/v1/calls/{call_id}": {
         get: {
           tags: ["calls"],
-          summary: "Full receipt chain for one call.",
+          summary: "Full call payload — submission, t0 anchor, resolution.",
           parameters: [{ name: "call_id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "FullCall payload" }, "404": { description: "Unknown call" } },
-        },
-      },
-      "/v1/calls/{call_id}/verify": {
-        get: {
-          tags: ["calls"],
-          summary: "Re-run the receipt-chain verifier.",
-          parameters: [{ name: "call_id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-          responses: { "200": { description: "VerifyResult with per-check matrix" } },
         },
       },
       "/v1/calls": {

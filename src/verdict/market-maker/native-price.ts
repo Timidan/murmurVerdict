@@ -65,11 +65,7 @@ import {
   type Outcome,
   type MarketRef,
 } from "../markets-core.js";
-import {
-  AcceptanceReceiptPayloadSchema,
-  ResolutionReceiptPayloadSchema,
-  SCHEMA_VERSION,
-} from "../schema.js";
+import { SCHEMA_VERSION } from "../schema.js";
 import { canonicalize, canonicalHash } from "../../receipts/canonical.js";
 import type {
   AcceptanceReceipt,
@@ -251,13 +247,10 @@ class NativePriceAdapter implements MarketMakerAdapter {
    *
    * SHELL behavior: the adapter canonicalizes the universal {@link Commitment}
    * shape directly via `canonicalize` / `canonicalHash` and returns the
-   * universal {@link AcceptanceReceipt} shape (hash + canonical_json +
-   * accepted_at). The legacy v1/v2 acceptance receipts at
-   * `src/verdict/schema.ts:621-710` carry rich preflight + oracle_policy +
-   * commit blocks that have no analogue on the universal Commitment — the
-   * Phase 4 submissions path will continue to build those legacy receipts via
-   * `buildAcceptanceReceipt` directly. This method is the *adapter-private*
-   * receipt for the universal canonical replay path.
+   * adapter-local {@link AcceptanceReceipt} shape (hash + canonical_json +
+   * accepted_at). Wave 4b retired the daemon-side receipts table; this
+   * adapter-private payload is purely an in-memory return shape callers can
+   * use for canonical replay without touching SQLite.
    *
    * Bigint-safe canonicalization: `canonicalize` runs through `JSON.stringify`,
    * which throws on bigint. The Commitment carries bigints in
@@ -358,18 +351,11 @@ class NativePriceAdapter implements MarketMakerAdapter {
   }
 
   /**
-   * Receipt verification for replay / dispute. SHELL implementation: delegates
-   * to a structural re-hash of the canonical JSON. The legacy chain-of-receipts
-   * verification (acceptance_receipt_hash → resolution_receipt previous_hash)
-   * lives at `src/verdict/verify.ts:verifyReceiptChain` and is per-call, not
-   * per-canonical-blob. This adapter-side `verifyReceipt` covers the universal
-   * canonical replay: parse, recompute the hash, compare.
-   *
-   * The brief calls for `verifyReceiptChain` delegation, but that function
-   * needs a `Database` reference + call_id, neither of which live on the
-   * universal canonical_json string. Phase 5 will add a wrapper that bridges
-   * the universal verifier to the chain-aware DB verifier; until then, the
-   * structural recompute is the contract.
+   * Receipt verification for replay / dispute. Structural re-hash of the
+   * canonical JSON returned by `acceptCommitment`. Wave 4b retired the
+   * daemon-side receipt-chain verifier (`src/verdict/verify.ts` is gone);
+   * this adapter-private check is the only canonical-replay contract,
+   * scoped to the in-memory blob the adapter itself produced.
    */
   verifyReceipt(canonicalJson: string): boolean {
     let parsed: unknown;
@@ -651,13 +637,7 @@ function computeSignedReturnLocal(
   return side === "BUY" ? ln : -ln;
 }
 
-// ─── Phase-5 prep: legacy receipt-shape constants (DO NOT REMOVE) ────────────
-//
-// Bound references so static analysis doesn't drop the Phase-5 cutover seam.
-// The resolver's existing `buildResolutionReceipt(...)` consumer at
-// `src/verdict/resolver.ts:367` will be wrapped by an adapter-supplied
-// canonicalizer in Phase 5. Keep the imports hot here so the cutover is a
-// single-file edit.
-void AcceptanceReceiptPayloadSchema;
-void ResolutionReceiptPayloadSchema;
+// Wave 4b — receipts subsystem dropped. The Phase-5 cutover-seam stub
+// that bound the receipt schemas here is no longer needed; SCHEMA_VERSION
+// stays in scope for future commit-time stamping use.
 void SCHEMA_VERSION;

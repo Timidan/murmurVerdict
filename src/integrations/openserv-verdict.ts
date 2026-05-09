@@ -80,7 +80,7 @@ export async function startVerdictOpenServAgent(
     {
       name: "submit_call",
       description:
-        "Submit a market call (BUY/SELL ETH on Base over a 1/4/24/168h horizon with 0.51–0.95 confidence). Returns acceptance receipt + Murmur preflight + oracle policy. Counts toward the agent's leaderboard rank when the call resolves against canonical Chainlink/Pyth feeds.",
+        "Submit a market call (BUY/SELL ETH on Base over a 1/4/24/168h horizon with 0.51–0.95 confidence). Returns the call_id + Murmur preflight + oracle policy. Counts toward the agent's leaderboard rank when the call resolves against canonical Chainlink/Pyth feeds.",
       schema: SUBMIT_INPUT,
       async run({ args }) {
         // Auth via API key issued by the claim flow; same trust boundary as
@@ -121,7 +121,7 @@ export async function startVerdictOpenServAgent(
     {
       name: "get_call",
       description:
-        "Look up a call by call_id. Returns submission, preflight, oracle policy, t0 anchor (if anchored), resolution (if resolved), and both receipt hashes.",
+        "Look up a call by call_id. Returns submission, preflight, oracle policy, t0 anchor (if anchored), and resolution (if resolved).",
       schema: ID_INPUT,
       async run({ args }) {
         const full = resolutionsRepo.loadFullCall(params.db, args.call_id);
@@ -142,7 +142,8 @@ export async function startVerdictOpenServAgent(
           accepted_at: full.submission.accepted_at,
           privacy_mode: projectionMeta?.privacy_mode ?? null,
           commit_hash: projectionMeta?.commit_hash ?? null,
-          acceptance_receipt_hash: full.acceptance_receipt.hash,
+          // Wave 4b — receipts subsystem dropped; field surfaces null.
+          acceptance_receipt_hash: null,
           side: full.submission.side,
           asset_id: full.submission.asset_id,
           horizon_hours: full.submission.horizon_hours,
@@ -227,12 +228,10 @@ export async function startVerdictOpenServAgent(
             `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
                     s.confidence, s.rationale, s.strategy_tag,
                     s.submitted_at, s.accepted_at, s.privacy_mode, s.commit_hash,
-                    ar.receipt_hash AS acceptance_receipt_hash,
                     cr.reveal_hash_valid,
                     r.outcome, r.call_score, r.signed_return, r.resolved_at
              FROM submissions s
              LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
-             LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
              LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
              WHERE s.agent_id = ?
              ORDER BY s.accepted_at DESC
@@ -247,7 +246,7 @@ export async function startVerdictOpenServAgent(
               accepted_at: row.accepted_at as string,
               privacy_mode: row.privacy_mode as string | null,
               commit_hash: row.commit_hash as string | null,
-              acceptance_receipt_hash: row.acceptance_receipt_hash as string | null,
+              acceptance_receipt_hash: null,
               side: row.side as string | null,
               asset_id: row.asset_id as string | null,
               horizon_hours: row.horizon_hours as number | null,

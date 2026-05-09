@@ -8,7 +8,9 @@
 //   - get_agent             Fetch profile + recent calls for one agent.
 //   - get_agent_score       Single-call lookup of an agent's verdict score.
 //   - submit_call           HMAC-authenticated call submission.
-//   - verify_call           Re-run the receipt-chain verifier.
+//
+// Wave 4b — verify_call dropped alongside the receipts subsystem; a
+// leaner per-call verifier can be reintroduced later if needed.
 //
 // Backend: this server speaks to the running Murmur daemon via HTTP. We
 // keep the MCP layer thin — protocol concerns live in the SDK, business
@@ -105,18 +107,6 @@ const TOOLS: Tool[] = [
       },
     },
   },
-  {
-    name: "verify_call",
-    description:
-      "Re-run Murmur's receipt-chain verifier against a known call_id. Returns the full check matrix with pass/fail per check (acceptance hash, t0 anchor, t1 resolution, scoring).",
-    inputSchema: {
-      type: "object",
-      required: ["call_id"],
-      properties: {
-        call_id: { type: "string" },
-      },
-    },
-  },
 ];
 
 const server = new Server(
@@ -138,8 +128,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req: CallToolRequest) => 
         return text(await getAgentScore(args ?? {}));
       case "submit_call":
         return text(await submitCallViaApi(args ?? {}));
-      case "verify_call":
-        return text(await verifyCall(args ?? {}));
       default:
         return error(`unknown tool: ${name}`);
     }
@@ -221,11 +209,6 @@ async function submitCallViaApi(args: Record<string, unknown>) {
     "X-Murmur-Agent-Id": VERDICT_AGENT_ID,
     "X-Murmur-Api-Key": VERDICT_API_KEY,
   });
-}
-
-async function verifyCall(args: Record<string, unknown>) {
-  const callId = requireString(args, "call_id");
-  return await getJson(`/v1/calls/${encodeURIComponent(callId)}/verify`);
 }
 
 async function getJson(path: string): Promise<unknown> {

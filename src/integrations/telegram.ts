@@ -93,7 +93,10 @@ export class TelegramNotifier {
       outcome: full.resolution.outcome,
       signed_return: Number(full.resolution.signed_return),
       call_score: full.resolution.call_score,
-      receipt_hash: full.resolution.receipt_hash,
+      // Wave 4b: receipts subsystem dropped. Card uses a short call_id
+      // identifier to give readers something to chain on (the call_id
+      // itself is the canonical handle).
+      call_id,
       rank: rankRow?.rank ?? null,
       tier: rankRow?.tier ?? "provisional",
       call_url: `${this.baseUrl}/calls/${call_id}`,
@@ -227,7 +230,7 @@ interface ResolutionCardArgs {
   outcome: string;
   signed_return: number;
   call_score: number | null;
-  receipt_hash: string;
+  call_id: string;
   rank: number | null;
   tier: string;
   call_url: string;
@@ -243,14 +246,17 @@ export function formatResolutionCard(a: ResolutionCardArgs): string {
   const ret = (a.signed_return * 100).toFixed(2);
   const score = a.call_score === null ? "—" : a.call_score.toFixed(3);
   const rankLine = a.rank ? `#${a.rank}` : a.tier;
-  const shortHash = `${a.receipt_hash.slice(0, 10)}…${a.receipt_hash.slice(-4)}`;
+  // Wave 4b: receipts subsystem dropped. Surface the last 8 chars of
+  // the call_id as the link label; the call_id itself is the canonical
+  // handle for any follow-up lookup.
+  const shortId = a.call_id.slice(-8);
   const shadowLine = a.claim_url
     ? `\n— Shadow agent. Claim this profile: ${a.claim_url}`
     : "";
   return [
     `${emoji} <b>${esc(a.agent_slug)}</b> ${subject}`,
     `→ <b>${a.outcome.toUpperCase()}</b> ${ret}%  · score ${score}  · ${rankLine}`,
-    `<a href="${a.call_url}">${shortHash}</a>${shadowLine}`,
+    `<a href="${a.call_url}">…${shortId}</a>${shadowLine}`,
   ].join("\n");
 }
 

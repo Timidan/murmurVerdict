@@ -35,122 +35,11 @@ const MARKET_REFRESH_SEC = Number(process.env.MARKET_REFRESH_SEC ?? 300);
 const VERDICT_DB_PATH = process.env.VERDICT_DB_PATH ?? "./data/verdict.db";
 const DASHBOARD_ORIGIN = (process.env.DASHBOARD_ORIGIN ?? "*").trim();
 
-// ─── pinReceipt callback ────────────────────────────────────────────────────
-//
-// Pinning is best-effort. Both the Resolver and the submission router accept
-// an optional `pinReceipt` callback that, when wired, produces a CID for each
-// canonical receipt JSON and populates `receipts.filecoin_cid`. Without a
-// callback wired, that column stays NULL forever — which is what we have
-// shipped to date.
-//
-// Design intent (do not regress):
-//   - Pinning MUST NEVER block resolution or acceptance. Any error MUST be
-//     swallowed (logged + return null), never thrown.
-//   - The default is a no-op; setting FILECOIN_API_TOKEN opts the operator in
-//     to a real best-effort upload against Lighthouse's anonymous-token
-//     endpoint (stable, public, supports plain Bearer auth).
-//   - On any non-2xx, malformed body, or network blip we return null so the
-//     receipt still persists with filecoin_cid=NULL. The receipt chain hash
-//     is independent of CID — pin failure does not corrupt provenance.
-//   - When FILECOIN_API_TOKEN is set, FILECOIN_PIN_ENDPOINT MUST be HTTPS.
-//     Bearer tokens over plaintext HTTP are exfiltrable on any hop; we fail
-//     CLOSED (disable pinning) rather than ship the token in cleartext. The
-//     no-token path still allows http:// for local testing because there's
-//     nothing secret to leak.
-
-const DEFAULT_FILECOIN_PIN_ENDPOINT = "https://node.lighthouse.storage/api/v0/add";
-
-export function makePinReceipt(): (canonical_json: string) => Promise<string | null> {
-  // Read at call time so tests (and future operator-overridable env) see
-  // up-to-date values rather than the value captured at module load.
-  const endpoint = process.env.FILECOIN_PIN_ENDPOINT ?? DEFAULT_FILECOIN_PIN_ENDPOINT;
-  const token = process.env.FILECOIN_API_TOKEN;
-  if (!token) {
-    // No-op default: callback is wired into Resolver + router for symmetry,
-    // but every call resolves to null so filecoin_cid remains NULL.
-    if (!endpoint.startsWith("https://")) {
-      // Local-testing affordance: log so the operator knows the endpoint
-      // is plaintext, but accept silently — no secrets at risk.
-      console.log(
-        `[daemon] pinReceipt no-op (endpoint=${endpoint}; not HTTPS, but no token to leak)`,
-      );
-    }
-    return async () => null;
-  }
-  // Token is set → enforce HTTPS up front so we never send a Bearer over
-  // plaintext. Validate BEFORE creating the closure, log a clear error,
-  // and degrade to the no-op path. Resolver / router stay symmetric;
-  // filecoin_cid stays NULL until the operator fixes the misconfig.
-  if (!endpoint.startsWith("https://")) {
-    console.error(
-      `[daemon] FILECOIN_PIN_ENDPOINT must be HTTPS when FILECOIN_API_TOKEN is set ` +
-        `(got '${endpoint}'); pin will be disabled`,
-    );
-    return async () => null;
-  }
-  // Best-effort timeout. submitCall (acceptance) and the resolver (T1) both
-  // await pinReceipt synchronously, so a slow or blackholed pin endpoint can
-  // stall accepts/resolutions without this guard. Default 5s; operator can
-  // override via MURMUR_PIN_TIMEOUT_MS. We resolve to null on timeout — same
-  // best-effort semantics as any other failure mode (NEVER throws).
-  const timeoutRaw = Number(process.env.MURMUR_PIN_TIMEOUT_MS);
-  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 5000;
-  console.log(
-    `[daemon] pinReceipt enabled (endpoint=${endpoint}, timeoutMs=${timeoutMs})`,
-  );
-  return async (canonical_json: string): Promise<string | null> => {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), timeoutMs);
-    try {
-      const form = new FormData();
-      form.append(
-        "file",
-        new Blob([canonical_json], { type: "application/json" }),
-        "receipt.json",
-      );
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-        signal: ac.signal,
-      });
-      if (!res.ok) {
-        console.warn(
-          `[daemon] pinReceipt non-2xx: ${res.status} ${res.statusText}`,
-        );
-        return null;
-      }
-      const text = await res.text();
-      // Lighthouse returns NDJSON-ish; the CID lives at .Hash on the last
-      // non-empty line. Defensive parse — any deviation returns null instead
-      // of throwing.
-      const lastLine = text.trim().split("\n").filter(Boolean).pop();
-      if (!lastLine) return null;
-      const obj = JSON.parse(lastLine) as { Hash?: string; cid?: string };
-      const cid = obj.Hash ?? obj.cid ?? null;
-      return typeof cid === "string" && cid.length > 0 ? cid : null;
-    } catch (err) {
-      // AbortError is fetch's signal that we tripped the timeout. Treat it
-      // as a best-effort miss like any other network failure.
-      const isAbort =
-        (err instanceof Error && err.name === "AbortError") ||
-        (typeof err === "object" && err !== null && (err as { name?: string }).name === "AbortError");
-      if (isAbort) {
-        console.warn(
-          `[daemon] pinReceipt timed out after ${timeoutMs}ms (best-effort, ignored)`,
-        );
-      } else {
-        console.warn(
-          "[daemon] pinReceipt failed (best-effort, ignored):",
-          err instanceof Error ? err.message : err,
-        );
-      }
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-}
+// Wave 4b — receipts subsystem and Filecoin pin callback retired.
+// The legacy makePinReceipt() helper that lived here was a no-op for any
+// deploy without FILECOIN_API_TOKEN set, and the receipts table it pinned
+// canonical JSON for is gone. v3 attested tier will pin EAS attestations
+// directly; nothing in v0.2 needs an HTTP-pinning shim.
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -217,14 +106,10 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
   // matching subscription on call.accepted / call.resolved.
   const webhookDispatcher = startWebhookDispatcher(db, events);
-  // Pinning callback is shared between submit (acceptance receipts) and
-  // resolve (T1/dispute receipts). Best-effort; never blocks.
-  const pinReceipt = makePinReceipt();
   const resolver = oracle
     ? new Resolver({
         db,
         oracle,
-        pinReceipt,
         ...(ageCtx ? { ageContext: ageCtx } : {}),
         ...(drandCtx ? { drandContext: drandCtx } : {}),
         onResolved: async (call_id) => {
@@ -342,9 +227,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       ctx: {
         marketContext: (asset_id) => market.get(asset_id),
         events,
-        // Pinning is best-effort. The submit path swallows pin failures and
-        // persists the receipt with filecoin_cid=NULL; never block accept.
-        pinReceipt,
         ...(ageCtx ? { ageContext: ageCtx } : {}),
         ...(drandCtx ? { drandContext: drandCtx } : {}),
       },

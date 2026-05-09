@@ -5,17 +5,12 @@ import {
   HORIZONS_HOURS,
   HorizonHours,
   OracleFeed,
-  OracleFeedSchema,
   Outcome,
-  ResolutionReceiptPayloadSchema,
-  SCHEMA_VERSION,
-  SCORING_VERSION,
   Side,
   T0Policy,
   UsageEvent,
 } from "./schema.js";
 import {
-  agentsRepo,
   anchorsRepo,
   marketsRepo,
   resolutionsRepo,
@@ -36,10 +31,6 @@ import {
   type OracleObservation as AdapterObservation,
 } from "../integrations/oracles/types.js";
 import { feedToOracleId } from "./oracle-routing.js";
-import {
-  buildResolutionReceipt,
-  buildV2ResolutionReceipt,
-} from "../receipts/verdictReceipt.js";
 import {
   computeSignedReturn,
   outcomeFromSignedReturn,
@@ -71,7 +62,6 @@ import { AdapterNotFoundError } from "./markets.js";
 export interface ResolverDeps {
   db: Database.Database;
   oracle: OracleClient;
-  pinReceipt?: (canonical_json: string) => Promise<string | null>;
   now?: () => Date;
   /** Test hook so we can drive logs assertively; default no-op. */
   log?: (line: ResolverLogEvent) => void;
@@ -108,7 +98,6 @@ export interface ResolverTickResult {
 export class Resolver {
   private readonly db: Database.Database;
   private readonly oracle: OracleClient;
-  private readonly pinReceipt: ((s: string) => Promise<string | null>) | null;
   private readonly now: () => Date;
   private readonly log: (line: ResolverLogEvent) => void;
   private readonly onResolved: NonNullable<ResolverDeps["onResolved"]>;
@@ -118,7 +107,6 @@ export class Resolver {
   constructor(deps: ResolverDeps) {
     this.db = deps.db;
     this.oracle = deps.oracle;
-    this.pinReceipt = deps.pinReceipt ?? null;
     this.now = deps.now ?? (() => new Date());
     this.log = deps.log ?? (() => undefined);
     this.onResolved = deps.onResolved ?? (() => undefined);
@@ -324,38 +312,12 @@ export class Resolver {
         }
 
         const resolved_at = this.nowIso();
-        // Look up the issuing agent so legacy receipts can carry the
-        // current wallet binding when available. Committed v2 receipts use
-        // the wallet embedded in the verified reveal preimage instead; an
-        // admin wallet rotation after submit must not rewrite history.
-        const issuingAgent = agentsRepo.byId(this.db, ctx.agent_id);
 
-        // Branch: v2 receipt for committed calls (carries reveal block);
-        // v1 receipt for legacy_plaintext.
-        let resolutionPayload: ReturnType<typeof ResolutionReceiptPayloadSchema.parse>;
-        if (subject.source === "legacy_plaintext") {
-          resolutionPayload = ResolutionReceiptPayloadSchema.parse({
-            schema_version: 1,
-            scoring_version: SCORING_VERSION,
-            call_id: ctx.call_id,
-            acceptance_receipt_hash: ctx.acceptance_receipt_hash,
-            t0: t0row.t0,
-            p0: t0row.p0,
-            t0_feed: OracleFeedSchema.parse(t0row.feed),
-            t1: obs.feed_timestamp,
-            p1: obs.price,
-            t1_feed: obs.feed,
-            signed_return: r.toFixed(8),
-            outcome: verdictOutcome,
-            call_score: score.call_score,
-            resolved_at,
-            ...(issuingAgent?.wallet_address ? { agent_wallet: issuingAgent.wallet_address } : {}),
-            ...(issuingAgent?.chain_id ? { chain_id: issuingAgent.chain_id } : {}),
-          });
-        } else {
-          // committed → v2 with reveal block.
-          // Skip emission if commit_hash is missing (shouldn't happen
-          // for committed rows, defensive null-guard).
+        // Wave 4b — committed-mode commit_hash + reveal binding sanity
+        // checks before resolution lands. Receipts no longer chain the
+        // attestation but the commit/reveal pair is still the canonical
+        // committed-mode evidence; refuse to resolve if either is missing.
+        if (subject.source !== "legacy_plaintext") {
           const subRow = this.db
             .prepare("SELECT commit_hash FROM submissions WHERE call_id = ?")
             .get(ctx.call_id) as { commit_hash: string | null } | undefined;
@@ -376,104 +338,6 @@ export class Resolver {
               reason: "committed-mode reveal without wallet binding",
             });
             continue;
-          }
-          resolutionPayload = ResolutionReceiptPayloadSchema.parse({
-            schema_version: 2,
-            scoring_version: SCORING_VERSION,
-            receipt_kind: "resolution",
-            call_id: ctx.call_id,
-            acceptance_receipt_hash: ctx.acceptance_receipt_hash,
-            commit_hash: subRow.commit_hash,
-            t0: t0row.t0,
-            p0: t0row.p0,
-            t0_feed: OracleFeedSchema.parse(t0row.feed),
-            t1: obs.feed_timestamp,
-            p1: obs.price,
-            t1_feed: obs.feed,
-            signed_return: r.toFixed(8),
-            outcome: verdictOutcome,
-            call_score: score.call_score,
-            resolved_at,
-            agent_wallet: subject.agent_wallet,
-            chain_id: subject.chain_id,
-            reveal: {
-              revealed_via: subject.source,
-              revealed_at: subject.revealed_at,
-              reveal_hash_valid: subject.reveal_hash_valid,
-              commit_preimage_schema:
-                subject.commit_preimage_schema ?? "murmur-verdict-v0.2-commit@1",
-              // P4 Item 4: emit additive market-aware fields on
-              // plaintext_subject when the subject carries enrichment.
-              // Old receipts without these fields keep parsing under
-              // the wider schema; new receipts let verifiers replay
-              // outcome+score from the receipt itself plus
-              // market_config_history (never the live markets row).
-              plaintext_subject: {
-                side: subject.side,
-                asset_id: subject.asset_id as AssetId,
-                horizon_hours: subject.horizon_hours as HorizonHours,
-                confidence: subject.confidence,
-                ...(subject.market_id !== null
-                  ? { market_id: subject.market_id }
-                  : {}),
-                ...(subject.market_config_version !== null
-                  ? { market_config_version: subject.market_config_version }
-                  : {}),
-                ...(subject.horizon_seconds !== null
-                  ? { horizon_seconds: subject.horizon_seconds }
-                  : {}),
-                ...(subject.scoring_kind !== null
-                  ? { scoring_kind: subject.scoring_kind }
-                  : {}),
-                ...(subject.void_band !== null
-                  ? { void_band: subject.void_band }
-                  : {}),
-              },
-            },
-          });
-        }
-        const receipt = buildResolutionReceipt(resolutionPayload);
-        let cid: string | null = null;
-        if (this.pinReceipt) {
-          try {
-            cid = (await this.pinReceipt(receipt.canonical_json)) ?? null;
-          } catch {
-            cid = null;
-          }
-        }
-
-        // Phase 5 — build the universal payout-vector receipt sibling. Only
-        // emitted when the v2 dispatch path produced a Commitment+Outcome
-        // pair (always today; legacy rows fall through to
-        // legacySubmissionToCommitment). When `v2 === null` the legacy
-        // receipt remains the sole receipt — same byte-for-byte shape as
-        // pre-Phase-5.
-        const v2Receipt = v2
-          ? buildV2ResolutionReceipt({
-              call_id: ctx.call_id,
-              acceptance_receipt_hash: ctx.acceptance_receipt_hash,
-              commitment: v2.commitment,
-              outcome: v2.outcome,
-              call_score: v2.score.call_score,
-              adapter_id: v2.adapter_id,
-              resolved_at,
-            })
-          : null;
-
-        // BUG FIX (codex review v3 P2 #1): pin the v2 sibling receipt to
-        // Filecoin too. Previously only the legacy resolution receipt got
-        // pinned and the resolution_v2 row was inserted with filecoin_cid=NULL,
-        // so v2 receipts always lost their Filecoin provenance. Best-effort
-        // (errors swallowed → cid=null) so a Filecoin outage never blocks
-        // resolution. Awaited BEFORE the transaction starts because
-        // pinReceipt is async and `db.transaction` callbacks must be sync.
-        let v2Cid: string | null = null;
-        if (v2Receipt && this.pinReceipt) {
-          try {
-            v2Cid =
-              (await this.pinReceipt(v2Receipt.canonical_json)) ?? null;
-          } catch {
-            v2Cid = null;
           }
         }
 
@@ -501,29 +365,6 @@ export class Resolver {
                 }
               : {}),
           });
-          resolutionsRepo.recordResolutionReceipt(this.db, {
-            receipt_hash: receipt.receipt_hash,
-            call_id: ctx.call_id,
-            canonical_json: receipt.canonical_json,
-            filecoin_cid: cid ?? undefined,
-            previous_hash: ctx.acceptance_receipt_hash as `0x${string}`,
-            created_at: resolved_at,
-            kind: "resolution",
-          });
-          if (v2Receipt) {
-            // Sibling row keyed by call_id with kind='resolution_v2'. Phase 6
-            // will surface this on /v1/calls/:id/verify; for now it's
-            // internal-only — verify path keeps reading the legacy receipt.
-            resolutionsRepo.recordResolutionReceipt(this.db, {
-              receipt_hash: v2Receipt.receipt_hash,
-              call_id: ctx.call_id,
-              canonical_json: v2Receipt.canonical_json,
-              filecoin_cid: v2Cid ?? undefined,
-              previous_hash: ctx.acceptance_receipt_hash as `0x${string}`,
-              created_at: resolved_at,
-              kind: "resolution_v2",
-            });
-          }
           submissionsRepo.setStatus(this.db, ctx.call_id, "resolved");
           usageRepo.emit(
             this.db,
@@ -531,10 +372,6 @@ export class Resolver {
               call_id: ctx.call_id,
               outcome: verdictOutcome,
               call_score: score.call_score,
-              receipt_hash: receipt.receipt_hash,
-              ...(v2Receipt
-                ? { resolution_v2_receipt_hash: v2Receipt.receipt_hash }
-                : {}),
             }),
           );
         });
@@ -818,97 +655,24 @@ export class Resolver {
         return false;
       }
     }
-    // Build a degenerate resolution receipt so the chain is preserved even when
-    // we never anchored. For t0-phase failures, t0/p0/t0_feed are best-effort
-    // placeholders; the receipt outcome is what carries semantic weight.
+    // Wave 4b — receipt building is gone; the resolution row alone now
+    // carries the terminal oracle_unavailable state. For t0-phase failures
+    // we still stamp placeholder t0/p0/t0_feed values so downstream view
+    // queries get non-null columns (the row's `outcome` is the semantic
+    // truth). Subject availability still gates the committed-mode path:
+    // committed calls require a valid reveal binding before we mark
+    // terminal, since the dispute / replay surface still needs the wallet
+    // attribution intact.
     const placeholderTime = ctx.accepted_at;
     const placeholderPrice = "0";
     const placeholderFeed: OracleFeed = "chainlink:base:ETH-USD";
     const t0Iso = t0row?.t0 ?? placeholderTime;
     const p0 = t0row?.p0 ?? placeholderPrice;
     const t0Feed = (t0row?.feed ?? placeholderFeed) as OracleFeed;
+    void subject;
+    void t0Iso;
+    void p0;
 
-    const resolutionPayload = ResolutionReceiptPayloadSchema.parse(
-      subject
-        ? {
-            schema_version: 2,
-            scoring_version: SCORING_VERSION,
-            receipt_kind: "resolution",
-            call_id: ctx.call_id,
-            acceptance_receipt_hash: ctx.acceptance_receipt_hash,
-            commit_hash: ctx.commit_hash,
-            t0: t0Iso,
-            p0,
-            t0_feed: t0Feed,
-            t1: resolved_at,
-            p1: placeholderPrice,
-            t1_feed: t0Feed,
-            signed_return: "0",
-            outcome: "oracle_unavailable",
-            call_score: null,
-            resolved_at,
-            agent_wallet: subject.agent_wallet,
-            chain_id: subject.chain_id,
-            reveal: {
-              revealed_via: subject.source,
-              revealed_at: subject.revealed_at,
-              reveal_hash_valid: subject.reveal_hash_valid,
-              commit_preimage_schema:
-                subject.commit_preimage_schema ?? "murmur-verdict-v0.2-commit@1",
-              // P4 Item 4: same additive enrichment as the normal
-              // resolution path. oracle_unavailable receipts also carry
-              // the per-call market policy snapshot when available so
-              // verify/disputes can replay this terminal state under
-              // the same rules a successful resolution would have used.
-              plaintext_subject: {
-                side: subject.side,
-                asset_id: subject.asset_id as AssetId,
-                horizon_hours: subject.horizon_hours as HorizonHours,
-                confidence: subject.confidence,
-                ...(subject.market_id !== null
-                  ? { market_id: subject.market_id }
-                  : {}),
-                ...(subject.market_config_version !== null
-                  ? { market_config_version: subject.market_config_version }
-                  : {}),
-                ...(subject.horizon_seconds !== null
-                  ? { horizon_seconds: subject.horizon_seconds }
-                  : {}),
-                ...(subject.scoring_kind !== null
-                  ? { scoring_kind: subject.scoring_kind }
-                  : {}),
-                ...(subject.void_band !== null
-                  ? { void_band: subject.void_band }
-                  : {}),
-              },
-            },
-          }
-        : {
-            schema_version: SCHEMA_VERSION,
-            scoring_version: SCORING_VERSION,
-            call_id: ctx.call_id,
-            acceptance_receipt_hash: ctx.acceptance_receipt_hash,
-            t0: t0Iso,
-            p0,
-            t0_feed: t0Feed,
-            t1: resolved_at,
-            p1: placeholderPrice,
-            t1_feed: t0Feed,
-            signed_return: "0",
-            outcome: "oracle_unavailable",
-            call_score: null,
-            resolved_at,
-          },
-    );
-    const receipt = buildResolutionReceipt(resolutionPayload);
-    let cid: string | null = null;
-    if (this.pinReceipt) {
-      try {
-        cid = (await this.pinReceipt(receipt.canonical_json)) ?? null;
-      } catch {
-        cid = null;
-      }
-    }
     const tx = this.db.transaction(() => {
       resolutionsRepo.setResolution(this.db, {
         call_id: ctx.call_id,
@@ -920,15 +684,6 @@ export class Resolver {
         call_score: null,
         resolved_at,
       });
-      resolutionsRepo.recordResolutionReceipt(this.db, {
-        receipt_hash: receipt.receipt_hash,
-        call_id: ctx.call_id,
-        canonical_json: receipt.canonical_json,
-        filecoin_cid: cid ?? undefined,
-        previous_hash: ctx.acceptance_receipt_hash as `0x${string}`,
-        created_at: resolved_at,
-        kind: "resolution",
-      });
       submissionsRepo.setStatus(this.db, ctx.call_id, "resolved");
       usageRepo.emit(
         this.db,
@@ -936,7 +691,6 @@ export class Resolver {
           call_id: ctx.call_id,
           outcome: "oracle_unavailable",
           phase,
-          receipt_hash: receipt.receipt_hash,
         }),
       );
     });

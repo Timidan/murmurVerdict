@@ -542,10 +542,9 @@ export const AcceptedCallSchema = z
     status: z.literal("accepted"),
     preflight: VerdictPreflightSchema,
     oracle_policy: T0PolicySchema,
-    acceptance_receipt_hash: z
-      .string()
-      .regex(/^0x[0-9a-f]{64}$/, "keccak256 hex"),
-    acceptance_receipt_cid: z.string().min(1).optional(),
+    // Wave 4b — receipts subsystem dropped. acceptance_receipt_hash and
+    // acceptance_receipt_cid no longer exist on AcceptedCall; the call_id
+    // itself is the canonical identifier downstream consumers chain on.
   })
   .strict();
 export type AcceptedCall = z.infer<typeof AcceptedCallSchema>;
@@ -598,235 +597,10 @@ export const VerdictResolutionSchema = z
   });
 export type VerdictResolution = z.infer<typeof VerdictResolutionSchema>;
 
-// ─── Receipt payloads (canonicalized before hashing) ─────────────────────────
-// These are the EXACT shapes that get keccak256-hashed. Field order does not
-// matter (canonicalization sorts keys), but the field SET is invariant.
-
-// ─── Acceptance receipt — v1 (legacy_plaintext) ────────────────────────────
-//
-// Original v0.1 shape: bakes the agent-submitted plaintext envelope into
-// the receipt subject. Still produced for benchmark + shadow-ingestion
-// agents per D20 — those stay legacy_plaintext until v0.3.
-//
-// P3 Phase 2a hardening (Codex audit): when an agent submitted with the
-// market_id wire shape but legacy_plaintext mode, the embedded `submission`
-// keeps the legacy shape (asset_id + horizon_hours synthesized from the
-// market) — that's a back-compat requirement of SubmittedCallSchema's
-// exactly-one rule. Without something else surfacing the market_id, the v1
-// receipt has no record of which wire shape the agent used (v1 doesn't
-// carry request_hash). Top-level market_id + market_config_version close
-// that ambiguity additively: old verifiers see legacy fields, new
-// verifiers see the explicit selector + policy version. Both fields are
-// optional so receipts already issued before this change keep parsing.
-const AcceptanceReceiptPayloadV1Schema = z
-  .object({
-    schema_version: z.literal(1),
-    scoring_version: z.literal(SCORING_VERSION),
-    submission: SubmittedCallSchema,
-    preflight: VerdictPreflightSchema,
-    oracle_policy: T0PolicySchema,
-    accepted_at: z.string().datetime({ offset: false }),
-    call_id: z.string().uuid(),
-    // P1.5 wallet binding (optional for v1 since it lands additively on
-    // pre-existing receipts that didn't have it).
-    agent_wallet: WalletAddressSchema.optional(),
-    chain_id: ChainIdSchema.optional(),
-    // P3 Phase 2a hardening: explicit selector + policy version when the
-    // agent used the market_id wire shape. Optional for back-compat.
-    market_id: MarketIdSchema.optional(),
-    market_config_version: z.number().int().positive().optional(),
-  })
-  .strict();
-
-// ─── Acceptance receipt — v2 (committed) ───────────────────────────────────
-//
-// P2 shape: NO plaintext envelope. Only the commit_hash binds the
-// receipt to a specific (side, asset, horizon, confidence, salt, t0)
-// tuple — verifiable at reveal time but not extractable from this
-// receipt alone. Agents in kind ∈ (verified, wallet_only) submit in
-// this mode in v0.2; benchmarks stay v1 (D20).
-//
-// Optional `drand` block is the daemon-less reveal commitment (D21):
-// the encrypted preimage is also tlock-encrypted to a future drand
-// round, so the public can decrypt without the operator's cooperation
-// once that round is past.
-//
-// Optional `fallback` block records the daemon-encrypted age envelope
-// metadata (D14d) — the daemon decrypts this past `fallback_after` if
-// the agent fails to reveal voluntarily.
-//
-// `request_hash` is the ERC-8004 vocabulary (D23): keccak256 of the
-// agent's submission request body. Lets off-Murmur consumers chain
-// receipts to an immutable input.
-const AcceptanceReceiptPayloadV2Schema = z
-  .object({
-    schema_version: z.literal(2),
-    scoring_version: z.literal(SCORING_VERSION),
-    receipt_kind: z.literal("acceptance"),
-    call_id: z.string().uuid(),
-    agent_id: z.string().uuid(),
-    accepted_at: z.string().datetime({ offset: false }),
-    privacy_mode: z.literal("committed"),
-    commit: z
-      .object({
-        hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-        scheme: z.literal("keccak256"),
-        preimage_schema: z.string(), // "murmur-verdict-v0.2-commit@1"
-      })
-      .strict(),
-    preflight: VerdictPreflightSchema,
-    oracle_policy: T0PolicySchema,
-    // Wallet binding REQUIRED in v2 — committed-mode agents are always
-    // wallet-bound (verified or wallet_only kind). Pillar-4 portability
-    // lives or dies on this field.
-    agent_wallet: WalletAddressSchema,
-    chain_id: ChainIdSchema,
-    // ERC-8004 vocabulary (D23). keccak256 of the canonical JSON of the
-    // agent's HTTP submission body. Lets a verifier reconstruct the
-    // input chain without trusting the daemon to keep the request body.
-    request_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-    // Optional drand/tlock commitment (D21).
-    drand: z
-      .object({
-        chain_hash: z.string(),
-        round: z.number().int().positive(),
-        ciphertext_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-      })
-      .strict()
-      .optional(),
-    // Optional age fallback envelope binding.
-    fallback: z
-      .object({
-        // String, NOT enum, so v0.3 can introduce 'fhevm-euint' without
-        // a schema migration (Codex P2 plan compatibility note).
-        encrypted_body_alg: z.string(),
-        daemon_key_id: z.string(),
-        encrypted_body_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-        fallback_after: z.string().datetime({ offset: false }),
-      })
-      .strict()
-      .optional(),
-  })
-  .strict();
-
-export const AcceptanceReceiptPayloadSchema = z.discriminatedUnion(
-  "schema_version",
-  [AcceptanceReceiptPayloadV1Schema, AcceptanceReceiptPayloadV2Schema],
-);
-export type AcceptanceReceiptPayload = z.infer<
-  typeof AcceptanceReceiptPayloadSchema
->;
-export type AcceptanceReceiptPayloadV1 = z.infer<
-  typeof AcceptanceReceiptPayloadV1Schema
->;
-export type AcceptanceReceiptPayloadV2 = z.infer<
-  typeof AcceptanceReceiptPayloadV2Schema
->;
-
-// ─── Resolution receipt — v1 (legacy_plaintext) ────────────────────────────
-const ResolutionReceiptPayloadV1Schema = z
-  .object({
-    schema_version: z.literal(1),
-    scoring_version: z.literal(SCORING_VERSION),
-    call_id: z.string().uuid(),
-    acceptance_receipt_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-    t0: z.string().datetime({ offset: false }),
-    p0: z.string().regex(/^[0-9]+(\.[0-9]+)?$/),
-    t0_feed: OracleFeedSchema,
-    t1: z.string().datetime({ offset: false }),
-    p1: z.string().regex(/^[0-9]+(\.[0-9]+)?$/),
-    t1_feed: OracleFeedSchema,
-    signed_return: z.string().regex(/^-?[0-9]+(\.[0-9]+)?$/),
-    outcome: OutcomeSchema,
-    call_score: z.number().nullable(),
-    resolved_at: z.string().datetime({ offset: false }),
-    // P1.5 wallet binding (additive; older receipts may not have it).
-    agent_wallet: WalletAddressSchema.optional(),
-    chain_id: ChainIdSchema.optional(),
-  })
-  .strict();
-
-// ─── Resolution receipt — v2 (committed reveal) ────────────────────────────
-//
-// Adds a `reveal` block recording HOW the plaintext was surfaced — agent
-// voluntary reveal, daemon decrypt past grace, drand decrypt past round,
-// or v0.3 fhEVM compute. The plaintext_subject is the D13 fields that
-// the receipt commits to; reveal_hash_valid attests the agent/daemon
-// recomputed keccak256(canonical_json(preimage)) and matched the
-// acceptance receipt's commit.hash.
-//
-// commit_hash is hoisted to the top level so a verifier crawling
-// receipts can chain (acceptance.commit.hash → resolution.commit_hash)
-// without re-fetching the acceptance receipt.
-const ResolutionReceiptPayloadV2Schema = z
-  .object({
-    schema_version: z.literal(2),
-    scoring_version: z.literal(SCORING_VERSION),
-    receipt_kind: z.literal("resolution"),
-    call_id: z.string().uuid(),
-    acceptance_receipt_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-    commit_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-    t0: z.string().datetime({ offset: false }),
-    p0: z.string().regex(/^[0-9]+(\.[0-9]+)?$/),
-    t0_feed: OracleFeedSchema,
-    t1: z.string().datetime({ offset: false }),
-    p1: z.string().regex(/^[0-9]+(\.[0-9]+)?$/),
-    t1_feed: OracleFeedSchema,
-    signed_return: z.string().regex(/^-?[0-9]+(\.[0-9]+)?$/),
-    outcome: OutcomeSchema,
-    call_score: z.number().nullable(),
-    resolved_at: z.string().datetime({ offset: false }),
-    agent_wallet: WalletAddressSchema,
-    chain_id: ChainIdSchema,
-    reveal: z
-      .object({
-        revealed_via: z.string(), // string, not enum, per v0.3 compat
-        revealed_at: z.string().datetime({ offset: false }),
-        reveal_hash_valid: z.boolean(),
-        commit_preimage_schema: z.string(),
-        // P4 Item 4 (Codex audit): plaintext_subject extends additively to
-        // carry the market identity + replay config. Existing receipts
-        // already issued (no market_id) keep parsing — every new field is
-        // optional. New receipts stamp all five so verifiers can replay
-        // outcome+score from the receipt + market_config_history without
-        // ever reading the live markets row. void_band is a decimal
-        // string for canonicalization stability; verifier parses to
-        // float at use-site.
-        plaintext_subject: z
-          .object({
-            side: z.enum(["BUY", "SELL"]),
-            asset_id: AssetIdSchema,
-            horizon_hours: HorizonHoursSchema,
-            confidence: z.number().min(0.51).max(0.95),
-            // Additive market-aware fields; optional for back-compat.
-            market_id: MarketIdSchema.optional(),
-            market_config_version: z.number().int().positive().optional(),
-            horizon_seconds: z.number().int().positive().optional(),
-            scoring_kind: ScoringKindSchema.optional(),
-            void_band: z
-              .string()
-              .regex(/^0(\.[0-9]+)?$|^[1-9][0-9]*(\.[0-9]+)?$/)
-              .optional(),
-          })
-          .strict(),
-      })
-      .strict(),
-  })
-  .strict();
-
-export const ResolutionReceiptPayloadSchema = z.discriminatedUnion(
-  "schema_version",
-  [ResolutionReceiptPayloadV1Schema, ResolutionReceiptPayloadV2Schema],
-);
-export type ResolutionReceiptPayload = z.infer<
-  typeof ResolutionReceiptPayloadSchema
->;
-export type ResolutionReceiptPayloadV1 = z.infer<
-  typeof ResolutionReceiptPayloadV1Schema
->;
-export type ResolutionReceiptPayloadV2 = z.infer<
-  typeof ResolutionReceiptPayloadV2Schema
->;
+// Wave 4b — receipt payload schemas (AcceptanceReceiptPayloadSchema,
+// ResolutionReceiptPayloadSchema and their v1/v2 variants) were dropped
+// alongside the receipts table. SCHEMA_VERSION + SCORING_VERSION below
+// are still the canonical stamps for resolution rows and call envelopes.
 
 // ─── Leaderboard view ────────────────────────────────────────────────────────
 
@@ -954,17 +728,16 @@ export type DisputeStatus = z.infer<typeof DisputeStatusSchema>;
 export const DisputeSchema = z
   .object({
     dispute_id: z.string().uuid(),
-    target_resolution_receipt_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
+    // Wave 4b — disputes now key on the call_id directly (FK to submissions).
+    // Prior shape used target_resolution_receipt_hash + new_resolution_receipt_hash;
+    // both went away with the receipts table.
+    target_call_id: z.string().uuid(),
     grounds: DisputeGroundsSchema,
     notes: z.string().max(1000).optional(),
     filed_by: z.string().min(1).max(128),
     filed_at: z.string().datetime({ offset: false }),
     status: DisputeStatusSchema,
     resolved_at: z.string().datetime({ offset: false }).nullable(),
-    new_resolution_receipt_hash: z
-      .string()
-      .regex(/^0x[0-9a-f]{64}$/)
-      .nullable(),
   })
   .strict();
 export type Dispute = z.infer<typeof DisputeSchema>;

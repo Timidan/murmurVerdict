@@ -27,6 +27,8 @@ export interface CallRowFields {
   accepted_at: string;
   privacy_mode?: string | null;
   commit_hash?: string | null;
+  /** Wave 4b — receipts subsystem dropped. Field accepted for back-compat
+   *  with callers that still pass it; the projection ignores any value. */
   acceptance_receipt_hash?: string | null;
   // Legacy plaintext columns on `submissions`. After Phase E scrub these are
   // NULL on committed-mode rows even when reveal_hash_valid=1.
@@ -61,6 +63,9 @@ export interface PublicCallProjection {
   accepted_at: string;
   privacy_mode: string;
   commit_hash: string | null;
+  /** Wave 4b — always null (receipts subsystem dropped). Field stays on
+   *  the public projection for one release so already-deployed dashboards
+   *  don't crash on missing keys; safe to drop after Wave 5. */
   acceptance_receipt_hash: string | null;
   // Plaintext fields — populated only when shouldExposePlaintext() returns true.
   side?: string;
@@ -115,7 +120,8 @@ export function projectCallRow(
     accepted_at: row.accepted_at,
     privacy_mode,
     commit_hash: row.commit_hash ?? null,
-    acceptance_receipt_hash: row.acceptance_receipt_hash ?? null,
+    // Wave 4b — receipts subsystem dropped. Always null on the wire.
+    acceptance_receipt_hash: null,
   };
   if (shouldExposePlaintext(privacy_mode, row.status, row.reveal_hash_valid)) {
     // Phase E scrubs side/asset_id/horizon_hours/confidence/rationale/

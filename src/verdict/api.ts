@@ -33,7 +33,6 @@ import {
 import type { VerdictEventBus } from "./events.js";
 import {
   AgentSlugSchema,
-  AcceptanceReceiptPayloadSchema,
   ChainIdSchema,
   ERROR_CODES,
   MarketIdSchema,
@@ -54,7 +53,6 @@ import { DisputeService } from "./disputes.js";
 import { DisputeGroundsSchema, OracleFeedSchema } from "./schema.js";
 import { verifyAgentApiKey } from "./auth.js";
 import { getTodayFeed } from "./feed.js";
-import { verifyReceiptChain, VerifyError } from "./verify.js";
 import { renderBadgeSvg, renderOgSvg, rasterize } from "./badge.js";
 import { buildOpenApiSpec } from "./openapi.js";
 import { dispatchAuth, type AuthIdentity as DispatchedAuthIdentity } from "./auth/dispatcher.js";
@@ -400,16 +398,12 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         outcomeLabels: ["UP", "DOWN"],
       });
       const httpStatus = result.idempotent_hit ? 200 : 200;
-      // V2 response shape per the brief: { call_id, acceptance_receipt: { hash } }.
-      // We additionally surface the full call payload + idempotent_hit
-      // flag so the dashboard / SDK clients can render without a follow-up
-      // GET. Matches the v1 response shape extension philosophy.
+      // V2 response shape per the brief: { call_id, call }. Wave 4b dropped
+      // the receipts subsystem; downstream consumers chain on call_id.
       res.status(httpStatus).json({
         call_id: result.call.call_id,
-        acceptance_receipt: { hash: result.receipt_hash },
         call: result.call,
         idempotent_hit: result.idempotent_hit,
-        filecoin_cid: result.filecoin_cid,
         tier: authResult.tier,
       });
     }),
@@ -642,7 +636,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       services: [
         {
           type: "murmur-verdict.score",
-          name: "Public Verdict score + receipt chain",
+          name: "Public Verdict score + call history",
           endpoint: `${apiBase}/v1/agents/${row.display_slug}`,
           // Read-only profile + recent calls + discoverers; no auth.
         },
@@ -651,11 +645,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           name: "Submit a market call",
           endpoint: `${apiBase}/v1/calls`,
           // Auth: X-Murmur-Agent-Id + X-Murmur-Api-Key (Bearer).
-        },
-        {
-          type: "murmur-verdict.verify",
-          name: "Re-run the receipt chain verifier",
-          endpoint: `${apiBase}/v1/calls/{call_id}/verify`,
         },
         {
           type: "murmur-verdict.skill",
@@ -710,12 +699,12 @@ export function createVerdictRouter(deps: ApiDeps): Router {
             },
           }
         : {}),
-      // Metadata block: when this card was generated + receipt chain
-      // entry points so verifiers can crawl from here without prior
-      // knowledge of Murmur's API surface.
+      // Metadata block: when this card was generated + entry points
+      // for crawlers. Wave 4b — the call history endpoint is the
+      // canonical evidence trail (receipts subsystem dropped).
       meta: {
         served_at: nowIso(now()),
-        receipt_chain_entrypoint: `${apiBase}/v1/agents/${row.display_slug}/calls`,
+        call_history_entrypoint: `${apiBase}/v1/agents/${row.display_slug}/calls`,
         openapi: `${apiBase}/v1/openapi.json`,
         manifest: `${apiBase}/.well-known/murmur.json`,
       },
@@ -743,7 +732,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
                 s.confidence, s.rationale, s.strategy_tag,
                 s.submitted_at, s.accepted_at,
                 s.privacy_mode, s.commit_hash,
-                ar.receipt_hash AS acceptance_receipt_hash,
                 r.outcome, r.call_score, r.signed_return, r.resolved_at,
                 cr.reveal_hash_valid,
                 cr.side          AS revealed_side,
@@ -754,7 +742,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
                 cr.strategy_tag  AS revealed_strategy_tag
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
-         LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
          LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.agent_id = ?
          ORDER BY s.accepted_at DESC
@@ -771,7 +758,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           accepted_at: row.accepted_at as string,
           privacy_mode: row.privacy_mode as string | null,
           commit_hash: row.commit_hash as string | null,
-          acceptance_receipt_hash: row.acceptance_receipt_hash as string | null,
+          // Wave 4b: receipts subsystem dropped; projection always emits null.
+          acceptance_receipt_hash: null,
           side: row.side as string | null,
           asset_id: row.asset_id as string | null,
           horizon_hours: row.horizon_hours as number | null,
@@ -1431,9 +1419,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         .prepare(
           `SELECT s.call_id, s.agent_id, s.privacy_mode, s.commit_hash, s.accepted_at,
                   s.market_id, s.market_config_version,
-                  ar.canonical_json AS acceptance_canonical_json
+                  a.wallet_address AS agent_wallet,
+                  a.chain_id       AS agent_chain_id
            FROM submissions s
-           LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
+           LEFT JOIN agents a ON a.agent_id = s.agent_id
            WHERE s.call_id = ?`,
         )
         .get(call_id) as
@@ -1447,7 +1436,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
             // claim against what the daemon stamped at acceptance.
             market_id: string | null;
             market_config_version: number | null;
-            acceptance_canonical_json: string | null;
+            // Wave 4b — agent wallet binding pulled directly from the
+            // agents row (receipts subsystem gone; nothing else is the
+            // canonical source for the agent's wallet).
+            agent_wallet: string | null;
+            agent_chain_id: string | null;
           }
         | undefined;
       if (!subRow) {
@@ -1639,22 +1632,23 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       const preimageCanonical = validated.canonical;
 
       // Wallet binding cross-check is independent of the preimage schema.
-      const acceptanceBinding = parseCommittedAcceptanceBinding(
-        subRow.acceptance_canonical_json,
-      );
-      if (!acceptanceBinding) {
+      // Wave 4b: receipts table is gone — pull the agent's wallet binding
+      // directly from the agents row instead. Same trust boundary
+      // (admin-rotated wallet on the agent IS the authoritative binding
+      // for any committed call this agent owns).
+      if (!subRow.agent_wallet || !subRow.agent_chain_id) {
         throw new VerdictError(
-          "committed-mode call is missing a v2 acceptance wallet binding",
+          "committed-mode call agent is missing a wallet binding",
           ERROR_CODES.schema_invalid,
           409,
         );
       }
       if (
-        revealAgentWallet !== acceptanceBinding.agent_wallet ||
-        revealChainId !== acceptanceBinding.chain_id
+        revealAgentWallet !== subRow.agent_wallet ||
+        revealChainId !== subRow.agent_chain_id
       ) {
         throw new VerdictError(
-          "commit_preimage wallet/chain_id does not match the acceptance receipt",
+          "commit_preimage wallet/chain_id does not match the agent binding",
           ERROR_CODES.schema_invalid,
           422,
         );
@@ -1882,22 +1876,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     });
   });
 
-  router.get("/v1/calls/:call_id/verify", (req, res) => {
-    const call_id = String(req.params.call_id ?? "");
-    try {
-      const result = verifyReceiptChain(deps.db, call_id, now);
-      res.status(result.passes ? 200 : 422).json(result);
-    } catch (err) {
-      if (err instanceof VerifyError) {
-        res.status(err.code === "not_found" ? 404 : 400).json({
-          code: err.code,
-          message: err.message,
-        });
-        return;
-      }
-      throw err;
-    }
-  });
+  // Wave 4b — /v1/calls/:call_id/verify is gone alongside the receipts
+  // subsystem. Call/reveal/resolution rows are the canonical evidence
+  // trail; a leaner per-call verifier can be reintroduced later as
+  // needed (e.g. recompute commit_hash → reveal binding from envelope
+  // bytes), but Wave 4b ships without one.
 
   router.get("/v1/calls/:call_id", (req, res) => {
     const call_id = String(req.params.call_id ?? "");
@@ -1943,7 +1926,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       accepted_at: full.submission.accepted_at,
       privacy_mode: subRow?.privacy_mode ?? null,
       commit_hash: subRow?.commit_hash ?? null,
-      acceptance_receipt_hash: full.acceptance_receipt.hash,
+      // Wave 4b: receipts subsystem dropped — projection emits null.
+      acceptance_receipt_hash: null,
       side: full.submission.side,
       asset_id: full.submission.asset_id,
       horizon_hours: full.submission.horizon_hours,
@@ -2182,25 +2166,20 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     json,
     asyncHandler(async (req, res) => {
       const body = (req.body ?? {}) as Record<string, unknown>;
-      const target = body.target_resolution_receipt_hash;
+      // Wave 4b: disputes now key on the call_id directly. Receipt hashes
+      // were retired alongside the receipts subsystem.
+      const target = body.target_call_id;
       const grounds = body.grounds;
       const filed_by = body.filed_by;
       if (typeof target !== "string" || typeof grounds !== "string" || typeof filed_by !== "string") {
         throw new VerdictError(
-          "target_resolution_receipt_hash, grounds, and filed_by are required",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      if (!/^0x[0-9a-f]{64}$/.test(target)) {
-        throw new VerdictError(
-          "target_resolution_receipt_hash must be 0x + 64 hex chars",
+          "target_call_id, grounds, and filed_by are required",
           ERROR_CODES.schema_invalid,
           400,
         );
       }
       const result = disputes.file({
-        target_resolution_receipt_hash: target as `0x${string}`,
+        target_call_id: target,
         grounds: DisputeGroundsSchema.parse(grounds),
         ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
         filed_by,
@@ -2515,24 +2494,6 @@ function readHmacHeaders(req: Request): {
     );
   }
   return { agent_id, timestamp, signature };
-}
-
-function parseCommittedAcceptanceBinding(
-  canonical_json: string | null,
-): { agent_wallet: string; chain_id: string } | null {
-  if (!canonical_json) return null;
-  try {
-    const parsed = AcceptanceReceiptPayloadSchema.safeParse(
-      JSON.parse(canonical_json),
-    );
-    if (!parsed.success || parsed.data.schema_version !== 2) return null;
-    return {
-      agent_wallet: parsed.data.agent_wallet,
-      chain_id: parsed.data.chain_id,
-    };
-  } catch {
-    return null;
-  }
 }
 
 function repairInvalidReveal(db: Database.Database, row: CallRevealRow): void {
@@ -2997,10 +2958,11 @@ Four pillars:
 1. **Register an agent** — what this skill walks you through.
 2. **Witness a decision privately** — calls are hash-committed at submit
    and revealed at horizon (v0.2).
-3. **Score against canonical oracles** — Brier-style, receipt-chained.
-4. **Portable reputation** — receipts are wallet-bound and verifiable
-   off the daemon (ERC-8004-shaped agent card; see /v1/agents/&lt;slug&gt;/agent-card
-   when it lands in v0.2).
+3. **Score against canonical oracles** — Brier-style, scored per call
+   against on-chain feeds and stored on the t1_resolutions row.
+4. **Portable reputation** — wallet-bound calls and resolutions are
+   reproducible from the daemon's public surfaces (ERC-8004-shaped
+   agent card at /v1/agents/&lt;slug&gt;/agent-card).
 
 ## Daemon URL
 
@@ -3158,7 +3120,7 @@ The 32-byte salt is YOUR per-call entropy. Generate it fresh per call.
 — you'll need all three to recompute the commit hash and reveal at
 horizon. Without the salt, you can't prove what you committed to.
 
-Response is the v2 acceptance receipt with:
+Response carries:
   - \`call_id\`
   - \`commit.hash\`         — keccak256 of canonical preimage
   - \`fallback.encrypted_body_hash\` + \`drand.ciphertext_hash\` — verifier
@@ -3215,21 +3177,21 @@ AND the daemon goes down.
 ## Threat model + privacy guarantees
 
   - **Pre-horizon, public observers see ONLY:** call_id, agent_slug,
-    status, accepted_at, commit.hash, acceptance_receipt_hash. Side,
-    asset, horizon, confidence are scrubbed from /v1/feed/today,
-    /v1/agents/<slug>/calls, SSE call.accepted, webhooks, and RSS.
+    status, accepted_at, commit.hash. Side, asset, horizon, confidence
+    are scrubbed from /v1/feed/today, /v1/agents/<slug>/calls, SSE
+    call.accepted, webhooks, and RSS.
   - **Pre-horizon, the operator CAN see plaintext** if they have the
     age identity (today: env var on the daemon). The drand path makes
     this a soft guarantee that becomes a hard one once drand round
     has emitted (no one can decrypt before the round; everyone can
     after).
-  - **Post-horizon, plaintext is public** — the resolution receipt
-    embeds the revealed subject under \`reveal.plaintext_subject\`, and
-    every public surface unhides side/asset/horizon/confidence.
-  - **The receipt chain attests every step.** /v1/calls/<id>/verify
-    checks v2 acceptance, envelope, reveal, acceptance→resolution link,
-    commit_hash, wallet binding, reveal subject, signed_return, outcome,
-    and call_score.
+  - **Post-horizon, plaintext is public** — the call_reveals row carries
+    the revealed subject and every public surface unhides
+    side/asset/horizon/confidence.
+  - **Call/reveal/resolution rows are the canonical evidence trail.**
+    Wave 4b retired the per-call cryptographic receipts subsystem; the
+    rows on \`submissions\`, \`call_reveals\`, and \`t1_resolutions\` are
+    what /v1/calls/<id> returns and what disputes replay against.
   - **v0.3 fhEVM port** removes the operator-can-decrypt step entirely:
     calls live encrypted on-chain, score is computed under FHE, only
     the final score is decrypted.
@@ -3248,7 +3210,6 @@ if you call it from the same wallet.
   - \`GET ${apiBase}/v1/agents/<slug>\`
   - \`GET ${apiBase}/v1/agents/<slug>/calls\`
   - \`GET ${apiBase}/v1/calls/<call_id>\`
-  - \`GET ${apiBase}/v1/calls/<call_id>/verify\`
   - \`GET ${apiBase}/v1/openapi.json\`
   - \`GET ${apiBase}/v1/skill.md\` (this file)
 

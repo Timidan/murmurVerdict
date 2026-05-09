@@ -320,6 +320,37 @@ function applyMigrations(db: Database.Database): void {
     );
     v = 19;
   }
+
+  if (v < 20) {
+    // Wave 4b — drop the receipts subsystem.
+    //
+    // Receipts were a hackathon-era artifact for the Filecoin sponsor track.
+    // The call + reveal + resolution rows are the canonical source of truth;
+    // the receipts table only doubled DB write volume.
+    //
+    // Two changes in one migration:
+    //   1. DROP receipts table entirely.
+    //   2. Rebuild disputes to key on target_call_id (FK to submissions.call_id)
+    //      instead of target_resolution_receipt_hash + new_resolution_receipt_hash.
+    //
+    // The disputes rebuild uses the SQLite "create new, copy, drop, rename"
+    // pattern. For each existing dispute row we resolve the receipt_hash → call_id
+    // by joining the legacy receipts table (still present until the DROP at the
+    // end of this migration body). Rows whose receipt_hash no longer resolves
+    // (orphaned legacy data) are dropped with a warning.
+    //
+    // Recovery: routed through applyTableRebuildMigration so a crash mid-rebuild
+    // recovers via the standard four-state pre-transaction inspection.
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_020,
+      () => {
+        set.run("schema_version", "20");
+      },
+      ["disputes", "disputes_v20"],
+    );
+    v = 20;
+  }
 }
 
 /**
@@ -497,6 +528,10 @@ const MIGRATION_001 = `
     resolved_at    TEXT NOT NULL
   );
 
+  -- The receipts table existed in v0.1 (Filecoin sponsor-track artifact)
+  -- but was retired in Wave 4b — migration 020 drops it. The base schema
+  -- still creates it here so migrations 002-019 can reference it without
+  -- conditional guards; migration 020 drops it cleanly post-replay.
   CREATE TABLE receipts (
     receipt_hash    TEXT PRIMARY KEY,
     call_id         TEXT NOT NULL REFERENCES submissions(call_id) ON DELETE CASCADE,
@@ -508,6 +543,10 @@ const MIGRATION_001 = `
   );
   CREATE INDEX idx_receipts_call_kind ON receipts(call_id, kind);
 
+  -- Wave 4b note: disputes originally keyed off receipt hashes; migration
+  -- 020 rebuilds this table to key off target_call_id instead. The legacy
+  -- shape stays here so the migration ladder (001 → 020) replays cleanly
+  -- on a fresh DB.
   CREATE TABLE disputes (
     dispute_id  TEXT PRIMARY KEY,
     target_resolution_receipt_hash TEXT NOT NULL,
@@ -1598,6 +1637,57 @@ const MIGRATION_019 = `
   CREATE INDEX idx_account_agents_agent ON account_agents(agent_id);
 `;
 
+// ─── Migration 020 — Wave 4b: drop receipts + rekey disputes on call_id ────
+//
+// The receipts table doubled DB write volume for every accept and resolve
+// (Filecoin sponsor-track artifact). Calls + reveals + resolutions are the
+// canonical evidence trail; receipts add nothing the call_id chain doesn't
+// already cover.
+//
+// Two changes:
+//   1. DROP TABLE receipts (and its index).
+//   2. Rebuild disputes:
+//        - target_resolution_receipt_hash → target_call_id (FK to submissions)
+//        - drop new_resolution_receipt_hash entirely; the dispute resolve
+//          path now updates t1_resolutions in-place instead of chaining a
+//          second receipt row.
+//
+// Disputes data migration: the legacy receipt_hash columns are resolved
+// to call_id by joining the still-present receipts table BEFORE we drop
+// it. Orphan dispute rows (receipt_hash that no longer matches anything)
+// are dropped — the only acceptable failure mode for a hackathon-era
+// table that's never had a non-test row land in production.
+//
+// Order matters: disputes data copy must happen BEFORE the receipts DROP,
+// since the copy joins receipts to resolve receipt_hash → call_id.
+const MIGRATION_020 = `
+  DROP TABLE IF EXISTS disputes_v20;
+
+  CREATE TABLE disputes_v20 (
+    dispute_id      TEXT PRIMARY KEY,
+    target_call_id  TEXT NOT NULL REFERENCES submissions(call_id) ON DELETE CASCADE,
+    grounds         TEXT NOT NULL CHECK (grounds IN ('stale_feed','wrong_feed_used','wrong_timestamp','calculation_bug','chain_reorg','oracle_revision_after_resolution')),
+    notes           TEXT,
+    filed_by        TEXT NOT NULL,
+    filed_at        TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('open','replay_in_progress','upheld','rejected')),
+    resolved_at     TEXT
+  );
+
+  INSERT INTO disputes_v20 (dispute_id, target_call_id, grounds, notes, filed_by, filed_at, status, resolved_at)
+  SELECT d.dispute_id, r.call_id, d.grounds, d.notes, d.filed_by, d.filed_at, d.status, d.resolved_at
+    FROM disputes d
+    JOIN receipts r ON r.receipt_hash = d.target_resolution_receipt_hash;
+
+  DROP TABLE disputes;
+  ALTER TABLE disputes_v20 RENAME TO disputes;
+
+  CREATE INDEX idx_disputes_target_call ON disputes(target_call_id);
+
+  DROP INDEX IF EXISTS idx_receipts_call_kind;
+  DROP TABLE IF EXISTS receipts;
+`;
+
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
 //
 // Three things at once:
@@ -1876,11 +1966,6 @@ export const verifiedIdentitiesRepo = {
 export interface AcceptanceWriteInput {
   submission: SubmittedCall;
   accepted: AcceptedCall;
-  receipt: {
-    hash: `0x${string}`;
-    canonical_json: string;
-    filecoin_cid?: string;
-  };
   dedup_key: string;
   /**
    * P2 committed-mode metadata. When `privacy_mode='committed'`, the
@@ -2045,18 +2130,9 @@ export const submissionsRepo = {
         t0_extended_grace_seconds:
           i.accepted.oracle_policy.t0_extended_grace_seconds,
       });
-      prep(
-        db,
-        `INSERT INTO receipts
-         (receipt_hash, call_id, kind, canonical_json, filecoin_cid, previous_hash, created_at)
-         VALUES (?, ?, 'acceptance', ?, ?, NULL, ?)`,
-      ).run(
-        i.receipt.hash,
-        i.accepted.call_id,
-        i.receipt.canonical_json,
-        i.receipt.filecoin_cid ?? null,
-        i.accepted.accepted_at,
-      );
+      // Wave 4b — receipts table dropped; calls + reveals + resolutions
+      // are the canonical evidence trail. The acceptance receipt insert
+      // that lived here previously is gone.
       // P2 committed-mode: persist the age-encrypted body alongside
       // the submission row in the same transaction. The plaintext is
       // STILL written to submissions today (Phase E will scrub public
@@ -2221,7 +2297,6 @@ export const submissionsRepo = {
     status: CallStatus;
     privacy_mode: string | null;
     commit_hash: string | null;
-    acceptance_receipt_hash: string;
     primary_feed: string;
     fallback_feed: string | null;
     primary_max_staleness_sec: number;
@@ -2252,13 +2327,11 @@ export const submissionsRepo = {
                 COALESCE(s.confidence, cr.confidence)         AS confidence,
                 s.accepted_at, s.status, s.privacy_mode, s.commit_hash,
                 s.market_id, s.market_config_version,
-                r.receipt_hash AS acceptance_receipt_hash,
                 op.primary_feed, op.fallback_feed,
                 op.primary_max_staleness_sec, op.fallback_max_staleness_sec,
                 op.t0_grace_seconds, op.t0_extended_grace_seconds
          FROM submissions s
          JOIN oracle_policies op ON op.call_id = s.call_id
-         JOIN receipts r ON r.call_id = s.call_id AND r.kind = 'acceptance'
          LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.call_id = ?`,
       ).get(call_id) as
@@ -2276,7 +2349,6 @@ export const submissionsRepo = {
             commit_hash: string | null;
             market_id: string | null;
             market_config_version: number | null;
-            acceptance_receipt_hash: string;
             primary_feed: string;
             // Phase 2d: nullable for sub-hour markets (Pyth-only).
             fallback_feed: string | null;
@@ -2409,10 +2481,6 @@ export const resolutionsRepo = {
       data_freshness_seconds: number;
       market_regime: string;
     };
-    acceptance_receipt: {
-      hash: string;
-      filecoin_cid: string | null;
-    };
     t0: { t0: string; p0: string; feed: string } | null;
     resolution:
       | {
@@ -2423,8 +2491,6 @@ export const resolutionsRepo = {
           outcome: string;
           call_score: number | null;
           resolved_at: string;
-          receipt_hash: string;
-          filecoin_cid: string | null;
           // Phase 5 — universal payout-vector additive fields. NULL when
           // the v2 dispatch path didn't run (legacy resolutions pre-cutover
           // or markets without a registered adapter). Wire shape — strings
@@ -2437,11 +2503,9 @@ export const resolutionsRepo = {
     const subRow = prep(
       db,
       `SELECT s.*, p.murmur_score, p.murmur_playbook, p.risk_flags_json,
-              p.data_freshness_seconds, p.market_regime,
-              ar.receipt_hash AS acceptance_hash, ar.filecoin_cid AS acceptance_cid
+              p.data_freshness_seconds, p.market_regime
        FROM submissions s
        JOIN preflights p ON p.call_id = s.call_id
-       LEFT JOIN receipts ar ON ar.call_id = s.call_id AND ar.kind = 'acceptance'
        WHERE s.call_id = ?`,
     ).get(call_id) as Record<string, unknown> | undefined;
     if (!subRow) return null;
@@ -2451,12 +2515,9 @@ export const resolutionsRepo = {
     ).get(call_id) as { t0: string; p0: string; feed: string } | undefined;
     const resRow = prep(
       db,
-      `SELECT r.*, rec.receipt_hash AS resolution_hash, rec.filecoin_cid AS resolution_cid
+      `SELECT r.*
        FROM t1_resolutions r
-       LEFT JOIN receipts rec ON rec.call_id = r.call_id AND rec.kind IN ('resolution','re_resolution')
-       WHERE r.call_id = ?
-       ORDER BY rec.created_at DESC
-       LIMIT 1`,
+       WHERE r.call_id = ?`,
     ).get(call_id) as Record<string, unknown> | undefined;
     return {
       submission: {
@@ -2480,10 +2541,6 @@ export const resolutionsRepo = {
         data_freshness_seconds: subRow.data_freshness_seconds as number,
         market_regime: subRow.market_regime as string,
       },
-      acceptance_receipt: {
-        hash: subRow.acceptance_hash as string,
-        filecoin_cid: (subRow.acceptance_cid as string) ?? null,
-      },
       t0: t0Row ?? null,
       resolution: resRow
         ? {
@@ -2494,8 +2551,6 @@ export const resolutionsRepo = {
             outcome: resRow.outcome as string,
             call_score: (resRow.call_score as number | null) ?? null,
             resolved_at: resRow.resolved_at as string,
-            receipt_hash: resRow.resolution_hash as string,
-            filecoin_cid: (resRow.resolution_cid as string) ?? null,
             // Phase 5 — universal columns. NULL when the v2 path didn't
             // run; downstream call.resolved emit reads these and skips
             // populating the additive event fields.
@@ -2508,32 +2563,6 @@ export const resolutionsRepo = {
     };
   },
 
-  recordResolutionReceipt(
-    db: Database.Database,
-    input: {
-      receipt_hash: `0x${string}`;
-      call_id: string;
-      canonical_json: string;
-      filecoin_cid?: string;
-      previous_hash: `0x${string}`;
-      created_at: string;
-      // Phase 5: 'resolution_v2' is the universal payout-vector receipt
-      // sibling. Migration 018 extends the receipts.kind CHECK constraint
-      // to permit it. Phase 6 will fold the two kinds back into one canonical
-      // chain; for now both ride alongside on the same receipts table.
-      kind: "resolution" | "re_resolution" | "resolution_v2";
-    },
-  ): void {
-    prep(
-      db,
-      `INSERT INTO receipts
-       (receipt_hash, call_id, kind, canonical_json, filecoin_cid, previous_hash, created_at)
-       VALUES (@receipt_hash, @call_id, @kind, @canonical_json, @filecoin_cid, @previous_hash, @created_at)`,
-    ).run({
-      ...input,
-      filecoin_cid: input.filecoin_cid ?? null,
-    });
-  },
 };
 
 // ─── Privacy: encrypted call envelopes ──────────────────────────────────────
@@ -2696,8 +2725,8 @@ export const disputesRepo = {
     prep(
       db,
       `INSERT INTO disputes
-       (dispute_id, target_resolution_receipt_hash, grounds, notes, filed_by, filed_at, status, resolved_at, new_resolution_receipt_hash)
-       VALUES (@dispute_id, @target_resolution_receipt_hash, @grounds, @notes, @filed_by, @filed_at, @status, @resolved_at, @new_resolution_receipt_hash)`,
+       (dispute_id, target_call_id, grounds, notes, filed_by, filed_at, status, resolved_at)
+       VALUES (@dispute_id, @target_call_id, @grounds, @notes, @filed_by, @filed_at, @status, @resolved_at)`,
     ).run({
       ...dispute,
       notes: dispute.notes ?? null,
@@ -2709,14 +2738,13 @@ export const disputesRepo = {
     dispute_id: string,
     status: DisputeStatus,
     resolved_at: string | null = null,
-    new_resolution_receipt_hash: string | null = null,
   ): void {
     prep(
       db,
       `UPDATE disputes
-       SET status = ?, resolved_at = ?, new_resolution_receipt_hash = ?
+       SET status = ?, resolved_at = ?
        WHERE dispute_id = ?`,
-    ).run(status, resolved_at, new_resolution_receipt_hash, dispute_id);
+    ).run(status, resolved_at, dispute_id);
   },
 
   listOpen(db: Database.Database): Dispute[] {
