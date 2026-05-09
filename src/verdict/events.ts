@@ -56,6 +56,20 @@ export interface CallResolvedEvent {
   signed_return: string | null;
   call_score: number | null;
   resolved_at: string;
+  // Phase 5 — universal payout-vector additive fields. Populated only when
+  // the resolver dispatched through an adapter that produced the v2 outcome
+  // shape (today: native-price for every market). Legacy SSE / webhook
+  // subscribers that read just `outcome` / `call_score` continue to work
+  // unchanged; new clients can read `resolved_outcome` / `payout_vector` to
+  // pick up the universal shape without a refetch.
+  /** Wire-shape Outcome (kind + payoutNumerators stringified +
+   *  payoutDenominator stringified + evidence). Same shape as
+   *  `t1_resolutions.resolved_outcome_json`. Undefined when the resolver
+   *  fell through to legacy-only resolution. */
+  resolved_outcome?: unknown;
+  /** Convenience copy of resolved_outcome.payoutNumerators (string array,
+   *  bigints stringified). Undefined when v2 path didn't run. */
+  payout_vector?: string[];
 }
 
 export interface LeaderboardUpdateEvent {

@@ -180,6 +180,19 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
             const full = resolutionsRepo.loadFullCall(db, call_id);
             const agent = full ? agentsRepo.byId(db, full.submission.agent_id) : null;
             if (full?.resolution && agent) {
+              // Phase 5 — surface universal payout-vector additive fields
+              // when the resolver dispatched through an adapter. Subscribers
+              // that read only legacy fields (outcome / call_score) keep
+              // working unchanged; v2 clients can read resolved_outcome /
+              // payout_vector for the universal shape.
+              const resolvedOutcome = full.resolution.resolved_outcome_json
+                ? (JSON.parse(full.resolution.resolved_outcome_json) as unknown)
+                : undefined;
+              const payoutVector = full.resolution.payout_vector_json
+                ? (JSON.parse(
+                    full.resolution.payout_vector_json,
+                  ) as string[])
+                : undefined;
               events.emit({
                 type: "call.resolved",
                 call_id,
@@ -189,6 +202,12 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
                 signed_return: full.resolution.signed_return,
                 call_score: full.resolution.call_score ?? null,
                 resolved_at: full.resolution.resolved_at,
+                ...(resolvedOutcome !== undefined
+                  ? { resolved_outcome: resolvedOutcome }
+                  : {}),
+                ...(payoutVector !== undefined
+                  ? { payout_vector: payoutVector }
+                  : {}),
               });
               // Resolution typically reorders the leaderboard — push new top.
               const rows = getLeaderboard(db, { limit: 20 });

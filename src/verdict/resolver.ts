@@ -17,6 +17,7 @@ import {
 import {
   agentsRepo,
   anchorsRepo,
+  marketsRepo,
   resolutionsRepo,
   submissionsRepo,
   usageRepo,
@@ -35,12 +36,24 @@ import {
   type OracleObservation as AdapterObservation,
 } from "../integrations/oracles/types.js";
 import { feedToOracleId } from "./oracle-routing.js";
-import { buildResolutionReceipt } from "../receipts/verdictReceipt.js";
+import {
+  buildResolutionReceipt,
+  buildV2ResolutionReceipt,
+} from "../receipts/verdictReceipt.js";
 import {
   computeSignedReturn,
   outcomeFromSignedReturn,
   scoreCall,
+  scoreOutcomeVector,
 } from "./scoring.js";
+// Phase 5 — adapter dispatch + universal commitment normalizer.
+import { getAdapterForMarket, voidBandFloat } from "./markets.js";
+import { observeResolutionForCall } from "./market-maker/native-price.js";
+import {
+  legacySubmissionToCommitment,
+  parseStoredCommitment,
+} from "./submission-normalizers.js";
+import { serializeOutcome, type Outcome as UniversalOutcome } from "./markets-core.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -255,6 +268,34 @@ export class Resolver {
           outcome: verdictOutcome,
         });
 
+        // Phase 5 — universal payout-vector path. Dispatched alongside the
+        // legacy code above so the leaderboard/verify/receipt paths all
+        // continue to read the same legacy columns byte-identically. The
+        // universal shape is ADDITIVE — written to t1_resolutions.{
+        // resolved_outcome_json, payout_vector_json } and a sibling v2
+        // receipt with kind='resolution_v2'.
+        //
+        // Adapter dispatch:
+        //   1. Look up the call's market row → adapter.
+        //   2. Lift the legacy resolver-scoped values (t0 anchor, t1 obs,
+        //      void_band, side, market_id) into a NativePriceObservationContext.
+        //   3. Adapter computes the universal Outcome.
+        //   4. Build the universal Commitment from submissions.commitment_json
+        //      (Phase 4 v2 submit) OR derive on-the-fly from the legacy
+        //      submission row (legacySubmissionToCommitment).
+        //   5. scoreOutcomeVector reconciles the void buckets.
+        //
+        // Legacy compatibility check: scoreOutcomeVector returns null
+        // call_score iff the legacy verdictOutcome is 'void'. Asserting
+        // this would catch any future divergence at the adapter cutover.
+        const v2 = this.computeV2OutcomePath({
+          ctx,
+          subject,
+          t0row,
+          obs,
+          subjectVoidBand,
+        });
+
         const resolved_at = this.nowIso();
         // Look up the issuing agent so legacy receipts can carry the
         // current wallet binding when available. Committed v2 receipts use
@@ -374,6 +415,24 @@ export class Resolver {
           }
         }
 
+        // Phase 5 — build the universal payout-vector receipt sibling. Only
+        // emitted when the v2 dispatch path produced a Commitment+Outcome
+        // pair (always today; legacy rows fall through to
+        // legacySubmissionToCommitment). When `v2 === null` the legacy
+        // receipt remains the sole receipt — same byte-for-byte shape as
+        // pre-Phase-5.
+        const v2Receipt = v2
+          ? buildV2ResolutionReceipt({
+              call_id: ctx.call_id,
+              acceptance_receipt_hash: ctx.acceptance_receipt_hash,
+              commitment: v2.commitment,
+              outcome: v2.outcome,
+              call_score: v2.score.call_score,
+              adapter_id: v2.adapter_id,
+              resolved_at,
+            })
+          : null;
+
         const tx = this.db.transaction(() => {
           resolutionsRepo.setResolution(this.db, {
             call_id: ctx.call_id,
@@ -384,6 +443,19 @@ export class Resolver {
             outcome: verdictOutcome,
             call_score: score.call_score,
             resolved_at,
+            // Phase 5 — additive universal columns. NULL when the v2 path
+            // was unavailable (shouldn't happen for native-price markets;
+            // future markets without an adapter would land here).
+            ...(v2
+              ? {
+                  resolved_outcome_json: JSON.stringify(
+                    serializeOutcome(v2.outcome),
+                  ),
+                  payout_vector_json: JSON.stringify(
+                    v2.outcome.payoutNumerators.map((n) => n.toString()),
+                  ),
+                }
+              : {}),
           });
           resolutionsRepo.recordResolutionReceipt(this.db, {
             receipt_hash: receipt.receipt_hash,
@@ -394,6 +466,19 @@ export class Resolver {
             created_at: resolved_at,
             kind: "resolution",
           });
+          if (v2Receipt) {
+            // Sibling row keyed by call_id with kind='resolution_v2'. Phase 6
+            // will surface this on /v1/calls/:id/verify; for now it's
+            // internal-only — verify path keeps reading the legacy receipt.
+            resolutionsRepo.recordResolutionReceipt(this.db, {
+              receipt_hash: v2Receipt.receipt_hash,
+              call_id: ctx.call_id,
+              canonical_json: v2Receipt.canonical_json,
+              previous_hash: ctx.acceptance_receipt_hash as `0x${string}`,
+              created_at: resolved_at,
+              kind: "resolution_v2",
+            });
+          }
           submissionsRepo.setStatus(this.db, ctx.call_id, "resolved");
           usageRepo.emit(
             this.db,
@@ -402,6 +487,9 @@ export class Resolver {
               outcome: verdictOutcome,
               call_score: score.call_score,
               receipt_hash: receipt.receipt_hash,
+              ...(v2Receipt
+                ? { resolution_v2_receipt_hash: v2Receipt.receipt_hash }
+                : {}),
             }),
           );
         });
@@ -445,6 +533,115 @@ export class Resolver {
       }
     }
     return { resolved, oracle_unavailable: oracleUnavailable };
+  }
+
+  // ── Phase 5 — adapter-dispatched universal payout-vector path ──
+  //
+  // Lifts the legacy resolver-scoped values (t0 anchor, t1 obs, void_band,
+  // side, market_id) into a NativePriceObservationContext, dispatches to the
+  // market's adapter, builds the universal Commitment, and reconciles the
+  // void buckets via scoreOutcomeVector.
+  //
+  // Returns null when the v2 path can't be computed:
+  //   - market row not found (legacy submission predates MIGRATION_009 and
+  //     market_id is null)
+  //   - subject is committed-mode without legacy plaintext fields and no
+  //     parsed commitment_json
+  // In null cases the resolver falls back to legacy-only behavior (no
+  // resolved_outcome_json, no v2 receipt). Today every active call has a
+  // market_id post-MIGRATION_009 backfill, so this null path is exercised
+  // only in regression scenarios.
+  private computeV2OutcomePath(args: {
+    ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>;
+    subject: {
+      side: Side;
+      asset_id: string;
+      horizon_hours: number;
+      confidence: number;
+      void_band: string | number | null;
+      market_id: string | null;
+      market_config_version?: number | null;
+    };
+    t0row: { p0: string };
+    obs: OracleObservation;
+    subjectVoidBand: number | undefined;
+  }): {
+    commitment: ReturnType<typeof legacySubmissionToCommitment>;
+    outcome: UniversalOutcome;
+    score: ReturnType<typeof scoreOutcomeVector>;
+    adapter_id: string;
+  } | null {
+    // Resolve the market row to dispatch the adapter. Legacy rows without
+    // market_id (pre-MIGRATION_009) fall through; the adapter dispatch
+    // requires a market row to honor markets.adapter_id (Phase 11+).
+    const marketId = args.subject.market_id ?? args.ctx.market_id ?? null;
+    if (!marketId) return null;
+    const marketRow = marketsRepo.get(this.db, marketId);
+    if (!marketRow) return null;
+    const adapter = getAdapterForMarket(marketRow);
+
+    // Lift the resolver-scoped values into the adapter's observation context.
+    // This is the seam Phase 3's NativePriceAdapter shell prepped for —
+    // observeResolutionForCall is the adapter-private function that produces
+    // the universal Outcome from native-price's t0/t1 anchors.
+    const voidBand =
+      args.subjectVoidBand !== undefined
+        ? args.subjectVoidBand
+        : voidBandFloat(marketRow);
+    const outcome = observeResolutionForCall({
+      t0_p0: args.t0row.p0,
+      t1_p1: args.obs.price,
+      t1_iso: args.obs.feed_timestamp,
+      t1_feed: args.obs.feed,
+      t1_source_id: args.obs.source_id,
+      void_band: voidBand,
+      side: args.subject.side,
+      market_id: marketId,
+    });
+
+    // Build the universal Commitment. Prefer the stored canonical
+    // commitment_json (Phase 4 submit path); fall back to deriving from
+    // the legacy submission fields (v1 calls / pre-Phase-4 rows).
+    const subRow = this.db
+      .prepare(
+        "SELECT commitment_json FROM submissions WHERE call_id = ?",
+      )
+      .get(args.ctx.call_id) as { commitment_json: string | null } | undefined;
+    const stored = parseStoredCommitment(subRow?.commitment_json ?? null);
+    const commitment =
+      stored ??
+      legacySubmissionToCommitment({
+        side: args.subject.side,
+        confidence: args.subject.confidence,
+        asset_id: args.subject.asset_id,
+        horizon_hours: args.subject.horizon_hours,
+        // The Commitment.horizon.iso is render-only — scoreOutcomeVector
+        // never reads it. Use accepted_at + horizon_seconds as a stable
+        // canonical value (matches what Phase 4 v2 submit stamps).
+        expected_resolves_at_iso: this.computeExpectedResolvesAt(args.ctx),
+        market_id: marketId,
+        market_config_version: args.subject.market_config_version ?? null,
+      });
+
+    const score = scoreOutcomeVector(commitment, outcome);
+    return {
+      commitment,
+      outcome,
+      score,
+      adapter_id: adapter.name,
+    };
+  }
+
+  /** Helper for legacySubmissionToCommitment fallback path. The actual
+   *  expected_resolves_at_iso is canonical (accepted_at + horizon_seconds);
+   *  the value is render-only on the Commitment so any stable derivation
+   *  works for Phase 5's void-mapping verification. */
+  private computeExpectedResolvesAt(
+    ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>,
+  ): string {
+    const acceptedMs = Date.parse(ctx.accepted_at);
+    const t1Ms = acceptedMs + ctx.horizon_seconds * 1000;
+    return new Date(t1Ms).toISOString().replace(/\.\d+Z$/, "Z");
   }
 
   // ── core anchoring step (used for both t0 and t1) ──

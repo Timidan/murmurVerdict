@@ -3,15 +3,22 @@ import {
   AcceptanceReceiptPayloadSchema,
   ResolutionReceiptPayloadSchema,
 } from "./schema.js";
-import { canonicalHash } from "../receipts/canonical.js";
+import { canonicalHash, canonicalize } from "../receipts/canonical.js";
 import {
   computeSignedReturn,
   outcomeFromSignedReturn,
   scoreCall,
+  scoreOutcomeVector,
 } from "./scoring.js";
 import { parseAndRebuildPreimageByDomain } from "./commit-preimage.js";
 import { marketsRepo } from "./db.js";
 import type { AssetId, HorizonHours, Side } from "./schema.js";
+import {
+  CommitmentSchema,
+  deserializeOutcome,
+  type Commitment,
+  type Outcome as UniversalOutcome,
+} from "./markets-core.js";
 
 // ─── /v1/calls/:id/verify ─────────────────────────────────────────────────────
 //
@@ -608,4 +615,182 @@ export function verifyReceiptChain(
     schema_version: 1,
     verified_at: now().toISOString().replace(/\.\d+Z$/, "Z"),
   };
+}
+
+// ─── Phase 5 — V2 universal payout-vector receipt verification ──────────────
+//
+// verifyReceiptChain (above) covers the legacy v1/v2 resolution receipts —
+// canonicalize → recompute hash → recompute signed_return / outcome /
+// call_score. The Phase 5 cutover writes a SIBLING universal-payout receipt
+// (kind='resolution_v2') alongside the legacy one. verifyResolutionV2 is
+// that receipt's canonical-replay verifier — accepts the receipt's
+// canonical_json, parses the embedded Commitment + Outcome, recomputes
+// scoreOutcomeVector, and asserts the receipt's call_score matches.
+//
+// Scope:
+//   - Receipt-internal canonical-replay only. The chain check (previous_hash
+//     binds back to the acceptance receipt) is the legacy verifier's
+//     responsibility — Phase 6 will fold it back in.
+//   - Schema: 'murmur-resolution-v2@1' produced by buildV2ResolutionReceipt.
+//
+// Phase 6 will surface this verifier on `GET /v1/calls/:id/verify` as an
+// additive `v2_checks` block; for v0.2 it's internal-only and exercised by
+// the Phase 5 smoke harness.
+
+export interface VerifyResolutionV2Result {
+  passes: boolean;
+  checks: VerifyResolutionV2Check[];
+}
+
+export interface VerifyResolutionV2Check {
+  name:
+    | "canonical_hash"
+    | "canonical_json_round_trip"
+    | "schema"
+    | "call_score";
+  status: "match" | "mismatch" | "skipped";
+  stored: string | number | boolean | null;
+  recomputed: string | number | boolean | null;
+  note?: string;
+}
+
+/**
+ * Recompute and validate a v2 resolution receipt from its canonical JSON.
+ * Returns `passes: true` iff every check is `'match'` (or `'skipped'`).
+ *
+ * Checks:
+ *   1. `canonical_json_round_trip` — re-canonicalizing the parsed payload
+ *      reproduces the input bytes exactly.
+ *   2. `canonical_hash` — recomputed hash matches `expected_hash` (when
+ *      supplied) or is non-empty 0x-hex.
+ *   3. `schema` — payload's `schema` field equals 'murmur-resolution-v2@1'.
+ *   4. `call_score` — scoreOutcomeVector(commitment, outcome) recomputes
+ *      the same call_score the receipt carries.
+ *
+ * The function is fail-open on parse errors only at the JSON level (JSON.parse
+ * throw → returns a single 'canonical_json_round_trip' mismatch). Schema /
+ * type errors propagate as ZodError — the caller is the v2 receipt
+ * canonicalizer, which expects strict input.
+ */
+export function verifyResolutionV2(
+  canonical_json: string,
+  expected_hash?: string,
+): VerifyResolutionV2Result {
+  const checks: VerifyResolutionV2Check[] = [];
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(canonical_json) as Record<string, unknown>;
+  } catch (err) {
+    checks.push({
+      name: "canonical_json_round_trip",
+      status: "mismatch",
+      stored: canonical_json.slice(0, 80),
+      recomputed: null,
+      note: `JSON.parse failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return { passes: false, checks };
+  }
+
+  // Re-canonicalize; the bytes must match exactly. canonicalize is
+  // deterministic over object keys, so any drift indicates tampering.
+  const recanonical = canonicalize(parsed);
+  checks.push({
+    name: "canonical_json_round_trip",
+    status: recanonical === canonical_json ? "match" : "mismatch",
+    stored: canonical_json,
+    recomputed: recanonical,
+  });
+
+  // Recomputed hash. When the caller supplied expected_hash, compare;
+  // otherwise just confirm 0x-hex.
+  const recomputedHash = canonicalHash(parsed);
+  if (expected_hash !== undefined) {
+    checks.push({
+      name: "canonical_hash",
+      status:
+        recomputedHash.toLowerCase() === expected_hash.toLowerCase()
+          ? "match"
+          : "mismatch",
+      stored: expected_hash,
+      recomputed: recomputedHash,
+    });
+  } else {
+    checks.push({
+      name: "canonical_hash",
+      status: recomputedHash.startsWith("0x") ? "match" : "mismatch",
+      stored: null,
+      recomputed: recomputedHash,
+      note: "no expected_hash supplied; only checked 0x-prefix shape",
+    });
+  }
+
+  // Schema check.
+  const schema = parsed["schema"];
+  checks.push({
+    name: "schema",
+    status: schema === "murmur-resolution-v2@1" ? "match" : "mismatch",
+    stored: typeof schema === "string" ? schema : null,
+    recomputed: "murmur-resolution-v2@1",
+  });
+
+  // Recompute call_score from the embedded Commitment + Outcome. The
+  // commitment field is the wire shape (bigints stringified) — round-trip
+  // through CommitmentSchema then BigInt(). Same for outcome via
+  // deserializeOutcome.
+  const commitmentWire = parsed["commitment"];
+  const outcomeWire = parsed["outcome"];
+  if (commitmentWire === undefined || outcomeWire === undefined) {
+    checks.push({
+      name: "call_score",
+      status: "skipped",
+      stored: null,
+      recomputed: null,
+      note: "commitment or outcome missing from receipt payload",
+    });
+  } else {
+    const validatedCommitment = CommitmentSchema.parse(commitmentWire);
+    const commitment: Commitment = {
+      marketRef: validatedCommitment.marketRef,
+      predictedOutcome: {
+        kind: validatedCommitment.predictedOutcome.kind,
+        payoutNumerators:
+          validatedCommitment.predictedOutcome.payoutNumerators.map((s) =>
+            BigInt(s),
+          ),
+        payoutDenominator: BigInt(
+          validatedCommitment.predictedOutcome.payoutDenominator,
+        ),
+        ...(validatedCommitment.predictedOutcome.scalarValue !== undefined
+          ? {
+              scalarValue: BigInt(
+                validatedCommitment.predictedOutcome.scalarValue,
+              ),
+            }
+          : {}),
+      },
+      horizon: validatedCommitment.horizon,
+      confidence: validatedCommitment.confidence,
+    };
+    const outcome: UniversalOutcome = deserializeOutcome(outcomeWire);
+    const recomputed = scoreOutcomeVector(commitment, outcome);
+    const stored = parsed["call_score"];
+    const storedScore = typeof stored === "number" ? stored : null;
+    const matches =
+      storedScore === null && recomputed.call_score === null
+        ? true
+        : storedScore !== null &&
+          recomputed.call_score !== null &&
+          Math.abs(storedScore - recomputed.call_score) < 1e-9;
+    checks.push({
+      name: "call_score",
+      status: matches ? "match" : "mismatch",
+      stored: storedScore,
+      recomputed: recomputed.call_score,
+      note: `void=${recomputed.void}`,
+    });
+  }
+
+  const passes = checks.every((c) => c.status !== "mismatch");
+  return { passes, checks };
 }

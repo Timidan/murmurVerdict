@@ -8,6 +8,11 @@ import {
   Side,
   VOID_BAND,
 } from "./schema.js";
+import {
+  callScore,
+  type Commitment,
+  type Outcome as UniversalOutcome,
+} from "./markets-core.js";
 
 // ─── Realized-volatility table (v0.1, static) ─────────────────────────────────
 // Refreshed by post-launch backfill, never on hot path.
@@ -254,4 +259,88 @@ export function computeVerdictScore(callScores: (number | null)[]): VerdictScore
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
+}
+
+// ─── Phase 5 — universal payout-vector scoring (V2 §2.3) ─────────────────────
+//
+// scoreOutcomeVector is the universal counterpart to scoreCall's binary
+// Brier-direction body. Where scoreCall consumes (asset, horizon, signed_return,
+// outcome) and emits a confidence-weighted financial-direction score,
+// scoreOutcomeVector dispatches to the markets-core multinomial-Brier shell:
+//
+//   call_score = 1 − halfL1Distance(predicted, resolved) ∈ [0, 1]
+//
+// V2 §2.3 reconciliation — the void-mapping rule:
+//   The legacy resolver collapses three buckets into one outcome:
+//     win  → predicted == resolved (binary [1,0]/[0,1])
+//     loss → disjoint one-hots
+//     void → small move inside |signed_return| < void_band
+//   Legacy void produces `call_score = null` and the call is excluded from
+//   leaderboard aggregation. The universal Outcome shape has TWO ways to
+//   signal "this call doesn't score":
+//
+//     (a) kind === 'invalid' — the adapter declined to resolve. Universal
+//         score is undefined; we map to `call_score = null`.
+//     (b) binary outcome with payoutNumerators=[0,0] — the native-price
+//         adapter emits this for void-band hits. callScore on
+//         predicted=[1,0] vs resolved=[0,0] is exactly 0.5 (L1 midpoint),
+//         which DIVERGES from the legacy null. Phase 5 reconciles in favor
+//         of the legacy semantics: `call_score = null` for [0,0] resolved
+//         outcomes too. Reasoning: leaderboard exclusion is the load-bearing
+//         legacy contract (see resolver_smoke regression: void calls don't
+//         move verdict_score).
+//
+//   Net effect: every code path that hit `outcome ∈ {void, oracle_unavailable}`
+//   in the legacy resolver hits `void: true` here. The universal Outcome
+//   shape is preserved on `t1_resolutions.resolved_outcome_json` for the new
+//   universal-shape consumers; the legacy `call_score` column stays null.
+
+export interface ScoreOutcomeVectorResult {
+  /** Universal call_score in [0,1] for non-void resolutions; null for the
+   *  three void buckets documented above. */
+  call_score: number | null;
+  /** True iff the outcome maps to legacy-void semantics (excluded from
+   *  leaderboard aggregation, call_score = null). */
+  void: boolean;
+}
+
+/**
+ * Universal payout-vector scoring entry point. Dispatches the multinomial-Brier
+ * shell from markets-core.callScore for non-void cases and reconciles the three
+ * void buckets to the legacy `call_score = null` contract.
+ *
+ * Void mapping rule (Phase 5 reconciliation, see file comment above):
+ *   - outcome.kind === 'invalid'                              → null, void
+ *   - outcome.kind === 'binary' AND payoutNumerators=[0n,0n]  → null, void
+ *   - any other case                                          → callScore(c, o)
+ *
+ * The kind === 'invalid' branch is fail-closed regardless of payoutNumerators —
+ * callScore would fail the kind-equality check anyway when predicted is binary
+ * and resolved is invalid, so we short-circuit before that throw.
+ *
+ * @param commitment — universal Commitment shape (parsed from
+ *                    `submissions.commitment_json` or derived from a legacy row
+ *                    via `legacySubmissionToCommitment`).
+ * @param outcome    — universal Outcome shape returned by the adapter's
+ *                    `observeResolution`-family function.
+ */
+export function scoreOutcomeVector(
+  commitment: Commitment,
+  outcome: UniversalOutcome,
+): ScoreOutcomeVectorResult {
+  // (a) adapter abstained — invalid outcome, no score.
+  if (outcome.kind === "invalid") {
+    return { call_score: null, void: true };
+  }
+  // (b) binary void: every numerator is zero. Legacy void band hit.
+  // Length guard catches malformed binary outcomes (adapter bug).
+  if (outcome.kind === "binary" && outcome.payoutNumerators.length === 2) {
+    const allZero = outcome.payoutNumerators.every((n) => n === 0n);
+    if (allZero) {
+      return { call_score: null, void: true };
+    }
+  }
+  // Non-void: dispatch to the universal multinomial-Brier shell.
+  const score = callScore(commitment, outcome);
+  return { call_score: score, void: false };
 }

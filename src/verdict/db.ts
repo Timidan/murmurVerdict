@@ -261,6 +261,36 @@ function applyMigrations(db: Database.Database): void {
     })();
     v = 17;
   }
+
+  if (v < 18) {
+    // V2 Phase 5 — receipts.kind allows 'resolution_v2' for the universal
+    // payout-vector receipt sibling.
+    //
+    // The Phase 5 resolver dual-writes a v2 resolution receipt alongside
+    // the legacy 'resolution' receipt so verifiers can recompute against
+    // either canonical chain. The legacy CHECK constraint at MIGRATION_001
+    // permits only ('acceptance','resolution','re_resolution') — adding
+    // 'resolution_v2' requires a table rebuild because SQLite cannot
+    // ALTER a CHECK in place.
+    //
+    // Idempotency: pure rebuild. The DROP TABLE IF EXISTS receipts_v18
+    // guard at the top survives partial-apply retries; the data copy is
+    // INSERT-from-original so existing receipts (acceptance / resolution /
+    // re_resolution) round-trip byte-for-byte.
+    //
+    // Recovery: routed through applyTableRebuildMigration so a crash
+    // mid-rebuild reaches the standard recover path. See the helper's
+    // doc comment for the four (original, temp) state recoveries.
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_018,
+      () => {
+        set.run("schema_version", "18");
+      },
+      ["receipts", "receipts_v18"],
+    );
+    v = 18;
+  }
 }
 
 /**
@@ -1467,6 +1497,44 @@ const MIGRATION_017 = `
   CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id) WHERE rotated_at IS NULL;
 `;
 
+// ─── Migration 018 — receipts.kind allows 'resolution_v2' (Phase 5) ─────────
+//
+// The Phase 5 resolver dual-writes a universal payout-vector receipt
+// alongside the legacy 'resolution' receipt. The CHECK constraint at
+// MIGRATION_001 only permits ('acceptance','resolution','re_resolution');
+// SQLite cannot ALTER a CHECK in place, so this is a rebuild migration
+// routed through applyTableRebuildMigration.
+//
+// Receipts is referenced FROM (no FKs target it as parent), so the
+// rebuild copies every row byte-identically and recreates the original
+// index. No data loss, no schema drift.
+//
+// Phase 6 will reconcile the two receipt kinds into a single canonical
+// chain — for v0.2 we keep both so the legacy verify path stays untouched.
+const MIGRATION_018 = `
+  DROP TABLE IF EXISTS receipts_v18;
+
+  CREATE TABLE receipts_v18 (
+    receipt_hash    TEXT PRIMARY KEY,
+    call_id         TEXT NOT NULL REFERENCES submissions(call_id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL CHECK (kind IN ('acceptance','resolution','re_resolution','resolution_v2')),
+    canonical_json  TEXT NOT NULL,
+    filecoin_cid    TEXT,
+    previous_hash   TEXT,
+    created_at      TEXT NOT NULL
+  );
+
+  INSERT INTO receipts_v18
+    (receipt_hash, call_id, kind, canonical_json, filecoin_cid, previous_hash, created_at)
+  SELECT receipt_hash, call_id, kind, canonical_json, filecoin_cid, previous_hash, created_at
+    FROM receipts;
+
+  DROP TABLE receipts;
+  ALTER TABLE receipts_v18 RENAME TO receipts;
+
+  CREATE INDEX idx_receipts_call_kind ON receipts(call_id, kind);
+`;
+
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
 //
 // Three things at once:
@@ -2155,18 +2223,35 @@ export const resolutionsRepo = {
       outcome: Outcome;
       call_score: number | null;
       resolved_at: string;
+      // Phase 5 — universal payout-vector columns (MIGRATION_016). Both
+      // optional so legacy callers (oracle_unavailable terminal path,
+      // re-resolution disputes path) can keep writing without supplying
+      // the universal shape. NULL → leaderboard reads continue to use
+      // the legacy `outcome`/`call_score` columns; new universal-shape
+      // consumers fall through to the legacy view via the resolver-side
+      // mapping (see scoreOutcomeVector void-mapping rule).
+      resolved_outcome_json?: string | null;
+      payout_vector_json?: string | null;
     },
   ): void {
     prep(
       db,
       `INSERT INTO t1_resolutions
-       (call_id, t1, p1, t1_feed, signed_return, outcome, call_score, resolved_at)
-       VALUES (@call_id, @t1, @p1, @t1_feed, @signed_return, @outcome, @call_score, @resolved_at)
+       (call_id, t1, p1, t1_feed, signed_return, outcome, call_score, resolved_at,
+        resolved_outcome_json, payout_vector_json)
+       VALUES (@call_id, @t1, @p1, @t1_feed, @signed_return, @outcome, @call_score, @resolved_at,
+               @resolved_outcome_json, @payout_vector_json)
        ON CONFLICT(call_id) DO UPDATE SET
          t1 = excluded.t1, p1 = excluded.p1, t1_feed = excluded.t1_feed,
          signed_return = excluded.signed_return, outcome = excluded.outcome,
-         call_score = excluded.call_score, resolved_at = excluded.resolved_at`,
-    ).run(input);
+         call_score = excluded.call_score, resolved_at = excluded.resolved_at,
+         resolved_outcome_json = excluded.resolved_outcome_json,
+         payout_vector_json = excluded.payout_vector_json`,
+    ).run({
+      ...input,
+      resolved_outcome_json: input.resolved_outcome_json ?? null,
+      payout_vector_json: input.payout_vector_json ?? null,
+    });
   },
 
   loadFullCall(
@@ -2210,6 +2295,12 @@ export const resolutionsRepo = {
           resolved_at: string;
           receipt_hash: string;
           filecoin_cid: string | null;
+          // Phase 5 — universal payout-vector additive fields. NULL when
+          // the v2 dispatch path didn't run (legacy resolutions pre-cutover
+          // or markets without a registered adapter). Wire shape — strings
+          // round-trip through deserializeOutcome / parseStoredCommitment.
+          resolved_outcome_json: string | null;
+          payout_vector_json: string | null;
         }
       | null;
   } | null {
@@ -2275,6 +2366,13 @@ export const resolutionsRepo = {
             resolved_at: resRow.resolved_at as string,
             receipt_hash: resRow.resolution_hash as string,
             filecoin_cid: (resRow.resolution_cid as string) ?? null,
+            // Phase 5 — universal columns. NULL when the v2 path didn't
+            // run; downstream call.resolved emit reads these and skips
+            // populating the additive event fields.
+            resolved_outcome_json:
+              (resRow.resolved_outcome_json as string | null) ?? null,
+            payout_vector_json:
+              (resRow.payout_vector_json as string | null) ?? null,
           }
         : null,
     };
@@ -2289,7 +2387,11 @@ export const resolutionsRepo = {
       filecoin_cid?: string;
       previous_hash: `0x${string}`;
       created_at: string;
-      kind: "resolution" | "re_resolution";
+      // Phase 5: 'resolution_v2' is the universal payout-vector receipt
+      // sibling. Migration 018 extends the receipts.kind CHECK constraint
+      // to permit it. Phase 6 will fold the two kinds back into one canonical
+      // chain; for now both ride alongside on the same receipts table.
+      kind: "resolution" | "re_resolution" | "resolution_v2";
     },
   ): void {
     prep(
