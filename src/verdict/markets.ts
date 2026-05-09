@@ -14,6 +14,64 @@ import {
   marketsRepo,
   type MarketRow,
 } from "./db.js";
+import { getMarketMakerRegistry } from "./market-maker/registry.js";
+import type { MarketMakerAdapter } from "../markets/types.js";
+
+// ─── P3 — adapter dispatch (Phase 3 of V2_IMPLEMENTATION_PLAN) ──────────────
+//
+// Every market row resolves to exactly one {@link MarketMakerAdapter}. Today
+// the only registered adapter is `native-price` (handles legacy ETH markets,
+// signed-return scoring, oracle T0/T1 anchoring). Phase 11 lands Polymarket
+// Gamma; Phase 13+ lands UMA / Reality.eth / etc. The dispatch key is
+// `markets.adapter_id` once migration 016 lands; until then every native-price
+// market falls through here by name.
+//
+// SHELL behavior: this helper is currently a deterministic constant — every
+// market gets `native-price`. The signature accepts a {@link MarketRow} so
+// the Phase 5 cutover can read `markets.adapter_id` from the row and dispatch
+// without changing any call site.
+
+export const NATIVE_PRICE_ADAPTER_ID = "native-price" as const;
+export const FINANCIAL_DIRECTION_FAMILY = "financial-direction" as const;
+
+/**
+ * Return the {@link MarketMakerAdapter} that handles `marketRow`. Today this
+ * is always the singleton `native-price` adapter — no other adapters are
+ * registered. Phase 11+ will read a `markets.adapter_id` column from the row
+ * and dispatch via the registry's `get()` method. The signature already
+ * accepts the row so the cutover is a one-liner.
+ *
+ * Throws when the registry hasn't bootstrapped its native-price adapter — a
+ * symptom of the registry import being elided by tree-shaking. Test harnesses
+ * that need a clean registry should import `./market-maker/registry.js`
+ * explicitly to force the side-effect bootstrap.
+ *
+ * @param _marketRow — accepted for forward-compat; ignored today.
+ */
+export function getAdapterForMarket(_marketRow: MarketRow): MarketMakerAdapter {
+  const adapter = getMarketMakerRegistry().get(NATIVE_PRICE_ADAPTER_ID);
+  if (!adapter) {
+    throw new Error(
+      `getAdapterForMarket: '${NATIVE_PRICE_ADAPTER_ID}' adapter not registered (registry bootstrap failed)`,
+    );
+  }
+  return adapter;
+}
+
+/**
+ * Resolve the adapter_id + market_family that the public market-list API
+ * surfaces for a given row. Until migration 016 lands these are constants;
+ * the helper isolates the synthesis so Phase 5 can swap to row-driven dispatch.
+ */
+export function adapterIdentityForMarket(_marketRow: MarketRow): {
+  adapter_id: string;
+  market_family: string;
+} {
+  return {
+    adapter_id: NATIVE_PRICE_ADAPTER_ID,
+    market_family: FINANCIAL_DIRECTION_FAMILY,
+  };
+}
 
 /**
  * Resolve a submission's market — either by explicit market_id (new code path)

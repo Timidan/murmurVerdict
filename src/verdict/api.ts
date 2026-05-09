@@ -14,7 +14,7 @@ import {
   type MarketRow,
   type RegistryStatus,
 } from "./db.js";
-import { legacyHorizonHoursForMarket } from "./markets.js";
+import { adapterIdentityForMarket, legacyHorizonHoursForMarket } from "./markets.js";
 import {
   COMMIT_PREIMAGE_SCHEMA,
   MARKET_COMMIT_PREIMAGE_SCHEMA,
@@ -2028,8 +2028,17 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       if (assetIdFilter) {
         markets = markets.filter((m) => m.asset_id === assetIdFilter);
       }
+      // P3 — surface adapter_id + market_family on every row. Until
+      // migration 016 lands a `markets.adapter_id` column, every native-price
+      // market resolves to ('native-price', 'financial-direction') via the
+      // registry. New columns travel additively — old clients keep parsing
+      // the row by ignoring the new fields.
+      const enriched = markets.map((m) => ({
+        ...m,
+        ...adapterIdentityForMarket(m),
+      }));
       res.json({
-        markets,
+        markets: enriched,
         served_at: nowIso(now()),
       });
     }),

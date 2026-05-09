@@ -209,6 +209,58 @@ function applyMigrations(db: Database.Database): void {
     }
     v = 15;
   }
+
+  if (v < 16) {
+    // V2 §2.1 / §2.2 / §3.2 — additive v2 commitment + outcome storage
+    // columns on submissions, t1_resolutions, and markets. Pure ADD COLUMN
+    // (no CHECK constraint changes), so no table rebuild needed. Same
+    // wrap-in-transaction discipline as MIGRATION_014: DDL + index DDL +
+    // backfill UPDATE + schema_meta bump all atomic against a crash mid-run.
+    //
+    // Columns are JSON-bag fields validated at write-time inside the
+    // MarketMakerAdapter (Phase 4); no Zod / DB CHECK constraints here.
+    // Per V2 §7.7 risk 4, adapter_id and market_family are operator-curated
+    // but kept open (no closed enum) so future families don't require a
+    // schema migration.
+    db.transaction(() => {
+      db.exec(MIGRATION_016);
+      set.run("schema_version", "16");
+    })();
+    v = 16;
+  }
+
+  if (v < 17) {
+    // V2 §7.1 (casual tier scaffold) — accounts, account_agents, api_keys.
+    //
+    // Scope:
+    //   - accounts: one row per Privy user (PRIMARY KEY = uuid; UNIQUE on
+    //     privy_user_id which is the Privy DID like 'did:privy:xxxx').
+    //   - account_agents: many-to-many bridge so a single account can later
+    //     own multiple agents. v2.0 enforces one account per agent in the
+    //     code path (see auth/accounts.ts getAccountForAgent), but the
+    //     schema permits the future shape where co-owned agents become
+    //     possible. Using a bridge table now avoids a third migration when
+    //     we relax the policy.
+    //   - api_keys: scoped per (account_id, agent_id) pair. Replaces the
+    //     legacy single-key-per-agent model in agents.api_key_hash. The
+    //     legacy column is left intact (we don't rebuild agents here) so
+    //     existing wallet-only and benchmark agents keep authenticating
+    //     until Phase 4 cuts the dispatcher over.
+    //
+    // Hash discipline: api_keys.api_key_hash stores sha256(secret) — same
+    // primitive as agents.api_key_hash. Plaintext is returned exactly once
+    // by mintApiKey() and never persisted. Rotation is soft: rotated_at
+    // populated → key invalid (verifyApiKey() filters WHERE rotated_at
+    // IS NULL). This keeps audit history without cascading deletes.
+    //
+    // Idempotency: pure additive. CREATE TABLE IF NOT EXISTS guards on
+    // every statement so a partial-apply retry is safe.
+    db.transaction(() => {
+      db.exec(MIGRATION_017);
+      set.run("schema_version", "17");
+    })();
+    v = 17;
+  }
 }
 
 /**
@@ -1260,6 +1312,159 @@ const MIGRATION_015 = `
       strategy_tag = NULL
   WHERE privacy_mode = 'committed'
     AND status NOT IN ('accepted', 'pending_t0');
+`;
+
+// ─── Migration 016 — v2 commitment + outcome storage columns (V2 §2.1/§2.2/§3.2)
+//
+// Adds the universal-Outcome / universal-Commitment storage shape on top of
+// the existing v1 columns. Phase 4 reads/writes these from the v2 submission
+// surface; legacy v1 calls keep their {side, asset_id, horizon_hours,
+// confidence} surface and the new columns stay NULL.
+//
+// Submissions (5 cols, all nullable):
+//   - commitment_json        — full canonical Commitment JSON (V2 §2.2).
+//                              NULL for legacy v1 calls.
+//   - predicted_outcome_json — the predictedOutcome block from the
+//                              Commitment (kind + payoutNumerators as
+//                              bigint strings + payoutDenominator).
+//                              NULL for legacy.
+//   - outcome_labels_json    — adapter-supplied label strings ('UP','DOWN',
+//                              'YES','NO',...) corresponding 1:1 to each
+//                              payoutNumerators position. Render-only —
+//                              NEVER load-bearing for scoring (V2 §2.3).
+//                              NULL for legacy.
+//   - adapter_id             — MarketMakerAdapter.name owning the market_id
+//                              (V2 §2.4). Backfill below: market_id
+//                              IS NOT NULL → 'native-price'. Pre-MIGRATION_009
+//                              rows where market_id IS NULL stay NULL.
+//   - market_family          — adapter.marketFamily denormalized for fast
+//                              leaderboard family filtering (V2 §3.2 risk 4).
+//                              Backfill below: adapter_id='native-price' →
+//                              'financial-direction'. Else NULL.
+//
+// Submissions indexes:
+//   - idx_submissions_market_family — partial; speeds family filters on
+//                                     leaderboard reads.
+//   - idx_submissions_adapter       — partial; lets the resolver dispatch by
+//                                     adapter without scanning the full table.
+//
+// t1_resolutions (2 cols, both nullable):
+//   - resolved_outcome_json — full Outcome JSON the adapter returned (kind,
+//                             payoutNumerators stringified, denominator,
+//                             scalarValue if any, evidence). NULL for legacy
+//                             resolutions written before v2.
+//   - payout_vector_json    — convenience: just the payoutNumerators array
+//                             as a JSON string (e.g. '["1","0"]'). Lets the
+//                             leaderboard skip a JSON parse on the hot path.
+//                             NULL for legacy.
+//   No new indexes — t1_resolutions is already PK'd on call_id, which is
+//   the only access path the resolver / scoring / leaderboard use.
+//
+// Markets (2 cols, both nullable; backfilled to 'native-price' /
+// 'financial-direction' for every existing row):
+//   - adapter_id    — actual source of truth at the MARKET level;
+//                     submissions.adapter_id denormalizes from here.
+//   - market_family — same idea. Independent of the existing market_kind
+//                     column from MIGRATION_008 (kept untouched).
+//
+// Backfill (in-migration, after the ALTER TABLE block):
+//   submissions:
+//     market_id IS NOT NULL AND adapter_id IS NULL
+//       → adapter_id='native-price', market_family='financial-direction'
+//   markets (every existing row):
+//     adapter_id IS NULL
+//       → adapter_id='native-price', market_family='financial-direction'
+//
+// Idempotency: the applyMigrations(`if (v < 16)`) guard is the
+// idempotency boundary — schema_version 16 is set inside the same
+// transaction as the DDL, so the migration can never run twice.
+//
+// No CHECK constraint on adapter_id / market_family per V2 §7.7 risk 4
+// (taxonomy is operator-curated but kept open so new families don't
+// require a schema migration).
+const MIGRATION_016 = `
+  ALTER TABLE submissions ADD COLUMN commitment_json TEXT;
+  ALTER TABLE submissions ADD COLUMN predicted_outcome_json TEXT;
+  ALTER TABLE submissions ADD COLUMN outcome_labels_json TEXT;
+  ALTER TABLE submissions ADD COLUMN adapter_id TEXT;
+  ALTER TABLE submissions ADD COLUMN market_family TEXT;
+
+  CREATE INDEX idx_submissions_market_family
+    ON submissions(market_family) WHERE market_family IS NOT NULL;
+  CREATE INDEX idx_submissions_adapter
+    ON submissions(adapter_id) WHERE adapter_id IS NOT NULL;
+
+  ALTER TABLE t1_resolutions ADD COLUMN resolved_outcome_json TEXT;
+  ALTER TABLE t1_resolutions ADD COLUMN payout_vector_json TEXT;
+
+  ALTER TABLE markets ADD COLUMN adapter_id TEXT;
+  ALTER TABLE markets ADD COLUMN market_family TEXT;
+
+  -- Backfill: every existing markets row is a native-price /
+  -- financial-direction market — that's the only adapter shipped at v0.2.
+  UPDATE markets
+     SET adapter_id = 'native-price',
+         market_family = 'financial-direction'
+   WHERE adapter_id IS NULL;
+
+  -- Backfill: submissions with a market_id (i.e. anything past
+  -- MIGRATION_009's ETH backfill) inherit the same adapter / family.
+  -- Pre-MIGRATION_009 legacy rows where market_id IS NULL stay NULL —
+  -- the v2 reader treats NULL adapter_id as "legacy v1 native-price"
+  -- via a code-level fallback, not a DB-level backfill.
+  UPDATE submissions
+     SET adapter_id = 'native-price',
+         market_family = 'financial-direction'
+   WHERE market_id IS NOT NULL
+     AND adapter_id IS NULL;
+`;
+
+// ─── Migration 017 — Phase 7 casual-tier auth scaffold ──────────────────────
+//
+// Three new tables for the Privy-backed casual identity tier:
+//   - accounts: one row per Privy user; UNIQUE on privy_user_id (the DID).
+//   - account_agents: many-to-many bridge for future co-ownership; v2.0
+//     enforces one-account-per-agent at the code layer.
+//   - api_keys: per (account, agent) pair, replaces the legacy single
+//     agents.api_key_hash column for casual-tier agents. The legacy column
+//     stays in place so wallet-only and benchmark agents keep working
+//     until Phase 4 cuts the dispatcher over.
+//
+// Hash discipline: api_key_hash stores sha256(secret); plaintext returned
+// once by mintApiKey() and never persisted. Soft rotation via rotated_at.
+//
+// Idempotency: pure additive (CREATE TABLE IF NOT EXISTS); safe on retry.
+const MIGRATION_017 = `
+  CREATE TABLE IF NOT EXISTS accounts (
+    account_id            TEXT PRIMARY KEY,
+    privy_user_id         TEXT UNIQUE NOT NULL,
+    email                 TEXT,
+    primary_login_method  TEXT,
+    created_at            TEXT NOT NULL,
+    last_seen_at          TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS account_agents (
+    account_id  TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    agent_id    TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (account_id, agent_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS api_keys (
+    api_key_id    TEXT PRIMARY KEY,
+    account_id    TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    agent_id      TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    api_key_hash  TEXT NOT NULL,
+    label         TEXT,
+    created_at    TEXT NOT NULL,
+    rotated_at    TEXT,
+    UNIQUE(api_key_hash)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_account_agents_agent ON account_agents(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_api_keys_agent ON api_keys(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id) WHERE rotated_at IS NULL;
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
