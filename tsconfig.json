@@ -23,5 +23,13 @@
     "noUncheckedIndexedAccess": false
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "dashboard"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dashboard",
+    "**/__smoke__.ts",
+    "**/__*_smoke__.ts",
+    "**/__smoke__.tsx",
+    "**/__*_smoke__.tsx"
+  ]
 }
