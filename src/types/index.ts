@@ -343,8 +343,3 @@ export class ExecutionError extends MurmurError {
   }
 }
 
-export type {
-  DecisionLogEntry,
-  DashboardSnapshot,
-  WsMessage,
-} from "./dashboard.js";
