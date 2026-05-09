@@ -1,0 +1,65 @@
+# Self-hosting template for the Murmur Verdict daemon.
+# Usage: copy `.env.example` to `.env`, fill in secrets, then `docker compose up -d`.
+#
+# This is the cloud-vendor-neutral deployment surface — works on any
+# Docker host (a VPS, a homelab, a Kubernetes node via `kompose`, etc.).
+# The repo also has render.yaml / fly.toml / railway.json for those
+# specific PaaS targets, all of which compose the same Dockerfile.
+
+services:
+  daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: murmur-verdict:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      VERDICT_DB_PATH: /app/data/verdict.db
+      RESOLVER_TICK_SEC: "${RESOLVER_TICK_SEC:-30}"
+      BENCHMARK_TICK_SEC: "${BENCHMARK_TICK_SEC:-600}"
+      MARKET_REFRESH_SEC: "${MARKET_REFRESH_SEC:-300}"
+      DASHBOARD_ORIGIN: "${DASHBOARD_ORIGIN:-http://localhost:5173}"
+      MURMUR_DASHBOARD_URL: "${MURMUR_DASHBOARD_URL:-}"
+      MURMUR_PUBLIC_URL: "${MURMUR_PUBLIC_URL:-http://localhost:5173}"
+      WEBHOOK_ALLOW_HTTP: "${WEBHOOK_ALLOW_HTTP:-}"
+      BASE_MAINNET_RPC_URL: "${BASE_MAINNET_RPC_URL:-}"
+      CHAINLINK_BASE_ETH_USD_ADDRESS: "${CHAINLINK_BASE_ETH_USD_ADDRESS:-}"
+      PYTH_HERMES_ENDPOINT: "${PYTH_HERMES_ENDPOINT:-https://hermes.pyth.network/v2/updates/price/latest}"
+      SANTIMENT_API_KEY: "${SANTIMENT_API_KEY:-}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_PUBLIC_CHAT_ID: "${TELEGRAM_PUBLIC_CHAT_ID:-}"
+      OPENSERV_API_KEY: "${OPENSERV_API_KEY:-}"
+      OPENSERV_AUTH_TOKEN: "${OPENSERV_AUTH_TOKEN:-}"
+      OPENSERV_VERDICT_PORT: "${OPENSERV_VERDICT_PORT:-7378}"
+      OPENSERV_VERDICT_ENABLED: "${OPENSERV_VERDICT_ENABLED:-false}"
+      FILECOIN_API_TOKEN: "${FILECOIN_API_TOKEN:-}"
+      FILECOIN_PIN_ENDPOINT: "${FILECOIN_PIN_ENDPOINT:-https://node.lighthouse.storage/api/v0/add}"
+      MURMUR_PIN_TIMEOUT_MS: "${MURMUR_PIN_TIMEOUT_MS:-5000}"
+      VERDICT_ADMIN_TOKEN: "${VERDICT_ADMIN_TOKEN:-}"
+      CLAIM_VERIFY_BYPASS: "${CLAIM_VERIFY_BYPASS:-}"
+      NODE_ENV: "${NODE_ENV:-production}"
+      PRIVY_APP_ID: "${PRIVY_APP_ID:-}"
+      PRIVY_APP_SECRET: "${PRIVY_APP_SECRET:-}"
+      PRIVY_VERIFICATION_KEY: "${PRIVY_VERIFICATION_KEY:-}"
+      MURMUR_DAEMON_AGE_RECIPIENT: "${MURMUR_DAEMON_AGE_RECIPIENT:-}"
+      MURMUR_DAEMON_AGE_IDENTITY: "${MURMUR_DAEMON_AGE_IDENTITY:-}"
+      MURMUR_DRAND_ENABLED: "${MURMUR_DRAND_ENABLED:-0}"
+      MURMUR_DRAND_CHAIN_URL: "${MURMUR_DRAND_CHAIN_URL:-}"
+      MURMUR_PRIVACY_COMMITTED_OPEN: "${MURMUR_PRIVACY_COMMITTED_OPEN:-0}"
+      MURMUR_PHASE_E_CLEANUP: "${MURMUR_PHASE_E_CLEANUP:-0}"
+      MURMUR_PHASE_E_DRY_RUN: "${MURMUR_PHASE_E_DRY_RUN:-0}"
+      MURMUR_V2_RESOLVER_DISABLED: "${MURMUR_V2_RESOLVER_DISABLED:-0}"
+    volumes:
+      - verdict_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  verdict_data:

@@ -15,6 +15,8 @@
 [![Deploy daemon to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Timidan/synth-x)
 [![Deploy dashboard to Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FTimidan%2Fsynth-x&project-name=murmur-verdict-dashboard&repository-name=murmur-verdict)
 
+> **Cloud-portable deployment.** The daemon is just a `Dockerfile` — pick whichever PaaS/host you prefer. The repo ships templates for Render (`render.yaml`), Fly.io (`fly.toml`), Railway (`railway.json`), Heroku/Procfile-style hosts (`Procfile`), and self-hosting via Docker Compose (`docker-compose.yml`). All compose the same image; the daemon itself reads only `process.env`, no platform-specific assumptions.
+
 <!-- LIVE-BADGE:START -->
 <!--
   This badge is a live SVG fetched from the deployed daemon. It updates with
