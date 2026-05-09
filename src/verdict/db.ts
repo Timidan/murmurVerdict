@@ -2029,7 +2029,8 @@ export interface AcceptanceWriteInput {
 }
 
 export const submissionsRepo = {
-  /** Inserts submission + preflight + oracle policy + acceptance receipt atomically. */
+  /** Inserts submission + oracle policy atomically. (Wave 4b — receipts gone;
+   *  Wave 4b-2 — Santiment-derived preflight insert gone.) */
   acceptCall(db: Database.Database, input: AcceptanceWriteInput): void {
     const tx = db.transaction((i: AcceptanceWriteInput) => {
       prep(
@@ -2097,19 +2098,10 @@ export const submissionsRepo = {
         predicted_outcome_json: i.predicted_outcome_json ?? null,
         outcome_labels_json: i.outcome_labels_json ?? null,
       });
-      prep(
-        db,
-        `INSERT INTO preflights
-         (call_id, murmur_score, murmur_playbook, risk_flags_json, data_freshness_seconds, market_regime)
-         VALUES (@call_id, @murmur_score, @murmur_playbook, @risk_flags_json, @data_freshness_seconds, @market_regime)`,
-      ).run({
-        call_id: i.accepted.call_id,
-        murmur_score: i.accepted.preflight.murmur_score,
-        murmur_playbook: i.accepted.preflight.murmur_playbook,
-        risk_flags_json: JSON.stringify(i.accepted.preflight.risk_flags),
-        data_freshness_seconds: i.accepted.preflight.data_freshness_seconds,
-        market_regime: i.accepted.preflight.market_regime,
-      });
+      // Wave 4b-2 — preflights insert (Santiment-derived) gone. The
+      // preflights TABLE survives in the schema as a vestigial empty
+      // table; a future migration can drop it. Murmur is a pure ranking
+      // layer over canonical price/event oracles — no sentiment metadata.
       prep(
         db,
         `INSERT INTO oracle_policies
@@ -2474,13 +2466,6 @@ export const resolutionsRepo = {
       rationale: string | null;
       strategy_tag: string | null;
     };
-    preflight: {
-      murmur_score: number;
-      murmur_playbook: string;
-      risk_flags: string[];
-      data_freshness_seconds: number;
-      market_regime: string;
-    };
     t0: { t0: string; p0: string; feed: string } | null;
     resolution:
       | {
@@ -2502,10 +2487,8 @@ export const resolutionsRepo = {
   } | null {
     const subRow = prep(
       db,
-      `SELECT s.*, p.murmur_score, p.murmur_playbook, p.risk_flags_json,
-              p.data_freshness_seconds, p.market_regime
+      `SELECT s.*
        FROM submissions s
-       JOIN preflights p ON p.call_id = s.call_id
        WHERE s.call_id = ?`,
     ).get(call_id) as Record<string, unknown> | undefined;
     if (!subRow) return null;
@@ -2533,13 +2516,6 @@ export const resolutionsRepo = {
         status: subRow.status as CallStatus,
         rationale: (subRow.rationale as string) ?? null,
         strategy_tag: (subRow.strategy_tag as string) ?? null,
-      },
-      preflight: {
-        murmur_score: subRow.murmur_score as number,
-        murmur_playbook: subRow.murmur_playbook as string,
-        risk_flags: JSON.parse(subRow.risk_flags_json as string),
-        data_freshness_seconds: subRow.data_freshness_seconds as number,
-        market_regime: subRow.market_regime as string,
       },
       t0: t0Row ?? null,
       resolution: resRow

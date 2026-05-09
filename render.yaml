@@ -29,8 +29,6 @@ services:
         value: "30"
       - key: BENCHMARK_TICK_SEC
         value: "600"
-      - key: MARKET_REFRESH_SEC
-        value: "300"
 
       # ─── Oracle (resolver requires this) ──────────────────────────────
       - key: BASE_MAINNET_RPC_URL
@@ -39,10 +37,6 @@ services:
         sync: false
       - key: PYTH_HERMES_ENDPOINT
         value: https://hermes.pyth.network/v2/updates/price/latest
-
-      # ─── Market signal source ─────────────────────────────────────────
-      - key: SANTIMENT_API_KEY
-        sync: false
 
       # ─── Distribution ─────────────────────────────────────────────────
       - key: TELEGRAM_BOT_TOKEN

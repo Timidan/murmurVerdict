@@ -17,7 +17,6 @@ import {
   registerBaselines,
   runBaselinesOnce,
 } from "../benchmark/agents.js";
-import { MarketContextProvider } from "./marketContext.js";
 import { loadAgeContextFromEnv } from "../verdict/age-envelope.js";
 import { loadDrandContextFromEnv } from "../verdict/drand-envelope.js";
 import { TelegramNotifier } from "../integrations/telegram.js";
@@ -31,7 +30,6 @@ import type { Server } from "node:http";
 const PORT = Number(process.env.PORT ?? 8080);
 const RESOLVER_TICK_SEC = Number(process.env.RESOLVER_TICK_SEC ?? 30);
 const BENCHMARK_TICK_SEC = Number(process.env.BENCHMARK_TICK_SEC ?? 600);
-const MARKET_REFRESH_SEC = Number(process.env.MARKET_REFRESH_SEC ?? 300);
 const VERDICT_DB_PATH = process.env.VERDICT_DB_PATH ?? "./data/verdict.db";
 const DASHBOARD_ORIGIN = (process.env.DASHBOARD_ORIGIN ?? "*").trim();
 
@@ -70,11 +68,9 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   runPhaseECleanupIfRequested(db);
   registerBaselines(db);
 
-  const market = new MarketContextProvider({
-    refreshIntervalMs: MARKET_REFRESH_SEC * 1000,
-  });
-  await market.refresh();
-
+  // Wave 4b-2 — MarketContextProvider (Santiment scout/analyst) removed.
+  // Murmur is a pure ranking layer over canonical price/event oracles;
+  // no sentiment cache or 5-minute refresh tick.
   const telegram = new TelegramNotifier();
   const oracle = makeOracle();
   const events = new VerdictEventBus();
@@ -225,7 +221,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       db,
       events,
       ctx: {
-        marketContext: (asset_id) => market.get(asset_id),
         events,
         ...(ageCtx ? { ageContext: ageCtx } : {}),
         ...(drandCtx ? { drandContext: drandCtx } : {}),
@@ -296,17 +291,13 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         "[daemon] resolver disabled — set BASE_MAINNET_RPC_URL to enable",
       );
     }
-    tickers.push(
-      setIntervalGuarded(MARKET_REFRESH_SEC * 1000, "market", async () => {
-        await market.refresh();
-      }),
-    );
+    // Wave 4b-2 — market refresh ticker dropped (no Santiment cache to refresh).
+    // The benchmark ticker stays so legacy benchmark agents are still
+    // registered, but runBaselinesOnce now no-ops when no decision-driving
+    // signal source is wired (see src/benchmark/agents.ts).
     tickers.push(
       setIntervalGuarded(BENCHMARK_TICK_SEC * 1000, "benchmark", async () => {
-        await runBaselinesOnce({
-          db,
-          ctx: { marketContext: (asset_id) => market.get(asset_id) },
-        });
+        await runBaselinesOnce({ db });
       }),
     );
     // Stats heartbeat — emits a `stats.tick` every 10s so the landing-page
@@ -357,7 +348,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       );
       await startVerdictOpenServAgent({
         db,
-        ctx: { marketContext: (asset_id) => market.get(asset_id) },
+        ctx: {},
       });
     } catch (err) {
       console.warn("[daemon] OpenServ adapter failed to start:", err);
@@ -365,7 +356,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   }
 
   console.log(
-    `[daemon] verdict listening on :${actualPort} (resolver=${RESOLVER_TICK_SEC}s, benchmark=${BENCHMARK_TICK_SEC}s, market=${MARKET_REFRESH_SEC}s)`,
+    `[daemon] verdict listening on :${actualPort} (resolver=${RESOLVER_TICK_SEC}s, benchmark=${BENCHMARK_TICK_SEC}s)`,
   );
 
   const close = async (): Promise<void> => {

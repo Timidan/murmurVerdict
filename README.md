@@ -32,10 +32,10 @@
 > against canonical Chainlink + Pyth feeds. Every result is hashed, optionally pinned to Filecoin,
 > and ranked on a public leaderboard the whole agent economy can reference.
 
-Murmur Verdict is built for the [OpenServ launchpad](https://launch.openserv.ai). It turns the
-existing Murmur signal pipeline (Santiment scout → analyst → playbook scoring) into a non-trading
-*scoring layer* around other agents — a different and ownable seat in OpenServ's "build / launch /
-run" stack.
+Murmur Verdict is a pure *ranking layer* over canonical price/event oracles — Chainlink and
+Pyth on Base. Calls are committed, resolved against the named feed at horizon expiry, and
+ranked on a public leaderboard. No sentiment decoration, no in-house signal pipeline; the
+oracle is the single source of truth.
 
 ## Integrations
 
@@ -141,12 +141,10 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
   Signature}` headers. Idempotent on `(agent_id, client_order_id)`.
 - **Frozen Brier-style scoring** with horizon and move-magnitude scaling. Per-agent `verdict_score`
   is `mean(call_score) − stdev(call_score) / sqrt(n)` with a 20-call minimum for the main tier.
-- **Two chained receipts per call** — acceptance (submission + preflight + oracle policy) and
-  resolution (t0 + t1 + outcome + score). Both keccak256-hashed over canonical JSON.
 - **Chainlink ETH/USD on Base + Pyth fallback** with a deterministic t0/t1 anchoring policy and an
   `oracle_unavailable` terminal state past extended grace.
-- **OpenServ Verdict adapter** with six referee capabilities: `submit_call`, `get_call`,
-  `get_leaderboard`, `get_agent`, `get_agent_calls`, `get_market_preflight`.
+- **OpenServ Verdict adapter** with five referee capabilities: `submit_call`, `get_call`,
+  `get_leaderboard`, `get_agent`, `get_agent_calls`.
 - **Telegram cards** — auto-posted on every resolution; daily Top-10; weekly recap with most-
   calibrated agent (Brier).
 - **React/Vite dashboard** — Landing, Leaderboard, Agent profile (with claim CTA on shadow agents),
@@ -157,10 +155,11 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 ```
 docs/launchpad/        Frozen v0.1 spec & implementation plan
 src/verdict/           Schema, scoring, submissions, resolver, leaderboard, api, claim, db
-src/receipts/          Canonical-JSON encoder + acceptance/resolution receipt builders
+src/receipts/          Canonical-JSON encoder
 src/integrations/      oracle (Chainlink + Pyth), telegram, openserv-verdict adapter
-src/benchmark/         Deterministic Benchmark League + tagged-post shadow ingester
-src/daemon/            Boot script, market-context provider, cron tickers
+src/benchmark/         Benchmark agent registration (decision logic dormant since the
+                       Santiment integration was retired in Wave 4b-2)
+src/daemon/            Boot script, cron tickers
 contracts/             MurmurEscrow + tests (Pipelines v0.2 paid-inference escrow; v0.1 is read-only)
 dashboard/src/verdict/ Front-end (Landing, Leaderboard, Agent, Call, Claim)
 ```
@@ -179,8 +178,8 @@ npm start                                # tsx src/daemon/index.ts (HTTP + cron 
 VITE_VERDICT_API_URL=http://localhost:8080 npm run dashboard
 ```
 
-The daemon stays alive without a Santiment key (neutral market view) or Base RPC URL (resolver
-disabled with a warning). Add them once you're past local poking.
+The daemon stays alive without a Base RPC URL (resolver disabled with a warning). Add it
+once you're past local poking.
 
 ## API quickstart
 

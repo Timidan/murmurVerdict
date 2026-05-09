@@ -80,7 +80,7 @@ export async function startVerdictOpenServAgent(
     {
       name: "submit_call",
       description:
-        "Submit a market call (BUY/SELL ETH on Base over a 1/4/24/168h horizon with 0.51–0.95 confidence). Returns the call_id + Murmur preflight + oracle policy. Counts toward the agent's leaderboard rank when the call resolves against canonical Chainlink/Pyth feeds.",
+        "Submit a market call (BUY/SELL ETH on Base over a 1/4/24/168h horizon with 0.51–0.95 confidence). Returns the call_id + oracle policy. Counts toward the agent's leaderboard rank when the call resolves against canonical Chainlink/Pyth feeds.",
       schema: SUBMIT_INPUT,
       async run({ args }) {
         // Auth via API key issued by the claim flow; same trust boundary as
@@ -121,7 +121,7 @@ export async function startVerdictOpenServAgent(
     {
       name: "get_call",
       description:
-        "Look up a call by call_id. Returns submission, preflight, oracle policy, t0 anchor (if anchored), and resolution (if resolved).",
+        "Look up a call by call_id. Returns submission, oracle policy, t0 anchor (if anchored), and resolution (if resolved).",
       schema: ID_INPUT,
       async run({ args }) {
         const full = resolutionsRepo.loadFullCall(params.db, args.call_id);
@@ -272,32 +272,16 @@ export async function startVerdictOpenServAgent(
         });
       },
     },
-    {
-      name: "get_market_preflight",
-      description:
-        "Snapshot of Murmur's current market view for ETH on Base: composite score, top playbook, regime, data freshness. Use this to anticipate which risk_flags your call may attract.",
-      schema: z.object({}),
-      async run() {
-        const market = await params.ctx.marketContext("base:ETH:USD");
-        return JSON.stringify({
-          kind: "verdict_market_preflight",
-          schema_version: SCHEMA_VERSION,
-          scoring_version: SCORING_VERSION,
-          asset_id: market.asset_id,
-          composite_score: market.composite_score,
-          top_playbook: market.top_playbook,
-          regime: market.regime,
-          data_freshness_seconds: market.data_freshness_seconds,
-          served_at: nowIso(),
-        });
-      },
-    },
+    // Wave 4b-2 — `get_market_preflight` tool removed alongside the Santiment
+    // integration. The tool returned composite_score / regime / top_playbook
+    // decoration that the resolver never consulted. Murmur is a pure ranking
+    // layer over canonical price/event oracles.
   ]);
 
   await agent.start();
   singleton = agent;
   console.log(
-    `[openserv-verdict] agent listening on port ${port} with 6 referee capabilities`,
+    `[openserv-verdict] agent listening on port ${port} with 5 referee capabilities`,
   );
   return agent;
 }

@@ -22,7 +22,6 @@ import {
   type AcceptanceWriteInput,
 } from "./db.js";
 import { canonicalHash, canonicalize } from "../receipts/canonical.js";
-import { evaluateRisk, type MarketContext } from "./risk.js";
 import type { VerdictEventBus } from "./events.js";
 import {
   buildCommit,
@@ -64,8 +63,6 @@ import { encryptToDrandRound, type DrandContext } from "./drand-envelope.js";
 // ─── Public types ────────────────────────────────────────────────────────────
 
 export interface SubmissionContext {
-  /** Build current market context for the asset; the pipeline is upstream of risk. */
-  marketContext: (asset_id: AssetId) => Promise<MarketContext>;
   /** Now provider; injectable for tests. */
   now?: () => Date;
   /**
@@ -120,7 +117,6 @@ export interface SubmitResult {
 // re-issues the key wholesale.
 
 import { createHash } from "node:crypto";
-import type { AssetId } from "./schema.js";
 
 export interface SignedHeaders {
   agent_id: string;
@@ -450,12 +446,13 @@ export async function submitCall(args: {
     );
   }
 
-  // 6. preflight via risk evaluator. P3: submission is post-normalization
-  // so asset_id is always populated; assert non-null for the legacy
-  // marketContext signature. evaluateRisk gets a MarketContext (the legacy
-  // ad-hoc shape); the new MarketRow stays in scope as `market`.
-  const marketCtx = await ctx.marketContext(submission.asset_id!);
-  const { preflight } = evaluateRisk(submission, marketCtx);
+  // 6. Wave 4b-2 — Santiment-driven risk evaluator removed. The earlier
+  // pipeline produced a VerdictPreflight stamped onto every accepted call
+  // with composite_score / regime / playbook / risk_flags. Resolver never
+  // consulted it; calls settle against Chainlink/Pyth oracles only. The
+  // commitment + reveal + resolution rows are the canonical evidence
+  // trail; rate limits, dedup, and HMAC auth above provide all
+  // non-decorative gating.
 
   // 7. assign call_id and prep committed-mode envelope (Wave 4b: receipts
   // were dropped — call_id + reveal + resolution rows are the canonical
@@ -673,7 +670,6 @@ export async function submitCall(args: {
     strategy_tag: submission.strategy_tag,
     accepted_at,
     status: "accepted",
-    preflight,
     oracle_policy: oraclePolicy,
   });
 
@@ -837,13 +833,13 @@ function loadExistingAcceptedCall(
   // Wave 4b — receipts subsystem is gone; idempotent retries hydrate from
   // the submissions row alone. The call_id is the only canonical identifier
   // an old client expected back from this path.
+  // Wave 4b-2 — preflights table dropped; oracle_policies remains as the
+  // sole join below.
   const stmt = db.prepare(`
-    SELECT s.*, p.murmur_score, p.murmur_playbook, p.risk_flags_json,
-           p.data_freshness_seconds, p.market_regime,
+    SELECT s.*,
            op.primary_feed, op.fallback_feed, op.primary_max_staleness_sec,
            op.fallback_max_staleness_sec, op.t0_grace_seconds, op.t0_extended_grace_seconds
     FROM submissions s
-    JOIN preflights p ON p.call_id = s.call_id
     JOIN oracle_policies op ON op.call_id = s.call_id
     WHERE s.call_id = ?
   `);
@@ -870,13 +866,6 @@ function loadExistingAcceptedCall(
     strategy_tag: row.strategy_tag ?? undefined,
     accepted_at: row.accepted_at,
     status: "accepted",
-    preflight: {
-      murmur_score: row.murmur_score,
-      murmur_playbook: row.murmur_playbook,
-      risk_flags: JSON.parse(row.risk_flags_json as string),
-      data_freshness_seconds: row.data_freshness_seconds,
-      market_regime: row.market_regime,
-    },
     // P3 Phase 2d: oracle_policies fallback columns are nullable for
     // sub-hour Pyth-only markets. T0PolicySchema's optional fields accept
     // omission/undefined but NOT null; hydrate the conditional shape so

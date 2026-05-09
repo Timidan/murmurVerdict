@@ -8,8 +8,6 @@
     "dev": "tsx watch src/daemon/index.ts",
     "start": "tsx src/daemon/index.ts",
     "build": "tsc --noEmit",
-    "scout": "tsx src/scout/index.ts",
-    "analyst": "tsx src/analyst/index.ts",
     "lint": "tsc --noEmit",
     "smoke": "tsx src/verdict/__smoke__.ts && tsx src/verdict/__db_smoke__.ts && tsx src/verdict/__submissions_smoke__.ts && tsx src/verdict/__resolver_smoke__.ts && tsx src/verdict/__leaderboard_smoke__.ts && tsx src/verdict/__api_smoke__.ts && tsx src/integrations/__oracle_smoke__.ts && tsx src/benchmark/__benchmark_smoke__.ts && tsx src/verdict/__shadow_claim_smoke__.ts && tsx src/integrations/__telegram_smoke__.ts && tsx src/verdict/__disputes_smoke__.ts && tsx src/verdict/__auth_smoke__.ts && tsx src/integrations/__verifiers_smoke__.ts && tsx src/daemon/__daemon_smoke__.ts",
     "smoke:contracts": "forge test --root contracts",

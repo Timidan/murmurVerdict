@@ -69,7 +69,6 @@ import { z } from "zod";
 //   GET  /v1/agents/:slug
 //   GET  /v1/agents/:slug/calls?limit=
 //   GET  /v1/calls/:call_id
-//   GET  /v1/market/preflight
 //
 // Authed routes (HMAC):
 //   POST /v1/calls
@@ -2378,17 +2377,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     }),
   );
 
-  router.get("/v1/market/preflight", asyncHandler(async (_req, res) => {
-    const market = await deps.ctx.marketContext("base:ETH:USD");
-    res.json({
-      asset_id: market.asset_id,
-      composite_score: market.composite_score,
-      top_playbook: market.top_playbook,
-      regime: market.regime,
-      data_freshness_seconds: market.data_freshness_seconds,
-      served_at: nowIso(now()),
-    });
-  }));
+  // Wave 4b-2 — /v1/market/preflight endpoint dropped alongside the
+  // Santiment scout/analyst pipeline. The endpoint returned composite
+  // score / regime / top playbook decoration that the resolver never
+  // consulted; nothing on the agent path required it. Murmur is a pure
+  // ranking layer over canonical price/event oracles.
 
   // Error handler — keeps wire contract stable.
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {

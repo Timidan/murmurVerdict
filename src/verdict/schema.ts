@@ -446,21 +446,12 @@ export const SubmittedCallSchema = z
   });
 export type SubmittedCall = z.infer<typeof SubmittedCallSchema>;
 
-// ─── Preflight (Murmur-supplied during acceptance) ───────────────────────────
-
-export const MarketRegimeSchema = z.enum(["bullish", "bearish", "neutral"]);
-export type MarketRegime = z.infer<typeof MarketRegimeSchema>;
-
-export const VerdictPreflightSchema = z
-  .object({
-    murmur_score: z.number().min(-1).max(1),
-    murmur_playbook: z.string().min(1),
-    risk_flags: z.array(z.string()).default([]),
-    data_freshness_seconds: z.number().int().min(0),
-    market_regime: MarketRegimeSchema,
-  })
-  .strict();
-export type VerdictPreflight = z.infer<typeof VerdictPreflightSchema>;
+// Wave 4b-2 — VerdictPreflight + MarketRegime were Santiment-derived
+// decoration stamped onto every accepted call. Resolver never consulted
+// them; calls settle against Chainlink/Pyth oracles. The preflight
+// struct, the /v1/market/preflight endpoint, the preflights table, and
+// the entire scout → analyst pipeline are removed. Murmur is a pure
+// ranking layer over canonical price/event oracles.
 
 // ─── T0 / oracle anchoring policy ────────────────────────────────────────────
 
@@ -540,11 +531,11 @@ export const AcceptedCallSchema = z
     strategy_tag: StrategyTagSchema.optional(),
     accepted_at: z.string().datetime({ offset: false }),
     status: z.literal("accepted"),
-    preflight: VerdictPreflightSchema,
     oracle_policy: T0PolicySchema,
     // Wave 4b — receipts subsystem dropped. acceptance_receipt_hash and
     // acceptance_receipt_cid no longer exist on AcceptedCall; the call_id
     // itself is the canonical identifier downstream consumers chain on.
+    // Wave 4b-2 — preflight (Santiment-derived) dropped from the wire shape.
   })
   .strict();
 export type AcceptedCall = z.infer<typeof AcceptedCallSchema>;

@@ -82,14 +82,11 @@ export interface FullCall {
     rationale?: string | null;
     strategy_tag?: string | null;
   };
-  preflight: {
-    murmur_score: number;
-    murmur_playbook: string;
-    risk_flags: string[];
-    data_freshness_seconds: number;
-    market_regime: string;
-  };
-  acceptance_receipt: { hash: string; filecoin_cid: string | null };
+  // Wave 4b — receipts subsystem dropped (acceptance_receipt no longer
+  // returned by the daemon). Wave 4b-2 — preflight metadata
+  // (murmur_score / murmur_playbook / risk_flags / market_regime /
+  // data_freshness_seconds) was Santiment-derived and is no longer
+  // emitted by the daemon either.
   t0: { t0: string; p0: string; feed: string } | null;
   resolution: {
     t1: string;
@@ -104,14 +101,8 @@ export interface FullCall {
   } | null;
 }
 
-export interface MarketPreflightSnapshot {
-  asset_id: string;
-  composite_score: number;
-  top_playbook: string;
-  regime: string;
-  data_freshness_seconds: number;
-  served_at: string;
-}
+// Wave 4b-2 — MarketPreflightSnapshot dropped alongside the Santiment
+// integration. The /v1/market/preflight endpoint no longer exists.
 
 export interface ClaimInitResponse {
   challenge_id: string;
@@ -276,7 +267,6 @@ export const verdictApi = {
   apiUrl: API_URL,
   meta: () => get<MetaResponse>("/v1/meta"),
   health: () => get<{ ok: boolean; schema_version: number; scoring_version: number; now: string }>("/v1/health"),
-  marketPreflight: () => get<MarketPreflightSnapshot>("/v1/market/preflight"),
   leaderboard: (opts: { tier?: "main" | "provisional"; limit?: number } = {}) => {
     const params = new URLSearchParams();
     if (opts.tier) params.set("tier", opts.tier);

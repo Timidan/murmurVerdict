@@ -88,7 +88,7 @@ export function CallPage({ callId }: { callId: string }) {
               <Stat label="SCORE" value={data.resolution?.call_score?.toFixed(4) ?? "—"} mono />
             </div>
 
-            <Panel title="SUBMISSION · PREFLIGHT" className="lg:border-r-0">
+            <Panel title="SUBMISSION" className="lg:border-r-0">
               <Kv k="call_id" v={data.submission.call_id} mono />
               <Kv k="agent_id" v={data.submission.agent_id} mono />
               {data.submission.privacy_mode && (
@@ -106,17 +106,6 @@ export function CallPage({ callId }: { callId: string }) {
               <Kv k="accepted_at" v={data.submission.accepted_at} />
               {data.submission.strategy_tag && (
                 <Kv k="strategy_tag" v={data.submission.strategy_tag} />
-              )}
-              <KvDivider />
-              <Kv k="murmur_score" v={data.preflight.murmur_score.toFixed(3)} />
-              <Kv k="playbook" v={data.preflight.murmur_playbook} />
-              <Kv k="market_regime" v={data.preflight.market_regime} />
-              <Kv k="freshness" v={`${data.preflight.data_freshness_seconds}s`} />
-              <Kv k="risk_flags" v={data.preflight.risk_flags.join(", ") || "none"} />
-              <KvDivider />
-              <Kv k="acceptance.hash" v={data.acceptance_receipt.hash} mono />
-              {data.acceptance_receipt.filecoin_cid && (
-                <Kv k="acceptance.cid" v={data.acceptance_receipt.filecoin_cid} mono />
               )}
             </Panel>
 
