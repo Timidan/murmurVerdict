@@ -7,9 +7,11 @@
 // start silence is acceptable. Keeping the buffer in-process also keeps
 // the ticker hot path free of any DB I/O beyond the submitCall write.
 //
-// The buffer is asset-scoped, fixed-capacity, FIFO. At the default 10-min
-// benchmark cadence, 144 samples covers ~24h — enough for the longest
-// baseline horizon (Contrarian 24h fade) plus a comfortable margin.
+// Eviction is by elapsed time, not by sample count: the longest lookback
+// any baseline performs is Contrarian's 24h fade, so retaining ~25h of
+// samples is sufficient regardless of BENCHMARK_TICK_SEC. (A fixed-count
+// buffer would silently break Contrarian when operators run sub-default
+// cadences — e.g. 60s ticks would only retain ~2.4h.)
 
 export interface PriceSample {
   /** Decimal string price as returned by OracleObservation.price. */
@@ -25,20 +27,24 @@ export interface PriceLookup {
   actual_age_hours: number;
 }
 
-const DEFAULT_CAPACITY = 144;
+const DEFAULT_RETAIN_MS = 25 * 60 * 60 * 1000; // 25h; covers Contrarian's 24h horizon plus margin
 
 export class PriceHistory {
   private readonly buffers = new Map<string, PriceSample[]>();
+  private readonly retainMs: number;
 
-  constructor(private readonly capacity: number = DEFAULT_CAPACITY) {
-    if (capacity <= 0) {
-      throw new Error(`PriceHistory capacity must be positive, got ${capacity}`);
+  constructor(retainMs: number = DEFAULT_RETAIN_MS) {
+    if (retainMs <= 0) {
+      throw new Error(`PriceHistory retainMs must be positive, got ${retainMs}`);
     }
+    this.retainMs = retainMs;
   }
 
   /**
-   * Append a fresh price sample for `asset_id`. Oldest sample is evicted
-   * once the per-asset buffer hits capacity.
+   * Append a fresh price sample for `asset_id`. Anything older than
+   * `retainMs` from the just-recorded sample's timestamp is evicted —
+   * anchoring on the oracle clock (not wall-clock) keeps the buffer
+   * stable across small clock drifts and predictable in tests.
    */
   record(asset_id: string, price: string, ts: string): void {
     let buf = this.buffers.get(asset_id);
@@ -47,8 +53,9 @@ export class PriceHistory {
       this.buffers.set(asset_id, buf);
     }
     buf.push({ price, ts });
-    if (buf.length > this.capacity) {
-      buf.splice(0, buf.length - this.capacity);
+    const cutoffMs = Date.parse(ts) - this.retainMs;
+    while (buf.length > 0 && Date.parse(buf[0]!.ts) < cutoffMs) {
+      buf.shift();
     }
   }
 

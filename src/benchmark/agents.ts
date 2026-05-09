@@ -181,6 +181,13 @@ const ASSET_FEED_FALLBACK: Record<AssetId, OracleFeed | undefined> = {
 // the documented baseline behavior (cold-start until the next 24h of ticks).
 const SHARED_HISTORY = new PriceHistory();
 
+// Maximum primary-feed staleness (seconds) the baselines tolerate before
+// preferring the fallback. Matches the typical T0Policy.primary_max_staleness_sec
+// the resolver enforces for ETH/USD on Base — without this guard the baselines
+// build history off prices the resolver would refuse, drifting the signal away
+// from settle-time reality.
+const PRIMARY_MAX_STALE_SEC = 120;
+
 /**
  * Ensure all baselines exist as agents in the DB. Idempotent.
  */
@@ -345,25 +352,35 @@ async function fetchPriceWithFallback(
 ): Promise<OracleObservation> {
   const primary = ASSET_FEED_PRIMARY[asset_id];
   const fallback = ASSET_FEED_FALLBACK[asset_id];
+  let primaryFailure: string | null = null;
+
   if (primary) {
     try {
-      return await oracle.getLatestPrice(primary);
-    } catch (primaryErr) {
-      if (!fallback) throw primaryErr;
-      try {
-        return await oracle.getLatestPrice(fallback);
-      } catch (fallbackErr) {
-        const primaryMsg =
-          primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
-        const fallbackMsg =
-          fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-        throw new Error(
-          `both feeds failed for ${asset_id}: primary=${primaryMsg}; fallback=${fallbackMsg}`,
-        );
-      }
+      const obs = await oracle.getLatestPrice(primary);
+      if (obs.source_age_seconds <= PRIMARY_MAX_STALE_SEC) return obs;
+      primaryFailure = `primary stale: ${obs.source_age_seconds.toFixed(1)}s > ${PRIMARY_MAX_STALE_SEC}s`;
+    } catch (e) {
+      primaryFailure = e instanceof Error ? e.message : String(e);
     }
   }
-  if (fallback) return oracle.getLatestPrice(fallback);
+
+  if (fallback) {
+    try {
+      return await oracle.getLatestPrice(fallback);
+    } catch (fallbackErr) {
+      const fallbackMsg =
+        fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      throw new Error(
+        `both feeds unavailable for ${asset_id}: primary=${primaryFailure ?? "n/a"}; fallback=${fallbackMsg}`,
+      );
+    }
+  }
+
+  if (primaryFailure) {
+    throw new Error(
+      `primary feed only and unavailable for ${asset_id}: ${primaryFailure}`,
+    );
+  }
   throw new Error(`no oracle feed registered for ${asset_id}`);
 }
 
