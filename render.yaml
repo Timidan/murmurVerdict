@@ -69,3 +69,31 @@ services:
       # ─── Receipt persistence (optional) ───────────────────────────────
       - key: FILECOIN_API_TOKEN
         sync: false
+
+      # ─── Privacy + V2 ─────────────────────────────────────────────────
+      # Daemon's age recipient (X25519 public key) for committed-mode
+      # encryption. When unset, committed-mode submissions return 503 and
+      # only legacy_plaintext is accepted.
+      - key: MURMUR_DAEMON_AGE_RECIPIENT
+        sync: false
+      # Optional fallback identity (X25519 private key) so the daemon
+      # can decrypt committed envelopes after fallback_after for resolver
+      # use. Without it, only the agent's voluntary reveal can resolve.
+      - key: MURMUR_DAEMON_AGE_IDENTITY
+        sync: false
+      # Parallel drand/tlock envelope (D21). 1 = enabled. Operator
+      # overridable per environment.
+      - key: MURMUR_DRAND_ENABLED
+        value: "0"
+      # drand chain endpoint; required when MURMUR_DRAND_ENABLED=1.
+      - key: MURMUR_DRAND_CHAIN_URL
+        value: ""
+      # Whether committed-mode reveals show plaintext on the public feed
+      # post-resolution. 0 = stay sealed (default); 1 = open for audit.
+      - key: MURMUR_PRIVACY_COMMITTED_OPEN
+        value: "0"
+      # Phase-E cleanup gate. Set to "1" exactly ONCE after a verified
+      # backup to permanently scrub plaintext columns from committed-mode
+      # rows (see V2_DECISION_RECORD §7.5 / migration 015). Idempotent.
+      - key: MURMUR_PHASE_E_CLEANUP
+        value: "0"

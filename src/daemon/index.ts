@@ -33,6 +33,75 @@ const MARKET_REFRESH_SEC = Number(process.env.MARKET_REFRESH_SEC ?? 300);
 const VERDICT_DB_PATH = process.env.VERDICT_DB_PATH ?? "./data/verdict.db";
 const DASHBOARD_ORIGIN = (process.env.DASHBOARD_ORIGIN ?? "*").trim();
 
+// ─── pinReceipt callback ────────────────────────────────────────────────────
+//
+// Pinning is best-effort. Both the Resolver and the submission router accept
+// an optional `pinReceipt` callback that, when wired, produces a CID for each
+// canonical receipt JSON and populates `receipts.filecoin_cid`. Without a
+// callback wired, that column stays NULL forever — which is what we have
+// shipped to date.
+//
+// Design intent (do not regress):
+//   - Pinning MUST NEVER block resolution or acceptance. Any error MUST be
+//     swallowed (logged + return null), never thrown.
+//   - The default is a no-op; setting FILECOIN_API_TOKEN opts the operator in
+//     to a real best-effort upload against Lighthouse's anonymous-token
+//     endpoint (stable, public, supports plain Bearer auth).
+//   - On any non-2xx, malformed body, or network blip we return null so the
+//     receipt still persists with filecoin_cid=NULL. The receipt chain hash
+//     is independent of CID — pin failure does not corrupt provenance.
+
+const FILECOIN_PIN_ENDPOINT =
+  process.env.FILECOIN_PIN_ENDPOINT ?? "https://node.lighthouse.storage/api/v0/add";
+
+function makePinReceipt(): (canonical_json: string) => Promise<string | null> {
+  const token = process.env.FILECOIN_API_TOKEN;
+  if (!token) {
+    // No-op default: callback is wired into Resolver + router for symmetry,
+    // but every call resolves to null so filecoin_cid remains NULL.
+    return async () => null;
+  }
+  console.log(
+    `[daemon] pinReceipt enabled (endpoint=${FILECOIN_PIN_ENDPOINT})`,
+  );
+  return async (canonical_json: string): Promise<string | null> => {
+    try {
+      const form = new FormData();
+      form.append(
+        "file",
+        new Blob([canonical_json], { type: "application/json" }),
+        "receipt.json",
+      );
+      const res = await fetch(FILECOIN_PIN_ENDPOINT, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        console.warn(
+          `[daemon] pinReceipt non-2xx: ${res.status} ${res.statusText}`,
+        );
+        return null;
+      }
+      const text = await res.text();
+      // Lighthouse returns NDJSON-ish; the CID lives at .Hash on the last
+      // non-empty line. Defensive parse — any deviation returns null instead
+      // of throwing.
+      const lastLine = text.trim().split("\n").filter(Boolean).pop();
+      if (!lastLine) return null;
+      const obj = JSON.parse(lastLine) as { Hash?: string; cid?: string };
+      const cid = obj.Hash ?? obj.cid ?? null;
+      return typeof cid === "string" && cid.length > 0 ? cid : null;
+    } catch (err) {
+      console.warn(
+        "[daemon] pinReceipt failed (best-effort, ignored):",
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  };
+}
+
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 export interface DaemonHandle {
@@ -95,10 +164,14 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
   // matching subscription on call.accepted / call.resolved.
   const webhookDispatcher = startWebhookDispatcher(db, events);
+  // Pinning callback is shared between submit (acceptance receipts) and
+  // resolve (T1/dispute receipts). Best-effort; never blocks.
+  const pinReceipt = makePinReceipt();
   const resolver = oracle
     ? new Resolver({
         db,
         oracle,
+        pinReceipt,
         ...(ageCtx ? { ageContext: ageCtx } : {}),
         ...(drandCtx ? { drandContext: drandCtx } : {}),
         onResolved: async (call_id) => {
@@ -189,6 +262,9 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       ctx: {
         marketContext: (asset_id) => market.get(asset_id),
         events,
+        // Pinning is best-effort. The submit path swallows pin failures and
+        // persists the receipt with filecoin_cid=NULL; never block accept.
+        pinReceipt,
         ...(ageCtx ? { ageContext: ageCtx } : {}),
         ...(drandCtx ? { drandContext: drandCtx } : {}),
       },

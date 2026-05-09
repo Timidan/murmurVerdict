@@ -147,6 +147,68 @@ function applyMigrations(db: Database.Database): void {
     })();
     v = 12;
   }
+
+  if (v < 13) {
+    // V2 §7.5 — extend agents.kind enum to include the new tiered identity
+    // values 'casual' and 'attested'. Same table-rebuild discipline as 005
+    // (the previous agents.kind extension) and 010 (submissions rebuild):
+    // SQLite cannot ALTER a CHECK constraint in place. PRAGMA foreign_keys
+    // toggling lives in applyTableRebuildMigration (outside the txn — SQLite
+    // no-ops the toggle inside a transaction).
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_013,
+      () => {
+        set.run("schema_version", "13");
+      },
+      ["agents", "agents_v3"],
+    );
+    v = 13;
+  }
+
+  if (v < 14) {
+    // V2 §7.4 — additive: agents.destination_address (+ updated-at timestamp
+    // for the 24h cooldown logic enforced in JS, not SQL). No rebuild needed.
+    db.transaction(() => {
+      db.exec(MIGRATION_014);
+      set.run("schema_version", "14");
+    })();
+    v = 14;
+  }
+
+  if (v < 15) {
+    // V2 §7.5 / Phase E cleanup — env-gated, idempotent. Two-stage:
+    //   stage 1 (always)     — bump schema_version so we don't retry.
+    //   stage 2 (gated only) — rebuild submissions to relax NOT NULL on
+    //                          {side, asset_id, horizon_hours, confidence}
+    //                          and NULL them on committed-mode rows that
+    //                          have already passed the acceptance window.
+    //
+    // Gate: process.env.MURMUR_PHASE_E_CLEANUP === '1'. When unset the
+    // migration is a pure no-op except for the schema_version bump — that
+    // intentionally locks the gate to first-run-after-deploy. Operators
+    // who miss the window must run a manual cleanup script (out of scope).
+    //
+    // The rebuild step uses applyTableRebuildMigration for the same FK +
+    // PRAGMA + transaction discipline as 010 / 013. Tables tuple is
+    // ['submissions', 'submissions_v4'] — distinct from 010's
+    // 'submissions_v3' name so a half-applied 010 retry can't collide.
+    if (process.env.MURMUR_PHASE_E_CLEANUP === "1") {
+      applyTableRebuildMigration(
+        db,
+        MIGRATION_015,
+        () => {
+          set.run("schema_version", "15");
+        },
+        ["submissions", "submissions_v4"],
+      );
+    } else {
+      db.transaction(() => {
+        set.run("schema_version", "15");
+      })();
+    }
+    v = 15;
+  }
 }
 
 /**
@@ -999,6 +1061,205 @@ const MIGRATION_012 = `
     -- entries get the actual mutation timestamp.
     strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
   FROM markets;
+`;
+
+// ─── Migration 013 — agents.kind extension for tiered identity (V2 §7.5) ───
+//
+// Adds 'casual' and 'attested' to the agents.kind CHECK constraint so the
+// new identity tiers from V2_DECISION_RECORD §7.1 can register. SQLite
+// cannot ALTER a CHECK constraint in place; same table-rebuild pattern as
+// migrations 005 (the previous agents.kind extension that added
+// 'wallet_only') and 010 (the submissions rebuild for sub-hour markets).
+//
+// Foreign keys INTO agents from migration 001 / 005:
+//   verified_identities.agent_id  ON DELETE CASCADE
+//   submissions.agent_id          ON DELETE CASCADE
+//   claim_challenges.agent_id     ON DELETE CASCADE
+//   usage_events.agent_id         ON DELETE SET NULL
+// SQLite resolves FK targets by table NAME at validation time, not at FK
+// creation time, so renaming agents_v3 -> agents leaves the dependent FKs
+// pointing at the rebuilt table automatically. PRAGMA foreign_keys = OFF
+// during the rebuild (managed by applyTableRebuildMigration) prevents
+// transient enforcement errors during the DROP+RENAME window.
+//
+// Indexes recreated post-rename: idx_agents_kind (from 001) and
+// idx_agents_wallet (from 005). The leading DROP TABLE IF EXISTS
+// agents_v3 is the same idempotent retry guard used by 010/011.
+const MIGRATION_013 = `
+  DROP TABLE IF EXISTS agents_v3;
+
+  CREATE TABLE agents_v3 (
+    agent_id        TEXT PRIMARY KEY,
+    display_slug    TEXT UNIQUE NOT NULL COLLATE NOCASE,
+    kind            TEXT NOT NULL CHECK (kind IN ('benchmark','shadow','verified','internal_test','wallet_only','casual','attested')),
+    display_name    TEXT NOT NULL,
+    bio             TEXT,
+    created_at      TEXT NOT NULL,
+    api_key_hash    TEXT,
+    wallet_address  TEXT,
+    chain_id        TEXT
+  );
+
+  INSERT INTO agents_v3 (agent_id, display_slug, kind, display_name, bio, created_at, api_key_hash, wallet_address, chain_id)
+    SELECT agent_id, display_slug, kind, display_name, bio, created_at, api_key_hash, wallet_address, chain_id FROM agents;
+
+  DROP TABLE agents;
+  ALTER TABLE agents_v3 RENAME TO agents;
+
+  CREATE INDEX idx_agents_kind ON agents(kind);
+  CREATE INDEX idx_agents_wallet ON agents(wallet_address) WHERE wallet_address IS NOT NULL;
+`;
+
+// ─── Migration 014 — agents.destination_address (V2 §7.4) ──────────────────
+//
+// Pure additive change: operators declare a `destination_address` (any EVM
+// address) as a payout-routing target. They do NOT sign with it. The 24h
+// cooldown described in V2_DECISION_RECORD §7.4 is enforced in JS at the
+// repo update fn, not in SQL — keeping cooldown logic in code lets us
+// extend it (e.g. require email confirmation per change) without another
+// migration. The destination_address_updated_at timestamp column is the
+// state that cooldown logic reads.
+//
+// Format constraint (lowercase 0x + 40 hex) is intentionally NOT in the
+// SQL CHECK. Reason: viem's getAddress() normalization runs at the API
+// edge (matches the pattern used for agents.wallet_address — see
+// schema.ts WalletAddressSchema). Adding a SQL CHECK would either
+// duplicate that validation or make backfills awkward when a mixed-case
+// address slips past the API edge during dev.
+//
+// Index: partial on destination_address WHERE NOT NULL — most agents
+// won't take payments and won't set this. Same partial-index pattern as
+// idx_agents_wallet from migration 005.
+const MIGRATION_014 = `
+  ALTER TABLE agents ADD COLUMN destination_address TEXT;
+  ALTER TABLE agents ADD COLUMN destination_address_updated_at TEXT;
+  CREATE INDEX idx_agents_destination ON agents(destination_address) WHERE destination_address IS NOT NULL;
+`;
+
+// ─── Migration 015 — Phase E cleanup (env-gated, V2 §7.5) ──────────────────
+//
+// Closes the DB-operator-sees-everything gap from STATE_OF_MURMUR.md §3.5
+// and Phase 1 of V2_DECISION_RECORD §4. Committed-mode submissions ship
+// their plaintext fields ({side, asset_id, horizon_hours, confidence,
+// rationale, strategy_tag}) only inside `call_reveals` post-reveal; the
+// raw `submissions` row should not retain those values once the call is
+// past the acceptance window. This migration NULLs them out for any
+// committed-mode row that has moved past 'accepted'/'pending_t0' status.
+//
+// Why env-gated: forward-only nullification is destructive (legacy
+// committed-mode rows lose their plaintext). Operators must opt-in by
+// setting MURMUR_PHASE_E_CLEANUP=1 on the deploy that crosses schema
+// version 15. Once schema_version reaches 15 the migration won't re-run,
+// so the gate is single-use.
+//
+// CHECK constraint relaxation: the existing submissions table (rebuilt by
+// migration 010) requires {side, asset_id, horizon_hours, confidence}
+// NOT NULL. The UPDATE below would fail the NOT NULL on side and the
+// CHECK on confidence (>= 0.51). The rebuild here:
+//   - relaxes side, asset_id, horizon_hours, confidence to NULL-able
+//   - drops the side CHECK ('BUY','SELL') so NULL is permitted
+//   - drops the confidence CHECK (>= 0.51 AND <= 0.95) — same reason
+//   - keeps horizon_seconds NOT NULL (we don't NULL it; it's the
+//     canonical horizon field per migration 010 and is used by the
+//     resolver post-acceptance to compute T1)
+// Existing legacy_plaintext rows still satisfy the relaxed constraints
+// because they had real values before, so the INSERT-from-original
+// step copies them through unchanged.
+//
+// Status filter: rows in 'accepted' or 'pending_t0' are the t0-anchoring
+// window — the daemon may still need {side, asset_id, horizon_hours,
+// confidence} during T0 anchor recovery. We leave those alone. Anything
+// past pending_t0 (pending_t1, resolved, disputed, re_resolved, rejected)
+// has its plaintext mirrored into call_reveals (or never needed it for
+// rejected) and is safe to wipe.
+//
+// FK dependents: same set as migration 010 (preflights, oracle_policies,
+// t0_anchors, t1_resolutions, receipts, call_private_envelopes,
+// call_reveals). Same FK-OFF discipline via applyTableRebuildMigration.
+//
+// Indexes recreated post-rename: same set migration 010 created.
+//
+// Idempotency: re-running on a fresh DB with the env gate set produces a
+// no-op UPDATE (no committed-mode rows past pending_t0 exist) but still
+// performs the rebuild. The applyMigrations `if (v < 15)` guard prevents
+// re-execution on subsequent opens — this is the actual idempotency
+// boundary.
+const MIGRATION_015 = `
+  DROP TABLE IF EXISTS submissions_v4;
+
+  CREATE TABLE submissions_v4 (
+    call_id           TEXT PRIMARY KEY,
+    agent_id          TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    client_order_id   TEXT NOT NULL,
+    asset_id          TEXT,
+    side              TEXT,
+    horizon_hours     INTEGER,
+    horizon_seconds   INTEGER NOT NULL CHECK (horizon_seconds > 0),
+    confidence        REAL,
+    submitted_at      TEXT NOT NULL,
+    accepted_at       TEXT NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN ('accepted','pending_t0','pending_t1','resolved','disputed','re_resolved','rejected')),
+    rationale         TEXT,
+    strategy_tag      TEXT,
+    schema_version    INTEGER NOT NULL,
+    scoring_version   INTEGER NOT NULL,
+    dedup_key         TEXT NOT NULL,
+    privacy_mode      TEXT,
+    commit_hash       TEXT,
+    commit_scheme     TEXT,
+    market_id         TEXT,
+    market_config_version INTEGER,
+    prediction_value  TEXT,
+    prediction_low    TEXT,
+    prediction_high   TEXT,
+    round_id          TEXT,
+    UNIQUE(agent_id, client_order_id),
+    UNIQUE(dedup_key)
+  );
+
+  INSERT INTO submissions_v4 (
+    call_id, agent_id, client_order_id, asset_id, side,
+    horizon_hours, horizon_seconds,
+    confidence, submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id
+  )
+  SELECT
+    call_id, agent_id, client_order_id, asset_id, side,
+    horizon_hours, horizon_seconds,
+    confidence, submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id
+  FROM submissions;
+
+  DROP TABLE submissions;
+  ALTER TABLE submissions_v4 RENAME TO submissions;
+
+  CREATE INDEX idx_submissions_agent ON submissions(agent_id);
+  CREATE INDEX idx_submissions_status ON submissions(status);
+  CREATE INDEX idx_submissions_asset_horizon ON submissions(asset_id, horizon_hours);
+  CREATE INDEX idx_submissions_commit_hash ON submissions(commit_hash) WHERE commit_hash IS NOT NULL;
+  CREATE INDEX idx_submissions_privacy_mode ON submissions(privacy_mode);
+  CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
+  CREATE INDEX idx_submissions_round ON submissions(round_id) WHERE round_id IS NOT NULL;
+
+  -- Phase E cleanup: NULL plaintext fields on committed-mode rows past
+  -- the pending_t0 window. legacy_plaintext rows are untouched. The
+  -- rationale/strategy_tag columns are already nullable in the rebuilt
+  -- table; we set them anyway for explicitness.
+  UPDATE submissions
+  SET side = NULL,
+      asset_id = NULL,
+      horizon_hours = NULL,
+      confidence = NULL,
+      rationale = NULL,
+      strategy_tag = NULL
+  WHERE privacy_mode = 'committed'
+    AND status NOT IN ('accepted', 'pending_t0');
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────

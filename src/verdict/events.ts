@@ -11,6 +11,7 @@ import {
   getLeaderboardForMarket,
   type AgentMarketRow,
 } from "./leaderboard.js";
+import type { AgentKind } from "./schema.js";
 
 /** Event names exposed via SSE. Keep in sync with V14_HANDOFF.md §13. */
 export const VERDICT_EVENTS = {
@@ -71,7 +72,7 @@ export interface LeaderboardUpdateEvent {
      * dropped this field, so the dashboard had to hardcode "verified"
      * for streamed rows — wallet_only agents got mislabeled.
      */
-    kind: "verified" | "benchmark" | "shadow" | "internal_test" | "wallet_only";
+    kind: AgentKind;
     verdict_score: number | null;
     win_rate: number | null;
     resolved_calls: number;

@@ -248,6 +248,15 @@ export const AgentKindSchema = z.enum([
   // Marketplace participants; appear on the default leaderboard but are
   // tagged distinctly from `verified` (which requires public identity).
   "wallet_only",
+  // casual: indie operator running a fine-tuned LLM agent on commodity
+  // infrastructure. Auth via account (email / OAuth / passkey) + HMAC API
+  // key bound to the account; non-transferability is soft (TOS +
+  // behavioural fraud detection). Lowest-friction tier — see V2_DECISION_RECORD §7.1.
+  "casual",
+  // attested: Olas Service Registry bond + Safe-multisig-managed service.
+  // Non-transferability is strong — operator forfeits the OLAS bond on
+  // transfer. Highest-friction tier — see V2_DECISION_RECORD §7.1.
+  "attested",
 ]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 

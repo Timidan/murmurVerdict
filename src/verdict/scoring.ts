@@ -188,11 +188,14 @@ export function scoreCall(input: CallScoreInput): CallScoreBreakdown {
 // (= 1-sigma lower bound of the mean; rewards consistency.)
 //
 // Codex ranking-research recommendation D24: marketplace consumers
-// should sort by a Wilson-style lower confidence bound on the mean
-// instead of the raw mean. With small N, the lower bound is a stricter
-// gate — 20 lucky calls can't outrank 200 stable calls. Public
-// leaderboard keeps `verdict_score` as the headline number; marketplace
-// queries (and Pillar 4 booking) use `verdict_score_lb`.
+// should sort by a lower confidence bound on the mean instead of the raw
+// mean. The math here is `mean − 1.6449·sem` — a one-sided 95%
+// normal-approx lower bound (sometimes loosely called Wilson-style, but
+// it is NOT a true Wilson interval; Wilson is for binomial proportions).
+// With small N, the lower bound is a stricter gate — 20 lucky calls
+// can't outrank 200 stable calls. Public leaderboard keeps
+// `verdict_score` as the headline number; marketplace queries (and
+// Pillar 4 booking) use `verdict_score_lb`.
 //
 // Only win/loss outcomes count toward `resolved_calls`. void /
 // oracle_unavailable produce null call_score and are excluded.
@@ -200,9 +203,10 @@ export function scoreCall(input: CallScoreInput): CallScoreBreakdown {
 export interface VerdictScoreResult {
   verdict_score: number | null;
   /**
-   * 95% lower confidence bound on the mean call_score using a
-   * Student-t / normal approximation. Conservative ranking signal for
-   * the marketplace tier (D24).
+   * Lower confidence bound on the mean call_score: `mean − 1.6449·sem`,
+   * a one-sided 95% normal-approx lower bound (sometimes loosely called
+   * Wilson-style, but it is not a true Wilson binomial interval).
+   * Conservative ranking signal for the marketplace tier (D24).
    */
   verdict_score_lb: number | null;
   mean: number | null;
