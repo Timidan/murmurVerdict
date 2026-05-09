@@ -11,9 +11,9 @@ import { CalmFooter } from "../components/calm/CalmFooter.js";
  * thesis, top agents list, end. No multi-panel cockpit, no ticker, no
  * grids of cards. Numbers are the art; chrome disappears.
  *
- * Mirrors the data fetches from the existing Landing.tsx (LiveCounter
- * stats from SSE; AgentCardGrid leaderboard via REST + SSE) but
- * presents them inside CALM tokens.
+ * Mirrors the data fetches from the compact default (LiveCounter stats
+ * from SSE; AgentCardGrid leaderboard via REST + SSE) but presents them
+ * inside CALM tokens.
  */
 export function VerdictLandingCalm() {
   const stream = useStream();

@@ -2,7 +2,7 @@
 // Standalone CLI to independently verify a Murmur receipt chain.
 //
 // Usage:
-//   npx tsx tools/verify-receipt.ts <call_id> [--db ./data/verdict.db]
+//   npx tsx tools/verify/verify-receipt.ts <call_id> [--db ./data/verdict.db]
 //
 // The command opens the SQLite DB read-only and runs the same recomputation
 // the /v1/calls/:id/verify endpoint runs. Output is a single JSON object that

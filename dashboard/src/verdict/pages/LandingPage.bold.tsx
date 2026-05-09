@@ -9,7 +9,7 @@ import { BoldHero } from "../components/bold/BoldHero.js";
 /**
  * Landing — BOLD variant.
  *
- * Same data sources as the default Landing.tsx (verdictApi.leaderboard +
+ * Same data fetches as the compact default (verdictApi.leaderboard +
  * useStream stats.tick). Only the JSX/styling changes. Hero is the live
  * 24h-resolved counter rendered ~50vh tall in Doto, captions slammed to
  * the right edge with vast empty space between. Followed by an endless

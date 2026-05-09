@@ -10,7 +10,7 @@ import { BoldShell } from "../components/bold/BoldShell.js";
 import { BoldTopbar, boldHref } from "../components/bold/BoldTopbar.js";
 
 /**
- * Market detail — BOLD variant. Same fetches as MarketDetailPage.tsx
+ * Market detail — BOLD variant. Same fetches as the compact default
  * (fetchMarketLeaderboard + fetchMarkets registry). Renders the market
  * id at hero scale in Doto, the asset and horizon as caption, then the
  * agent ladder as tall hairline rows.

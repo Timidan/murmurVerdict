@@ -4,7 +4,7 @@
  * green/red diagnostic across 14 endpoint shapes.
  *
  * Usage:
- *   tsx tools/verify-deploy.ts \
+ *   tsx tools/verify/verify-deploy.ts \
  *     --api https://murmur.verdict \
  *     --dashboard https://murmur.app \
  *     --slug murmur-momentum

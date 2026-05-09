@@ -2,7 +2,7 @@
 // Pre-claim a shadow agent profile for an outreach target.
 //
 // Usage:
-//   npx tsx tools/preclaim-shadow.ts \
+//   npx tsx tools/operations/preclaim-shadow.ts \
 //     --kind x \
 //     --value @some_handle \
 //     [--display-name "Some Handle"] \

@@ -9,7 +9,7 @@ import { BoldShell } from "../components/bold/BoldShell.js";
 import { BoldTopbar, boldHref } from "../components/bold/BoldTopbar.js";
 
 /**
- * Agent — BOLD variant. Same data fetches as AgentPage.tsx
+ * Agent — BOLD variant. Same data fetches as the compact default
  * (verdictApi.agent + verdictApi.agentCalls). Hero is the agent's
  * computed average score in Doto at hero scale, with a single accent
  * sign character (+ or −). Stats grid below as 4 huge cells. Calls

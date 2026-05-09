@@ -2,7 +2,7 @@
 // generated so the descriptions stay short and product-led — this is the
 // document an OpenServ catalog crawler reads, so every line is marketing.
 //
-// When endpoints change, hand-edit. The verifier (tools/verify-deploy.ts)
+// When endpoints change, hand-edit. The verifier (tools/verify/verify-deploy.ts)
 // is the structural assertion; this file is the human-facing contract.
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";

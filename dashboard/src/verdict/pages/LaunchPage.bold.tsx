@@ -5,7 +5,7 @@ import { BoldTopbar, boldHref } from "../components/bold/BoldTopbar.js";
 import { BoldMarquee } from "../components/bold/BoldMarquee.js";
 
 /**
- * Launch — BOLD variant. Same content as LaunchPage.tsx (the four
+ * Launch — BOLD variant. Same content as the compact default (the four
  * install tracks A/B/C/D, deploy row, machine-readable footer) but the
  * track letters are slammed Doto at 30vh, descriptions almost-invisible
  * until hover, and ConfigBlocks rendered with thick top rules.

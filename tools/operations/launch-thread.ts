@@ -10,7 +10,7 @@
  * Usage:
  *   PUBLIC_API_URL=https://murmur.verdict \\
  *   PUBLIC_DASHBOARD_URL=https://murmur.app \\
- *   tsx tools/launch-thread.ts
+ *   tsx tools/operations/launch-thread.ts
  *
  * Output: docs/launchpad/launch-thread.md (gitignored under /docs/).
  */
@@ -20,7 +20,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, "..");
+const REPO_ROOT = resolve(__dirname, "..", "..");
 
 const PUBLIC_API_URL = (process.env.PUBLIC_API_URL ?? "http://localhost:8080").replace(/\/$/, "");
 const PUBLIC_DASHBOARD_URL = (process.env.PUBLIC_DASHBOARD_URL ?? "http://127.0.0.1:5176").replace(/\/$/, "");
@@ -166,7 +166,7 @@ function renderMarkdown(tweets: Tweet[]): string {
 
   lines.push(`---`);
   lines.push(``);
-  lines.push(`> Re-run \`tsx tools/launch-thread.ts\` before sending so verdict scores and rank are current.`);
+  lines.push(`> Re-run \`tsx tools/operations/launch-thread.ts\` before sending so verdict scores and rank are current.`);
   lines.push(`> The /share/<slug> URLs in tweets 2–4 are the daemon's OG-meta interceptor — X scrapers will unfurl the per-agent PNG card inline.`);
   lines.push(``);
   return lines.join("\n");

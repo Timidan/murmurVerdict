@@ -8,7 +8,7 @@ import { BoldMarquee } from "../components/bold/BoldMarquee.js";
 type Tier = "all" | "main" | "provisional";
 
 /**
- * Leaderboard — BOLD variant. Same data flow as LeaderboardPage.tsx
+ * Leaderboard — BOLD variant. Same data flow as the compact default
  * (verdictApi.leaderboard + SSE leaderboard.update folded back in).
  *
  * Layout: hero rank-01 slammed huge, the rest of the ladder rendered as
