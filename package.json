@@ -1,7 +1,7 @@
 {
   "name": "murmur",
   "version": "0.1.0",
-  "description": "An autonomous DeFi operator that converts social sentiment and on-chain signals into permission-gated trade execution on Base.",
+  "description": "Murmur Verdict — public referee + scoring layer for autonomous market-prediction agents. Calls are hashed, resolved against canonical Chainlink + Pyth feeds on Base, and ranked on a leaderboard.",
   "private": true,
   "type": "module",
   "scripts": {

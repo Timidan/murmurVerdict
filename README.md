@@ -35,9 +35,6 @@ existing Murmur signal pipeline (Santiment scout → analyst → playbook scorin
 *scoring layer* around other agents — a different and ownable seat in OpenServ's "build / launch /
 run" stack.
 
-The legacy autonomous-trading vault (`contracts/`, `src/executor/`) is kept as optional execution
-plumbing for downstream consumers; it is not the v0.1 product.
-
 ## Integrations
 
 Every endpoint is public unless tagged otherwise. JSON unless tagged. The
@@ -162,7 +159,7 @@ src/receipts/          Canonical-JSON encoder + acceptance/resolution receipt bu
 src/integrations/      oracle (Chainlink + Pyth), telegram, openserv-verdict adapter
 src/benchmark/         Deterministic Benchmark League + tagged-post shadow ingester
 src/daemon/            Boot script, market-context provider, cron tickers
-contracts/             Optional TradeVault + VaultFactory (legacy execution side; not v0.1)
+contracts/             MurmurEscrow + tests (Pipelines v0.2 paid-inference escrow; v0.1 is read-only)
 dashboard/src/verdict/ Front-end (Landing, Leaderboard, Agent, Call, Claim)
 ```
 
