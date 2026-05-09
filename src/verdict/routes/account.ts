@@ -44,6 +44,7 @@ import {
   rotateApiKey,
   setDestinationAddress,
   listApiKeysForAccount,
+  AgentAlreadyOwnedError,
 } from "../auth/accounts.js";
 import { verifyPrivyAuth, type PrivyClaims } from "../auth/privy.js";
 
@@ -247,20 +248,28 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
       }
       const ts = (now ?? (() => new Date()))().toISOString().replace(/\.\d+Z$/, "Z");
       const agent_id = randomUUID();
+      // FIX 6 — wrap agent insert + ownership link in a single
+      // transaction so a crash between insert and link cannot leave
+      // an orphan casual agent. Errors are caught + classified outside
+      // the transaction (so the rollback runs first, then the API
+      // surfaces the right status code).
       try {
-        agentsRepo.insert(
-          db,
-          {
-            agent_id,
-            display_slug: parsed.data.display_slug,
-            kind: "casual",
-            display_name: parsed.data.display_name,
-            bio: parsed.data.bio,
-            created_at: ts,
-            verified_identities: [],
-          },
-          null,
-        );
+        db.transaction(() => {
+          agentsRepo.insert(
+            db,
+            {
+              agent_id,
+              display_slug: parsed.data.display_slug,
+              kind: "casual",
+              display_name: parsed.data.display_name,
+              bio: parsed.data.bio,
+              created_at: ts,
+              verified_identities: [],
+            },
+            null,
+          );
+          linkAgentToAccount(db, resolved.account_id, agent_id);
+        })();
       } catch (err) {
         // SQLite UNIQUE on display_slug → 'duplicate'.
         if (
@@ -273,9 +282,17 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
             409,
           );
         }
+        // BLOCKER #4 — agent already owned by a different account.
+        if (err instanceof AgentAlreadyOwnedError) {
+          throw new VerdictError(
+            err.message,
+            ERROR_CODES.agent_already_owned_by_another_account,
+            409,
+            { agent_id: err.agent_id },
+          );
+        }
         throw err;
       }
-      linkAgentToAccount(db, resolved.account_id, agent_id);
       res.status(201).json({
         agent_id,
         display_slug: parsed.data.display_slug,

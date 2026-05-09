@@ -1000,6 +1000,13 @@ export const ERROR_CODES = {
    * code so the caller can prompt for / persist a default.
    */
   agent_slug_required: "agent_slug_required",
+  /**
+   * Hard ownership conflict — the agent_id requested for link is already
+   * owned by a DIFFERENT account. Surfaced as 409 by POST
+   * /v1/account/agents (BLOCKER #4). Distinct from agent_not_authorized
+   * because the caller's auth is valid; the resource is just claimed.
+   */
+  agent_already_owned_by_another_account: "agent_already_owned_by_another_account",
   asset_not_supported: "asset_not_supported",
   internal_error: "internal_error",
 } as const;

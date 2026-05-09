@@ -54,6 +54,17 @@ import {
   parseStoredCommitment,
 } from "./submission-normalizers.js";
 import { serializeOutcome, type Outcome as UniversalOutcome } from "./markets-core.js";
+import { AdapterNotFoundError } from "./markets.js";
+
+// ─── Env knobs ──────────────────────────────────────────────────────────────
+//
+// MURMUR_V2_RESOLVER_DISABLED — kill switch for the additive v2 dual-write
+// path (computeV2OutcomePath). When set to "1", the resolver skips the v2
+// computation entirely and writes only the legacy resolution receipt /
+// columns. Intended for emergency rollback if production data exposes a
+// bad adapter / commitment shape AFTER deploy. Default: v2 path runs but
+// is wrapped in try/catch — a throw in v2 is logged and the legacy
+// transaction still proceeds (BLOCKER #1 isolation guarantee).
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -288,13 +299,29 @@ export class Resolver {
         // Legacy compatibility check: scoreOutcomeVector returns null
         // call_score iff the legacy verdictOutcome is 'void'. Asserting
         // this would catch any future divergence at the adapter cutover.
-        const v2 = this.computeV2OutcomePath({
-          ctx,
-          subject,
-          t0row,
-          obs,
-          subjectVoidBand,
-        });
+        // BLOCKER #1 isolation: the v2 dual-write path MUST NEVER abort the
+        // legacy resolution transaction. Wrap the whole compute in try/catch
+        // and honor the MURMUR_V2_RESOLVER_DISABLED kill switch so an
+        // operator can hot-disable v2 without redeploy if a bad adapter or
+        // malformed commitment lands in production.
+        let v2: ReturnType<Resolver["computeV2OutcomePath"]> = null;
+        if (process.env.MURMUR_V2_RESOLVER_DISABLED !== "1") {
+          try {
+            v2 = this.computeV2OutcomePath({
+              ctx,
+              subject,
+              t0row,
+              obs,
+              subjectVoidBand,
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(
+              `[resolver] v2 path failed for call ${ctx.call_id}: ${msg}`,
+            );
+            v2 = null;
+          }
+        }
 
         const resolved_at = this.nowIso();
         // Look up the issuing agent so legacy receipts can carry the
@@ -574,11 +601,27 @@ export class Resolver {
     // Resolve the market row to dispatch the adapter. Legacy rows without
     // market_id (pre-MIGRATION_009) fall through; the adapter dispatch
     // requires a market row to honor markets.adapter_id (Phase 11+).
+    //
+    // FIX 1c — defensive: missing market row, missing/unknown adapter,
+    // unparseable commitment_json all return null instead of throwing.
+    // The outer try/catch in the resolver tick (FIX 1a) is a backstop
+    // for unexpected programmer errors; the well-known partial-state
+    // cases land here as a quiet `null` so a single bad call can't
+    // poison the tick.
     const marketId = args.subject.market_id ?? args.ctx.market_id ?? null;
     if (!marketId) return null;
     const marketRow = marketsRepo.get(this.db, marketId);
     if (!marketRow) return null;
-    const adapter = getAdapterForMarket(marketRow);
+
+    let adapter;
+    try {
+      adapter = getAdapterForMarket(marketRow);
+    } catch (err) {
+      if (err instanceof AdapterNotFoundError) {
+        return null;
+      }
+      throw err;
+    }
 
     // Lift the resolver-scoped values into the adapter's observation context.
     // This is the seam Phase 3's NativePriceAdapter shell prepped for —
@@ -608,22 +651,38 @@ export class Resolver {
       )
       .get(args.ctx.call_id) as { commitment_json: string | null } | undefined;
     const stored = parseStoredCommitment(subRow?.commitment_json ?? null);
-    const commitment =
-      stored ??
-      legacySubmissionToCommitment({
-        side: args.subject.side,
-        confidence: args.subject.confidence,
-        asset_id: args.subject.asset_id,
-        horizon_hours: args.subject.horizon_hours,
-        // The Commitment.horizon.iso is render-only — scoreOutcomeVector
-        // never reads it. Use accepted_at + horizon_seconds as a stable
-        // canonical value (matches what Phase 4 v2 submit stamps).
-        expected_resolves_at_iso: this.computeExpectedResolvesAt(args.ctx),
-        market_id: marketId,
-        market_config_version: args.subject.market_config_version ?? null,
-      });
+    let commitment;
+    if (stored) {
+      commitment = stored;
+    } else {
+      // Legacy fallback. Wrap in try/catch so a malformed legacy row
+      // (e.g. Phase E-cleaned committed row with no stored commitment_json
+      // and nulled-out plaintext columns) returns null instead of throwing
+      // through the outer resolver loop.
+      try {
+        commitment = legacySubmissionToCommitment({
+          side: args.subject.side,
+          confidence: args.subject.confidence,
+          asset_id: args.subject.asset_id,
+          horizon_hours: args.subject.horizon_hours,
+          // The Commitment.horizon.iso is render-only — scoreOutcomeVector
+          // never reads it. Use accepted_at + horizon_seconds as a stable
+          // canonical value (matches what Phase 4 v2 submit stamps).
+          expected_resolves_at_iso: this.computeExpectedResolvesAt(args.ctx),
+          market_id: marketId,
+          market_config_version: args.subject.market_config_version ?? null,
+        });
+      } catch {
+        return null;
+      }
+    }
 
-    const score = scoreOutcomeVector(commitment, outcome);
+    let score;
+    try {
+      score = scoreOutcomeVector(commitment, outcome);
+    } catch {
+      return null;
+    }
     return {
       commitment,
       outcome,

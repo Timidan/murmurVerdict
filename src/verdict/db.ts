@@ -177,36 +177,33 @@ function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 15) {
-    // V2 §7.5 / Phase E cleanup — env-gated, idempotent. Two-stage:
-    //   stage 1 (always)     — bump schema_version so we don't retry.
-    //   stage 2 (gated only) — rebuild submissions to relax NOT NULL on
-    //                          {side, asset_id, horizon_hours, confidence}
-    //                          and NULL them on committed-mode rows that
-    //                          have already passed the acceptance window.
+    // BLOCKER #5 fix — V2 §7.5 / Phase E cleanup, decoupled.
     //
-    // Gate: process.env.MURMUR_PHASE_E_CLEANUP === '1'. When unset the
-    // migration is a pure no-op except for the schema_version bump — that
-    // intentionally locks the gate to first-run-after-deploy. Operators
-    // who miss the window must run a manual cleanup script (out of scope).
+    // STRUCTURAL part (this migration): rebuild submissions to relax
+    // NOT NULL on {side, asset_id, horizon_hours, confidence,
+    // rationale, strategy_tag}. ALWAYS runs — this is a pure schema
+    // change, not destructive, and downstream code paths now expect
+    // those columns to be nullable on committed-mode rows.
+    //
+    // DESTRUCTIVE part (moved out): the actual plaintext scrub now
+    // lives in src/verdict/phase-e-cleanup.ts and runs at boot when
+    // MURMUR_PHASE_E_CLEANUP=1. Idempotent — operators can flip the
+    // env at any time and the next boot picks up the work, vs the
+    // prior single-shot trap where the env had to be set on the
+    // SAME boot that crossed schema 15.
     //
     // The rebuild step uses applyTableRebuildMigration for the same FK +
     // PRAGMA + transaction discipline as 010 / 013. Tables tuple is
     // ['submissions', 'submissions_v4'] — distinct from 010's
     // 'submissions_v3' name so a half-applied 010 retry can't collide.
-    if (process.env.MURMUR_PHASE_E_CLEANUP === "1") {
-      applyTableRebuildMigration(
-        db,
-        MIGRATION_015,
-        () => {
-          set.run("schema_version", "15");
-        },
-        ["submissions", "submissions_v4"],
-      );
-    } else {
-      db.transaction(() => {
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_015,
+      () => {
         set.run("schema_version", "15");
-      })();
-    }
+      },
+      ["submissions", "submissions_v4"],
+    );
     v = 15;
   }
 
@@ -290,6 +287,38 @@ function applyMigrations(db: Database.Database): void {
       ["receipts", "receipts_v18"],
     );
     v = 18;
+  }
+
+  if (v < 19) {
+    // V2 BLOCKER #4 — one-account-per-agent enforced at the DB level.
+    //
+    // Migration 017 modeled account_agents as a many-to-many bridge with
+    // PRIMARY KEY (account_id, agent_id) but NO uniqueness on agent_id
+    // alone. Phase 7 intent (V2 §7.1) is one-owner-per-agent; the v2.0
+    // policy was being enforced only at the code layer. Rebuild the
+    // table with UNIQUE(agent_id) so the constraint is authoritative
+    // and concurrent linkAgentToAccount() calls cannot race.
+    //
+    // Defensive dedup: Phase 7 hasn't shipped, so production should
+    // have zero duplicate agent_id rows. The INSERT-from-original step
+    // selects the row with MIN(created_at) per agent_id, so if a future
+    // hotfix lands BEFORE this deploys and we somehow accumulated
+    // duplicates, the FIRST owner wins and the table rebuild succeeds
+    // rather than aborting on the new UNIQUE constraint.
+    //
+    // Recovery: routed through applyTableRebuildMigration for the same
+    // FK + transaction discipline as 010/013/015/018. Tables tuple is
+    // ['account_agents','account_agents_v19'] — distinct from 017's
+    // table name so a half-applied retry can't collide.
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_019,
+      () => {
+        set.run("schema_version", "19");
+      },
+      ["account_agents", "account_agents_v19"],
+    );
+    v = 19;
   }
 }
 
@@ -1329,19 +1358,13 @@ const MIGRATION_015 = `
   CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
   CREATE INDEX idx_submissions_round ON submissions(round_id) WHERE round_id IS NOT NULL;
 
-  -- Phase E cleanup: NULL plaintext fields on committed-mode rows past
-  -- the pending_t0 window. legacy_plaintext rows are untouched. The
-  -- rationale/strategy_tag columns are already nullable in the rebuilt
-  -- table; we set them anyway for explicitness.
-  UPDATE submissions
-  SET side = NULL,
-      asset_id = NULL,
-      horizon_hours = NULL,
-      confidence = NULL,
-      rationale = NULL,
-      strategy_tag = NULL
-  WHERE privacy_mode = 'committed'
-    AND status NOT IN ('accepted', 'pending_t0');
+  -- BLOCKER #5 fix: the destructive Phase-E plaintext scrub UPDATE has
+  -- been moved OUT of this migration into src/verdict/phase-e-cleanup.ts.
+  -- Migration 015 now only does the structural rebuild (NOT NULL relaxed
+  -- on side/asset_id/horizon_hours/confidence/rationale/strategy_tag).
+  -- The scrub runs at boot when MURMUR_PHASE_E_CLEANUP=1 and is
+  -- idempotent — operators can flip the env at any time and the next
+  -- boot will catch up, vs the prior single-shot schema-version trap.
 `;
 
 // ─── Migration 016 — v2 commitment + outcome storage columns (V2 §2.1/§2.2/§3.2)
@@ -1533,6 +1556,46 @@ const MIGRATION_018 = `
   ALTER TABLE receipts_v18 RENAME TO receipts;
 
   CREATE INDEX idx_receipts_call_kind ON receipts(call_id, kind);
+`;
+
+// ─── Migration 019 — UNIQUE(agent_id) on account_agents (BLOCKER #4) ────────
+//
+// Phase 7 / V2 §7.1 invariant: one account per agent. Migration 017 left
+// the constraint at the code layer only (PRIMARY KEY on the pair, no
+// uniqueness on agent_id alone), so a concurrent or buggy
+// linkAgentToAccount() could create a second link before the code-layer
+// pre-check fires. This rebuild makes the DB authoritative.
+//
+// Dedup tactic: Phase 7 hasn't shipped, so production should have zero
+// duplicate agent_id rows. We still select MIN(created_at) per agent_id
+// in the copy step so an unexpected duplicate (e.g. mid-migration hotfix
+// retry) doesn't abort the whole migration on the new UNIQUE constraint.
+//
+// PRIMARY KEY (account_id, agent_id) is preserved alongside UNIQUE(agent_id)
+// so existing read paths (the dispatcher's pair-lookup, etc.) keep working
+// byte-identically. The FK targets (accounts, agents) stay the same.
+const MIGRATION_019 = `
+  DROP TABLE IF EXISTS account_agents_v19;
+
+  CREATE TABLE account_agents_v19 (
+    account_id  TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    agent_id    TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (account_id, agent_id),
+    UNIQUE (agent_id)
+  );
+
+  INSERT INTO account_agents_v19 (account_id, agent_id, created_at)
+  SELECT account_id, agent_id, created_at
+    FROM account_agents
+   WHERE rowid IN (
+     SELECT MIN(rowid) FROM account_agents GROUP BY agent_id
+   );
+
+  DROP TABLE account_agents;
+  ALTER TABLE account_agents_v19 RENAME TO account_agents;
+
+  CREATE INDEX idx_account_agents_agent ON account_agents(agent_id);
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
@@ -2990,6 +3053,12 @@ export interface MarketRow {
   status: RegistryStatus;
   notes: string | null;
   created_at: string;
+  // FIX 5 — adapter dispatch surface columns. Backfilled by MIGRATION_016
+  // for every existing row to ('native-price','financial-direction').
+  // Stay nullable for forward-compat: a future row could land before its
+  // adapter is registered.
+  adapter_id: string | null;
+  market_family: string | null;
 }
 
 export const assetsRepo = {

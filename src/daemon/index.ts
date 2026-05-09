@@ -7,6 +7,7 @@ import { Resolver } from "../verdict/resolver.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import { ClaimService } from "../verdict/claim.js";
 import { agentsRepo, openDb, resolutionsRepo, submissionsRepo } from "../verdict/db.js";
+import { runPhaseECleanupIfRequested } from "../verdict/phase-e-cleanup.js";
 import { hashSharedSecret } from "../verdict/submissions.js";
 import { VerdictEventBus } from "../verdict/events.js";
 import { getLeaderboard } from "../verdict/leaderboard.js";
@@ -151,6 +152,9 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
 
   ensureParentDir(dbPath);
   const db = openDb({ path: dbPath });
+  // BLOCKER #5 fix — Phase-E plaintext scrub runs at boot when env is set.
+  // Idempotent + decoupled from MIGRATION_015's single-shot schema gate.
+  runPhaseECleanupIfRequested(db);
   registerBaselines(db);
 
   const market = new MarketContextProvider({

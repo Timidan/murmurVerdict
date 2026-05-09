@@ -99,8 +99,23 @@ services:
       # post-resolution. 0 = stay sealed (default); 1 = open for audit.
       - key: MURMUR_PRIVACY_COMMITTED_OPEN
         value: "0"
-      # Phase-E cleanup gate. Set to "1" exactly ONCE after a verified
-      # backup to permanently scrub plaintext columns from committed-mode
-      # rows (see V2_DECISION_RECORD §7.5 / migration 015). Idempotent.
+      # Phase-E cleanup gate. Set to "1" to scrub plaintext columns from
+      # committed-mode rows past pending_t0 (see V2_DECISION_RECORD §7.5).
+      # Idempotent — safe to leave on. Operator should backup first.
+      # Decoupled from MIGRATION_015 schema-version gate; runs at every
+      # boot when env is set, NULLs only rows that still have plaintext.
       - key: MURMUR_PHASE_E_CLEANUP
+        value: "0"
+      # Phase-E dry-run mode. When MURMUR_PHASE_E_CLEANUP=1 AND this is
+      # also set to "1", the boot hook prints the count of rows that
+      # WOULD be scrubbed and exits without writing. Use this to verify
+      # blast radius before the real run.
+      - key: MURMUR_PHASE_E_DRY_RUN
+        value: "0"
+      # V2 resolver kill switch (BLOCKER #1). Set to "1" to disable the
+      # additive v2 dual-write path. Legacy resolution receipts are still
+      # written; v2 receipts and t1_resolutions.resolved_outcome_json are
+      # skipped. Use as an emergency rollback if a bad adapter or
+      # commitment shape lands in production.
+      - key: MURMUR_V2_RESOLVER_DISABLED
         value: "0"

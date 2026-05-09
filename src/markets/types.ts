@@ -19,20 +19,15 @@
  */
 
 import type { ZodSchema } from "zod";
-import type { Commitment, Outcome } from "../verdict/markets-core.js";
+import type { Commitment, MarketRef, Outcome } from "../verdict/markets-core.js";
 
 // ─── MarketRef ───────────────────────────────────────────────────────────────
 
-// TODO: consolidate with `MarketRef` re-exported from
-// `../verdict/markets-core.ts`. Duplicated here for now to keep the markets
-// directory importable without pulling the full markets-core surface for
-// adapters that only need the registration shape. Same shape — promoted to a
-// shared types package once a third adapter lands.
-export interface MarketRef {
-  protocol: string;
-  sourceId: string;
-  configVersion: number;
-}
+// FIX 7 — single source of truth. The duplicate definition this file used
+// to carry has been replaced with a re-export from markets-core. Adapters
+// importing `MarketRef` from this module continue to compile byte-identically
+// — same name, same shape — but every consumer now agrees on one type.
+export type { MarketRef } from "../verdict/markets-core.js";
 
 // ─── AcceptanceReceipt ───────────────────────────────────────────────────────
 

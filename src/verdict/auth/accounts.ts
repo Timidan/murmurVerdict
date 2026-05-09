@@ -85,35 +85,43 @@ export function getOrCreateAccount(
   db: Database.Database,
   claims: PrivyClaims,
 ): { account_id: string; created: boolean } {
-  const existing = db
-    .prepare(
-      "SELECT account_id FROM accounts WHERE privy_user_id = ?",
-    )
-    .get(claims.privy_user_id) as { account_id: string } | undefined;
+  // FIX 6 — wrap the SELECT-then-(UPDATE | INSERT) sequence in a
+  // transaction so concurrent /session callers for the same Privy
+  // user don't race past the existence check. The UNIQUE on
+  // privy_user_id is the DB-level backstop; the txn closes the
+  // application-level window.
+  const txn = db.transaction(() => {
+    const existing = db
+      .prepare(
+        "SELECT account_id FROM accounts WHERE privy_user_id = ?",
+      )
+      .get(claims.privy_user_id) as { account_id: string } | undefined;
 
-  if (existing) {
+    if (existing) {
+      db.prepare(
+        "UPDATE accounts SET last_seen_at = ? WHERE account_id = ?",
+      ).run(nowIso(), existing.account_id);
+      return { account_id: existing.account_id, created: false };
+    }
+
+    const account_id = randomUUID();
+    const ts = nowIso();
     db.prepare(
-      "UPDATE accounts SET last_seen_at = ? WHERE account_id = ?",
-    ).run(nowIso(), existing.account_id);
-    return { account_id: existing.account_id, created: false };
-  }
-
-  const account_id = randomUUID();
-  const ts = nowIso();
-  db.prepare(
-    `INSERT INTO accounts (
-       account_id, privy_user_id, email, primary_login_method,
-       created_at, last_seen_at
-     ) VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    account_id,
-    claims.privy_user_id,
-    claims.email ?? null,
-    claims.primary_login_method ?? null,
-    ts,
-    ts,
-  );
-  return { account_id, created: true };
+      `INSERT INTO accounts (
+         account_id, privy_user_id, email, primary_login_method,
+         created_at, last_seen_at
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      account_id,
+      claims.privy_user_id,
+      claims.email ?? null,
+      claims.primary_login_method ?? null,
+      ts,
+      ts,
+    );
+    return { account_id, created: true };
+  });
+  return txn();
 }
 
 export function getAccountById(
@@ -145,18 +153,63 @@ export function getAccountByPrivyUserId(
 // ─── account_agents bridge ────────────────────────────────────────────────
 
 /**
- * Idempotent — re-inserting the same (account_id, agent_id) pair is a
- * no-op via INSERT OR IGNORE. Throws if the FK targets don't exist.
+ * BLOCKER #4 — agent ownership transfer attempt. Thrown by
+ * linkAgentToAccount when the agent is already linked to a DIFFERENT
+ * account. Distinct from a generic insert error so the caller can
+ * surface a precise 409 to the API edge.
+ */
+export class AgentAlreadyOwnedError extends Error {
+  /** Stable error code for API responses + tests. */
+  readonly code = "agent_already_owned_by_another_account" as const;
+  readonly agent_id: string;
+
+  constructor(agent_id: string) {
+    super(
+      `agent ${agent_id} is already owned by a different account`,
+    );
+    this.name = "AgentAlreadyOwnedError";
+    this.agent_id = agent_id;
+  }
+}
+
+/**
+ * Link an agent to an account, enforcing the one-account-per-agent
+ * invariant (V2 §7.1, BLOCKER #4). Behavior:
+ *   - No existing link → INSERT.
+ *   - Existing link to the SAME account → no-op (idempotent).
+ *   - Existing link to a DIFFERENT account → throw AgentAlreadyOwnedError.
+ *
+ * The pre-SELECT closes the race that "INSERT OR IGNORE" left open: with
+ * IGNORE alone, a concurrent request that already linked agent X to
+ * account A would silently succeed for account B's request (because the
+ * PRIMARY KEY in M017 was on the pair). Migration 019 adds UNIQUE(agent_id)
+ * which makes the DB authoritative; this code layer is the early-fail
+ * fast path so callers don't have to parse SQLite UNIQUE error messages.
  */
 export function linkAgentToAccount(
   db: Database.Database,
   account_id: string,
   agent_id: string,
 ): void {
-  db.prepare(
-    `INSERT OR IGNORE INTO account_agents (account_id, agent_id, created_at)
-     VALUES (?, ?, ?)`,
-  ).run(account_id, agent_id, nowIso());
+  const txn = db.transaction(() => {
+    const existing = db
+      .prepare(
+        "SELECT account_id FROM account_agents WHERE agent_id = ? LIMIT 1",
+      )
+      .get(agent_id) as { account_id: string } | undefined;
+    if (existing) {
+      if (existing.account_id === account_id) {
+        // Idempotent re-link by the same owner. No-op.
+        return;
+      }
+      throw new AgentAlreadyOwnedError(agent_id);
+    }
+    db.prepare(
+      `INSERT INTO account_agents (account_id, agent_id, created_at)
+       VALUES (?, ?, ?)`,
+    ).run(account_id, agent_id, nowIso());
+  });
+  txn();
 }
 
 export function listAccountAgents(

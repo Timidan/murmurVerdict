@@ -35,25 +35,38 @@ export const NATIVE_PRICE_ADAPTER_ID = "native-price" as const;
 export const FINANCIAL_DIRECTION_FAMILY = "financial-direction" as const;
 
 /**
- * Return the {@link MarketMakerAdapter} that handles `marketRow`. Today this
- * is always the singleton `native-price` adapter — no other adapters are
- * registered. Phase 11+ will read a `markets.adapter_id` column from the row
- * and dispatch via the registry's `get()` method. The signature already
- * accepts the row so the cutover is a one-liner.
- *
- * Throws when the registry hasn't bootstrapped its native-price adapter — a
- * symptom of the registry import being elided by tree-shaking. Test harnesses
- * that need a clean registry should import `./market-maker/registry.js`
- * explicitly to force the side-effect bootstrap.
- *
- * @param _marketRow — accepted for forward-compat; ignored today.
+ * FIX 5 — distinct error for "row references an adapter that isn't
+ * registered." Caller (resolver) catches this and skips the v2 path
+ * for the call rather than aborting the legacy transaction.
  */
-export function getAdapterForMarket(_marketRow: MarketRow): MarketMakerAdapter {
-  const adapter = getMarketMakerRegistry().get(NATIVE_PRICE_ADAPTER_ID);
-  if (!adapter) {
-    throw new Error(
-      `getAdapterForMarket: '${NATIVE_PRICE_ADAPTER_ID}' adapter not registered (registry bootstrap failed)`,
+export class AdapterNotFoundError extends Error {
+  readonly code = "adapter_not_found" as const;
+  readonly adapter_id: string;
+  readonly market_id: string | null;
+
+  constructor(adapter_id: string, market_id: string | null) {
+    super(
+      `getAdapterForMarket: adapter '${adapter_id}' not registered for market '${market_id ?? "<unknown>"}'`,
     );
+    this.name = "AdapterNotFoundError";
+    this.adapter_id = adapter_id;
+    this.market_id = market_id;
+  }
+}
+
+/**
+ * Return the {@link MarketMakerAdapter} that handles `marketRow`. Honors
+ * `markets.adapter_id` (added in MIGRATION_016) — when set, dispatches to
+ * that adapter; when null/missing (pre-Phase-1 markets that didn't get the
+ * backfill), falls back to the legacy `native-price` adapter. Throws
+ * {@link AdapterNotFoundError} when the row points at an adapter that
+ * isn't registered.
+ */
+export function getAdapterForMarket(marketRow: MarketRow): MarketMakerAdapter {
+  const adapterId = marketRow.adapter_id ?? NATIVE_PRICE_ADAPTER_ID;
+  const adapter = getMarketMakerRegistry().get(adapterId);
+  if (!adapter) {
+    throw new AdapterNotFoundError(adapterId, marketRow.market_id);
   }
   return adapter;
 }
