@@ -21,13 +21,13 @@
 //     URLs explicitly, or use a separate ingestion pipeline. Both
 //     interactive paths get noisy. Keep this tool tight.
 
-import { openDb } from "../src/verdict/db.js";
+import { openDb } from "../../src/verdict/db.js";
 import {
   findOrCreateShadowAgent,
   shadowSlugFor,
   type ShadowSource,
-} from "../src/benchmark/shadow.js";
-import { agentsRepo } from "../src/verdict/db.js";
+} from "../../src/benchmark/shadow.js";
+import { agentsRepo } from "../../src/verdict/db.js";
 
 interface Args {
   kind: ShadowSource["kind"];

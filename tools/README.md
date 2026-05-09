@@ -6,11 +6,24 @@ or `--flag value` arguments; all write to gitignored paths under
 
 | Script | npm | When to run |
 |---|---|---|
-| `tools/preclaim-shadow.ts` | — | once per outreach candidate, when seeding the leaderboard |
-| `tools/outreach-kit.ts` | `npm run outreach:kit` | before each DM push, so verdict scores are current |
-| `tools/launch-thread.ts` | `npm run outreach:thread` | before posting the launch thread on X |
-| `tools/verify-deploy.ts` | `npm run verify:deploy` | after every deploy / push to a release branch |
+| `tools/operations/preclaim-shadow.ts` | — | once per outreach candidate, when seeding the leaderboard |
+| `tools/operations/outreach-kit.ts` | `npm run outreach:kit` | before each DM push, so verdict scores are current |
+| `tools/operations/launch-thread.ts` | `npm run outreach:thread` | before posting the launch thread on X |
+| `tools/verify/verify-deploy.ts` | `npm run verify:deploy` | after every deploy / push to a release branch |
+| `tools/verify/verify-receipt.ts` | — | offline: re-verify a single receipt's hash chain |
+| `tools/wiring/chainlink-probe.ts` | — | one-shot live RPC probe of registered Chainlink Base feeds |
+| `tools/wiring/pyth-probe.ts` | — | one-shot live Hermes + adapter probe of Pyth feeds |
 | `src/mcp/index.ts` | `npm run mcp` | local: register Claude / Cursor / OpenServ MCP server |
+
+Tree:
+
+```
+tools/
+  operations/   — outreach + recruiting (writes to gitignored docs/launchpad/)
+  verify/       — post-deploy smoke + receipt-chain verifier
+  wiring/       — live RPC / oracle probes (Chainlink + Pyth)
+  README.md
+```
 
 ---
 
@@ -108,7 +121,7 @@ the public dashboard URL + claim URL the operator includes in
 outreach.
 
 ```sh
-tsx tools/preclaim-shadow.ts \
+tsx tools/operations/preclaim-shadow.ts \
   --kind x \
   --value @hsakatrades \
   --display-name "Hsaka" \

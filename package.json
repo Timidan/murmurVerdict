@@ -16,9 +16,9 @@
     "dashboard": "vite --config dashboard/vite.config.ts",
     "dashboard:build": "vite build --config dashboard/vite.config.ts",
     "mcp": "tsx src/mcp/index.ts",
-    "verify:deploy": "tsx tools/verify-deploy.ts",
-    "outreach:kit": "tsx tools/outreach-kit.ts",
-    "outreach:thread": "tsx tools/launch-thread.ts"
+    "verify:deploy": "tsx tools/verify/verify-deploy.ts",
+    "outreach:kit": "tsx tools/operations/outreach-kit.ts",
+    "outreach:thread": "tsx tools/operations/launch-thread.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

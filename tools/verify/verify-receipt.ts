@@ -8,8 +8,8 @@
 // the /v1/calls/:id/verify endpoint runs. Output is a single JSON object that
 // returns exit code 0 on PASS, 1 on FAIL, 2 on infrastructure/data errors.
 
-import { openDb } from "../src/verdict/db.js";
-import { verifyReceiptChain, VerifyError } from "../src/verdict/verify.js";
+import { openDb } from "../../src/verdict/db.js";
+import { verifyReceiptChain, VerifyError } from "../../src/verdict/verify.js";
 
 function arg(name: string, def?: string): string | undefined {
   const idx = process.argv.indexOf(name);

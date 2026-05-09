@@ -1,6 +1,6 @@
 name: verify deploy
 
-# Runs the deploy verifier (tools/verify-deploy.ts) against the public
+# Runs the deploy verifier (tools/verify/verify-deploy.ts) against the public
 # daemon + dashboard pair after every push to a release-tracking branch.
 # Exits non-zero if any of the 18 endpoint shape checks fail, so a regressed
 # deploy fails CI and surfaces a red check on GitHub.
