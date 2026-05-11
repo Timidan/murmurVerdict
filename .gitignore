@@ -10,6 +10,12 @@ dashboard/.env*
 
 # Dependencies
 node_modules/
+# Also match `node_modules` as a symlink (mode 120000) — npm install in a
+# fresh worktree sometimes creates dashboard/node_modules as a symlink
+# back into the root tree's node_modules, and trailing-slash globs match
+# directories only, not symlinks. Without this entry, the symlink itself
+# gets staged on the next `git add -A`.
+**/node_modules
 .pnp
 .pnp.js
 
