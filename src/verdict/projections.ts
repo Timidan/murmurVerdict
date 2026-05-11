@@ -98,6 +98,16 @@ export function shouldExposePlaintext(
   status: string,
   reveal_hash_valid?: number | boolean | null,
 ): boolean {
+  // Codex Z1 review fix — fhe_direct rows must NEVER expose plaintext
+  // through projectCallRow. Z1 already nulls the plaintext columns at
+  // submit time, but relying on "the column is null" is brittle: a
+  // future column added without nulling would silently leak. Fail-closed
+  // here so every public projection (/v1/calls/:id, /v1/agents/:slug/calls,
+  // /v1/feed/today, RSS, SSE accepted-event) returns operator-blind
+  // shapes for fhe_direct rows regardless of underlying column state.
+  // The bounded score lands on t1_resolutions via Z3 threshold release;
+  // until then operator-blind callers see only commit_hash + privacy_mode.
+  if (privacy_mode === "fhe_direct") return false;
   if (privacy_mode !== "committed") return true;
   if (PENDING_STATUSES.has(status as never)) return false;
   return reveal_hash_valid === true || reveal_hash_valid === 1;
