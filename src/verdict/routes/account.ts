@@ -45,6 +45,7 @@ import {
   setDestinationAddress,
   listApiKeysForAccount,
   AgentAlreadyOwnedError,
+  type SetDestinationResult,
 } from "../auth/accounts.js";
 import { verifyPrivyAuth, type PrivyClaims } from "../auth/privy.js";
 
@@ -431,17 +432,41 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
           { issues: parsed.error.issues },
         );
       }
-      const result = setDestinationAddress(
-        db,
-        agent.agent_id,
-        parsed.data.destination_address,
-        {
-          ...(destinationCooldownMs !== undefined
-            ? { cooldownMs: destinationCooldownMs }
-            : {}),
-          ...(now ? { now } : {}),
-        },
-      );
+      // V2 §7.7 risk-1 — the address update and its audit event must commit
+      // atomically. Without the outer transaction, a crash between
+      // setDestinationAddress returning and usageRepo.emit running would
+      // leave the cooldown active with no matching audit row, breaking
+      // post-incident replay AND blocking retry. better-sqlite3 nests via
+      // savepoints, so setDestinationAddress's inner txn becomes a savepoint
+      // of this outer commit-or-rollback boundary.
+      const result = db.transaction((): SetDestinationResult => {
+        const r = setDestinationAddress(
+          db,
+          agent.agent_id,
+          parsed.data.destination_address,
+          {
+            ...(destinationCooldownMs !== undefined
+              ? { cooldownMs: destinationCooldownMs }
+              : {}),
+            ...(now ? { now } : {}),
+          },
+        );
+        if (r.ok) {
+          usageRepo.emit(db, {
+            event_id: randomUUID(),
+            agent_id: agent.agent_id,
+            kind: "destination_address_updated",
+            ts: r.updated_at ?? new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+            attributes: {
+              previous_address: r.previous_address ?? null,
+              new_address: parsed.data.destination_address,
+              cooldown_ms:
+                destinationCooldownMs ?? 24 * 60 * 60 * 1000 /* default */,
+            },
+          });
+        }
+        return r;
+      })();
       if (!result.ok) {
         if (result.reason === "cooldown_active") {
           res.status(429).json({
@@ -457,22 +482,6 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
           404,
         );
       }
-      // V2 §7.7 risk-1 — emit the §7.7 audit-trail event so the cooldown
-      // enforcement has a complete `usage_events` history. Includes both
-      // the previous and new addresses + the canonical write timestamp,
-      // so a post-incident replay can reconstruct every payout retarget.
-      usageRepo.emit(db, {
-        event_id: randomUUID(),
-        agent_id: agent.agent_id,
-        kind: "destination_address_updated",
-        ts: result.updated_at ?? new Date().toISOString().replace(/\.\d+Z$/, "Z"),
-        attributes: {
-          previous_address: result.previous_address ?? null,
-          new_address: parsed.data.destination_address,
-          cooldown_ms:
-            destinationCooldownMs ?? 24 * 60 * 60 * 1000 /* default */,
-        },
-      });
       res.status(200).json({
         agent_id: agent.agent_id,
         destination_address: parsed.data.destination_address,
