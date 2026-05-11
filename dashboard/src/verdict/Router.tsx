@@ -11,6 +11,13 @@ const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => 
 // into the landing/leaderboard bundles.
 const AccountPage = lazy(() => import("./pages/AccountPage.js").then((m) => ({ default: m.AccountPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage.js").then((m) => ({ default: m.LoginPage })));
+const AgentNewPagePlaceholder = lazy(() =>
+  import("./pages/AgentNewPage.placeholder.js").then((m) => ({ default: m.AgentNewPagePlaceholder })),
+);
+// PrivyProvider mounts here, not in main.tsx, so public routes never load
+// the Privy SDK. One AccountShell instance wraps every /account/* route so
+// auth state survives navigation between login → list → new-agent.
+const AccountShell = lazy(() => import("./auth/AccountShell.js").then((m) => ({ default: m.AccountShell })));
 
 /* ── Variant gate ────────────────────────────────────────────────────────
    `?variant=bold|compact|calm` (passed in the hash query, e.g.
@@ -124,6 +131,7 @@ interface ParsedRoute {
     | "market"
     | "account"
     | "account_login"
+    | "account_agent_new"
     | "spec";
   params?: Record<string, string>;
 }
@@ -147,6 +155,10 @@ function parseHash(hash: string): ParsedRoute {
   // so deep links like #/account/login?next=/account survive sign-in.
   if (path === "/account") return { name: "account" };
   if (path === "/account/login") return { name: "account_login" };
+  // Placeholder for Phase 7b agent-creation page. The CTA on AccountPage
+  // points here; without the route entry the link would silently fall
+  // through to landing (codex P2 from the Phase 7a review).
+  if (path === "/account/agent/new") return { name: "account_agent_new" };
   const shareMatch = /^\/share\/([^/]+)$/.exec(path);
   if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
   const marketMatch = /^\/markets\/(.+)$/.exec(path);
@@ -244,8 +256,15 @@ export function VerdictRouter() {
         ) : (
           <MarketDetailPageCompact marketId={route.params!.market_id} />
         ))}
-      {route.name === "account" && <AccountPage />}
-      {route.name === "account_login" && <LoginPage next={decodeNext(next)} />}
+      {(route.name === "account" ||
+        route.name === "account_login" ||
+        route.name === "account_agent_new") && (
+        <AccountShell>
+          {route.name === "account" && <AccountPage />}
+          {route.name === "account_login" && <LoginPage next={decodeNext(next)} />}
+          {route.name === "account_agent_new" && <AgentNewPagePlaceholder />}
+        </AccountShell>
+      )}
       {route.name === "spec" && <SpecPage />}
     </Suspense>
   );
