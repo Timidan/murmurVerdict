@@ -72,6 +72,15 @@ export function AgentNewPage() {
   const [submitting, setSubmitting] = useState(false);
   const [minted, setMinted] = useState<MintedState | null>(null);
 
+  // Codex P2 fix — if postCreateAgent succeeds but postMintApiKey fails
+  // (network, 429, expired token), the user is stranded: the agent exists
+  // but no key was revealed, and retrying the form would 409 on the slug.
+  // We persist the created slug here so the UI flips to a key-only retry
+  // surface instead of asking the user to re-create.
+  const [createdSlug, setCreatedSlug] = useState<string | null>(null);
+  const [minting, setMinting] = useState(false);
+  const [mintError, setMintError] = useState<string | null>(null);
+
   // Auth gate — bounce to login if Privy reports a stable signed-out state.
   // Same pattern as AccountPage; we never render the form when unauthed.
   useEffect(() => {
@@ -97,10 +106,44 @@ export function AgentNewPage() {
     bioLen <= BIO_MAX &&
     !submitting;
 
+  const explainMintError = (err: unknown): string => {
+    if (err instanceof ApiError) {
+      if (err.status === 401 || err.status === 403) return "× session expired — sign in again";
+      if (err.status === 429) return "× rate limited — wait a minute and retry";
+      if (err.status === 404) return "× agent disappeared — refresh and start over";
+    }
+    return `× mint failed: ${(err as Error).message ?? "unknown"}`;
+  };
+
+  // Mint-only retry path. Used both as the second step of the happy path
+  // AND as the user-facing retry when create succeeded but mint failed.
+  const doMint = async (slugToMint: string): Promise<void> => {
+    setMinting(true);
+    setMintError(null);
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setMintError("× session expired — sign in again");
+        return;
+      }
+      const mint = await verdictApi.postMintApiKey(token, slugToMint);
+      setMinted({ result: mint, slug: slugToMint });
+      setCreatedSlug(null);
+    } catch (e) {
+      setMintError(explainMintError(e));
+    } finally {
+      setMinting(false);
+    }
+  };
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSlugTouched(true);
     if (!formReady) return;
+    // Codex P3 fix — submit the trimmed value that the inline validator
+    // approved, so trailing whitespace doesn't pass client-side then 400
+    // server-side.
+    const cleanSlug = slug.trim();
     setSubmitting(true);
     setServerError(null);
     try {
@@ -111,15 +154,15 @@ export function AgentNewPage() {
       }
       const trimmedBio = bio.trim();
       const created = await verdictApi.postCreateAgent(token, {
-        display_slug: slug,
+        display_slug: cleanSlug,
         display_name: effectiveName,
         ...(trimmedBio ? { bio: trimmedBio } : {}),
       });
-      // Mint the first API key immediately — the user's mental model is
-      // "I just made an agent, give me the credential". This is the
-      // single moment we ever surface the plaintext key.
-      const mint = await verdictApi.postMintApiKey(token, created.display_slug);
-      setMinted({ result: mint, slug: created.display_slug });
+      // Persist the created slug BEFORE attempting the mint so a mint-side
+      // failure can fall through to the retry surface without losing the
+      // reference (codex P2-stranded-mint fix).
+      setCreatedSlug(created.display_slug);
+      await doMint(created.display_slug);
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.status === 409) {
@@ -127,7 +170,7 @@ export function AgentNewPage() {
           // (the server folds reserved-list rejections into the same
           // UNIQUE-style error path). We can't always distinguish, so
           // surface a single message + suggest a `-2` suffix.
-          setServerError(`× taken — try ${suggestSuffixed(slug)}`);
+          setServerError(`× taken — try ${suggestSuffixed(cleanSlug)}`);
           return;
         }
         if (e.status === 400) {
@@ -182,6 +225,49 @@ export function AgentNewPage() {
       />
 
       <main className="flex-1 px-3 py-4 flex flex-col items-center">
+        {createdSlug && !minted ? (
+          // Codex P2 fix — agent exists, key mint failed. Retry the mint
+          // step in isolation; the user must not re-submit the form (the
+          // slug is taken now, would 409). Navigating away abandons the
+          // agent without a key (operator state, harmless).
+          <section className="ck-frame-strong w-full max-w-[560px] flex flex-col">
+            <div className="ck-header">
+              <span className="ck-label ck-pos">AGENT CREATED · KEY PENDING</span>
+              <span className="ck-mono ck-dim">{createdSlug}</span>
+            </div>
+            <div className="px-4 py-4 flex flex-col gap-3">
+              <p className="ck-mono">
+                <span className="ck-pos">{createdSlug}</span> is live, but the
+                api-key mint didn&apos;t complete. retry below — the slug stays
+                yours.
+              </p>
+              {mintError && (
+                <p
+                  className="ck-mono text-[11px]"
+                  style={{ color: "var(--color-accent)" }}
+                >
+                  {mintError}
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-3 pt-2">
+                <a href="#/account" className="ck-btn">
+                  [ ← ABANDON ]
+                </a>
+                <button
+                  type="button"
+                  disabled={minting}
+                  onClick={() => doMint(createdSlug)}
+                  className="ck-btn ck-btn-accent justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  [ RETRY KEY MINT → ]
+                </button>
+                {minting && (
+                  <span className="ck-mono ck-dim text-[10px]">working…</span>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : (
         <form
           onSubmit={onSubmit}
           className="ck-frame w-full max-w-[560px] flex flex-col"
@@ -284,6 +370,7 @@ export function AgentNewPage() {
             </div>
           </div>
         </form>
+        )}
       </main>
 
       {minted && (

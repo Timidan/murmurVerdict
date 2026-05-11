@@ -31,6 +31,12 @@ export interface ApiKeyMintModalProps {
 export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) {
   const [saved, setSaved] = useState(false);
   const [copiedAt, setCopiedAt] = useState<"raw" | "env" | null>(null);
+  // Codex P2 fix — when navigator.clipboard is unavailable (insecure
+  // origins, certain webviews) writeText() silently failed but the UI
+  // still claimed success. The key is one-time, so a false "copied"
+  // could trick the user into dismissing without saving. When we can't
+  // write, surface an explicit manual-copy hint instead.
+  const [copyFallback, setCopyFallback] = useState<"raw" | "env" | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Lock body scroll while the modal is open so the user can't accidentally
@@ -62,17 +68,24 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
   }, []);
 
   const copyToClipboard = useCallback(async (text: string, which: "raw" | "env") => {
+    // Codex P2 fix — gate "copied" feedback on an actual successful write.
+    // Pre-flight check + try/catch around writeText; on either branch fail
+    // we flip to copyFallback so the UI shows a manual-copy hint and the
+    // saved-checkbox conscience doesn't ride on a no-op success message.
+    if (!navigator.clipboard?.writeText) {
+      setCopyFallback(which);
+      setCopiedAt(null);
+      return;
+    }
     try {
-      // Modern clipboard API; falls back silently because the key is also
-      // selectable in the monospace box (triple-click works).
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      }
+      await navigator.clipboard.writeText(text);
       setCopiedAt(which);
+      setCopyFallback(null);
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
       copyTimerRef.current = setTimeout(() => setCopiedAt(null), 3000);
     } catch {
-      // Swallow: the user can still drag-select the key from the box.
+      setCopyFallback(which);
+      setCopiedAt(null);
     }
   }, []);
 
@@ -136,6 +149,16 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
           {copiedAt && (
             <p className="ck-mono ck-pos text-[10px]" aria-live="polite">
               copied {copiedAt === "env" ? ".env line" : "key"} · 3s
+            </p>
+          )}
+
+          {copyFallback && (
+            <p
+              className="ck-mono text-[10px]"
+              style={{ color: "var(--color-accent)" }}
+              aria-live="polite"
+            >
+              × clipboard blocked — triple-click the key above and Cmd-C / Ctrl-C.
             </p>
           )}
 
