@@ -11,8 +11,10 @@ const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => 
 // into the landing/leaderboard bundles.
 const AccountPage = lazy(() => import("./pages/AccountPage.js").then((m) => ({ default: m.AccountPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage.js").then((m) => ({ default: m.LoginPage })));
-const AgentNewPagePlaceholder = lazy(() =>
-  import("./pages/AgentNewPage.placeholder.js").then((m) => ({ default: m.AgentNewPagePlaceholder })),
+// Phase 7b — real agent-creation form + one-time api-key reveal modal.
+// Replaces the Phase 7a placeholder that lived at this route.
+const AgentNewPage = lazy(() =>
+  import("./pages/AgentNewPage.js").then((m) => ({ default: m.AgentNewPage })),
 );
 // PrivyProvider mounts here, not in main.tsx, so public routes never load
 // the Privy SDK. One AccountShell instance wraps every /account/* route so
@@ -155,9 +157,8 @@ function parseHash(hash: string): ParsedRoute {
   // so deep links like #/account/login?next=/account survive sign-in.
   if (path === "/account") return { name: "account" };
   if (path === "/account/login") return { name: "account_login" };
-  // Placeholder for Phase 7b agent-creation page. The CTA on AccountPage
-  // points here; without the route entry the link would silently fall
-  // through to landing (codex P2 from the Phase 7a review).
+  // Phase 7b — AgentNewPage owns this route: slug/name/bio form +
+  // one-time api-key reveal modal. Replaces the Phase 7a placeholder.
   if (path === "/account/agent/new") return { name: "account_agent_new" };
   const shareMatch = /^\/share\/([^/]+)$/.exec(path);
   if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
@@ -262,7 +263,7 @@ export function VerdictRouter() {
         <AccountShell>
           {route.name === "account" && <AccountPage />}
           {route.name === "account_login" && <LoginPage next={decodeNext(next)} />}
-          {route.name === "account_agent_new" && <AgentNewPagePlaceholder />}
+          {route.name === "account_agent_new" && <AgentNewPage />}
         </AccountShell>
       )}
       {route.name === "spec" && <SpecPage />}

@@ -245,6 +245,50 @@ export interface AccountAgent {
   kind: string | null;
 }
 
+/* ── Phase 7b — agent creation + api-key mint request/response shapes ───── */
+
+/**
+ * Request body for POST /v1/account/agents. Validation mirrors the
+ * server-side zod schema in src/verdict/routes/account.ts:CreateAgentSchema —
+ *   · `display_slug` matches AgentSlugSchema (3–32 chars, lowercase alphanum
+ *     segments joined by single dashes)
+ *   · `display_name` 1–120 chars (UI clamps to 64 per design guidance)
+ *   · `bio` optional, ≤500 chars on the server (UI clamps to 280)
+ */
+export interface CreateAgentRequest {
+  display_slug: string;
+  display_name: string;
+  bio?: string;
+}
+
+/**
+ * Response body for POST /v1/account/agents. The handler responds 201 with
+ * the freshly-inserted row; the client uses `display_slug` to navigate
+ * to the agent's integration page.
+ */
+export interface CreateAgentResponse {
+  agent_id: string;
+  display_slug: string;
+  display_name: string;
+  kind: "casual";
+  created_at: string;
+}
+
+/**
+ * Response body for POST /v1/account/agents/:slug/api-keys.
+ *
+ * SECURITY: `secret` is the ONE place this plaintext is ever returned by
+ * the API. Subsequent reads return only the metadata (api_key_id,
+ * created_at, label). UI MUST display this once and warn the user the
+ * value is not recoverable.
+ */
+export interface MintApiKeyResponse {
+  api_key_id: string;
+  secret: string;
+  created_at: string;
+  warning?: string;
+}
+
 // Phase 7a — `get`/`post` accept optional extra headers so account-area
 // callers can attach `Authorization: Bearer <privy_jwt>` without breaking
 // the existing call-sites (they continue to omit the second arg).
@@ -385,6 +429,35 @@ export const verdictApi = {
     get<{ agents: AccountAgent[] }>("/v1/account/agents", {
       Authorization: `Bearer ${privyToken}`,
     }),
+
+  /* ── Phase 7b — agent creation + one-time api-key mint ───────────────── */
+
+  /**
+   * Create a casual-tier agent under the authenticated account. Backend
+   * returns 409 with code `duplicate` if the slug is taken or reserved
+   * (the reserved-slug check lives behind the same UNIQUE constraint
+   * path in v0.2). Surfaces as ApiError(status=409) so the UI can swap
+   * in an inline "× taken" error.
+   */
+  postCreateAgent: (privyToken: string, body: CreateAgentRequest) =>
+    post<CreateAgentResponse>(
+      "/v1/account/agents",
+      body,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * Mint a new API key for the given slug. The plaintext `secret` is the
+   * ONLY field that ever returns the cleartext key; it is hashed at rest
+   * and not retrievable later. Caller MUST display it once + warn the
+   * user that it will not be shown again (see ApiKeyMintModal).
+   */
+  postMintApiKey: (privyToken: string, slug: string, label?: string) =>
+    post<MintApiKeyResponse>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/api-keys`,
+      label ? { label } : {},
+      { Authorization: `Bearer ${privyToken}` },
+    ),
 };
 
 /* ── Top-level convenience exports ─────────────────────────────────────── */
