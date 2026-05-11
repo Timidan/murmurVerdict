@@ -394,6 +394,27 @@ function applyMigrations(db: Database.Database): void {
     v = 23;
     set.run("schema_version", String(v));
   }
+
+  if (v < 24) {
+    // Z1 — operator-blind submission storage.
+    //
+    // fhe_call_ciphertexts stores ONLY the encrypted payout vector,
+    // its hash, and the binding metadata the resolver (Z2) needs to
+    // pick the right circuit. The daemon never decrypts the blob —
+    // ciphertext_blob is opaque bytes whose only daemon-side property
+    // is `sha256(blob) === ciphertext_hash`.
+    //
+    // UNIQUE(ciphertext_hash) defends against cross-agent replay of a
+    // captured ciphertext. UNIQUE(keyset_id, nonce) defends against
+    // same-agent nonce reuse (the preimage binds nonce, so reusing it
+    // would otherwise produce a stale-but-valid commit hash).
+    //
+    // Pure additive — no rebuild, no FK impact on existing tables.
+    // Legacy_plaintext and committed agents are unaffected.
+    db.exec(MIGRATION_024);
+    v = 24;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -1792,6 +1813,40 @@ const MIGRATION_023 = `
     UNIQUE (provider, name, vector_max_len)
   );
   CREATE INDEX IF NOT EXISTS idx_fhe_circuits_name ON fhe_circuits(name);
+`;
+
+// ─── Migration 024 — fhe_call_ciphertexts (Z1) ──────────────────────────────
+//
+// Stores per-call encrypted payout vectors for fhe_direct submissions.
+// One row per accepted fhe_direct call; FK cascades on submissions
+// delete so a developer's local rollback / dev wipe of submissions
+// doesn't leave orphan ciphertext rows.
+//
+// `ciphertext_blob` is BLOB (binary) not TEXT — base64 is the wire
+// shape, the database stores raw decoded bytes so byte-for-byte
+// dispute replay reproduces the same sha256 without re-decoding.
+//
+// `payout_denominator` is TEXT (decimal-stringified bigint) because
+// SQLite INTEGER caps at 2^63-1 and the universal Commitment shape
+// allows arbitrary-precision denominators. Same convention as
+// `submissions.commitment_json`'s payoutDenominator field.
+const MIGRATION_024 = `
+  CREATE TABLE IF NOT EXISTS fhe_call_ciphertexts (
+    call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    keyset_id            TEXT NOT NULL REFERENCES fhe_keysets(keyset_id),
+    circuit_id           TEXT NOT NULL REFERENCES fhe_circuits(circuit_id),
+    ciphertext_format    TEXT NOT NULL,
+    ciphertext_blob      BLOB NOT NULL,
+    ciphertext_hash      TEXT NOT NULL,
+    vector_len           INTEGER NOT NULL,
+    payout_denominator   TEXT NOT NULL,
+    nonce                TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    UNIQUE (ciphertext_hash),
+    UNIQUE (keyset_id, nonce)
+  );
+  CREATE INDEX IF NOT EXISTS idx_fhe_ct_keyset ON fhe_call_ciphertexts(keyset_id);
+  CREATE INDEX IF NOT EXISTS idx_fhe_ct_format ON fhe_call_ciphertexts(ciphertext_format);
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────

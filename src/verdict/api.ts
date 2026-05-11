@@ -290,16 +290,20 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       }
       const body = parsed.data;
 
-      // Casual tier: privacy_mode locked to legacy_plaintext (V2 §7.1).
-      // Committed mode requires (a) wallet binding and (b) reveal flow
-      // (Phase 8). Reject early with a precise code.
+      // Casual tier: privacy_mode locked to legacy_plaintext or
+      // fhe_direct (Z1). Committed mode still requires wallet binding
+      // (Phase 8); fhe_direct intentionally permits the casual tier
+      // because the cryptographic privacy stack does not require
+      // a verified wallet — the agent encrypts client-side against
+      // the keyset's public key.
       if (
         authResult.tier === "casual" &&
         body.privacy_mode !== undefined &&
-        body.privacy_mode !== "legacy_plaintext"
+        body.privacy_mode !== "legacy_plaintext" &&
+        body.privacy_mode !== "fhe_direct"
       ) {
         throw new VerdictError(
-          "casual tier accepts privacy_mode='legacy_plaintext' only on /v2/calls (committed mode requires Phase 8 wallet auth)",
+          "casual tier accepts privacy_mode ∈ {'legacy_plaintext', 'fhe_direct'} on /v2/calls (committed mode requires Phase 8 wallet auth)",
           ERROR_CODES.schema_invalid,
           400,
           { tier: authResult.tier, privacy_mode: body.privacy_mode },
@@ -320,27 +324,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         );
       }
 
-      // Adapter-narrow validation. native-price's commitmentSchema today
-      // accepts the LEGACY direction-input shape (asset_id|market_id +
-      // side + horizon_hours), NOT the universal Commitment. Phase 4
-      // bypasses that transform — we already have a canonical Commitment
-      // from CommitmentSchema above; we just normalize the runtime shape.
-      const v2Commitment: Commitment = {
-        marketRef: body.marketRef,
-        predictedOutcome: {
-          kind: body.predictedOutcome.kind,
-          payoutNumerators: body.predictedOutcome.payoutNumerators.map(
-            (s) => BigInt(s),
-          ),
-          payoutDenominator: BigInt(body.predictedOutcome.payoutDenominator),
-          ...(body.predictedOutcome.scalarValue !== undefined
-            ? { scalarValue: BigInt(body.predictedOutcome.scalarValue) }
-            : {}),
-        },
-        horizon: body.horizon,
-        confidence: body.confidence,
-      };
-
       // Resolve the underlying market_id. For native-price, marketRef.sourceId
       // IS the market_id (e.g. 'eth.1h'). Fail-fast 404 if unknown.
       const market = marketsRepo.get(deps.db, body.marketRef.sourceId);
@@ -353,6 +336,85 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         );
       }
 
+      // Z1 — operator-blind submission. Route fhe_direct through the
+      // dedicated path before the legacy bridge; the wire shape is
+      // fundamentally different (no plaintext predictedOutcome /
+      // horizon / confidence) and forcing it through the legacy
+      // SubmittedCallSchema would either reject every submit OR leak
+      // synthetic plaintext into projections.
+      if (body.privacy_mode === "fhe_direct") {
+        const submittedAt =
+          body.submitted_at ?? now().toISOString().replace(/\.\d+Z$/, "Z");
+        const fhePayload: Record<string, unknown> = {
+          schema_version: SCHEMA_VERSION,
+          agent_id: authResult.agent_id,
+          client_order_id: body.client_order_id,
+          market_id: market.market_id,
+          privacy_mode: "fhe_direct",
+          submitted_at: submittedAt,
+          ...(body.rationale !== undefined ? { rationale: body.rationale } : {}),
+          ...(body.strategy_tag !== undefined
+            ? { strategy_tag: body.strategy_tag }
+            : {}),
+        };
+        const fheResult = await submitCall({
+          db: deps.db,
+          ctx: deps.ctx,
+          identity: { agent_id: authResult.agent_id },
+          payload: fhePayload,
+          fheDirect: { fhe: body.fhe!, market_id: market.market_id },
+        });
+        res.status(fheResult.idempotent_hit ? 200 : 201).json({
+          call_id: fheResult.call.call_id,
+          // Operator-blind response: do not echo the synthesized
+          // placeholder side/confidence the AcceptedCall carries; the
+          // submitFheDirectCall path already nulls these in the return,
+          // but we filter explicitly here in case a future refactor
+          // forgets.
+          call: {
+            schema_version: fheResult.call.schema_version,
+            scoring_version: fheResult.call.scoring_version,
+            call_id: fheResult.call.call_id,
+            agent_id: fheResult.call.agent_id,
+            client_order_id: fheResult.call.client_order_id,
+            submitted_at: fheResult.call.submitted_at,
+            accepted_at: fheResult.call.accepted_at,
+            status: fheResult.call.status,
+            ...(fheResult.call.rationale !== undefined
+              ? { rationale: fheResult.call.rationale }
+              : {}),
+            ...(fheResult.call.strategy_tag !== undefined
+              ? { strategy_tag: fheResult.call.strategy_tag }
+              : {}),
+            privacy_mode: "fhe_direct",
+          },
+          idempotent_hit: fheResult.idempotent_hit,
+          tier: authResult.tier,
+        });
+        return;
+      }
+
+      // Adapter-narrow validation. native-price's commitmentSchema today
+      // accepts the LEGACY direction-input shape (asset_id|market_id +
+      // side + horizon_hours), NOT the universal Commitment. Phase 4
+      // bypasses that transform — we already have a canonical Commitment
+      // from CommitmentSchema above; we just normalize the runtime shape.
+      const v2Commitment: Commitment = {
+        marketRef: body.marketRef,
+        predictedOutcome: {
+          kind: body.predictedOutcome!.kind,
+          payoutNumerators: body.predictedOutcome!.payoutNumerators.map(
+            (s) => BigInt(s),
+          ),
+          payoutDenominator: BigInt(body.predictedOutcome!.payoutDenominator),
+          ...(body.predictedOutcome!.scalarValue !== undefined
+            ? { scalarValue: BigInt(body.predictedOutcome!.scalarValue) }
+            : {}),
+        },
+        horizon: body.horizon!,
+        confidence: body.confidence!,
+      };
+
       // Bridge to the legacy submitCall pipeline. The Phase 5 universal
       // hot path reads from `commitment_json` regardless of submit
       // surface; we still produce a legacy SubmittedCall here so the
@@ -361,7 +423,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       if (!side) {
         throw new VerdictError(
           "v2 native-price predictedOutcome must reduce to BUY ([1,0]) or SELL ([0,1]); got " +
-            JSON.stringify(body.predictedOutcome.payoutNumerators),
+            JSON.stringify(body.predictedOutcome!.payoutNumerators),
           ERROR_CODES.schema_invalid,
           400,
         );
@@ -379,7 +441,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         client_order_id: body.client_order_id,
         market_id: market.market_id,
         side,
-        confidence: body.confidence,
+        confidence: body.confidence!,
         submitted_at: submittedAt,
         rationale: body.rationale,
         strategy_tag: body.strategy_tag,
@@ -2481,14 +2543,40 @@ function asyncHandler(
 // addressed via marketRef, and committed-mode (which needed `salt`) is
 // gated until Phase 8 EIP-712. Adding a stray field returns
 // `schema_invalid` thanks to z.strict().
+// Z1 — operator-blind submission. When privacy_mode='fhe_direct', the
+// body carries an `fhe` block instead of plaintext predictedOutcome /
+// horizon / confidence. The legacy Commitment fields become OPTIONAL at
+// the Zod level and are REJECTED by the superRefine when fhe_direct is
+// set (mutually exclusive). The fhe block's content (keyset existence,
+// hash recomputation, replay) is validated inside submitFheDirectCall;
+// here we only enforce the wire shape.
+const FheBlockSchema = z
+  .object({
+    keyset_id: z.string().min(1).max(128),
+    circuit_id: z.string().min(1).max(128),
+    encrypted_predicted_outcome: z
+      .string()
+      .min(1)
+      .max(256 * 1024),
+    ciphertext_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    vector_len: z.number().int().min(2).max(256),
+    payout_denominator: z.string().regex(/^[1-9][0-9]*$/),
+    nonce: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+
 const V2SubmissionBodySchema = z
   .object({
     // Inline mirror of CommitmentSchema fields rather than `.merge` so
     // .strict() catches typos like `marketref` / `predicted_outcome`.
+    // Z1: marketRef stays required for both modes (the route still needs
+    // to know which adapter / market the call targets). predictedOutcome
+    // / horizon / confidence become OPTIONAL because fhe_direct hides
+    // them inside the encrypted blob.
     marketRef: CommitmentSchema.shape.marketRef,
-    predictedOutcome: CommitmentSchema.shape.predictedOutcome,
-    horizon: CommitmentSchema.shape.horizon,
-    confidence: CommitmentSchema.shape.confidence,
+    predictedOutcome: CommitmentSchema.shape.predictedOutcome.optional(),
+    horizon: CommitmentSchema.shape.horizon.optional(),
+    confidence: CommitmentSchema.shape.confidence.optional(),
     // Idempotency. Mirrors SubmittedCallSchema bounds so the v2 surface
     // matches v1 expectations end-to-end.
     client_order_id: z.string().min(8).max(128),
@@ -2499,6 +2587,7 @@ const V2SubmissionBodySchema = z
       .datetime({ offset: false })
       .optional(),
     privacy_mode: z.string().optional(),
+    fhe: FheBlockSchema.optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -2508,6 +2597,77 @@ const V2SubmissionBodySchema = z
         message: "rationale or strategy_tag is required",
         path: ["rationale"],
       });
+    }
+    // Z1 — mutually-exclusive shape. fhe_direct hides the prediction;
+    // submitting it alongside a plaintext predictedOutcome / confidence
+    // would defeat the operator-blind invariant by exposing both wire
+    // shapes on the same row.
+    if (v.privacy_mode === "fhe_direct") {
+      if (!v.fhe) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "fhe block is required when privacy_mode='fhe_direct'",
+          path: ["fhe"],
+        });
+      }
+      if (v.predictedOutcome !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "predictedOutcome MUST NOT be set when privacy_mode='fhe_direct' (would leak the prediction)",
+          path: ["predictedOutcome"],
+        });
+      }
+      if (v.horizon !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "horizon MUST NOT be set when privacy_mode='fhe_direct' (derived from market_id)",
+          path: ["horizon"],
+        });
+      }
+      if (v.confidence !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "confidence MUST NOT be set when privacy_mode='fhe_direct' (would leak the prediction)",
+          path: ["confidence"],
+        });
+      }
+    } else {
+      // Non-fhe_direct submissions still need the legacy Commitment
+      // fields. The pre-Z1 schema had them all required; we keep that
+      // contract for legacy_plaintext / committed modes.
+      if (!v.predictedOutcome) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "predictedOutcome is required for non-fhe_direct submissions",
+          path: ["predictedOutcome"],
+        });
+      }
+      if (!v.horizon) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "horizon is required for non-fhe_direct submissions",
+          path: ["horizon"],
+        });
+      }
+      if (v.confidence === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "confidence is required for non-fhe_direct submissions",
+          path: ["confidence"],
+        });
+      }
+      if (v.fhe !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "fhe block is only valid when privacy_mode='fhe_direct'",
+          path: ["fhe"],
+        });
+      }
     }
   });
 

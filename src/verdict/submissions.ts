@@ -76,6 +76,13 @@ export const ACCEPTED_PRIVACY_MODES: ReadonlySet<string> = (() => {
 import { encryptEnvelope, type AgeContext } from "./age-envelope.js";
 import { encryptToDrandRound, type DrandContext } from "./drand-envelope.js";
 import type { FheProvider } from "./fhe/provider.js";
+import {
+  insertFheCiphertext,
+  validateFheSubmission,
+  type FheSubmissionBlock,
+} from "./fhe/submission.js";
+import { buildFheCommit } from "./fhe/fhe-commit-preimage.js";
+import { z } from "zod";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -228,9 +235,45 @@ export async function submitCall(args: {
    *  own (e.g. ['YES','NO'] or category names). NEVER load-bearing for
    *  scoring (V2 §2.3); the leaderboard / dashboard just renders them. */
   outcomeLabels?: readonly string[];
+  /**
+   * Z1 — operator-blind submission. When the /v2/calls route detects
+   * `privacy_mode === 'fhe_direct'`, it passes the parsed `fhe` block
+   * and the resolved market_id here. submitCall routes to
+   * `submitFheDirectCall` BEFORE validating against SubmittedCallSchema:
+   * fhe_direct has no `side` / `confidence` on the wire, so passing it
+   * through the legacy schema would reject every operator-blind call.
+   *
+   * The fhe block has already been Zod-validated by the route layer
+   * (so a malformed shape is a 400 at the boundary); the *content* of
+   * it (keyset existence, hash recomputation, replay) is verified
+   * inside submitFheDirectCall.
+   */
+  fheDirect?: {
+    readonly fhe: unknown;
+    readonly market_id: string;
+  };
 }): Promise<SubmitResult> {
   const { db, ctx, identity, payload, precomputedCommitment } = args;
   const now = ctx.now ?? (() => new Date());
+
+  // Z1 — operator-blind early branch. Detect fhe_direct from the
+  // payload BEFORE schema validation: SubmittedCallSchema's
+  // `side`/`confidence` requirements would otherwise reject every
+  // fhe_direct submission at byte 0. The privacy gate inside the
+  // legacy path still rejects fhe_direct strings when the caller
+  // mistakenly routes through there (defense in depth).
+  if (
+    args.fheDirect !== undefined ||
+    (isObject(payload) && payload.privacy_mode === "fhe_direct")
+  ) {
+    return submitFheDirectCall({
+      db,
+      ctx,
+      identity,
+      payload,
+      fheDirect: args.fheDirect,
+    });
+  }
   // Phase 2b: oracle policy is derived from the resolved market row at the
   // point we know which market this call targets — see derivedOraclePolicy
   // below. ctx.oraclePolicy survives only as a TEST OVERRIDE (smoke / unit
@@ -513,18 +556,17 @@ export async function submitCall(args: {
     );
   }
 
-  // Z0 — fhe_direct is structurally accepted (so a 4xx upstream of the
-  // submission path doesn't leak whether the operator has the flag on)
-  // but the submission CODE PATH is owned by Z1. Return a precise,
-  // documented error so callers don't mistake this for a transient
-  // failure or silently degrade to legacy_plaintext. This branch goes
-  // away when Z1 lands `src/verdict/fhe/submission.ts`.
+  // Z1 — fhe_direct is handled by submitFheDirectCall via the early
+  // branch at the top of submitCall. Reaching this point with
+  // privacy_mode='fhe_direct' means a caller posted the legacy wire
+  // shape (side/confidence in plaintext) while declaring fhe_direct
+  // — that would leak the prediction to the operator. Reject as a
+  // shape error rather than silently downgrading.
   if (submission.privacy_mode === "fhe_direct") {
     throw new VerdictError(
-      "fhe_direct submission path lands in Z1 (operator-blind submission); current daemon accepts the privacy_mode string but does not yet store encrypted predictions",
+      "fhe_direct submissions must POST to /v2/calls with the `fhe` block; this route's wire shape includes plaintext side/confidence",
       ERROR_CODES.schema_invalid,
-      501,
-      { z1_not_implemented: true },
+      400,
     );
   }
 
@@ -846,6 +888,430 @@ export async function submitCall(args: {
   };
 }
 
+// ─── Z1 — operator-blind submission path ─────────────────────────────────────
+//
+// Parallel to submitCall(): same agent / market / rate-limit / idempotency
+// gates, but the wire shape carries an `fhe` block instead of
+// side/confidence/predictedOutcome, and the persisted submissions row has
+// NULL on every plaintext-prediction column. submissions.commit_hash is
+// stamped with the v0.3 fhe-commit preimage hash (which binds the
+// ciphertext_hash, not the prediction itself).
+//
+// Intentionally does NOT share state with submitCall — copy-paste over
+// abstraction here is deliberate because every shared helper would
+// invite future drift that re-introduces a plaintext leak. The legacy
+// path's "stamp commitment_json from precomputedCommitment" is exactly
+// what we must NOT do for fhe_direct.
+
+/**
+ * Wire shape for the agent-supplied portion of an fhe_direct submission.
+ * The /v2/calls route extracts this and passes it via `args.fheDirect`.
+ * `client_order_id`, `rationale`, `strategy_tag`, `submitted_at` come
+ * through the payload object as usual (mirrors V2SubmissionBodySchema's
+ * non-Commitment fields).
+ */
+const FheDirectPayloadSchema = z
+  .object({
+    schema_version: z.literal(SCHEMA_VERSION),
+    agent_id: z.string().uuid(),
+    client_order_id: z.string().min(8).max(128),
+    market_id: z.string().min(1),
+    privacy_mode: z.literal("fhe_direct"),
+    rationale: z.string().max(240).optional(),
+    strategy_tag: z.string().min(2).max(32).optional(),
+    submitted_at: z.string().datetime({ offset: false }).optional(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (!v.rationale && !v.strategy_tag) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "rationale or strategy_tag is required",
+        path: ["rationale"],
+      });
+    }
+  });
+
+async function submitFheDirectCall(args: {
+  db: Database.Database;
+  ctx: SubmissionContext;
+  identity: AuthIdentity;
+  payload: unknown;
+  fheDirect?: { readonly fhe: unknown; readonly market_id: string };
+}): Promise<SubmitResult> {
+  const { db, ctx, identity, payload } = args;
+  const now = ctx.now ?? (() => new Date());
+
+  // Provider must be loaded — the privacy gate at module top admits
+  // 'fhe_direct' only when MURMUR_FHE_DIRECT_ENABLED=1, but the gate
+  // doesn't check whether the daemon actually constructed a provider.
+  // If the operator typoed MURMUR_FHE_PROVIDER or dropped a required
+  // env var, loader returns null even with the flag on; we refuse
+  // submissions with a clear 503 rather than crashing on the keyset
+  // lookup.
+  const provider = ctx.fheProvider ?? null;
+  if (!provider) {
+    throw new VerdictError(
+      "daemon not configured for fhe_direct submissions (no FheProvider loaded; check MURMUR_FHE_DIRECT_ENABLED and MURMUR_FHE_PROVIDER)",
+      ERROR_CODES.internal_error,
+      503,
+    );
+  }
+
+  // 1. Validate the agent-supplied payload shape. The /v2/calls handler
+  //    already parsed the body; we re-parse here so /v1 routes (or
+  //    future internal callers) can't bypass the schema.
+  const parsed = FheDirectPayloadSchema.safeParse(payload);
+  if (!parsed.success) {
+    usageRepo.emit(
+      db,
+      makeUsage(
+        identity.agent_id,
+        "submission_rejected",
+        { reason: "schema_invalid", privacy_mode: "fhe_direct" },
+        now,
+      ),
+    );
+    throw new VerdictError(
+      "fhe_direct submission failed schema validation",
+      ERROR_CODES.schema_invalid,
+      400,
+      { issues: parsed.error.format() },
+    );
+  }
+  const submission = parsed.data;
+
+  if (submission.agent_id !== identity.agent_id) {
+    throw new VerdictError(
+      "agent_id in payload does not match auth identity",
+      ERROR_CODES.agent_not_authorized,
+      403,
+    );
+  }
+
+  // 2. Agent exists.
+  const agent = agentsRepo.byId(db, identity.agent_id);
+  if (!agent) {
+    throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
+  }
+
+  // 3. Idempotency — same client_order_id returns the existing call.
+  //    Runs BEFORE market lookup so a market freeze between attempts
+  //    can't break a retry (same rationale as the legacy path).
+  //    Uses the fhe_direct-aware loader so the rebuilt AcceptedCall
+  //    doesn't trip AcceptedCallSchema's required side/confidence
+  //    (which are deliberately NULL for fhe_direct rows).
+  const existing = submissionsRepo.findByClientOrderId(
+    db,
+    identity.agent_id,
+    submission.client_order_id,
+  );
+  if (existing) {
+    return loadExistingFheDirectCall(db, existing.call_id, true);
+  }
+
+  // 4. Market resolution + listed-status gate.
+  const market: MarketRow | null = resolveMarketFromPayload(db, {
+    market_id: submission.market_id,
+  } as Parameters<typeof resolveMarketFromPayload>[1]);
+  if (!market) {
+    throw new VerdictError(
+      `unknown market_id: ${submission.market_id}`,
+      ERROR_CODES.asset_not_supported,
+      404,
+    );
+  }
+  if (!acceptsSubmissions(market)) {
+    throw new VerdictError(
+      `market ${market.market_id} status=${market.status} (not accepting submissions)`,
+      ERROR_CODES.asset_not_supported,
+      400,
+    );
+  }
+
+  // 5. Derive oracle policy (same path the legacy submit takes; the
+  //    resolver still needs this for Z2's encrypted-scoring flow).
+  let oraclePolicy: T0Policy;
+  try {
+    oraclePolicy = ctx.oraclePolicy ?? derivePolicyFromMarket(db, market);
+  } catch (err) {
+    if (err instanceof PolicyDerivationError) {
+      throw new VerdictError(
+        `cannot mint fhe_direct call on ${market.market_id}: ${err.message}`,
+        ERROR_CODES.asset_not_supported,
+        400,
+      );
+    }
+    throw err;
+  }
+
+  // 6. Rate limits — global active count + per-market 24h cap. We DON'T
+  //    apply the per-asset cap (it indexes on `asset_id`, which is null
+  //    for fhe_direct rows). The per-market cap on its own keeps the
+  //    headline abuse vector bounded.
+  const activeCount = agentsRepo.countActiveCallsForAgent(db, identity.agent_id);
+  if (activeCount >= SUBMISSION_LIMITS.max_active_calls_per_agent) {
+    throw new VerdictError(
+      `max ${SUBMISSION_LIMITS.max_active_calls_per_agent} active calls per agent`,
+      ERROR_CODES.rate_limited,
+      429,
+    );
+  }
+  const since = new Date(now().getTime() - 24 * 60 * 60 * 1000)
+    .toISOString()
+    .replace(/\.\d+Z$/, "Z");
+  const perMarketCap = perMarketDailyCap(market.market_id);
+  const todayMarketCount = submissionsRepo.countCallsForAgentMarketWindow(
+    db,
+    identity.agent_id,
+    market.market_id,
+    since,
+  );
+  if (todayMarketCount >= perMarketCap) {
+    throw new VerdictError(
+      `max ${perMarketCap} calls/market/24h on ${market.market_id}`,
+      ERROR_CODES.rate_limited,
+      429,
+    );
+  }
+
+  // 7. accepted_at stamp + dedup-key bucket.
+  //    fhe_direct dedup omits `side` because there is no side on the
+  //    wire — we substitute the literal 'fhe' so the bucket still
+  //    collapses two near-simultaneous identical-market submits but
+  //    can't accidentally collide with a legacy_plaintext BUY/SELL
+  //    bucket (different prefix).
+  const accepted_at = nowIso(now());
+  const dedup_key = buildMarketDedupKey({
+    agent_id: identity.agent_id,
+    market_id: market.market_id,
+    side: "fhe" as unknown as "BUY",
+    horizon_seconds: market.horizon_seconds,
+    accepted_at_iso: accepted_at,
+  });
+
+  // 8. Validate the `fhe` block content (keyset, circuit, hash,
+  //    replay). The route already validated the SHAPE via Zod; this
+  //    pass enforces the existence + integrity constraints.
+  const fheBlock = args.fheDirect?.fhe;
+  if (fheBlock === undefined) {
+    throw new VerdictError(
+      "fhe_direct submissions require an `fhe` block on /v2/calls",
+      ERROR_CODES.schema_invalid,
+      400,
+    );
+  }
+  const validated = validateFheSubmission({
+    db,
+    agent_id: identity.agent_id,
+    provider,
+    fhe: fheBlock,
+  });
+
+  // 9. Build the v0.3 commit hash. The preimage binds the ciphertext
+  //    hash, NOT the prediction. See fhe-commit-preimage.ts for the
+  //    operator-blind invariant: putting `side` / `confidence` /
+  //    `payoutNumerators` here would re-open a dictionary-attack
+  //    side-channel on the public commit_hash.
+  const call_id = randomUUID();
+  const fheCommit = buildFheCommit({
+    call_id,
+    agent_id: identity.agent_id,
+    market_ref: {
+      protocol: market.adapter_id ?? "native-price",
+      sourceId: market.market_id,
+    },
+    keyset_id: validated.keyset.keyset_id,
+    circuit_id: validated.circuit.circuit_id,
+    ciphertext_hash: validated.block.ciphertext_hash,
+    vector_len: validated.block.vector_len,
+    payout_denominator: validated.block.payout_denominator,
+    nonce: validated.block.nonce,
+    t0_anchor_ts: accepted_at,
+    accepted_at,
+  });
+
+  // 10. Persist. Same transaction shape as the legacy acceptCall, but
+  //     we (a) leave commitment_json / predicted_outcome_json NULL,
+  //     (b) leave side / asset_id / horizon_hours / confidence NULL on
+  //     the row, (c) insert the ciphertext row alongside.
+  const submittedAt =
+    submission.submitted_at ?? accepted_at;
+  // The synthesized AcceptedCall satisfies the legacy type but every
+  // plaintext-prediction field is overridden to NULL inside the
+  // transaction below. The cast is unavoidable: AcceptedCall predates
+  // operator-blind privacy and bakes in side/confidence/horizon as
+  // required. Z4 introduces a discriminated AcceptedCall variant; for
+  // Z1 the cast is the price of leaving public types stable while a
+  // single mode goes "blind".
+  const acceptedRow = {
+    schema_version: SCHEMA_VERSION,
+    scoring_version: SCORING_VERSION,
+    call_id,
+    agent_id: submission.agent_id,
+    client_order_id: submission.client_order_id,
+    asset_id: market.asset_id,
+    side: "BUY",
+    horizon_hours: legacyHorizonHoursForMarket(market) ?? 24,
+    confidence: 0.51,
+    submitted_at: submittedAt,
+    ...(submission.rationale !== undefined
+      ? { rationale: submission.rationale }
+      : {}),
+    ...(submission.strategy_tag !== undefined
+      ? { strategy_tag: submission.strategy_tag }
+      : {}),
+    accepted_at,
+    status: "accepted",
+    oracle_policy: oraclePolicy,
+  } as unknown as AcceptedCall;
+
+  // Run the multi-statement insert inside a single transaction so a
+  // crash between submissions and fhe_call_ciphertexts can't leave a
+  // half-written call.
+  let idempotentHit = false;
+  try {
+    db.transaction(() => {
+      submissionsRepo.acceptCall(db, {
+        submission: {
+          schema_version: SCHEMA_VERSION,
+          agent_id: submission.agent_id,
+          client_order_id: submission.client_order_id,
+          // The repo writes these onto the submissions row. For
+          // fhe_direct we want them NULL — `acceptCall` reads from
+          // `i.accepted`, so we override after the call below via a
+          // direct UPDATE. Pass the synthetic acceptedRow shape here
+          // to satisfy the typed insert; we then null the leak-y
+          // columns in the same transaction.
+          market_id: market.market_id,
+          side: "BUY",
+          confidence: 0.51,
+          submitted_at: submittedAt,
+        } as unknown as SubmittedCall,
+        accepted: acceptedRow,
+        dedup_key,
+        privacy_mode: "fhe_direct",
+        market_id: market.market_id,
+        market_config_version: market.market_config_version,
+        horizon_seconds: market.horizon_seconds,
+        adapter_id: market.adapter_id ?? "native-price",
+        market_family: market.market_family ?? "financial-direction",
+        // Operator-blind invariant: NULL on every plaintext-derived
+        // column. Phase 5 resolver's universal hot path falls back to
+        // legacy-synthesis when commitment_json is null; Z2 will add
+        // an `fhe_direct` short-circuit there that consults
+        // fhe_call_ciphertexts instead.
+        commitment_json: null,
+        predicted_outcome_json: null,
+        outcome_labels_json: null,
+        commit_hash: fheCommit.commit_hash,
+        commit_scheme: "keccak256",
+      });
+      // Null the plaintext-prediction columns the legacy repo just
+      // wrote. We want fhe_direct rows to be operator-blind — even
+      // the side/asset/horizon/confidence columns must be cleared so
+      // a future projection (Today Tape, SSE) reading `submissions.*`
+      // can't accidentally surface a placeholder value.
+      db.prepare(
+        `UPDATE submissions
+         SET side = NULL, asset_id = NULL, horizon_hours = NULL, confidence = NULL
+         WHERE call_id = ?`,
+      ).run(call_id);
+      insertFheCiphertext({
+        db,
+        call_id,
+        keyset: validated.keyset,
+        circuit: validated.circuit,
+        block: validated.block,
+        ciphertext_bytes: validated.ciphertext_bytes,
+        accepted_at,
+      });
+    })();
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      // Race or replay — both surface as 409 with the existing call_id
+      // when we can identify it; otherwise re-throw as a duplicate
+      // schema_invalid so the agent rotates their nonce / hash.
+      const existingAfter = submissionsRepo.findByClientOrderId(
+        db,
+        identity.agent_id,
+        submission.client_order_id,
+      );
+      if (existingAfter) {
+        return loadExistingFheDirectCall(db, existingAfter.call_id, true);
+      }
+      throw new VerdictError(
+        "fhe_direct: duplicate ciphertext_hash or (keyset_id, nonce) — agent must rotate nonce or resubmit with fresh entropy",
+        ERROR_CODES.duplicate,
+        409,
+      );
+    }
+    throw err;
+  }
+
+  submissionsRepo.setStatus(db, call_id, "pending_t0");
+  usageRepo.emit(
+    db,
+    makeUsage(
+      identity.agent_id,
+      "submission_accepted",
+      {
+        call_id,
+        privacy_mode: "fhe_direct",
+        commit_hash: fheCommit.commit_hash,
+        keyset_id: validated.keyset.keyset_id,
+      },
+      now,
+    ),
+  );
+
+  // SSE/webhook event — operator-blind projection. Subscribers see
+  // commit_hash, keyset_id, ciphertext_hash. NO side, NO confidence,
+  // NO ciphertext bytes. This is the load-bearing guard: every fan-out
+  // surface must consult the fhe block (or the projection helper) and
+  // never the synthesized placeholder on the AcceptedCall.
+  ctx.events?.emit({
+    type: "call.accepted",
+    call_id,
+    agent_id: agent.agent_id,
+    agent_slug: agent.display_slug,
+    privacy_mode: "fhe_direct",
+    accepted_at,
+    commit_hash: fheCommit.commit_hash,
+  });
+
+  // Return a publicly-safe shape: the synthesized AcceptedCall is what
+  // the legacy /v2/calls response shape expects (call_id + call), but
+  // we redact the leak-y fields so a curious client logging the
+  // response doesn't accidentally cache a placeholder side/confidence.
+  // (The router strips these explicitly via a projection step, but
+  // belt-and-braces here closes the gap if a future caller forgets.)
+  const redacted: AcceptedCall = {
+    ...acceptedRow,
+    side: undefined as unknown as AcceptedCall["side"],
+    confidence: undefined as unknown as AcceptedCall["confidence"],
+    asset_id: undefined as unknown as AcceptedCall["asset_id"],
+    horizon_hours: undefined as unknown as AcceptedCall["horizon_hours"],
+  };
+  return {
+    call: redacted,
+    status: "accepted",
+    idempotent_hit: idempotentHit,
+  };
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Suppress unused-import warnings — these are part of the fhe_direct
+// surface and kept in scope for the helper's type signature even when
+// the helper does not directly invoke them.
+void buildFheCommit;
+void validateFheSubmission;
+void insertFheCiphertext;
+type _FheSubmissionBlock = FheSubmissionBlock;
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function makeUsage(
@@ -865,6 +1331,63 @@ function makeUsage(
 
 function nowIso(d: Date): string {
   return d.toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+/**
+ * Z1 — idempotent loader for fhe_direct rows. AcceptedCallSchema requires
+ * non-null side/asset_id/horizon_hours/confidence, but fhe_direct rows
+ * deliberately persist all four as NULL (operator-blind invariant). We
+ * build the AcceptedCall via the loose cast that the submit path already
+ * uses, so an idempotent retry hydrates exactly what the original submit
+ * returned — null on every plaintext field, populated on call_id /
+ * accepted_at / status / strategy_tag.
+ */
+function loadExistingFheDirectCall(
+  db: Database.Database,
+  call_id: string,
+  idempotent_hit: boolean,
+): SubmitResult {
+  const row = db
+    .prepare(
+      `SELECT s.call_id, s.agent_id, s.client_order_id, s.submitted_at,
+              s.accepted_at, s.strategy_tag, s.rationale,
+              s.schema_version, s.scoring_version,
+              op.primary_feed, op.fallback_feed, op.primary_max_staleness_sec,
+              op.fallback_max_staleness_sec, op.t0_grace_seconds, op.t0_extended_grace_seconds
+       FROM submissions s
+       JOIN oracle_policies op ON op.call_id = s.call_id
+       WHERE s.call_id = ?`,
+    )
+    .get(call_id) as Record<string, unknown> | undefined;
+  if (!row) {
+    throw new VerdictError(
+      "call vanished after insert",
+      ERROR_CODES.internal_error,
+      500,
+    );
+  }
+  // Build a synthetic AcceptedCall whose plaintext fields are undefined
+  // (so JSON serialization drops them on the wire). The cast bypasses
+  // AcceptedCallSchema for the same reason the submit path bypasses
+  // it: the schema predates operator-blind privacy.
+  const accepted = {
+    schema_version: row.schema_version,
+    scoring_version: row.scoring_version,
+    call_id: row.call_id,
+    agent_id: row.agent_id,
+    client_order_id: row.client_order_id,
+    submitted_at: row.submitted_at,
+    accepted_at: row.accepted_at,
+    status: "accepted" as const,
+    ...(row.rationale ? { rationale: row.rationale } : {}),
+    ...(row.strategy_tag ? { strategy_tag: row.strategy_tag } : {}),
+    oracle_policy: buildT0PolicyFromRow(row),
+  } as unknown as AcceptedCall;
+  return {
+    call: accepted,
+    status: "accepted",
+    idempotent_hit,
+  };
 }
 
 function loadExistingAcceptedCall(
