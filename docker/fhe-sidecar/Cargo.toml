@@ -34,6 +34,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "ne
 anyhow = "1"
 thiserror = "1"
 
+# Z2 transcript-hash binding for scoreEncrypted. Matches the
+# daemon-side createHash('sha256') in src/verdict/fhe/mock-provider.ts
+# so a dispute replay produces byte-identical hashes.
+sha2 = "0.10"
+
 # CLI surface (so operators can `fhe-sidecar --socket /tmp/foo.sock`
 # without env vars).
 clap = { version = "4", features = ["derive", "env"] }

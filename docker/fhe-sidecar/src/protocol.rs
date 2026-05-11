@@ -119,16 +119,6 @@ pub enum Response {
 }
 
 impl Response {
-    /// Convenience builder for the Z2-prep stubs.
-    pub fn not_implemented(entry: &str) -> Self {
-        Response::Error {
-            code: "not_implemented_z2_real".to_string(),
-            message: format!(
-                "{entry}: Z2-prep scaffold; real TFHE-rs handler lands in Z2-proper"
-            ),
-        }
-    }
-
     /// Convenience builder for keystore / framing errors.
     pub fn err(code: &str, message: impl Into<String>) -> Self {
         Response::Error {

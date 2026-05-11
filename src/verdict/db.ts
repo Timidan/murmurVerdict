@@ -427,6 +427,36 @@ function applyMigrations(db: Database.Database): void {
     v = 24;
     set.run("schema_version", String(v));
   }
+
+  if (v < 25) {
+    // Z2 — homomorphic scoring jobs + score-ciphertext pointers on
+    // t1_resolutions.
+    //
+    // fhe_score_jobs is the per-call queue/state machine the resolver
+    // writes to when it computes (or fails to compute) an encrypted
+    // score for an fhe_direct row. The job row is the only operator-
+    // visible state for the encrypted score until Z3's threshold
+    // committee decrypts it. It carries the encrypted_score blob,
+    // its hash, the transcript hash binding (circuit_id, ciphertext
+    // hash, resolved outcome), retry bookkeeping, and the last error
+    // string for diagnosis. There is no plaintext score column here
+    // by construction — Z3 owns the decrypted bounded score and that
+    // lands on `t1_resolutions.call_score` after quorum release.
+    //
+    // The two additive columns on t1_resolutions point the legacy
+    // resolution row at the new encrypted artifact:
+    //   - score_ciphertext_hash: same value as fhe_score_jobs.
+    //     score_ciphertext_hash; duplicated on t1_resolutions so the
+    //     /v1/calls/:id read can serve both rows with one query.
+    //   - fhe_circuit_id: FK into fhe_circuits, lets disputes replay
+    //     the exact compiled circuit the score was computed against.
+    //
+    // Pure additive — legacy_plaintext and committed paths read the
+    // unchanged t1_resolutions columns and never touch fhe_score_jobs.
+    db.exec(MIGRATION_025);
+    v = 25;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -1861,6 +1891,46 @@ const MIGRATION_024 = `
   CREATE INDEX IF NOT EXISTS idx_fhe_ct_format ON fhe_call_ciphertexts(ciphertext_format);
 `;
 
+// ─── Migration 025 — fhe_score_jobs + t1_resolutions FHE pointers (Z2) ──────
+//
+// One row per fhe_direct call once the resolver has tried to score it.
+// Status machine:
+//   - queued                  — resolver pushed a job, sidecar not yet called
+//   - running                 — score attempt in flight (set/cleared by caller)
+//   - scored_pending_decrypt  — sidecar returned an encrypted score; awaiting Z3
+//   - failed                  — terminal-ish; attempts column + last_error tell
+//                               the operator what to do
+//
+// `attempts` increments on every retry so a stuck call surfaces quickly in
+// /v1/readyz; the resolver decides when to give up based on this count, not
+// on a hardcoded clock. Cold-start posture (plan §5): if the sidecar is
+// unavailable, the JOB row records the failure but the CALL stays
+// pending_t1, never downgrades to plaintext.
+//
+// score_ciphertext is BLOB (raw bytes from the provider). score_ciphertext_hash
+// is sha256 hex; transcript_hash is the provider-attested binding hash.
+const MIGRATION_025 = `
+  CREATE TABLE IF NOT EXISTS fhe_score_jobs (
+    call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    status               TEXT NOT NULL CHECK (status IN ('queued','running','scored_pending_decrypt','failed')),
+    provider             TEXT NOT NULL,
+    circuit_id           TEXT NOT NULL REFERENCES fhe_circuits(circuit_id),
+    score_ciphertext     BLOB,
+    score_ciphertext_hash TEXT,
+    transcript_hash      TEXT,
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at      TEXT,
+    last_error           TEXT,
+    computed_at          TEXT,
+    created_at           TEXT NOT NULL,
+    UNIQUE (call_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_fhe_score_jobs_status ON fhe_score_jobs(status);
+
+  ALTER TABLE t1_resolutions ADD COLUMN score_ciphertext_hash TEXT;
+  ALTER TABLE t1_resolutions ADD COLUMN fhe_circuit_id TEXT REFERENCES fhe_circuits(circuit_id);
+`;
+
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
 //
 // Three things at once:
@@ -2646,25 +2716,37 @@ export const resolutionsRepo = {
       // mapping (see scoreOutcomeVector void-mapping rule).
       resolved_outcome_json?: string | null;
       payout_vector_json?: string | null;
+      // Z2 — encrypted-score pointers (MIGRATION_025). Populated only for
+      // fhe_direct rows; legacy_plaintext/committed rows keep these NULL.
+      // The plaintext call_score column stays NULL for fhe_direct until
+      // Z3's threshold release decrypts the score ciphertext.
+      score_ciphertext_hash?: string | null;
+      fhe_circuit_id?: string | null;
     },
   ): void {
     prep(
       db,
       `INSERT INTO t1_resolutions
        (call_id, t1, p1, t1_feed, signed_return, outcome, call_score, resolved_at,
-        resolved_outcome_json, payout_vector_json)
+        resolved_outcome_json, payout_vector_json,
+        score_ciphertext_hash, fhe_circuit_id)
        VALUES (@call_id, @t1, @p1, @t1_feed, @signed_return, @outcome, @call_score, @resolved_at,
-               @resolved_outcome_json, @payout_vector_json)
+               @resolved_outcome_json, @payout_vector_json,
+               @score_ciphertext_hash, @fhe_circuit_id)
        ON CONFLICT(call_id) DO UPDATE SET
          t1 = excluded.t1, p1 = excluded.p1, t1_feed = excluded.t1_feed,
          signed_return = excluded.signed_return, outcome = excluded.outcome,
          call_score = excluded.call_score, resolved_at = excluded.resolved_at,
          resolved_outcome_json = excluded.resolved_outcome_json,
-         payout_vector_json = excluded.payout_vector_json`,
+         payout_vector_json = excluded.payout_vector_json,
+         score_ciphertext_hash = excluded.score_ciphertext_hash,
+         fhe_circuit_id = excluded.fhe_circuit_id`,
     ).run({
       ...input,
       resolved_outcome_json: input.resolved_outcome_json ?? null,
       payout_vector_json: input.payout_vector_json ?? null,
+      score_ciphertext_hash: input.score_ciphertext_hash ?? null,
+      fhe_circuit_id: input.fhe_circuit_id ?? null,
     });
   },
 
@@ -2702,6 +2784,11 @@ export const resolutionsRepo = {
           // round-trip through deserializeOutcome / parseStoredCommitment.
           resolved_outcome_json: string | null;
           payout_vector_json: string | null;
+          // Z2 — encrypted-score pointers. Populated only for fhe_direct
+          // rows whose resolver tick computed an encrypted score; NULL
+          // for legacy_plaintext / committed / oracle_unavailable rows.
+          score_ciphertext_hash: string | null;
+          fhe_circuit_id: string | null;
         }
       | null;
   } | null {
@@ -2754,6 +2841,11 @@ export const resolutionsRepo = {
               (resRow.resolved_outcome_json as string | null) ?? null,
             payout_vector_json:
               (resRow.payout_vector_json as string | null) ?? null,
+            // Z2 additions — see resolutionsRepo.setResolution input shape.
+            score_ciphertext_hash:
+              (resRow.score_ciphertext_hash as string | null) ?? null,
+            fhe_circuit_id:
+              (resRow.fhe_circuit_id as string | null) ?? null,
           }
         : null,
     };

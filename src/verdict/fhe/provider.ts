@@ -196,3 +196,23 @@ export class FheNotImplementedError extends Error {
     this.name = "FheNotImplementedError";
   }
 }
+
+/**
+ * Z2 — transient sidecar failure. Distinct from FheNotImplementedError
+ * (which is "this wave never wired it"). The resolver maps this onto
+ * "leave the call pending_t1, retry on next tick, do NOT downgrade to
+ * plaintext scoring." Plan §5 cold-start posture: a missing sidecar is
+ * not a license to expose the prediction.
+ *
+ * Carries the underlying socket-level message verbatim so the operator
+ * can diagnose without trawling sidecar logs.
+ */
+export class FheUnavailableError extends Error {
+  constructor(
+    public readonly entry: string,
+    public readonly cause_message: string,
+  ) {
+    super(`FHE entry '${entry}' unavailable: ${cause_message}`);
+    this.name = "FheUnavailableError";
+  }
+}

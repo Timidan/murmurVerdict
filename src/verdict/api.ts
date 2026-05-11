@@ -2084,7 +2084,60 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       ...(projected.strategy_tag ? { strategy_tag: projected.strategy_tag } : {}),
       ...(projected.submitted_at ? { submitted_at: projected.submitted_at } : {}),
     };
-    res.json({ ...full, submission: scrubbedSubmission });
+    // Z2 — for fhe_direct rows, surface the encrypted-score status. The
+    // response NEVER carries the prediction (still encrypted in
+    // fhe_call_ciphertexts) and NEVER carries the cleartext score (still
+    // encrypted in fhe_score_jobs until Z3 releases it). Callers see:
+    //   score_status: 'pending_t1'            — t1 not yet anchored
+    //   score_status: 'score_pending_decrypt' — encrypted score computed,
+    //                                           awaiting Z3 quorum decrypt
+    //   score_status: 'score_pending_quorum'  — Z3 in flight (placeholder
+    //                                           until Z3 wires it; today
+    //                                           we never emit this state)
+    //   score_status: 'resolved'              — bounded score released
+    //                                           (only after Z3)
+    // plus the transcript_hash once computed (Z3 disputes replay
+    // against it).
+    const fheExtras: Record<string, string> = {};
+    if (subRow?.privacy_mode === "fhe_direct") {
+      const jobRow = deps.db
+        .prepare(
+          `SELECT j.status AS job_status, j.transcript_hash,
+                  s.status AS sub_status
+           FROM submissions s
+           LEFT JOIN fhe_score_jobs j ON j.call_id = s.call_id
+           WHERE s.call_id = ?`,
+        )
+        .get(call_id) as
+        | {
+            job_status: string | null;
+            transcript_hash: string | null;
+            sub_status: string;
+          }
+        | undefined;
+      if (jobRow) {
+        let scoreStatus: string;
+        if (jobRow.sub_status !== "resolved") {
+          scoreStatus = "pending_t1";
+        } else if (jobRow.job_status === "scored_pending_decrypt") {
+          scoreStatus = "score_pending_decrypt";
+        } else if (
+          full.resolution?.call_score !== null &&
+          full.resolution?.call_score !== undefined
+        ) {
+          scoreStatus = "resolved";
+        } else {
+          scoreStatus = "score_pending_decrypt";
+        }
+        fheExtras["score_status"] = scoreStatus;
+        if (jobRow.transcript_hash) {
+          fheExtras["transcript_hash"] = jobRow.transcript_hash;
+        }
+      } else {
+        fheExtras["score_status"] = "pending_t1";
+      }
+    }
+    res.json({ ...full, submission: scrubbedSubmission, ...fheExtras });
   });
 
   router.post(

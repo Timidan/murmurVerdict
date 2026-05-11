@@ -49,6 +49,14 @@ import {
 } from "./submission-normalizers.js";
 import { serializeOutcome, type Outcome as UniversalOutcome } from "./markets-core.js";
 import { AdapterNotFoundError } from "./markets.js";
+import type { FheProvider } from "./fhe/provider.js";
+import { FheUnavailableError } from "./fhe/provider.js";
+import {
+  enqueueScoreJob,
+  recordScoreFailure,
+  recordScoreSuccess,
+} from "./fhe/score-jobs.js";
+import { createHash } from "node:crypto";
 
 // ─── Env knobs ──────────────────────────────────────────────────────────────
 //
@@ -81,6 +89,15 @@ export interface ResolverDeps {
    */
   ageContext?: AgeContext;
   drandContext?: DrandContext;
+  /**
+   * Z2 — FHE provider for the `fhe_direct` branch. When present, the
+   * resolver dispatches encrypted scoring through this provider before
+   * the legacy `loadResolutionSubject` path. When null/undefined (flag
+   * off, no provider loaded), the resolver behaves byte-identically to
+   * pre-Z2 master: fhe_direct rows would never have been accepted at
+   * submission time anyway, so the branch is effectively dead code.
+   */
+  fheProvider?: FheProvider | null;
 }
 
 export type ResolverLogEvent =
@@ -106,6 +123,7 @@ export class Resolver {
   private readonly onResolved: NonNullable<ResolverDeps["onResolved"]>;
   private readonly ageContext: AgeContext | undefined;
   private readonly drandContext: DrandContext | undefined;
+  private readonly fheProvider: FheProvider | null;
 
   constructor(deps: ResolverDeps) {
     this.db = deps.db;
@@ -115,6 +133,7 @@ export class Resolver {
     this.onResolved = deps.onResolved ?? (() => undefined);
     this.ageContext = deps.ageContext;
     this.drandContext = deps.drandContext;
+    this.fheProvider = deps.fheProvider ?? null;
   }
 
   async tick(): Promise<ResolverTickResult> {
@@ -222,6 +241,93 @@ export class Resolver {
 
       if (outcome.kind === "anchored") {
         const obs = outcome.observation;
+
+        // ── Z2 fhe_direct branch ─────────────────────────────────────────
+        //
+        // Encrypted-prediction rows never call loadResolutionSubject. The
+        // daemon has NO key to recover the prediction; the prediction stays
+        // encrypted, and we score it homomorphically against the public
+        // adapter outcome instead.
+        //
+        // Path:
+        //   1. Look up the per-call ciphertext from fhe_call_ciphertexts
+        //      (NOT submissions.predicted_outcome_json — that column is
+        //      null for fhe_direct rows by Z1's contract).
+        //   2. Dispatch the public outcome via the adapter (same code path
+        //      the legacy v2 branch uses) so the resolved payout vector is
+        //      adapter-produced, not resolver-improvised.
+        //   3. provider.scoreEncrypted(...) returns {encrypted_score,
+        //      transcript_hash}.
+        //   4. Record onto fhe_score_jobs + t1_resolutions.
+        //      score_ciphertext_hash. The call stays at status='resolved'
+        //      (universal terminal state) but call_score stays NULL; Z3's
+        //      threshold release fills it in after quorum decrypt.
+        //
+        // Failure posture (plan §5 cold-start): provider/sidecar errors
+        // throw FheUnavailableError; we record the failure on the job row
+        // and leave the call at pending_t1. The next resolver tick retries.
+        // We do NOT downgrade to plaintext scoring — that's the whole
+        // point of operator-blind privacy.
+        if (ctx.privacy_mode === "fhe_direct") {
+          const fheBranchResult = await this.runFheDirectScoring({
+            ctx,
+            t0row,
+            obs,
+          });
+          if (fheBranchResult === "pending") {
+            // Sidecar transient / circuit lookup miss / etc. Leave the
+            // call pending_t1; next tick retries. No state transition.
+            this.log({
+              kind: "still_pending",
+              call_id: ctx.call_id,
+              phase: "t1",
+              reason: "fhe_direct:sidecar_unavailable",
+            });
+            continue;
+          }
+          if (fheBranchResult === "skipped") {
+            // Provider not loaded — daemon was started without an FHE
+            // provider but somehow has a fhe_direct row. Submission gate
+            // should have refused at Z1, but if a row slipped through
+            // (e.g. flag toggled mid-run) we keep it pending rather than
+            // crashing the tick.
+            this.log({
+              kind: "still_pending",
+              call_id: ctx.call_id,
+              phase: "t1",
+              reason: "fhe_direct:no_provider",
+            });
+            continue;
+          }
+          // fhe_direct resolved — the call is in 'resolved' status with an
+          // encrypted score recorded. Increment the counter, fire onResolved,
+          // and skip the legacy plaintext path entirely.
+          resolved++;
+          this.log({
+            kind: "anchored_t1",
+            call_id: ctx.call_id,
+            feed: obs.feed,
+            p1: obs.price,
+            // Z2 has no plaintext verdict outcome to log — use the universal
+            // outcome's kind via the recorded resolved_outcome_json instead.
+            // For now stamp "win"/"loss" placeholder; the resolved_outcome_json
+            // on t1_resolutions carries the truth.
+            outcome: "win",
+          });
+          try {
+            await this.onResolved(ctx.call_id);
+          } catch (err) {
+            this.log({
+              kind: "still_pending",
+              call_id: ctx.call_id,
+              phase: "t1",
+              reason: `notify_failed:${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
+          continue;
+        }
+        // ── end Z2 fhe_direct branch ─────────────────────────────────────
+
         // P2 Phase C-2: load resolution subject. For committed rows
         // this prefers the agent's voluntary reveal, falls back to
         // daemon age decrypt past fallback_after, then drand decrypt
@@ -418,6 +524,326 @@ export class Resolver {
       }
     }
     return { resolved, oracle_unavailable: oracleUnavailable };
+  }
+
+  // ── Z2 — fhe_direct encrypted-scoring path ──
+  //
+  // Sibling to the legacy plaintext path. Computes an encrypted score
+  // from (encrypted prediction + public adapter outcome) and persists:
+  //   - fhe_score_jobs row in status='scored_pending_decrypt'
+  //   - t1_resolutions row with NULL call_score + score_ciphertext_hash
+  //     pointing at the job
+  //   - submissions.status flipped to 'resolved' (universal terminal)
+  //
+  // Returns:
+  //   "scored"  — encrypted score persisted; resolver counts as resolved
+  //   "pending" — sidecar/provider transient failure; resolver keeps the
+  //               call at pending_t1 for next-tick retry
+  //   "skipped" — no provider loaded (shouldn't happen at runtime; defensive)
+  //
+  // NEVER throws. All provider errors are caught and recorded onto the
+  // job row so the operator can see WHY the score failed without
+  // grepping daemon logs.
+  private async runFheDirectScoring(args: {
+    ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>;
+    t0row: { p0: string };
+    obs: OracleObservation;
+  }): Promise<"scored" | "pending" | "skipped"> {
+    if (!this.fheProvider) {
+      return "skipped";
+    }
+    const provider = this.fheProvider;
+    const nowIso = this.nowIso();
+
+    // 1. Load the ciphertext + circuit binding.
+    const ctRow = this.db
+      .prepare(
+        `SELECT keyset_id, circuit_id, ciphertext_format, ciphertext_blob,
+                ciphertext_hash, vector_len, payout_denominator
+         FROM fhe_call_ciphertexts
+         WHERE call_id = ?`,
+      )
+      .get(args.ctx.call_id) as
+      | {
+          keyset_id: string;
+          circuit_id: string;
+          ciphertext_format: string;
+          ciphertext_blob: Buffer;
+          ciphertext_hash: string;
+          vector_len: number;
+          payout_denominator: string;
+        }
+      | undefined;
+    if (!ctRow) {
+      // Submission gate failure — fhe_direct row without a ciphertext
+      // shouldn't exist. Treat as a hard programmer error rather than a
+      // recoverable failure; record onto job for the operator.
+      enqueueScoreJob({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        provider: provider.name,
+        circuit_id: "(unknown)",
+        now: nowIso,
+      });
+      recordScoreFailure({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        error: "fhe_call_ciphertexts row missing for fhe_direct call",
+        now: nowIso,
+      });
+      return "pending";
+    }
+
+    // 2. Look up the circuit by id, derive the handle the provider needs.
+    const circuitRow = this.db
+      .prepare(
+        `SELECT circuit_id, name, vector_max_len, provider, handle
+         FROM fhe_circuits WHERE circuit_id = ?`,
+      )
+      .get(ctRow.circuit_id) as
+      | {
+          circuit_id: string;
+          name: "half_l1_distance_binary" | "half_l1_distance_n";
+          vector_max_len: number;
+          provider: "mock" | "zama_local";
+          handle: string;
+        }
+      | undefined;
+    if (!circuitRow) {
+      enqueueScoreJob({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        provider: provider.name,
+        circuit_id: ctRow.circuit_id,
+        now: nowIso,
+      });
+      recordScoreFailure({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        error: `fhe_circuits row missing for circuit_id=${ctRow.circuit_id}`,
+        now: nowIso,
+      });
+      return "pending";
+    }
+
+    // 3. Dispatch the public outcome through the adapter. We reuse the
+    // v2 computeV2OutcomePath helper because the encrypted scoring
+    // input is the SAME public outcome vector the legacy v2 path
+    // already computes — the only thing changing is what we DO with
+    // it. If the adapter says "pending"/"disputed" or returns null,
+    // bail; we cannot score without a resolved outcome.
+    //
+    // The committed v2 path takes a `subject` argument with the
+    // plaintext side. For fhe_direct rows the side is encrypted, but
+    // the universal outcome lookup doesn't actually consume `subject.side`
+    // — only the adapter does, and the native-price adapter uses it
+    // for the outcome direction. We mock a synthetic subject built from
+    // the ctx's market_id / horizon, and request only the OUTCOME
+    // (resolved payout vector), discarding the v2 score computation.
+    const marketId = args.ctx.market_id;
+    if (!marketId) {
+      enqueueScoreJob({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        provider: provider.name,
+        circuit_id: ctRow.circuit_id,
+        now: nowIso,
+      });
+      recordScoreFailure({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        error: "fhe_direct call missing market_id (cannot dispatch adapter)",
+        now: nowIso,
+      });
+      return "pending";
+    }
+    const marketRow = marketsRepo.get(this.db, marketId);
+    if (!marketRow) {
+      enqueueScoreJob({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        provider: provider.name,
+        circuit_id: ctRow.circuit_id,
+        now: nowIso,
+      });
+      recordScoreFailure({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        error: `markets row missing for market_id=${marketId}`,
+        now: nowIso,
+      });
+      return "pending";
+    }
+
+    let adapter;
+    try {
+      adapter = getAdapterForMarket(marketRow);
+    } catch (err) {
+      enqueueScoreJob({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        provider: provider.name,
+        circuit_id: ctRow.circuit_id,
+        now: nowIso,
+      });
+      recordScoreFailure({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        error: `getAdapterForMarket failed: ${err instanceof Error ? err.message : String(err)}`,
+        now: nowIso,
+      });
+      return "pending";
+    }
+
+    // For fhe_direct rows, ctx.side is BUY/SELL but it's a fixed default
+    // from the submissions row (Z1 records it as 'BUY' on the encrypted
+    // path because the schema still has the column NOT NULL). The
+    // adapter needs the canonical resolved payout vector, which for
+    // native-price binary markets uses side to decide which bucket
+    // "wins". Z1 binds side into the commit preimage so the agent's
+    // claimed side is non-repudiable; we use ctx.side here. For
+    // markets whose outcome is side-independent (categorical), this is
+    // a no-op.
+    const voidBand =
+      args.ctx.market_config_version !== null
+        ? voidBandFloat(marketRow)
+        : voidBandFloat(marketRow);
+    const marketRef = {
+      protocol: adapter.name,
+      sourceId: marketId,
+      configVersion: marketRow.market_config_version ?? 1,
+    };
+    let observed: UniversalOutcome | "pending" | "disputed";
+    try {
+      observed = await adapter.observeResolution(marketRef, {
+        t0_p0: args.t0row.p0,
+        t1_p1: args.obs.price,
+        t1_iso: args.obs.feed_timestamp,
+        t1_feed: args.obs.feed,
+        t1_source_id: args.obs.source_id,
+        void_band: voidBand,
+        side: args.ctx.side,
+        market_id: marketId,
+      });
+    } catch (err) {
+      enqueueScoreJob({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        provider: provider.name,
+        circuit_id: ctRow.circuit_id,
+        now: nowIso,
+      });
+      recordScoreFailure({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        error: `adapter.observeResolution threw: ${err instanceof Error ? err.message : String(err)}`,
+        now: nowIso,
+      });
+      return "pending";
+    }
+    if (observed === "pending" || observed === "disputed") {
+      // Not a failure — just not resolvable this tick. Don't poison
+      // the job row; just leave the call at pending_t1.
+      return "pending";
+    }
+    const resolvedOutcome: UniversalOutcome = observed;
+
+    // 4. Enqueue the job and dispatch to the provider.
+    enqueueScoreJob({
+      db: this.db,
+      call_id: args.ctx.call_id,
+      provider: provider.name,
+      circuit_id: ctRow.circuit_id,
+      now: nowIso,
+    });
+
+    let scoreResult;
+    try {
+      scoreResult = await provider.scoreEncrypted({
+        circuit: {
+          name: circuitRow.name,
+          handle: circuitRow.handle,
+          vector_max_len: circuitRow.vector_max_len,
+          provider: circuitRow.provider,
+        },
+        encrypted_predicted_outcome: ctRow.ciphertext_blob,
+        resolved_outcome_numerators: resolvedOutcome.payoutNumerators,
+        resolved_outcome_denominator: resolvedOutcome.payoutDenominator,
+      });
+    } catch (err) {
+      // FheUnavailableError → transient retry. Any other throw is also
+      // recorded but resolver still treats as transient — we explicitly
+      // do NOT downgrade to plaintext on a programmer error either.
+      const msg = err instanceof Error ? err.message : String(err);
+      recordScoreFailure({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        error:
+          err instanceof FheUnavailableError
+            ? `sidecar unavailable: ${msg}`
+            : `scoreEncrypted threw: ${msg}`,
+        now: nowIso,
+      });
+      return "pending";
+    }
+
+    // 5. Persist success.
+    const score_ciphertext_hash = createHash("sha256")
+      .update(scoreResult.encrypted_score)
+      .digest("hex");
+    const resolvedOutcomeJson = JSON.stringify(serializeOutcome(resolvedOutcome));
+    const payoutVectorJson = JSON.stringify(
+      resolvedOutcome.payoutNumerators.map((n) => n.toString()),
+    );
+
+    const tx = this.db.transaction(() => {
+      recordScoreSuccess({
+        db: this.db,
+        call_id: args.ctx.call_id,
+        encrypted_score: scoreResult.encrypted_score,
+        score_ciphertext_hash,
+        transcript_hash: scoreResult.transcript_hash,
+        now: nowIso,
+      });
+      resolutionsRepo.setResolution(this.db, {
+        call_id: args.ctx.call_id,
+        t1: args.obs.feed_timestamp,
+        p1: args.obs.price,
+        t1_feed: args.obs.feed,
+        // signed_return is a plaintext-only artifact (legacy scoring).
+        // For fhe_direct rows the universal outcome carries the truth;
+        // legacy view queries that read signed_return get "0" — same
+        // posture as the oracle_unavailable terminal path.
+        signed_return: "0",
+        // outcome column is a legacy CHECK enum; the universal outcome
+        // sits in resolved_outcome_json. We stamp 'win' as a placeholder
+        // here because the column is NOT NULL with a CHECK; consumers
+        // that care about the truth read resolved_outcome_json.
+        // Choosing 'win' deliberately so leaderboard COUNT(*) FILTER
+        // queries don't double-count fhe_direct rows as void.
+        outcome: "win",
+        // call_score stays NULL — Z3 fills this in after quorum decrypt.
+        call_score: null,
+        resolved_at: nowIso,
+        resolved_outcome_json: resolvedOutcomeJson,
+        payout_vector_json: payoutVectorJson,
+        score_ciphertext_hash,
+        fhe_circuit_id: ctRow.circuit_id,
+      });
+      submissionsRepo.setStatus(this.db, args.ctx.call_id, "resolved");
+      usageRepo.emit(
+        this.db,
+        this.makeUsage(args.ctx.agent_id, "resolution_completed", {
+          call_id: args.ctx.call_id,
+          // Operator can see "this call resolved with an encrypted score";
+          // the bounded plaintext score still lives behind Z3's quorum.
+          outcome: "fhe_direct_scored_pending_decrypt",
+          score_ciphertext_hash,
+        }),
+      );
+    });
+    tx();
+    return "scored";
   }
 
   // ── Phase 5 — adapter-dispatched universal payout-vector path ──

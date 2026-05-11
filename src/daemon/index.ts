@@ -131,6 +131,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         oracle,
         ...(ageCtx ? { ageContext: ageCtx } : {}),
         ...(drandCtx ? { drandContext: drandCtx } : {}),
+        ...(fheProvider ? { fheProvider } : {}),
         onResolved: async (call_id) => {
           // 1. Fan out to SSE subscribers
           try {

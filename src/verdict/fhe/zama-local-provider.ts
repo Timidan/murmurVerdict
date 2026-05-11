@@ -49,7 +49,14 @@ import {
   type FheProvider,
   type FheScoreEncryptedArgs,
   type FheScoreEncryptedResult,
+  FheUnavailableError,
 } from "./provider.js";
+import {
+  bytesToWire,
+  sendRequest,
+  type SidecarRequest,
+  wireToBytes,
+} from "./sidecar-client.js";
 
 export interface ZamaLocalFheProviderOptions {
   readonly db: Database.Database;
@@ -60,8 +67,17 @@ export interface ZamaLocalFheProviderOptions {
    * across restarts.
    */
   readonly placeholderPublicKey?: Buffer;
+  /**
+   * Override the sidecar socket path. Default reads
+   * `MURMUR_FHE_SIDECAR_SOCKET` or `/var/run/murmur/fhe.sock` (matches
+   * the Rust crate's clap default).
+   */
   readonly socketPath?: string;
+  /** Override the per-request sidecar IPC timeout. Default 30s. */
+  readonly sidecarTimeoutMs?: number;
 }
+
+const DEFAULT_SIDECAR_SOCKET = "/var/run/murmur/fhe.sock";
 
 const DEFAULT_PLACEHOLDER = Buffer.from(
   "murmur-zama-local-placeholder-public-key:v0",
@@ -81,11 +97,18 @@ export class ZamaLocalFheProvider implements FheProvider {
 
   private readonly db: Database.Database;
   private readonly placeholderBlob: Buffer;
+  private readonly socketPath: string;
+  private readonly sidecarTimeoutMs: number | undefined;
   private cachedActive: FheActiveKey | null = null;
 
   constructor(opts: ZamaLocalFheProviderOptions) {
     this.db = opts.db;
     this.placeholderBlob = opts.placeholderPublicKey ?? DEFAULT_PLACEHOLDER;
+    this.socketPath =
+      opts.socketPath ??
+      process.env.MURMUR_FHE_SIDECAR_SOCKET ??
+      DEFAULT_SIDECAR_SOCKET;
+    this.sidecarTimeoutMs = opts.sidecarTimeoutMs;
   }
 
   async getActivePublicKey(): Promise<FheActiveKey> {
@@ -148,14 +171,82 @@ export class ZamaLocalFheProvider implements FheProvider {
   }
 
   async scoreEncrypted(
-    _args: FheScoreEncryptedArgs,
+    args: FheScoreEncryptedArgs,
   ): Promise<FheScoreEncryptedResult> {
-    throw new FheNotImplementedError("z2", "scoreEncrypted");
+    if (args.circuit.provider !== "zama_local") {
+      throw new Error(
+        `zama_local provider cannot run circuit compiled by '${args.circuit.provider}'`,
+      );
+    }
+    if (args.resolved_outcome_denominator === 0n) {
+      throw new Error(
+        "scoreEncrypted: resolved_outcome_denominator must be non-zero",
+      );
+    }
+    // Look up the sidecar's circuit_id from `fhe_circuits`. The handle
+    // returned by getCircuit() is provider-internal; the sidecar
+    // wants the circuit_id PK so it can dispatch to its compiled
+    // artifact registry.
+    const row = this.db
+      .prepare(
+        `SELECT circuit_id FROM fhe_circuits
+         WHERE provider = 'zama_local'
+           AND name = ?
+           AND vector_max_len = ?
+         ORDER BY compiled_at DESC LIMIT 1`,
+      )
+      .get(args.circuit.name, args.circuit.vector_max_len) as
+      | { circuit_id: string }
+      | undefined;
+    if (!row) {
+      throw new FheUnavailableError(
+        "scoreEncrypted",
+        `no fhe_circuits row for zama_local/${args.circuit.name}/${args.circuit.vector_max_len}`,
+      );
+    }
+    const req: SidecarRequest = {
+      op: "score_encrypted",
+      circuit_id: row.circuit_id,
+      encrypted_predicted_outcome: bytesToWire(args.encrypted_predicted_outcome),
+      resolved_outcome_numerators: args.resolved_outcome_numerators.map((n) =>
+        n.toString(),
+      ),
+      resolved_outcome_denominator: args.resolved_outcome_denominator.toString(),
+    };
+    const resp = await sendRequest(req, {
+      socketPath: this.socketPath,
+      ...(this.sidecarTimeoutMs !== undefined
+        ? { timeoutMs: this.sidecarTimeoutMs }
+        : {}),
+    });
+    if (resp.kind === "error") {
+      // The sidecar's `not_implemented_z2_real` stub is what Z2-prep
+      // would emit; the Z2 handler change replaces it with real
+      // computation. Either way the resolver treats this as transient
+      // and retries on the next tick — no plaintext downgrade.
+      throw new FheUnavailableError(
+        "scoreEncrypted",
+        `sidecar error code='${resp.code}' message='${resp.message}'`,
+      );
+    }
+    if (resp.kind !== "score_ciphertext") {
+      throw new FheUnavailableError(
+        "scoreEncrypted",
+        `unexpected sidecar response kind='${resp.kind}'`,
+      );
+    }
+    return {
+      encrypted_score: wireToBytes(resp.encrypted_score),
+      transcript_hash: resp.transcript_hash,
+    };
   }
 
   async decryptScore(
     _args: FheDecryptScoreArgs,
   ): Promise<FheDecryptScoreResult> {
+    // Z3 owns this. The sidecar handler also returns
+    // 'requires_threshold_z3' so even a curious caller can't fish a
+    // single-party decrypt out of the dev sidecar.
     throw new FheNotImplementedError("z3", "decryptScore");
   }
 }
