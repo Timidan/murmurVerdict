@@ -895,7 +895,14 @@ export class Resolver {
         score_ciphertext_hash,
         fhe_circuit_id: ctRow.circuit_id,
       });
-      submissionsRepo.setStatus(this.db, args.ctx.call_id, "resolved");
+      // Codex Z3 review FAIL #8 fix — DO NOT flip submissions.status to
+      // "resolved" yet. For fhe_direct calls, "resolved" means the
+      // bounded score is publicly available, which requires the
+      // quorum release (next paragraph below + the release tx in
+      // runFheThresholdReleasePhase). Until quorum lands, status stays
+      // pending_t1 — sub-state distinguished by fhe_score_jobs.status
+      // ('scored_pending_decrypt'). The release tx flips it to
+      // 'resolved' atomically with the score write.
       // Z3 — atomic with the score commit: enqueue the decrypt request
       // so the next tick's threshold-release phase has work to do. The
       // helper is idempotent on (call_id, score_ciphertext_hash), so a
@@ -1059,11 +1066,28 @@ export class Resolver {
     // pool — the DB is the source of truth for "who can sign for
     // this holder_id"). A share whose signature doesn't verify is
     // dropped silently from the quorum count.
-    const verified = collected.filter((s) => {
-      const dbHolder = dbByHolderId.get(s.holder_id);
-      if (!dbHolder) return false;
-      return verifyShare(s, dbHolder.public_identity, req.transcript_hash);
-    });
+    //
+    // Codex Z3 review FAIL #2 fix — also overwrite the share's
+    // `category` with the DB-truth value before passing to
+    // validateQuorum(). The previous code trusted the caller-supplied
+    // category, which let a malicious holder claim category='partner'
+    // when its DB row said category='agent', bypassing the
+    // ≥2-non-agent + ≥2-non-murmur policy. The DB is the source of
+    // truth for "what category is this holder_id".
+    const verified = collected
+      .filter((s) => {
+        const dbHolder = dbByHolderId.get(s.holder_id);
+        if (!dbHolder) return false;
+        return verifyShare(s, dbHolder.public_identity, req.transcript_hash);
+      })
+      .map((s) => {
+        const dbHolder = dbByHolderId.get(s.holder_id);
+        // Type-safe non-null — the filter above just proved presence.
+        return {
+          ...s,
+          category: dbHolder!.category,
+        };
+      });
 
     // 3. Quorum check.
     const quorum = validateQuorum(verified);
@@ -1106,6 +1130,12 @@ export class Resolver {
         quorum_signatures: quorumSigsJson,
         now: nowIso,
       });
+      // Codex Z3 review FAIL #8 fix — flip submissions.status to
+      // "resolved" HERE (atomic with the release) instead of at score
+      // time. For fhe_direct, "resolved" means the bounded score is
+      // released and the leaderboard can read it; that only happens
+      // after quorum, never before.
+      submissionsRepo.setStatus(this.db, req.call_id, "resolved");
     });
     releaseTx();
 

@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import {
   canonicalResolvedOutcomeBytes,
   canonicalTranscriptBytes,
+  FheNotImplementedError,
   type FheActiveKey,
   type FheCircuit,
   type FheDecryptScoreArgs,
@@ -257,12 +258,19 @@ export class MockFheProvider implements FheProvider {
     return { encrypted_score, transcript_hash, score_ciphertext_hash };
   }
 
-  async decryptScore(args: FheDecryptScoreArgs): Promise<FheDecryptScoreResult> {
-    const decoded = decodeScore(args.encrypted_score);
-    const score = decoded.score_x1e9 / 1_000_000_000;
-    // Defensive clamp — score blobs are produced by us, but a future
-    // wire-format drift shouldn't leak out-of-range values.
-    return { score: Math.max(0, Math.min(1, score)) };
+  async decryptScore(_args: FheDecryptScoreArgs): Promise<FheDecryptScoreResult> {
+    // Codex Z3 review FAIL #1 — single-operator decrypt path is REMOVED,
+    // not flagged. Z3's mock-quorum is the only legitimate way to
+    // recover the cleartext score (it parses the partial_decrypt bytes
+    // inside aggregateShares() in src/verdict/fhe/threshold.ts).
+    //
+    // Earlier this method decoded the score blob locally, which would
+    // have let an operator with daemon access bypass quorum entirely
+    // by constructing the encrypted_score from DB state and calling
+    // `mockProvider.decryptScore()` directly. The operator-blind
+    // invariant requires that single-party decryption be impossible,
+    // not just inconvenient. Mirrors the zama-local stub posture.
+    throw new FheNotImplementedError("z3", "decryptScore_via_quorum_only");
   }
 }
 
