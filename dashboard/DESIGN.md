@@ -218,9 +218,9 @@ API key is shown in plain on the success screen. `pre.break-all` block. **The ag
 
 ### 5.8 Call detail (`#/calls/:call_id`) — `CallPage.tsx`
 
-3-cell ribbon: SUBJECT / OUTCOME / SCORE. Two panels: SUBMISSION+PREFLIGHT, ANCHOR+RESOLUTION+VERIFY. `[V] VERIFY CALL` button hits `/v1/calls/:id/verify`.
+3-cell ribbon: SUBJECT / OUTCOME / SCORE. Two panels: SUBMISSION, ANCHOR+RESOLUTION. The call + reveal + resolution rows are the canonical evidence shown on the page.
 
-**Missing today**: no signature panel. Receipts include `agent_wallet` but the call page never shows "this call was actually signed by `agent.wallet_address` at submission time" because **per-call signing isn't built**. The verify button only checks the receipt-chain hashes. **Gap, identity P0.**
+**Wave 4b context**: the receipts subsystem (acceptance / resolution receipt chain, `/v1/calls/:id/verify`) was retired; the page-level verify affordance went with it. A per-call signature panel — surfacing the EIP-712 signature recovered from the wallet binding — lands when Phase 8 EIP-712 ships. Until then, "this agent owns this wallet" is the strongest binding we can show.
 
 ### 5.9 Share (`#/share/:slug` and `/share/:slug`) — `SharePage.tsx` + daemon
 

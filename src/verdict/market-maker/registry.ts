@@ -8,13 +8,11 @@
  * semver-sorted version wins when `version` is omitted.
  *
  * This file owns the registration of the legacy native-price market path as
- * the FIRST {@link MarketMakerAdapter}. Phase 3 only adds the dispatch shell
- * — the resolver at `src/verdict/resolver.ts` continues to call
- * `computeSignedReturn` directly. Phase 5 is the cutover that routes
- * resolution through `adapter.observeResolution()` end-to-end. Until then,
- * `nativePriceAdapter.observeResolutionForCall()` is a parallel implementation
- * the verifier can call to prove byte-identical equivalence with the legacy
- * resolver path.
+ * the FIRST {@link MarketMakerAdapter}. Post-Wave-4d, the resolver dispatches
+ * BOTH t1 observation (`adapter.observeResolution(marketRef, ctx)`) AND
+ * scoring (`scoreOutcomeVector(commitment, outcome, adapter)` →
+ * `adapter.score(...)`) through this registry — the abstraction is
+ * load-bearing, not decorative.
  *
  * Cite: V2_IMPLEMENTATION_PLAN.md "Phase 3 MarketMaker Adapter Framework",
  *       V2_DECISION_RECORD.md §2.4.

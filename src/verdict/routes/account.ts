@@ -34,7 +34,7 @@ import {
   WalletAddressSchema,
   VerdictError,
 } from "../schema.js";
-import { agentsRepo } from "../db.js";
+import { agentsRepo, usageRepo } from "../db.js";
 import {
   getOrCreateAccount,
   linkAgentToAccount,
@@ -457,6 +457,22 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
           404,
         );
       }
+      // V2 §7.7 risk-1 — emit the §7.7 audit-trail event so the cooldown
+      // enforcement has a complete `usage_events` history. Includes both
+      // the previous and new addresses + the canonical write timestamp,
+      // so a post-incident replay can reconstruct every payout retarget.
+      usageRepo.emit(db, {
+        event_id: randomUUID(),
+        agent_id: agent.agent_id,
+        kind: "destination_address_updated",
+        ts: result.updated_at ?? new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+        attributes: {
+          previous_address: result.previous_address ?? null,
+          new_address: parsed.data.destination_address,
+          cooldown_ms:
+            destinationCooldownMs ?? 24 * 60 * 60 * 1000 /* default */,
+        },
+      });
       res.status(200).json({
         agent_id: agent.agent_id,
         destination_address: parsed.data.destination_address,

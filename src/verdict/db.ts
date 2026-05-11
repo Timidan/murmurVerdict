@@ -351,6 +351,24 @@ function applyMigrations(db: Database.Database): void {
     );
     v = 20;
   }
+
+  if (v < 21) {
+    // Wave 4d — drop the preflights table.
+    //
+    // preflights was Santiment-derived risk metadata stamped at acceptance
+    // (murmur_score, murmur_playbook, risk_flags_json, data_freshness_seconds,
+    // market_regime). Wave 4b-2 retired the Santiment integration; the
+    // INSERT call site was removed at that time and the table has been
+    // vestigial ever since — zero writers, zero readers, but the DDL still
+    // shipped in MIGRATION_001 so every install carries an empty table.
+    //
+    // Single DROP — no data migration required (no rows to preserve), no FK
+    // dependents (preflights references submissions ON DELETE CASCADE, not
+    // the other direction). Idempotent via IF EXISTS.
+    db.exec("DROP TABLE IF EXISTS preflights;");
+    v = 21;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -1807,7 +1825,54 @@ export const agentsRepo = {
     return row ? hydrateAgent(db, row) : null;
   },
 
-  setKind(db: Database.Database, agent_id: string, kind: AgentKind): void {
+  /**
+   * Mutate an agent's `kind` post-registration.
+   *
+   * V2 §7.1 + §7.7 risk-2 invariant: tier is immutable per agent. Switching
+   * tiers requires registering a NEW agent (new agent_id, fresh reputation).
+   * The plan's stated motivation is anti-downgrade — an `attested` agent
+   * forfeiting their Olas bond by silently flipping to `casual`.
+   *
+   * Two legitimate exceptions live today:
+   *   1. `claim` flow: `shadow` → `verified` when an operator proves
+   *      control of the X/Telegram identity that produced the shadow
+   *      ingested posts. The shadow agent is a NON-OPERATOR-MINTED row
+   *      (auto-created by the post ingester); the operator's claim
+   *      converts it into their canonical identity. This is upgrade-only
+   *      and explicitly sanctioned by the claim flow.
+   *   2. `wallet-only claim` flow: pre-registered `shadow` self-claimed
+   *      as `wallet_only` by an operator who proves wallet control. Same
+   *      upgrade-only constraint.
+   *
+   * Wave 4d guard:
+   *   - Callers MUST pass an explicit `{ reason }` marker so accidental
+   *     in-place mutations elsewhere in the codebase grep / fail-loud.
+   *   - Generic admin overrides require `MURMUR_ADMIN_TIER_OVERRIDE=1`.
+   *   - The mutation is recorded via `usage_events` (caller responsibility)
+   *     so the §7.7 audit trail picks up every transition.
+   *
+   * Throws when the caller is neither a sanctioned claim flow nor an
+   * env-gated admin override.
+   */
+  setKind(
+    db: Database.Database,
+    agent_id: string,
+    kind: AgentKind,
+    opts: {
+      reason:
+        | "claim_completed_verified"
+        | "claim_completed_wallet_only"
+        | "admin_override";
+    },
+  ): void {
+    if (
+      opts.reason === "admin_override" &&
+      process.env.MURMUR_ADMIN_TIER_OVERRIDE !== "1"
+    ) {
+      throw new Error(
+        "agentsRepo.setKind: admin_override requires MURMUR_ADMIN_TIER_OVERRIDE=1",
+      );
+    }
     prep(
       db,
       "UPDATE agents SET kind = ? WHERE agent_id = ?",

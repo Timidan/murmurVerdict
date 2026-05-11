@@ -388,6 +388,13 @@ export interface SetDestinationResult {
   reason?: "cooldown_active" | "agent_not_found";
   /** Seconds until the cooldown clears (only when reason='cooldown_active'). */
   retry_after_seconds?: number;
+  /** Previous destination_address, surfaced on ok=true so the caller can
+   *  emit the §7.7 risk-1 audit event with both old + new values. Null when
+   *  the agent had no prior destination_address bound. */
+  previous_address?: string | null;
+  /** ISO8601 timestamp the new value was written at, surfaced for the audit
+   *  event. Matches the `destination_address_updated_at` column write. */
+  updated_at?: string;
 }
 
 /**
@@ -416,9 +423,14 @@ export function setDestinationAddress(
   const txn = db.transaction(() => {
     const row = db
       .prepare(
-        "SELECT destination_address_updated_at FROM agents WHERE agent_id = ?",
+        "SELECT destination_address, destination_address_updated_at FROM agents WHERE agent_id = ?",
       )
-      .get(agent_id) as { destination_address_updated_at: string | null } | undefined;
+      .get(agent_id) as
+      | {
+          destination_address: string | null;
+          destination_address_updated_at: string | null;
+        }
+      | undefined;
     if (!row) {
       return { ok: false as const, reason: "agent_not_found" as const };
     }
@@ -442,7 +454,11 @@ export function setDestinationAddress(
        SET destination_address = ?, destination_address_updated_at = ?
        WHERE agent_id = ?`,
     ).run(destination_address, ts, agent_id);
-    return { ok: true as const };
+    return {
+      ok: true as const,
+      previous_address: row.destination_address,
+      updated_at: ts,
+    };
   });
 
   return txn();

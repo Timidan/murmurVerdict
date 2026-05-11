@@ -2,10 +2,10 @@
  * Market-maker entry point for code living under `src/verdict/`.
  *
  * Re-exports the canonical {@link MarketMakerAdapter} / {@link MarketMakerRegistry}
- * primitives from `src/markets/types.js`, plus the lifecycle types
- * ({@link MarketRef}, {@link AcceptanceReceipt}). Consumers inside the verdict
- * tree should import from this barrel rather than reaching across the source
- * tree boundary into `src/markets/`.
+ * primitives from `src/markets/types.js`, plus {@link MarketRef} and the
+ * per-call {@link ObservationContext}. Consumers inside the verdict tree
+ * should import from this barrel rather than reaching across the source-tree
+ * boundary into `src/markets/`.
  *
  * The registry singleton + concrete `NativePriceAdapter` are exported from
  * sibling modules:
@@ -16,8 +16,8 @@
  */
 
 export type {
-  AcceptanceReceipt,
   MarketMakerAdapter,
   MarketRef,
+  ObservationContext,
 } from "../../markets/types.js";
 export { MarketMakerRegistry } from "../../markets/types.js";

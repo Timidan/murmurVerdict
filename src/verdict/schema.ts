@@ -659,6 +659,11 @@ export const UsageEventKindSchema = z.enum([
   "claim_initiated",
   "claim_completed",
   "shadow_card_posted",
+  // V2 §7.4 + §7.7 risk-1 — every destination_address mutation is recorded
+  // here so the 24h cooldown enforcement has a full audit trail. Emitted by
+  // the PATCH /v1/account/agents/:slug/destination-address handler after a
+  // successful setDestinationAddress call.
+  "destination_address_updated",
 ]);
 export type UsageEventKind = z.infer<typeof UsageEventKindSchema>;
 

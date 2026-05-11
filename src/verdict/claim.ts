@@ -373,10 +373,19 @@ export class ClaimService {
       }
 
       // Flip kind, set api_key_hash, denormalize wallet onto agents row
-      // so receipts can canonicalize wallet binding without joining
-      // verified_identities on every build (Codex's note from the
-      // P1.5 review: "Otherwise every receipt build needs a join").
-      agentsRepo.setKind(this.db, row.agent_id, "verified");
+      // so canonical wallet binding doesn't require joining
+      // verified_identities on every read.
+      //
+      // V2 §7.1 + §7.7 risk-2 — tier mutation is normally illegal. The
+      // `claim_completed_verified` reason is the explicit sanctioned exception:
+      // shadow agents are auto-minted by the public-post ingester and have
+      // no operator; the operator's verified claim converts the row into
+      // their canonical identity. Upgrade-only by construction (only
+      // `agent.kind !== 'shadow'` rows are accepted at init()), and recorded
+      // on the `claim_completed` usage event below for §7.7 audit trail.
+      agentsRepo.setKind(this.db, row.agent_id, "verified", {
+        reason: "claim_completed_verified",
+      });
       agentsRepo.setApiKeyHash(this.db, row.agent_id, apiKeyHash);
       agentsRepo.setWallet(
         this.db,
@@ -708,9 +717,18 @@ export class ClaimService {
       }
 
       // Set kind to "wallet_only" (NOT "verified" — no public identity
-      // proof). Set api_key_hash + denormalized wallet so receipts can
-      // canonicalize wallet binding without joining verified_identities.
-      agentsRepo.setKind(this.db, row.agent_id, "wallet_only");
+      // proof). Set api_key_hash + denormalized wallet so canonical wallet
+      // binding doesn't require joining verified_identities.
+      //
+      // V2 §7.1 + §7.7 risk-2 — tier mutation is normally illegal. The
+      // `claim_completed_wallet_only` reason is the explicit sanctioned
+      // exception: existing claimable rows are either shadow (upgrade-only
+      // from auto-ingestion) or unclaimed wallet_only (idempotent re-bind).
+      // Recorded on the `claim_completed` usage event below for §7.7 audit
+      // trail.
+      agentsRepo.setKind(this.db, row.agent_id, "wallet_only", {
+        reason: "claim_completed_wallet_only",
+      });
       agentsRepo.setApiKeyHash(this.db, row.agent_id, apiKeyHash);
       agentsRepo.setWallet(this.db, row.agent_id, row.wallet_to_bind, chainId);
 

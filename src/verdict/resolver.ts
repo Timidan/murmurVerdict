@@ -37,9 +37,12 @@ import {
   scoreCall,
   scoreOutcomeVector,
 } from "./scoring.js";
-// Phase 5 — adapter dispatch + universal commitment normalizer.
+// Wave 4d — universal payout-vector path is dispatched through the registry
+// for BOTH t1 observation (adapter.observeResolution) and scoring
+// (scoreOutcomeVector internally routes through adapter.score). The legacy
+// `observeResolutionForCall` direct import is gone — the adapter is now
+// load-bearing, not a parallel implementation.
 import { getAdapterForMarket, voidBandFloat } from "./markets.js";
-import { observeResolutionForCall } from "./market-maker/native-price.js";
 import {
   legacySubmissionToCommitment,
   parseStoredCommitment,
@@ -292,10 +295,10 @@ export class Resolver {
         // and honor the MURMUR_V2_RESOLVER_DISABLED kill switch so an
         // operator can hot-disable v2 without redeploy if a bad adapter or
         // malformed commitment lands in production.
-        let v2: ReturnType<Resolver["computeV2OutcomePath"]> = null;
+        let v2: Awaited<ReturnType<Resolver["computeV2OutcomePath"]>> = null;
         if (process.env.MURMUR_V2_RESOLVER_DISABLED !== "1") {
           try {
-            v2 = this.computeV2OutcomePath({
+            v2 = await this.computeV2OutcomePath({
               ctx,
               subject,
               t0row,
@@ -433,7 +436,7 @@ export class Resolver {
   // resolved_outcome_json, no v2 receipt). Today every active call has a
   // market_id post-MIGRATION_009 backfill, so this null path is exercised
   // only in regression scenarios.
-  private computeV2OutcomePath(args: {
+  private async computeV2OutcomePath(args: {
     ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>;
     subject: {
       side: Side;
@@ -447,12 +450,12 @@ export class Resolver {
     t0row: { p0: string };
     obs: OracleObservation;
     subjectVoidBand: number | undefined;
-  }): {
+  }): Promise<{
     commitment: ReturnType<typeof legacySubmissionToCommitment>;
     outcome: UniversalOutcome;
     score: ReturnType<typeof scoreOutcomeVector>;
     adapter_id: string;
-  } | null {
+  } | null> {
     // Resolve the market row to dispatch the adapter. Legacy rows without
     // market_id (pre-MIGRATION_009) fall through; the adapter dispatch
     // requires a market row to honor markets.adapter_id (Phase 11+).
@@ -478,24 +481,44 @@ export class Resolver {
       throw err;
     }
 
+    // Wave 4d — dispatch t1 observation through the adapter via the registry.
     // Lift the resolver-scoped values into the adapter's observation context.
-    // This is the seam Phase 3's NativePriceAdapter shell prepped for —
-    // observeResolutionForCall is the adapter-private function that produces
-    // the universal Outcome from native-price's t0/t1 anchors.
+    // The adapter (native-price today) narrows the context structurally; a
+    // malformed context maps to "pending" so the resolver falls through to its
+    // still-pending path rather than crashing the tick.
     const voidBand =
       args.subjectVoidBand !== undefined
         ? args.subjectVoidBand
         : voidBandFloat(marketRow);
-    const outcome = observeResolutionForCall({
-      t0_p0: args.t0row.p0,
-      t1_p1: args.obs.price,
-      t1_iso: args.obs.feed_timestamp,
-      t1_feed: args.obs.feed,
-      t1_source_id: args.obs.source_id,
-      void_band: voidBand,
-      side: args.subject.side,
-      market_id: marketId,
-    });
+    const marketRef = {
+      protocol: adapter.name,
+      sourceId: marketId,
+      configVersion:
+        marketRow.market_config_version ??
+        args.subject.market_config_version ??
+        1,
+    };
+    let observed: UniversalOutcome | "pending" | "disputed";
+    try {
+      observed = await adapter.observeResolution(marketRef, {
+        t0_p0: args.t0row.p0,
+        t1_p1: args.obs.price,
+        t1_iso: args.obs.feed_timestamp,
+        t1_feed: args.obs.feed,
+        t1_source_id: args.obs.source_id,
+        void_band: voidBand,
+        side: args.subject.side,
+        market_id: marketId,
+      });
+    } catch {
+      return null;
+    }
+    if (observed === "pending" || observed === "disputed") {
+      // Adapter declined to resolve this tick — fall through to legacy-only
+      // path; the resolver's outer loop will surface a still_pending log.
+      return null;
+    }
+    const outcome: UniversalOutcome = observed;
 
     // Build the universal Commitment. Prefer the stored canonical
     // commitment_json (Phase 4 submit path); fall back to deriving from
@@ -534,7 +557,10 @@ export class Resolver {
 
     let score;
     try {
-      score = scoreOutcomeVector(commitment, outcome);
+      // Wave 4d — dispatch scoring via the registry-resolved adapter so the
+      // call_score number is produced by adapter.score(commitment, outcome).
+      // Void / kind-mismatch reconciliation stays inside scoreOutcomeVector.
+      score = scoreOutcomeVector(commitment, outcome, adapter);
     } catch {
       return null;
     }

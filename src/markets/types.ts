@@ -5,8 +5,10 @@
  *
  * Directory purpose: `src/markets/` hosts pluggable market-maker adapters
  * (NativePrice, Polymarket, UMA OOv3, Reality.eth, social-pulse, ...). Each
- * adapter declares its commitment / market-config Zod schemas, accepts
- * commitments, observes resolutions, scores calls, and verifies receipts.
+ * adapter declares its commitment / market-config Zod schemas, observes
+ * resolutions, and scores calls. Wave 4b retired the receipts subsystem;
+ * call + reveal + resolution rows are the canonical evidence — adapters no
+ * longer issue acceptance receipts or verify receipt blobs.
  *
  * This registry lives **one level above** `src/integrations/oracles/registry.ts`.
  * Oracle adapters are an implementation detail of `NativePriceAdapter` (a
@@ -29,27 +31,40 @@ import type { Commitment, MarketRef, Outcome } from "../verdict/markets-core.js"
 // — same name, same shape — but every consumer now agrees on one type.
 export type { MarketRef } from "../verdict/markets-core.js";
 
-// ─── AcceptanceReceipt ───────────────────────────────────────────────────────
+// ─── ObservationContext ─────────────────────────────────────────────────────
 
 /**
- * Adapter-side acceptance receipt. Aligns with the canonical receipt pattern
- * in `src/receipts/verdictReceipt.ts` — `hash` is the canonical hash of
- * `canonical_json`, `accepted_at` is ISO8601 UTC. Adapters MAY embed
- * protocol-native evidence (e.g. Polymarket conditionId snapshot) inside
- * `canonical_json`; the verifier replays against that stamped snapshot.
+ * Per-call resolver context the adapter needs to compute a universal
+ * {@link Outcome} from a {@link Commitment}. The universal {@link MarketRef}
+ * alone is intentionally context-free (protocol + sourceId + configVersion);
+ * adapters that need anchor prices, oracle observations, or the agent's
+ * predicted side surface those needs through this structured context.
+ *
+ * The native-price adapter consumes the financial-direction fields
+ * (t0_p0, t1_p1, t1_iso, t1_feed, t1_source_id, void_band, side, market_id).
+ * Other adapters (Polymarket, UMA OOv3, Reality.eth) ignore those and instead
+ * read protocol-native fields they declare in their own typed extension. The
+ * shape is intentionally permissive (`unknown`-cast at the boundary) so each
+ * adapter can carry its own context payload without polluting the universal
+ * surface — the adapter's `observeResolution` body narrows via `as` /
+ * structural checks before reading any field.
  */
-export interface AcceptanceReceipt {
-  hash: string;
-  canonical_json: string;
-  accepted_at: string;
-}
+export type ObservationContext = Record<string, unknown>;
 
 // ─── MarketMakerAdapter (V2 §2.4) ────────────────────────────────────────────
 
 /**
- * The trait every market-maker implements. Maps (Commitment → AcceptanceReceipt)
- * on submit and (MarketRef → Outcome) on resolve. `score` runs adapter-private
- * scoring on top of the shared {@link Commitment} / {@link Outcome} primitives.
+ * The trait every market-maker implements. Maps (MarketRef + ObservationContext
+ * → Outcome) on resolve. `score` runs adapter-private scoring on top of the
+ * shared {@link Commitment} / {@link Outcome} primitives.
+ *
+ * Wave 4d note: this interface used to carry `acceptCommitment` /
+ * `verifyReceipt` / `AcceptanceReceipt`, leftover from the pre-Wave-4b
+ * receipts model. The receipts subsystem was retired in Wave 4b; the
+ * call + reveal + resolution rows are the canonical evidence. The adapter
+ * surface is now exactly "observe resolution" + "score the resolved outcome"
+ * — both of which the resolver dispatches through {@link MarketMakerRegistry}
+ * so cross-adapter dispatch stays load-bearing.
  *
  * `marketFamily` is open-set so future families can land without a core bump,
  * but Murmur curates an allowlist (`'financial-direction' |
@@ -71,32 +86,30 @@ export interface MarketMakerAdapter {
   commitmentSchema: ZodSchema<Commitment>;
   /** Shape of `markets.config_json` for this adapter. Kept opaque to core. */
   marketConfigSchema: ZodSchema<unknown>;
-  /** Stamp the commitment, return ISO8601 acceptance time + canonical receipt. */
-  acceptCommitment(
-    c: Commitment,
-  ): Promise<{ accepted_at: string; receipt: AcceptanceReceipt }>;
   /**
-   * Pull the current resolution status. `'pending'` / `'disputed'` are
-   * non-terminal — the resolver loops until an {@link Outcome} is returned.
-   * Disputes are routed through `src/verdict/disputes.ts`'s `previous_hash`
-   * receipt chain on subsequent re-resolutions.
+   * Pull the universal {@link Outcome} for `marketRef` given the resolver's
+   * per-call context. `'pending'` / `'disputed'` are non-terminal — the
+   * resolver loops until an {@link Outcome} is returned. Disputes are routed
+   * through `src/verdict/disputes.ts` on subsequent re-resolutions.
+   *
+   * Concrete adapter context shapes are adapter-private; see e.g.
+   * `NativePriceObservationContext` in
+   * `src/verdict/market-maker/native-price.ts`.
    */
   observeResolution(
     marketRef: MarketRef,
+    ctx: ObservationContext,
   ): Promise<Outcome | "pending" | "disputed">;
   /**
    * Score a commitment against its resolution. `call_score ∈ [0, 1]`.
    * `components` is adapter-private (e.g. confidence-weighted breakdown,
    * native-price T0/T1 reconstruction); the resolver stamps it on the
-   * resolution receipt for replay but never consumes it directly.
+   * resolution row for replay but never consumes it directly.
    */
   score(
     c: Commitment,
     o: Outcome,
-  ): { call_score: number; components?: unknown };
-  /** Receipt verification for replay / dispute. `true` iff canonical_json
-   *  parses against the adapter's stamped schema and re-hashes equal. */
-  verifyReceipt(canonicalJson: string): boolean;
+  ): { call_score: number | null; components?: unknown };
   /**
    * Optional push channel. Adapters with native event streams (UMA OO,
    * Reality.eth, CTF events, Chainlink Functions callbacks) override this

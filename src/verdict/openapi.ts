@@ -154,7 +154,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           tags: ["calls"],
           summary: "Submit a market call. HMAC or X-Murmur-Api-Key auth required.",
           requestBody: { required: true, content: { "application/json": {} } },
-          responses: { "201": { description: "Accepted call + receipt" }, "200": { description: "Idempotent hit" }, "400": { description: "Schema invalid" }, "403": { description: "Auth failed" }, "409": { description: "Duplicate inside dedup window" }, "429": { description: "Rate limited" } },
+          responses: { "201": { description: "Accepted call" }, "200": { description: "Idempotent hit" }, "400": { description: "Schema invalid" }, "403": { description: "Auth failed" }, "409": { description: "Duplicate inside dedup window" }, "429": { description: "Rate limited" } },
           security: [{ hmacAuth: [] }, { apiKeyAuth: [] }],
         },
       },
@@ -259,7 +259,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           responses: {
             "200": {
               description:
-                "Accepted call (or idempotent hit). Body: { call_id, acceptance_receipt:{hash}, call, idempotent_hit, tier }.",
+                "Accepted call (or idempotent hit). Body: { call_id, call, idempotent_hit, tier }. Wave 4b retired the receipts subsystem — submission, reveal, and resolution rows are the canonical evidence; no acceptance_receipt is returned.",
             },
             "400": {
               description:

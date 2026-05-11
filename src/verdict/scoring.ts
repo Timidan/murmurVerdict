@@ -13,6 +13,7 @@ import {
   type Commitment,
   type Outcome as UniversalOutcome,
 } from "./markets-core.js";
+import type { MarketMakerAdapter } from "../markets/types.js";
 
 // ─── Realized-volatility table (v0.1, static) ─────────────────────────────────
 // Refreshed by post-launch backfill, never on hot path.
@@ -343,6 +344,7 @@ export interface ScoreOutcomeVectorResult {
 export function scoreOutcomeVector(
   commitment: Commitment,
   outcome: UniversalOutcome,
+  adapter?: MarketMakerAdapter,
 ): ScoreOutcomeVectorResult {
   // (0) adapter abstained — invalid outcome, no score. Independent of
   // commitment shape: callScore would throw kind-mismatch for binary
@@ -371,7 +373,22 @@ export function scoreOutcomeVector(
       return { call_score: null, void: true };
     }
   }
-  // (3) Non-void: dispatch to the universal multinomial-Brier shell.
+  // (3) Non-void: dispatch via the adapter's `score()` so adapter-private
+  // components (legacy_bin classification, native-price T0/T1 reconstruction,
+  // future Polymarket softmax weights, ...) stay encapsulated. The adapter
+  // is OPTIONAL — callers that have no registry handy (legacy tooling, the
+  // pre-cutover universal verifier harness) fall through to the markets-core
+  // callScore shell directly. Both paths yield the same number for the
+  // native-price adapter (callScore vs adapter.score is byte-identical
+  // today); the dispatch is the abstraction the cross-adapter leaderboard
+  // dispatch will leverage in Phase 11+.
+  if (adapter) {
+    const { call_score } = adapter.score(commitment, outcome);
+    return { call_score, void: false };
+  }
+  // Fallback when no adapter passed — direct callScore. callScore is the
+  // same function adapter.score() wraps internally for native-price, so the
+  // two paths return byte-identical numbers today.
   const score = callScore(commitment, outcome);
   return { call_score: score, void: false };
 }

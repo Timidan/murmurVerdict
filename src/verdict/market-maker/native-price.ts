@@ -2,14 +2,15 @@
  * NativePriceAdapter — the legacy financial-direction market path wrapped as
  * the first {@link MarketMakerAdapter}. Phase 3 of V2_IMPLEMENTATION_PLAN.
  *
- * Why this exists as a SHELL:
- *   The resolver at `src/verdict/resolver.ts` still calls
- *   `computeSignedReturn` / `outcomeFromSignedReturn` / `scoreCall` directly.
- *   Phase 5 cuts those calls over to `adapter.observeResolution()` +
- *   `adapter.score()`. This file is the parallel implementation that lets
- *   the verifier run side-by-side and PROVE byte-for-byte equivalence on
- *   the legacy ETH markets BEFORE the resolver's hot path swaps. The
- *   universal-vs-legacy mapping decisions live here and are easy to grep.
+ * Wave 4d update — the adapter is now load-bearing:
+ *   The resolver at `src/verdict/resolver.ts` dispatches the universal
+ *   payout-vector path through {@link MarketMakerRegistry}. `observeResolution`
+ *   takes the per-call context and returns a real {@link Outcome} (not
+ *   `pending`); `score` is the public scoring entry for the adapter (the
+ *   resolver routes `scoreOutcomeVector` through the registry). Wave 4b
+ *   retired the receipts subsystem — `acceptCommitment` / `verifyReceipt` are
+ *   gone from the interface, and the call + reveal + resolution rows are the
+ *   canonical evidence.
  *
  * Mapping legacy (Side, signed_return, void_band) → universal (Outcome):
  *
@@ -66,10 +67,9 @@ import {
   type MarketRef,
 } from "../markets-core.js";
 import { SCHEMA_VERSION } from "../schema.js";
-import { canonicalize, canonicalHash } from "../../receipts/canonical.js";
 import type {
-  AcceptanceReceipt,
   MarketMakerAdapter,
+  ObservationContext,
 } from "../../markets/types.js";
 
 // ─── Adapter constants ──────────────────────────────────────────────────────
@@ -243,79 +243,33 @@ class NativePriceAdapter implements MarketMakerAdapter {
   readonly marketConfigSchema = marketConfigSchema;
 
   /**
-   * Stamp the commitment, return ISO8601 acceptance time + canonical receipt.
+   * Compute the universal {@link Outcome} for a native-price call.
    *
-   * SHELL behavior: the adapter canonicalizes the universal {@link Commitment}
-   * shape directly via `canonicalize` / `canonicalHash` and returns the
-   * adapter-local {@link AcceptanceReceipt} shape (hash + canonical_json +
-   * accepted_at). Wave 4b retired the daemon-side receipts table; this
-   * adapter-private payload is purely an in-memory return shape callers can
-   * use for canonical replay without touching SQLite.
+   * `ctx` is structurally typed as the universal {@link ObservationContext}
+   * (an opaque record) but, for native-price, MUST carry the financial-
+   * direction fields documented on {@link NativePriceObservationContext}.
+   * The resolver lifts those values from the call's t0 anchor + t1 oracle
+   * observation + market row. The shape is verified by structural checks
+   * inside the body — a malformed context returns `pending` instead of
+   * throwing so the resolver can fall through to its still-pending path.
    *
-   * Bigint-safe canonicalization: `canonicalize` runs through `JSON.stringify`,
-   * which throws on bigint. The Commitment carries bigints in
-   * `predictedOutcome.payoutNumerators` / `payoutDenominator`. We pre-serialize
-   * via {@link toCanonicalCommitmentWire} so the bigints become
-   * decimal-digit strings — round-tripping back through
-   * `commitmentSchema.parse` would yield numerator + denominator strings, not
-   * bigints, but the adapter's verifier never re-deserializes; it just
-   * re-hashes the canonical bytes.
-   */
-  async acceptCommitment(
-    c: Commitment,
-  ): Promise<{ accepted_at: string; receipt: AcceptanceReceipt }> {
-    const accepted_at = nowIsoUtcZ();
-    const wire = toCanonicalCommitmentWire(c);
-    const canonical_json = canonicalize({
-      adapter: ADAPTER_NAME,
-      version: ADAPTER_VERSION,
-      accepted_at,
-      commitment: wire,
-    });
-    const hash = canonicalHash({
-      adapter: ADAPTER_NAME,
-      version: ADAPTER_VERSION,
-      accepted_at,
-      commitment: wire,
-    });
-    return {
-      accepted_at,
-      receipt: {
-        hash,
-        canonical_json,
-        accepted_at,
-      },
-    };
-  }
-
-  /**
-   * Pull the current resolution status for the marketRef.
+   * Universal-vs-legacy mapping:
+   *   - kind: 'binary' (always, even on void — see top-of-file docstring)
+   *   - payoutNumerators: [UP, DOWN] integer pair, derived from BUY-perspective
+   *                       signed_return via {@link signedReturnToPayoutNumerators}
+   *   - payoutDenominator: 1n
    *
-   * SHELL caveat: the universal {@link MarketRef} carries no DB / call
-   * context — the legacy resolver flow needs a t0 anchor (per-call) and the
-   * void_band (per-market) which neither live on MarketRef. The Phase 5
-   * cutover wires the call's resolver context into a richer
-   * `observeResolution(marketRef, callCtx)` overload (NOT yet on the
-   * interface). Until then, this method returns 'pending' so the universal
-   * resolver loop (when Phase 5 lands) is forced to fall through to the
-   * legacy code path. The verifier exercises the SAME logic via the
-   * `observeResolutionForCall` helper exported below — that's the byte-for-
-   * byte equivalence proof.
-   *
-   * Phase 5 will replace this body with a real implementation that:
-   *   1. Loads the market row via `marketsRepo.get(db, marketRef.sourceId)`
-   *   2. Loads the call's t0 anchor via `anchorsRepo.getT0(db, callId)`
-   *   3. Polls the latest oracle observation via `observeOracle(db, ...)`
-   *   4. Computes `signed_return = computeSignedReturn(side, p0, p1)`
-   *   5. Maps via `signedReturnToPayoutNumerators(signed_return, voidBand)`
-   *   6. Returns the {@link Outcome} with `kind='binary'`, denom=1n
+   * Implementation shares {@link observeResolutionForCall} so the legacy
+   * helper (still exported for back-compat callers) and the universal adapter
+   * surface stay byte-identical.
    */
   async observeResolution(
     _marketRef: MarketRef,
+    ctx: ObservationContext,
   ): Promise<Outcome | "pending" | "disputed"> {
-    // Intentional pending — see docstring. The Phase-5-ready helper that
-    // produces a real Outcome lives at `observeResolutionForCall` below.
-    return "pending";
+    const narrowed = narrowNativePriceContext(ctx);
+    if (!narrowed) return "pending";
+    return observeResolutionForCall(narrowed);
   }
 
   /**
@@ -324,8 +278,14 @@ class NativePriceAdapter implements MarketMakerAdapter {
    * `1 − halfL1Distance(predicted, resolved)`, and on `[1,0]` vs `[1,0]` it's
    * 1.0; vs `[0,1]` it's 0.0; vs `[0,0]` (legacy void) it's 0.5.
    *
-   * `components` carries the void-collapse rationale for receipt replay: the
-   * adapter records the resolved vector + a tag identifying which legacy bin
+   * Wave 4d note — the universal `scoreOutcomeVector` reconciles the void
+   * bucket to `call_score = null` for leaderboard-exclusion parity with the
+   * legacy resolver. This adapter-private method returns the raw
+   * multinomial-Brier number (including 0.5 for [0,0]); callers that need
+   * the legacy void contract route through `scoreOutcomeVector` instead.
+   *
+   * `components` carries the void-collapse rationale for replay: the adapter
+   * records the resolved vector + a tag identifying which legacy bin
    * (UP / DOWN / VOID) it came from so verifiers can inspect the L1 reasoning
    * without re-running the resolver.
    */
@@ -349,140 +309,38 @@ class NativePriceAdapter implements MarketMakerAdapter {
       },
     };
   }
-
-  /**
-   * Receipt verification for replay / dispute. Structural re-hash of the
-   * canonical JSON returned by `acceptCommitment`. Wave 4b retired the
-   * daemon-side receipt-chain verifier (`src/verdict/verify.ts` is gone);
-   * this adapter-private check is the only canonical-replay contract,
-   * scoped to the in-memory blob the adapter itself produced.
-   */
-  verifyReceipt(canonicalJson: string): boolean {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(canonicalJson);
-    } catch {
-      return false;
-    }
-    if (parsed === null || typeof parsed !== "object") return false;
-
-    // BUG FIX (codex review v3 P2 #4): the previous implementation only
-    // checked the canonical hash had a 0x prefix — ANY canonical JSON
-    // (including {}) passed. Validate the parsed payload actually has the
-    // shape NativePriceAdapter.acceptCommitment produces:
-    //   {
-    //     adapter: 'native-price',
-    //     version: '1.0.0',
-    //     accepted_at: <ISO>,
-    //     commitment: {
-    //       marketRef: { protocol: 'native-price', sourceId, configVersion },
-    //       predictedOutcome: { kind, payoutNumerators, payoutDenominator },
-    //       horizon, confidence
-    //     }
-    //   }
-    //
-    // A receipt belonging to a different adapter (e.g. polymarket-gamma)
-    // MUST return false here — that's the "rubber-stamp" the bug fix exists
-    // to prevent. Once the shape is confirmed, the canonical-hash + round-
-    // trip check stays the structural integrity gate (catches tampering
-    // that preserves shape).
-    const shapeOk = isNativePriceAcceptanceReceipt(parsed);
-    if (!shapeOk) return false;
-
-    const recomputed = canonicalHash(parsed as Record<string, unknown>);
-    const recanonical = canonicalize(parsed as Record<string, unknown>);
-    return recanonical === canonicalJson && recomputed.startsWith("0x");
-  }
 }
 
 /**
- * BUG FIX (codex review v3 P2 #4): structural validator for the canonical
- * JSON {@link NativePriceAdapter.acceptCommitment} produces. Mirrors the
- * exact key set + literal markers (adapter='native-price',
- * commitment.marketRef.protocol='native-price') so a receipt belonging to
- * any other adapter fails this gate.
+ * Structurally narrow the universal {@link ObservationContext} to the
+ * native-price-specific shape. Returns null when any required field is
+ * missing or mistyped — the adapter caller maps null → "pending" so the
+ * resolver falls through to its still-pending path rather than throwing.
+ *
+ * Mirrors {@link NativePriceObservationContext} exactly. Kept structural
+ * (no Zod) because the resolver constructs the context inline and we don't
+ * want a runtime schema parse on every t1 tick.
  */
-function isNativePriceAcceptanceReceipt(parsed: unknown): boolean {
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return false;
-  }
-  const obj = parsed as Record<string, unknown>;
-  if (obj["adapter"] !== ADAPTER_NAME) return false;
-  if (typeof obj["version"] !== "string") return false;
-  if (typeof obj["accepted_at"] !== "string") return false;
-  const commitment = obj["commitment"];
-  if (
-    commitment === null ||
-    typeof commitment !== "object" ||
-    Array.isArray(commitment)
-  ) {
-    return false;
-  }
-  const c = commitment as Record<string, unknown>;
-  const marketRef = c["marketRef"];
-  if (
-    marketRef === null ||
-    typeof marketRef !== "object" ||
-    Array.isArray(marketRef)
-  ) {
-    return false;
-  }
-  const m = marketRef as Record<string, unknown>;
-  if (m["protocol"] !== SOURCE_PROTOCOL) return false;
-  if (typeof m["sourceId"] !== "string") return false;
-  if (typeof m["configVersion"] !== "number") return false;
-  const predicted = c["predictedOutcome"];
-  if (
-    predicted === null ||
-    typeof predicted !== "object" ||
-    Array.isArray(predicted)
-  ) {
-    return false;
-  }
-  const p = predicted as Record<string, unknown>;
-  if (typeof p["kind"] !== "string") return false;
-  if (!Array.isArray(p["payoutNumerators"])) return false;
-  if (typeof p["payoutDenominator"] !== "string") return false;
-  // horizon + confidence required at the commitment level — accepts any
-  // structurally valid value (Zod re-validation lives on the producer side).
-  if (c["horizon"] === undefined) return false;
-  if (typeof c["confidence"] !== "number") return false;
-  return true;
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/** ISO8601 UTC with 'Z' suffix and no fractional seconds — matches the daemon's
- *  acceptance-time format used in receipts. */
-function nowIsoUtcZ(): string {
-  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
-}
-
-/**
- * Bigint → wire-string transform. The Commitment carries bigints in
- * `predictedOutcome.payoutNumerators` / `payoutDenominator`; canonical JSON
- * doesn't support bigint. This produces the on-the-wire shape the canonicalizer
- * can stringify.
- */
-function toCanonicalCommitmentWire(c: Commitment): unknown {
+function narrowNativePriceContext(
+  ctx: ObservationContext,
+): NativePriceObservationContext | null {
+  if (typeof ctx.t0_p0 !== "string") return null;
+  if (typeof ctx.t1_p1 !== "string") return null;
+  if (typeof ctx.t1_iso !== "string") return null;
+  if (typeof ctx.t1_feed !== "string") return null;
+  if (typeof ctx.t1_source_id !== "string") return null;
+  if (typeof ctx.void_band !== "number") return null;
+  if (ctx.side !== "BUY" && ctx.side !== "SELL") return null;
+  if (typeof ctx.market_id !== "string") return null;
   return {
-    marketRef: {
-      protocol: c.marketRef.protocol,
-      sourceId: c.marketRef.sourceId,
-      configVersion: c.marketRef.configVersion,
-    },
-    predictedOutcome: {
-      kind: c.predictedOutcome.kind,
-      payoutNumerators: c.predictedOutcome.payoutNumerators.map((n) =>
-        n.toString(),
-      ),
-      payoutDenominator: c.predictedOutcome.payoutDenominator.toString(),
-      ...(c.predictedOutcome.scalarValue !== undefined
-        ? { scalarValue: c.predictedOutcome.scalarValue.toString() }
-        : {}),
-    },
-    horizon: c.horizon,
-    confidence: c.confidence,
+    t0_p0: ctx.t0_p0,
+    t1_p1: ctx.t1_p1,
+    t1_iso: ctx.t1_iso,
+    t1_feed: ctx.t1_feed,
+    t1_source_id: ctx.t1_source_id,
+    void_band: ctx.void_band,
+    side: ctx.side,
+    market_id: ctx.market_id,
   };
 }
 
@@ -513,18 +371,17 @@ export const nativePriceAdapter: MarketMakerAdapter = new NativePriceAdapter();
 // the singleton.
 export type { NativePriceAdapter };
 
-// ─── Phase 5 prep — observeResolutionForCall (NOT on the public interface) ─
+// ─── Native-price observation context + helper ──────────────────────────────
 //
-// The legacy resolver path needs DB + call_id + observation context to compute
-// signed_return → outcome. The universal `observeResolution(marketRef)` can't
-// pull those today (MarketRef carries no DB). This concrete helper is the
-// SHELL's "real" observation path — Phase 5 will fold it back behind the
-// adapter interface.
-//
-// Inputs are all already on the resolver's `runT1Phase` hot path
-// (resolver.ts:177-256), so the cutover is a mechanical lift. Outputs include
-// the legacy values (signed_return, p0, p1) inside `evidence.raw` for receipt
-// replay parity.
+// The universal `MarketRef` carries no DB / call context — the legacy
+// resolver flow needs a t0 anchor (per-call) and the void_band (per-market).
+// The resolver builds this context from `anchorsRepo.getT0(db, call_id)`,
+// the latest `observeOracle` result, and `markets.void_band` parsed via
+// `voidBandFloat()`, then passes it through `adapter.observeResolution(
+// marketRef, ctx)`. Wave 4d wired the adapter's `observeResolution` method
+// directly to this helper; the helper stays exported for back-compat callers
+// (verifier harness, internal tooling) that already speak the structured
+// shape.
 
 export interface NativePriceObservationContext {
   /** From `anchorsRepo.getT0(db, call_id)`. */
@@ -539,7 +396,8 @@ export interface NativePriceObservationContext {
   t1_source_id: string;
   /** From `markets.void_band` parsed via `voidBandFloat()`. */
   void_band: number;
-  /** Legacy side. Phase 5 derives this from the universal Commitment instead. */
+  /** Legacy side. Maps to the commitment's predictedOutcome via
+   *  {@link sideToPayoutNumerators}. */
   side: "BUY" | "SELL";
   /** marketRef.sourceId — used as evidence.sourceId on the Outcome. */
   market_id: string;
@@ -547,8 +405,7 @@ export interface NativePriceObservationContext {
 
 /**
  * Compute the resolved {@link Outcome} for a native-price call exactly the way
- * the legacy resolver does today. Phase 5 will plumb this into the universal
- * `observeResolution(marketRef, callCtx)` overload. Returned shape:
+ * the legacy resolver does today. Returned shape:
  *
  *   - kind: 'binary' (always, even on void — see top-of-file docstring)
  *   - payoutNumerators: [UP, DOWN] integer pair
@@ -612,29 +469,6 @@ export function observeResolutionForCall(
       },
     },
   };
-}
-
-/**
- * Local mirror of `scoring.ts:computeSignedReturn`. Phase 5 will delete this
- * duplicate and route through the canonical implementation (the legacy path
- * lives one level above in the resolver, so it can't be lifted here without
- * pulling in scoring imports the adapter shouldn't depend on yet).
- *
- * `r = ln(p1/p0)` for BUY, `-ln(p1/p0)` for SELL — byte-identical to
- * `src/verdict/scoring.ts:68-80`. Rejects non-positive prices the same way.
- */
-function computeSignedReturnLocal(
-  side: "BUY" | "SELL",
-  p0: string,
-  p1: string,
-): number {
-  const a = Number(p0);
-  const b = Number(p1);
-  if (!(a > 0) || !(b > 0)) {
-    throw new Error("p0 and p1 must be positive decimal strings");
-  }
-  const ln = Math.log(b / a);
-  return side === "BUY" ? ln : -ln;
 }
 
 // Wave 4b — receipts subsystem dropped. The Phase-5 cutover-seam stub
