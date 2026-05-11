@@ -22,6 +22,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openserv-labs/sdk": "^2.4.1",
     "@privy-io/node": "^0.18.0",
+    "@privy-io/react-auth": "3.23.1",
     "@resvg/resvg-js": "^2.6.2",
     "@tailwindcss/vite": "^4.2.4",
     "age-encryption": "^0.3.0",

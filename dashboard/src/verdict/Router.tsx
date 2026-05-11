@@ -7,6 +7,11 @@ const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ defau
 const RecruitersPage = lazy(() => import("./pages/RecruitersPage.js").then((m) => ({ default: m.RecruitersPage })));
 const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => ({ default: m.AdminRefsPage })));
 
+// Phase 7a — account-area pages. Lazy so the Privy SDK chunk isn't pulled
+// into the landing/leaderboard bundles.
+const AccountPage = lazy(() => import("./pages/AccountPage.js").then((m) => ({ default: m.AccountPage })));
+const LoginPage = lazy(() => import("./pages/LoginPage.js").then((m) => ({ default: m.LoginPage })));
+
 /* ── Variant gate ────────────────────────────────────────────────────────
    `?variant=bold|compact|calm` (passed in the hash query, e.g.
    `#/leaderboard?variant=bold`) swaps the default page for a variant
@@ -84,6 +89,25 @@ function parseVariant(hash: string): Variant {
   return null;
 }
 
+/**
+ * Phase 7a — extract the `?next=` deep-link from the hash query string.
+ * Returns the raw (un-decoded) path so LoginPage can sanitize it before
+ * navigation. Same defensive parsing posture as parseVariant().
+ */
+function parseNext(hash: string): string | null {
+  const raw = (hash || "").replace(/^#/, "");
+  const qIdx = raw.indexOf("?");
+  if (qIdx < 0) return null;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(raw.slice(qIdx + 1));
+  } catch {
+    return null;
+  }
+  const n = params.get("next");
+  return n && n.length > 0 ? n : null;
+}
+
 interface ParsedRoute {
   name:
     | "landing"
@@ -98,6 +122,8 @@ interface ParsedRoute {
     | "recruiters"
     | "admin_refs"
     | "market"
+    | "account"
+    | "account_login"
     | "spec";
   params?: Record<string, string>;
 }
@@ -117,6 +143,10 @@ function parseHash(hash: string): ParsedRoute {
   if (path === "/recruiters") return { name: "recruiters" };
   if (path === "/admin/refs") return { name: "admin_refs" };
   if (path === "/spec") return { name: "spec" };
+  // Phase 7a — account area. `?next=` is parsed below via parseNext()
+  // so deep links like #/account/login?next=/account survive sign-in.
+  if (path === "/account") return { name: "account" };
+  if (path === "/account/login") return { name: "account_login" };
   const shareMatch = /^\/share\/([^/]+)$/.exec(path);
   if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
   const marketMatch = /^\/markets\/(.+)$/.exec(path);
@@ -156,6 +186,7 @@ export function VerdictRouter() {
 
   const route = parseHash(hash);
   const variant = parseVariant(hash);
+  const next = parseNext(hash);
 
   return (
     <Suspense fallback={<div className="min-h-dvh bg-[var(--color-bg)]" />}>
@@ -213,9 +244,25 @@ export function VerdictRouter() {
         ) : (
           <MarketDetailPageCompact marketId={route.params!.market_id} />
         ))}
+      {route.name === "account" && <AccountPage />}
+      {route.name === "account_login" && <LoginPage next={decodeNext(next)} />}
       {route.name === "spec" && <SpecPage />}
     </Suspense>
   );
+}
+
+/**
+ * Decode the `?next=` query value with the same defensive posture as the
+ * market_id decoder above. Malformed percent sequences fall back to null,
+ * so LoginPage cleanly defaults to /account.
+ */
+function decodeNext(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
 }
 
 function SpecPage() {

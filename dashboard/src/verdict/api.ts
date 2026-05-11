@@ -218,16 +218,50 @@ export interface AgentGridSummary {
   kind: AgentKind;
 }
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`);
+/* ── Phase 7a — casual-tier account session + agent list ────────────────── */
+
+/** Response shape for POST /v1/account/session (see src/verdict/routes/account.ts). */
+export interface AccountSession {
+  account_id: string;
+  created: boolean;
+  privy_user_id: string;
+}
+
+/**
+ * One row from GET /v1/account/agents. Fields are nullable because the
+ * agents bridge may exist before the agent row is fully hydrated, but
+ * after Phase 4 the only nullable case in practice is `display_name`.
+ */
+export interface AccountAgent {
+  agent_id: string;
+  linked_at: string;
+  display_slug: string | null;
+  display_name: string | null;
+  /**
+   * In v2 this is "casual" for accounts created via this flow. Older
+   * legacy bridges may surface other AgentKind values; UI should treat
+   * null defensively.
+   */
+  kind: string | null;
+}
+
+// Phase 7a — `get`/`post` accept optional extra headers so account-area
+// callers can attach `Authorization: Bearer <privy_jwt>` without breaking
+// the existing call-sites (they continue to omit the second arg).
+type HeaderMap = Record<string, string>;
+
+async function get<T>(path: string, headers?: HeaderMap): Promise<T> {
+  const init: RequestInit = headers ? { headers } : {};
+  const res = await fetch(`${API_URL}${path}`, init);
   if (!res.ok) throw new ApiError(`GET ${path} → ${res.status}`, res.status);
   return (await res.json()) as T;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, headers?: HeaderMap): Promise<T> {
+  const merged: HeaderMap = { "content-type": "application/json", ...(headers ?? {}) };
   const res = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: merged,
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -327,6 +361,30 @@ export const verdictApi = {
     get<{ agent: AgentGridSummary; grid: AgentMarketRow[]; served_at: string }>(
       `/v1/agents/${encodeURIComponent(slug)}/grid`,
     ),
+
+  /* ── Phase 7a — account-area endpoints (Privy bearer required) ─────── */
+
+  /**
+   * Exchange a Privy access token for a Murmur account session. Idempotent:
+   * `created` is true only on the first call per Privy user. The dashboard
+   * uses this to branch onboarding ("welcome" vs "back so soon").
+   */
+  postAccountSession: (privyToken: string) =>
+    post<AccountSession>(
+      "/v1/account/session",
+      {},
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * List agents owned by the authenticated account. Empty array when the
+   * user hasn't declared an agent yet — Phase 7b's AgentNewPage handles
+   * that case.
+   */
+  getAccountAgents: (privyToken: string) =>
+    get<{ agents: AccountAgent[] }>("/v1/account/agents", {
+      Authorization: `Bearer ${privyToken}`,
+    }),
 };
 
 /* ── Top-level convenience exports ─────────────────────────────────────── */
