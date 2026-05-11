@@ -12,8 +12,9 @@
 
 import { useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TierBadge } from "../components/TierBadge.js";
 import { useAccount } from "../hooks/useAccount.js";
-import type { AccountAgent } from "../api.js";
+import type { AccountAgent, AgentKind } from "../api.js";
 
 export function AccountPage() {
   const account = useAccount();
@@ -98,28 +99,33 @@ export function AccountPage() {
 function AgentList({ agents }: { agents: AccountAgent[] }) {
   return (
     <ul className="divide-y divide-[var(--color-border)]">
-      {agents.map((a) => (
-        <li
-          key={a.agent_id}
-          className="grid grid-cols-[1fr_auto_auto] items-center px-3 py-2 gap-3"
-        >
-          <div className="min-w-0">
-            <div className="ck-mono ck-pos truncate">
-              {a.display_slug ?? a.agent_id.slice(0, 12)}
-            </div>
-            <div className="ck-mono ck-dim truncate text-[10px]">
-              {a.display_name ?? "—"}
-            </div>
-          </div>
-          <span className="ck-label">{(a.kind ?? "casual").toUpperCase()}</span>
-          <a
-            href={`#/agents/${encodeURIComponent(a.display_slug ?? a.agent_id)}`}
-            className="ck-btn"
+      {agents.map((a) => {
+        // Settings page is the most common entry point (set payout, mint
+        // additional keys). Fall back to agent_id when the slug hasn't
+        // hydrated yet — same defensive posture as Phase 7a.
+        const settingsHref = `#/account/agent/${encodeURIComponent(
+          a.display_slug ?? a.agent_id,
+        )}/payout`;
+        return (
+          <li
+            key={a.agent_id}
+            className="grid grid-cols-[1fr_auto_auto] items-center px-3 py-2 gap-3"
           >
-            VIEW
-          </a>
-        </li>
-      ))}
+            <div className="min-w-0">
+              <div className="ck-mono ck-pos truncate">
+                {a.display_slug ?? a.agent_id.slice(0, 12)}
+              </div>
+              <div className="ck-mono ck-dim truncate text-[10px]">
+                {a.display_name ?? "—"}
+              </div>
+            </div>
+            <TierBadge kind={(a.kind as AgentKind | null) ?? "casual"} />
+            <a href={settingsHref} className="ck-btn">
+              [ VIEW ]
+            </a>
+          </li>
+        );
+      })}
     </ul>
   );
 }

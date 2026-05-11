@@ -306,6 +306,14 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   );
 
   // GET /v1/account/agents — list agents owned by this account.
+  //
+  // Phase 7c additive: surface `destination_address` and
+  // `destination_address_updated_at` on each row so the settings UI can
+  // derive the §7.4 24h cooldown countdown without an extra round-trip
+  // (and without needing to call PATCH and parse 429 just to learn the
+  // current state). Reads the columns via a direct SELECT because the
+  // hydrated AgentRow shape doesn't expose them by design — keeps the
+  // public /v1/agents/:slug response free of operator-only payout data.
   router.get(
     "/v1/account/agents",
     listAgentsLimiter,
@@ -315,17 +323,74 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
         throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
       }
       const rows = listAccountAgents(db, resolved.account_id);
+      const destRowStmt = db.prepare(
+        "SELECT destination_address, destination_address_updated_at FROM agents WHERE agent_id = ?",
+      );
       const hydrated = rows.map((row) => {
         const a = agentsRepo.byId(db, row.agent_id);
+        const dest = destRowStmt.get(row.agent_id) as
+          | {
+              destination_address: string | null;
+              destination_address_updated_at: string | null;
+            }
+          | undefined;
         return {
           agent_id: row.agent_id,
           linked_at: row.created_at,
           display_slug: a?.display_slug ?? null,
           display_name: a?.display_name ?? null,
           kind: a?.kind ?? null,
+          destination_address: dest?.destination_address ?? null,
+          destination_address_updated_at:
+            dest?.destination_address_updated_at ?? null,
         };
       });
       res.status(200).json({ agents: hydrated });
+    }),
+  );
+
+  // GET /v1/account/agents/:slug/api-keys — list active keys for an agent.
+  //
+  // Phase 7c — the rotate UI needs to enumerate (api_key_id, created_at,
+  // label) so the user can pick which stale key to soft-delete without
+  // having to remember a uuid. The plaintext secret is NEVER returned
+  // here — only metadata. Existing /api-keys POST stays the sole source
+  // of cleartext per the §7.5 one-time-reveal invariant.
+  //
+  // Auth: requires Privy bearer + agent ownership (same posture as
+  // POST /:slug/api-keys). Re-uses `listAgentsLimiter` semantics — this
+  // is a read on already-paginated data.
+  router.get(
+    "/v1/account/agents/:slug/api-keys",
+    listAgentsLimiter,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(db, slug);
+      if (!agent) {
+        throw new VerdictError(
+          "unknown agent",
+          ERROR_CODES.unknown_agent,
+          404,
+        );
+      }
+      assertAgentOwnedBy(db, resolved.account_id, agent.agent_id);
+      // Filter the account-wide list down to keys belonging to THIS agent.
+      // listApiKeysForAccount returns rows scoped to the account; we keep
+      // both rotated + active so the panel can show full history (the UI
+      // chooses what to render).
+      const keys = listApiKeysForAccount(db, resolved.account_id, true)
+        .filter((k) => k.agent_id === agent.agent_id)
+        .map((k) => ({
+          api_key_id: k.api_key_id,
+          created_at: k.created_at,
+          label: k.label,
+          rotated_at: k.rotated_at,
+        }));
+      res.status(200).json({ keys });
     }),
   );
 
@@ -482,9 +547,15 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
           404,
         );
       }
+      // Phase 7c — surface `destination_address_updated_at` on the success
+      // response so the client can start the 24h cooldown countdown
+      // without an extra round-trip. Falls back to `now()` if the inner
+      // helper didn't return one (shouldn't happen on ok=true).
       res.status(200).json({
         agent_id: agent.agent_id,
         destination_address: parsed.data.destination_address,
+        destination_address_updated_at:
+          result.updated_at ?? new Date().toISOString().replace(/\.\d+Z$/, "Z"),
       });
     }),
   );

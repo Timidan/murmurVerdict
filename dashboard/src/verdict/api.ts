@@ -9,7 +9,16 @@
 // for split-deploy setups (different origin for dashboard vs daemon).
 const API_URL = (import.meta.env.VITE_VERDICT_API_URL?.trim() || "") as string;
 
-export type AgentKind = "verified" | "benchmark" | "shadow" | "internal_test" | "wallet_only";
+export type AgentKind =
+  | "verified"
+  | "benchmark"
+  | "shadow"
+  | "internal_test"
+  | "wallet_only"
+  // V2 §7.1 casual tier — indie operator, account-bound auth.
+  | "casual"
+  // V2 §7.1 attested tier — Olas Service Registry bond + Safe multisig.
+  | "attested";
 
 export interface LeaderboardRow {
   agent_id: string;
@@ -243,6 +252,14 @@ export interface AccountAgent {
    * null defensively.
    */
   kind: string | null;
+  /**
+   * Phase 7c — payout destination + last-change timestamp surfaced on
+   * the account-scoped list so the settings UI can derive the §7.4 24h
+   * cooldown without an extra round-trip. Null on agents that have never
+   * had a destination_address set.
+   */
+  destination_address: string | null;
+  destination_address_updated_at: string | null;
 }
 
 /* ── Phase 7b — agent creation + api-key mint request/response shapes ───── */
@@ -289,6 +306,51 @@ export interface MintApiKeyResponse {
   warning?: string;
 }
 
+/* ── Phase 7c — api-key list + destination-address + cooldown shapes ────── */
+
+/**
+ * One row from GET /v1/account/agents/:slug/api-keys. Metadata only — the
+ * plaintext secret is NEVER returned here (one-time mint reveal is the
+ * sole source per V2 §7.5). `rotated_at` is null on active keys and an
+ * ISO timestamp on soft-deleted ones.
+ */
+export interface ApiKeyRow {
+  api_key_id: string;
+  created_at: string;
+  label?: string | null;
+  rotated_at?: string | null;
+}
+
+/**
+ * Response body for DELETE /v1/account/api-keys/:key_id. `rotated` is
+ * boolean — false only when the key was already rotated (idempotent).
+ */
+export interface RotateApiKeyResponse {
+  rotated: boolean;
+}
+
+/**
+ * Response body for PATCH /v1/account/agents/:slug/destination-address.
+ * Includes `destination_address_updated_at` so the client can start the
+ * 24h cooldown countdown immediately on success.
+ */
+export interface PatchDestinationResponse {
+  agent_id: string;
+  destination_address: string;
+  destination_address_updated_at: string;
+}
+
+/**
+ * 429 body for PATCH /v1/account/agents/:slug/destination-address when
+ * the §7.4 cooldown is still active. The handler surfaces
+ * `retry_after_seconds` so the UI countdown is exact, not estimated.
+ */
+export interface DestinationCooldownError {
+  error: string;
+  code: string;
+  retry_after_seconds: number;
+}
+
 // Phase 7a — `get`/`post` accept optional extra headers so account-area
 // callers can attach `Authorization: Bearer <privy_jwt>` without breaking
 // the existing call-sites (they continue to omit the second arg).
@@ -310,15 +372,49 @@ async function post<T>(path: string, body: unknown, headers?: HeaderMap): Promis
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new ApiError(`POST ${path} → ${res.status}: ${text}`, res.status);
+    throw new ApiError(`POST ${path} → ${res.status}: ${text}`, res.status, text);
+  }
+  return (await res.json()) as T;
+}
+
+// Phase 7c — PATCH + DELETE helpers, mirroring `post`/`get` so the
+// account-settings page can issue payout updates + key rotations through
+// the same headers-aware client surface.
+async function patch<T>(path: string, body: unknown, headers?: HeaderMap): Promise<T> {
+  const merged: HeaderMap = { "content-type": "application/json", ...(headers ?? {}) };
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "PATCH",
+    headers: merged,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`PATCH ${path} → ${res.status}: ${text}`, res.status, text);
+  }
+  return (await res.json()) as T;
+}
+
+async function del<T>(path: string, headers?: HeaderMap): Promise<T> {
+  const init: RequestInit = headers ? { method: "DELETE", headers } : { method: "DELETE" };
+  const res = await fetch(`${API_URL}${path}`, init);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`DELETE ${path} → ${res.status}: ${text}`, res.status, text);
   }
   return (await res.json()) as T;
 }
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly status: number) {
+  /**
+   * Raw response body. Carried alongside the formatted message so callers
+   * can JSON.parse it for structured fields (e.g. `retry_after_seconds`
+   * on a 429 from PATCH /destination-address) without re-fetching.
+   */
+  readonly rawBody: string;
+  constructor(message: string, public readonly status: number, rawBody = "") {
     super(message);
     this.name = "ApiError";
+    this.rawBody = rawBody;
   }
 }
 
@@ -456,6 +552,47 @@ export const verdictApi = {
     post<MintApiKeyResponse>(
       `/v1/account/agents/${encodeURIComponent(slug)}/api-keys`,
       label ? { label } : {},
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /* ── Phase 7c — settings page (payout + key rotation) ──────────────── */
+
+  /**
+   * List API keys for an agent (metadata only — no plaintext). Returns
+   * both active and rotated keys so the panel can show full history;
+   * the caller decides what to render. Backed by the additive Phase 7c
+   * GET /v1/account/agents/:slug/api-keys route.
+   */
+  getApiKeys: (privyToken: string, slug: string) =>
+    get<{ keys: ApiKeyRow[] }>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/api-keys`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * Soft-rotate (invalidate) an API key by id. Idempotent — a second
+   * call returns rotated=false but does NOT throw. Old keys 401 within
+   * ~1s of this returning (the verify path checks rotated_at IS NULL).
+   */
+  deleteApiKey: (privyToken: string, key_id: string) =>
+    del<RotateApiKeyResponse>(
+      `/v1/account/api-keys/${encodeURIComponent(key_id)}`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * Set/update the casual-tier payout destination. Surfaces 429 with
+   * `retry_after_seconds` when the §7.4 24h cooldown is still active;
+   * caller should parse ApiError.rawBody for the JSON body.
+   */
+  patchDestinationAddress: (
+    privyToken: string,
+    slug: string,
+    destination_address: string,
+  ) =>
+    patch<PatchDestinationResponse>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/destination-address`,
+      { destination_address },
       { Authorization: `Bearer ${privyToken}` },
     ),
 };

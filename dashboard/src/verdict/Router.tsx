@@ -16,6 +16,12 @@ const LoginPage = lazy(() => import("./pages/LoginPage.js").then((m) => ({ defau
 const AgentNewPage = lazy(() =>
   import("./pages/AgentNewPage.js").then((m) => ({ default: m.AgentNewPage })),
 );
+// Phase 7c — per-agent settings shell (payout + keys sub-tabs).
+const AgentSettingsPage = lazy(() =>
+  import("./pages/AgentSettingsPage.js").then((m) => ({
+    default: m.AgentSettingsPage,
+  })),
+);
 // PrivyProvider mounts here, not in main.tsx, so public routes never load
 // the Privy SDK. One AccountShell instance wraps every /account/* route so
 // auth state survives navigation between login → list → new-agent.
@@ -134,6 +140,7 @@ interface ParsedRoute {
     | "account"
     | "account_login"
     | "account_agent_new"
+    | "account_agent_settings"
     | "spec";
   params?: Record<string, string>;
 }
@@ -160,6 +167,19 @@ function parseHash(hash: string): ParsedRoute {
   // Phase 7b — AgentNewPage owns this route: slug/name/bio form +
   // one-time api-key reveal modal. Replaces the Phase 7a placeholder.
   if (path === "/account/agent/new") return { name: "account_agent_new" };
+  // Phase 7c — per-agent settings, with /payout (default) and /keys
+  // sub-tabs. The trailing tab segment is optional so #/account/agent/foo
+  // alone still resolves to the payout tab.
+  const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|keys))?$/.exec(path);
+  if (agentSettingsMatch && agentSettingsMatch[1] !== "new") {
+    return {
+      name: "account_agent_settings",
+      params: {
+        slug: agentSettingsMatch[1],
+        tab: agentSettingsMatch[2] ?? "payout",
+      },
+    };
+  }
   const shareMatch = /^\/share\/([^/]+)$/.exec(path);
   if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
   const marketMatch = /^\/markets\/(.+)$/.exec(path);
@@ -259,11 +279,18 @@ export function VerdictRouter() {
         ))}
       {(route.name === "account" ||
         route.name === "account_login" ||
-        route.name === "account_agent_new") && (
+        route.name === "account_agent_new" ||
+        route.name === "account_agent_settings") && (
         <AccountShell>
           {route.name === "account" && <AccountPage />}
           {route.name === "account_login" && <LoginPage next={decodeNext(next)} />}
           {route.name === "account_agent_new" && <AgentNewPage />}
+          {route.name === "account_agent_settings" && (
+            <AgentSettingsPage
+              slug={route.params!.slug}
+              tab={(route.params!.tab as "payout" | "keys") ?? "payout"}
+            />
+          )}
         </AccountShell>
       )}
       {route.name === "spec" && <SpecPage />}
