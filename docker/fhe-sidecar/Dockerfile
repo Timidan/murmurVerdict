@@ -1,63 +1,94 @@
 # Murmur Verdict — FHE sidecar (Zama TFHE-rs)
 #
-# Z0 status: PLACEHOLDER. No Rust crate exists yet — Z2 lands the
-# `murmur-fhe-sidecar` binary that hosts TFHE-rs over a Unix-domain
-# socket. This Dockerfile pins the toolchain we'll use so the eventual
-# CI image build is reproducible, and it documents the wire protocol
-# for Z1/Z2 implementers without forcing them to guess.
+# Z2-prep status: this image builds the real `fhe-sidecar` binary. The
+# IPC + keystore paths are live; the encrypted-compute handlers
+# return `not_implemented_z2_real` until Z2-proper lands.
 #
-# Wire protocol (matches comments in src/verdict/fhe/zama-local-provider.ts)
-# ------------------------------------------------------------------------
-#   Transport: SOCK_STREAM over `/run/murmur/fhe-sidecar.sock` (path
-#              overridable via MURMUR_FHE_SIDECAR_SOCKET).
-#   Framing:   u32 BE length prefix, then u8 op_code, then payload.
-#   Encoding:  payloads use length-prefixed bincode for predictable
-#              decoding from both Rust and Node; we'll provide a
-#              shared schema crate that exports msg::v1::{Request,
-#              Response} on the Rust side and a generated TS module
-#              under src/verdict/fhe/sidecar-types.ts on the Node side.
+# Why a separate process at all
+# -----------------------------
+# Zama's TFHE-rs has no Node binding and the published JS/WASM API
+# (docs.zama.org/tfhe-rs/integration/js-on-wasm-api) intentionally
+# omits computation primitives — it ships keygen + encrypt + serialize
+# only. The homomorphic operators (add, sub, comparison) live in the
+# Rust crate and run natively. Hence: Rust sidecar, Unix socket, the
+# daemon (Node) speaks the protocol defined in
+# `docker/fhe-sidecar/src/protocol.rs`.
 #
-# Op-codes (also documented in fhe/zama-local-provider.ts header):
-#   0x01 GET_ACTIVE_KEY
-#   0x02 GET_CIRCUIT
-#   0x10 SCORE_ENCRYPTED
-#   0x20 DECRYPT_SCORE_REQ (single-party dev only — Z3 replaces this)
-#   0xF0 ERROR
+# Wire protocol (lives in src/protocol.rs; mirrored in
+# src/verdict/fhe/zama-local-provider.ts on the daemon side)
+# ----------------------------------------------------------
+#   Transport: SOCK_STREAM over `${MURMUR_FHE_SIDECAR_SOCKET}`
+#              (default `/var/run/murmur/fhe.sock`).
+#   Framing:   `u32 BE length | JSON body`.
+#   Tags:      `op` discriminates requests, `kind` discriminates
+#              responses. Error responses use code = stable string.
 #
-# Threat model notes for Z2:
-#   * The sidecar process MUST drop privileges before binding the
-#     socket; SOCK_STREAM on a 0700 directory is the operator-trust
-#     boundary in single-host deployments.
+# Threat model notes carried forward from Z0:
+#   * The sidecar drops privileges before binding (USER 1000:1000).
+#   * Mount the socket directory at mode 0700; only the daemon and the
+#     sidecar should be able to traverse it.
 #   * No plaintext predictions ever leave the sidecar except the
-#     bounded decrypted score (and even that is gated to single-party
-#     dev mode until Z3 lands the threshold ceremony).
-#   * Build with `--release` + `RUSTFLAGS="-C target-cpu=x86-64-v3"`
-#     to match the throughput numbers the v0 plan assumes (Zama 1.5
-#     8-bit add ~76ms on AVX2). ARM64 builds use the default target.
+#     bounded decrypted score (and Z3 will gate even that behind a
+#     quorum ceremony).
 #
-# DO NOT add a top-level npm script that depends on this Dockerfile in
-# Z0 — it's documentation, not a runnable target. Z2's PR will add
-# `npm run fhe:sidecar:build` and the corresponding docker-compose
-# wiring.
+# Build cost: TFHE-rs is heavy (~5 min cold cargo build). The Z2-prep
+# layer ordering below puts `Cargo.toml` + `Cargo.lock` ahead of the
+# source copy so iterating on `src/*.rs` only triggers a re-link, not
+# a full crate rebuild.
 
-FROM rust:1.81-slim AS toolchain
+# ─── Stage 1: build ──────────────────────────────────────────────────
+FROM rust:1.81-slim AS builder
 
-# Pinned for reproducibility; bump in lockstep with the actual Rust
-# crate that lands in Z2.
-RUN rustup component add rustfmt clippy
+# Toolchain pinning comes from rust-toolchain.toml (channel = "1.81").
+# Matching the base image keeps rustup from downloading a duplicate
+# toolchain at build time.
 
-WORKDIR /work
+WORKDIR /build
 
-# Z2 will copy the actual crate here:
-#   COPY rust/murmur-fhe-sidecar /work/murmur-fhe-sidecar
-#   WORKDIR /work/murmur-fhe-sidecar
-#   RUN cargo build --release
-#   FROM debian:bookworm-slim
-#   COPY --from=toolchain /work/murmur-fhe-sidecar/target/release/murmur-fhe-sidecar /usr/local/bin/
-#   USER 65534:65534
-#   ENTRYPOINT ["/usr/local/bin/murmur-fhe-sidecar"]
+# Native build deps. pkg-config + libsqlite3-dev are only needed when
+# rusqlite is *not* in bundled mode; we use the bundled feature, so
+# these are belt-and-braces — left in because Z2-proper's tfhe-rs
+# build script links against libstdc++ and pulling pkg-config now
+# avoids a surprise later.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        pkg-config libsqlite3-dev \
+ && rm -rf /var/lib/apt/lists/*
 
-# Z0 placeholder entrypoint — just exits non-zero so anyone who
-# accidentally builds and runs this image sees a loud failure rather
-# than a "looks healthy" no-op.
-CMD ["sh", "-c", "echo 'murmur-fhe-sidecar: Z0 placeholder — Z2 ships the real binary' >&2; exit 1"]
+# Manifest first so cargo's dep-graph layer caches across source edits.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY src ./src
+
+# `--locked` so a stale Cargo.lock blows up the build instead of
+# silently re-resolving (matches our Node lockfile posture).
+RUN cargo build --release --locked
+
+# ─── Stage 2: runtime ────────────────────────────────────────────────
+FROM debian:12-slim
+
+# libsqlite3-0 is here for symmetry with Stage 1; the bundled feature
+# statically links sqlite into the binary so this is technically
+# optional. Kept so an operator who flips the bundled feature off
+# doesn't immediately hit a missing-shared-lib failure.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        libsqlite3-0 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/fhe-sidecar /usr/local/bin/fhe-sidecar
+
+# /var/run/murmur is the socket dir. Owned by the unprivileged UID
+# the sidecar runs as so it can `bind(2)` without CAP_NET_BIND or a
+# root-owned parent.
+RUN mkdir -p /var/run/murmur \
+ && chown 1000:1000 /var/run/murmur \
+ && chmod 0700 /var/run/murmur
+
+USER 1000:1000
+ENV RUST_BACKTRACE=1 \
+    RUST_LOG=info
+
+# No CMD args — the binary reads its config from
+# MURMUR_FHE_SIDECAR_SOCKET + MURMUR_VERDICT_DB_PATH. Compose / k8s
+# can still pass `--socket /elsewhere.sock` if needed.
+ENTRYPOINT ["/usr/local/bin/fhe-sidecar"]

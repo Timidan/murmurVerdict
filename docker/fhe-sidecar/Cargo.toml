@@ -1,0 +1,58 @@
+[package]
+name = "fhe-sidecar"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+publish = false
+description = "Murmur Verdict FHE compute coprocessor (Zama TFHE-rs). Z2 scaffold."
+license = "Apache-2.0"
+
+# Single binary; the daemon talks to us over a Unix-domain socket.
+[[bin]]
+name = "fhe-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+# Zama TFHE-rs — pinned per docs/operator-blind-privacy-plan.md §1
+# (latest stable on docs.rs as of 2026-04-27). Z2-proper exercises the
+# crate; the Z2-prep scaffold only ensures it compiles in our build
+# image so the cold-cache penalty is paid once.
+tfhe = { version = "1.6", default-features = false, features = ["boolean", "shortint", "integer"] }
+
+# Wire encoding. JSON for the outer envelope (so we can debug with
+# `socat`), bincode kept on standby for future ciphertext-blob framing
+# inside the Vec<u8> fields if JSON base64 becomes a hot spot.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+
+# Async runtime + Unix-socket IO. No web framework on purpose: the
+# daemon is the only client and IPC stays loopback-local.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "net", "signal", "sync"] }
+
+# Error plumbing.
+anyhow = "1"
+thiserror = "1"
+
+# CLI surface (so operators can `fhe-sidecar --socket /tmp/foo.sock`
+# without env vars).
+clap = { version = "4", features = ["derive", "env"] }
+
+# Keystore. Bundled feature so the Docker image doesn't need a host
+# libsqlite of a specific minor version — the daemon's better-sqlite3
+# bundles its own, and we mirror that posture.
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Minimal logging. tracing is overkill for a single-binary sidecar;
+# eprintln through anyhow is fine for Z2-prep.
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+# Z2-proper expects AVX2 (Zama 8-bit add ~76ms on x86-64-v3). We do
+# NOT bake target-cpu into the crate so cross-arch images (ARM64 for
+# Apple Silicon dev) still build; the Dockerfile sets RUSTFLAGS when
+# we ship the real Z2 image.
+opt-level = 3
+lto = "thin"
+codegen-units = 1
