@@ -22,6 +22,12 @@ const AgentSettingsPage = lazy(() =>
     default: m.AgentSettingsPage,
   })),
 );
+// Phase 7d — step f of the new-agent flow. Renders the CodeSnippetPanel
+// keyed to the agent + reads the freshly-minted secret out of the
+// sessionStorage handoff dropped by ApiKeyMintModal.
+const IntegratePage = lazy(() =>
+  import("./pages/IntegratePage.js").then((m) => ({ default: m.IntegratePage })),
+);
 // PrivyProvider mounts here, not in main.tsx, so public routes never load
 // the Privy SDK. One AccountShell instance wraps every /account/* route so
 // auth state survives navigation between login → list → new-agent.
@@ -141,6 +147,7 @@ interface ParsedRoute {
     | "account_login"
     | "account_agent_new"
     | "account_agent_settings"
+    | "account_agent_integrate"
     | "spec";
   params?: Record<string, string>;
 }
@@ -167,6 +174,17 @@ function parseHash(hash: string): ParsedRoute {
   // Phase 7b — AgentNewPage owns this route: slug/name/bio form +
   // one-time api-key reveal modal. Replaces the Phase 7a placeholder.
   if (path === "/account/agent/new") return { name: "account_agent_new" };
+  // Phase 7d — integration / snippet view. Matched BEFORE the settings
+  // regex because /payout|/keys is the only tab set we want to fold into
+  // settings; /integrate is its own page so the URL is bookmark-stable
+  // and analytics can attribute funnel emits cleanly.
+  const agentIntegrateMatch = /^\/account\/agent\/([^/]+)\/integrate$/.exec(path);
+  if (agentIntegrateMatch) {
+    return {
+      name: "account_agent_integrate",
+      params: { slug: agentIntegrateMatch[1] },
+    };
+  }
   // Phase 7c — per-agent settings, with /payout (default) and /keys
   // sub-tabs. The trailing tab segment is optional so #/account/agent/foo
   // alone still resolves to the payout tab.
@@ -286,7 +304,8 @@ export function VerdictRouter() {
       {(route.name === "account" ||
         route.name === "account_login" ||
         route.name === "account_agent_new" ||
-        route.name === "account_agent_settings") && (
+        route.name === "account_agent_settings" ||
+        route.name === "account_agent_integrate") && (
         <AccountShell>
           {route.name === "account" && <AccountPage />}
           {route.name === "account_login" && <LoginPage next={decodeNext(next)} />}
@@ -296,6 +315,9 @@ export function VerdictRouter() {
               slug={route.params!.slug}
               tab={(route.params!.tab as "payout" | "keys") ?? "payout"}
             />
+          )}
+          {route.name === "account_agent_integrate" && (
+            <IntegratePage slug={route.params!.slug} />
           )}
         </AccountShell>
       )}

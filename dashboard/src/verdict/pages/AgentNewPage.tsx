@@ -21,7 +21,9 @@ import { useEffect, useMemo, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { ApiKeyMintModal } from "../components/account/ApiKeyMintModal.js";
+import { stashJustMinted } from "./IntegratePage.js";
 import { useAccount } from "../hooks/useAccount.js";
+import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import { ApiError, verdictApi, type MintApiKeyResponse } from "../api.js";
 
 const SLUG_MAX = 32;
@@ -63,6 +65,7 @@ interface MintedState {
 
 export function AgentNewPage() {
   const account = useAccount();
+  const emitFunnel = useFunnelEmit();
 
   const [slug, setSlug] = useState("");
   const [name, setName] = useState("");
@@ -129,6 +132,10 @@ export function AgentNewPage() {
       const mint = await verdictApi.postMintApiKey(token, slugToMint);
       setMinted({ result: mint, slug: slugToMint });
       setCreatedSlug(null);
+      // Phase 7d funnel emit — fire-and-forget. attributes carry the
+      // agent slug so the analytics view can join api_key.minted →
+      // agent.created without a SELECT against the agents table.
+      void emitFunnel("api_key.minted", { slug: slugToMint });
     } catch (e) {
       setMintError(explainMintError(e));
     } finally {
@@ -162,6 +169,9 @@ export function AgentNewPage() {
       // failure can fall through to the retry surface without losing the
       // reference (codex P2-stranded-mint fix).
       setCreatedSlug(created.display_slug);
+      // Phase 7d funnel emit — fire BEFORE the mint attempt so creation
+      // gets credited even if the mint round-trip flakes out.
+      void emitFunnel("agent.created", { slug: created.display_slug });
       await doMint(created.display_slug);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -193,13 +203,27 @@ export function AgentNewPage() {
   };
 
   const onModalDone = () => {
-    // Refresh the agents list so AccountPage shows the new row. We don't
-    // await — navigation happens immediately and the hook flushes the
-    // result by the time AccountPage's useEffect lands.
+    // Refresh the agents list so the new row is hydrated in useAccount's
+    // cache by the time IntegratePage mounts. We don't await — navigation
+    // happens immediately and the hook flushes the result by the time
+    // IntegratePage's useMemo lands.
     void account.refreshAgents();
+    // Phase 7d sessionStorage handoff — stash the just-minted secret so
+    // IntegratePage can render it inline in the TS/Python/curl snippets
+    // for the next 5 minutes. Refresh past that window or close the tab
+    // and the snippets fall back to MURMUR_API_KEY env-var refs.
+    if (minted) {
+      stashJustMinted(minted.slug, minted.result.secret);
+    }
+    const targetSlug = minted?.slug;
     setMinted(null);
-    // Phase 7d will own /integrate — until then, close the loop at /account.
-    window.location.hash = "#/account";
+    // Phase 7d — DONE lands on the snippet panel, not the bare account list.
+    // Falls back to /account if somehow we lost the slug reference (the
+    // minted state would have to be cleared between render and click,
+    // which shouldn't be possible — but defence in depth).
+    window.location.hash = targetSlug
+      ? `#/account/agent/${encodeURIComponent(targetSlug)}/integrate`
+      : "#/account";
   };
 
   if (!account.configured) {

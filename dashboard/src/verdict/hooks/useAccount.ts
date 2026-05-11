@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePrivy, getAccessToken } from "@privy-io/react-auth";
 import { verdictApi, type AccountAgent, type AccountSession } from "../api.js";
 import { isPrivyConfigured } from "../auth/PrivyProvider.js";
+import { useFunnelEmit } from "./useFunnelEmit.js";
 
 export interface UseAccountResult {
   /** True iff VITE_PRIVY_APP_ID is set at build time. */
@@ -56,6 +57,9 @@ export function useAccount(): UseAccountResult {
   // it returns a no-op default that reports `ready: false`. But to keep
   // the hook order stable we never branch on `configured` before calling.
   const privy = usePrivy();
+  // Phase 7d — useFunnelEmit is hook-stable and returns a memoized callback;
+  // it never re-fires its own emits across renders (dedupe is internal).
+  const emitFunnel = useFunnelEmit();
 
   const [session, setSession] = useState<AccountSession | null>(null);
   const [agents, setAgents] = useState<AccountAgent[]>([]);
@@ -113,6 +117,15 @@ export function useAccount(): UseAccountResult {
         const s = await verdictApi.postAccountSession(token);
         if (cancelled) return;
         setSession(s);
+        // Phase 7d — fire privy.signed_in once per authenticated edge.
+        // bootstrappedRef gates duplicates across StrictMode + reruns.
+        // `created` on the AccountSession tells us whether this was
+        // first-time signup vs returning; useful attribute for funnel
+        // grouping ("new signups today" vs "returning visitors").
+        void emitFunnel("privy.signed_in", {
+          first_time: s.created,
+          privy_user_id: s.privy_user_id,
+        });
         const { agents: rows } = await verdictApi.getAccountAgents(token);
         if (cancelled) return;
         setAgents(rows);
@@ -126,7 +139,7 @@ export function useAccount(): UseAccountResult {
     return () => {
       cancelled = true;
     };
-  }, [configured, privy.ready, privy.authenticated, privy.user?.id]);
+  }, [configured, privy.ready, privy.authenticated, privy.user?.id, emitFunnel]);
 
   const signIn = useCallback(() => {
     if (!configured) return;

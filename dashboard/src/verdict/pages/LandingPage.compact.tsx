@@ -5,6 +5,7 @@ import { CompactMiniLB } from "../components/compact/MiniLB.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { CompactMarketsGrid } from "../components/compact/MarketsGrid.js";
 import { useStream } from "../hooks/useStream.js";
+import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import { verdictApi } from "../api.js";
 
 /**
@@ -18,6 +19,7 @@ import { verdictApi } from "../api.js";
  */
 export function LandingPageCompact() {
   const { stats } = useStream();
+  const emitFunnel = useFunnelEmit();
   const [meta, setMeta] = useState<{ schema: number; scoring: number; agents: number } | null>(
     null,
   );
@@ -38,6 +40,13 @@ export function LandingPageCompact() {
       cancel = true;
     };
   }, []);
+
+  // Phase 7d — funnel pageview. Best-effort: only fires when Privy is
+  // configured + the user has a session. Anonymous visitors are dropped
+  // on the floor by useFunnelEmit until a future buffer-on-signin pass.
+  useEffect(() => {
+    void emitFunnel("landing.viewed");
+  }, [emitFunnel]);
 
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
@@ -83,9 +92,21 @@ export function LandingPageCompact() {
         <Panel
           title="MARKETS MATRIX"
           actions={
-            <a href="#/launch" className="ck-btn">
-              INSTL
-            </a>
+            <span className="flex items-center gap-1">
+              <a href="#/launch" className="ck-btn">
+                INSTL
+              </a>
+              {/* Phase 7d — primary "compete" CTA. The ?ref=landing-cta
+                  param is the attribution tag AccountPage reads to fire
+                  the compete.clicked funnel event. The button label
+                  matches the LoginPage breadcrumb idiom (COMPETE). */}
+              <a
+                href="#/account?ref=landing-cta"
+                className="ck-btn ck-btn-accent"
+              >
+                COMPETE
+              </a>
+            </span>
           }
         >
           <CompactMarketsGrid />

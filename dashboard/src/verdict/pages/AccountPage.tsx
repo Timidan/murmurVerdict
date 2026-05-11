@@ -14,10 +14,29 @@ import { useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { TierBadge } from "../components/TierBadge.js";
 import { useAccount } from "../hooks/useAccount.js";
+import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import type { AccountAgent, AgentKind } from "../api.js";
+
+/**
+ * Phase 7d — read `?ref=<source>` from the hash query so we can attribute
+ * funnel events to their entry point. Mirrors the parseVariant /
+ * parseNext defensive parsing pattern in Router.tsx.
+ */
+function readHashRef(): string | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.location.hash.replace(/^#/, "");
+  const qIdx = raw.indexOf("?");
+  if (qIdx < 0) return null;
+  try {
+    return new URLSearchParams(raw.slice(qIdx + 1)).get("ref");
+  } catch {
+    return null;
+  }
+}
 
 export function AccountPage() {
   const account = useAccount();
+  const emitFunnel = useFunnelEmit();
 
   // Redirect to login when Privy reports a stable "not signed in" state.
   // Wait for `ready` so we don't bounce the user mid-bootstrap.
@@ -27,6 +46,18 @@ export function AccountPage() {
     const next = encodeURIComponent("/account");
     window.location.hash = `#/account/login?next=${next}`;
   }, [account.ready, account.isAuthenticated]);
+
+  // Phase 7d — fire compete.clicked only when the user actually arrived
+  // from the landing-page CTA (carries ?ref=landing-cta). We don't fire
+  // on every /account visit because that would double-count: returning
+  // users hit this page directly. The emit is gated on isAuthenticated
+  // so it doesn't get dropped by the anon-kinds path in useFunnelEmit.
+  useEffect(() => {
+    if (!account.isAuthenticated) return;
+    const ref = readHashRef();
+    if (ref !== "landing-cta") return;
+    void emitFunnel("compete.clicked", { ref });
+  }, [account.isAuthenticated, emitFunnel]);
 
   if (!account.configured) {
     return <ConfigErrorShell />;

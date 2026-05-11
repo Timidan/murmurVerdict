@@ -8,9 +8,10 @@
 // (Google / email / passkey icons + wallet escape-hatch). For now we ship a
 // single "[ SIGN IN ]" CTA — the modal itself shows the method picker.
 
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { useAccount } from "../hooks/useAccount.js";
+import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 
 interface LoginPageProps {
   /** Hash path to redirect to after successful auth (e.g. "/account"). */
@@ -19,6 +20,7 @@ interface LoginPageProps {
 
 export function LoginPage({ next }: LoginPageProps) {
   const account = useAccount();
+  const emitFunnel = useFunnelEmit();
 
   // Auto-redirect once Privy reports an authenticated session — handles
   // both "user clicks sign-in" and "user lands here already logged in".
@@ -29,6 +31,24 @@ export function LoginPage({ next }: LoginPageProps) {
       window.location.hash = `#${target}`;
     }
   }, [account.isAuthenticated, next]);
+
+  /**
+   * Phase 7d — fire privy.modal_opened on the sign-in click. The actual
+   * Privy hosted modal opens inside account.signIn(); we emit BEFORE
+   * invoking it so a slow-network funnel event doesn't gate the modal.
+   *
+   * Known limitation: the user hasn't authenticated yet, so the emit
+   * has no Privy bearer to attach. useFunnelEmit drops it on the floor
+   * (the route requires auth). The downstream `privy.signed_in` emit
+   * fired from useAccount is the load-bearing signal — modal_opened is
+   * useful only if/when we add an anon-emit path or a client-side
+   * buffer-on-signin flush. Wired today so the call-site exists when
+   * either lands.
+   */
+  const onSignInClick = useCallback(() => {
+    void emitFunnel("privy.modal_opened");
+    account.signIn();
+  }, [account, emitFunnel]);
 
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
@@ -71,7 +91,7 @@ export function LoginPage({ next }: LoginPageProps) {
 
             <button
               type="button"
-              onClick={account.signIn}
+              onClick={onSignInClick}
               disabled={!account.configured || !account.ready || account.loading}
               className="ck-btn ck-btn-accent justify-center py-2"
             >

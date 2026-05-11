@@ -351,6 +351,29 @@ export interface DestinationCooldownError {
   retry_after_seconds: number;
 }
 
+/* ── Phase 7d — onboarding funnel event allowlist ───────────────────────── */
+
+/**
+ * Allowlisted funnel-event kinds. Mirrors the server-side
+ * FunnelEventKindSchema in src/verdict/routes/account.ts. Anything outside
+ * this union → server 400. Keep both lists synced.
+ *
+ * The `call.*` variants are server-reserved (no client emit site in 7d);
+ * they're listed here so a future resolver-side hook can use the same
+ * client signature without a type widening.
+ */
+export type FunnelEventKind =
+  | "landing.viewed"
+  | "compete.clicked"
+  | "privy.modal_opened"
+  | "privy.signed_in"
+  | "agent.created"
+  | "api_key.minted"
+  | "destination.set"
+  | "call.first_submitted"
+  | "call.first_resolved"
+  | "call.tenth_submitted";
+
 // Phase 7a — `get`/`post` accept optional extra headers so account-area
 // callers can attach `Authorization: Bearer <privy_jwt>` without breaking
 // the existing call-sites (they continue to omit the second arg).
@@ -392,6 +415,28 @@ async function patch<T>(path: string, body: unknown, headers?: HeaderMap): Promi
     throw new ApiError(`PATCH ${path} → ${res.status}: ${text}`, res.status, text);
   }
   return (await res.json()) as T;
+}
+
+/**
+ * Phase 7d — POST helper for endpoints that return 204 No Content. The
+ * generic `post<T>` always calls `.json()`, which throws on an empty
+ * body. The funnel-emit route is the only 204-returning caller today.
+ */
+async function postNoContent(
+  path: string,
+  body: unknown,
+  headers?: HeaderMap,
+): Promise<void> {
+  const merged: HeaderMap = { "content-type": "application/json", ...(headers ?? {}) };
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: merged,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`POST ${path} → ${res.status}: ${text}`, res.status, text);
+  }
 }
 
 async function del<T>(path: string, headers?: HeaderMap): Promise<T> {
@@ -593,6 +638,25 @@ export const verdictApi = {
     patch<PatchDestinationResponse>(
       `/v1/account/agents/${encodeURIComponent(slug)}/destination-address`,
       { destination_address },
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /* ── Phase 7d — onboarding funnel emit (account-scoped audit trail) ──── */
+
+  /**
+   * Emit a single funnel event. Server-side allowlist rejects anything
+   * outside FunnelEventKind with 400. The dashboard NEVER renders errors
+   * from this endpoint — useFunnelEmit swallows ApiError so analytics
+   * issues can't bubble into the UI.
+   */
+  postFunnelEvent: (
+    privyToken: string,
+    kind: FunnelEventKind,
+    attributes?: Record<string, unknown>,
+  ) =>
+    postNoContent(
+      "/v1/account/events",
+      attributes ? { kind, attributes } : { kind },
       { Authorization: `Bearer ${privyToken}` },
     ),
 };

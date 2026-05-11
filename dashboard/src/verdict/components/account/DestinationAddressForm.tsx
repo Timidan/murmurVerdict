@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
 import { ApiError, verdictApi, type DestinationCooldownError } from "../../api.js";
+import { useFunnelEmit } from "../../hooks/useFunnelEmit.js";
 
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const EVM_REGEX = /^0x[0-9a-fA-F]{40}$/;
@@ -70,6 +71,7 @@ export function DestinationAddressForm({
   updatedAt,
   onSaved,
 }: DestinationAddressFormProps) {
+  const emitFunnel = useFunnelEmit();
   const [input, setInput] = useState("");
   const [touched, setTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -172,6 +174,13 @@ export function DestinationAddressForm({
       setLastUpdatedIso(res.destination_address_updated_at);
       setInput("");
       setTouched(false);
+      // Phase 7d funnel emit — fire-and-forget after the patch round
+      // trip succeeds. We don't include the address itself (PII-adjacent
+      // — a payout address is on-chain public but the funnel store
+      // doesn't need it to derive conversion). The slug attribute lets
+      // funnel queries group by agent without joining usage_events.agent_id
+      // (which is null on these account-scoped emits).
+      void emitFunnel("destination.set", { slug });
       onSaved();
     } catch (e) {
       setServerError(explainError(e));

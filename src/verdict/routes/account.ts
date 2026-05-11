@@ -120,6 +120,40 @@ const SetDestinationSchema = z.object({
   destination_address: WalletAddressSchema,
 });
 
+// Phase 7d — funnel event emit. Body is fixed-shape, kind is strictly
+// allowlisted server-side (mirrors UsageEventKindSchema but enumerated
+// inline so the route stays the only authority on what the dashboard
+// can write). Anything outside this list → 400 schema_invalid.
+//
+// Why a separate enum instead of UsageEventKindSchema? The full schema
+// includes resolver-side kinds (submission_accepted, resolution_completed)
+// that the dashboard should NEVER be allowed to forge. The route's
+// allowlist is the funnel-only subset.
+const FunnelEventKindSchema = z.enum([
+  "landing.viewed",
+  "compete.clicked",
+  "privy.modal_opened",
+  "privy.signed_in",
+  "agent.created",
+  "api_key.minted",
+  "destination.set",
+  // Reserved for future resolver-side emits; the dashboard never sets
+  // these directly today, but the allowlist accepts them so we can wire
+  // the call-resolver path without another roll.
+  "call.first_submitted",
+  "call.first_resolved",
+  "call.tenth_submitted",
+]);
+
+const FunnelEventSchema = z.object({
+  kind: FunnelEventKindSchema,
+  // Attributes are free-shape but constrained to JSON-stringifiable
+  // values via z.record. The DB column is TEXT (JSON.stringified) so we
+  // accept anything well-typed and let the JSON encoder handle the
+  // ground-truth shape check.
+  attributes: z.record(z.string(), z.unknown()).optional(),
+});
+
 // ─── Rate limiting (V2 §7.1 + codex review MAJOR finding 8.4) ───────────────
 //
 // All /v1/account/* routes ship with route-level rate limiting BEFORE Phase 4
@@ -197,6 +231,11 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   const mintKeyLimiter = makeLimiter(10, ONE_MINUTE_MS, true, "mint_api_key");
   const rotateKeyLimiter = makeLimiter(20, ONE_MINUTE_MS, true, "rotate_api_key");
   const destAddrLimiter = makeLimiter(5, ONE_MINUTE_MS, true, "destination_address");
+  // Funnel-emit limiter — generous because the dashboard fires one event per
+  // user action (landing.viewed, compete.clicked, etc) and a single Maya
+  // walks through ~7 of them inside a minute. Per-token so a leaked Privy
+  // bearer can't drain everyone's quota.
+  const funnelEventLimiter = makeLimiter(60, ONE_MINUTE_MS, true, "funnel_event");
 
   // POST /v1/account/session — exchange Privy JWT for an internal session.
   // Returns { account_id, created } so the dashboard can branch on
@@ -557,6 +596,66 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
         destination_address_updated_at:
           result.updated_at ?? new Date().toISOString().replace(/\.\d+Z$/, "Z"),
       });
+    }),
+  );
+
+  // POST /v1/account/events — thin allowlisted funnel-event emit (Phase 7d).
+  //
+  // Account-scoped audit trail for the Maya onboarding loop. The dashboard
+  // fires one event per UX step (landing.viewed → compete.clicked → … →
+  // destination.set) so we can measure where casual-tier signups drop off.
+  //
+  // Why account-scoped (agent_id=null) instead of agent-scoped: most of the
+  // funnel happens BEFORE the user has an agent. The handful of post-create
+  // events (api_key.minted, destination.set) could carry agent_id in their
+  // attributes_json — we keep that as a payload field rather than the
+  // usage_events.agent_id column because the column ON DELETE SET NULLs
+  // (agent deletion shouldn't wipe funnel history).
+  //
+  // Auth: same Privy bearer posture as the other /v1/account/* writes. A
+  // 401 is silently swallowed by useFunnelEmit on the client so missed
+  // emits never bubble into the UI.
+  router.post(
+    "/v1/account/events",
+    funnelEventLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError(
+          "auth required",
+          ERROR_CODES.agent_not_authorized,
+          401,
+        );
+      }
+      const parsed = FunnelEventSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid request",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.issues },
+        );
+      }
+      const ts = (now ?? (() => new Date()))()
+        .toISOString()
+        .replace(/\.\d+Z$/, "Z");
+      // Stamp the account_id into attributes so downstream funnel queries
+      // can group by account without joining against the api_keys table.
+      // The usage_events.agent_id column stays null on purpose (these are
+      // account-scoped, not agent-scoped).
+      const attributes = {
+        account_id: resolved.account_id,
+        ...(parsed.data.attributes ?? {}),
+      };
+      usageRepo.emit(db, {
+        event_id: randomUUID(),
+        agent_id: null,
+        kind: parsed.data.kind,
+        ts,
+        attributes,
+      });
+      res.status(204).end();
     }),
   );
 

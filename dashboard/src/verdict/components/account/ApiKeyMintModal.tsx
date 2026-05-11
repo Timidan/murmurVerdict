@@ -10,8 +10,11 @@
 //   · "I have saved this key" checkbox guards the DONE button
 //   · click-outside + Escape are explicitly NOT honored (footgun prevention)
 //
-// On DONE: caller decides where to navigate. Phase 7d will own the
-// `/integrate` snippet panel; until that ships we route back to /account.
+// On DONE: caller decides where to navigate. Phase 7d shipped the
+// `/integrate` snippet panel — AgentNewPage now stashes the just-minted
+// secret in sessionStorage (key: `murmur_just_minted:<slug>`, 5-min TTL)
+// and hash-navigates to #/account/agent/<slug>/integrate. The modal
+// itself stays storage-agnostic — onDone is still just a void callback.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MintApiKeyResponse } from "../../api.js";

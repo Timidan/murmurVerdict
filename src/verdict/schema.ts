@@ -664,6 +664,25 @@ export const UsageEventKindSchema = z.enum([
   // the PATCH /v1/account/agents/:slug/destination-address handler after a
   // successful setDestinationAddress call.
   "destination_address_updated",
+  // Phase 7d — Maya onboarding funnel events emitted by the dashboard via
+  // POST /v1/account/events. account-scoped (agent_id is nullable on this
+  // table), used to measure where casual-tier signups drop off between
+  // first landing-pageview and first call submission. The allowlist is
+  // also enforced server-side in the route handler; keep both in sync.
+  "landing.viewed",
+  "compete.clicked",
+  "privy.modal_opened",
+  "privy.signed_in",
+  "agent.created",
+  "api_key.minted",
+  "destination.set",
+  // Future waves (resolver-side hooks) — kinds reserved here so the
+  // schema doesn't have to migrate when those land. Emit sites are not
+  // wired in 7d, but the allowlist accepts them so the frontend can
+  // start probing without a server roll.
+  "call.first_submitted",
+  "call.first_resolved",
+  "call.tenth_submitted",
 ]);
 export type UsageEventKind = z.infer<typeof UsageEventKindSchema>;
 

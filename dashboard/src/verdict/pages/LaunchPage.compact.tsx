@@ -3,6 +3,7 @@ import { verdictApi } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactMarketsGrid } from "../components/compact/MarketsGrid.js";
+import { CodeSnippetPanel } from "../components/account/CodeSnippetPanel.js";
 
 type TrackKey = "A" | "B" | "C" | "D";
 
@@ -108,7 +109,19 @@ export function LaunchPageCompact() {
         {/* LEFT — TRACK BRIEF + SNIPPET PICKER ─────────────── */}
         <div className="flex flex-col border-r border-[var(--color-border)] min-h-0">
           {track === "A" && (
-            <TrackBrief
+            // Phase 7d refactor: Track A's TS/PY/curl trio is now rendered
+            // via the shared CodeSnippetPanel — same snippets the new-agent
+            // /integrate page uses, so users see one canonical example
+            // shape whether they're learning or onboarding. Track B/C/D
+            // keep the old TrackBrief snippet renderer because their
+            // snippet shapes (Claude MCP config, Cursor stdio command,
+            // webhook register, HMAC verify middleware) don't fit the
+            // TS/PY/curl trifecta the new panel encodes.
+            //
+            // TrackBriefHeader still owns the heading + facts block; the
+            // snippet body is the only part swapping. No API key prop —
+            // Launch page is public, snippets render with env-var refs.
+            <TrackBriefHeader
               tag="TRACK·A · PRIMARY"
               title="BUILD AN AGENT"
               note="Submit market calls; Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles. Committed mode hides side / asset / horizon / confidence from the public feed until reveal at horizon."
@@ -121,16 +134,12 @@ export function LaunchPageCompact() {
                   <FactRow label="SKILL" value={`${base}/v1/skill.md`} copy />
                 </>
               }
-              snippets={[
-                ["CURL", curlExample(base)],
-                ["TS", tsExample(base)],
-                ["PY", pythonExample(base)],
-              ]}
-              snippet={snippet}
-              setSnippet={setSnippet}
-              copied={copied}
-              copy={copy}
-            />
+            >
+              <CodeSnippetPanel
+                containerClass=""
+                initialLanguage="curl"
+              />
+            </TrackBriefHeader>
           )}
           {track === "B" && (
             <TrackBrief
@@ -247,6 +256,56 @@ export function LaunchPageCompact() {
         </div>
       </main>
     </div>
+  );
+}
+
+/**
+ * Phase 7d — header-only variant of TrackBrief. Same heading + cta + facts
+ * layout, but defers the snippet rendering to a `children` slot so Track A
+ * can drop in the new CodeSnippetPanel. Bold + calm Launch variants stay
+ * on the legacy TrackBrief signature (snippets passed as a `[label, body]`
+ * tuple list) until the Phase 12 variant sweep.
+ *
+ * TODO Phase 12 dashboard polish: sweep LaunchPage.bold + LaunchPage.calm
+ * to use this helper + CodeSnippetPanel for parity. The bold + calm
+ * variants currently embed their own curl/ts snippet templates inline.
+ */
+function TrackBriefHeader({
+  tag,
+  title,
+  note,
+  cta,
+  extras,
+  children,
+}: {
+  tag: string;
+  title: string;
+  note: string;
+  cta: { label: string; href: string };
+  extras?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const external = cta.href.startsWith("http");
+  return (
+    <>
+      <div className="px-2 py-2 border-b border-[var(--color-border)]">
+        <div className="ck-label ck-dim mb-0.5">{tag}</div>
+        <div className="ck-mono ck-pos" style={{ fontSize: 14, fontWeight: 700 }}>
+          {title}
+        </div>
+        <p className="ck-mono ck-dim mt-1 leading-tight">{note}</p>
+        <a
+          href={cta.href}
+          target={external ? "_blank" : undefined}
+          rel={external ? "noreferrer" : undefined}
+          className="ck-btn mt-2 inline-flex"
+        >
+          {cta.label}
+        </a>
+      </div>
+      {extras && <div className="border-b border-[var(--color-border)]">{extras}</div>}
+      {children && <div className="flex-1 min-h-0 flex flex-col">{children}</div>}
+    </>
   );
 }
 
@@ -374,94 +433,12 @@ function DeployCell({
   );
 }
 
-/* ── Snippets (verbatim from default Launch page) ───────────────────── */
-
-function curlExample(base: string): string {
-  return `# Submit a COMMITTED-MODE market call. Daemon hashes the canonical
-# preimage (call_id, wallet, side, asset, horizon, confidence, salt, t0)
-# and stores only the hash + an age envelope + a drand tlock envelope.
-
-curl -X POST "${base}/v1/calls" \\
-  -H "Content-Type: application/json" \\
-  -H "X-Murmur-Agent-Id: <AGENT_ID>" \\
-  -H "X-Murmur-Api-Key: <API_KEY>" \\
-  -d '{
-    "schema_version": 1,
-    "agent_id": "<AGENT_ID>",
-    "client_order_id": "<unique-uuid>",
-    "asset_id": "base:ETH:USD",
-    "side": "BUY",
-    "horizon_hours": 24,
-    "confidence": 0.7,
-    "submitted_at": "<ISO 8601 UTC>",
-    "strategy_tag": "momentum",
-    "privacy_mode": "committed",
-    "salt": "<64 hex chars>"
-  }'`;
-}
-
-function tsExample(base: string): string {
-  return `// npm i undici
-import { request } from "undici";
-import { randomBytes, randomUUID } from "node:crypto";
-
-const salt = randomBytes(32).toString("hex");
-const body = JSON.stringify({
-  schema_version: 1,
-  agent_id: process.env.MURMUR_AGENT_ID!,
-  client_order_id: randomUUID(),
-  asset_id: "base:ETH:USD",
-  side: "BUY",
-  horizon_hours: 24,
-  confidence: 0.7,
-  submitted_at: new Date().toISOString().replace(/\\.\\d+Z$/, "Z"),
-  strategy_tag: "momentum",
-  privacy_mode: "committed",
-  salt,
-});
-
-const { body: respBody } = await request("${base}/v1/calls", {
-  method: "POST",
-  headers: {
-    "content-type": "application/json",
-    "x-murmur-agent-id": process.env.MURMUR_AGENT_ID!,
-    "x-murmur-api-key":  process.env.MURMUR_API_KEY!,
-  },
-  body,
-});
-const { call } = (await respBody.json()) as { call: { call_id: string; accepted_at: string } };
-await persist({ call_id: call.call_id, accepted_at: call.accepted_at, salt });`;
-}
-
-function pythonExample(base: string): string {
-  return `# pip install requests
-import os, json, uuid, secrets, datetime, requests
-
-salt = secrets.token_hex(32)
-body = {
-    "schema_version": 1,
-    "agent_id": os.environ["MURMUR_AGENT_ID"],
-    "client_order_id": str(uuid.uuid4()),
-    "asset_id": "base:ETH:USD",
-    "side": "BUY",
-    "horizon_hours": 24,
-    "confidence": 0.7,
-    "submitted_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "strategy_tag": "momentum",
-    "privacy_mode": "committed",
-    "salt": salt,
-}
-resp = requests.post(
-    "${base}/v1/calls",
-    json=body,
-    headers={
-        "x-murmur-agent-id": os.environ["MURMUR_AGENT_ID"],
-        "x-murmur-api-key":  os.environ["MURMUR_API_KEY"],
-    },
-)
-call = resp.json()["call"]
-persist(call_id=call["call_id"], accepted_at=call["accepted_at"], salt=salt)`;
-}
+/* ── Snippets ────────────────────────────────────────────────────────────
+ * Phase 7d — Track A's TS/PY/curl snippets moved into CodeSnippetPanel
+ * (see usage in the JSX above). The remaining track-specific snippets
+ * (MCP config, webhook register, HMAC verify) stay inline because their
+ * shape doesn't fit the TS/PY/curl trifecta the new panel encodes.
+ * ─────────────────────────────────────────────────────────────────── */
 
 function claudeConfig(base: string): string {
   return `{
