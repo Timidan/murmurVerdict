@@ -19,7 +19,13 @@ import {
 } from "../benchmark/agents.js";
 import { loadAgeContextFromEnv } from "../verdict/age-envelope.js";
 import { loadDrandContextFromEnv } from "../verdict/drand-envelope.js";
-import { isFheDirectEnabled, loadFheProviderFromEnv } from "../verdict/fhe/loader.js";
+// Codex Z0 review FAIL #1 — do NOT statically import the FHE loader.
+// A static import drags fhe/{provider,mock-provider,zama-local-provider}
+// into the daemon bundle on every boot regardless of
+// MURMUR_FHE_DIRECT_ENABLED; that violates the "byte-identical legacy
+// boot" invariant. The loader is dynamic-imported inside the boot
+// function only when the flag is set. Type-only imports stay safe.
+import type { FheProvider } from "../verdict/fhe/provider.js";
 import { TelegramNotifier } from "../integrations/telegram.js";
 import { makeProductionVerifier } from "../integrations/postVerifiers.js";
 import { mkdirSync } from "node:fs";
@@ -100,23 +106,21 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       "[daemon] drand disabled (set MURMUR_DRAND_ENABLED=1 for daemon-less reveal)",
     );
   }
-  // Z0 — FHE provider boundary. Loaded only when MURMUR_FHE_DIRECT_ENABLED=1.
-  // When the flag is off, fheProvider is null and the submission path
-  // behaves byte-identically to today. Z1 wires the encrypted-submission
-  // code; Z2 wires homomorphic scoring; Z3 wires threshold release.
-  const fheProvider = loadFheProviderFromEnv(db);
-  if (fheProvider) {
-    console.log(
-      `[daemon] fhe provider ready (name=${fheProvider.name}, threshold_mode=${fheProvider.threshold_mode}); fhe_direct submissions still rejected with z1_not_implemented`,
-    );
-  } else if (isFheDirectEnabled()) {
-    console.log(
-      "[daemon] MURMUR_FHE_DIRECT_ENABLED=1 but loadFheProviderFromEnv returned null — fhe_direct will reject",
-    );
-  } else {
-    console.log(
-      "[daemon] fhe_direct disabled (set MURMUR_FHE_DIRECT_ENABLED=1 to enable the operator-blind privacy path)",
-    );
+  // Z0 — FHE provider boundary. Dynamic-import only when the flag is set
+  // so legacy boot never touches the fhe/* modules (codex Z0 review fix).
+  let fheProvider: FheProvider | null = null;
+  if (process.env.MURMUR_FHE_DIRECT_ENABLED === "1") {
+    const { loadFheProviderFromEnv } = await import("../verdict/fhe/loader.js");
+    fheProvider = loadFheProviderFromEnv(db);
+    if (fheProvider) {
+      console.log(
+        `[daemon] fhe provider ready (name=${fheProvider.name}, threshold_mode=${fheProvider.threshold_mode})`,
+      );
+    } else {
+      console.log(
+        "[daemon] MURMUR_FHE_DIRECT_ENABLED=1 but loadFheProviderFromEnv returned null — fhe_direct will reject",
+      );
+    }
   }
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
   // matching subscription on call.accepted / call.resolved.

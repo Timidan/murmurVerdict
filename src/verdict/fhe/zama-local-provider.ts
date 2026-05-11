@@ -71,13 +71,13 @@ const DEFAULT_PLACEHOLDER = Buffer.from(
 export class ZamaLocalFheProvider implements FheProvider {
   readonly name = "zama_local" as const;
   /**
-   * Z0 cannot yet promise threshold release — the sidecar isn't here.
-   * Even in single-party mode the production gate (Z5) refuses to
-   * promote `zama_local` until Z3's quorum is live; this label
-   * reflects "intent to be production" so /v1/readyz can distinguish
-   * mock-only deployments from this stub mid-rollout.
+   * Codex Z0 review fix — was "production" (intent-based), now "stub" so
+   * Z5's prod gate fails CLOSED until the real Rust sidecar + threshold
+   * release lands. Previously, enabling `MURMUR_FHE_PROVIDER=zama_local`
+   * with a stub that throws on every op would have caused /v1/readyz to
+   * report `threshold_mode: "production"`, fooling the prod gate.
    */
-  readonly threshold_mode = "production" as const;
+  readonly threshold_mode = "stub" as const;
 
   private readonly db: Database.Database;
   private readonly placeholderBlob: Buffer;

@@ -370,9 +370,21 @@ function applyMigrations(db: Database.Database): void {
     set.run("schema_version", String(v));
   }
 
-  // Migration 022 is intentionally skipped — the next-integrations plan
-  // reserves it for the optional family-leaderboard cache landing in
-  // Phase 10. FHE additive tables start at 023 to avoid collision.
+  if (v < 22) {
+    // Migration 022 — RESERVED NO-OP.
+    //
+    // Codex Z0 review P2-C fix: the original plan reserved 022 for an
+    // optional Phase 10 family-leaderboard cache that never shipped, and
+    // jumping from 021 → 023 left a gap. Any future migration trying to
+    // claim 022 would never run on DBs that booted under Z0 (the
+    // `if (v < 22)` check would be false at v=23+).
+    //
+    // The fix: claim 022 as a deliberate no-op so the ladder is dense.
+    // Phase 10's family-leaderboard cache (if it ever lands) MUST take
+    // a slot AFTER the FHE block (current top is Z5's 027 — so >=028).
+    v = 22;
+    set.run("schema_version", String(v));
+  }
 
   if (v < 23) {
     // Z0 — operator-blind privacy foundation.

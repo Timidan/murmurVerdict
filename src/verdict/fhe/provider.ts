@@ -78,7 +78,11 @@ export interface FheActiveKey {
 
 export type FheProviderName = "mock" | "zama_local";
 
-export type FheThresholdMode = "mock" | "production";
+// Codex Z0 review fix — added "stub" between "mock" and "production". Z5's
+// prod gate (MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1) refuses any non-"production"
+// mode, so the Zama Z0 stub must NOT claim "production" while throwing on
+// every operation. "stub" makes the gate fail-closed on incomplete providers.
+export type FheThresholdMode = "mock" | "stub" | "production";
 
 /**
  * Inputs for the homomorphic score computation.
