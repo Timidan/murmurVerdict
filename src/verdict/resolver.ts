@@ -50,12 +50,31 @@ import {
 import { serializeOutcome, type Outcome as UniversalOutcome } from "./markets-core.js";
 import { AdapterNotFoundError } from "./markets.js";
 import type { FheProvider } from "./fhe/provider.js";
-import { FheUnavailableError } from "./fhe/provider.js";
+import {
+  canonicalResolvedOutcomeBytes as canonicalResolvedOutcomeBytesLocal,
+  FheUnavailableError,
+} from "./fhe/provider.js";
 import {
   enqueueScoreJob,
   recordScoreFailure,
   recordScoreSuccess,
 } from "./fhe/score-jobs.js";
+import {
+  enqueueDecryptRequest,
+  listPendingDecryptRequests,
+  persistDecryptShare,
+  persistScoreRelease,
+  setRequestStatus,
+  listActiveKeyHolders,
+} from "./fhe/decrypt-requests.js";
+import {
+  aggregateShares,
+  validateQuorum,
+  verifyShare,
+  type PartialDecryptRequest,
+  type PartialDecryptShare,
+  type ThresholdHolder,
+} from "./fhe/threshold.js";
 import { createHash } from "node:crypto";
 
 // ─── Env knobs ──────────────────────────────────────────────────────────────
@@ -98,6 +117,23 @@ export interface ResolverDeps {
    * submission time anyway, so the branch is effectively dead code.
    */
   fheProvider?: FheProvider | null;
+  /**
+   * Z3 — threshold-decrypt quorum pool. When present, the resolver
+   * enqueues a decrypt request immediately after recordScoreSuccess
+   * (atomic with the score commit) and drives quorum collection +
+   * release on subsequent ticks via runFheThresholdReleasePhase().
+   *
+   * Holders are loaded from `fhe_key_holders` by ID; the pool object
+   * carries the in-process signing keys (mock-quorum) OR the off-process
+   * HTTP/RPC adapters (real Zama KMS). The interface is the same.
+   *
+   * When null/undefined, the resolver still scores in encrypted mode
+   * (Z2 behavior) but never releases the score — the call stays at
+   * status='resolved' with call_score=NULL and the decrypt request
+   * sits in 'pending_shares' until quorum lands. This is the Z2-only
+   * configuration and stays operationally usable for ops smoke tests.
+   */
+  quorumPool?: { holders(): ReadonlyArray<ThresholdHolder> } | null;
 }
 
 export type ResolverLogEvent =
@@ -124,6 +160,9 @@ export class Resolver {
   private readonly ageContext: AgeContext | undefined;
   private readonly drandContext: DrandContext | undefined;
   private readonly fheProvider: FheProvider | null;
+  private readonly quorumPool: {
+    holders(): ReadonlyArray<ThresholdHolder>;
+  } | null;
 
   constructor(deps: ResolverDeps) {
     this.db = deps.db;
@@ -134,11 +173,17 @@ export class Resolver {
     this.ageContext = deps.ageContext;
     this.drandContext = deps.drandContext;
     this.fheProvider = deps.fheProvider ?? null;
+    this.quorumPool = deps.quorumPool ?? null;
   }
 
   async tick(): Promise<ResolverTickResult> {
     const t0 = await this.runT0Phase();
     const t1 = await this.runT1Phase();
+    // Z3 — drive the threshold-release phase last, after t1 has had a
+    // chance to enqueue new decrypt requests this tick. Releases are
+    // additive: they fill in t1_resolutions.call_score for calls that
+    // already reached status='resolved' at score-time.
+    await this.runFheThresholdReleasePhase();
     const summary = {
       anchored: t0.anchored,
       resolved: t1.resolved,
@@ -802,6 +847,19 @@ export class Resolver {
     const payoutVectorJson = JSON.stringify(
       resolvedOutcome.payoutNumerators.map((n) => n.toString()),
     );
+    // Z3 — canonical resolved-outcome hash binds the decrypt request
+    // to the same plaintext payout vector the score was computed
+    // against. Holders independently recompute this from the score-job
+    // row and refuse to sign if it drifted (see mock-quorum.ts).
+    // canonicalResolvedOutcomeBytes mirrors the TS/Rust contract in
+    // fhe/provider.ts, so the hash is byte-stable across both sides.
+    const canonicalResolvedBytes = canonicalResolvedOutcomeBytesLocal(
+      resolvedOutcome.payoutNumerators,
+      resolvedOutcome.payoutDenominator,
+    );
+    const resolvedOutcomeHash = createHash("sha256")
+      .update(canonicalResolvedBytes)
+      .digest("hex");
 
     const tx = this.db.transaction(() => {
       recordScoreSuccess({
@@ -838,6 +896,21 @@ export class Resolver {
         fhe_circuit_id: ctRow.circuit_id,
       });
       submissionsRepo.setStatus(this.db, args.ctx.call_id, "resolved");
+      // Z3 — atomic with the score commit: enqueue the decrypt request
+      // so the next tick's threshold-release phase has work to do. The
+      // helper is idempotent on (call_id, score_ciphertext_hash), so a
+      // resolver retry that re-runs scoreEncrypted with the same
+      // ciphertext just refreshes nothing.
+      enqueueDecryptRequest({
+        db: this.db,
+        request_id: `dreq_${randomUUID()}`,
+        call_id: args.ctx.call_id,
+        score_ciphertext_hash,
+        transcript_hash: scoreResult.transcript_hash,
+        resolved_outcome_hash: resolvedOutcomeHash,
+        keyset_id: ctRow.keyset_id,
+        now: nowIso,
+      });
       usageRepo.emit(
         this.db,
         this.makeUsage(args.ctx.agent_id, "resolution_completed", {
@@ -851,6 +924,201 @@ export class Resolver {
     });
     tx();
     return "scored";
+  }
+
+  // ── Z3 — threshold-release phase ──
+  //
+  // Runs after t1 each tick. For every fhe_decrypt_requests row in
+  // 'pending_shares' that has a registered quorumPool, the resolver:
+  //
+  //   1. Asks every active holder for a partial decrypt
+  //      (producePartialDecrypt). Holders independently verify the
+  //      request matches DB state and refuse to sign on drift —
+  //      that's caught here as a thrown error and counted as a
+  //      missing share (NOT a global failure; the call stays pending
+  //      until enough other holders sign).
+  //   2. Persists each accepted share to fhe_decrypt_shares.
+  //   3. After collection, runs validateQuorum + per-share verifyShare.
+  //      A quorum-valid share set unblocks aggregate.
+  //   4. aggregateShares returns the bounded score; the resolver
+  //      writes it onto t1_resolutions.call_score AND
+  //      fhe_score_releases (audit trail). The fhe_decrypt_requests
+  //      row flips to 'released'.
+  //
+  // The phase NEVER throws. Per-call failures are logged via
+  // this.log() and the request stays at 'pending_shares' for the
+  // next tick. The age-identity env (MURMUR_DAEMON_AGE_IDENTITY) is
+  // deliberately NOT consulted anywhere in this path: math is the
+  // trust root.
+  private async runFheThresholdReleasePhase(): Promise<void> {
+    if (!this.quorumPool) return; // Z2-only config: nothing to do.
+    const pool = this.quorumPool;
+    const pending = listPendingDecryptRequests(this.db);
+    if (pending.length === 0) return;
+
+    // Cache the enabled-holder list once per tick. The pool emits
+    // ThresholdHolder objects (with the live signing key); the DB
+    // table carries the public_identity for verifyShare. Match by
+    // holder_id.
+    const dbHolders = listActiveKeyHolders(this.db);
+    const dbByHolderId = new Map(dbHolders.map((h) => [h.holder_id, h]));
+
+    for (const req of pending) {
+      try {
+        await this.tryReleaseDecryptRequest(req, pool.holders(), dbByHolderId);
+      } catch (err) {
+        // tryReleaseDecryptRequest already logs per-call; this catch
+        // is the bulkhead so one bad request can't kill the whole
+        // tick.
+        this.log({
+          kind: "still_pending",
+          call_id: req.call_id,
+          phase: "t1",
+          reason: `fhe_threshold:tick_error:${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+  }
+
+  private async tryReleaseDecryptRequest(
+    req: {
+      request_id: string;
+      call_id: string;
+      score_ciphertext_hash: string;
+      transcript_hash: string;
+      resolved_outcome_hash: string;
+      keyset_id: string;
+    },
+    holders: ReadonlyArray<ThresholdHolder>,
+    dbByHolderId: Map<string, ReturnType<typeof listActiveKeyHolders>[number]>,
+  ): Promise<void> {
+    // Score-ciphertext bytes live on the score-job row; we need them
+    // in the request body so each holder can verify the hash. The
+    // call_id → ciphertext path is the same one the score-time tx
+    // wrote to.
+    const ctRow = this.db
+      .prepare(
+        `SELECT score_ciphertext FROM fhe_score_jobs
+         WHERE call_id = ? AND status = 'scored_pending_decrypt'`,
+      )
+      .get(req.call_id) as { score_ciphertext: Buffer } | undefined;
+    if (!ctRow) {
+      this.log({
+        kind: "still_pending",
+        call_id: req.call_id,
+        phase: "t1",
+        reason: "fhe_threshold:no_scored_ciphertext",
+      });
+      return;
+    }
+
+    const nowIso = this.nowIso();
+    const partialReq: PartialDecryptRequest = {
+      request_id: req.request_id,
+      call_id: req.call_id,
+      keyset_id: req.keyset_id,
+      score_ciphertext: new Uint8Array(ctRow.score_ciphertext),
+      score_ciphertext_hash: req.score_ciphertext_hash,
+      transcript_hash: req.transcript_hash,
+      resolved_outcome_hash: req.resolved_outcome_hash,
+    };
+
+    // 1. Collect shares from every active holder. Per-holder errors
+    // are non-fatal (refusal to sign is a feature, not a bug — see
+    // the splice-attack defense in mock-quorum.ts).
+    const collected: PartialDecryptShare[] = [];
+    for (const h of holders) {
+      if (!h.record.enabled) continue;
+      try {
+        const share = await h.producePartialDecrypt(partialReq);
+        // Persist before verifying — the audit trail wants the raw
+        // submission so a third party reading the transcript can
+        // diagnose a bad-share holder out of band.
+        persistDecryptShare({
+          db: this.db,
+          share_id: `dshr_${randomUUID()}`,
+          request_id: req.request_id,
+          holder_id: share.holder_id,
+          partial_decrypt: share.partial_decrypt,
+          share_signature: share.share_signature,
+          now: nowIso,
+        });
+        collected.push(share);
+      } catch (err) {
+        this.log({
+          kind: "still_pending",
+          call_id: req.call_id,
+          phase: "t1",
+          reason: `fhe_threshold:holder_${h.record.holder_id}_refused:${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
+    // 2. Verify per-share signatures using the DB-stored public
+    // identity (NOT the holder's claimed public identity from the
+    // pool — the DB is the source of truth for "who can sign for
+    // this holder_id"). A share whose signature doesn't verify is
+    // dropped silently from the quorum count.
+    const verified = collected.filter((s) => {
+      const dbHolder = dbByHolderId.get(s.holder_id);
+      if (!dbHolder) return false;
+      return verifyShare(s, dbHolder.public_identity, req.transcript_hash);
+    });
+
+    // 3. Quorum check.
+    const quorum = validateQuorum(verified);
+    if (!quorum.ok) {
+      this.log({
+        kind: "still_pending",
+        call_id: req.call_id,
+        phase: "t1",
+        reason: `fhe_threshold:quorum_unmet:${quorum.reason}`,
+      });
+      return;
+    }
+
+    // 4. Aggregate + release atomically.
+    const aggregated = aggregateShares(verified);
+    const quorumSigsJson = JSON.stringify(
+      verified.map((s) => ({
+        holder_id: s.holder_id,
+        public_identity: dbByHolderId.get(s.holder_id)?.public_identity ?? null,
+        share_signature: s.share_signature,
+        category: s.category,
+      })),
+    );
+
+    const releaseTx = this.db.transaction(() => {
+      // Stamp the call_score onto the resolution row.
+      this.db
+        .prepare(
+          `UPDATE t1_resolutions
+           SET call_score = ?
+           WHERE call_id = ?`,
+        )
+        .run(aggregated.score, req.call_id);
+      setRequestStatus(this.db, req.request_id, "released", nowIso);
+      persistScoreRelease({
+        db: this.db,
+        request_id: req.request_id,
+        call_id: req.call_id,
+        released_score: aggregated.score,
+        quorum_signatures: quorumSigsJson,
+        now: nowIso,
+      });
+    });
+    releaseTx();
+
+    this.log({
+      kind: "anchored_t1",
+      call_id: req.call_id,
+      // Placeholder fields for the legacy log shape — the actual
+      // event the operator cares about is the threshold release,
+      // surfaced via /v1/calls/:id/fhe-transcript.
+      feed: "kraken" as OracleFeed,
+      p1: aggregated.score.toFixed(9),
+      outcome: "win",
+    });
   }
 
   // ── Phase 5 — adapter-dispatched universal payout-vector path ──

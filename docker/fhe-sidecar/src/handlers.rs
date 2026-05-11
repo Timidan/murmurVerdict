@@ -73,9 +73,20 @@ pub fn dispatch(keystore: &Keystore, req: &Request) -> Response {
             resolved_outcome_denominator,
         ),
         Request::DecryptScore { .. } => Response::Error {
-            code: "requires_threshold_z3".to_string(),
+            // Z3 — the sidecar deliberately doesn't decrypt scores in
+            // any mode (mock or production). Decryption is the
+            // committee's job; the sidecar's role ends at returning
+            // the encrypted_score blob. A single-party decrypt path
+            // would defeat operator-blind privacy, so this error code
+            // is permanent. Real Zama KMS integration in v0.5 still
+            // returns this — the threshold ceremony lives outside the
+            // sidecar.
+            code: "decrypt_via_quorum_only".to_string(),
             message:
-                "decryptScore decrypts the bounded score; Z3 wires the threshold quorum"
+                "sidecar does not decrypt scores; the threshold quorum (see \
+                 src/verdict/fhe/threshold.ts) is the only decrypt path. v0 \
+                 ships a single-process mock pool; production swaps for real \
+                 Zama KMS without changing this contract"
                     .to_string(),
         },
     }

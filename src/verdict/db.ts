@@ -464,6 +464,47 @@ function applyMigrations(db: Database.Database): void {
     v = 25;
     set.run("schema_version", String(v));
   }
+
+  if (v < 26) {
+    // Z3 — threshold score release.
+    //
+    // Four additive tables that wire the 5-of-9 threshold-key ceremony
+    // described in docs/operator-blind-privacy-plan.md §3. The committee
+    // decrypts ONLY the bounded score ciphertext (never the prediction)
+    // and the row layout is intentionally narrow so the prediction
+    // ciphertext / plaintext score never have a home here:
+    //
+    //   - fhe_key_holders: the 9-seat registry. `category` enforces the
+    //     plan's seat composition (1 Murmur + 3 attesters + 3 agents +
+    //     2 partners). `public_identity` is the ed25519 pubkey hex used
+    //     to verify partial-decrypt signatures. `enabled`/`retired_at`
+    //     drive holder rotation without breaking historical share rows.
+    //   - fhe_decrypt_requests: one row per call's decrypt ceremony.
+    //     `transcript_hash` binds the same canonical bytes the resolver
+    //     hashed at score time (see canonicalTranscriptBytes() in
+    //     fhe/provider.ts), so a holder can independently verify the
+    //     request matches DB state before signing.  Status machine:
+    //     `pending_shares` → `quorum_reached` → `released`, with
+    //     `expired`/`frozen` as terminal failure states for ops.
+    //   - fhe_decrypt_shares: one row per holder per request. The
+    //     partial_decrypt blob is provider-specific opaque bytes; the
+    //     share_signature is ed25519(request_hash || partial) so the
+    //     transcript on /v1/calls/:id/fhe-transcript is third-party
+    //     auditable.
+    //   - fhe_score_releases: terminal record of a successful quorum
+    //     release. `released_score` is the ONLY plaintext bounded score
+    //     in v0 (also copied to t1_resolutions.call_score on release).
+    //     `quorum_signatures` carries the JSON array of holder_id +
+    //     pubkey + signature so anyone can replay the verification.
+    //
+    // Migration 026 is CREATE-only — no ALTER TABLE, so it's
+    // unconditionally idempotent via `IF NOT EXISTS` and doesn't need
+    // the applyAlterTableAddColumn helper (codex Z2 review fix #4 only
+    // applied to the migration-025 ALTERs).
+    db.exec(MIGRATION_026);
+    v = 26;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -1940,6 +1981,57 @@ const MIGRATION_025_TABLES = `
     UNIQUE (call_id)
   );
   CREATE INDEX IF NOT EXISTS idx_fhe_score_jobs_status ON fhe_score_jobs(status);
+`;
+
+// ─── Migration 026 — Z3 threshold-key ceremony tables ──────────────────────
+//
+// Pure CREATE-only block (no ALTER TABLE), so it is safe to re-run on a
+// half-applied state. The schema is locked-in by docs/operator-blind-
+// privacy-plan.md §3 — see the prose in applyMigrations() above for why
+// each table looks the way it does.
+const MIGRATION_026 = `
+  CREATE TABLE IF NOT EXISTS fhe_key_holders (
+    holder_id           TEXT PRIMARY KEY,
+    category            TEXT NOT NULL CHECK (category IN ('murmur','attester','agent','partner')),
+    display_name        TEXT NOT NULL,
+    public_identity     TEXT NOT NULL,
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    registered_at       TEXT NOT NULL,
+    retired_at          TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS fhe_decrypt_requests (
+    request_id            TEXT PRIMARY KEY,
+    call_id               TEXT NOT NULL REFERENCES submissions(call_id) ON DELETE CASCADE,
+    score_ciphertext_hash TEXT NOT NULL,
+    transcript_hash       TEXT NOT NULL,
+    resolved_outcome_hash TEXT NOT NULL,
+    keyset_id             TEXT NOT NULL,
+    status                TEXT NOT NULL CHECK (status IN ('pending_shares','quorum_reached','released','expired','frozen')),
+    created_at            TEXT NOT NULL,
+    released_at           TEXT,
+    expires_at            TEXT,
+    UNIQUE (call_id, score_ciphertext_hash)
+  );
+  CREATE INDEX IF NOT EXISTS idx_fhe_decrypt_requests_status ON fhe_decrypt_requests(status);
+
+  CREATE TABLE IF NOT EXISTS fhe_decrypt_shares (
+    share_id            TEXT PRIMARY KEY,
+    request_id          TEXT NOT NULL REFERENCES fhe_decrypt_requests(request_id) ON DELETE CASCADE,
+    holder_id           TEXT NOT NULL REFERENCES fhe_key_holders(holder_id),
+    partial_decrypt     BLOB NOT NULL,
+    share_signature     TEXT NOT NULL,
+    submitted_at        TEXT NOT NULL,
+    UNIQUE (request_id, holder_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS fhe_score_releases (
+    request_id          TEXT PRIMARY KEY REFERENCES fhe_decrypt_requests(request_id) ON DELETE CASCADE,
+    call_id             TEXT NOT NULL,
+    released_score      REAL NOT NULL CHECK (released_score >= 0 AND released_score <= 1),
+    quorum_signatures   TEXT NOT NULL,
+    released_at         TEXT NOT NULL
+  );
 `;
 
 const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [

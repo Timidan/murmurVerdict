@@ -109,6 +109,15 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // Z0 — FHE provider boundary. Dynamic-import only when the flag is set
   // so legacy boot never touches the fhe/* modules (codex Z0 review fix).
   let fheProvider: FheProvider | null = null;
+  // Z3 — opt-in single-process mock quorum. The pool is constructed
+  // alongside the provider; the resolver and the routes share the same
+  // instance. The dynamic import keeps the legacy boot path free of any
+  // threshold-related imports — same posture as the provider load.
+  let quorumPool: {
+    holders(): ReadonlyArray<
+      import("../verdict/fhe/threshold.js").ThresholdHolder
+    >;
+  } | null = null;
   if (process.env.MURMUR_FHE_DIRECT_ENABLED === "1") {
     const { loadFheProviderFromEnv } = await import("../verdict/fhe/loader.js");
     fheProvider = loadFheProviderFromEnv(db);
@@ -119,6 +128,16 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     } else {
       console.log(
         "[daemon] MURMUR_FHE_DIRECT_ENABLED=1 but loadFheProviderFromEnv returned null — fhe_direct will reject",
+      );
+    }
+    if (process.env.MURMUR_FHE_THRESHOLD_MODE === "mock_5of9") {
+      const { MockQuorumPool } = await import(
+        "../verdict/fhe/mock-quorum.js"
+      );
+      const nowIso = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+      quorumPool = MockQuorumPool.init(db, nowIso);
+      console.log(
+        `[daemon] mock-quorum pool ready (9 holders; mock_5of9 — NOT production-ready, Z5 prod gate refuses)`,
       );
     }
   }
@@ -132,6 +151,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         ...(ageCtx ? { ageContext: ageCtx } : {}),
         ...(drandCtx ? { drandContext: drandCtx } : {}),
         ...(fheProvider ? { fheProvider } : {}),
+        ...(quorumPool ? { quorumPool } : {}),
         onResolved: async (call_id) => {
           // 1. Fan out to SSE subscribers
           try {
@@ -292,6 +312,22 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // router so `/v1/calls` / `/v1/agents/...` still resolve to the legacy
   // handlers — `/v1/account/*` is a fresh path prefix with no collision.
   app.use(accountRouter({ db }));
+
+  // Z3 — FHE threshold-decrypt routes. Mounted only when the wave's
+  // feature flag is on; the route file is dynamic-imported so legacy
+  // boot stays untouched.
+  if (process.env.MURMUR_FHE_DIRECT_ENABLED === "1") {
+    const { createFheThresholdRouter } = await import(
+      "../verdict/routes/fhe-threshold.js"
+    );
+    app.use(
+      createFheThresholdRouter({
+        db,
+        adminToken:
+          process.env.VERDICT_ADMIN_TOKEN ?? undefined,
+      }),
+    );
+  }
 
   const server: Server = await new Promise((resolve, reject) => {
     const s = app.listen(port, () => resolve(s));

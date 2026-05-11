@@ -86,7 +86,13 @@ export type FheProviderName = "mock" | "zama_local";
 // prod gate (MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1) refuses any non-"production"
 // mode, so the Zama Z0 stub must NOT claim "production" while throwing on
 // every operation. "stub" makes the gate fail-closed on incomplete providers.
-export type FheThresholdMode = "mock" | "stub" | "production";
+//
+// Z3 — added "mock_quorum" for the single-process 5-of-9 mock holder pool
+// (see fhe/mock-quorum.ts). The protocol data flow is the same as real
+// Zama KMS quorum, but the holders all live in the daemon process so it
+// is structurally not a real threshold ceremony. Z5's prod gate must
+// refuse both "mock" AND "mock_quorum" — only "production" passes.
+export type FheThresholdMode = "mock" | "mock_quorum" | "stub" | "production";
 
 /**
  * Inputs for the homomorphic score computation.

@@ -10,6 +10,7 @@ import {
   type FheProvider,
   type FheScoreEncryptedArgs,
   type FheScoreEncryptedResult,
+  type FheThresholdMode,
 } from "./provider.js";
 
 /**
@@ -71,7 +72,14 @@ interface ScoreBlob {
 
 export class MockFheProvider implements FheProvider {
   readonly name = "mock" as const;
-  readonly threshold_mode = "mock" as const;
+  /**
+   * Z3 — when the daemon opts into `MURMUR_FHE_THRESHOLD_MODE=mock_5of9`
+   * AND the mock-provider is the scoring backend, we bump the reported
+   * threshold mode to `"mock_quorum"`. Without the env opt-in it stays
+   * `"mock"` (no quorum at all — the daemon mock decrypts in-process,
+   * legacy Z0/Z1/Z2 posture). Z5's prod gate refuses both.
+   */
+  readonly threshold_mode: FheThresholdMode;
 
   private readonly db: Database.Database;
   private readonly supportedLens: readonly number[];
@@ -82,6 +90,10 @@ export class MockFheProvider implements FheProvider {
     this.db = opts.db;
     this.supportedLens = opts.supportedVectorLens ?? [2, 32];
     this.seed = opts.seed ?? MOCK_PUBLIC_KEY_SEED;
+    this.threshold_mode =
+      process.env.MURMUR_FHE_THRESHOLD_MODE === "mock_5of9"
+        ? "mock_quorum"
+        : "mock";
   }
 
   async getActivePublicKey(): Promise<FheActiveKey> {
