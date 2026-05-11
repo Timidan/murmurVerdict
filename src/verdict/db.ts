@@ -453,7 +453,14 @@ function applyMigrations(db: Database.Database): void {
     //
     // Pure additive — legacy_plaintext and committed paths read the
     // unchanged t1_resolutions columns and never touch fhe_score_jobs.
-    db.exec(MIGRATION_025);
+    // Codex Z2 fix — table create + index are idempotent (`IF NOT EXISTS`),
+    // but ALTER TABLE ADD COLUMN is NOT in SQLite. Apply the two ALTERs
+    // through the existence-guarded helper so a partial-completion rerun
+    // doesn't abort with "duplicate column name".
+    db.exec(MIGRATION_025_TABLES);
+    for (const { table, column, sql } of MIGRATION_025_ALTERS) {
+      applyAlterTableAddColumn(db, table, column, sql);
+    }
     v = 25;
     set.run("schema_version", String(v));
   }
@@ -1909,7 +1916,14 @@ const MIGRATION_024 = `
 //
 // score_ciphertext is BLOB (raw bytes from the provider). score_ciphertext_hash
 // is sha256 hex; transcript_hash is the provider-attested binding hash.
-const MIGRATION_025 = `
+//
+// Codex Z2 review FAIL #4 — `ALTER TABLE ... ADD COLUMN` is NOT idempotent in
+// SQLite: a rerun (e.g. after a crash between the ALTER and the schema_version
+// bump, or a manual fix) hits "duplicate column name" and aborts the
+// migration. Splitting MIGRATION_025 into the idempotent CREATE TABLE block
+// (still safe to re-run) and the two ALTERs which apply applyAlterTable() —
+// a helper that no-ops when the target column already exists.
+const MIGRATION_025_TABLES = `
   CREATE TABLE IF NOT EXISTS fhe_score_jobs (
     call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
     status               TEXT NOT NULL CHECK (status IN ('queued','running','scored_pending_decrypt','failed')),
@@ -1926,10 +1940,37 @@ const MIGRATION_025 = `
     UNIQUE (call_id)
   );
   CREATE INDEX IF NOT EXISTS idx_fhe_score_jobs_status ON fhe_score_jobs(status);
-
-  ALTER TABLE t1_resolutions ADD COLUMN score_ciphertext_hash TEXT;
-  ALTER TABLE t1_resolutions ADD COLUMN fhe_circuit_id TEXT REFERENCES fhe_circuits(circuit_id);
 `;
+
+const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
+  {
+    table: "t1_resolutions",
+    column: "score_ciphertext_hash",
+    sql: "ALTER TABLE t1_resolutions ADD COLUMN score_ciphertext_hash TEXT",
+  },
+  {
+    table: "t1_resolutions",
+    column: "fhe_circuit_id",
+    sql: "ALTER TABLE t1_resolutions ADD COLUMN fhe_circuit_id TEXT REFERENCES fhe_circuits(circuit_id)",
+  },
+];
+
+/**
+ * Apply an ALTER TABLE ADD COLUMN only if the column doesn't already exist.
+ * SQLite's PRAGMA table_info() is the canonical existence check. Used by
+ * Migration 025 (codex Z2 review FAIL #4) so rerunning the migration after a
+ * crash between the ALTER and the schema_version bump is safe.
+ */
+function applyAlterTableAddColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  sql: string,
+): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === column)) return;
+  db.exec(sql);
+}
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
 //

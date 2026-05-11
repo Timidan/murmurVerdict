@@ -40,7 +40,16 @@ export type SidecarRequest =
   | { op: "get_circuit"; name: string; vector_max_len: number }
   | {
       op: "score_encrypted";
+      // Codex Z2 review fixes #6 + #7 — extended request shape so the
+      // sidecar can compute a transcript hash that binds (call_id,
+      // keyset_id, circuit_id, score_ciphertext_hash, resolved_outcome_hash,
+      // score_range). The Rust side (docker/fhe-sidecar/src/protocol.rs)
+      // mirrors this exactly; cross-language byte equality of the
+      // canonical transcript bytes is the contract.
+      call_id: string;
+      keyset_id: string;
       circuit_id: string;
+      ciphertext_format: string;
       encrypted_predicted_outcome: number[];
       resolved_outcome_numerators: string[];
       resolved_outcome_denominator: string;
@@ -71,6 +80,11 @@ export type SidecarResponse =
       kind: "score_ciphertext";
       encrypted_score: number[];
       transcript_hash: string;
+      // Codex Z2 fix #7 — sidecar reports the score ciphertext hash so
+      // the daemon doesn't have to recompute it (cheap on TS side too,
+      // but having sidecar emit it lets dispute replay verify byte-for-byte
+      // that the same ciphertext was hashed on both sides).
+      score_ciphertext_hash: string;
     }
   | { kind: "score"; value: number }
   | { kind: "error"; code: string; message: string };

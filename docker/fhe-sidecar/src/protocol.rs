@@ -56,8 +56,16 @@ pub enum Request {
     /// `resolved_outcome_numerators` and `resolved_outcome_denominator`
     /// are decimal strings to preserve full precision across the Node
     /// (BigInt) ↔ Rust (u128 / BigUint) boundary.
+    /// Codex Z2 review fixes #6 + #7 — request now carries the full
+    /// identity of the score computation so the transcript hash can
+    /// bind (call_id, keyset_id, circuit_id, score_ciphertext_hash,
+    /// resolved_outcome_hash, score_range). Cross-language byte equality
+    /// with the TS canonicalTranscriptBytes() is the contract.
     ScoreEncrypted {
+        call_id: String,
+        keyset_id: String,
         circuit_id: String,
+        ciphertext_format: String,
         encrypted_predicted_outcome: Vec<u8>,
         resolved_outcome_numerators: Vec<String>,
         resolved_outcome_denominator: String,
@@ -100,9 +108,16 @@ pub enum Response {
     /// Reply to [`Request::ScoreEncrypted`].
     ScoreCiphertext {
         encrypted_score: Vec<u8>,
-        /// `sha256` over the canonical (circuit_id || ciphertext_hash
-        /// || resolved_outcome) transcript. Replayable for disputes.
+        /// `sha256` of the canonical transcript bytes per
+        /// MURMUR_FHE_SCORE_TRANSCRIPT_V1 (see TS provider.ts).
+        /// Binds: { domain, call_id, circuit_id, keyset_id,
+        ///   score_ciphertext_hash, resolved_outcome_hash, score_range }.
+        /// Daemon mock and sidecar produce identical bytes for the same
+        /// input — cross-language equality is the dispute-replay contract.
         transcript_hash: String,
+        /// `sha256(encrypted_score)` lowercase hex. Daemon also
+        /// computes this independently and asserts they match.
+        score_ciphertext_hash: String,
     },
 
     /// Reply to [`Request::DecryptScore`].

@@ -50,6 +50,10 @@
  * hard reject at Z1.
  */
 export interface FheCircuit {
+  /** Codex Z2 fix #7 — the row PK from fhe_circuits. Binding the
+   *  circuit by ID (not opaque handle) means daemon mock + Rust
+   *  sidecar can compute identical transcript hashes. */
+  readonly circuit_id: string;
   /** Matches `fhe_circuits.name`. */
   readonly name: "half_l1_distance_binary" | "half_l1_distance_n";
   /** Opaque provider-specific handle (e.g. circuit hash, file path). */
@@ -102,17 +106,98 @@ export interface FheScoreEncryptedArgs {
   readonly encrypted_predicted_outcome: Uint8Array;
   readonly resolved_outcome_numerators: bigint[];
   readonly resolved_outcome_denominator: bigint;
+  // Codex Z2 review fix #6 — `keyset_id` + `ciphertext_format` are required
+  // for real Zama bytes. They're forward-compat for Z2-proper's
+  // `zama_tfhe_v1` path; today's mock provider tolerates them as metadata.
+  // The transcript hash (FAIL #7 fix below) ALSO binds them, so caller +
+  // provider must agree on the values used.
+  readonly keyset_id: string;
+  readonly ciphertext_format: string;
+  // Codex Z2 review fix #7 — `call_id` so the transcript hash can bind
+  // the exact call this score is for. Without it, an attacker could
+  // splice a score from call A onto call B's resolution.
+  readonly call_id: string;
 }
 
 export interface FheScoreEncryptedResult {
   /** Encrypted score blob. Decrypts to a bounded value in [0, 1]. */
   readonly encrypted_score: Uint8Array;
   /**
-   * Hash of the canonical transcript binding (circuit handle,
-   * ciphertext hash, resolved outcome). Used by the dispute path to
-   * verify a recomputation against the same inputs.
+   * Hash of the canonical transcript binding (codex Z2 review fix #7).
+   * Both daemon-side providers and the Rust sidecar MUST hash the same
+   * canonical bytes, per `canonicalTranscriptBytes()` in this module.
+   * Binds: { domain, call_id, keyset_id, circuit_id, score_ciphertext_hash,
+   * resolved_outcome_hash, score_range }.
    */
   readonly transcript_hash: string;
+  /** sha256 hex of `encrypted_score` bytes — convenience for caller. */
+  readonly score_ciphertext_hash: string;
+}
+
+/**
+ * The bounded range of a decrypted FHE score. v0 is always [0, 1] (the
+ * halfL1Distance complement), but Z3+ adapters might emit other ranges
+ * (e.g. log-loss scaled to [-1, 0]). Carrying it in the transcript hash
+ * means dispute replay can verify the bound the score was computed under.
+ */
+export interface FheScoreRange {
+  readonly min: number;
+  readonly max: number;
+}
+
+/**
+ * Compute the canonical UTF-8 JSON bytes that both the daemon-side mock
+ * and the Rust sidecar MUST hash to produce identical transcript hashes
+ * (codex Z2 review fix #7). The shape is sorted-key JSON; no whitespace.
+ * sha256 over the result is the `transcript_hash` returned by
+ * `scoreEncrypted`.
+ *
+ * The fields are NOT optional. Cross-language byte equality requires:
+ *   - exact field order (alphabetical)
+ *   - hex hashes lowercase
+ *   - numerators/denominators as decimal strings (bigint-safe)
+ *   - score_range as `{max,min}` (alphabetical)
+ *
+ * Any future change to the canonical shape needs a domain bump
+ * (TRANSCRIPT_DOMAIN_V1 → V2) so old transcripts don't silently re-verify.
+ */
+export const TRANSCRIPT_DOMAIN_V1 = "MURMUR_FHE_SCORE_TRANSCRIPT_V1" as const;
+
+export function canonicalTranscriptBytes(input: {
+  call_id: string;
+  keyset_id: string;
+  circuit_id: string;
+  score_ciphertext_hash: string;
+  resolved_outcome_hash: string;
+  score_range: FheScoreRange;
+}): Uint8Array {
+  // Sorted keys for byte equality across implementations.
+  const obj = {
+    call_id: input.call_id,
+    circuit_id: input.circuit_id,
+    domain: TRANSCRIPT_DOMAIN_V1,
+    keyset_id: input.keyset_id,
+    resolved_outcome_hash: input.resolved_outcome_hash.toLowerCase(),
+    score_ciphertext_hash: input.score_ciphertext_hash.toLowerCase(),
+    score_range: { max: input.score_range.max, min: input.score_range.min },
+  };
+  return new TextEncoder().encode(JSON.stringify(obj));
+}
+
+/**
+ * Hash a canonical resolved outcome to a stable sha256 hex. Both sides
+ * must hash this exact shape so the transcript binding survives the
+ * Rust ↔ TS boundary.
+ */
+export function canonicalResolvedOutcomeBytes(
+  numerators: readonly bigint[],
+  denominator: bigint,
+): Uint8Array {
+  const obj = {
+    denominator: denominator.toString(),
+    numerators: numerators.map((n) => n.toString()),
+  };
+  return new TextEncoder().encode(JSON.stringify(obj));
 }
 
 export interface FheDecryptScoreArgs {

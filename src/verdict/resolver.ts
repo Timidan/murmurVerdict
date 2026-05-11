@@ -761,6 +761,7 @@ export class Resolver {
     try {
       scoreResult = await provider.scoreEncrypted({
         circuit: {
+          circuit_id: circuitRow.circuit_id,
           name: circuitRow.name,
           handle: circuitRow.handle,
           vector_max_len: circuitRow.vector_max_len,
@@ -769,6 +770,12 @@ export class Resolver {
         encrypted_predicted_outcome: ctRow.ciphertext_blob,
         resolved_outcome_numerators: resolvedOutcome.payoutNumerators,
         resolved_outcome_denominator: resolvedOutcome.payoutDenominator,
+        // Codex Z2 fixes #6 + #7 — pass keyset, ciphertext format,
+        // and call_id so the provider can produce a transcript hash
+        // that binds the full identity of the score computation.
+        keyset_id: ctRow.keyset_id,
+        ciphertext_format: ctRow.ciphertext_format,
+        call_id: args.ctx.call_id,
       });
     } catch (err) {
       // FheUnavailableError → transient retry. Any other throw is also

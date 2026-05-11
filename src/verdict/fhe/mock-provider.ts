@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
+  canonicalResolvedOutcomeBytes,
+  canonicalTranscriptBytes,
   type FheActiveKey,
   type FheCircuit,
   type FheDecryptScoreArgs,
@@ -155,6 +157,7 @@ export class MockFheProvider implements FheProvider {
         handle,
       });
     return {
+      circuit_id: `circ_mock_${handle.slice(0, 12)}`,
       name,
       handle,
       vector_max_len: vectorLen,
@@ -208,22 +211,38 @@ export class MockFheProvider implements FheProvider {
       score_x1e9,
     };
     const encrypted_score = Buffer.from(JSON.stringify(blob), "utf8");
-    const transcript_hash = createHash("sha256")
-      .update(args.circuit.handle)
-      .update("\n")
-      .update(
-        createHash("sha256")
-          .update(args.encrypted_predicted_outcome)
-          .digest("hex"),
-      )
-      .update("\n")
-      .update(
-        args.resolved_outcome_numerators.map((n) => n.toString()).join(","),
-      )
-      .update("/")
-      .update(args.resolved_outcome_denominator.toString())
+    // Codex Z2 review fix #7 — canonical transcript bytes per the
+    // cross-language spec in provider.ts. Hashes:
+    //   { domain, call_id, circuit_id, keyset_id,
+    //     score_ciphertext_hash, resolved_outcome_hash, score_range }
+    // Both the daemon mock AND the Rust sidecar must produce the same
+    // bytes. The previous transcript bound only (circuit_handle,
+    // ciphertext_hash, raw outcome) which made cross-side verification
+    // impossible and let an attacker splice scores between calls.
+    const score_ciphertext_hash = createHash("sha256")
+      .update(encrypted_score)
       .digest("hex");
-    return { encrypted_score, transcript_hash };
+    const resolved_outcome_hash = createHash("sha256")
+      .update(
+        canonicalResolvedOutcomeBytes(
+          args.resolved_outcome_numerators,
+          args.resolved_outcome_denominator,
+        ),
+      )
+      .digest("hex");
+    const transcript_hash = createHash("sha256")
+      .update(
+        canonicalTranscriptBytes({
+          call_id: args.call_id,
+          keyset_id: args.keyset_id,
+          circuit_id: args.circuit.circuit_id,
+          score_ciphertext_hash,
+          resolved_outcome_hash,
+          score_range: { min: 0, max: 1 },
+        }),
+      )
+      .digest("hex");
+    return { encrypted_score, transcript_hash, score_ciphertext_hash };
   }
 
   async decryptScore(args: FheDecryptScoreArgs): Promise<FheDecryptScoreResult> {

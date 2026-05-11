@@ -163,6 +163,7 @@ export class ZamaLocalFheProvider implements FheProvider {
       );
     }
     return {
+      circuit_id: row.circuit_id,
       name,
       handle: row.handle,
       vector_max_len: vectorLen,
@@ -206,7 +207,10 @@ export class ZamaLocalFheProvider implements FheProvider {
     }
     const req: SidecarRequest = {
       op: "score_encrypted",
+      call_id: args.call_id,
+      keyset_id: args.keyset_id,
       circuit_id: row.circuit_id,
+      ciphertext_format: args.ciphertext_format,
       encrypted_predicted_outcome: bytesToWire(args.encrypted_predicted_outcome),
       resolved_outcome_numerators: args.resolved_outcome_numerators.map((n) =>
         n.toString(),
@@ -238,6 +242,7 @@ export class ZamaLocalFheProvider implements FheProvider {
     return {
       encrypted_score: wireToBytes(resp.encrypted_score),
       transcript_hash: resp.transcript_hash,
+      score_ciphertext_hash: resp.score_ciphertext_hash,
     };
   }
 

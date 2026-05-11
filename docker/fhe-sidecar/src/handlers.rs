@@ -55,13 +55,19 @@ pub fn dispatch(keystore: &Keystore, req: &Request) -> Response {
             vector_max_len,
         } => handle_get_circuit(keystore, name, *vector_max_len),
         Request::ScoreEncrypted {
+            call_id,
+            keyset_id,
             circuit_id,
+            ciphertext_format,
             encrypted_predicted_outcome,
             resolved_outcome_numerators,
             resolved_outcome_denominator,
         } => handle_score_encrypted(
             keystore,
+            call_id,
+            keyset_id,
             circuit_id,
+            ciphertext_format,
             encrypted_predicted_outcome,
             resolved_outcome_numerators,
             resolved_outcome_denominator,
@@ -140,7 +146,10 @@ struct MockScoreBlob {
 
 fn handle_score_encrypted(
     _keystore: &Keystore,
+    call_id: &str,
+    keyset_id: &str,
     circuit_id: &str,
+    _ciphertext_format: &str,
     encrypted_predicted_outcome: &[u8],
     resolved_outcome_numerators: &[String],
     resolved_outcome_denominator: &str,
@@ -189,8 +198,12 @@ fn handle_score_encrypted(
 
     if is_mock_json {
         score_mock_json(
+            call_id,
+            keyset_id,
             circuit_id,
             encrypted_predicted_outcome,
+            resolved_outcome_numerators,
+            resolved_outcome_denominator,
             &resolved_num,
             denominator,
         )
@@ -209,8 +222,12 @@ fn handle_score_encrypted(
 }
 
 fn score_mock_json(
+    call_id: &str,
+    keyset_id: &str,
     circuit_id: &str,
     encrypted_predicted_outcome: &[u8],
+    resolved_outcome_numerators_raw: &[String],
+    resolved_outcome_denominator_raw: &str,
     resolved_num: &[i128],
     resolved_den: i128,
 ) -> Response {
@@ -305,33 +322,91 @@ fn score_mock_json(
         }
     };
 
-    // Transcript hash: sha256( circuit_id || '\n' || sha256(ciphertext) ||
-    //                          '\n' || join(',', numerators) || '/' || denominator ).
-    // Identical to the daemon-side mock-provider transcript so a dispute
-    // replay produces byte-identical bytes regardless of which side
-    // recomputed.
-    let ciphertext_hash_hex = hex_sha256(encrypted_predicted_outcome);
-    let mut hasher = Sha256::new();
-    hasher.update(circuit_id.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(ciphertext_hash_hex.as_bytes());
-    hasher.update(b"\n");
-    // resolved_num was rebuilt from strings; format them back so the
-    // hash matches the daemon's pre-encoded resolved numerators.
-    let joined_num: String = resolved_num
-        .iter()
-        .map(|n| n.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    hasher.update(joined_num.as_bytes());
-    hasher.update(b"/");
-    hasher.update(resolved_den.to_string().as_bytes());
-    let transcript_hash = hex_string(&hasher.finalize());
+    // Codex Z2 fix #7 — canonical transcript bytes per
+    // MURMUR_FHE_SCORE_TRANSCRIPT_V1 (see TS provider.ts). The TS side
+    // builds an object literal with keys in this exact insertion order
+    // and JSON.stringifies it; Rust must emit the same byte sequence.
+    // Cross-language equality is the dispute-replay contract.
+    //
+    // Underlying values:
+    //   - resolved_outcome_hash = sha256(JSON{"denominator":"X","numerators":["X",...]})
+    //     Uses the raw incoming strings so we don't drift on i128->String
+    //     formatting differences across languages.
+    //   - score_ciphertext_hash = sha256(encrypted_score) lowercase hex
+    //   - score_range = {min:0, max:1} (halfL1 complement bound)
+    let score_ciphertext_hash = hex_sha256(&encrypted_score);
+
+    let resolved_outcome_json = canonical_resolved_outcome_json(
+        resolved_outcome_numerators_raw,
+        resolved_outcome_denominator_raw,
+    );
+    let resolved_outcome_hash = hex_sha256(resolved_outcome_json.as_bytes());
+
+    // Build the canonical transcript JSON manually. We avoid serde here
+    // because the field order is part of the contract and we don't want
+    // serde to optimize anything that could reorder keys.
+    let transcript_json = format!(
+        "{{\
+\"call_id\":{call_id_q},\
+\"circuit_id\":{circuit_id_q},\
+\"domain\":\"MURMUR_FHE_SCORE_TRANSCRIPT_V1\",\
+\"keyset_id\":{keyset_id_q},\
+\"resolved_outcome_hash\":{roh_q},\
+\"score_ciphertext_hash\":{sch_q},\
+\"score_range\":{{\"max\":1,\"min\":0}}\
+}}",
+        call_id_q = json_quote(call_id),
+        circuit_id_q = json_quote(circuit_id),
+        keyset_id_q = json_quote(keyset_id),
+        roh_q = json_quote(&resolved_outcome_hash),
+        sch_q = json_quote(&score_ciphertext_hash),
+    );
+    let transcript_hash = hex_sha256(transcript_json.as_bytes());
+    let _ = resolved_num; // resolved_den/resolved_num used only by score math; keep
+    let _ = resolved_den; // signature changes minimal — bind into a no-op so warnings don't trigger.
 
     Response::ScoreCiphertext {
         encrypted_score,
         transcript_hash,
+        score_ciphertext_hash,
     }
+}
+
+/// Canonical resolved-outcome JSON used in the transcript hash. Must
+/// produce byte-identical output to `canonicalResolvedOutcomeBytes()` in
+/// the TS provider.ts. JSON.stringify-equivalent: keys in alphabetical
+/// order, no whitespace, numerators as a JSON array of decimal strings.
+fn canonical_resolved_outcome_json(numerators: &[String], denominator: &str) -> String {
+    let mut s = String::with_capacity(64);
+    s.push_str("{\"denominator\":");
+    s.push_str(&json_quote(denominator));
+    s.push_str(",\"numerators\":[");
+    for (i, n) in numerators.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&json_quote(n));
+    }
+    s.push_str("]}");
+    s
+}
+
+/// Minimal JSON string quoter. The fields we emit are ASCII (uuids, hex,
+/// decimal digits) so we only need to escape `"` and `\`. If a future
+/// caller passes arbitrary content here, expand the escape set.
+fn json_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
