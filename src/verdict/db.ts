@@ -369,6 +369,31 @@ function applyMigrations(db: Database.Database): void {
     v = 21;
     set.run("schema_version", String(v));
   }
+
+  // Migration 022 is intentionally skipped — the next-integrations plan
+  // reserves it for the optional family-leaderboard cache landing in
+  // Phase 10. FHE additive tables start at 023 to avoid collision.
+
+  if (v < 23) {
+    // Z0 — operator-blind privacy foundation.
+    //
+    // Two additive tables wire the FHE provider boundary without
+    // touching any existing privacy path:
+    //   - fhe_keysets:  public-key metadata per provider/keyset, with
+    //                   lifecycle status. The submission path (Z1) FKs
+    //                   into `keyset_id`. The committee/operator never
+    //                   stores plaintext private keys here.
+    //   - fhe_circuits: compiled circuit handles per (provider, name,
+    //                   vector_max_len) so the resolver (Z2) knows
+    //                   which artifact to call when scoring.
+    //
+    // Pure additive: no backfill, no rebuild, no FK impact on
+    // submissions/agents/markets. Legacy_plaintext and committed
+    // agents are unaffected.
+    db.exec(MIGRATION_023);
+    v = 23;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -1704,6 +1729,69 @@ const MIGRATION_020 = `
 
   DROP INDEX IF EXISTS idx_receipts_call_kind;
   DROP TABLE IF EXISTS receipts;
+`;
+
+// ─── Migration 023 — Z0 FHE foundation (additive) ───────────────────────────
+//
+// Two tables, no backfill. Both are independent of submissions/agents
+// so legacy_plaintext + committed paths are unaffected.
+//
+// fhe_keysets
+//   - keyset_id: opaque PK; the submission path FKs against this in Z1.
+//   - provider: provider that owns the secret share (today: mock,
+//     zama_local; future: zama_kms, fhenix_cofhe). CHECK constraint
+//     stays in step with `FheProviderName` in fhe/provider.ts.
+//   - public_key_blob: provider-specific public-key serialization.
+//     SQLite BLOB; size is provider-defined.
+//   - public_key_hash: hex sha256(public_key_blob). Bound into the
+//     commit preimage so an agent's submission pins which keyset it
+//     was encrypted to (rotation safety).
+//   - status: pending → active → suspended → revoked. Only `active`
+//     keysets accept new submissions; older statuses are honored for
+//     pending/in-flight calls.
+//   - vector_max_len: max payout-vector length the keyset's compiled
+//     circuits support. Z1's submission validator rejects vectors
+//     longer than this.
+//
+// fhe_circuits
+//   - circuit_id: opaque PK.
+//   - name: 'half_l1_distance_binary' (length 2) or 'half_l1_distance_n'
+//     (variable length up to vector_max_len). CHECK constraint matches
+//     `FheCircuit["name"]` in fhe/provider.ts.
+//   - (provider, name, vector_max_len) is a UNIQUE tuple — the resolver
+//     uses it as the lookup key when dispatching to scoreEncrypted.
+//   - handle: provider-specific compiled-artifact identifier (e.g.
+//     circuit hash, file path on the sidecar).
+//
+// Indexes: status + provider on keysets for the active-keyset lookup;
+// name on circuits for the resolver's dispatch.
+const MIGRATION_023 = `
+  CREATE TABLE IF NOT EXISTS fhe_keysets (
+    keyset_id           TEXT PRIMARY KEY,
+    provider            TEXT NOT NULL CHECK (provider IN ('mock','zama_local','zama_kms','fhenix_cofhe')),
+    public_key_blob     BLOB NOT NULL,
+    public_key_hash     TEXT NOT NULL,
+    status              TEXT NOT NULL CHECK (status IN ('pending','active','suspended','revoked')),
+    vector_max_len      INTEGER NOT NULL,
+    created_at          TEXT NOT NULL,
+    activated_at        TEXT,
+    suspended_at        TEXT,
+    notes               TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_fhe_keysets_status ON fhe_keysets(status);
+  CREATE INDEX IF NOT EXISTS idx_fhe_keysets_provider ON fhe_keysets(provider);
+
+  CREATE TABLE IF NOT EXISTS fhe_circuits (
+    circuit_id          TEXT PRIMARY KEY,
+    name                TEXT NOT NULL CHECK (name IN ('half_l1_distance_binary','half_l1_distance_n')),
+    description         TEXT,
+    vector_max_len      INTEGER NOT NULL,
+    compiled_at         TEXT NOT NULL,
+    provider            TEXT NOT NULL CHECK (provider IN ('mock','zama_local','zama_kms','fhenix_cofhe')),
+    handle              TEXT NOT NULL,
+    UNIQUE (provider, name, vector_max_len)
+  );
+  CREATE INDEX IF NOT EXISTS idx_fhe_circuits_name ON fhe_circuits(name);
 `;
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────

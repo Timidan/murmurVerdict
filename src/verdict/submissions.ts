@@ -55,10 +55,27 @@ import type { MarketRow } from "./db.js";
  * privacy downgrade vector. v0.3 will extend this set with 'fhevm' (or
  * similar) only when the daemon has the corresponding code path; until
  * then, any string outside this set is rejected with schema_invalid.
+ *
+ * Z0 — operator-blind privacy foundation: when MURMUR_FHE_DIRECT_ENABLED=1,
+ * we extend the set with 'fhe_direct' so the schema validator stops
+ * fail-closing on it. The submission path itself still rejects with a
+ * clear `z1_not_implemented` error — the encrypted submission code path
+ * (`fhe.encrypted_predicted_outcome`, ciphertext binding, keyset FK)
+ * lands in Z1. The flag is checked at module load via a closure so
+ * test code that mutates process.env post-import doesn't see stale
+ * state if it re-imports; the export is `readonly` to discourage
+ * mutation from anywhere else.
  */
-const ACCEPTED_PRIVACY_MODES = new Set(["committed", "legacy_plaintext"] as const);
+export const ACCEPTED_PRIVACY_MODES: ReadonlySet<string> = (() => {
+  const base = new Set<string>(["committed", "legacy_plaintext"]);
+  if (process.env.MURMUR_FHE_DIRECT_ENABLED === "1") {
+    base.add("fhe_direct");
+  }
+  return base;
+})();
 import { encryptEnvelope, type AgeContext } from "./age-envelope.js";
 import { encryptToDrandRound, type DrandContext } from "./drand-envelope.js";
+import type { FheProvider } from "./fhe/provider.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -92,6 +109,16 @@ export interface SubmissionContext {
   drandContext?: DrandContext;
   /** Optional event bus for SSE fan-out. Emit on accept; no-op when undefined. */
   events?: VerdictEventBus;
+  /**
+   * Z0 — FHE provider for operator-blind privacy. Loaded once at daemon
+   * boot from MURMUR_FHE_PROVIDER and shared across submissions and the
+   * resolver. NULL when MURMUR_FHE_DIRECT_ENABLED is unset; in that case
+   * `fhe_direct` submissions are rejected by the privacy gate above and
+   * legacy paths are unaffected. The submission path itself still
+   * rejects `fhe_direct` with `z1_not_implemented` for now — Z1 fills
+   * in the encrypted-submission code.
+   */
+  fheProvider?: FheProvider | null;
 }
 
 export interface AuthIdentity {
@@ -477,12 +504,27 @@ export async function submitCall(args: {
   // the Codex H2 silent-downgrade vector.
   if (
     submission.privacy_mode !== undefined &&
-    !ACCEPTED_PRIVACY_MODES.has(submission.privacy_mode as never)
+    !ACCEPTED_PRIVACY_MODES.has(submission.privacy_mode)
   ) {
     throw new VerdictError(
       `unknown privacy_mode '${submission.privacy_mode}' — must be one of: ${[...ACCEPTED_PRIVACY_MODES].join(", ")}`,
       ERROR_CODES.schema_invalid,
       400,
+    );
+  }
+
+  // Z0 — fhe_direct is structurally accepted (so a 4xx upstream of the
+  // submission path doesn't leak whether the operator has the flag on)
+  // but the submission CODE PATH is owned by Z1. Return a precise,
+  // documented error so callers don't mistake this for a transient
+  // failure or silently degrade to legacy_plaintext. This branch goes
+  // away when Z1 lands `src/verdict/fhe/submission.ts`.
+  if (submission.privacy_mode === "fhe_direct") {
+    throw new VerdictError(
+      "fhe_direct submission path lands in Z1 (operator-blind submission); current daemon accepts the privacy_mode string but does not yet store encrypted predictions",
+      ERROR_CODES.schema_invalid,
+      501,
+      { z1_not_implemented: true },
     );
   }
 

@@ -512,6 +512,30 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     // network probe of the chain's latest beacon. We don't fail
     // /readyz on drand UNREACHABLE (that's an opt-in upgrade), but
     // we DO surface the state so operators see the degradation.
+    //
+    // Z0 — extend with an `fhe` sub-block so operators can tell at a
+    // glance whether the operator-blind path is wired. `provider`,
+    // `active_keyset_id`, and `threshold_mode` mirror the /v1/meta
+    // shape so SDKs read both surfaces consistently. We do NOT fail
+    // /readyz on a `mock` threshold_mode here — that gate ships in
+    // Z5 (MURMUR_PROD_REQUIRE_OPERATOR_BLIND).
+    const fheEnabled = process.env.MURMUR_FHE_DIRECT_ENABLED === "1";
+    const fheProv = deps.ctx.fheProvider ?? null;
+    let fheActiveKeysetId: string | null = null;
+    if (fheProv) {
+      try {
+        const row = deps.db
+          .prepare(
+            `SELECT keyset_id FROM fhe_keysets
+             WHERE provider = ? AND status = 'active'
+             ORDER BY activated_at DESC LIMIT 1`,
+          )
+          .get(fheProv.name) as { keyset_id: string } | undefined;
+        if (row) fheActiveKeysetId = row.keyset_id;
+      } catch {
+        // Pre-migration-023 race; surface as no active keyset.
+      }
+    }
     const privacy = {
       committed_mode_open: process.env.MURMUR_PRIVACY_COMMITTED_OPEN === "1",
       age: {
@@ -520,6 +544,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         daemon_key_id: deps.ctx.ageContext?.daemon_key_id ?? null,
       },
       drand: await probeDrandHealth(deps.ctx.drandContext),
+      fhe_direct_enabled: fheEnabled,
+      provider: fheProv?.name ?? null,
+      active_keyset_id: fheActiveKeysetId,
+      threshold_mode: fheProv?.threshold_mode ?? null,
     };
 
     const ready = dbOk && (oracleStatus === "ok" || oracleStatus === "disabled");
@@ -533,12 +561,43 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   }));
 
   router.get("/v1/meta", (_req, res) => {
+    // Z0 — surface FHE wiring without disclosing anything secret. The
+    // `privacy` block is additive; SDK clients reading existing fields
+    // (schema_version, strategy_tags, assets, verified_volume_24h)
+    // stay untouched. `active_keyset_id` is the row Z1 will FK against;
+    // it's null when the flag is off OR when the chosen provider has
+    // no keyset in `status='active'` yet (zama_local stub seeds in
+    // `pending`).
+    const fheEnabled = process.env.MURMUR_FHE_DIRECT_ENABLED === "1";
+    const fheProv = deps.ctx.fheProvider ?? null;
+    let activeKeysetId: string | null = null;
+    if (fheProv) {
+      try {
+        const row = deps.db
+          .prepare(
+            `SELECT keyset_id FROM fhe_keysets
+             WHERE provider = ? AND status = 'active'
+             ORDER BY activated_at DESC LIMIT 1`,
+          )
+          .get(fheProv.name) as { keyset_id: string } | undefined;
+        if (row) activeKeysetId = row.keyset_id;
+      } catch {
+        // fhe_keysets exists post-migration 023; defensive against
+        // older DBs surfaced via /v1/meta during boot races.
+      }
+    }
     res.json({
       schema_version: SCHEMA_VERSION,
       scoring_version: SCORING_VERSION,
       strategy_tags: REGISTERED_STRATEGY_TAGS,
       assets: ["base:ETH:USD"],
       verified_volume_24h: get24hVerifiedVolume(deps.db),
+      privacy: {
+        fhe_direct_enabled: fheEnabled,
+        provider: fheProv?.name ?? null,
+        active_keyset_id: activeKeysetId,
+        threshold_mode: fheProv?.threshold_mode ?? null,
+      },
     });
   });
 

@@ -19,6 +19,7 @@ import {
 } from "../benchmark/agents.js";
 import { loadAgeContextFromEnv } from "../verdict/age-envelope.js";
 import { loadDrandContextFromEnv } from "../verdict/drand-envelope.js";
+import { isFheDirectEnabled, loadFheProviderFromEnv } from "../verdict/fhe/loader.js";
 import { TelegramNotifier } from "../integrations/telegram.js";
 import { makeProductionVerifier } from "../integrations/postVerifiers.js";
 import { mkdirSync } from "node:fs";
@@ -97,6 +98,24 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   } else {
     console.log(
       "[daemon] drand disabled (set MURMUR_DRAND_ENABLED=1 for daemon-less reveal)",
+    );
+  }
+  // Z0 — FHE provider boundary. Loaded only when MURMUR_FHE_DIRECT_ENABLED=1.
+  // When the flag is off, fheProvider is null and the submission path
+  // behaves byte-identically to today. Z1 wires the encrypted-submission
+  // code; Z2 wires homomorphic scoring; Z3 wires threshold release.
+  const fheProvider = loadFheProviderFromEnv(db);
+  if (fheProvider) {
+    console.log(
+      `[daemon] fhe provider ready (name=${fheProvider.name}, threshold_mode=${fheProvider.threshold_mode}); fhe_direct submissions still rejected with z1_not_implemented`,
+    );
+  } else if (isFheDirectEnabled()) {
+    console.log(
+      "[daemon] MURMUR_FHE_DIRECT_ENABLED=1 but loadFheProviderFromEnv returned null — fhe_direct will reject",
+    );
+  } else {
+    console.log(
+      "[daemon] fhe_direct disabled (set MURMUR_FHE_DIRECT_ENABLED=1 to enable the operator-blind privacy path)",
     );
   }
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
@@ -224,6 +243,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         events,
         ...(ageCtx ? { ageContext: ageCtx } : {}),
         ...(drandCtx ? { drandContext: drandCtx } : {}),
+        ...(fheProvider ? { fheProvider } : {}),
       },
       oracleProbe: oracle
         ? async () => {
