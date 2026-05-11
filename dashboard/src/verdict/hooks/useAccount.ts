@@ -118,14 +118,35 @@ export function useAccount(): UseAccountResult {
         if (cancelled) return;
         setSession(s);
         // Phase 7d — fire privy.signed_in once per authenticated edge.
-        // bootstrappedRef gates duplicates across StrictMode + reruns.
-        // `created` on the AccountSession tells us whether this was
-        // first-time signup vs returning; useful attribute for funnel
-        // grouping ("new signups today" vs "returning visitors").
-        void emitFunnel("privy.signed_in", {
-          first_time: s.created,
-          privy_user_id: s.privy_user_id,
-        });
+        //
+        // Codex P2 fix — bootstrappedRef is per-hook-instance, so the
+        // login → account → new-agent → integrate flow remounted
+        // useAccount five times and emitted privy.signed_in once per
+        // mount, inflating the funnel. Gate the emit on a localStorage
+        // ratchet keyed by privy_user_id + the session.created flag, so
+        // each unique signed-in edge fires exactly one emit per browser.
+        // bootstrappedRef still prevents the in-mount StrictMode
+        // double-run.
+        const signedInLatchKey = `murmur_funnel_signed_in:${s.privy_user_id}:${s.created ? "new" : "ret"}`;
+        let alreadyEmitted = false;
+        try {
+          alreadyEmitted = window.localStorage.getItem(signedInLatchKey) === "1";
+        } catch {
+          // localStorage unavailable (private mode etc.) — fall back to
+          // per-mount emit; one duplicate funnel row per session is
+          // acceptable in the no-storage path.
+        }
+        if (!alreadyEmitted) {
+          void emitFunnel("privy.signed_in", {
+            first_time: s.created,
+            privy_user_id: s.privy_user_id,
+          });
+          try {
+            window.localStorage.setItem(signedInLatchKey, "1");
+          } catch {
+            // ignore — see above
+          }
+        }
         const { agents: rows } = await verdictApi.getAccountAgents(token);
         if (cancelled) return;
         setAgents(rows);

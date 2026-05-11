@@ -89,33 +89,33 @@ function getApiBase(): string {
 }
 
 /**
- * Substitute the `{{agentId}}` / `{{apiKey}}` / `{{base}}` placeholders
- * in a template. When `apiKey` is undefined, we replace the placeholder
- * with the language-specific env-var reference. The base URL replacement
- * always runs (no env-var fallback — the URL is public, baking it in is
- * the whole point).
+ * Substitute the `{{agentId}}` / `{{base}}` placeholders in a template.
+ *
+ * Codex P2 fix — `{{apiKey}}` is NOT substituted here. Earlier versions
+ * replaced `"{{apiKey}}"` (already-quoted in templates) with the env-var
+ * reference, which produced `"${process.env.MURMUR_API_KEY}"` (literal
+ * string in TS) or `"os.environ["MURMUR_API_KEY"]"` (invalid Python).
+ * Now we pick the template by apiKey presence — see `pickTemplate` —
+ * and the chosen template embeds the right form natively.
  */
 function renderSnippet(
-  language: SnippetLanguage,
   template: string,
   agentId: string,
   apiKey: string | undefined,
   base: string,
 ): string {
-  const envRef: Record<SnippetLanguage, string> = {
-    typescript: "${process.env.MURMUR_API_KEY}",
-    python: 'os.environ["MURMUR_API_KEY"]',
-    curl: "$MURMUR_API_KEY",
-  };
-  const keyValue = apiKey ?? envRef[language];
-  return template
-    .replaceAll("{{base}}", base)
-    .replaceAll("{{agentId}}", agentId)
-    .replaceAll("{{apiKey}}", keyValue);
+  let out = template.replaceAll("{{base}}", base).replaceAll("{{agentId}}", agentId);
+  if (apiKey !== undefined) out = out.replaceAll("{{apiKey}}", apiKey);
+  return out;
 }
 
-/** TypeScript (Node-native fetch) template — verbatim from §7 research. */
-const TS_TEMPLATE = `// Submit a Murmur call (BUY ETH, 4h horizon, 0.72 confidence)
+// ─── Templates ──────────────────────────────────────────────────────────────
+// Codex P1 fix — every snippet matches the v0.2 SubmittedCallSchema:
+//   schema_version, agent_id, client_order_id, asset_id, side,
+//   horizon_hours, confidence, submitted_at, rationale|strategy_tag.
+// Response is unwrapped: { call: { call_id }, status, idempotent_hit }.
+
+const TS_WITH_KEY = `// Submit a Murmur call (BUY ETH, 4h horizon, 0.72 confidence)
 const res = await fetch("{{base}}/v1/calls", {
   method: "POST",
   headers: {
@@ -124,17 +124,46 @@ const res = await fetch("{{base}}/v1/calls", {
     "X-Murmur-Api-Key": "{{apiKey}}",
   },
   body: JSON.stringify({
+    schema_version: 1,
+    agent_id: "{{agentId}}",
     client_order_id: crypto.randomUUID(),
     asset_id: "base:ETH:USD",
     side: "BUY",
     horizon_hours: 4,
     confidence: 0.72,
+    submitted_at: new Date().toISOString(),
+    rationale: "demo: paste into your agent",
   }),
 });
-const { call_id, status } = await res.json();`;
+const result = await res.json();
+console.log(result.call.call_id, result.status);`;
 
-/** Python (stdlib only) template. */
-const PY_TEMPLATE = `import json
+const TS_ENV_REF = `// Submit a Murmur call (BUY ETH, 4h horizon, 0.72 confidence)
+const apiKey = process.env.MURMUR_API_KEY ?? "";
+const res = await fetch("{{base}}/v1/calls", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Murmur-Agent-Id": "{{agentId}}",
+    "X-Murmur-Api-Key": apiKey,
+  },
+  body: JSON.stringify({
+    schema_version: 1,
+    agent_id: "{{agentId}}",
+    client_order_id: crypto.randomUUID(),
+    asset_id: "base:ETH:USD",
+    side: "BUY",
+    horizon_hours: 4,
+    confidence: 0.72,
+    submitted_at: new Date().toISOString(),
+    rationale: "demo: paste into your agent",
+  }),
+});
+const result = await res.json();
+console.log(result.call.call_id, result.status);`;
+
+const PY_WITH_KEY = `import datetime
+import json
 import urllib.request
 import uuid
 
@@ -147,34 +176,74 @@ req = urllib.request.Request(
         "X-Murmur-Api-Key": "{{apiKey}}",
     },
     data=json.dumps({
+        "schema_version": 1,
+        "agent_id": "{{agentId}}",
         "client_order_id": str(uuid.uuid4()),
         "asset_id": "base:ETH:USD",
         "side": "BUY",
         "horizon_hours": 4,
         "confidence": 0.72,
+        "submitted_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "rationale": "demo: paste into your agent",
     }).encode(),
 )
 with urllib.request.urlopen(req) as resp:
-    print(json.load(resp))`;
+    body = json.load(resp)
+    print(body["call"]["call_id"], body["status"])`;
 
-/** curl template. */
+const PY_ENV_REF = `import datetime
+import json
+import os
+import urllib.request
+import uuid
+
+req = urllib.request.Request(
+    "{{base}}/v1/calls",
+    method="POST",
+    headers={
+        "Content-Type": "application/json",
+        "X-Murmur-Agent-Id": "{{agentId}}",
+        "X-Murmur-Api-Key": os.environ["MURMUR_API_KEY"],
+    },
+    data=json.dumps({
+        "schema_version": 1,
+        "agent_id": "{{agentId}}",
+        "client_order_id": str(uuid.uuid4()),
+        "asset_id": "base:ETH:USD",
+        "side": "BUY",
+        "horizon_hours": 4,
+        "confidence": 0.72,
+        "submitted_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "rationale": "demo: paste into your agent",
+    }).encode(),
+)
+with urllib.request.urlopen(req) as resp:
+    body = json.load(resp)
+    print(body["call"]["call_id"], body["status"])`;
+
+// curl: `$MURMUR_API_KEY` expands inside double quotes, so one template
+// suffices — substitute either the literal key or the env-var name.
 const CURL_TEMPLATE = `curl -X POST {{base}}/v1/calls \\
   -H "Content-Type: application/json" \\
   -H "X-Murmur-Agent-Id: {{agentId}}" \\
   -H "X-Murmur-Api-Key: {{apiKey}}" \\
   -d '{
+    "schema_version": 1,
+    "agent_id": "{{agentId}}",
     "client_order_id": "'"$(uuidgen)"'",
     "asset_id": "base:ETH:USD",
     "side": "BUY",
     "horizon_hours": 4,
-    "confidence": 0.72
+    "confidence": 0.72,
+    "submitted_at": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "rationale": "demo: paste into your agent"
   }'`;
 
-const TEMPLATE: Record<SnippetLanguage, string> = {
-  typescript: TS_TEMPLATE,
-  python: PY_TEMPLATE,
-  curl: CURL_TEMPLATE,
-};
+function pickTemplate(language: SnippetLanguage, hasKey: boolean): string {
+  if (language === "typescript") return hasKey ? TS_WITH_KEY : TS_ENV_REF;
+  if (language === "python") return hasKey ? PY_WITH_KEY : PY_ENV_REF;
+  return CURL_TEMPLATE;
+}
 
 export function CodeSnippetPanel({
   agentId,
@@ -226,10 +295,15 @@ export function CodeSnippetPanel({
   // snippet beats showing "undefined" if a caller forgot the prop.
   const effectiveAgentId = agentId ?? "<agent-id>";
 
-  const body = useMemo(
-    () => renderSnippet(active, TEMPLATE[active], effectiveAgentId, apiKey, base),
-    [active, effectiveAgentId, apiKey, base],
-  );
+  const body = useMemo(() => {
+    const hasKey = apiKey !== undefined;
+    const tpl = pickTemplate(active, hasKey);
+    // curl substitutes apiKey from either the literal key or the env-var
+    // string `$MURMUR_API_KEY` (which bash expands inside double quotes).
+    const curlKey = hasKey ? apiKey : "$MURMUR_API_KEY";
+    const renderKey = active === "curl" ? curlKey : apiKey;
+    return renderSnippet(tpl, effectiveAgentId, renderKey, base);
+  }, [active, effectiveAgentId, apiKey, base]);
 
   const doCopy = useCallback(async () => {
     if (!navigator.clipboard?.writeText) {

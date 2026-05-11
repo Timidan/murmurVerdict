@@ -36,8 +36,13 @@ interface JustMintedEnvelope {
  * Read + immediately clear the handoff envelope for a slug. Returns null
  * when the entry is missing, malformed, or past its expiry. Clearing on
  * read is intentional — refreshing the page should not re-reveal the key.
+ *
+ * Codex P2 fix — returns the full `{ secret, expires_at }` so the caller
+ * can schedule an expiry-driven clear. Earlier this only returned the
+ * secret string, so state held the key past `expires_at` if the tab was
+ * left idle.
  */
-function consumeJustMinted(slug: string): string | null {
+function consumeJustMinted(slug: string): JustMintedEnvelope | null {
   if (typeof window === "undefined" || !window.sessionStorage) return null;
   const key = `${SESSION_KEY_PREFIX}${slug}`;
   const raw = window.sessionStorage.getItem(key);
@@ -54,7 +59,7 @@ function consumeJustMinted(slug: string): string | null {
       return null;
     }
     if (Date.now() > env.expires_at) return null;
-    return env.secret;
+    return { secret: env.secret, expires_at: env.expires_at };
   } catch {
     return null;
   }
@@ -70,17 +75,43 @@ export function IntegratePage({ slug }: IntegratePageProps) {
   // safe place to do this; a useEffect would either re-fire under
   // StrictMode (double consume) or land too late (snippet renders with
   // env-ref, then re-renders with the key — flash of stale content).
-  const [apiKey] = useState<string | null>(() => consumeJustMinted(slug));
+  const [envelope, setEnvelope] = useState<JustMintedEnvelope | null>(() =>
+    consumeJustMinted(slug),
+  );
 
-  // Resolve the matching agent row from the cached account list. We DON'T
-  // refetch — useAccount already hydrates this on first authed render,
-  // and a stale slug just renders snippets with the slug-as-placeholder
-  // (still useful, the user knows their own slug). When the list IS
-  // hydrated we substitute the real agent_id into the snippet header.
+  // Codex P2 fix — the handoff envelope carries `expires_at`; schedule a
+  // setTimeout to null out the secret when that wall-clock moment arrives.
+  // Earlier we only checked expiry at the initial sessionStorage read, so
+  // an idle tab past the TTL kept the secret visible until manual refresh.
+  useEffect(() => {
+    if (envelope === null) return;
+    const remaining = envelope.expires_at - Date.now();
+    if (remaining <= 0) {
+      setEnvelope(null);
+      return;
+    }
+    const t = setTimeout(() => setEnvelope(null), remaining);
+    return () => clearTimeout(t);
+  }, [envelope]);
+
+  const apiKey = envelope?.secret ?? null;
+
+  // Resolve the matching agent row from the cached account list. The
+  // backend's /v1/calls accepts ONLY the agent_id UUID in the X-Murmur-
+  // Agent-Id header (verifyAgentApiKey does an agentsRepo.byId lookup);
+  // it does NOT accept the slug. Earlier this fell back to the slug while
+  // account.agents loaded, which produced "unknown agent" 404s for users
+  // who pasted the snippet immediately after mint.
   const agent = useMemo(
     () => account.agents.find((a) => a.display_slug === slug),
     [account.agents, slug],
   );
+  const agentLoading = account.ready && account.isAuthenticated && account.agents.length === 0;
+  const agentMissing =
+    account.ready &&
+    account.isAuthenticated &&
+    account.agents.length > 0 &&
+    !agent;
 
   // Auth gate — same posture as AccountPage/AgentNewPage. Bounce when
   // Privy reports a stable signed-out state.
@@ -143,15 +174,36 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           )}
         </section>
 
-        <CodeSnippetPanel
-          agentSlug={slug}
-          // Prefer the real agent_id from the hydrated list; fall back to
-          // the slug so the snippet still reads cleanly while the list
-          // resolves. (Header is X-Murmur-Agent-Id, which the daemon
-          // accepts as either.)
-          agentId={agent?.agent_id ?? slug}
-          apiKey={apiKey ?? undefined}
-        />
+        {agent ? (
+          <CodeSnippetPanel
+            agentSlug={slug}
+            agentId={agent.agent_id}
+            apiKey={apiKey ?? undefined}
+          />
+        ) : agentMissing ? (
+          <section className="ck-frame-strong px-4 py-4">
+            <p className="ck-mono ck-neg">agent {slug} not found in your account.</p>
+            <p className="ck-mono ck-dim text-[10px] mt-2">
+              the daemon may not have hydrated yet — try a refresh, or
+              {" "}
+              <a href="#/account" className="ck-pos no-underline">return to account</a>.
+            </p>
+          </section>
+        ) : (
+          <section className="ck-frame px-4 py-4">
+            <p className="ck-mono ck-dim">resolving agent id…</p>
+            <p className="ck-mono ck-dim text-[10px] mt-2">
+              snippets render with your agent&apos;s uuid (header
+              {" "}
+              <code>X-Murmur-Agent-Id</code> requires it, not the slug).
+            </p>
+            {agentLoading && (
+              <p className="ck-mono ck-dim text-[10px] mt-1">
+                fetching /v1/account/agents…
+              </p>
+            )}
+          </section>
+        )}
 
         <section className="ck-frame">
           <div className="ck-header">

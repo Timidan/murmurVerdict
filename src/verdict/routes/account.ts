@@ -644,9 +644,15 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
       // can group by account without joining against the api_keys table.
       // The usage_events.agent_id column stays null on purpose (these are
       // account-scoped, not agent-scoped).
+      //
+      // Codex P2 fix — put account_id AFTER the client spread (was the
+      // other way), so an authenticated caller submitting
+      // `attributes.account_id = "other"` cannot overwrite the
+      // server-stamped value used for downstream attribution. The trusted
+      // server value always wins.
       const attributes = {
-        account_id: resolved.account_id,
         ...(parsed.data.attributes ?? {}),
+        account_id: resolved.account_id,
       };
       usageRepo.emit(db, {
         event_id: randomUUID(),

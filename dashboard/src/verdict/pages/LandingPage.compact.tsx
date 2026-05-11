@@ -99,10 +99,29 @@ export function LandingPageCompact() {
               {/* Phase 7d — primary "compete" CTA. The ?ref=landing-cta
                   param is the attribution tag AccountPage reads to fire
                   the compete.clicked funnel event. The button label
-                  matches the LoginPage breadcrumb idiom (COMPETE). */}
+                  matches the LoginPage breadcrumb idiom (COMPETE).
+
+                  Codex P2 fix — unauth users get bounced to the login
+                  page which strips the ref query before AccountPage
+                  ever sees it. Persist a small latch in localStorage at
+                  click time so the post-login AccountPage can emit
+                  compete.clicked regardless of how the URL mutated
+                  through the login flow. */}
               <a
                 href="#/account?ref=landing-cta"
                 className="ck-btn ck-btn-accent"
+                onClick={() => {
+                  try {
+                    window.localStorage.setItem(
+                      "murmur_funnel_compete_pending",
+                      JSON.stringify({ ref: "landing-cta", ts: Date.now() }),
+                    );
+                  } catch {
+                    // localStorage unavailable (private mode etc.) — the
+                    // direct AccountPage authed-effect still catches the
+                    // already-signed-in case via the ?ref= query.
+                  }
+                }}
               >
                 COMPETE
               </a>

@@ -48,13 +48,40 @@ export function AccountPage() {
   }, [account.ready, account.isAuthenticated]);
 
   // Phase 7d — fire compete.clicked only when the user actually arrived
-  // from the landing-page CTA (carries ?ref=landing-cta). We don't fire
-  // on every /account visit because that would double-count: returning
-  // users hit this page directly. The emit is gated on isAuthenticated
-  // so it doesn't get dropped by the anon-kinds path in useFunnelEmit.
+  // from the landing-page CTA. Two paths converge here:
+  //
+  //   1. Already-signed-in users hit `/account?ref=landing-cta` directly
+  //      (CTA URL is preserved through the route). Read the hash ref.
+  //   2. Unauth users bounce through `/account/login?next=/account` which
+  //      strips the `?ref=` before they land here. The CTA persists a
+  //      `murmur_funnel_compete_pending` latch in localStorage at click
+  //      time (codex P2 fix); we consume it post-auth.
+  //
+  // Either path emits exactly one compete.clicked per CTA click attempt.
   useEffect(() => {
     if (!account.isAuthenticated) return;
-    const ref = readHashRef();
+    let ref: string | null = readHashRef();
+    if (ref !== "landing-cta") {
+      try {
+        const raw = window.localStorage.getItem("murmur_funnel_compete_pending");
+        if (raw) {
+          window.localStorage.removeItem("murmur_funnel_compete_pending");
+          const parsed = JSON.parse(raw) as { ref?: string; ts?: number };
+          // Stale latches (>30 min) get dropped on the floor — the user
+          // clicked the CTA, abandoned, and came back hours later. That
+          // isn't the moment we want to attribute compete.clicked to.
+          if (
+            typeof parsed?.ref === "string" &&
+            typeof parsed?.ts === "number" &&
+            Date.now() - parsed.ts < 30 * 60 * 1000
+          ) {
+            ref = parsed.ref;
+          }
+        }
+      } catch {
+        // localStorage unavailable; fall through with ref still null.
+      }
+    }
     if (ref !== "landing-cta") return;
     void emitFunnel("compete.clicked", { ref });
   }, [account.isAuthenticated, emitFunnel]);

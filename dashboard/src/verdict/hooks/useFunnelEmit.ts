@@ -28,9 +28,21 @@
 // it to a useEffect dep array is safe.
 
 import { useCallback, useRef } from "react";
-import { getAccessToken } from "@privy-io/react-auth";
 import { isPrivyConfigured } from "../auth/PrivyProvider.js";
 import { verdictApi, type FunnelEventKind } from "../api.js";
+
+// Codex P2 fix — earlier we statically imported `getAccessToken` from
+// `@privy-io/react-auth`, which dragged the entire Privy SDK into any
+// chunk that referenced this hook. LandingPage in particular pulled
+// the ~2MB Privy bundle onto the public-route entrypoint just to fire
+// `landing.viewed`. We now dynamic-import the SDK only inside the
+// authenticated emit path; the function-scoped import gets its own
+// chunk that Vite splits behind the Privy entry, leaving public
+// routes Privy-free.
+async function loadGetAccessToken(): Promise<() => Promise<string | null>> {
+  const mod = await import("@privy-io/react-auth");
+  return mod.getAccessToken;
+}
 
 /**
  * Kinds the dashboard is allowed to emit without an authenticated session.
@@ -78,6 +90,7 @@ export function useFunnelEmit(): (
 
       let token: string | null;
       try {
+        const getAccessToken = await loadGetAccessToken();
         token = await getAccessToken();
       } catch {
         token = null;
