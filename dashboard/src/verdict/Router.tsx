@@ -170,8 +170,14 @@ function parseHash(hash: string): ParsedRoute {
   // Phase 7c — per-agent settings, with /payout (default) and /keys
   // sub-tabs. The trailing tab segment is optional so #/account/agent/foo
   // alone still resolves to the payout tab.
+  //
+  // Codex P2 fix — bare `/account/agent/new` is caught above by the
+  // creation-route check, so we don't need a separate "new" guard here.
+  // An agent whose slug happens to be "new" reaches its settings via
+  // /account/agent/new/payout or /account/agent/new/keys with no
+  // collision against the creation page.
   const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|keys))?$/.exec(path);
-  if (agentSettingsMatch && agentSettingsMatch[1] !== "new") {
+  if (agentSettingsMatch) {
     return {
       name: "account_agent_settings",
       params: {

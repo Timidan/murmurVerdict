@@ -111,17 +111,24 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
         </nav>
 
         {/* ── Body ─────────────────────────────────────────────── */}
+        {/* Codex P2 fix — `key={slug}` forces full remount when the user
+            navigates from one agent's settings to another's. Without it
+            React reuses the same component instance and the previous
+            agent's loaded keys / form input / confirm-id can leak under
+            the new header. On the keys tab the leak is destructive: a
+            stale confirm-id could rotate the wrong agent's key. */}
         {agentMissing ? (
           <NotFoundShell slug={slug} />
         ) : tab === "payout" ? (
           <DestinationAddressForm
+            key={slug}
             slug={slug}
             currentAddress={agent?.destination_address ?? null}
             updatedAt={agent?.destination_address_updated_at ?? null}
             onSaved={() => void account.refreshAgents()}
           />
         ) : (
-          <ApiKeysPanel slug={slug} />
+          <ApiKeysPanel key={slug} slug={slug} />
         )}
       </main>
     </div>
