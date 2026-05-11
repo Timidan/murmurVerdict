@@ -505,6 +505,43 @@ function applyMigrations(db: Database.Database): void {
     v = 26;
     set.run("schema_version", String(v));
   }
+
+  // Migration 027 is RESERVED for Z5 (production-gate for the FHE
+  // threshold-committee promotion). Phase 11 takes 028 even though
+  // 027 isn't filled yet — the gap is intentional so the FHE block
+  // stays contiguous, and Z5 lands without renumbering Polymarket
+  // state. The ladder helper `if (v < 27)` would simply be a no-op
+  // here today; rather than ship a sentinel that has to be deleted
+  // when Z5 lands, we let the version cursor jump straight to 28 on
+  // a clean boot.
+
+  if (v < 28) {
+    // Phase 11 — Polymarket Gamma adapter (Tier 1).
+    //
+    // Adds `external_market_sync_state`, the per-conditionId poll-state
+    // table the Polymarket sync ticker writes to. Holds:
+    //   - poll cadence bookkeeping (last_polled_at / next_poll_at)
+    //   - observed status (`pending` | `disputed` | `resolved` | `404` |
+    //     `error`) — sourced from a fresh Gamma fetch
+    //   - consecutive failure counter for the MARKET_DISAPPEARED alert
+    //     (24× 404 in a row)
+    //   - one-shot alert timestamps so each operator alert fires exactly
+    //     once per market lifetime
+    //
+    // Pure additive — no ALTER TABLE, no rebuild. Resolution state itself
+    // continues to live on `t1_resolutions` like every other adapter; this
+    // table is purely the ticker's scratch pad.
+    //
+    // FK on `market_id` cascades on delete so retiring a market cleans
+    // the sync row too. Indexes:
+    //   - adapter_id: per-adapter sweep (the ticker filters on
+    //     `adapter_id = 'polymarket-gamma'`)
+    //   - next_poll_at (partial; NOT NULL): the ticker's primary
+    //     scheduling read.
+    db.exec(MIGRATION_028);
+    v = 28;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -2032,6 +2069,33 @@ const MIGRATION_026 = `
     quorum_signatures   TEXT NOT NULL,
     released_at         TEXT NOT NULL
   );
+`;
+
+// ─── Migration 028 — Polymarket sync state (Phase 11) ──────────────────────
+//
+// Per-conditionId scratch pad for the Polymarket Gamma sync ticker. Every
+// row is owned by exactly one markets entry (FK ON DELETE CASCADE) and
+// keyed back to the adapter via `adapter_id` for fast per-adapter sweeps.
+// CREATE-only — idempotent under `IF NOT EXISTS`, same posture as
+// MIGRATION_026.
+const MIGRATION_028 = `
+  CREATE TABLE IF NOT EXISTS external_market_sync_state (
+    market_id                 TEXT PRIMARY KEY REFERENCES markets(market_id) ON DELETE CASCADE,
+    adapter_id                TEXT NOT NULL,
+    last_polled_at            TEXT,
+    last_observed_status      TEXT,
+    consecutive_failures      INTEGER NOT NULL DEFAULT 0,
+    next_poll_at              TEXT,
+    last_error                TEXT,
+    alerted_disappeared_at    TEXT,
+    alerted_never_resolved_at TEXT,
+    created_at                TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_sync_state_adapter
+    ON external_market_sync_state(adapter_id);
+  CREATE INDEX IF NOT EXISTS idx_sync_state_next_poll
+    ON external_market_sync_state(next_poll_at)
+    WHERE next_poll_at IS NOT NULL;
 `;
 
 const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [

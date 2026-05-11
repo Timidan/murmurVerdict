@@ -329,6 +329,24 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     );
   }
 
+  // Phase 11 — Polymarket Gamma adapter. Off by default; dynamic-import
+  // only when MURMUR_POLYMARKET_GAMMA_ENABLED=1 so the legacy boot path
+  // stays byte-identical when the flag is unset (same posture as the Z0
+  // FHE provider loader above). The register helper:
+  //   1. registers polymarketGammaAdapter into the MarketMakerRegistry
+  //   2. starts the per-conditionId sync ticker that drives
+  //      external_market_sync_state
+  let polymarketStop: (() => void) | null = null;
+  if (process.env.MURMUR_POLYMARKET_GAMMA_ENABLED === "1") {
+    const { registerPolymarketGammaAdapter } = await import(
+      "../markets/polymarket-gamma/register.js"
+    );
+    const handle = registerPolymarketGammaAdapter(
+      opts.skipTickers ? {} : { db },
+    );
+    polymarketStop = handle.stop;
+  }
+
   const server: Server = await new Promise((resolve, reject) => {
     const s = app.listen(port, () => resolve(s));
     s.once("error", reject);
@@ -426,6 +444,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
 
   const close = async (): Promise<void> => {
     for (const t of tickers) clearInterval(t);
+    if (polymarketStop) polymarketStop();
     webhookDispatcher.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     db.close();
