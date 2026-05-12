@@ -737,6 +737,31 @@ function applyMigrations(db: Database.Database): void {
     v = 32;
     set.run("schema_version", String(v));
   }
+
+  if (v < 33) {
+    // Local-smoke discovery — Wave 4b's `marketsRepo.upsertExternalMarket`
+    // inserts into `markets.config_json` and the resolver reads
+    // `marketRow.config_json` to spread Polymarket's conditionId into
+    // the adapter observation context. The MarketRow TS type declared
+    // the column but no migration ever added it (codex P11's review
+    // expected MIGRATION_016 to land it; it didn't). Without this
+    // column, the Polymarket admin upsert + every resolver tick that
+    // hits a Polymarket row fail at runtime with `no such column:
+    // config_json`.
+    //
+    // Idempotent via applyAlterTableAddColumn — re-runs on a crashed
+    // boot are no-ops. NOT NULL DEFAULT '{}' so existing native-price
+    // markets land with the same empty-object shape the resolver's
+    // parseMarketConfigJson helper already handles.
+    applyAlterTableAddColumn(
+      db,
+      "markets",
+      "config_json",
+      "ALTER TABLE markets ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'",
+    );
+    v = 33;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
