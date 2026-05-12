@@ -4,6 +4,7 @@ import {
   AgentKind,
   AgentProfile,
   AgentSecurityEvent,
+  AgentSecurityEventSchema,
   CallStatus,
   Outcome,
   SubmittedCall,
@@ -2532,6 +2533,32 @@ const MIGRATION_032 = `
     ON agent_security_events(kind);
   CREATE INDEX IF NOT EXISTS idx_agent_security_events_created
     ON agent_security_events(created_at DESC);
+  -- Wave 5 codex review MINOR — partial expression index for
+  -- post-incident Polymarket lookups. The most common forensic query is
+  -- "who upserted conditionId X?", which previously required a full
+  -- table scan with payload_json LIKE. SQLite's json_extract on the
+  -- payload returns the conditionId for admin_polymarket_upsert rows
+  -- (and NULL elsewhere); the partial index ON the typed expression
+  -- keeps storage cheap (only matching rows are indexed).
+  CREATE INDEX IF NOT EXISTS idx_agent_security_events_polymarket_condition
+    ON agent_security_events(json_extract(payload_json, '$.conditionId'))
+    WHERE kind = 'admin_polymarket_upsert';
+  -- Wave 5 codex review MAJOR — enforce append-only at the SQL layer.
+  -- Without these triggers an accidental UPDATE / DELETE through any
+  -- DB handle (test harness, smoke driver, future buggy repo) could
+  -- rewrite or erase the forensic trail. RAISE(ABORT) returns a
+  -- SQLITE_CONSTRAINT error to the caller; legitimate row inserts go
+  -- through unchanged.
+  CREATE TRIGGER IF NOT EXISTS trg_agent_security_events_no_update
+  BEFORE UPDATE ON agent_security_events
+  BEGIN
+    SELECT RAISE(ABORT, 'agent_security_events rows are append-only');
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_agent_security_events_no_delete
+  BEFORE DELETE ON agent_security_events
+  BEGIN
+    SELECT RAISE(ABORT, 'agent_security_events rows are append-only');
+  END;
 `;
 
 const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
@@ -3630,24 +3657,29 @@ export interface AgentSecurityEventRow {
 
 export const agentSecurityEventsRepo = {
   /**
-   * Emit a security event. The caller pre-builds the AgentSecurityEvent
-   * shape (with payload as a parsed object) and this repo handles the
-   * JSON encoding + write.
+   * Emit a security event.
+   *
+   * Wave 5 codex review MAJOR — runs the input through
+   * AgentSecurityEventSchema.parse() before insert so malformed UUIDs,
+   * over-long actor strings, bad timestamp formats, or non-object
+   * payloads exit cleanly instead of landing as malformed rows. The
+   * SQL CHECK only gates `kind`; the Zod parse covers everything else.
    */
   emit(db: Database.Database, event: AgentSecurityEvent): void {
+    const parsed = AgentSecurityEventSchema.parse(event);
     prep(
       db,
       `INSERT INTO agent_security_events
        (event_id, agent_id, account_id, kind, actor, payload_json, created_at)
        VALUES (@event_id, @agent_id, @account_id, @kind, @actor, @payload_json, @created_at)`,
     ).run({
-      event_id: event.event_id,
-      agent_id: event.agent_id,
-      account_id: event.account_id,
-      kind: event.kind,
-      actor: event.actor,
-      payload_json: JSON.stringify(event.payload),
-      created_at: event.created_at,
+      event_id: parsed.event_id,
+      agent_id: parsed.agent_id,
+      account_id: parsed.account_id,
+      kind: parsed.kind,
+      actor: parsed.actor,
+      payload_json: JSON.stringify(parsed.payload),
+      created_at: parsed.created_at,
     });
   },
 
@@ -4126,12 +4158,17 @@ export const marketsRepo = {
          @adapter_id, @market_family, @config_json
        )
        ON CONFLICT(market_id) DO UPDATE SET
-         config_json   = excluded.config_json,
-         market_kind   = excluded.market_kind,
-         scoring_kind  = excluded.scoring_kind,
-         status        = excluded.status,
-         adapter_id    = excluded.adapter_id,
-         market_family = excluded.market_family`,
+         config_json     = excluded.config_json,
+         market_kind     = excluded.market_kind,
+         scoring_kind    = excluded.scoring_kind,
+         status          = excluded.status,
+         adapter_id      = excluded.adapter_id,
+         market_family   = excluded.market_family,
+         -- Wave 5 codex review MINOR — refresh horizon_seconds on
+         -- re-upsert so an admin POST that supplies a new value
+         -- updates the row instead of silently logging a stale one to
+         -- agent_security_events.
+         horizon_seconds = excluded.horizon_seconds`,
     ).run(row);
   },
 

@@ -126,60 +126,65 @@ async function main(): Promise<void> {
     account_id = account.account_id;
   }
 
-  // Resolve or create the agent. If a row with the slug already exists,
-  // reuse it; otherwise mint a fresh agent_id + 'agent' kind row.
-  const existing = agentsRepo.bySlug(db, args.slug);
+  // Wave 5 codex review fixes (BLOCKER + MAJOR):
+  //   - Validate the constructed AgentProfile via Zod BEFORE the insert so
+  //     malformed flag values exit cleanly with code 2 rather than
+  //     producing a malformed row.
+  //   - Wrap agent resolve/create + linkAgentToAccount + security event
+  //     emit in a single SQLite transaction so a crash mid-flow can't
+  //     leave a claim half-applied or unaudited.
+  const { AgentProfileSchema } = await import("../../src/verdict/schema.js");
+  const displayName = args.displayName ?? args.slug;
   let agent_id: string;
   let created_agent = false;
-  if (existing) {
-    agent_id = existing.agent_id;
-  } else {
-    agent_id = randomUUID();
-    agentsRepo.insert(
-      db,
-      {
-        agent_id,
-        display_slug: args.slug,
-        kind: "agent",
-        display_name: args.displayName ?? args.slug,
-        ...(args.bio !== undefined ? { bio: args.bio } : {}),
-        created_at: nowIso(),
-        verified_identities: [],
-      },
-      null,
-    );
-    created_agent = true;
-  }
-
-  // Link agent → account. linkAgentToAccount throws AgentAlreadyOwnedError
-  // when the agent is already linked to a DIFFERENT account; we surface
-  // the typed error and exit 4 so an automation can branch on it.
+  const event_id = randomUUID();
   try {
-    linkAgentToAccount(db, account_id, agent_id);
+    db.transaction(() => {
+      const existing = agentsRepo.bySlug(db, args.slug!);
+      if (existing) {
+        agent_id = existing.agent_id;
+      } else {
+        agent_id = randomUUID();
+        const profile = AgentProfileSchema.parse({
+          agent_id,
+          display_slug: args.slug,
+          kind: "agent",
+          display_name: displayName,
+          ...(args.bio !== undefined ? { bio: args.bio } : {}),
+          created_at: nowIso(),
+          verified_identities: [],
+        });
+        agentsRepo.insert(db, profile, null);
+        created_agent = true;
+      }
+      linkAgentToAccount(db, account_id, agent_id!);
+      agentSecurityEventsRepo.emit(db, {
+        event_id,
+        agent_id: agent_id!,
+        account_id,
+        kind: "admin_claim",
+        actor: "cli:admin-claim",
+        payload: {
+          slug: args.slug,
+          created_agent,
+          display_name: args.displayName ?? null,
+        },
+        created_at: nowIso(),
+      });
+    })();
   } catch (err) {
     if (err instanceof AgentAlreadyOwnedError) {
       console.error(
-        `error: agent ${agent_id} is already linked to a different account. Use --unlink first (not implemented in Wave 5).`,
+        `error: agent ${err.agent_id} is already linked to a different account. Use --unlink first (not implemented in Wave 5).`,
       );
       process.exit(4);
     }
+    if (err instanceof Error && err.name === "ZodError") {
+      console.error(`error: invalid input — ${err.message}`);
+      process.exit(2);
+    }
     throw err;
   }
-
-  const event_id = randomUUID();
-  agentSecurityEventsRepo.emit(db, {
-    event_id,
-    agent_id,
-    account_id,
-    kind: "admin_claim",
-    actor: "cli:admin-claim",
-    payload: {
-      slug: args.slug,
-      created_agent,
-      display_name: args.displayName ?? null,
-    },
-    created_at: nowIso(),
-  });
 
   // JSON output for piping into ops tooling.
   console.log(

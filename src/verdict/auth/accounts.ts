@@ -204,10 +204,28 @@ export function linkAgentToAccount(
       }
       throw new AgentAlreadyOwnedError(agent_id);
     }
-    db.prepare(
-      `INSERT INTO account_agents (account_id, agent_id, created_at)
-       VALUES (?, ?, ?)`,
-    ).run(account_id, agent_id, nowIso());
+    try {
+      db.prepare(
+        `INSERT INTO account_agents (account_id, agent_id, created_at)
+         VALUES (?, ?, ?)`,
+      ).run(account_id, agent_id, nowIso());
+    } catch (err) {
+      // Wave 5 codex review MAJOR — concurrent claimers can both pass
+      // the pre-check above and race the INSERT. The UNIQUE(agent_id)
+      // (added by MIGRATION_019) makes the DB authoritative; translate
+      // the raw SQLITE_CONSTRAINT_UNIQUE into AgentAlreadyOwnedError so
+      // the CLI / API caller can branch on the typed error code
+      // uniformly across both the early-check and race paths.
+      if (
+        err instanceof Error &&
+        "code" in err &&
+        (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE" &&
+        /account_agents.+agent_id/i.test(err.message)
+      ) {
+        throw new AgentAlreadyOwnedError(agent_id);
+      }
+      throw err;
+    }
   });
   txn();
 }

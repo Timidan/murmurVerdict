@@ -1212,39 +1212,46 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         gamma_url: `https://polymarket.com/event/${slugCandidate ?? conditionId}`,
       });
       const created_at = nowIso(now());
-      marketsRepo.upsertExternalMarket(deps.db, {
-        market_id: conditionId,
-        asset_id: "polymarket:event",
-        market_kind: "event_binary",
-        horizon_seconds: horizonSec,
-        primary_oracle_id: "polymarket-gamma-oracle",
-        adapter_id: "polymarket-gamma",
-        market_family: "prediction-market-binary",
-        scoring_kind: "multinomial_brier",
-        config_json: configJson,
-        void_band: "0",
-        status,
-        created_at,
-      });
-      // Wave 5 — append a security event for the upsert. The admin token
-      // is the only authorization, so logging here lets a post-incident
-      // sweep reconstruct who registered which conditionId without
-      // grepping application logs.
-      agentSecurityEventsRepo.emit(deps.db, {
-        event_id: randomUUID(),
-        agent_id: null,
-        account_id: null,
-        kind: "admin_polymarket_upsert",
-        actor: "admin_token",
-        payload: {
-          conditionId,
-          status,
+      // Wave 5 codex review BLOCKER + MINOR — wrap upsert + audit event
+      // in a single transaction so a crash between the two cannot land a
+      // market mutation without its audit row. Re-read the row inside
+      // the txn so the audit payload logs persisted values (closes the
+      // horizon_seconds-drift footgun on re-upserts where the SQL's
+      // ON CONFLICT clause doesn't refresh every column).
+      const row = deps.db.transaction(() => {
+        marketsRepo.upsertExternalMarket(deps.db, {
+          market_id: conditionId,
+          asset_id: "polymarket:event",
+          market_kind: "event_binary",
           horizon_seconds: horizonSec,
-          slug: slugCandidate ?? null,
-        },
-        created_at,
-      });
-      const row = marketsRepo.get(deps.db, conditionId);
+          primary_oracle_id: "polymarket-gamma-oracle",
+          adapter_id: "polymarket-gamma",
+          market_family: "prediction-market-binary",
+          scoring_kind: "multinomial_brier",
+          config_json: configJson,
+          void_band: "0",
+          status,
+          created_at,
+        });
+        const persisted = marketsRepo.get(deps.db, conditionId);
+        agentSecurityEventsRepo.emit(deps.db, {
+          event_id: randomUUID(),
+          agent_id: null,
+          account_id: null,
+          kind: "admin_polymarket_upsert",
+          actor: "admin_token",
+          payload: {
+            conditionId,
+            status,
+            requested_horizon_seconds: horizonSec,
+            persisted_horizon_seconds:
+              persisted?.horizon_seconds ?? null,
+            slug: slugCandidate ?? null,
+          },
+          created_at,
+        });
+        return persisted;
+      })();
       res.status(201).json({
         schema_version: SCHEMA_VERSION,
         market: row,
@@ -1269,20 +1276,25 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       res.status(400).json({ code: "invalid_ref" });
       return;
     }
-    const info = deps.db.prepare("DELETE FROM ref_clicks WHERE ref = ?").run(ref);
-    // Wave 5 — append a security event for the delete. Useful for
-    // reconstructing which ref buckets an operator scrubbed (and when)
-    // without keeping the deleted rows around.
-    agentSecurityEventsRepo.emit(deps.db, {
-      event_id: randomUUID(),
-      agent_id: null,
-      account_id: null,
-      kind: "admin_ref_delete",
-      actor: "admin_token",
-      payload: { ref, deleted_rows: info.changes },
-      created_at: nowIso(now()),
-    });
-    res.json({ deleted: info.changes });
+    // Wave 5 codex review BLOCKER — wrap DELETE + audit event in a
+    // single transaction so a crash between them cannot delete evidence
+    // without recording who did it.
+    const deleted_rows = deps.db.transaction(() => {
+      const info = deps.db
+        .prepare("DELETE FROM ref_clicks WHERE ref = ?")
+        .run(ref);
+      agentSecurityEventsRepo.emit(deps.db, {
+        event_id: randomUUID(),
+        agent_id: null,
+        account_id: null,
+        kind: "admin_ref_delete",
+        actor: "admin_token",
+        payload: { ref, deleted_rows: info.changes },
+        created_at: nowIso(now()),
+      });
+      return info.changes;
+    })();
+    res.json({ deleted: deleted_rows });
   });
 
   // Public mirror of /v1/refs — capped harder so it can never enumerate
