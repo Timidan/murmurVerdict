@@ -6,25 +6,41 @@ export const SCHEMA_VERSION = 1 as const;
 export const SCORING_VERSION = 1 as const;
 
 // ─── Asset registry ──────────────────────────────────────────────────────────
-// asset_id = "<chain>:<asset>:<quote>".
 //
-// P3 Phase 1.5: extended to cover all four assets seeded by migration 008
-// so legacy-shape submissions (asset_id + horizon_hours) can target BTC,
-// SOL, BNB once the operator flips those markets to 'listed'. The runtime
-// markets registry remains the source of truth for "which assets are
-// listable today" — this enum just bounds the wire format.
+// Wave 4a — opened from the closed native-price enum to a structural
+// regex that admits two adapter families:
 //
-// Adding a new asset: add a row in this enum AND insert assets/oracles/
-// markets registry rows. The enum is intentionally a closed list so a
-// typo in an agent payload is rejected at the daemon edge instead of
-// resolving against a non-existent registry row.
+//   - Native-price: "<chain>:<asset>:<quote>" (e.g. "base:ETH:USD",
+//     "base:BTC:USD"). Lowercase chain + uppercase asset/quote tickers.
+//   - External-adapter synthetic: "<protocol>:<kind>" (e.g.
+//     "polymarket:event"). MIGRATION_029 seeded "polymarket:event" as
+//     the synthetic anchor for every Polymarket conditionId market;
+//     future adapter families (Kalshi, Drift, etc.) follow the same
+//     "<protocol>:<kind>" pattern.
+//
+// The registry (assets table + adapter dispatch) remains the source of
+// truth for whether a given asset_id is listable; this regex is just
+// the wire-shape gate. Closed-enum rejection of typos moves up one
+// layer to the registry lookup (which already 404s an unknown asset
+// before the submission lands).
+//
+// REGISTERED_ASSET_IDS stays around as a back-compat list of the four
+// native-price assets that originally seeded the registry — call sites
+// that iterated it for benchmark/test setup keep working unchanged.
 export const REGISTERED_ASSET_IDS = [
   "base:ETH:USD",
   "base:BTC:USD",
   "base:SOL:USD",
   "base:BNB:USD",
 ] as const;
-export const AssetIdSchema = z.enum(REGISTERED_ASSET_IDS);
+export const AssetIdSchema = z
+  .string()
+  .min(3)
+  .max(64)
+  .regex(
+    /^[a-z0-9]+:[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/,
+    "asset_id shape: '<chain>:<asset>:<quote>' (native-price) or '<protocol>:<kind>' (external adapter)",
+  );
 export type AssetId = z.infer<typeof AssetIdSchema>;
 
 // ─── Strategy tag registry ────────────────────────────────────────────────────
@@ -103,24 +119,42 @@ export const SCORING_KINDS = [
 export const ScoringKindSchema = z.enum(SCORING_KINDS);
 export type ScoringKind = z.infer<typeof ScoringKindSchema>;
 
+// Wave 4a — MIGRATION_029 widened the SQL CHECK on `oracles.kind` to
+// include 'external_adapter' for adapter-resolved markets (Polymarket
+// Gamma is the first such adapter; future Kalshi / Drift / event-feed
+// adapters reuse the same value with their own oracle_id). The Zod enum
+// here mirrors the SQL CHECK so registry admin writes are bounded the
+// same way at the API edge.
 export const ORACLE_KINDS = [
   "chainlink_evm",
   "pyth_pull",
   "pyth_solana",
+  "external_adapter",
 ] as const;
 export const OracleKindSchema = z.enum(ORACLE_KINDS);
 export type OracleKind = z.infer<typeof OracleKindSchema>;
 
-// market_id wire format: <asset-short>.<horizon-label>.
-// horizon-label ∈ {5m, 15m, 1h, 4h, 24h, 7d, ...}. Lowercase ASCII,
-// immutable per Codex audit — never rename a market_id post-launch.
+// Wave 4a — market_id is now a union of two adapter-specific shapes:
+//
+//   Native-price: "<asset-short>.<horizon-label>" — lowercase ASCII
+//     dot-separated, e.g. 'eth.1h', 'btc.5m'. Immutable per Codex audit
+//     (never rename post-launch).
+//   External-adapter: "0x[0-9a-f]{64}" — a Polymarket conditionId or
+//     any future external-adapter row whose canonical handle is a
+//     32-byte hex hash. Polymarket Gamma is the first such adapter;
+//     Kalshi (when it lands) will likely follow a UUID or
+//     adapter-namespaced shape that we'd add here.
+//
+// The regex tolerates either shape at the wire-validation layer; the
+// market registry's row lookup is the authoritative "is this market
+// listable today?" gate.
 export const MarketIdSchema = z
   .string()
   .min(3)
-  .max(64)
+  .max(80)
   .regex(
-    /^[a-z0-9]+(\.[a-z0-9]+)+$/,
-    "lowercase dot-separated segments, e.g. 'eth.5m' or 'btc.1h'",
+    /^([a-z0-9]+(\.[a-z0-9]+)+|0x[0-9a-f]{64})$/,
+    "market_id: '<asset>.<horizon>' (native-price) or '0x[hex64]' (Polymarket conditionId)",
   );
 export type MarketId = z.infer<typeof MarketIdSchema>;
 
@@ -372,13 +406,16 @@ export const SubmittedCallSchema = z
     agent_id: z.string().uuid(),
     client_order_id: z.string().min(8).max(128),
     // Legacy tuple — optional in v0.2.5+ wire shape; required only when
-    // market_id is absent. AssetIdSchema enum is closed; new assets land
-    // via the markets registry, not by extending this enum.
+    // market_id is absent. Wave 4a opened AssetIdSchema from a closed
+    // native-price enum to an open '<chain>:<asset>:<quote>' /
+    // '<protocol>:<kind>' regex; the markets registry remains the
+    // authoritative "is this asset listable?" gate.
     asset_id: AssetIdSchema.optional(),
     horizon_hours: HorizonHoursSchema.optional(),
-    // New shape — registry-driven market identity. Submissions on new
-    // assets (BTC, SOL, BNB) and new horizons (5m/15m) go through this
-    // path. Daemon rejects market_id targeting a non-listed market.
+    // New shape — registry-driven market identity. Wave 4a opened
+    // MarketIdSchema to also accept '0x[hex64]' Polymarket conditionIds.
+    // The daemon still rejects market_id values that don't resolve to a
+    // listed `markets` row, regardless of which legal shape was supplied.
     market_id: MarketIdSchema.optional(),
     side: SideSchema,
     confidence: z.number().min(0.51).max(0.95),

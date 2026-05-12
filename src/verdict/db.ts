@@ -580,25 +580,22 @@ function applyMigrations(db: Database.Database): void {
     //
     // ── Scope boundary ──
     //
-    // This migration is REGISTRY-only. Operational use of Polymarket
-    // conditionIds via the agent /v2/calls path remains blocked on:
-    //   1. MarketIdSchema regex (schema.ts) — currently constrains to
-    //      lowercase dot-separated segments (e.g. 'eth.1h'); Polymarket
-    //      conditionIds are '0x[hex64]'.
-    //   2. AssetIdSchema enum — closed list of native-price assets;
-    //      'polymarket:event' isn't a member.
-    //   3. AcceptedCallSchema — native-price-shaped: requires asset_id,
-    //      side, horizon_hours, oracle_policy. Z4 introduces the
-    //      discriminated variant.
-    //   4. submitCall rate limiters — per-asset cap keys on asset_id,
-    //      which is meaningless for external markets.
-    //
-    // All four unblock together with Z4 (discriminated AcceptedCall +
-    // adapter-aware schema variants). At that point the synthetic asset
-    // + oracle seeded here become the anchor rows that external markets'
-    // markets-row INSERTs reference, satisfying the NOT NULL FKs on
-    // markets.asset_id and markets.primary_oracle_id without rewriting
-    // the markets table.
+    // Wave 4a — the four unblock points called out by this migration's
+    // original scope boundary have landed:
+    //   1. MarketIdSchema accepts '0x[hex64]' Polymarket conditionIds
+    //      alongside the legacy '<asset>.<horizon>' shape.
+    //   2. AssetIdSchema is now an open '<chain>:<asset>:<quote>' or
+    //      '<protocol>:<kind>' regex (admits 'polymarket:event').
+    //   3. AcceptedCallSchema's plaintext market-signal fields became
+    //      optional in Wave 3b; the resolver consumes Commitment/Outcome
+    //      JSON instead.
+    //   4. The per-asset rate limiter (countCallsForAgentAssetWindow)
+    //      was removed in Wave 3b; rate-limiting is per-market only.
+    // The synthetic Polymarket asset + oracle seeded below remain the
+    // anchor rows that external-market `markets` inserts reference, so
+    // the NOT NULL FKs on `markets.asset_id` and
+    // `markets.primary_oracle_id` are satisfied without rewriting the
+    // markets table.
     // Concatenating the seed into the rebuild SQL keeps both inside the
     // same BEGIN..COMMIT as the schema_version bump — codex bundle review
     // MAJOR #1 fix. The original split (rebuild → schema_version=29 → seed
