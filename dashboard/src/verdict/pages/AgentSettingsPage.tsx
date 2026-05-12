@@ -86,7 +86,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
         <header className="w-full max-w-[720px] flex flex-wrap items-center justify-between gap-3 px-1">
           <div className="flex items-center gap-2 min-w-0">
             <span className="ck-mono ck-pos truncate">{slug}</span>
-            <TierBadge kind={(agent?.kind as AgentKind) ?? "casual"} />
+            <TierBadge kind={(agent?.kind as AgentKind) ?? "agent"} />
           </div>
           <a
             href={`#/agents/${encodeURIComponent(slug)}`}

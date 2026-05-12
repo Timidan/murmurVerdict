@@ -322,17 +322,20 @@ function SidebarStats({
         tone="dim"
       />
       <div className="px-2 py-2 ck-mono ck-dim leading-tight border-t border-[var(--color-border)]">
-        {agent.kind === "shadow" && (
-          <span>
-            SHADOW · wins scored but don't count toward main leaderboard. Claim
-            to lock wallet + import history.
-          </span>
-        )}
-        {agent.kind === "verified" && (
-          <span>VERIFIED · wallet-bound · main-tier eligible.</span>
+        {/* Wave 3 — collapsed enum. shadow/verified notes dropped alongside
+            the deleted tiers. `agent` is the canonical Privy-owned default
+            and gets the main-tier-eligible note. */}
+        {agent.kind === "agent" && (
+          <span>AGENT · Privy-owned · main-tier eligible.</span>
         )}
         {agent.kind === "benchmark" && (
           <span>BENCHMARK · system-curated comparison agent.</span>
+        )}
+        {agent.kind === "attested" && (
+          <span>ATTESTED · Olas Service Registry bond · sentinel tier.</span>
+        )}
+        {agent.kind === "internal_test" && (
+          <span>INTERNAL · operator-only test agent.</span>
         )}
       </div>
     </div>
@@ -389,8 +392,11 @@ function RCell({
 }
 
 function kindTone(kind: AgentProfile["kind"]): "pos" | "neg" | "dim" | "default" {
-  if (kind === "verified") return "pos";
-  if (kind === "shadow") return "neg";
+  // Wave 3 — `agent` is the canonical Privy-owned default and reads as
+  // the positive tone; `attested` is the sentinel (red) tier; everything
+  // else (benchmark, internal_test, stale legacy values) reads dim.
+  if (kind === "agent") return "pos";
+  if (kind === "attested") return "neg";
   return "dim";
 }
 

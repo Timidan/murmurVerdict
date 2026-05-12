@@ -9,14 +9,16 @@
 // for split-deploy setups (different origin for dashboard vs daemon).
 const API_URL = (import.meta.env.VITE_VERDICT_API_URL?.trim() || "") as string;
 
+// Wave 3 — collapsed enum under FHE-mandatory + Privy-only auth.
+// Dropped: 'shadow' (no scraping), 'wallet_only' (no HMAC claim),
+// 'verified' (no public-identity claim). Renamed: 'casual' → 'agent'
+// (canonical Privy-owned default). Keep this in sync with the backend
+// schema in src/verdict/schema.ts:AgentKindSchema.
 export type AgentKind =
-  | "verified"
   | "benchmark"
-  | "shadow"
+  // Canonical Privy-owned default — was "casual" pre-Wave-3.
+  | "agent"
   | "internal_test"
-  | "wallet_only"
-  // V2 §7.1 casual tier — indie operator, account-bound auth.
-  | "casual"
   // V2 §7.1 attested tier — Olas Service Registry bond + Safe multisig.
   | "attested";
 
@@ -271,9 +273,11 @@ export interface AccountAgent {
   display_slug: string | null;
   display_name: string | null;
   /**
-   * In v2 this is "casual" for accounts created via this flow. Older
-   * legacy bridges may surface other AgentKind values; UI should treat
-   * null defensively.
+   * Wave 3 — this is "agent" for accounts created via this flow (the
+   * canonical Privy-owned default). Older legacy bridges may surface
+   * other AgentKind values, or stale literals ("casual") from pre-Wave-3
+   * rows; UI should treat null defensively and let TierBadge's `unknown`
+   * fallback render anything outside the current 4-value enum.
    */
   kind: string | null;
   /**
@@ -311,7 +315,7 @@ export interface CreateAgentResponse {
   agent_id: string;
   display_slug: string;
   display_name: string;
-  kind: "casual";
+  kind: "agent";
   created_at: string;
 }
 

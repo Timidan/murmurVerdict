@@ -116,24 +116,28 @@ export function AgentPageBold({ slug }: { slug: string }) {
                     @{agent.display_slug}
                   </p>
                   <div className="mt-4 flex flex-wrap gap-2">
-                    {agent.kind === "shadow" && (
-                      <span className="t-button border-2 border-[var(--color-warning)] text-[var(--color-warning)] px-3 py-1">
-                        ▌ SHADOW
-                      </span>
-                    )}
-                    {agent.kind === "wallet_only" && (
+                    {/* Wave 3 — collapsed enum. Dropped shadow / wallet_only /
+                        verified badges; `agent` is the canonical Privy-owned
+                        default; benchmark / attested / internal_test keep
+                        their existing slots. */}
+                    {agent.kind === "agent" && (
                       <span className="t-button border-2 border-[var(--color-display)] text-[var(--color-display)] px-3 py-1">
-                        ▌ WALLET-ONLY
-                      </span>
-                    )}
-                    {agent.kind === "verified" && (
-                      <span className="t-button border-2 border-[var(--color-display)] text-[var(--color-display)] px-3 py-1">
-                        ▌ VERIFIED
+                        ▌ AGENT
                       </span>
                     )}
                     {agent.kind === "benchmark" && (
                       <span className="t-button border-2 border-[var(--color-secondary)] text-[var(--color-secondary)] px-3 py-1">
                         ▌ BENCHMARK
+                      </span>
+                    )}
+                    {agent.kind === "attested" && (
+                      <span className="t-button border-2 border-[var(--color-accent)] text-[var(--color-accent)] px-3 py-1">
+                        ▌ ATTESTED
+                      </span>
+                    )}
+                    {agent.kind === "internal_test" && (
+                      <span className="t-button border-2 border-[var(--color-secondary)] text-[var(--color-secondary)] px-3 py-1">
+                        ▌ INTERNAL
                       </span>
                     )}
                   </div>

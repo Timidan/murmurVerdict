@@ -49,8 +49,9 @@ import {
   type SubmissionContext,
 } from "./submissions.js";
 // Wave 1 — ClaimService import removed alongside src/verdict/claim.ts.
-import { DisputeService } from "./disputes.js";
-import { DisputeGroundsSchema, OracleFeedSchema } from "./schema.js";
+// Wave 3 — DisputeService + OracleFeedSchema (replay) imports removed;
+// the legacy plaintext-replay path was retired. FHE-aware disputes ship
+// in v0.3 under the production threshold committee.
 import { verifyAgentApiKey } from "./auth.js";
 import { getTodayFeed } from "./feed.js";
 import { renderBadgeSvg, renderOgSvg, rasterize } from "./badge.js";
@@ -89,11 +90,10 @@ export interface ApiDeps {
    * still checks DB writeability but reports oracle as `disabled`.
    */
   oracleProbe?: () => Promise<string | null>;
-  /** Optional DisputeService; defaults to a fresh instance bound to the same db. */
-  disputes?: DisputeService;
   /**
-   * Required to access /v1/disputes/:id/resolve. When unset, that route returns 503.
-   * v0.1 is admin-correct; token-staked governance ships post-TGE.
+   * Admin bearer token gating administrative routes (e.g. /v1/refs).
+   * Wave 3 — the legacy /v1/disputes/:id/resolve admin path was retired
+   * with the plaintext-replay service; FHE-aware disputes land in v0.3.
    */
   adminToken?: string;
   /**
@@ -107,7 +107,10 @@ export interface ApiDeps {
 export function createVerdictRouter(deps: ApiDeps): Router {
   const router = Router();
   const now = deps.now ?? (() => new Date());
-  const disputes = deps.disputes ?? new DisputeService({ db: deps.db });
+  // Wave 3 — DisputeService construction removed; the runtime service was
+  // deleted alongside the legacy plaintext-replay disputes path. The two
+  // /v1/disputes/* routes now return 410 Gone; FHE-aware disputes ship in
+  // v0.3 under the production threshold committee.
   const adminToken = deps.adminToken ?? process.env.VERDICT_ADMIN_TOKEN ?? "";
   const json = express.json({ limit: "32kb" });
 
@@ -1561,95 +1564,34 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   // manual claim for legacy shadow agents lands as a CLI in Wave 5
   // (no public route).
 
-  // ── Disputes ──
+  // ── Disputes (Wave 3 — retired) ──
+  //
+  // The legacy plaintext-replay dispute service was deleted in Wave 3 of
+  // the consolidated reshape. Under FHE-mandatory the prediction stays
+  // encrypted forever, so disputes can only be about the public OUTCOME
+  // (which the resolver re-resolves from the canonical oracle/adapter).
+  // FHE-aware disputes ship in v0.3 with the production threshold
+  // committee; both routes now return 410 Gone.
 
   router.post(
     "/v1/disputes",
-    json,
-    asyncHandler(async (req, res) => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      // Wave 4b: disputes now key on the call_id directly. Receipt hashes
-      // were retired alongside the receipts subsystem.
-      const target = body.target_call_id;
-      const grounds = body.grounds;
-      const filed_by = body.filed_by;
-      if (typeof target !== "string" || typeof grounds !== "string" || typeof filed_by !== "string") {
-        throw new VerdictError(
-          "target_call_id, grounds, and filed_by are required",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      const result = disputes.file({
-        target_call_id: target,
-        grounds: DisputeGroundsSchema.parse(grounds),
-        ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
-        filed_by,
-        now,
+    asyncHandler(async (_req, res) => {
+      res.status(410).json({
+        code: "endpoint_removed",
+        message:
+          "Disputes are deferred to v0.3 (FHE-aware transcript verification under the production threshold committee). The legacy plaintext-replay path was retired in Wave 3 of the consolidated reshape.",
       });
-      res.status(201).json(result);
     }),
   );
 
   router.post(
     "/v1/disputes/:dispute_id/resolve",
-    json,
-    asyncHandler(async (req, res) => {
-      if (!adminToken) {
-        throw new VerdictError(
-          "dispute resolution endpoint disabled (no admin token configured)",
-          ERROR_CODES.agent_not_authorized,
-          503,
-        );
-      }
-      const auth = req.header("authorization") ?? "";
-      const provided = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-      if (!safeStrEq(provided, adminToken)) {
-        throw new VerdictError(
-          "admin authorization required",
-          ERROR_CODES.agent_not_authorized,
-          403,
-        );
-      }
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const replay = body.replay as
-        | {
-            t1_replay?: { t1?: string; p1?: string; feed?: string };
-            t0_override?: { t0?: string; p0?: string; feed?: string };
-          }
-        | undefined;
-      const t1 = replay?.t1_replay;
-      if (!t1?.t1 || !t1.p1 || !t1.feed) {
-        throw new VerdictError(
-          "replay.t1_replay {t1, p1, feed} is required",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      const result = await disputes.resolve({
-        dispute_id: String(req.params.dispute_id ?? ""),
-        replay: {
-          t1_replay: {
-            t1: String(t1.t1),
-            p1: String(t1.p1),
-            feed: OracleFeedSchema.parse(t1.feed),
-          },
-          ...(replay?.t0_override?.t0 && replay.t0_override.p0 && replay.t0_override.feed
-            ? {
-                t0_override: {
-                  t0: String(replay.t0_override.t0),
-                  p0: String(replay.t0_override.p0),
-                  feed: OracleFeedSchema.parse(replay.t0_override.feed),
-                },
-              }
-            : {}),
-        },
-        ...(typeof body.accept_unchanged === "boolean"
-          ? { accept_unchanged: body.accept_unchanged }
-          : {}),
-        now,
+    asyncHandler(async (_req, res) => {
+      res.status(410).json({
+        code: "endpoint_removed",
+        message:
+          "Disputes are deferred to v0.3 (FHE-aware transcript verification under the production threshold committee). The legacy plaintext-replay path was retired in Wave 3 of the consolidated reshape.",
       });
-      res.status(200).json(result);
     }),
   );
 
@@ -2586,14 +2528,15 @@ non-production posture via \`MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1\`.
 
 ## Disputes
 
-Disputes today are about the public outcome — if you believe the
-resolver scored against the wrong public oracle reading, file a
-dispute at \`POST /v1/disputes\`. The resolver re-resolves against the
-canonical source; your prediction ciphertext stays encrypted regardless
-(scoring is deterministic given the ciphertext + the corrected
-outcome).
+Disputes are deferred to v0.3. The legacy plaintext-replay dispute path
+(\`POST /v1/disputes\` + \`POST /v1/disputes/:id/resolve\`) was retired in
+Wave 3 of the consolidated reshape — under FHE-mandatory the prediction
+stays encrypted forever, so disputes can only be about the public
+OUTCOME, and the v0.3 path is FHE-aware transcript verification under
+the production threshold committee. Both routes currently return
+\`410 endpoint_removed\`.
 
-There is no separate "decrypt the prediction" dispute path. The
+There is no "decrypt the prediction" dispute path now or in v0.3. The
 prediction stays private.
 
 ## Useful endpoints

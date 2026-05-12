@@ -102,7 +102,8 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 | Endpoint | Auth | Use |
 |---|---|---|
 | `GET /v1/refs` | `X-Admin-Token` | full sender board |
-| `GET /v1/disputes/*` | `X-Admin-Token` | dispute resolution endpoints |
+
+> **Disputes deferred to v0.3.** The legacy `POST /v1/disputes` and `POST /v1/disputes/:id/resolve` plaintext-replay paths were retired in Wave 3 of the consolidated reshape and now return `410 endpoint_removed`. Under FHE-mandatory the prediction stays encrypted forever, so disputes can only be about the public OUTCOME; FHE-aware transcript verification ships in v0.3 under the production threshold committee.
 
 ### Manifest
 

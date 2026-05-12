@@ -179,7 +179,7 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
                 {a.display_name ?? "—"}
               </div>
             </div>
-            <TierBadge kind={(a.kind as AgentKind | null) ?? "casual"} />
+            <TierBadge kind={(a.kind as AgentKind | null) ?? "agent"} />
             <a href={settingsHref} className="ck-btn">
               [ VIEW ]
             </a>
