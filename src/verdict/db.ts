@@ -3,6 +3,7 @@ import {
   AcceptedCall,
   AgentKind,
   AgentProfile,
+  AgentSecurityEvent,
   CallStatus,
   Outcome,
   SubmittedCall,
@@ -714,6 +715,26 @@ function applyMigrations(db: Database.Database): void {
       ["submissions", "submissions_v031"],
     );
     v = 31;
+  }
+
+  if (v < 32) {
+    // Wave 5 — agent_security_events: append-only audit log for
+    // operator/admin actions that mutate an agent's ownership or a
+    // sensitive registry slot. Emitters live next to the call sites
+    // (admin routes + admin-claim CLI) so a forensic timeline can be
+    // reconstructed without grep'ing application logs.
+    //
+    // Rows are intentionally NOT FK'd to agents.agent_id — the audit
+    // log must survive an admin-driven CASCADE delete of the agent
+    // row itself. The agent_id column carries the same string for
+    // forensics; lookup paths LEFT JOIN agents when they need the
+    // current row.
+    //
+    // Pure additive (CREATE TABLE IF NOT EXISTS), so it is safe to
+    // re-run on a half-applied state.
+    db.exec(MIGRATION_032);
+    v = 32;
+    set.run("schema_version", String(v));
   }
 }
 
@@ -2472,6 +2493,47 @@ const MIGRATION_031_SUBMISSIONS_REBUILD = `
     ON submissions(adapter_id) WHERE adapter_id IS NOT NULL;
 `;
 
+// ─── Migration 032 — agent_security_events ─────────────────────────────────
+//
+// Append-only audit log for admin/operator actions that mutate an agent's
+// ownership or a sensitive registry slot. Rows are intentionally NOT
+// FK'd to `agents` — an admin-driven CASCADE delete of the agent must
+// not erase the forensic trail. The string `agent_id` column carries the
+// same value for join purposes; lookup paths LEFT JOIN when they need
+// the current agent row.
+//
+// CHECK on `kind` keeps a closed taxonomy at the SQL layer so any
+// emitter that adds a new event class also adds a row here (and to
+// AgentSecurityEventKindSchema in schema.ts). Pure additive — safe to
+// re-run via CREATE TABLE IF NOT EXISTS.
+const MIGRATION_032 = `
+  CREATE TABLE IF NOT EXISTS agent_security_events (
+    event_id     TEXT PRIMARY KEY,
+    agent_id     TEXT,
+    account_id   TEXT,
+    kind         TEXT NOT NULL CHECK (kind IN (
+      'admin_claim',
+      'admin_polymarket_upsert',
+      'admin_market_status_change',
+      'admin_ref_delete',
+      'admin_account_unlink'
+    )),
+    actor        TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_security_events_agent
+    ON agent_security_events(agent_id)
+    WHERE agent_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_agent_security_events_account
+    ON agent_security_events(account_id)
+    WHERE account_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_agent_security_events_kind
+    ON agent_security_events(kind);
+  CREATE INDEX IF NOT EXISTS idx_agent_security_events_created
+    ON agent_security_events(created_at DESC);
+`;
+
 const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
   {
     table: "t1_resolutions",
@@ -3548,6 +3610,79 @@ export interface RefClickRow {
   converted_count: number;
   last_conversion_at: string | null;
 }
+
+// ─── Agent security events (Wave 5) ─────────────────────────────────────────
+//
+// Append-only audit log for admin/operator actions. See MIGRATION_032 and
+// `AgentSecurityEventSchema` in schema.ts for the taxonomy. Rows are
+// intentionally NOT FK'd to `agents` so a CASCADE delete of an agent (e.g.
+// recovery / unbind path) doesn't erase the forensic trail.
+
+export interface AgentSecurityEventRow {
+  event_id: string;
+  agent_id: string | null;
+  account_id: string | null;
+  kind: AgentSecurityEvent["kind"];
+  actor: string;
+  payload_json: string;
+  created_at: string;
+}
+
+export const agentSecurityEventsRepo = {
+  /**
+   * Emit a security event. The caller pre-builds the AgentSecurityEvent
+   * shape (with payload as a parsed object) and this repo handles the
+   * JSON encoding + write.
+   */
+  emit(db: Database.Database, event: AgentSecurityEvent): void {
+    prep(
+      db,
+      `INSERT INTO agent_security_events
+       (event_id, agent_id, account_id, kind, actor, payload_json, created_at)
+       VALUES (@event_id, @agent_id, @account_id, @kind, @actor, @payload_json, @created_at)`,
+    ).run({
+      event_id: event.event_id,
+      agent_id: event.agent_id,
+      account_id: event.account_id,
+      kind: event.kind,
+      actor: event.actor,
+      payload_json: JSON.stringify(event.payload),
+      created_at: event.created_at,
+    });
+  },
+
+  /** Recent events for an agent, newest first. Audit-time read path. */
+  listForAgent(
+    db: Database.Database,
+    agent_id: string,
+    limit = 50,
+  ): AgentSecurityEventRow[] {
+    return prep(
+      db,
+      `SELECT event_id, agent_id, account_id, kind, actor, payload_json, created_at
+       FROM agent_security_events
+       WHERE agent_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    ).all(agent_id, limit) as AgentSecurityEventRow[];
+  },
+
+  /** Recent events by kind — useful for admin-side dashboards. */
+  listByKind(
+    db: Database.Database,
+    kind: AgentSecurityEvent["kind"],
+    limit = 50,
+  ): AgentSecurityEventRow[] {
+    return prep(
+      db,
+      `SELECT event_id, agent_id, account_id, kind, actor, payload_json, created_at
+       FROM agent_security_events
+       WHERE kind = ?
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    ).all(kind, limit) as AgentSecurityEventRow[];
+  },
+};
 
 export const refsRepo = {
   /** Bump the (ref, agent_slug) counter. Creates the row on first hit. */

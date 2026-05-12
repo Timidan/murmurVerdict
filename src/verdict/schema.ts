@@ -775,6 +775,56 @@ export const UsageEventSchema = z
   .strict();
 export type UsageEvent = z.infer<typeof UsageEventSchema>;
 
+// ─── Agent security events (Wave 5) ──────────────────────────────────────────
+//
+// Append-only audit log for admin/operator actions that mutate an agent's
+// ownership or a sensitive registry slot. The closed enum mirrors the SQL
+// CHECK in MIGRATION_032 — adding a new event class requires touching both
+// surfaces so emitters can't quietly grow the taxonomy unobserved.
+export const AgentSecurityEventKindSchema = z.enum([
+  // Operator manually attached an agent to an account (e.g. recovery
+  // path when an operator loses Privy access). Emitted by the
+  // admin-claim CLI.
+  "admin_claim",
+  // Operator upserted a Polymarket conditionId via POST
+  // /v1/admin/markets/polymarket.
+  "admin_polymarket_upsert",
+  // Operator transitioned a registry market between
+  // draft/listed/frozen/retired via an admin route. Not wired in
+  // Wave 5 itself; reserved here so the taxonomy stays stable.
+  "admin_market_status_change",
+  // Operator deleted a ref_clicks bucket via DELETE /v1/refs/:ref.
+  "admin_ref_delete",
+  // Operator detached an agent from an account via the admin-claim
+  // CLI's `--unlink` flag (recovery path for a slug that was claimed
+  // to the wrong account). Not wired in Wave 5; reserved for a v0.3
+  // follow-up.
+  "admin_account_unlink",
+]);
+export type AgentSecurityEventKind = z.infer<
+  typeof AgentSecurityEventKindSchema
+>;
+
+export const AgentSecurityEventSchema = z
+  .object({
+    event_id: z.string().uuid(),
+    /** UUID when the action targets an existing agent; null for events
+     *  whose `kind` operates on a different scope (e.g. ref bucket). */
+    agent_id: z.string().uuid().nullable(),
+    /** UUID when the action attaches/detaches an agent to an account;
+     *  null for admin-only mutations that don't touch ownership. */
+    account_id: z.string().uuid().nullable(),
+    kind: AgentSecurityEventKindSchema,
+    /** Free-text actor tag — e.g. 'admin_token' for HTTP routes or
+     *  'cli:admin-claim' for tools/operations/admin-claim.ts. Read-only
+     *  forensic context, never load-bearing for auth. */
+    actor: z.string().min(1).max(64),
+    payload: z.record(z.string(), z.unknown()).default({}),
+    created_at: z.string().datetime({ offset: false }),
+  })
+  .strict();
+export type AgentSecurityEvent = z.infer<typeof AgentSecurityEventSchema>;
+
 // ─── Claim challenge (Challenge-Link flow) ───────────────────────────────────
 
 export const ClaimChallengeSchema = z

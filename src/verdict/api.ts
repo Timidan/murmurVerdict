@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import express from "express";
 import type Database from "better-sqlite3";
 import {
+  agentSecurityEventsRepo,
   agentsRepo,
   callRevealsRepo,
   marketsRepo,
@@ -1225,6 +1226,24 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         status,
         created_at,
       });
+      // Wave 5 — append a security event for the upsert. The admin token
+      // is the only authorization, so logging here lets a post-incident
+      // sweep reconstruct who registered which conditionId without
+      // grepping application logs.
+      agentSecurityEventsRepo.emit(deps.db, {
+        event_id: randomUUID(),
+        agent_id: null,
+        account_id: null,
+        kind: "admin_polymarket_upsert",
+        actor: "admin_token",
+        payload: {
+          conditionId,
+          status,
+          horizon_seconds: horizonSec,
+          slug: slugCandidate ?? null,
+        },
+        created_at,
+      });
       const row = marketsRepo.get(deps.db, conditionId);
       res.status(201).json({
         schema_version: SCHEMA_VERSION,
@@ -1251,6 +1270,18 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       return;
     }
     const info = deps.db.prepare("DELETE FROM ref_clicks WHERE ref = ?").run(ref);
+    // Wave 5 — append a security event for the delete. Useful for
+    // reconstructing which ref buckets an operator scrubbed (and when)
+    // without keeping the deleted rows around.
+    agentSecurityEventsRepo.emit(deps.db, {
+      event_id: randomUUID(),
+      agent_id: null,
+      account_id: null,
+      kind: "admin_ref_delete",
+      actor: "admin_token",
+      payload: { ref, deleted_rows: info.changes },
+      created_at: nowIso(now()),
+    });
     res.json({ deleted: info.changes });
   });
 
