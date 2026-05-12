@@ -2354,6 +2354,9 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         signature,
         ...(chain_id ? { chain_id } : {}),
         origin: `${req.protocol}://${req.get("host")}`,
+        // SECURITY: forward route slug so the service refuses
+        // cross-slug finalizes (codex slug-takeover review).
+        url_slug: String(req.params.slug ?? ""),
         now,
       });
       res.status(200).json(result);
@@ -2380,6 +2383,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         signature,
         post_url,
         origin: `${req.protocol}://${req.get("host")}`,
+        // SECURITY: forward route slug. See walletOnlyFinalize above.
+        url_slug: String(req.params.slug ?? ""),
         now,
       });
       // Outreach attribution: if the visitor arrived via /share/<slug>?ref=<sender>,

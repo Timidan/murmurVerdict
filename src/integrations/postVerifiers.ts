@@ -78,26 +78,42 @@ export class TelegramPostVerifier implements PostVerifier {
   }
 }
 
-// ─── XPostVerifier (structured-link self-attest) ─────────────────────────────
+// ─── XPostVerifier (HARD-DISABLED pending Privy X connector) ─────────────────
 //
-// X (Twitter) gates programmatic post-content reads behind a paid API tier
-// that's prohibitive for an early-stage launch. We ship a pragmatic
-// substitute: the operator provides a `post_url` whose structure encodes the
-// challenge cryptographically. Specifically we accept the post URL only if
-// the URL itself contains the challenge_text fragment after a known marker.
+// SECURITY: a prior version of this verifier returned `true` after only
+// checking that the post URL pointed at the right X handle (via
+// `parseXPostUrl` + `matchesIdentity`) and that the URL HEAD'd 200. It
+// did NOT verify that the post actually contained the challenge text.
+// The comment block (preserved below for the historical record) claimed
+// the URL structure plus wallet signature made forgery require both
+// posting access AND the wallet private key — that reasoning is wrong:
 //
-// Concretely, the operator posts on X:
-//   "claiming murmur agent <slug>: <challenge_text> — verify at murmur.xyz/v/<slug>"
-// AND submits a `post_url` that includes a #murmur-verify=<base64(text)>
-// fragment we add to the dashboard's claim wizard. This is weaker than
-// reading the post directly, but the wallet signature on the same nonce
-// (already verified by ClaimService) makes a forgery require BOTH the wallet
-// and the X handle's posting ability — same security as the Telegram path
-// modulo the paid-API gap.
+//   * Shadow-X agents on Murmur are scraped from public X handles. Any
+//     historical tweet URL from the target handle already exists.
+//   * An attacker provides their OWN wallet signature over their OWN
+//     nonce. The wallet sig proves they control the wallet, not the X
+//     account.
+//   * So an attacker can take ANY existing tweet URL from a high-rep
+//     X handle and use it to claim the corresponding shadow-X agent.
+//     Reputation laundering, fully automated.
 //
-// In short: this verifier is "trust the URL fragment + rely on wallet sig
-// for the binding." Document it that way to operators. Future: swap for full
-// X API verification once we can justify the cost.
+// Until the Privy X connector lands (OAuth-based proof that the
+// connected Privy account also owns the X handle), this verifier
+// returns FALSE unconditionally for the X identity kind. Legitimate
+// shadow-X agent owners must claim via Telegram identity (which has
+// real text verification via t.me/<channel>/<id>?embed=1 preview) or
+// wait for the Privy X path.
+//
+// Historical design intent (DO NOT REVIVE without a real text-content
+// check via paid X API or oEmbed — both have their own reliability
+// issues but at least surface actual tweet content):
+//
+//   "X (Twitter) gates programmatic post-content reads behind a paid
+//   API tier that's prohibitive for an early-stage launch. We ship a
+//   pragmatic substitute: the operator provides a `post_url` whose
+//   structure encodes the challenge cryptographically..." [the rest of
+//   the original comment block elided — it described a #fragment hack
+//   that was never actually implemented in the verifier body.]
 
 export interface XPostVerifierOpts {
   /** Inject for tests. */
@@ -124,42 +140,22 @@ export class XPostVerifier implements PostVerifier {
     expected_text: string;
     post_url: string;
   }): Promise<boolean> {
-    if (args.target_identity.kind !== "x") return false;
-
-    const parsed = parseXPostUrl(args.post_url);
-    if (!parsed) return false;
-    if (!matchesIdentity(parsed.handle, args.target_identity.value)) return false;
-
-    // Best-effort liveness check — confirm the URL actually returns 200 (vs
-    // 404 / DNS fail / blocked). This doesn't read the post content (X
-    // returns a blank shell to unauthed scrapers) but it does prevent
-    // submission of fake URLs. The real binding remains the wallet sig.
-    if (this.fetchPost) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
-      try {
-        const res = await this.fetchImpl(args.post_url, {
-          signal: ctrl.signal,
-          method: "HEAD",
-        });
-        clearTimeout(timer);
-        if (!res.ok && res.status !== 405) return false; // 405 = Method not allowed, fall through
-      } catch {
-        clearTimeout(timer);
-        return false;
-      }
-    }
-
-    // We CANNOT read the post body without paid X API. The trust model is:
-    //   - Wallet signature on nonce is the cryptographic binding.
-    //   - The post URL is structural proof the operator has posting rights
-    //     on that handle (since X URLs include the handle).
-    //   - The expected_text is published in the challenge_text and signed by
-    //     the wallet, making forgery require both posting access AND the
-    //     wallet's private key.
-    // This is NOT as strong as reading the post body. Document accordingly.
+    // SECURITY: hard-disabled. See file-level comment block. Returning
+    // false unconditionally for X identity means shadow-X agents cannot
+    // be claimed via the legacy wallet flow until Privy X connector
+    // (OAuth) lands. This intentionally breaks the legacy onboarding
+    // path for X-handle agents — the alternative is leaving a known
+    // reputation-laundering hole open.
+    //
+    // Touch args so the compiler doesn't flag them unused; preserves
+    // the interface contract for the CompositeVerifier dispatcher.
+    void args.target_identity;
     void args.expected_text;
-    return true;
+    void args.post_url;
+    void this.fetchImpl;
+    void this.timeoutMs;
+    void this.fetchPost;
+    return false;
   }
 }
 
