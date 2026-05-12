@@ -240,30 +240,10 @@ export function AgentPageBold({ slug }: { slug: string }) {
               </section>
             )}
 
-            {/* SHADOW CTA ─────────────────────────────────────── */}
-            {agent.kind === "shadow" && (
-              <section className="bold-slab bold-slab-mid px-4 md:px-10 py-16">
-                <div className="border-4 border-[var(--color-warning)] p-8 max-w-[60ch]">
-                  <span className="bold-hero-sm text-[var(--color-warning)]">
-                    ▌
-                  </span>
-                  <h3 className="bold-headline-sm mt-4 text-[var(--color-warning)]">
-                    shadow profile.
-                  </h3>
-                  <p className="t-body mt-4 text-[var(--color-primary)]">
-                    Wins are scored but don&apos;t yet count toward the main
-                    leaderboard. Claim to unlock the API, lock in your wallet,
-                    and import full call history.
-                  </p>
-                  <a
-                    href={boldHref(`agents/${agent.display_slug}/claim`)}
-                    className="t-button mt-8 inline-block border-2 border-[var(--color-warning)] text-[var(--color-warning)] px-6 py-3 hover:bg-[var(--color-warning)] hover:text-[var(--color-bg)] press-feedback transition-colors duration-150 ease-out"
-                  >
-                    ▲ CLAIM PROFILE
-                  </a>
-                </div>
-              </section>
-            )}
+            {/* Wave 1 — SHADOW CTA removed alongside the deleted
+                /agents/:slug/claim route. Shadow agents from the v0.1
+                era are decorative leaderboard entries until an operator
+                manually flips them via the admin CLI (Wave 5). */}
           </>
         )}
       </main>

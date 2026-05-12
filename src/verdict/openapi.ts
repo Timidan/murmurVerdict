@@ -348,66 +348,12 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           },
         },
       },
-      "/v1/agents/{slug}/claim/wallet-only/init": {
-        post: {
-          tags: ["claim"],
-          summary: "Self-onboarding: start a wallet-only claim. No public identity required; the wallet IS the identity. Slug self-mint allowed for non-reserved slugs.",
-          parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string", minLength: 3, maxLength: 32 } }],
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["wallet_to_bind"],
-                  properties: {
-                    wallet_to_bind: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" },
-                    chain_id: { type: "string", description: "CAIP-2, default eip155:8453" },
-                    display_name: { type: "string", maxLength: 64 },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            "201": { description: "Challenge issued; sign the canonical message" },
-            "400": { description: "Invalid slug or wallet" },
-            "403": { description: "Reserved slug" },
-            "409": { description: "Slug already claimed" },
-            "429": { description: "Rate limited or pending challenge exists" },
-          },
-        },
-      },
-      "/v1/agents/{slug}/claim/wallet-only/finalize": {
-        post: {
-          tags: ["claim"],
-          summary: "Verify the wallet signature and issue the API key. Single-use per challenge_id.",
-          parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["challenge_id", "signature"],
-                  properties: {
-                    challenge_id: { type: "string", format: "uuid" },
-                    signature: { type: "string", pattern: "^0x[0-9a-fA-F]+$" },
-                    chain_id: { type: "string" },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            "200": { description: "API key issued; agent kind=wallet_only" },
-            "403": { description: "Signature did not verify" },
-            "404": { description: "Challenge not found" },
-            "409": { description: "Challenge already finalized OR wrong flow (use /claim/finalize for X/Telegram)" },
-            "410": { description: "Challenge expired" },
-          },
-        },
-      },
+      // Wave 1 (consolidated reshape) — /v1/agents/{slug}/claim/*
+      // routes deleted from the runtime and from this spec. Public-
+      // identity (X/Telegram) verification + wallet-only self-mint
+      // are both gone; new agents are minted under a Privy account
+      // via POST /v1/account/agents (see the account router; not yet
+      // surfaced in this top-level spec).
       "/v1/refs/{ref}/click": {
         post: {
           tags: ["outreach"],
