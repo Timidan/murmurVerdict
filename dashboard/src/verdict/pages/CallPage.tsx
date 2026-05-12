@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { verdictApi, type FullCall } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
+import { PrivacyTierBadge } from "../components/PrivacyTierBadge.js";
 
 export function CallPage({ callId }: { callId: string }) {
   const [data, setData] = useState<FullCall | null>(null);
@@ -22,17 +23,33 @@ export function CallPage({ callId }: { callId: string }) {
     };
   }, [callId]);
 
-  const scrubbed =
+  // "SEALED" — body is age-encrypted under daemon key, plaintext fields
+  // (side / asset_id / horizon_hours) are scrubbed until reveal.
+  const sealed =
     data?.submission.privacy_mode === "committed" && data.submission.side === undefined;
+  // "BLIND" — prediction is FHE-encrypted under threshold keyset; the
+  // daemon cannot decrypt the prediction at all, so the same plaintext
+  // fields are not just scrubbed but never existed for the operator.
+  const blind = data?.submission.privacy_mode === "fhe_direct";
+  // signed_return is native-price-shaped (returns over a price oracle
+  // window). FHE-direct calls resolve to a released bounded score with
+  // no return concept; rendering signed_return would either lie (null
+  // formatted as "—%") or leak nothing useful.
+  const showSignedReturn =
+    !blind && data?.resolution?.signed_return !== null && data?.resolution?.signed_return !== undefined;
   const subjectLabel = !data
     ? ""
-    : scrubbed
+    : sealed
       ? "COMMITTED · SEALED"
-      : `${data.submission.side} · ${data.submission.asset_id?.split(":").pop()} · ${data.submission.horizon_hours}H`;
+      : blind
+        ? "FHE-DIRECT · BLIND"
+        : `${data.submission.side} · ${data.submission.asset_id?.split(":").pop()} · ${data.submission.horizon_hours}H`;
   const outcomeText = !data
     ? ""
     : data.resolution
-      ? `${data.resolution.outcome.toUpperCase()} · ${(Number(data.resolution.signed_return) * 100).toFixed(2)}%`
+      ? showSignedReturn
+        ? `${data.resolution.outcome.toUpperCase()} · ${(Number(data.resolution.signed_return) * 100).toFixed(2)}%`
+        : data.resolution.outcome.toUpperCase()
       : "PEND";
   const outcomeTone = !data
     ? "ck-dim"
@@ -78,7 +95,10 @@ export function CallPage({ callId }: { callId: string }) {
               <Kv k="call_id" v={data.submission.call_id} mono />
               <Kv k="agent_id" v={data.submission.agent_id} mono />
               {data.submission.privacy_mode && (
-                <Kv k="privacy_mode" v={data.submission.privacy_mode} />
+                <div className="flex items-center justify-between px-2 py-1">
+                  <span className="ck-label ck-dim">privacy_mode</span>
+                  <PrivacyTierBadge mode={data.submission.privacy_mode} />
+                </div>
               )}
               {data.submission.commit_hash && (
                 <Kv k="commit_hash" v={data.submission.commit_hash} mono />
@@ -111,10 +131,12 @@ export function CallPage({ callId }: { callId: string }) {
                   <Kv k="t1" v={data.resolution.t1} />
                   <Kv k="p1" v={data.resolution.p1} />
                   <Kv k="t1_feed" v={data.resolution.t1_feed} />
-                  <Kv
-                    k="signed_return"
-                    v={`${(Number(data.resolution.signed_return) * 100).toFixed(3)}%`}
-                  />
+                  {showSignedReturn && (
+                    <Kv
+                      k="signed_return"
+                      v={`${(Number(data.resolution.signed_return) * 100).toFixed(3)}%`}
+                    />
+                  )}
                   {data.resolution.call_score !== null && (
                     <Kv k="call_score" v={data.resolution.call_score.toFixed(4)} />
                   )}

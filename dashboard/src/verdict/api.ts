@@ -40,6 +40,18 @@ export interface MetaResponse {
   strategy_tags: string[];
   assets: string[];
   verified_volume_24h: { count: number; since_iso: string };
+  /** Z0+/Z3 — operator-blind privacy block. `threshold_mode` is the
+   *  load-bearing field for the dashboard's FheStatusPanel:
+   *    - "mock" / "stub"        → development-only postures, banner displays
+   *    - "mock_quorum"          → Z3 5-of-9 in-process pool; non-prod
+   *    - "production"           → real KMS/committee (Z5)
+   *  null means MURMUR_FHE_DIRECT_ENABLED is off. */
+  privacy?: {
+    fhe_direct_enabled: boolean;
+    provider: string | null;
+    active_keyset_id: string | null;
+    threshold_mode: string | null;
+  };
 }
 
 export interface AgentProfile {

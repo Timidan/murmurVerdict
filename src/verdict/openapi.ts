@@ -164,7 +164,8 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           summary:
             "Submit a market call as a universal Commitment (V2 §2.2). Tier-aware auth — casual (Privy or account API key) and legacy (single-key API agents) accepted; wallet HMAC must use /v1/calls until Phase 8 EIP-712.",
           description:
-            "Body shape: { marketRef:{protocol,sourceId,configVersion}, predictedOutcome:{kind,payoutNumerators,payoutDenominator}, horizon:{iso}, confidence, client_order_id, rationale|strategy_tag }. Auth tiers: Authorization: Bearer <privy-jwt> → casual; X-Murmur-Api-Key → casual or legacy; HMAC → wallet_legacy (rejected 426). Adapter dispatch by marketRef.protocol; only 'native-price' registered at v2.0 (others 422).",
+            "Body shape: { marketRef:{protocol,sourceId,configVersion}, predictedOutcome:{kind,payoutNumerators,payoutDenominator}, horizon:{iso}, confidence, client_order_id, rationale|strategy_tag }. Auth tiers: Authorization: Bearer <privy-jwt> → casual; X-Murmur-Api-Key → casual or legacy; HMAC → wallet_legacy (rejected 426). Adapter dispatch by marketRef.protocol; only 'native-price' registered at v2.0 (others 422). " +
+            "Privacy: pass `privacy_mode='fhe_direct'` together with the `fhe` block to submit operator-blind — the daemon stores only the ciphertext; the prediction is decryptable only by a 5-of-9 threshold committee after market resolution (no single party, including the operator, can decrypt). Otherwise the submission is plaintext.",
           requestBody: {
             required: true,
             content: {
@@ -246,9 +247,55 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
                     },
                     privacy_mode: {
                       type: "string",
-                      enum: ["legacy_plaintext"],
+                      enum: ["legacy_plaintext", "fhe_direct"],
                       description:
-                        "Casual tier locked to legacy_plaintext at v2.0; committed mode requires Phase 8 wallet auth.",
+                        "Trust posture for the submitted prediction. " +
+                        "`legacy_plaintext` (default) writes side/confidence/horizon to the daemon DB and is operator-readable. " +
+                        "`fhe_direct` encrypts the prediction under a threshold keyset (Zama TFHE-rs); the daemon CANNOT decrypt the prediction alone — only a 5-of-9 threshold-key committee can release the bounded score after the market resolves. " +
+                        "When `fhe_direct` is set, supply the `fhe` block instead of `predictedOutcome`/`horizon`/`confidence`. " +
+                        "Casual tier accepts both modes; `committed` mode (age-encrypted body with reveal) requires Phase 8 wallet auth and is not yet exposed here. " +
+                        "See /v1/meta.privacy.threshold_mode for the active committee posture (mock / stub / mock_quorum / production).",
+                    },
+                    fhe: {
+                      type: "object",
+                      description:
+                        "Required when privacy_mode='fhe_direct'. The encrypted predicted outcome ciphertext plus binding metadata. The daemon never sees the plaintext payoutNumerators — the resolver scores against the ciphertext under the threshold keyset, and only the bounded score is released by the committee. See docs/operator-blind-privacy-plan.md §3.",
+                      required: [
+                        "keyset_id",
+                        "circuit_id",
+                        "encrypted_predicted_outcome",
+                        "ciphertext_hash",
+                        "vector_len",
+                        "payout_denominator",
+                        "nonce",
+                      ],
+                      properties: {
+                        keyset_id: { type: "string", minLength: 1, maxLength: 128 },
+                        circuit_id: { type: "string", minLength: 1, maxLength: 128 },
+                        encrypted_predicted_outcome: {
+                          type: "string",
+                          description: "Base64 ciphertext bytes",
+                          maxLength: 262144,
+                        },
+                        ciphertext_hash: {
+                          type: "string",
+                          pattern: "^[0-9a-f]{64}$",
+                          description:
+                            "sha256(ciphertext_bytes) — hashed at submit time and bound into the public commit_hash",
+                        },
+                        vector_len: { type: "integer", minimum: 2, maximum: 256 },
+                        payout_denominator: {
+                          type: "string",
+                          pattern: "^[1-9][0-9]*$",
+                          description: "Public denominator the bounded score is divided by",
+                        },
+                        nonce: {
+                          type: "string",
+                          pattern: "^[0-9a-f]{64}$",
+                          description: "32-byte hex agent entropy; daemon rejects duplicates per (agent_id, nonce)",
+                        },
+                      },
+                      additionalProperties: false,
                     },
                   },
                   additionalProperties: false,

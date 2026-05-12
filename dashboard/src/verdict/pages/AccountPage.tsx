@@ -13,6 +13,7 @@
 import { useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { TierBadge } from "../components/TierBadge.js";
+import { FheStatusPanel } from "../components/FheStatusPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import type { AccountAgent, AgentKind } from "../api.js";
@@ -149,6 +150,7 @@ export function AccountPage() {
             <AgentList agents={account.agents} />
           )}
         </section>
+        <FheStatusPanel />
       </main>
     </div>
   );
