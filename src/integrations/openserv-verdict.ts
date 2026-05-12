@@ -4,14 +4,17 @@ import type Database from "better-sqlite3";
 import { agentsRepo, resolutionsRepo, submissionsRepo } from "../verdict/db.js";
 import { getLeaderboard, get24hVerifiedVolume } from "../verdict/leaderboard.js";
 import {
+  // Wave 2b — REGISTERED_STRATEGY_TAGS + VerdictError were used only
+  // by the deleted submit_call capability's input schema + error
+  // handler. ERROR_CODES + schema versions remain in use by read tools.
   ERROR_CODES,
-  REGISTERED_STRATEGY_TAGS,
   SCHEMA_VERSION,
   SCORING_VERSION,
-  VerdictError,
 } from "../verdict/schema.js";
-import { submitCall, type SubmissionContext } from "../verdict/submissions.js";
-import { verifyAgentApiKey } from "../verdict/auth.js";
+// Wave 2b — submitCall + verifyAgentApiKey imports removed alongside
+// the deleted submit_call capability. The remaining capabilities are
+// read-only (get_call, get_agent_calls, get_leaderboard).
+import type { SubmissionContext } from "../verdict/submissions.js";
 import { projectCallRow } from "../verdict/projections.js";
 
 // ─── Public params ───────────────────────────────────────────────────────────
@@ -28,20 +31,9 @@ export interface StartVerdictOpenServParams {
 // Ensures we don't double-construct the agent in dev hot-reloads.
 let singleton: Agent | null = null;
 
-const SUBMIT_INPUT = z.object({
-  agent_id: z.string().uuid(),
-  api_key: z.string().min(16).max(128),
-  client_order_id: z.string().min(8).max(128),
-  asset_id: z.literal("base:ETH:USD"),
-  side: z.enum(["BUY", "SELL"]),
-  horizon_hours: z.union([z.literal(1), z.literal(4), z.literal(24), z.literal(168)]),
-  confidence: z.number().min(0.51).max(0.95),
-  submitted_at: z.string().datetime({ offset: false }),
-  rationale: z.string().max(240).optional(),
-  strategy_tag: z.enum(REGISTERED_STRATEGY_TAGS).optional(),
-  privacy_mode: z.enum(["committed", "legacy_plaintext"]).optional(),
-  salt: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
-});
+// Wave 2b — SUBMIT_INPUT schema deleted alongside the submit_call
+// capability. The plaintext input shape (side/asset_id/horizon_hours/
+// confidence/privacy_mode/salt) doesn't survive FHE-mandatory.
 
 const ID_INPUT = z.object({ call_id: z.string().uuid() });
 const SLUG_INPUT = z.object({ slug: z.string().min(3).max(48) });
@@ -77,47 +69,14 @@ export async function startVerdictOpenServAgent(
   });
 
   agent.addCapabilities([
-    {
-      name: "submit_call",
-      description:
-        "Submit a market call (BUY/SELL ETH on Base over a 1/4/24/168h horizon with 0.51–0.95 confidence). Returns the call_id + oracle policy. Counts toward the agent's leaderboard rank when the call resolves against canonical Chainlink/Pyth feeds.",
-      schema: SUBMIT_INPUT,
-      async run({ args }) {
-        // Auth via API key issued by the claim flow; same trust boundary as
-        // POST /v1/calls. The OpenServ caller identity from the SDK is not
-        // currently used as the auth principal — agents bring their own key.
-        try {
-          verifyAgentApiKey(params.db, args.agent_id, args.api_key);
-        } catch (err) {
-          if (err instanceof VerdictError) {
-            return jsonError(err.httpStatus, err.code, err.message);
-          }
-          throw err;
-        }
-        const { api_key: _ignored, ...payload } = args;
-        void _ignored;
-        try {
-          const result = await submitCall({
-            db: params.db,
-            ctx: params.ctx,
-            identity: { agent_id: args.agent_id },
-            payload: { schema_version: SCHEMA_VERSION, ...payload },
-          });
-          return JSON.stringify({
-            kind: "verdict_submission",
-            schema_version: SCHEMA_VERSION,
-            scoring_version: SCORING_VERSION,
-            ok: true,
-            ...result,
-          });
-        } catch (err) {
-          if (err instanceof VerdictError) {
-            return jsonError(err.httpStatus, err.code, err.message, err.context);
-          }
-          throw err;
-        }
-      },
-    },
+    // Wave 2b — submit_call capability removed alongside the MCP
+    // submit_call removal in Wave 2a. The OpenServ capability posted
+    // plaintext {asset_id, side, horizon_hours, confidence, privacy_mode}
+    // payloads to submitCall(), which now rejects every non-fhe_direct
+    // submission at the schema layer. FHE-direct submission requires
+    // client-side ciphertext encryption against the active threshold
+    // keyset — that's a separate SDK surface, not in scope for an
+    // OpenServ agent capability.
     {
       name: "get_call",
       description:

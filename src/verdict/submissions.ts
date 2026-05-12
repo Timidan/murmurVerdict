@@ -969,16 +969,26 @@ async function submitFheDirectCall(args: {
         commit_hash: fheCommit.commit_hash,
         commit_scheme: "keccak256",
       });
-      // Null the plaintext-prediction columns the legacy repo just
-      // wrote. We want fhe_direct rows to be operator-blind — even
-      // the side/asset/horizon/confidence columns must be cleared so
-      // a future projection (Today Tape, SSE) reading `submissions.*`
-      // can't accidentally surface a placeholder value.
-      db.prepare(
-        `UPDATE submissions
-         SET side = NULL, asset_id = NULL, horizon_hours = NULL, confidence = NULL
-         WHERE call_id = ?`,
-      ).run(call_id);
+      // Wave 2b — DON'T null the plaintext-prediction columns. The
+      // operator-blind invariant is enforced at the PROJECTION layer
+      // (projectCallRow returns operator-blind only; no plaintext is
+      // ever surfaced on /v1/agents/:slug/calls, /v1/feed/today,
+      // /v1/calls/:id, SSE events, RSS, MCP). The columns themselves
+      // hold MEANINGLESS PLACEHOLDERS for FHE rows:
+      //   side='BUY' (fixed default from the legacy insert path)
+      //   asset_id='base:ETH:USD' (default native-price asset)
+      //   horizon_hours=1 (default)
+      //   confidence=0.51 (default)
+      // These placeholders are needed because the resolver's native-
+      // price encrypted-scoring path threads `side` into the adapter's
+      // observeResolution context (codex Wave 2b review BLOCKER E:
+      // nulling side broke the native-price FHE scoring path). Wave 3
+      // drops these columns outright, at which point this comment
+      // becomes obsolete and the placeholders disappear.
+      //
+      // The TRUE prediction lives encrypted in fhe_call_ciphertexts
+      // and never decrypts on the daemon side; the threshold committee
+      // releases only the bounded score after resolution.
       insertFheCiphertext({
         db,
         call_id,
