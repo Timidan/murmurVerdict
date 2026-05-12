@@ -203,7 +203,7 @@ export class Resolver {
       // policy would previously throw out of the per-call loop and crash
       // the entire pass. Bound the throw to this call: log + route to
       // oracle_unavailable so the rest of the tick keeps making progress.
-      let policy: T0Policy;
+      let policy: T0Policy | null;
       try {
         policy = this.policyFromCtx(ctx);
       } catch (err) {
@@ -218,6 +218,24 @@ export class Resolver {
         if (await this.markOracleUnavailable(ctx, "t0")) {
           oracleUnavailable++;
         }
+        continue;
+      }
+      // Wave 4a — adapter-resolved markets (Polymarket Gamma + future
+      // event-feed adapters) return null policy. They don't anchor
+      // against a price feed at t0; the t1 path's adapter.observeResolution
+      // dispatch is the only resolution surface. Skip the t0 anchor step
+      // and move the call straight into pending_t1 so the t1 loop picks it
+      // up next tick.
+      if (policy === null) {
+        if (ctx.status === "accepted") {
+          submissionsRepo.setStatus(this.db, ctx.call_id, "pending_t1");
+        }
+        this.log({
+          kind: "still_pending",
+          call_id: ctx.call_id,
+          phase: "t0",
+          reason: "adapter_resolved_market:no_t0_anchor",
+        });
         continue;
       }
       const outcome = await this.tryAnchor({
@@ -275,22 +293,17 @@ export class Resolver {
     for (const c of candidates) {
       const ctx = submissionsRepo.loadResolverContext(this.db, c.call_id);
       if (!ctx) continue;
+
+      // Wave 4a — adapter-resolved markets (Polymarket Gamma + future
+      // event-feed adapters) never anchored at t0; runT0Phase moved them
+      // to pending_t1 without a t0_anchors row. Here we route them
+      // straight to the FHE-direct adapter-dispatch path, bypassing the
+      // price-feed-anchored t1 observation. The Polymarket/Kalshi
+      // adapter's `observeResolution` returns the final outcome
+      // (or "pending"/"disputed") whenever it's available; the
+      // resolver re-checks each tick until it lands.
       const t0row = anchorsRepo.getT0(this.db, ctx.call_id);
-      if (!t0row) continue;
-
-      // Phase 2c: prefer the canonical horizon_seconds (no precision loss
-      // for sub-hour markets). horizon_hours is retained as a back-compat
-      // surface but the t1 anchor uses seconds directly.
-      const t1Iso = isoFromUnixMs(
-        Date.parse(t0row.t0) + ctx.horizon_seconds * 1000,
-      );
-      const elapsedSinceT1 = this.elapsedSecSince(t1Iso);
-      if (elapsedSinceT1 < 0) continue; // not yet
-
-      // Wave 3b BLOCKER fix — same per-call policy try/catch as T0.
-      // Market gone or half-configured → terminal oracle_unavailable for
-      // this call, never a tick-killing throw.
-      let policy: T0Policy;
+      let policy: T0Policy | null;
       try {
         policy = this.policyFromCtx(ctx);
       } catch (err) {
@@ -307,6 +320,93 @@ export class Resolver {
         }
         continue;
       }
+
+      if (policy === null) {
+        // Adapter-resolved branch. The native-price t0/t1 price observation
+        // doesn't apply; the resolver calls runFheDirectScoring with a
+        // synthetic obs/t0row so the downstream adapter dispatch ignores
+        // the price fields. The adapter's observeResolution is the
+        // authoritative resolution path.
+        if (ctx.privacy_mode !== "fhe_direct") {
+          this.log({
+            kind: "still_pending",
+            call_id: ctx.call_id,
+            phase: "t1",
+            reason: "adapter_resolved_market_requires_fhe_direct",
+          });
+          if (await this.markOracleUnavailable(ctx, "t1")) {
+            oracleUnavailable++;
+          }
+          continue;
+        }
+        // No price anchor exists; build a placeholder observation that
+        // the FHE scoring path will pass into the adapter. Polymarket
+        // Gamma adapter ignores price fields and reads `conditionId`
+        // off the spread `markets.config_json` instead. The placeholder
+        // feed is chainlink:base:ETH-USD (an arbitrary listed feed) only
+        // because the type system forces a value from the closed
+        // OracleFeed enum — adapter-resolved markets do not consult it.
+        const placeholderTime = this.nowIso();
+        const placeholderFeed: OracleFeed = "chainlink:base:ETH-USD";
+        const fheBranchResult = await this.runFheDirectScoring({
+          ctx,
+          t0row: t0row ?? {
+            t0: ctx.accepted_at,
+            p0: "0",
+            feed: placeholderFeed,
+            source_id: "adapter_resolved",
+            anchored_at: ctx.accepted_at,
+          },
+          obs: {
+            price: "0",
+            feed: placeholderFeed,
+            feed_timestamp: placeholderTime,
+            observed_at: placeholderTime,
+            source_id: "adapter_resolved",
+            source_age_seconds: 0,
+          },
+        });
+        if (fheBranchResult === "pending" || fheBranchResult === "skipped") {
+          this.log({
+            kind: "still_pending",
+            call_id: ctx.call_id,
+            phase: "t1",
+            reason: `adapter_resolved:${fheBranchResult}`,
+          });
+          continue;
+        }
+        resolved++;
+        this.log({
+          kind: "anchored_t1",
+          call_id: ctx.call_id,
+          feed: placeholderFeed,
+          p1: "0",
+          outcome: "win",
+        });
+        try {
+          await this.onResolved(ctx.call_id);
+        } catch (err) {
+          this.log({
+            kind: "still_pending",
+            call_id: ctx.call_id,
+            phase: "t1",
+            reason: `notify_failed:${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+        continue;
+      }
+
+      if (!t0row) continue;
+
+      // Phase 2c: prefer the canonical horizon_seconds (no precision loss
+      // for sub-hour markets). horizon_hours is retained as a back-compat
+      // surface but the t1 anchor uses seconds directly.
+      const t1Iso = isoFromUnixMs(
+        Date.parse(t0row.t0) + ctx.horizon_seconds * 1000,
+      );
+      const elapsedSinceT1 = this.elapsedSecSince(t1Iso);
+      if (elapsedSinceT1 < 0) continue; // not yet
+
       const outcome = await this.tryAnchor({
         call_id: ctx.call_id,
         mustBeAfterIso: t1Iso,
@@ -1203,6 +1303,12 @@ export class Resolver {
    * resolver re-derives a call's T0Policy from its market_id on every
    * read by walking the markets registry via derivePolicyFromMarket().
    *
+   * Wave 4a — derivePolicyFromMarket can return null for adapter-resolved
+   * markets (Polymarket Gamma + future event-feed adapters). The T0/T1
+   * anchoring loops short-circuit on null: those markets resolve via
+   * adapter.observeResolution(...) on every tick rather than anchoring
+   * against a price feed at t0+horizon.
+   *
    * The trade-off vs the old per-call snapshot:
    *   - A market frozen between submit and the resolver tick swaps the
    *     policy under us. With receipts/disputes gone (Wave 1/3a) there
@@ -1214,7 +1320,7 @@ export class Resolver {
    */
   private policyFromCtx(
     ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>,
-  ): T0Policy {
+  ): T0Policy | null {
     if (!ctx.market_id) {
       throw new Error(
         `call ${ctx.call_id} has no market_id; cannot derive oracle policy`,

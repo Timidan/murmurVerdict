@@ -3754,7 +3754,13 @@ export interface AssetRow {
 export interface OracleRow {
   oracle_id: string;
   asset_id: string;
-  kind: "chainlink_evm" | "pyth_pull" | "pyth_solana";
+  // Wave 4a — 'external_adapter' added by MIGRATION_029 for Polymarket
+  // Gamma + future event-adapter rows. Mirror in OracleKindSchema.
+  kind:
+    | "chainlink_evm"
+    | "pyth_pull"
+    | "pyth_solana"
+    | "external_adapter";
   adapter: string;
   chain: string;
   config_json: string;

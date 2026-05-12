@@ -561,24 +561,20 @@ export const DEFAULT_T0_POLICY: T0Policy = {
 
 // ─── AcceptedCall (post-acceptance, public-shape projection) ────────────────
 //
-// Wave 3 — operator-blind variant. The four plaintext market-signal fields
-// (asset_id / side / horizon_hours / confidence) are OPTIONAL on the public
-// type because under FHE-direct submit they never leave the daemon in
-// clear: the prediction lives inside the Commitment ciphertext only.
+// Wave 3 made the four plaintext market-signal fields optional (operator-
+// blind invariant under FHE-direct submit). Wave 4a additionally makes
+// `oracle_policy` optional so external-adapter markets (Polymarket Gamma,
+// future Kalshi/Drift/event-feed adapters) can mint without forcing a
+// Chainlink/Pyth-shaped policy struct: those markets resolve through
+// `adapter.observeResolution(...)` and never anchor against a price feed.
 //
-// Legacy plaintext and committed-mode submission paths have been excised
-// (Wave 2b) — the only reason these four fields survive on the type at all
-// is so historical receipts + dashboard projections that happen to know
-// them (e.g. benchmark adapter telemetry) can keep round-tripping the
-// shape. New /v2/calls acceptances stamp them as undefined.
+// Native-price markets continue to stamp the T0Policy because the
+// resolver's tick-time `policyFromCtx` walks the registry separately —
+// the policy on the wire is essentially cosmetic / for receipt echoing.
 //
-// market_id is still the canonical handle the resolver/dispatch/leaderboard
-// chain on; oracle_policy travels along so the resolver doesn't need to
-// re-derive it inside the hot path. (The MIGRATION_031 drop of the
-// oracle_policies TABLE shifts the persistence story to derive-on-read via
-// derivePolicyFromMarket(); the in-memory AcceptedCall still carries the
-// resolved policy so downstream consumers can reason about it
-// uniformly.)
+// market_id remains the canonical handle the resolver/dispatch/
+// leaderboard chain on; absence of oracle_policy is the signal that the
+// market is adapter-resolved, not feed-anchored.
 export const AcceptedCallSchema = z
   .object({
     schema_version: z.literal(SCHEMA_VERSION),
@@ -595,7 +591,7 @@ export const AcceptedCallSchema = z
     strategy_tag: StrategyTagSchema.optional(),
     accepted_at: z.string().datetime({ offset: false }),
     status: z.literal("accepted"),
-    oracle_policy: T0PolicySchema,
+    oracle_policy: T0PolicySchema.optional(),
     // Wave 4b — receipts subsystem dropped. acceptance_receipt_hash and
     // acceptance_receipt_cid no longer exist on AcceptedCall; the call_id
     // itself is the canonical identifier downstream consumers chain on.

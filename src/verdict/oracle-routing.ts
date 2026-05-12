@@ -149,11 +149,18 @@ function feedForOracle(
  * (fallback_oracle_id, fallback_max_staleness_sec) MUST travel together
  * — having one without the other is a misconfigured market and we
  * fail closed.
+ *
+ * Wave 4a: returns `null` for adapter-resolved markets (oracle kind
+ * 'external_adapter'). Polymarket Gamma + future event-adapter markets
+ * resolve via `adapter.observeResolution(...)`, never anchor against a
+ * price feed — there is no T0Policy to derive. The resolver's tick path
+ * branches on the same condition (no policy → no T0 anchor; the adapter
+ * dispatch reads outcome state directly on each pass).
  */
 export function derivePolicyFromMarket(
   db: Database.Database,
   market: MarketRow,
-): T0Policy {
+): T0Policy | null {
   // Primary
   const primary = loadListedOracle(
     db,
@@ -161,6 +168,14 @@ export function derivePolicyFromMarket(
     market,
     "primary",
   );
+  // Wave 4a — external_adapter oracles short-circuit. They have no
+  // price-feed mapping, so feedForOracle would (correctly) throw
+  // primary_feed_unmapped. Adapter dispatch handles resolution end-to-
+  // end via observeResolution; the resolver tick reads this null and
+  // skips T0 anchoring for the call.
+  if (primary.kind === "external_adapter") {
+    return null;
+  }
   const primary_feed = feedForOracle(primary, market.market_id, "primary");
 
   // Fallback — optional at Phase 2d but the two fields must agree.

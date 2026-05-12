@@ -340,7 +340,7 @@ export async function submitCall(args: {
   // silent-wrong-oracle footgun where a market.status flip on a market
   // whose oracle was draft would let calls mint and resolve against the
   // wrong feed.
-  let derivedOraclePolicy: T0Policy;
+  let derivedOraclePolicy: T0Policy | null;
   try {
     derivedOraclePolicy = ctx.oraclePolicy ?? derivePolicyFromMarket(db, market);
   } catch (err) {
@@ -371,6 +371,9 @@ export async function submitCall(args: {
     }
     throw err;
   }
+  // Wave 4a — null means adapter-resolved market (Polymarket Gamma +
+  // future external adapters); the policy slot stays empty on the
+  // AcceptedCall (optional per the operator-blind shape).
   const oraclePolicy = derivedOraclePolicy;
 
   // P3: normalize the submission shape — fill in whichever side of the
@@ -532,7 +535,7 @@ export async function submitCall(args: {
     strategy_tag: submission.strategy_tag,
     accepted_at,
     status: "accepted",
-    oracle_policy: oraclePolicy,
+    ...(oraclePolicy ? { oracle_policy: oraclePolicy } : {}),
   });
 
   // Wave 2b — the legacy plaintext fallthrough that reaches this point
@@ -783,9 +786,12 @@ async function submitFheDirectCall(args: {
     );
   }
 
-  // 5. Derive oracle policy (same path the legacy submit takes; the
-  //    resolver still needs this for Z2's encrypted-scoring flow).
-  let oraclePolicy: T0Policy;
+  // 5. Derive oracle policy. Wave 4a — `derivePolicyFromMarket` returns
+  //    null for adapter-resolved markets (Polymarket Gamma + future
+  //    event-adapter markets). The AcceptedCall's oracle_policy slot is
+  //    optional in that case; adapter dispatch handles resolution end-
+  //    to-end via observeResolution.
+  let oraclePolicy: T0Policy | null;
   try {
     oraclePolicy = ctx.oraclePolicy ?? derivePolicyFromMarket(db, market);
   } catch (err) {
@@ -914,7 +920,7 @@ async function submitFheDirectCall(args: {
       : {}),
     accepted_at,
     status: "accepted",
-    oracle_policy: oraclePolicy,
+    ...(oraclePolicy ? { oracle_policy: oraclePolicy } : {}),
   };
 
   // Run the multi-statement insert inside a single transaction so a
@@ -1106,6 +1112,7 @@ function loadExistingFheDirectCall(
       500,
     );
   }
+  const retryPolicy = resolveOraclePolicyFromMarket(db, row.market_id);
   const accepted: AcceptedCall = {
     schema_version: row.schema_version as 1,
     scoring_version: row.scoring_version as 1,
@@ -1119,7 +1126,7 @@ function loadExistingFheDirectCall(
     ...(typeof row.strategy_tag === "string"
       ? { strategy_tag: row.strategy_tag as StrategyTag }
       : {}),
-    oracle_policy: resolveOraclePolicyFromMarket(db, row.market_id),
+    ...(retryPolicy ? { oracle_policy: retryPolicy } : {}),
   };
   return {
     call: accepted,
@@ -1153,6 +1160,7 @@ function loadExistingAcceptedCall(
       500,
     );
   }
+  const retryPolicy = resolveOraclePolicyFromMarket(db, row.market_id);
   const accepted = AcceptedCallSchema.parse({
     schema_version: row.schema_version,
     scoring_version: row.scoring_version,
@@ -1164,7 +1172,7 @@ function loadExistingAcceptedCall(
     strategy_tag: row.strategy_tag ?? undefined,
     accepted_at: row.accepted_at,
     status: "accepted",
-    oracle_policy: resolveOraclePolicyFromMarket(db, row.market_id),
+    ...(retryPolicy ? { oracle_policy: retryPolicy } : {}),
   });
   return {
     call: accepted,
@@ -1198,7 +1206,7 @@ function loadExistingAcceptedCall(
 function resolveOraclePolicyFromMarket(
   db: Database.Database,
   market_id: unknown,
-): T0Policy {
+): T0Policy | null {
   if (typeof market_id !== "string" || market_id.length === 0) {
     return DEFAULT_T0_POLICY;
   }
@@ -1207,6 +1215,9 @@ function resolveOraclePolicyFromMarket(
     return DEFAULT_T0_POLICY;
   }
   try {
+    // Wave 4a — null comes back for adapter-resolved markets
+    // (Polymarket Gamma + future event-feed adapters); callers omit
+    // the oracle_policy slot entirely in that case.
     return derivePolicyFromMarket(db, market);
   } catch (err) {
     // Half-configured fallback / unknown adapter in the markets row —
