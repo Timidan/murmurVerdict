@@ -28,6 +28,8 @@ import {
   getLeaderboard,
   get24hVerifiedVolume,
   getLeaderboardForMarket,
+  getLeaderboardForFamily,
+  getCrossFamilyLeaderboard,
   getAgentMarketGrid,
 } from "./leaderboard.js";
 import type { VerdictEventBus } from "./events.js";
@@ -2548,6 +2550,103 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         grid,
         served_at: nowIso(now()),
       });
+    }),
+  );
+
+  // ─── Phase 10 — per-family + cross-family leaderboards ───────────────────
+  //
+  // `market_family` (e.g. 'financial-direction', 'prediction-market-binary')
+  // groups markets of the same scoring shape so an agent specialising in
+  // one family isn't penalised by a sparse cross-family sample. The
+  // /v1/families/* surfaces mirror /v1/markets/* but read from the
+  // (denormalized) submissions.market_family column.
+  //
+  // Family taxonomy is operator-curated (V2 §3.2 risk 4); no CHECK
+  // constraint at the DB layer. The route validates the family value
+  // is non-empty + URL-safe and lets the SQL return an empty agents[]
+  // for unknown families rather than 404-ing — clients can poll
+  // /v1/families to discover the live list.
+  router.get(
+    "/v1/families/:family/leaderboard",
+    asyncHandler(async (req, res) => {
+      const raw = String(req.params.family ?? "");
+      if (!raw.match(/^[a-z0-9-]{2,64}$/)) {
+        throw new VerdictError(
+          "invalid family — lowercase-alphanumeric-and-dashes, 2-64 chars",
+          ERROR_CODES.schema_invalid,
+          400,
+          { family: raw },
+        );
+      }
+      const rawLimit = Number(req.query.limit ?? "20");
+      const limit = Number.isFinite(rawLimit)
+        ? Math.max(1, Math.min(100, Math.floor(rawLimit)))
+        : 20;
+      const tierRaw = req.query.tier;
+      const tier =
+        tierRaw === "main" || tierRaw === "provisional" ? tierRaw : undefined;
+
+      const agents = getLeaderboardForFamily(deps.db, {
+        market_family: raw,
+        limit,
+        tier,
+      });
+      res.json({
+        market_family: raw,
+        agents,
+        served_at: nowIso(now()),
+      });
+    }),
+  );
+
+  // Discovery: every distinct market_family currently used by any
+  // submission, with a sample count + a flag for whether at least one
+  // resolved call exists. Lets the dashboard build the family dropdown
+  // without hardcoding the taxonomy.
+  router.get(
+    "/v1/families",
+    asyncHandler(async (_req, res) => {
+      const rows = deps.db
+        .prepare(
+          `SELECT s.market_family AS family,
+                  COUNT(*) AS submissions,
+                  SUM(CASE WHEN r.outcome IS NOT NULL THEN 1 ELSE 0 END) AS resolved
+             FROM submissions s
+             LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
+            WHERE s.market_family IS NOT NULL
+         GROUP BY s.market_family
+         ORDER BY submissions DESC`,
+        )
+        .all() as Array<{
+        family: string;
+        submissions: number;
+        resolved: number;
+      }>;
+      res.json({
+        families: rows.map((r) => ({
+          market_family: r.family,
+          submissions: r.submissions,
+          resolved: r.resolved,
+        })),
+        served_at: nowIso(now()),
+      });
+    }),
+  );
+
+  // Cross-family aggregate — "best agent across all families." Per-family
+  // verdict_scores are computed, then averaged across families where the
+  // agent qualifies (resolved_calls >= MAIN_TIER threshold). An agent
+  // who only plays one family appears on the per-family LB; here we
+  // surface cross-family practitioners — main tier requires ≥2 families.
+  router.get(
+    "/v1/leaderboard/cross-family",
+    asyncHandler(async (req, res) => {
+      const rawLimit = Number(req.query.limit ?? "20");
+      const limit = Number.isFinite(rawLimit)
+        ? Math.max(1, Math.min(100, Math.floor(rawLimit)))
+        : 20;
+      const agents = getCrossFamilyLeaderboard(deps.db, { limit });
+      res.json({ agents, served_at: nowIso(now()) });
     }),
   );
 

@@ -216,6 +216,40 @@ export interface MarketRow {
   [extra: string]: unknown;
 }
 
+// Phase 10 — per-family + cross-family LB row shapes. Keep aligned with
+// src/verdict/leaderboard.ts AgentFamilyRow / AgentCrossFamilyRow.
+export interface AgentFamilyRow {
+  agent_id: string;
+  display_slug: string;
+  display_name: string;
+  kind: LeaderboardRow["kind"];
+  market_family: string;
+  verdict_score: number | null;
+  verdict_score_lb: number | null;
+  resolved_calls: number;
+  pending_calls: number;
+  win_rate: number | null;
+  last_resolved_at: string | null;
+  family_main_tier: boolean;
+  distinct_markets: number;
+}
+
+export interface AgentCrossFamilyRow {
+  agent_id: string;
+  display_slug: string;
+  display_name: string;
+  kind: LeaderboardRow["kind"];
+  cross_family_score: number | null;
+  families: Array<{
+    market_family: string;
+    verdict_score: number | null;
+    resolved_calls: number;
+    qualifies: boolean;
+  }>;
+  qualifying_families: number;
+  cross_family_main_tier: boolean;
+}
+
 export interface AgentMarketRow {
   agent_id: string;
   display_slug: string;
@@ -552,6 +586,40 @@ export const verdictApi = {
     const q = params.toString();
     return get<{ market_id: string; agents: AgentMarketRow[]; served_at: string }>(
       `/v1/markets/${encodeURIComponent(market_id)}/leaderboard${q ? `?${q}` : ""}`,
+    );
+  },
+  // Phase 10 — family + cross-family LBs.
+  families: () =>
+    get<{
+      families: Array<{
+        market_family: string;
+        submissions: number;
+        resolved: number;
+      }>;
+      served_at: string;
+    }>(`/v1/families`),
+  familyLeaderboard: (
+    family: string,
+    opts: { limit?: number; tier?: "main" | "provisional" } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.tier) params.set("tier", opts.tier);
+    const q = params.toString();
+    return get<{
+      market_family: string;
+      agents: AgentFamilyRow[];
+      served_at: string;
+    }>(
+      `/v1/families/${encodeURIComponent(family)}/leaderboard${q ? `?${q}` : ""}`,
+    );
+  },
+  crossFamilyLeaderboard: (opts: { limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const q = params.toString();
+    return get<{ agents: AgentCrossFamilyRow[]; served_at: string }>(
+      `/v1/leaderboard/cross-family${q ? `?${q}` : ""}`,
     );
   },
   agentGrid: (slug: string) =>

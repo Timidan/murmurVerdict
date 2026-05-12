@@ -4,6 +4,7 @@ import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
+import { FamilyLeaderboards } from "../components/FamilyLeaderboards.js";
 import { useStream } from "../hooks/useStream.js";
 
 type Tier = "all" | "main" | "provisional";
@@ -163,9 +164,14 @@ export function LeaderboardPageCompact() {
           )}
           {!error && sorted && sorted.length > 0 && <Ladder rows={sorted} />}
         </Panel>
-        <Panel title="LIVE TAPE" meta="REALTIME">
-          <CompactLiveFeed limit={60} />
-        </Panel>
+        <div className="flex flex-col">
+          <Panel title="LIVE TAPE" meta="REALTIME">
+            <CompactLiveFeed limit={60} />
+          </Panel>
+          <div className="px-2 py-2">
+            <FamilyLeaderboards />
+          </div>
+        </div>
       </main>
     </div>
   );

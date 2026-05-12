@@ -470,6 +470,349 @@ export function getAgentMarketGrid(
   });
 }
 
+// ─── Phase 10 — per-family leaderboard ─────────────────────────────────────
+//
+// A `market_family` (e.g. 'financial-direction', 'prediction-market-binary')
+// groups markets of the same scoring shape. Agents who only play one
+// family shouldn't be penalized in cross-family rankings; per-family LBs
+// answer "who's best at THIS kind of question." V2 §3.2 risk 4 — taxonomy
+// is operator-curated, kept open at the DB layer, so adding a new family
+// (e.g. 'category-multi') is a code-only change.
+//
+// Sources of family on the row:
+//   - submissions.market_family — denormalized at submit time from the
+//     market row's adapter.marketFamily. Backfilled in MIGRATION_016 for
+//     pre-v2 native-price rows ('financial-direction').
+//
+// Provisional tier inside a family is the same MAIN_TIER threshold as
+// global — keeps the surface intuitive. Cross-family is a separate
+// function below.
+
+export interface FamilyLeaderboardOptions extends LeaderboardOptions {
+  /** Required. Matches submissions.market_family exactly. */
+  market_family: string;
+}
+
+export interface AgentFamilyRow {
+  agent_id: string;
+  display_slug: string;
+  display_name: string;
+  kind: AgentKind;
+  market_family: string;
+  verdict_score: number | null;
+  verdict_score_lb: number | null;
+  resolved_calls: number;
+  pending_calls: number;
+  win_rate: number | null;
+  last_resolved_at: string | null;
+  /** True iff resolved_calls >= MAIN tier threshold WITHIN this family. */
+  family_main_tier: boolean;
+  /** Number of distinct market_ids this agent has resolved a call on
+   *  inside the family. Helps the dashboard distinguish "one-market
+   *  specialist" from "broad family practitioner." */
+  distinct_markets: number;
+}
+
+export function getLeaderboardForFamily(
+  db: Database.Database,
+  opts: FamilyLeaderboardOptions,
+): AgentFamilyRow[] {
+  const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
+  const limit = opts.limit ?? 200;
+  const placeholders = includeKinds.map(() => "?").join(",");
+
+  const rows = db
+    .prepare(
+      `SELECT a.agent_id, a.display_slug, a.display_name, a.kind,
+              s.call_id, s.status, s.market_id, s.market_family,
+              r.outcome, r.call_score, r.resolved_at
+       FROM agents a
+       JOIN submissions s ON s.agent_id = a.agent_id
+       LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
+       WHERE a.kind IN (${placeholders})
+         AND s.market_family = ?
+       ORDER BY a.agent_id, s.accepted_at`,
+    )
+    .all(...includeKinds, opts.market_family) as Array<{
+    agent_id: string;
+    display_slug: string;
+    display_name: string;
+    kind: AgentKind;
+    call_id: string;
+    status: string;
+    market_id: string | null;
+    market_family: string;
+    outcome: string | null;
+    call_score: number | null;
+    resolved_at: string | null;
+  }>;
+
+  type Agg = {
+    agent_id: string;
+    display_slug: string;
+    display_name: string;
+    kind: AgentKind;
+    call_scores: (number | null)[];
+    wins: number;
+    losses: number;
+    pending: number;
+    last_resolved_at: string | null;
+    distinct_markets: Set<string>;
+  };
+  const byAgent = new Map<string, Agg>();
+  for (const row of rows) {
+    let a = byAgent.get(row.agent_id);
+    if (!a) {
+      a = {
+        agent_id: row.agent_id,
+        display_slug: row.display_slug,
+        display_name: row.display_name,
+        kind: row.kind,
+        call_scores: [],
+        wins: 0,
+        losses: 0,
+        pending: 0,
+        last_resolved_at: null,
+        distinct_markets: new Set(),
+      };
+      byAgent.set(row.agent_id, a);
+    }
+    if (row.outcome === "win") {
+      a.wins++;
+      a.call_scores.push(row.call_score);
+    } else if (row.outcome === "loss") {
+      a.losses++;
+      a.call_scores.push(row.call_score);
+    } else if (row.outcome === "void" || row.outcome === "oracle_unavailable") {
+      a.call_scores.push(null);
+    } else if (
+      row.status === "accepted" ||
+      row.status === "pending_t0" ||
+      row.status === "pending_t1"
+    ) {
+      a.pending++;
+    }
+    if (row.market_id) a.distinct_markets.add(row.market_id);
+    if (row.resolved_at) {
+      if (!a.last_resolved_at || row.resolved_at > a.last_resolved_at) {
+        a.last_resolved_at = row.resolved_at;
+      }
+    }
+  }
+
+  type Computed = AgentFamilyRow & { _sortKey: number };
+  const computed: Computed[] = [];
+  for (const a of byAgent.values()) {
+    const score = computeVerdictScore(a.call_scores);
+    const win_rate = a.wins + a.losses > 0 ? a.wins / (a.wins + a.losses) : null;
+    computed.push({
+      agent_id: a.agent_id,
+      display_slug: a.display_slug,
+      display_name: a.display_name,
+      kind: a.kind,
+      market_family: opts.market_family,
+      verdict_score: score.verdict_score,
+      verdict_score_lb: score.verdict_score_lb,
+      resolved_calls: score.resolved_calls,
+      pending_calls: a.pending,
+      win_rate,
+      last_resolved_at: a.last_resolved_at,
+      family_main_tier:
+        score.resolved_calls >= MIN_RESOLVED_CALLS_FOR_MAIN_TIER,
+      distinct_markets: a.distinct_markets.size,
+      _sortKey: score.verdict_score_lb ?? score.verdict_score ?? -Infinity,
+    });
+  }
+
+  // Tier filter mirrors getLeaderboard()'s contract: 'main' → only ranked,
+  // 'provisional' → only sub-threshold, omit → both with main first.
+  const filtered = opts.tier
+    ? computed.filter((r) =>
+        opts.tier === "main" ? r.family_main_tier : !r.family_main_tier,
+      )
+    : computed;
+  const main = filtered
+    .filter((r) => r.family_main_tier)
+    .sort((a, b) => b._sortKey - a._sortKey);
+  const provisional = filtered
+    .filter((r) => !r.family_main_tier)
+    .sort((a, b) => b._sortKey - a._sortKey);
+  return [...main, ...provisional]
+    .slice(0, limit)
+    .map(({ _sortKey, ...row }) => {
+      void _sortKey;
+      return row;
+    });
+}
+
+// ─── Phase 10 — cross-family aggregate leaderboard ─────────────────────────
+//
+// "Who's the best agent across ALL families?" is harder than per-family
+// because the score distributions differ. financial-direction Brier and
+// prediction-market-binary L1 are both scaled to [0,1] but the difficulty
+// landscape is not the same. Aggregating raw call_scores would let an
+// agent who only plays the "easy" family dominate.
+//
+// Approach: per-family normalize, then average.
+//
+//   1. Compute per-family verdict_score for the agent.
+//   2. Per family, require at least MIN_RESOLVED_CALLS_FOR_MAIN_TIER
+//      resolved calls; otherwise the family contributes a null and is
+//      excluded from the cross-family mean (the agent is provisional in
+//      that family, so we don't pretend they're ranked there).
+//   3. The cross-family score is the unweighted mean of the per-family
+//      verdict_scores the agent qualifies in. cross_family_main_tier
+//      requires at least 2 qualifying families — a single-family
+//      specialist appears on the per-family LB, not the cross-family one.
+//
+// The unweighted mean is the v0 choice. A future revision can swap in
+// family-difficulty calibration (e.g. divide each per-family score by
+// the family's own historical mean) once we have stable cross-family
+// sample sizes; the API shape stays the same.
+
+export interface CrossFamilyOptions {
+  includeKinds?: AgentKind[];
+  limit?: number;
+}
+
+export interface AgentCrossFamilyRow {
+  agent_id: string;
+  display_slug: string;
+  display_name: string;
+  kind: AgentKind;
+  /** Mean of qualifying per-family verdict_scores. null when the agent
+   *  doesn't qualify in any family. */
+  cross_family_score: number | null;
+  /** Per-family detail. Each entry is { market_family, verdict_score,
+   *  resolved_calls, qualifies } so the dashboard can render the
+   *  breakdown without a second query. */
+  families: Array<{
+    market_family: string;
+    verdict_score: number | null;
+    resolved_calls: number;
+    qualifies: boolean;
+  }>;
+  /** Number of families with resolved_calls >= MAIN_TIER. */
+  qualifying_families: number;
+  /** True iff qualifying_families >= 2. */
+  cross_family_main_tier: boolean;
+}
+
+export function getCrossFamilyLeaderboard(
+  db: Database.Database,
+  opts: CrossFamilyOptions = {},
+): AgentCrossFamilyRow[] {
+  const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
+  const limit = opts.limit ?? 200;
+  const placeholders = includeKinds.map(() => "?").join(",");
+
+  const rows = db
+    .prepare(
+      `SELECT a.agent_id, a.display_slug, a.display_name, a.kind,
+              s.call_id, s.status, s.market_family,
+              r.outcome, r.call_score
+       FROM agents a
+       JOIN submissions s ON s.agent_id = a.agent_id
+       LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
+       WHERE a.kind IN (${placeholders})
+         AND s.market_family IS NOT NULL
+       ORDER BY a.agent_id, s.market_family, s.accepted_at`,
+    )
+    .all(...includeKinds) as Array<{
+    agent_id: string;
+    display_slug: string;
+    display_name: string;
+    kind: AgentKind;
+    call_id: string;
+    status: string;
+    market_family: string;
+    outcome: string | null;
+    call_score: number | null;
+  }>;
+
+  type FamilyAgg = { call_scores: (number | null)[] };
+  type Agg = {
+    agent_id: string;
+    display_slug: string;
+    display_name: string;
+    kind: AgentKind;
+    byFamily: Map<string, FamilyAgg>;
+  };
+  const byAgent = new Map<string, Agg>();
+  for (const row of rows) {
+    let a = byAgent.get(row.agent_id);
+    if (!a) {
+      a = {
+        agent_id: row.agent_id,
+        display_slug: row.display_slug,
+        display_name: row.display_name,
+        kind: row.kind,
+        byFamily: new Map(),
+      };
+      byAgent.set(row.agent_id, a);
+    }
+    let fam = a.byFamily.get(row.market_family);
+    if (!fam) {
+      fam = { call_scores: [] };
+      a.byFamily.set(row.market_family, fam);
+    }
+    if (row.outcome === "win" || row.outcome === "loss") {
+      fam.call_scores.push(row.call_score);
+    } else if (row.outcome === "void" || row.outcome === "oracle_unavailable") {
+      fam.call_scores.push(null);
+    }
+  }
+
+  type Computed = AgentCrossFamilyRow & { _sortKey: number };
+  const computed: Computed[] = [];
+  for (const a of byAgent.values()) {
+    const families = Array.from(a.byFamily.entries()).map(([family, fam]) => {
+      const score = computeVerdictScore(fam.call_scores);
+      const qualifies = score.resolved_calls >= MIN_RESOLVED_CALLS_FOR_MAIN_TIER;
+      return {
+        market_family: family,
+        verdict_score: score.verdict_score,
+        resolved_calls: score.resolved_calls,
+        qualifies,
+      };
+    });
+    const qualifyingScores = families
+      .filter((f) => f.qualifies && f.verdict_score !== null)
+      .map((f) => f.verdict_score as number);
+    const cross_family_score =
+      qualifyingScores.length > 0
+        ? qualifyingScores.reduce((s, x) => s + x, 0) / qualifyingScores.length
+        : null;
+    const qualifying_families = qualifyingScores.length;
+    computed.push({
+      agent_id: a.agent_id,
+      display_slug: a.display_slug,
+      display_name: a.display_name,
+      kind: a.kind,
+      cross_family_score,
+      families,
+      qualifying_families,
+      cross_family_main_tier: qualifying_families >= 2,
+      _sortKey: cross_family_score ?? -Infinity,
+    });
+  }
+
+  return computed
+    .sort((a, b) => {
+      // Main-tier (qualifying ≥2 families) sorts ahead of provisional;
+      // within each band sort by cross_family_score descending.
+      if (a.cross_family_main_tier !== b.cross_family_main_tier) {
+        return a.cross_family_main_tier ? -1 : 1;
+      }
+      return b._sortKey - a._sortKey;
+    })
+    .slice(0, limit)
+    .map(({ _sortKey, ...row }) => {
+      void _sortKey;
+      return row;
+    });
+}
+
 /**
  * 24h Verified Verdict Volume — count of `submission_accepted` events from
  * verified agents in the last 24 hours. v0.1 has no fees yet, so this number
