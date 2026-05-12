@@ -13,6 +13,13 @@ export interface CallAcceptedEvent {
   privacy_mode: string;
   commit_hash?: string;
   acceptance_receipt_hash?: string;
+  // Phase 10 / Z4-extra discriminators. Backend populates these from
+  // submissions.adapter_id / market_family / market_id. Optional for
+  // forward compat with daemons that haven't shipped the wire-shape
+  // bump yet.
+  adapter_id?: string;
+  market_family?: string;
+  market_id?: string;
   side?: "BUY" | "SELL";
   asset_id?: string;
   horizon_hours?: number;
@@ -26,9 +33,17 @@ export interface CallResolvedEvent {
   agent_id: string;
   agent_slug: string;
   outcome: string;
-  signed_return: string | null;
+  /** Native-price markets emit a string-decimal return; non-native
+   *  adapters (Polymarket and future event/category families) OMIT this
+   *  field entirely (Drift C). Consumers must guard with `if
+   *  (signed_return)` before formatting. */
+  signed_return?: string | null;
   call_score: number | null;
   resolved_at: string;
+  // Phase 10 / Z4-extra discriminators.
+  adapter_id?: string;
+  market_family?: string;
+  market_id?: string;
 }
 
 export interface LeaderboardUpdateEvent {

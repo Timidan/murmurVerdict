@@ -171,15 +171,45 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
                     full.resolution.payout_vector_json,
                   ) as string[])
                 : undefined;
+              // Phase 10 / Z4-extra Drift C — read the adapter/family
+              // off the submission so non-native resolutions (Polymarket,
+              // future event-binary adapters) don't emit a meaningless
+              // signed_return on the SSE channel. Native-price defaults
+              // when the columns are null (pre-MIGRATION_016 legacy rows).
+              const adapterRow = db
+                .prepare(
+                  "SELECT adapter_id, market_family, market_id FROM submissions WHERE call_id = ?",
+                )
+                .get(call_id) as
+                | {
+                    adapter_id: string | null;
+                    market_family: string | null;
+                    market_id: string | null;
+                  }
+                | undefined;
+              const adapterId = adapterRow?.adapter_id ?? "native-price";
+              const marketFamily =
+                adapterRow?.market_family ?? "financial-direction";
+              const isNativePrice = adapterId === "native-price";
               events.emit({
                 type: "call.resolved",
                 call_id,
                 agent_id: agent.agent_id,
                 agent_slug: agent.display_slug,
                 outcome: full.resolution.outcome,
-                signed_return: full.resolution.signed_return,
+                // signed_return is a price-return concept — emit ONLY for
+                // native-price adapters. Polymarket and other event/
+                // category families omit the field entirely (Drift C).
+                ...(isNativePrice
+                  ? { signed_return: full.resolution.signed_return }
+                  : {}),
                 call_score: full.resolution.call_score ?? null,
                 resolved_at: full.resolution.resolved_at,
+                adapter_id: adapterId,
+                market_family: marketFamily,
+                ...(adapterRow?.market_id
+                  ? { market_id: adapterRow.market_id }
+                  : {}),
                 ...(resolvedOutcome !== undefined
                   ? { resolved_outcome: resolvedOutcome }
                   : {}),

@@ -871,6 +871,13 @@ export async function submitCall(args: {
     privacy_mode: privacyModeForRepo,
     accepted_at,
     ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
+    // Phase 10 / Z4-extra discriminators. The resolved adapter/family/
+    // market_id are always known at this point — market != null was
+    // enforced earlier in the route. Subscribers route render off these
+    // without inferring from optional plaintext.
+    adapter_id: market.adapter_id ?? "native-price",
+    market_family: market.market_family ?? "financial-direction",
+    market_id: market.market_id,
     ...(isCommittedEvent
       ? {}
       : {
@@ -1278,6 +1285,13 @@ async function submitFheDirectCall(args: {
     privacy_mode: "fhe_direct",
     accepted_at,
     commit_hash: fheCommit.commit_hash,
+    // Phase 10 / Z4-extra discriminators. fhe_direct calls still
+    // belong to an adapter/family — Polymarket can submit fhe_direct
+    // once P11.5 lands. Subscribers route on these without leaking
+    // plaintext.
+    adapter_id: market.adapter_id ?? "native-price",
+    market_family: market.market_family ?? "financial-direction",
+    market_id: market.market_id,
   });
 
   // Return a publicly-safe shape: the synthesized AcceptedCall is what

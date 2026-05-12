@@ -30,17 +30,25 @@ export interface CallAcceptedEvent {
   call_id: string;
   agent_id: string;
   agent_slug: string;
-  /** "committed" | "legacy_plaintext". Committed-mode calls scrub
-   *  side/asset_id/horizon_hours/confidence below. */
+  /** "committed" | "legacy_plaintext" | "fhe_direct". Committed-mode and
+   *  fhe_direct calls scrub side/asset_id/horizon_hours/confidence below. */
   privacy_mode: string;
-  /** Present for committed mode; null for legacy. */
+  /** Present for committed mode + fhe_direct; null for legacy. */
   commit_hash?: string;
   /** Present for committed mode; null for legacy. */
   acceptance_receipt_hash?: string;
   accepted_at: string;
+  // Phase 10 / Z4-extra discriminators — Polymarket and other
+  // non-native-price adapters land on the same SSE channel; subscribers
+  // use these to route render without inferring from the optional
+  // plaintext block. NEVER load-bearing for any privacy guarantee —
+  // omitted (not null) for legacy pre-v2 rows where the column is null.
+  adapter_id?: string;
+  market_family?: string;
+  market_id?: string;
   // Plaintext envelope fields — populated only when privacy_mode is
-  // legacy_plaintext. Committed-mode events scrub these so SSE
-  // subscribers + webhook bridges can't front-run a pending call.
+  // legacy_plaintext. Committed-mode + fhe_direct events scrub these so
+  // SSE subscribers + webhook bridges can't front-run a pending call.
   side?: "BUY" | "SELL";
   asset_id?: string;
   horizon_hours?: number;
@@ -53,9 +61,22 @@ export interface CallResolvedEvent {
   agent_id: string;
   agent_slug: string;
   outcome: string;
-  signed_return: string | null;
+  /** Native-price markets emit a string-decimal return (e.g. "0.0034"
+   *  for +0.34%). Non-native adapters (Polymarket and any future
+   *  prediction-market-binary, event-binary, etc. family) MUST omit
+   *  this field — the concept doesn't apply (codex P11 Drift C). The
+   *  dashboard / RSS / webhook consumers already guard with truthiness
+   *  before formatting, so an omitted field renders as no return rather
+   *  than "null %" or "0%". */
+  signed_return?: string | null;
   call_score: number | null;
   resolved_at: string;
+  // Phase 10 / Z4-extra discriminators — see CallAcceptedEvent for the
+  // routing rationale. Subscribers can branch on adapter_id /
+  // market_family without re-querying.
+  adapter_id?: string;
+  market_family?: string;
+  market_id?: string;
   // Phase 5 — universal payout-vector additive fields. Populated only when
   // the resolver dispatched through an adapter that produced the v2 outcome
   // shape (today: native-price for every market). Legacy SSE / webhook
