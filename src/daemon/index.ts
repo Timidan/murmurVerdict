@@ -6,9 +6,7 @@ import { OracleClient } from "../integrations/oracle.js";
 import { Resolver } from "../verdict/resolver.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import { accountRouter } from "../verdict/routes/account.js";
-import { ClaimService } from "../verdict/claim.js";
 import { agentsRepo, openDb, resolutionsRepo, submissionsRepo } from "../verdict/db.js";
-import { runPhaseECleanupIfRequested } from "../verdict/phase-e-cleanup.js";
 import { hashSharedSecret } from "../verdict/submissions.js";
 import { VerdictEventBus } from "../verdict/events.js";
 import { getLeaderboard } from "../verdict/leaderboard.js";
@@ -26,8 +24,6 @@ import { loadDrandContextFromEnv } from "../verdict/drand-envelope.js";
 // boot" invariant. The loader is dynamic-imported inside the boot
 // function only when the flag is set. Type-only imports stay safe.
 import type { FheProvider } from "../verdict/fhe/provider.js";
-import { TelegramNotifier } from "../integrations/telegram.js";
-import { makeProductionVerifier } from "../integrations/postVerifiers.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server } from "node:http";
@@ -72,13 +68,18 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   const db = openDb({ path: dbPath });
   // BLOCKER #5 fix — Phase-E plaintext scrub runs at boot when env is set.
   // Idempotent + decoupled from MIGRATION_015's single-shot schema gate.
-  runPhaseECleanupIfRequested(db);
   registerBaselines(db);
 
   // Wave 4b-2 — MarketContextProvider (Santiment scout/analyst) removed.
   // Murmur is a pure ranking layer over canonical price/event oracles;
   // no sentiment cache or 5-minute refresh tick.
-  const telegram = new TelegramNotifier();
+  // Wave 1 (consolidated reshape) — TelegramNotifier deleted. Outbound
+  // Telegram bot (resolution cards, daily top-10, weekly recap) was a
+  // v0.1 distribution channel that doesn't survive the FHE-only +
+  // operator-blind invariant: cards would either leak the prediction
+  // (legacy_plaintext was the path that produced render-worthy text)
+  // or have nothing meaningful to post (fhe_direct emits only commit
+  // hash + outcome + bounded score).
   const oracle = makeOracle();
   const events = new VerdictEventBus();
   // P2 committed-mode: load the daemon's age recipient at boot so
@@ -250,26 +251,17 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
           } catch (err) {
             console.warn(`[daemon] sse fan-out failed for ${call_id}:`, err);
           }
-          // 2. Telegram side-effect (existing behavior)
-          if (!telegram.isLive()) return;
-          const result = await telegram.postResolutionCard(db, call_id);
-          if (!result.ok && result.reason) {
-            console.warn(
-              `[daemon] telegram resolution card failed for ${call_id}: ${result.reason}`,
-            );
-          }
+          // Wave 1 — Telegram outbound publish removed alongside
+          // src/integrations/telegram.ts. SSE remains the canonical
+          // fan-out; subscribers route their own bridges if needed.
         },
       })
     : null;
-  // Claim flow:
-  //   - production: wire CompositeVerifier (Telegram + X). Real verification.
-  //   - dev / smoke: leave verifier unset so ClaimService falls back to its
-  //     internal NullVerifier (gated on NODE_ENV !== "production" inside
-  //     ClaimService — see src/verdict/claim.ts).
-  const claim =
-    process.env.NODE_ENV === "production"
-      ? new ClaimService({ db, verifier: makeProductionVerifier() })
-      : new ClaimService({ db });
+  // Wave 1 — ClaimService removed alongside the public-identity /
+  // wallet-only claim flow. The new model is Privy-account-owned
+  // agents (linkAgentToAccount) + API-key submissions; no on-platform
+  // claim service is needed. Operator-mediated manual claim CLI lands
+  // in Wave 5.
 
   const app = express();
   // Phase 4 Hardening B — trust the first reverse-proxy hop. The casual
@@ -324,7 +316,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         }
         return null;
       },
-      claim,
     }),
   );
 

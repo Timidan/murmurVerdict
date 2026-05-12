@@ -51,9 +51,9 @@ export function SharePage({ slug }: { slug: string }) {
 
   // Outreach attribution: when a visitor lands here from an outreach DM
   // (?ref=<sender>) fire a single click ping AND sticky the (ref, slug)
-  // pair to localStorage. ClaimPage reads it on successful finalize so
-  // the conversion gets credited back to the original sender even after
-  // they navigate away from /share.
+  // pair to localStorage. Wave 1 deleted ClaimPage; the localStorage
+  // sticky is now unused for finalize attribution but kept as a no-op
+  // hook for the future Privy-account-claim flow that lands in Wave 5.
   useEffect(() => {
     if (!ref) return;
     const apiBase = verdictApi.apiUrl.replace(/\/$/, "");

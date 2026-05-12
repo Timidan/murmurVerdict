@@ -123,32 +123,10 @@ export interface FullCall {
 // Wave 4b-2 — MarketPreflightSnapshot dropped alongside the Santiment
 // integration. The /v1/market/preflight endpoint no longer exists.
 
-export interface ClaimInitResponse {
-  challenge_id: string;
-  nonce: string;
-  challenge_text: string;
-  /**
-   * Canonical claim message — bind to (origin, slug, agent_id, challenge_id,
-   * wallet, nonce, expires_at). The wallet must sign THIS, not the raw nonce.
-   * Replaces the older "sign the nonce" path.
-   */
-  sign_message: string;
-  expires_at: string;
-  target_identity: { kind: string; value: string };
-  wallet_to_bind: string;
-  agent_id: string;
-  display_slug: string;
-  instructions: string[];
-}
-
-export interface ClaimFinalizeResponse {
-  agent_id: string;
-  display_slug: string;
-  imported_call_ids: string[];
-  api_key: string;
-  api_key_hash: string;
-  verified_at: string;
-}
+// Wave 1 — ClaimInitResponse + ClaimFinalizeResponse + the
+// claimInit/claimFinalize verdictApi methods deleted alongside the
+// public-identity / wallet-only claim flow (see Router.tsx). Casual
+// agents are minted via POST /v1/account/agents directly.
 
 export interface TodayFeedRow {
   call_id: string;
@@ -536,12 +514,8 @@ export const verdictApi = {
       `/v1/agents/${encodeURIComponent(slug)}/calls?limit=${limit}`,
     ),
   call: (call_id: string) => get<FullCall>(`/v1/calls/${encodeURIComponent(call_id)}`),
-  claimInit: (slug: string, body: { target_identity: { kind: string; value: string }; wallet_to_bind: string }) =>
-    post<ClaimInitResponse>(`/v1/agents/${encodeURIComponent(slug)}/claim/init`, body),
-  claimFinalize: (
-    slug: string,
-    body: { challenge_id: string; signature: string; post_url: string; ref?: string },
-  ) => post<ClaimFinalizeResponse>(`/v1/agents/${encodeURIComponent(slug)}/claim/finalize`, body),
+  // Wave 1 — claimInit / claimFinalize verdictApi methods removed
+  // alongside the deleted /v1/agents/:slug/claim/* routes.
   todayFeed: () => get<TodayFeed>(`/v1/feed/today`),
   discoverers: (slug: string, limit = 5) =>
     get<{

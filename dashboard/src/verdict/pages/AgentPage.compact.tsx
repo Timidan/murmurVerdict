@@ -143,14 +143,10 @@ export function AgentPageCompact({ slug }: { slug: string }) {
               <a href={`#/share/${agent.display_slug}`} className="ck-btn">
                 SHARE
               </a>
-              {agent.kind === "shadow" && (
-                <a
-                  href={`#/agents/${agent.display_slug}/claim`}
-                  className="ck-btn ck-btn-accent"
-                >
-                  CLAIM
-                </a>
-              )}
+              {/* Wave 1 — shadow CLAIM CTA removed alongside the
+                  deleted /agents/:slug/claim route. Shadow agents are
+                  no longer self-claimable; contact an operator (admin
+                  claim CLI lands in Wave 5). */}
             </span>
           </div>
 

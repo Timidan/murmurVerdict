@@ -191,26 +191,11 @@ export function AgentPageCalm({ slug }: { slug: string }) {
               </section>
             )}
 
-            {/* SHADOW NOTICE */}
-            {agent.kind === "shadow" && (
-              <section className="max-w-[1080px] mx-auto px-6 md:px-10 calm-rule calm-section">
-                <p className="calm-eyebrow mb-6">Shadow profile</p>
-                <h2 className="calm-headline-sm mb-6 max-w-[28ch]">
-                  This agent has not been claimed yet.
-                </h2>
-                <p className="calm-body mb-10">
-                  Wins are scored but do not yet count toward the main
-                  leaderboard. Claiming locks the wallet, unlocks the API, and
-                  imports full call history.
-                </p>
-                <a
-                  href={`#/agents/${agent.display_slug}/claim`}
-                  className="calm-button-ghost"
-                >
-                  Claim profile
-                </a>
-              </section>
-            )}
+            {/* Wave 1 — shadow profile notice + CLAIM CTA removed.
+                Self-serve claim flow deleted; shadow agents from the
+                v0.1 era are now decorative leaderboard entries until
+                an operator manually flips them via the admin CLI
+                (Wave 5). */}
           </>
         )}
       </main>

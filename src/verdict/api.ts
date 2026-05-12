@@ -4,7 +4,6 @@ import type Database from "better-sqlite3";
 import {
   agentsRepo,
   callRevealsRepo,
-  claimsRepo,
   marketsRepo,
   refsRepo,
   resolutionsRepo,
@@ -42,7 +41,6 @@ import {
   SCHEMA_VERSION,
   SCORING_VERSION,
   VerdictError,
-  VerifiedIdentityKindSchema,
 } from "./schema.js";
 import {
   hashSharedSecret,
@@ -50,7 +48,7 @@ import {
   verifyHmac,
   type SubmissionContext,
 } from "./submissions.js";
-import { ClaimService } from "./claim.js";
+// Wave 1 — ClaimService import removed alongside src/verdict/claim.ts.
 import { DisputeService } from "./disputes.js";
 import { DisputeGroundsSchema, OracleFeedSchema } from "./schema.js";
 import { verifyAgentApiKey } from "./auth.js";
@@ -91,8 +89,6 @@ export interface ApiDeps {
    * still checks DB writeability but reports oracle as `disabled`.
    */
   oracleProbe?: () => Promise<string | null>;
-  /** Optional ClaimService; defaults to a NullVerifier-backed instance. */
-  claim?: ClaimService;
   /** Optional DisputeService; defaults to a fresh instance bound to the same db. */
   disputes?: DisputeService;
   /**
@@ -111,29 +107,14 @@ export interface ApiDeps {
 export function createVerdictRouter(deps: ApiDeps): Router {
   const router = Router();
   const now = deps.now ?? (() => new Date());
-  const claim = deps.claim ?? new ClaimService({ db: deps.db });
   const disputes = deps.disputes ?? new DisputeService({ db: deps.db });
   const adminToken = deps.adminToken ?? process.env.VERDICT_ADMIN_TOKEN ?? "";
   const json = express.json({ limit: "32kb" });
 
-  // claim_challenges GC — every 5 min, expire pending rows past their
-  // expires_at and delete settled rows older than 7 days. Keeps the
-  // table from accumulating dead state under wallet-only init traffic.
-  // unref() so the timer doesn't keep the process alive at shutdown.
-  const GC_INTERVAL_MS = 5 * 60 * 1000;
-  const GC_KEEP_DAYS = 7;
-  setInterval(() => {
-    try {
-      const n = now();
-      const nowIso = n.toISOString().replace(/\.\d+Z$/, "Z");
-      const keepSinceIso = new Date(n.getTime() - GC_KEEP_DAYS * 24 * 60 * 60 * 1000)
-        .toISOString()
-        .replace(/\.\d+Z$/, "Z");
-      claimsRepo.gc(deps.db, nowIso, keepSinceIso);
-    } catch {
-      // GC is best-effort — never let a sweep error crash the daemon.
-    }
-  }, GC_INTERVAL_MS).unref();
+  // Wave 1 — claim_challenges GC removed alongside the deleted claim
+  // routes. The table is retained for now to keep local DBs at v=30
+  // bootable without manual repair; Wave 3 (Migration 031) drops the
+  // table outright.
 
   // Capture raw body for HMAC verification on the submission route only.
   router.post(
@@ -2212,202 +2193,15 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     res.json({ ...full, submission: scrubbedSubmission, ...fheExtras });
   });
 
-  router.post(
-    "/v1/agents/:slug/claim/init",
-    json,
-    asyncHandler(async (req, res) => {
-      const slug = String(req.params.slug ?? "");
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const target = body.target_identity as
-        | { kind?: string; value?: string }
-        | undefined;
-      const wallet = body.wallet_to_bind as string | undefined;
-      if (!target?.kind || !target.value || !wallet) {
-        throw new VerdictError(
-          "target_identity and wallet_to_bind are required",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      const result = await claim.init({
-        display_slug: slug,
-        target_identity: {
-          kind: VerifiedIdentityKindSchema.parse(target.kind),
-          value: String(target.value),
-        },
-        wallet_to_bind: String(wallet) as `0x${string}`,
-        origin: `${req.protocol}://${req.get("host")}`,
-        now,
-      });
-      res.status(201).json(result);
-    }),
-  );
-
-  // ── Wallet-only claim flow ──
-  // Self-onboarding for autonomous agents: no X/Telegram identity required.
-  // The agent picks a slug, signs the canonical claim message with its
-  // wallet, and gets back an API key bound to (slug, wallet). The agent
-  // ends up as kind="wallet_only" — visible on the leaderboard alongside
-  // verified+benchmark agents but distinguishable in the UI. See
-  // src/verdict/claim.ts for the per-method docs.
-  //
-  // Rate limits: in-memory token bucket per (IP, wallet, slug). Hard cap
-  // of one pending challenge per (slug, wallet) is enforced inside the
-  // claim service via claimsRepo.countPendingForWalletAndAgent. The
-  // in-memory limiter blocks the burst case before we even hit the DB.
-  router.post(
-    "/v1/agents/:slug/claim/wallet-only/init",
-    json,
-    asyncHandler(async (req, res) => {
-      const slugRaw = String(req.params.slug ?? "");
-      // Validate the slug shape at the API edge — claim.ts assumes it's
-      // already conformant. AgentSlugSchema enforces 3-32 chars,
-      // lowercase, no double-dashes, no leading/trailing dashes.
-      const slugParse = AgentSlugSchema.safeParse(slugRaw);
-      if (!slugParse.success) {
-        throw new VerdictError(
-          "slug must be 3-32 lowercase alphanumeric chars with single dashes between segments",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      const slug = slugParse.data;
-
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const walletRaw = body.wallet_to_bind;
-      if (typeof walletRaw !== "string" || walletRaw.length === 0) {
-        throw new VerdictError(
-          "wallet_to_bind is required",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      const chainIdRaw = body.chain_id;
-      let chain_id: string | undefined;
-      if (typeof chainIdRaw === "string" && chainIdRaw.length > 0) {
-        const cid = ChainIdSchema.safeParse(chainIdRaw);
-        if (!cid.success) {
-          throw new VerdictError(
-            "chain_id must be CAIP-2 (e.g. eip155:8453)",
-            ERROR_CODES.schema_invalid,
-            400,
-          );
-        }
-        chain_id = cid.data;
-      }
-      const display_name =
-        typeof body.display_name === "string" && body.display_name.length > 0
-          ? body.display_name.slice(0, 64)
-          : undefined;
-
-      // Per-IP rate limit (in-memory).
-      const ip = readClientIp(req);
-      if (!walletOnlyInitLimiter.allow({ ip, slug, wallet: walletRaw.toLowerCase() })) {
-        throw new VerdictError(
-          "rate limited; back off and retry",
-          ERROR_CODES.agent_not_authorized,
-          429,
-        );
-      }
-
-      const result = await claim.walletOnlyInit({
-        display_slug: slug,
-        wallet_to_bind: walletRaw as `0x${string}`,
-        ...(display_name ? { display_name } : {}),
-        ...(chain_id ? { chain_id } : {}),
-        origin: `${req.protocol}://${req.get("host")}`,
-        now,
-      });
-      res.status(201).json(result);
-    }),
-  );
-
-  router.post(
-    "/v1/agents/:slug/claim/wallet-only/finalize",
-    json,
-    asyncHandler(async (req, res) => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const challenge_id = body.challenge_id as string | undefined;
-      const signature = body.signature as `0x${string}` | undefined;
-      if (!challenge_id || !signature) {
-        throw new VerdictError(
-          "challenge_id and signature are required",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      const chainIdRaw = body.chain_id;
-      let chain_id: string | undefined;
-      if (typeof chainIdRaw === "string" && chainIdRaw.length > 0) {
-        const cid = ChainIdSchema.safeParse(chainIdRaw);
-        if (!cid.success) {
-          throw new VerdictError(
-            "chain_id must be CAIP-2 (e.g. eip155:8453)",
-            ERROR_CODES.schema_invalid,
-            400,
-          );
-        }
-        chain_id = cid.data;
-      }
-      const result = await claim.walletOnlyFinalize({
-        challenge_id,
-        signature,
-        ...(chain_id ? { chain_id } : {}),
-        origin: `${req.protocol}://${req.get("host")}`,
-        // SECURITY: forward route slug so the service refuses
-        // cross-slug finalizes (codex slug-takeover review).
-        url_slug: String(req.params.slug ?? ""),
-        now,
-      });
-      res.status(200).json(result);
-    }),
-  );
-
-  router.post(
-    "/v1/agents/:slug/claim/finalize",
-    json,
-    asyncHandler(async (req, res) => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const challenge_id = body.challenge_id as string | undefined;
-      const signature = body.signature as `0x${string}` | undefined;
-      const post_url = body.post_url as string | undefined;
-      if (!challenge_id || !signature || !post_url) {
-        throw new VerdictError(
-          "challenge_id, signature, and post_url are required",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      const result = await claim.finalize({
-        challenge_id,
-        signature,
-        post_url,
-        origin: `${req.protocol}://${req.get("host")}`,
-        // SECURITY: forward route slug. See walletOnlyFinalize above.
-        url_slug: String(req.params.slug ?? ""),
-        now,
-      });
-      // Outreach attribution: if the visitor arrived via /share/<slug>?ref=<sender>,
-      // the dashboard echoes that ref back here. We credit a conversion only
-      // when the (ref, slug) bucket already has at least one click — i.e. the
-      // sender actually drove this visitor. Idempotent (capped at 1) and tied
-      // to a single-use challenge_id, so the credit can't be replayed.
-      const ref = sanitizeRef(body.ref);
-      if (ref) {
-        try {
-          refsRepo.bumpConversion(
-            deps.db,
-            ref,
-            result.display_slug,
-            nowIso(now()),
-          );
-        } catch {
-          // Attribution is best-effort; never block a successful claim.
-        }
-      }
-      res.status(200).json(result);
-    }),
-  );
+  // Wave 1 (consolidated reshape) — /v1/agents/:slug/claim/* routes
+  // (init, finalize, wallet-only/init, wallet-only/finalize) all
+  // deleted. The public-identity claim flow (X/Telegram post-content
+  // verification) and the wallet-only self-mint flow were the v0.1
+  // onboarding paths. In the new model agents are minted under a
+  // Privy account via POST /v1/account/agents — no on-platform
+  // signature challenge, no public-identity proof. Operator-mediated
+  // manual claim for legacy shadow agents lands as a CLI in Wave 5
+  // (no public route).
 
   // ── Disputes ──
 
@@ -3275,50 +3069,9 @@ function readClientIp(req: Request): string {
   return req.ip ?? "unknown";
 }
 
-/**
- * In-memory token-bucket rate limiter for /claim/wallet-only/init.
- * Bucket lifetimes are short (60s windows), so memory growth is bounded
- * by traffic. Three independent dimensions:
- *   - per IP (5 init/min) — the broadest abuse surface
- *   - per wallet (3 init/min) — bound an attacker rotating slugs
- *   - per slug (2 init/min) — bound concurrent races for the same slug
- *
- * Behind a multi-instance deploy this only rate-limits per process. Good
- * enough for a launchpad single-Render-instance v0.2; promote to Redis
- * if/when we go multi-process.
- */
-const walletOnlyInitLimiter = (() => {
-  const WINDOW_MS = 60 * 1000;
-  const buckets = new Map<string, { count: number; resetAt: number }>();
-  const tap = (key: string, max: number, now: number): boolean => {
-    const b = buckets.get(key);
-    if (!b || b.resetAt <= now) {
-      buckets.set(key, { count: 1, resetAt: now + WINDOW_MS });
-      return true;
-    }
-    if (b.count >= max) return false;
-    b.count++;
-    return true;
-  };
-  // Periodic prune — drop expired buckets so memory doesn't grow with
-  // unique IPs over a long-running daemon.
-  setInterval(() => {
-    const now = Date.now();
-    for (const [k, v] of buckets) {
-      if (v.resetAt <= now) buckets.delete(k);
-    }
-  }, 5 * 60 * 1000).unref();
-  return {
-    allow(args: { ip: string; wallet: string; slug: string }): boolean {
-      const now = Date.now();
-      return (
-        tap(`ip:${args.ip}`, 5, now) &&
-        tap(`wallet:${args.wallet}`, 3, now) &&
-        tap(`slug:${args.slug}`, 2, now)
-      );
-    },
-  };
-})();
+// Wave 1 — walletOnlyInitLimiter deleted alongside the /claim/wallet-only
+// routes it gated. Casual-tier mint via POST /v1/account/agents has its
+// own express-rate-limit middleware (see src/verdict/routes/account.ts).
 
 /**
  * Self-onboarding skill file. Any agent with internet access reads this

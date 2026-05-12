@@ -2,7 +2,8 @@ import { useEffect, useState, lazy, Suspense } from "react";
 
 const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ default: m.TodayPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
-const ClaimPage = lazy(() => import("./pages/ClaimPage.js").then((m) => ({ default: m.ClaimPage })));
+// Wave 1 — ClaimPage deleted alongside the public-identity claim flow.
+// New agents are minted under a Privy account via /v1/account/agents.
 const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ default: m.SharePage })));
 const RecruitersPage = lazy(() => import("./pages/RecruitersPage.js").then((m) => ({ default: m.RecruitersPage })));
 const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => ({ default: m.AdminRefsPage })));
@@ -137,7 +138,6 @@ interface ParsedRoute {
     | "agent"
     | "agent_calls"
     | "call"
-    | "claim"
     | "launch"
     | "share"
     | "recruiters"
@@ -221,8 +221,7 @@ function parseHash(hash: string): ParsedRoute {
   }
   const callMatch = /^\/calls\/(.+)$/.exec(path);
   if (callMatch) return { name: "call", params: { call_id: callMatch[1] } };
-  const claimMatch = /^\/agents\/([^/]+)\/claim$/.exec(path);
-  if (claimMatch) return { name: "claim", params: { slug: claimMatch[1] } };
+  // Wave 1 — /agents/:slug/claim route deleted alongside ClaimPage.
   const agentCalls = /^\/agents\/([^/]+)\/calls$/.exec(path);
   if (agentCalls) return { name: "agent_calls", params: { slug: agentCalls[1] } };
   const agent = /^\/agents\/([^/]+)$/.exec(path);
@@ -281,7 +280,6 @@ export function VerdictRouter() {
           <AgentPageCompact slug={route.params!.slug} />
         ))}
       {route.name === "call" && <CallPage callId={route.params!.call_id} />}
-      {route.name === "claim" && <ClaimPage slug={route.params!.slug} />}
       {route.name === "launch" &&
         (variant === "bold" ? (
           <LaunchPageBold />
