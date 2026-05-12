@@ -2191,8 +2191,16 @@ const MIGRATION_029_ORACLES_REBUILD = `
   CREATE INDEX idx_oracles_status ON oracles(status);
 `;
 
-// Seed runs OUTSIDE the table-rebuild transaction so a partial rebuild
-// can't double-insert. INSERT OR IGNORE keeps it idempotent on retry.
+// Seed is CONCATENATED into the rebuild SQL above so both run inside
+// the same BEGIN..COMMIT as the schema_version=29 bump (codex bundle
+// review MAJOR #1 fix at db.ts:584). A crash mid-block rolls back the
+// entire migration; the `if (v < 29)` guard re-runs everything on
+// the next boot. INSERT OR IGNORE makes that retry idempotent.
+//
+// Future authors: changes to the synthetic Polymarket asset/oracle
+// rows must use an explicit UPDATE / UPSERT migration — re-running
+// this seed appends nothing because INSERT OR IGNORE silently skips
+// existing rows.
 const MIGRATION_029_SEED = `
   INSERT OR IGNORE INTO assets (asset_id, display_short, display_name, native_chain, pyth_feed_id, chainlink_base_address, decimals_hint, status, notes, created_at) VALUES
     ('polymarket:event', 'pmevent', 'Polymarket Event', 'polygon',
