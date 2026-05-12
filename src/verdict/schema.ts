@@ -101,11 +101,17 @@ export const REGISTRY_STATUSES = [
 export const RegistryStatusSchema = z.enum(REGISTRY_STATUSES);
 export type RegistryStatus = z.infer<typeof RegistryStatusSchema>;
 
+// Wave 4b — `event_binary` covers Polymarket-style YES/NO markets where
+// the outcome is delivered by an external adapter (no price feed). Score
+// kind for those markets is the universal multinomial Brier, scored by
+// markets-core::callScore on the payout vector. Native-price direction
+// markets continue to use direction_binary + brier_direction.
 export const MARKET_KINDS = [
   "direction_binary",
   "price_point",
   "price_bracket",
   "depeg_threshold",
+  "event_binary",
 ] as const;
 export const MarketKindSchema = z.enum(MARKET_KINDS);
 export type MarketKind = z.infer<typeof MarketKindSchema>;
@@ -115,6 +121,7 @@ export const SCORING_KINDS = [
   "rank_proximity_l1",
   "bracket_hit",
   "threshold_hit",
+  "multinomial_brier",
 ] as const;
 export const ScoringKindSchema = z.enum(SCORING_KINDS);
 export type ScoringKind = z.infer<typeof ScoringKindSchema>;
@@ -236,6 +243,17 @@ export const MarketRecordSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "direction_binary markets require scoring_kind=brier_direction",
+        path: ["scoring_kind"],
+      });
+    }
+    // Wave 4b — event_binary markets are adapter-resolved (Polymarket
+    // Gamma + future event-feed adapters). The universal payout-vector
+    // scorer (multinomial_brier) is the only legal scoring kind; bespoke
+    // direction-Brier doesn't apply because there is no price feed.
+    if (v.market_kind === "event_binary" && v.scoring_kind !== "multinomial_brier") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "event_binary markets require scoring_kind=multinomial_brier",
         path: ["scoring_kind"],
       });
     }

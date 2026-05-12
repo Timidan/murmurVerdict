@@ -3937,6 +3937,70 @@ export const marketsRepo = {
   },
 
   /**
+   * Wave 4b — upsert an external-adapter market row (Polymarket Gamma is
+   * the first such adapter). The row's `market_id` is the adapter's
+   * canonical handle (Polymarket conditionId, 32-byte hex). The synthetic
+   * anchor rows seeded by MIGRATION_029 (`assets.polymarket:event` +
+   * `oracles.polymarket-gamma-oracle`) satisfy the FK constraints on
+   * `markets.asset_id` and `markets.primary_oracle_id`.
+   *
+   * `config_json` carries every adapter-private field the resolver needs
+   * for dispatch (conditionId / slug / outcomes / endDate); the
+   * Polymarket Gamma adapter parses it via `marketConfigSchema` and
+   * spreads it into the resolver's observation context.
+   *
+   * Upserts via `INSERT … ON CONFLICT(market_id) DO UPDATE` so re-running
+   * the admin route with the same conditionId refreshes the config JSON
+   * (Gamma's metadata changes between fetches) without rotating the
+   * row's `created_at`.
+   */
+  upsertExternalMarket(
+    db: Database.Database,
+    row: {
+      market_id: string;
+      asset_id: string;
+      market_kind: string;
+      horizon_seconds: number;
+      primary_oracle_id: string;
+      adapter_id: string;
+      market_family: string;
+      scoring_kind: string;
+      config_json: string;
+      void_band: string;
+      status: RegistryStatus;
+      created_at: string;
+    },
+  ): void {
+    prep(
+      db,
+      `INSERT INTO markets (
+         market_id, asset_id, market_kind, horizon_seconds,
+         primary_oracle_id, fallback_oracle_id,
+         primary_max_staleness_sec, fallback_max_staleness_sec,
+         t0_grace_seconds, t0_extended_grace_seconds,
+         void_band, round_cadence_seconds, scoring_kind,
+         market_config_version, status, notes, created_at,
+         adapter_id, market_family, config_json
+       ) VALUES (
+         @market_id, @asset_id, @market_kind, @horizon_seconds,
+         @primary_oracle_id, NULL,
+         0, NULL,
+         0, 0,
+         @void_band, NULL, @scoring_kind,
+         1, @status, NULL, @created_at,
+         @adapter_id, @market_family, @config_json
+       )
+       ON CONFLICT(market_id) DO UPDATE SET
+         config_json   = excluded.config_json,
+         market_kind   = excluded.market_kind,
+         scoring_kind  = excluded.scoring_kind,
+         status        = excluded.status,
+         adapter_id    = excluded.adapter_id,
+         market_family = excluded.market_family`,
+    ).run(row);
+  },
+
+  /**
    * Update market_config_version + selected mutable policy fields atomically.
    * Bumps `market_config_version` so existing pending submissions stamped at
    * the prior version know they were resolved under different rules.

@@ -1052,6 +1052,139 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     });
   });
 
+  // Wave 4b — admin upsert for Polymarket conditionId markets. The
+  // operator POSTs a conditionId; the daemon fetches it from Gamma,
+  // builds a `markets` row via marketsRepo.upsertExternalMarket, and
+  // returns the resulting MarketRow JSON.
+  //
+  // The synthetic anchors seeded by MIGRATION_029 satisfy the
+  // markets.asset_id + markets.primary_oracle_id FK constraints
+  // ('polymarket:event' asset; 'polymarket-gamma-oracle' oracle).
+  // The sync ticker (started behind MURMUR_POLYMARKET_GAMMA_ENABLED=1)
+  // auto-seeds the external_market_sync_state row on its next pass.
+  //
+  // Guard: requires VERDICT_ADMIN_TOKEN, same posture as the other
+  // admin-gated endpoints. Body is validated with a Zod schema; any
+  // Gamma fetch failure surfaces a 502 (the conditionId is unknown
+  // upstream). Idempotent — re-POSTing the same conditionId refreshes
+  // the cached metadata.
+  router.post(
+    "/v1/admin/markets/polymarket",
+    express.json(),
+    asyncHandler(async (req, res) => {
+      if (!adminToken) {
+        res.status(503).json({
+          code: "admin_disabled",
+          message: "VERDICT_ADMIN_TOKEN not set",
+        });
+        return;
+      }
+      if (!safeStrEq(req.header("X-Admin-Token"), adminToken)) {
+        res.status(403).json({
+          code: "forbidden",
+          message: "admin token required",
+        });
+        return;
+      }
+      const Body = z
+        .object({
+          conditionId: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+          // Default 'listed' — operators almost always want a freshly
+          // registered Polymarket market to accept submissions immediately.
+          status: z
+            .enum(["draft", "listed", "frozen", "retired"])
+            .default("listed"),
+          // Optional override; otherwise derived from the Gamma row's
+          // endDate (resolver doesn't anchor t0/t1 on event_binary markets,
+          // so the value is bookkeeping only).
+          horizon_seconds: z.number().int().positive().optional(),
+        })
+        .strict();
+      const parsed = Body.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          code: "schema_invalid",
+          issues: parsed.error.format(),
+        });
+        return;
+      }
+      const { conditionId, status, horizon_seconds } = parsed.data;
+      const { PolymarketGammaClient } = await import(
+        "../markets/polymarket-gamma/client.js"
+      );
+      const client = new PolymarketGammaClient();
+      const fetched = await client.fetchMarketByConditionId(conditionId);
+      if (!fetched.snapshot) {
+        res.status(502).json({
+          code: "gamma_fetch_failed",
+          message: `Polymarket Gamma returned no snapshot for ${conditionId}`,
+          gamma_error: fetched.error,
+        });
+        return;
+      }
+      const snapshot = fetched.snapshot;
+      // Pull a few canonical fields off the snapshot for the row;
+      // everything else flows through `config_json` for the adapter.
+      const endDateMs = snapshot.endDate
+        ? Date.parse(snapshot.endDate)
+        : Number.NaN;
+      const derivedHorizonSec = Number.isFinite(endDateMs)
+        ? Math.max(60, Math.floor((endDateMs - Date.now()) / 1000))
+        : 7 * 24 * 60 * 60;
+      const horizonSec = horizon_seconds ?? derivedHorizonSec;
+      const slugCandidate =
+        typeof snapshot.slug === "string" ? snapshot.slug : null;
+      const outcomesField = snapshot.outcomes;
+      let outcomes: string[] = ["YES", "NO"];
+      if (typeof outcomesField === "string") {
+        try {
+          const parsedOutcomes = JSON.parse(outcomesField) as unknown;
+          if (
+            Array.isArray(parsedOutcomes) &&
+            parsedOutcomes.length === 2 &&
+            parsedOutcomes.every((o) => typeof o === "string")
+          ) {
+            outcomes = parsedOutcomes as string[];
+          }
+        } catch {
+          // Gamma sometimes serializes outcomes oddly; the adapter's
+          // marketConfigSchema is the authoritative validator at read time.
+        }
+      }
+      const configJson = JSON.stringify({
+        conditionId,
+        slug: slugCandidate ?? conditionId.slice(0, 10),
+        outcomes,
+        endDate: snapshot.endDate ?? null,
+        ...(typeof snapshot.umaBond === "string" ? { umaBond: snapshot.umaBond } : {}),
+        ...(typeof snapshot.resolvedBy === "string"
+          ? { resolvedBy: snapshot.resolvedBy }
+          : {}),
+        gamma_url: `https://polymarket.com/event/${slugCandidate ?? conditionId}`,
+      });
+      const created_at = nowIso(now());
+      marketsRepo.upsertExternalMarket(deps.db, {
+        market_id: conditionId,
+        asset_id: "polymarket:event",
+        market_kind: "event_binary",
+        horizon_seconds: horizonSec,
+        primary_oracle_id: "polymarket-gamma-oracle",
+        adapter_id: "polymarket-gamma",
+        market_family: "prediction-market-binary",
+        scoring_kind: "multinomial_brier",
+        config_json: configJson,
+        void_band: "0",
+        status,
+        created_at,
+      });
+      const row = marketsRepo.get(deps.db, conditionId);
+      res.status(201).json({
+        schema_version: SCHEMA_VERSION,
+        market: row,
+      });
+    }),
+  );
+
   // Admin-only delete of a sender's ref bucket — used to clear noise / spam
   // from the recruiters board. Requires the same admin token as the full
   // listing.
