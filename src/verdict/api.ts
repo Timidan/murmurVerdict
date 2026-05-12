@@ -3571,9 +3571,11 @@ attesters + 3 agent-elected + 2 infra partners; quorum requires ≥2
 non-agent and ≥2 non-Murmur seats) decrypts the bounded SCORE — never
 the prediction.
 
-**Operator is in the trust root ONLY when the deployed threshold
-committee is the production posture.** Inspect
-\`GET /v1/meta.privacy.threshold_mode\`:
+**Operator is OUT of the trust root ONLY when the deployed threshold
+committee is the production posture.** Under every other posture
+(mock, stub, mock_quorum) the operator is still in the trust root and
+agents who require the operator-blind guarantee should refuse to
+submit. Inspect \`GET /v1/meta.privacy.threshold_mode\`:
 
   - \`production\`           — operator is out of the trust root.
   - \`mock_quorum\`          — Z3 in-process 5-of-9 pool; the
@@ -3594,11 +3596,14 @@ Call/reveal/resolution rows are the canonical evidence trail. Wave 4b
 retired the per-call cryptographic receipts subsystem; the rows on
 \`submissions\`, \`call_reveals\`, \`t1_resolutions\`, and (for fhe_direct)
 \`fhe_call_ciphertexts\` + \`fhe_score_releases\` are what /v1/calls/<id>
-returns and what disputes replay against. For fhe_direct calls,
-disputes verify the transcript (ciphertext hash matches commit, circuit
-id matches active code, resolved outcome is adapter-produced, encrypted
-score hash is reproducible, threshold release signatures match) — they
-do NOT decrypt the agent's prediction.
+returns and what disputes replay against. Today's dispute machinery in
+\`src/verdict/disputes.ts\` is the legacy native-price replay path
+(re-resolve against the canonical oracle); **fhe_direct transcript
+verification (ciphertext hash matches commit, circuit id matches active
+code, threshold release signatures match) is planned for the v0.3
+production-committee wave — it is NOT live today.** Pre-v0.3, an
+fhe_direct call that disputes against its public outcome is replayed
+as if it were native-price; the prediction stays encrypted regardless.
 
 ## Optional — upgrade to a verified public identity
 

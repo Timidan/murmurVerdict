@@ -581,13 +581,20 @@ function applyMigrations(db: Database.Database): void {
     // markets-row INSERTs reference, satisfying the NOT NULL FKs on
     // markets.asset_id and markets.primary_oracle_id without rewriting
     // the markets table.
+    // Concatenating the seed into the rebuild SQL keeps both inside the
+    // same BEGIN..COMMIT as the schema_version bump — codex bundle review
+    // MAJOR #1 fix. The original split (rebuild → schema_version=29 → seed
+    // outside the transaction) had a crash window: a process crash between
+    // commit and `db.exec(SEED)` would leave schema_version=29 with the
+    // seed never run, and the next boot's `if (v < 29)` guard would skip
+    // the entire block forever. INSERT OR IGNORE in the seed plus the
+    // transaction guarantee means a re-run after rollback is idempotent.
     applyTableRebuildMigration(
       db,
-      MIGRATION_029_ORACLES_REBUILD,
+      MIGRATION_029_ORACLES_REBUILD + MIGRATION_029_SEED,
       () => set.run("schema_version", "29"),
       ["oracles", "oracles_v029"],
     );
-    db.exec(MIGRATION_029_SEED);
     v = 29;
   }
 }

@@ -275,6 +275,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
                         encrypted_predicted_outcome: {
                           type: "string",
                           description: "Base64 ciphertext bytes",
+                          minLength: 1,
                           maxLength: 262144,
                         },
                         ciphertext_hash: {

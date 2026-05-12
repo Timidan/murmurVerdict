@@ -507,9 +507,12 @@ export interface AgentFamilyRow {
   last_resolved_at: string | null;
   /** True iff resolved_calls >= MAIN tier threshold WITHIN this family. */
   family_main_tier: boolean;
-  /** Number of distinct market_ids this agent has resolved a call on
-   *  inside the family. Helps the dashboard distinguish "one-market
-   *  specialist" from "broad family practitioner." */
+  /** Number of distinct market_ids this agent has TOUCHED inside the
+   *  family — counts any submission with a market_id (pending or
+   *  resolved). Helps the dashboard distinguish "one-market specialist"
+   *  from "broad family practitioner." Resolved-only is a stricter
+   *  signal expressible via resolved_calls; this field is intentionally
+   *  inclusive of pending so a new agent's reach is visible. */
   distinct_markets: number;
 }
 
