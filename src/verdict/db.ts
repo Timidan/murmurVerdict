@@ -3180,9 +3180,14 @@ export const resolutionsRepo = {
         agent_id: subRow.agent_id,
         client_order_id: subRow.client_order_id,
         asset_id: subRow.asset_id,
-        // SQLite NULL → null; cast the non-null path through the typed
-        // 'BUY' | 'SELL' enum. Schema CHECK constraint guarantees the
-        // value is one of the two when non-null.
+        // SQLite NULL → null; otherwise narrow into the 'BUY' | 'SELL'
+        // enum via a runtime guard. The MIGRATION_001 CHECK that bounded
+        // submissions.side to BUY/SELL was lifted in MIGRATION_015 (the
+        // column went to nullable plain TEXT to accommodate fhe_direct
+        // rows that null all plaintext fields). Application-layer
+        // validation (SubmittedCallSchema's SideSchema) is the live
+        // guard on the write path; this runtime guard is the
+        // matching fail-closed on the read path.
         side: subRow.side === "BUY" || subRow.side === "SELL" ? subRow.side : null,
         horizon_hours: subRow.horizon_hours,
         confidence: subRow.confidence,

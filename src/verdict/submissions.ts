@@ -1400,8 +1400,18 @@ function loadExistingAcceptedCall(
   // an old client expected back from this path.
   // Wave 4b-2 — preflights table dropped; oracle_policies remains as the
   // sole join below.
+  // Codex Z2 Drift B follow-up — explicit submissions columns (was
+  // `SELECT s.*`). Same defense-in-depth rationale as
+  // resolutionsRepo.loadFullCall: a future plaintext column added to
+  // submissions would land in the row dict on day one with no audit
+  // moment, and a naive widening of AcceptedCallSchema.parse below
+  // would auto-surface it. Enumerating fields here forces a deliberate
+  // review.
   const stmt = db.prepare(`
-    SELECT s.*,
+    SELECT s.schema_version, s.scoring_version,
+           s.call_id, s.agent_id, s.client_order_id,
+           s.asset_id, s.side, s.horizon_hours, s.confidence,
+           s.submitted_at, s.accepted_at, s.rationale, s.strategy_tag,
            op.primary_feed, op.fallback_feed, op.primary_max_staleness_sec,
            op.fallback_max_staleness_sec, op.t0_grace_seconds, op.t0_extended_grace_seconds
     FROM submissions s
