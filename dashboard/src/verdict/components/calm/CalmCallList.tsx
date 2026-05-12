@@ -60,22 +60,16 @@ function formatTs(iso: string): string {
   });
 }
 
-function formatTitle(c: AgentCallRow): string {
-  const scrubbed = c.privacy_mode === "committed" && c.side === undefined;
-  if (scrubbed) return "Sealed commit";
-  const asset = c.asset_id?.split(":").pop() ?? c.asset_id ?? "—";
-  const side = c.side ?? "—";
-  return `${side.toLowerCase()} ${asset}`;
+function formatTitle(_c: AgentCallRow): string {
+  // Wave 2b — FHE-mandatory. Every call is operator-blind; the title is
+  // a uniform "Sealed commit" placard.
+  return "Sealed commit";
 }
 
-function formatHorizon(c: AgentCallRow): string {
-  if (c.privacy_mode === "committed" && c.side === undefined) return "horizon hidden";
-  const h = c.horizon_hours;
-  const conf = c.confidence;
-  const parts: string[] = [];
-  if (h) parts.push(`${h}h`);
-  if (typeof conf === "number") parts.push(`${(conf * 100).toFixed(0)}% conf`);
-  return parts.join(" · ");
+function formatHorizon(_c: AgentCallRow): string {
+  // Wave 2b — FHE-mandatory. Side, asset, horizon, confidence are
+  // encrypted under the threshold keyset.
+  return "horizon hidden";
 }
 
 function formatOutcome(c: AgentCallRow): string {

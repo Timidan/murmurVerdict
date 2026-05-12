@@ -118,8 +118,10 @@ export async function loadResolutionSubject(
   db: Database.Database,
   call_id: string,
   opts: {
-    ageCtx?: AgeContext;
-    drandCtx?: DrandContext;
+    // Wave 2b — ageCtx + drandCtx removed; the envelope-decrypt
+    // fallbacks below are unreachable under FHE-mandatory but kept
+    // as dead-code branches that Wave 3 will fully prune alongside
+    // the call_private_envelopes table drop.
     now?: () => Date;
   } = {},
 ): Promise<SubjectResult> {
@@ -219,72 +221,15 @@ export async function loadResolutionSubject(
   const envRow = callPrivateEnvelopesRepo.byCallId(db, call_id);
   if (!envRow) return { ok: false, reason: "envelope_missing" };
 
-  // Try (2) daemon fallback past fallback_after.
-  const fallbackAfterMs = envRow.fallback_after
-    ? Date.parse(envRow.fallback_after)
-    : Date.parse(subRow.accepted_at) +
-      subRow.horizon_hours * 3_600_000 +
-      REVEAL_GRACE_MS;
-  if (now.getTime() >= fallbackAfterMs && opts.ageCtx?.identity) {
-    try {
-      const plaintextBytes = await decryptEnvelope(
-        opts.ageCtx,
-        envRow.encrypted_body,
-      );
-      const subject = await materializeFromCiphertext({
-        db,
-        call_id,
-        envBody: plaintextBytes,
-        commit_hash: subRow.commit_hash,
-        commit_preimage_schema: envRow.commit_preimage_schema,
-        agentWallet,
-        chainId,
-        revealed_via: "daemon_fallback",
-        nowIso: nowIso(now),
-        enrichment,
-      });
-      if (subject) return { ok: true, subject };
-    } catch {
-      // Fall through to drand try.
-    }
-  }
-
-  // Try (3) drand fallback past round time.
-  if (
-    envRow.drand_round &&
-    envRow.drand_ciphertext &&
-    opts.drandCtx?.available
-  ) {
-    const roundTimeMs = drandRoundTimeMs(opts.drandCtx, envRow.drand_round);
-    if (roundTimeMs !== null && now.getTime() >= roundTimeMs) {
-      try {
-        const plaintextBytes = await decryptDrandEnvelope(
-          opts.drandCtx,
-          envRow.drand_ciphertext,
-        );
-        const subject = await materializeFromCiphertext({
-          db,
-          call_id,
-          envBody: plaintextBytes,
-          commit_hash: subRow.commit_hash,
-          commit_preimage_schema: envRow.commit_preimage_schema,
-          agentWallet,
-          chainId,
-          revealed_via: "drand_fallback",
-          nowIso: nowIso(now),
-          enrichment,
-        });
-        if (subject) return { ok: true, subject };
-      } catch (err) {
-        return {
-          ok: false,
-          reason: "decrypt_failed",
-          detail: err instanceof Error ? err.message : "drand decrypt failed",
-        };
-      }
-    }
-  }
-
+  // Wave 2b — daemon age-envelope fallback + drand timelock fallback
+  // both removed. Without an age identity or drand context (both gone
+  // alongside committed-mode submission), a committed-mode call past
+  // horizon stays not_yet_revealable forever. Wave 3 drops
+  // call_private_envelopes entirely; until then any legacy committed
+  // rows that exist in dev DBs stay deferred and are wiped by the
+  // migration. Suppress unused-var warnings on the still-referenced
+  // envelope row.
+  void envRow;
   return { ok: false, reason: "not_yet_revealable" };
 }
 

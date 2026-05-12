@@ -18,8 +18,9 @@ import {
   usageRepo,
 } from "./db.js";
 import { loadResolutionSubject } from "./resolution-subject.js";
-import type { AgeContext } from "./age-envelope.js";
-import type { DrandContext } from "./drand-envelope.js";
+// Wave 2b — AgeContext / DrandContext imports removed; the dead
+// envelope-decrypt paths in loadResolutionSubject are no longer
+// passed contexts.
 import {
   OracleClient,
   OracleError,
@@ -97,17 +98,9 @@ export interface ResolverDeps {
   log?: (line: ResolverLogEvent) => void;
   /** Called for every call that becomes terminal (resolved, oracle_unavailable). */
   onResolved?: (call_id: string) => void | Promise<void>;
-  /**
-   * P2 committed-mode subject loader contexts. When the resolver hits a
-   * committed-mode call past horizon, it tries (in order):
-   *   1. agent reveal already in call_reveals
-   *   2. age envelope decrypt past fallback_after (needs ageContext.identity)
-   *   3. drand timelock decrypt past round (needs drandContext)
-   * Without these, committed calls past horizon stay deferred until
-   * an agent reveals voluntarily.
-   */
-  ageContext?: AgeContext;
-  drandContext?: DrandContext;
+  // Wave 2b — ageContext + drandContext removed alongside the
+  // committed-mode envelope decrypt path. FHE-direct rows never
+  // needed them; legacy plaintext rows have nothing to decrypt.
   /**
    * Z2 — FHE provider for the `fhe_direct` branch. When present, the
    * resolver dispatches encrypted scoring through this provider before
@@ -157,8 +150,7 @@ export class Resolver {
   private readonly now: () => Date;
   private readonly log: (line: ResolverLogEvent) => void;
   private readonly onResolved: NonNullable<ResolverDeps["onResolved"]>;
-  private readonly ageContext: AgeContext | undefined;
-  private readonly drandContext: DrandContext | undefined;
+  // Wave 2b — ageContext + drandContext fields removed.
   private readonly fheProvider: FheProvider | null;
   private readonly quorumPool: {
     holders(): ReadonlyArray<ThresholdHolder>;
@@ -170,8 +162,7 @@ export class Resolver {
     this.now = deps.now ?? (() => new Date());
     this.log = deps.log ?? (() => undefined);
     this.onResolved = deps.onResolved ?? (() => undefined);
-    this.ageContext = deps.ageContext;
-    this.drandContext = deps.drandContext;
+    // Wave 2b — ageContext + drandContext init removed.
     this.fheProvider = deps.fheProvider ?? null;
     this.quorumPool = deps.quorumPool ?? null;
   }
@@ -381,8 +372,8 @@ export class Resolver {
         // next tick. Legacy_plaintext rows hydrate from submissions
         // on first access and behave like agent reveals from then on.
         const subjectResult = await loadResolutionSubject(this.db, ctx.call_id, {
-          ...(this.ageContext ? { ageCtx: this.ageContext } : {}),
-          ...(this.drandContext ? { drandCtx: this.drandContext } : {}),
+          // Wave 2b — ageCtx + drandCtx removed; the envelope-decrypt
+          // fallback paths inside loadResolutionSubject are dead.
           now: this.now,
         });
         if (!subjectResult.ok) {
@@ -1389,55 +1380,20 @@ export class Resolver {
   ): Promise<boolean> {
     const resolved_at = this.nowIso();
     const t0row = anchorsRepo.getT0(this.db, ctx.call_id);
-    const committedSubject =
-      ctx.privacy_mode === "committed"
-        ? await loadResolutionSubject(this.db, ctx.call_id, {
-            ...(this.ageContext ? { ageCtx: this.ageContext } : {}),
-            ...(this.drandContext ? { drandCtx: this.drandContext } : {}),
-            now: this.now,
-          })
-        : null;
-    if (committedSubject && !committedSubject.ok) {
-      this.log({
-        kind: "still_pending",
-        call_id: ctx.call_id,
-        phase,
-        reason: `subject:${committedSubject.reason}:oracle_unavailable`,
-      });
-      return false;
-    }
-    const subject = committedSubject?.subject ?? null;
-    if (ctx.privacy_mode === "committed") {
-      if (
-        !ctx.commit_hash ||
-        !subject?.agent_wallet ||
-        !subject.chain_id ||
-        !subject.reveal_hash_valid
-      ) {
-        this.log({
-          kind: "still_pending",
-          call_id: ctx.call_id,
-          phase,
-          reason: "committed oracle_unavailable missing valid reveal binding",
-        });
-        return false;
-      }
-    }
+    // Wave 2b — committed-mode subject load + reveal-binding check
+    // removed. FHE-direct rows never had this branch; legacy plaintext
+    // rows can mark terminal without a reveal proof.
     // Wave 4b — receipt building is gone; the resolution row alone now
     // carries the terminal oracle_unavailable state. For t0-phase failures
     // we still stamp placeholder t0/p0/t0_feed values so downstream view
     // queries get non-null columns (the row's `outcome` is the semantic
-    // truth). Subject availability still gates the committed-mode path:
-    // committed calls require a valid reveal binding before we mark
-    // terminal, since the dispute / replay surface still needs the wallet
-    // attribution intact.
+    // truth).
     const placeholderTime = ctx.accepted_at;
     const placeholderPrice = "0";
     const placeholderFeed: OracleFeed = "chainlink:base:ETH-USD";
     const t0Iso = t0row?.t0 ?? placeholderTime;
     const p0 = t0row?.p0 ?? placeholderPrice;
     const t0Feed = (t0row?.feed ?? placeholderFeed) as OracleFeed;
-    void subject;
     void t0Iso;
     void p0;
 

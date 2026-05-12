@@ -209,10 +209,8 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
       </li>
       {calls.map((c) => {
         const ts = formatTs(c.submitted_at ?? c.accepted_at);
-        const sealed = c.privacy_mode === "committed" && c.side === undefined;
-        const isSell = c.side === "SELL";
-        const horizon = sealed ? "SEAL" : `${c.horizon_hours}H`;
-        const ast = sealed ? "COMMIT" : (c.asset_id?.split(":").pop() ?? "—");
+        // Wave 2b — FHE-mandatory. Every call is operator-blind; side,
+        // asset, and horizon are encrypted under the threshold keyset.
         const note = formatNote(c);
         const outLabel = formatOutcome(c);
         return (
@@ -222,15 +220,9 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
           >
             <a href={`#/calls/${c.call_id}`} className="contents no-underline">
               <span className="ck-mono ck-dim">{ts}</span>
-              <span
-                className={
-                  "ck-mono " + (sealed ? "ck-dim" : isSell ? "ck-neg" : "ck-pos")
-                }
-              >
-                {sealed ? "HASH" : c.side}
-              </span>
-              <span className="ck-mono ck-pos truncate">{ast}</span>
-              <span className="ck-mono ck-dim">{horizon}</span>
+              <span className="ck-mono ck-dim">HASH</span>
+              <span className="ck-mono ck-pos truncate">BLIND</span>
+              <span className="ck-mono ck-dim">SEAL</span>
               <span className="ck-mono ck-dim truncate">{note}</span>
               <span
                 className={
@@ -422,17 +414,12 @@ function formatTs(iso: string): string {
 }
 
 function formatNote(c: AgentCallRow): string {
-  if (c.privacy_mode === "committed" && c.side === undefined) {
-    return c.commit_hash ? `commit ${c.commit_hash.slice(0, 8)}` : "committed";
-  }
-  if (!c.outcome && !c.signed_return) return "acceptance";
-  if (c.outcome === "void") return "void · ±0%";
-  if (c.signed_return) {
-    const pct = (Number(c.signed_return) * 100).toFixed(2);
-    const sign = pct.startsWith("-") ? "" : "+";
-    return `${sign}${pct}%`;
-  }
-  return c.outcome ?? "—";
+  // Wave 2b — FHE-mandatory. Every call is operator-blind; the only
+  // legible note is the commit hash that anchors the encrypted body.
+  if (c.commit_hash) return `commit ${c.commit_hash.slice(0, 8)}`;
+  if (!c.outcome) return "encrypted";
+  if (c.outcome === "void") return "void";
+  return c.outcome;
 }
 
 function formatOutcome(c: AgentCallRow): string {

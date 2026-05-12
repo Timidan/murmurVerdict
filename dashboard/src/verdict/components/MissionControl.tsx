@@ -62,7 +62,9 @@ function Empty({ label }: { label: string }) {
 }
 
 function PendingCard({ event }: { event: CallAcceptedEvent }) {
-  const scrubbed = event.privacy_mode === "committed" && event.side === undefined;
+  // Wave 2b — FHE-mandatory. Side, asset, horizon, confidence are
+  // encrypted under the threshold keyset; the card renders the
+  // operator-blind placard rather than plaintext fields.
   return (
     <li className="border-b border-[var(--color-border)]">
       <a
@@ -76,16 +78,9 @@ function PendingCard({ event }: { event: CallAcceptedEvent }) {
           <span className="inline-block w-[5px] h-[5px] bg-[var(--color-accent)] nothing-live" />
         </div>
         <div className="flex items-center gap-3 t-data text-[var(--color-secondary)]">
-          <span className={event.side === "SELL" ? sideTokens.sell : sideTokens.buy}>
-            {scrubbed ? "HASH" : event.side}
-          </span>
-          <span className="text-[var(--color-display)]">
-            {scrubbed ? "COMMIT" : event.asset_id?.split(":").pop() ?? event.asset_id}
-          </span>
-          <span>{scrubbed ? "sealed" : `${event.horizon_hours}H`}</span>
-          {!scrubbed && event.confidence !== undefined && (
-            <span>{(event.confidence * 100).toFixed(0)}%</span>
-          )}
+          <span className={sideTokens.buy}>HASH</span>
+          <span className="text-[var(--color-display)]">BLIND</span>
+          <span>sealed</span>
         </div>
       </a>
     </li>

@@ -21,15 +21,7 @@ import {
   usageRepo,
   type AcceptanceWriteInput,
 } from "./db.js";
-import { canonicalHash, canonicalize } from "../receipts/canonical.js";
 import type { VerdictEventBus } from "./events.js";
-import {
-  buildCommit,
-  buildMarketCommit,
-  COMMIT_PREIMAGE_SCHEMA,
-  MARKET_COMMIT_PREIMAGE_SCHEMA,
-  REVEAL_GRACE_MS,
-} from "./commit-preimage.js";
 import {
   acceptsSubmissions,
   buildMarketDedupKey,
@@ -37,10 +29,6 @@ import {
   perMarketDailyCap,
   resolveMarketFromPayload,
 } from "./markets.js";
-import {
-  legacySubmissionToCommitment,
-  type LegacySubmissionForCommitment,
-} from "./submission-normalizers.js";
 import type { Commitment } from "./markets-core.js";
 import {
   derivePolicyFromMarket,
@@ -49,32 +37,16 @@ import {
 import type { MarketRow } from "./db.js";
 
 /**
- * Privacy modes the v0.2 daemon accepts at submit. Codex Phase B review
- * H2: an unrecognized privacy_mode (typo, future v0.3 mode) MUST NOT
- * silently fall through to legacy plaintext — that's an accidental
- * privacy downgrade vector. v0.3 will extend this set with 'fhevm' (or
- * similar) only when the daemon has the corresponding code path; until
- * then, any string outside this set is rejected with schema_invalid.
- *
- * Z0 — operator-blind privacy foundation: when MURMUR_FHE_DIRECT_ENABLED=1,
- * we extend the set with 'fhe_direct' so the schema validator stops
- * fail-closing on it. The submission path itself still rejects with a
- * clear `z1_not_implemented` error — the encrypted submission code path
- * (`fhe.encrypted_predicted_outcome`, ciphertext binding, keyset FK)
- * lands in Z1. The flag is checked at module load via a closure so
- * test code that mutates process.env post-import doesn't see stale
- * state if it re-imports; the export is `readonly` to discourage
- * mutation from anywhere else.
+ * Privacy modes the daemon accepts at submit. Wave 2b: FHE-mandatory
+ * means `fhe_direct` is the only surviving mode. Committed-mode and
+ * legacy_plaintext have been excised — every submission must arrive
+ * via the operator-blind path. Any unrecognized privacy_mode string
+ * is rejected with schema_invalid (Codex H2 silent-downgrade closure
+ * still applies).
  */
-export const ACCEPTED_PRIVACY_MODES: ReadonlySet<string> = (() => {
-  const base = new Set<string>(["committed", "legacy_plaintext"]);
-  if (process.env.MURMUR_FHE_DIRECT_ENABLED === "1") {
-    base.add("fhe_direct");
-  }
-  return base;
-})();
-import { encryptEnvelope, type AgeContext } from "./age-envelope.js";
-import { encryptToDrandRound, type DrandContext } from "./drand-envelope.js";
+export const ACCEPTED_PRIVACY_MODES: ReadonlySet<string> = new Set<string>([
+  "fhe_direct",
+]);
 import type { FheProvider } from "./fhe/provider.js";
 import {
   insertFheCiphertext,
@@ -96,24 +68,6 @@ export interface SubmissionContext {
    * markets-registry path.
    */
   oraclePolicy?: T0Policy;
-  /**
-   * P2 committed-mode age context. When present, agents may submit with
-   * privacy_mode='committed' and the daemon encrypts the envelope to the
-   * configured age recipient. When absent (no MURMUR_DAEMON_AGE_RECIPIENT),
-   * committed-mode submissions are rejected with 503; legacy_plaintext
-   * submissions are unaffected.
-   */
-  ageContext?: AgeContext;
-  /**
-   * Optional parallel drand/tlock encryption context (D21). When opted-in
-   * via MURMUR_DRAND_ENABLED, every committed-mode submit ALSO produces
-   * a tlock ciphertext bound to a future drand round. The v2 acceptance
-   * receipt's `drand` block records (chain_hash, round, ciphertext_hash)
-   * so anyone with the receipt can decrypt at the round without daemon
-   * cooperation. drand failures are best-effort: age envelope still
-   * persists, drand ciphertext is just absent.
-   */
-  drandContext?: DrandContext;
   /** Optional event bus for SSE fan-out. Emit on accept; no-op when undefined. */
   events?: VerdictEventBus;
   /**
@@ -219,15 +173,11 @@ export async function submitCall(args: {
   identity: AuthIdentity;
   payload: unknown;
   /**
-   * Phase 4 /v2/calls handoff. When the request entered through the v2
-   * surface, the route handler pre-validates the universal Commitment
-   * via `adapter.commitmentSchema.parse(...)` and passes the resulting
-   * runtime Commitment here. submitCall stamps it verbatim into
-   * `submissions.commitment_json` / `predicted_outcome_json`.
-   *
-   * When omitted (every /v1 path), submitCall derives the Commitment
-   * via `legacySubmissionToCommitment` so legacy + v2 paths produce
-   * byte-identical universal columns for the same fundamental call.
+   * Phase 4 /v2/calls handoff retained for type-compat with legacy /v1
+   * callers, but Wave 2b leaves the legacy plaintext stamp path dead
+   * (it now writes NULL into the commitment columns). fhe_direct
+   * submissions are stamped by submitFheDirectCall, which leaves both
+   * commitment_json and predicted_outcome_json NULL by design.
    */
   precomputedCommitment?: Commitment;
   /** Phase 4 — render-only labels for the payout vector positions. Today
@@ -534,14 +484,17 @@ export async function submitCall(args: {
   // the agent profile, not a per-call receipt subject.
   const issuingAgent = agentsRepo.byId(db, submission.agent_id);
 
-  // P2 committed mode: when the agent opted in via privacy_mode='committed',
-  // build the commit_hash + age envelope. Falls back to legacy_plaintext for
-  // benchmark/shadow agents (D20). Wave 4b — receipt building is gone;
-  // commit_hash itself stays the canonical commitment artifact.
-  let envelopeForRepo: AcceptanceWriteInput["envelope"];
-  let privacyModeForRepo: string = "legacy_plaintext";
-  let commitHashForRepo: string | undefined;
-  let commitSchemeForRepo: string | undefined;
+  // Wave 2b — FHE-mandatory. The committed-mode and legacy_plaintext
+  // branches have been excised. fhe_direct submissions are dispatched
+  // via the early branch at the top of submitCall(); reaching this
+  // point means the caller posted the legacy plaintext wire shape, so
+  // we keep the privacy-mode gate to reject anything outside the
+  // surviving set (which is just `fhe_direct`).
+  const envelopeForRepo: AcceptanceWriteInput["envelope"] = undefined;
+  const privacyModeForRepo: string = "legacy_plaintext";
+  const commitHashForRepo: string | undefined = undefined;
+  const commitSchemeForRepo: string | undefined = undefined;
+  void issuingAgent;
 
   // F3: reject unknown privacy_mode strings BEFORE branching. Closes
   // the Codex H2 silent-downgrade vector.
@@ -570,174 +523,6 @@ export async function submitCall(args: {
     );
   }
 
-  if (submission.privacy_mode === "committed") {
-    // F2: gate committed-mode behind a feature flag until Phase E
-    // ships projection scrubbing. Codex Phase B review C2: today the
-    // daemon ACCEPTS committed submits, encrypts the receipt subject
-    // properly, but /v1/feed/today + /v1/agents/:slug/calls + SSE
-    // events + webhooks STILL select plaintext from the submissions
-    // table. The committed path is therefore only meaningful once
-    // those surfaces are scrubbed. Until then, refuse — operator can
-    // opt in for testing via env.
-    if (process.env.MURMUR_PRIVACY_COMMITTED_OPEN !== "1") {
-      throw new VerdictError(
-        "committed-mode submissions are gated until projection scrubbing lands (Phase E); set MURMUR_PRIVACY_COMMITTED_OPEN=1 on the daemon to opt in for testing",
-        ERROR_CODES.agent_not_authorized,
-        503,
-      );
-    }
-    const ageCtx = ctx.ageContext;
-    if (!ageCtx) {
-      throw new VerdictError(
-        "daemon not configured for committed-mode submissions (set MURMUR_DAEMON_AGE_RECIPIENT)",
-        ERROR_CODES.internal_error,
-        503,
-      );
-    }
-    if (
-      !issuingAgent?.wallet_address ||
-      !issuingAgent.chain_id ||
-      !["verified", "wallet_only"].includes(issuingAgent.kind)
-    ) {
-      throw new VerdictError(
-        "committed-mode submissions require kind ∈ (verified, wallet_only) and a wallet binding",
-        ERROR_CODES.agent_not_authorized,
-        403,
-      );
-    }
-    if (!submission.salt) {
-      // Schema-level superRefine should have caught this; defensive recheck.
-      throw new VerdictError(
-        "salt is required for committed-mode submissions",
-        ERROR_CODES.schema_invalid,
-        400,
-      );
-    }
-    // F4: lowercase-normalize salt before hashing. Schema accepts
-    // 64-char hex case-insensitive, but commit canonicalization MUST
-    // be byte-stable — agents that uppercase the salt would otherwise
-    // produce a different commit_hash than the daemon. Lowercase wins.
-    const saltLower = submission.salt.toLowerCase();
-
-    // P3 D4: dispatch on the WIRE shape, not the normalized submission.
-    // Agents that submitted with explicit market_id get a v0.2.5 preimage
-    // (market_id + market_config_version). Legacy (asset_id, horizon_hours)
-    // payloads keep emitting the v0.2 schema so existing verifiers and
-    // already-published preimages stay byte-compatible.
-    let commit_hash: `0x${string}`;
-    let preimage_canonical: string;
-    let usedPreimageSchema: string;
-    if (wireUsedMarketId) {
-      ({ commit_hash, preimage_canonical } = buildMarketCommit({
-        call_id,
-        agent_wallet: issuingAgent.wallet_address,
-        chain_id: issuingAgent.chain_id,
-        side: submission.side,
-        market_id: market.market_id,
-        market_config_version: market.market_config_version,
-        confidence: submission.confidence,
-        salt: saltLower,
-        // D16: t0 is daemon-canonical accepted_at.
-        t0: accepted_at,
-      }));
-      usedPreimageSchema = MARKET_COMMIT_PREIMAGE_SCHEMA;
-    } else {
-      ({ commit_hash, preimage_canonical } = buildCommit({
-        call_id,
-        agent_wallet: issuingAgent.wallet_address,
-        chain_id: issuingAgent.chain_id,
-        side: submission.side,
-        asset_id: submission.asset_id!,
-        horizon_hours: submission.horizon_hours!,
-        confidence: submission.confidence,
-        salt: saltLower,
-        t0: accepted_at,
-      }));
-      usedPreimageSchema = COMMIT_PREIMAGE_SCHEMA;
-    }
-    // Envelope plaintext = canonical preimage JSON + the not-committed
-    // metadata (rationale, strategy_tag) per D18. Daemon decrypts at
-    // fallback_after if the agent hasn't revealed; agent reveals
-    // voluntarily by re-posting the preimage to /v1/calls/:id/reveal.
-    const envelopeBody = JSON.stringify({
-      preimage_canonical,
-      rationale: submission.rationale ?? null,
-      strategy_tag: submission.strategy_tag ?? null,
-    });
-    const envelopeBytes = new TextEncoder().encode(envelopeBody);
-    const encrypted = await encryptEnvelope(ageCtx, envelopeBytes);
-    // fallback_after = accepted_at + horizon + REVEAL_GRACE_MS (D17).
-    // The constant is locked, not configurable — see commit-preimage.ts.
-    // P3: read horizon from the market row (not submission.horizon_hours)
-    // so sub-hour markets compute fallback correctly when they're listed.
-    //
-    // P3 Phase 2a hardening (Codex audit): anchor fallback_after to the
-    // CAPTURED accepted_at, not a fresh now() call. accepted_at was
-    // stamped above for dedup; reusing it here keeps the receipt's
-    // (accepted_at, fallback_after) pair coherent — a second now() can
-    // drift by ~1s across the boundary, leaving fallback_after slightly
-    // off the receipt-attested anchor.
-    const fallback_after_ms =
-      Date.parse(accepted_at) + market.horizon_seconds * 1_000 + REVEAL_GRACE_MS;
-    const fallback_after = new Date(fallback_after_ms)
-      .toISOString()
-      .replace(/\.\d+Z$/, "Z");
-
-    // Optional parallel drand/tlock envelope (D21). Best-effort: a
-    // network failure or schema mismatch falls back to age-only —
-    // the receipt's `drand` block is only emitted on success so a
-    // verifier knows whether the trustless reveal path is available.
-    let drandEnvelope:
-      | { chain_hash: string; round: number; ciphertext: string; ciphertext_hash: `0x${string}` }
-      | null = null;
-    const drandCtx = ctx.drandContext;
-    if (drandCtx?.available) {
-      try {
-        drandEnvelope = await encryptToDrandRound(
-          drandCtx,
-          envelopeBytes,
-          fallback_after_ms,
-        );
-      } catch (err) {
-        // Don't fail the submit — drand is best-effort in v0.2; the
-        // age envelope still lands. Log to stderr so an operator
-        // notices repeated failures (e.g. drand network unreachable).
-        const reason = err instanceof Error ? err.message : "unknown";
-        console.warn(
-          `[submit] drand timelock encrypt failed (call_id=${call_id}): ${reason}`,
-        );
-      }
-    }
-    // request_hash (D23) is still computed for committed-mode submissions:
-    // it acts as the authenticated input bind even without a receipt to
-    // anchor it. Future verify endpoints can recompute and compare against
-    // an out-of-band record, but Wave 4b doesn't persist it.
-    void canonicalHash(rawSubmission);
-    privacyModeForRepo = "committed";
-    commitHashForRepo = commit_hash;
-    commitSchemeForRepo = "keccak256";
-    envelopeForRepo = {
-      encrypted_body: encrypted.ciphertext_base64,
-      encrypted_body_alg: encrypted.alg,
-      encrypted_body_hash: encrypted.encrypted_body_hash,
-      daemon_key_id: encrypted.daemon_key_id,
-      commit_preimage_schema: usedPreimageSchema,
-      fallback_after,
-      received_at: accepted_at,
-      ...(drandEnvelope
-        ? {
-            drand_chain_hash: drandEnvelope.chain_hash,
-            drand_round: drandEnvelope.round,
-            drand_ciphertext: drandEnvelope.ciphertext,
-            drand_ciphertext_hash: drandEnvelope.ciphertext_hash,
-          }
-        : {}),
-    };
-  }
-  // Legacy plaintext branch falls through with privacyModeForRepo='legacy_plaintext'
-  // — no commit_hash, no envelope. The submissions row carries the call's
-  // canonical state directly; nothing else to stamp.
-
   // 8. construct AcceptedCall, validate, persist atomically
   const accepted: AcceptedCall = AcceptedCallSchema.parse({
     schema_version: SCHEMA_VERSION,
@@ -757,35 +542,17 @@ export async function submitCall(args: {
     oracle_policy: oraclePolicy,
   });
 
-  // Phase 4 — derive (or reuse) the universal Commitment so /v1 and /v2
-  // submit paths produce the same `commitment_json` / `predicted_outcome_json`
-  // shape on disk. The resolver's universal hot path (Phase 5) reads
-  // these columns directly; falling back to legacySubmissionToCommitment
-  // there is the safety net but stamping at submit closes the gap so
-  // every fresh row carries the canonical wire bytes already.
-  //
-  // Committed-mode (privacy_mode='committed') — these columns reveal the
-  // predicted vector, which would defeat commit-reveal privacy. Skip the
-  // stamp so committed rows keep `commitment_json IS NULL` until the
-  // agent reveals.
-  const commitmentForStamp: Commitment | null =
-    privacyModeForRepo === "committed"
-      ? null
-      : (precomputedCommitment ??
-        deriveLegacyCommitment(submission, market, accepted_at));
-  const commitmentJsonStamp = commitmentForStamp
-    ? canonicalize(commitmentToWire(commitmentForStamp))
-    : null;
-  const predictedOutcomeJsonStamp = commitmentForStamp
-    ? canonicalize(commitmentToWire(commitmentForStamp).predictedOutcome)
-    : null;
-  // Render-only label vector. /v2 callers can pass adapter-specific
-  // labels via args.outcomeLabels; legacy /v1 native-price rows default
-  // to the canonical UP/DOWN pair so the dashboard chip code doesn't
-  // need a per-row family fallback.
-  const outcomeLabelsJsonStamp = commitmentForStamp
-    ? JSON.stringify(args.outcomeLabels ?? ["UP", "DOWN"])
-    : null;
+  // Wave 2b — the legacy plaintext fallthrough that reaches this point
+  // is unreachable at runtime (the v2 surface rejects non-FHE at the
+  // route layer; fhe_direct branches out at the top of submitCall).
+  // We stamp nulls into the commitment columns so the call site stays
+  // compilable without dragging the deleted Phase 4 helpers
+  // (`deriveLegacyCommitment` / `commitmentToWire`) back in.
+  void precomputedCommitment;
+  void args.outcomeLabels;
+  const commitmentJsonStamp: string | null = null;
+  const predictedOutcomeJsonStamp: string | null = null;
+  const outcomeLabelsJsonStamp: string | null = null;
 
   try {
     submissionsRepo.acceptCall(db, {
@@ -837,32 +604,25 @@ export async function submitCall(args: {
   }
 
   submissionsRepo.setStatus(db, call_id, "pending_t0");
-  const isCommittedEvent = privacyModeForRepo === "committed";
   usageRepo.emit(
     db,
     makeUsage(
       identity.agent_id,
       "submission_accepted",
-      isCommittedEvent
-        ? {
-            call_id,
-            privacy_mode: privacyModeForRepo,
-            commit_hash: commitHashForRepo,
-          }
-        : {
-            call_id,
-            asset_id: submission.asset_id,
-            side: submission.side,
-            horizon_hours: submission.horizon_hours,
-          },
+      {
+        call_id,
+        asset_id: submission.asset_id,
+        side: submission.side,
+        horizon_hours: submission.horizon_hours,
+      },
       now,
     ),
   );
 
-  // Scrub plaintext from the SSE/webhook event when committed-mode
-  // (Phase E). Subscribers see commit_hash; they can fetch
-  // /v1/calls/:id/envelope to attest the ciphertexts committed to.
-  // The plaintext only fans out post-horizon.
+  // Wave 2b — committed-mode scrubbing is gone (mode no longer exists at
+  // this layer). The legacy plaintext fallthrough fans out side / asset /
+  // horizon / confidence directly; fhe_direct submissions are emitted by
+  // submitFheDirectCall's own event path with operator-blind redaction.
   ctx.events?.emit({
     type: "call.accepted",
     call_id,
@@ -870,7 +630,6 @@ export async function submitCall(args: {
     agent_slug: agent.display_slug,
     privacy_mode: privacyModeForRepo,
     accepted_at,
-    ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
     // Phase 10 / Z4-extra discriminators. The resolved adapter/family/
     // market_id are always known at this point — market != null was
     // enforced earlier in the route. Subscribers route render off these
@@ -878,14 +637,10 @@ export async function submitCall(args: {
     adapter_id: market.adapter_id ?? "native-price",
     market_family: market.market_family ?? "financial-direction",
     market_id: market.market_id,
-    ...(isCommittedEvent
-      ? {}
-      : {
-          side: submission.side,
-          asset_id: submission.asset_id,
-          horizon_hours: submission.horizon_hours,
-          confidence: submission.confidence,
-        }),
+    side: submission.side,
+    asset_id: submission.asset_id,
+    horizon_hours: submission.horizon_hours,
+    confidence: submission.confidence,
   });
 
   return {
@@ -1500,80 +1255,8 @@ function buildT0PolicyFromRow(row: Record<string, unknown>): T0Policy {
   };
 }
 
-// ─── Phase 4 — universal Commitment derivation helpers ──────────────────────
-
-/**
- * Derive a runtime {@link Commitment} from a normalized SubmittedCall +
- * MarketRow tuple. Legacy /v1 callers don't supply a Commitment on the
- * wire; we synthesize one here from the legacy fields so /v1 + /v2 paths
- * agree on the byte shape stamped into `submissions.commitment_json`.
- *
- * Mirrors the inverse {@link legacySubmissionToCommitment} (used by the
- * resolver hot path on rows missing commitment_json) — the two helpers
- * MUST stay byte-identical or the resolver / submit boundary will see
- * drift on otherwise-equivalent calls.
- */
-function deriveLegacyCommitment(
-  submission: SubmittedCall,
-  market: MarketRow,
-  accepted_at_iso: string,
-): Commitment {
-  // accepted_at + horizon_seconds == expected resolution. The Commitment's
-  // `horizon.iso` is render-only (resolver never reads it) so an
-  // approximate ISO is fine; we still match what the resolver-side
-  // synthesizer at submission-normalizers.ts:50 does to keep drift zero.
-  const horizonMs =
-    Date.parse(accepted_at_iso) + market.horizon_seconds * 1000;
-  const expectedIso = new Date(horizonMs)
-    .toISOString()
-    .replace(/\.\d+Z$/, "Z");
-  const legacy: LegacySubmissionForCommitment = {
-    side: submission.side,
-    confidence: submission.confidence,
-    asset_id: submission.asset_id ?? market.asset_id,
-    horizon_hours: submission.horizon_hours ?? Math.round(market.horizon_seconds / 3600),
-    expected_resolves_at_iso: expectedIso,
-    market_id: market.market_id,
-    market_config_version: market.market_config_version,
-  };
-  return legacySubmissionToCommitment(legacy);
-}
-
-/**
- * Bigint → wire-string transform for canonicalization. {@link canonicalize}
- * runs through `JSON.stringify` which throws on bigint, so the
- * payoutNumerators / payoutDenominator / scalarValue fields are pre-mapped
- * to decimal-digit strings here (round-trips through CommitmentSchema and
- * back to bigint via {@link parseStoredCommitment}).
- */
-function commitmentToWire(c: Commitment): {
-  marketRef: { protocol: string; sourceId: string; configVersion: number };
-  predictedOutcome: {
-    kind: string;
-    payoutNumerators: string[];
-    payoutDenominator: string;
-    scalarValue?: string;
-  };
-  horizon: { iso: string; resolvesAfterMin?: number };
-  confidence: number;
-} {
-  return {
-    marketRef: {
-      protocol: c.marketRef.protocol,
-      sourceId: c.marketRef.sourceId,
-      configVersion: c.marketRef.configVersion,
-    },
-    predictedOutcome: {
-      kind: c.predictedOutcome.kind,
-      payoutNumerators: c.predictedOutcome.payoutNumerators.map((n) =>
-        n.toString(),
-      ),
-      payoutDenominator: c.predictedOutcome.payoutDenominator.toString(),
-      ...(c.predictedOutcome.scalarValue !== undefined
-        ? { scalarValue: c.predictedOutcome.scalarValue.toString() }
-        : {}),
-    },
-    horizon: c.horizon,
-    confidence: c.confidence,
-  };
-}
+// Wave 2b — `deriveLegacyCommitment` and `commitmentToWire` deleted.
+// Under FHE-mandatory the only path stamping `commitment_json` /
+// `predicted_outcome_json` is the fhe_direct branch (which writes NULL
+// into both, per the operator-blind invariant). The legacy plaintext
+// fallthrough in submitCall() now stamps null directly.

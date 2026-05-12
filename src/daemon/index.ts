@@ -16,8 +16,10 @@ import { registerBaselines } from "../benchmark/agents.js";
 // import is gone alongside the disabled benchmark ticker; the
 // register-only call keeps the kind='benchmark' rows in the DB so
 // historical leaderboard entries don't disappear.
-import { loadAgeContextFromEnv } from "../verdict/age-envelope.js";
-import { loadDrandContextFromEnv } from "../verdict/drand-envelope.js";
+// Wave 2b — loadAgeContextFromEnv + loadDrandContextFromEnv imports
+// removed. The committed-mode envelope-decrypt fallback paths in
+// resolution-subject.ts are dead under FHE-mandatory; the daemon no
+// longer wires age / drand contexts into the Resolver.
 // Wave 2a (consolidated reshape) — FHE is now mandatory. The dynamic-
 // import gate from Z0 is gone; the loader runs unconditionally at
 // boot. Z0's "byte-identical legacy boot" invariant no longer applies
@@ -85,31 +87,9 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // hash + outcome + bounded score).
   const oracle = makeOracle();
   const events = new VerdictEventBus();
-  // P2 committed-mode: load the daemon's age recipient at boot so
-  // committed submissions can be encrypted to it. Optional — when
-  // absent, committed-mode submissions return 503 and legacy_plaintext
-  // path is unaffected.
-  const ageCtx = loadAgeContextFromEnv();
-  if (ageCtx) {
-    console.log(
-      `[daemon] age envelope ready (key_id=${ageCtx.daemon_key_id}, fallback_decrypt=${ageCtx.identity ? "enabled" : "disabled"})`,
-    );
-  } else {
-    console.log("[daemon] age recipient not set; committed-mode submissions disabled");
-  }
-  // P2 phase B-3: optional parallel drand/tlock envelope (D21).
-  // Closes the selective-reveal attack vector — operator can't keep a
-  // committed call hidden past the drand round, even with the age key.
-  const drandCtx = loadDrandContextFromEnv();
-  if (drandCtx) {
-    console.log(
-      `[daemon] drand timelock ready (chain=${drandCtx.chain.hash.slice(0, 12)}…, period=${drandCtx.chain.period}s)`,
-    );
-  } else {
-    console.log(
-      "[daemon] drand disabled (set MURMUR_DRAND_ENABLED=1 for daemon-less reveal)",
-    );
-  }
+  // Wave 2b — ageCtx + drandCtx loaders removed. Committed-mode
+  // envelope encryption is dead alongside the deleted submission
+  // path; the daemon no longer needs to construct either context.
   // Z0 — FHE provider boundary. Dynamic-import only when the flag is set
   // so legacy boot never touches the fhe/* modules (codex Z0 review fix).
   let fheProvider: FheProvider | null = null;
@@ -150,8 +130,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     ? new Resolver({
         db,
         oracle,
-        ...(ageCtx ? { ageContext: ageCtx } : {}),
-        ...(drandCtx ? { drandContext: drandCtx } : {}),
+        // Wave 2b — ageContext + drandContext removed from Resolver deps.
         ...(fheProvider ? { fheProvider } : {}),
         ...(quorumPool ? { quorumPool } : {}),
         onResolved: async (call_id) => {
@@ -289,8 +268,9 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       events,
       ctx: {
         events,
-        ...(ageCtx ? { ageContext: ageCtx } : {}),
-        ...(drandCtx ? { drandContext: drandCtx } : {}),
+        // Wave 2b — ageContext + drandContext removed from
+        // SubmissionContext alongside the deleted committed-mode
+        // submit path. FHE-direct submissions don't need them.
         ...(fheProvider ? { fheProvider } : {}),
       },
       oracleProbe: oracle

@@ -1,25 +1,17 @@
 /**
- * Public projections for committed-mode calls (P2 Phase E).
+ * Public projections for verdict calls.
  *
- * The submissions table still carries plaintext columns (Phase A
- * was additive); the daemon's PUBLIC API surfaces must scrub those
- * columns when privacy_mode='committed' until a valid reveal row exists.
- *
- * Normally a resolved committed call has a call_reveals row because the
- * resolver cannot score without one. The exception is terminal oracle
- * unavailability, which can happen before horizon and without a reveal.
- * Status alone is therefore not enough to unhide plaintext.
+ * Wave 2b — under FHE-mandatory every submission is operator-blind:
+ * plaintext (side / asset_id / horizon_hours / confidence / rationale /
+ * strategy_tag) is never surfaced. Resolved-side fields (outcome,
+ * call_score, signed_return, resolved_at) come from t1_resolutions and
+ * are added by consumers downstream of the projection; this helper
+ * returns only the operator-blind core.
  *
  * Single helper used from every leak surface (feed.ts, api.ts,
  * events.ts, mcp/, calls.xml RSS) so we don't have N implementations
  * drifting apart.
  */
-
-const PENDING_STATUSES = new Set([
-  "accepted",
-  "pending_t0",
-  "pending_t1",
-] as const);
 
 export interface CallRowFields {
   call_id: string;
@@ -30,8 +22,10 @@ export interface CallRowFields {
   /** Wave 4b — receipts subsystem dropped. Field accepted for back-compat
    *  with callers that still pass it; the projection ignores any value. */
   acceptance_receipt_hash?: string | null;
-  // Legacy plaintext columns on `submissions`. After Phase E scrub these are
-  // NULL on committed-mode rows even when reveal_hash_valid=1.
+  // Legacy plaintext columns on `submissions`. Under FHE-mandatory these
+  // are NULL on every row; the projection no longer surfaces them, but the
+  // shape is kept so SQL callers can still forward arbitrary row payloads
+  // without rewriting their type cast at every call site.
   side?: string | null;
   asset_id?: string | null;
   horizon_hours?: number | null;
@@ -43,17 +37,6 @@ export interface CallRowFields {
   signed_return?: string | null;
   resolved_at?: string | null;
   submitted_at?: string | null;
-  reveal_hash_valid?: number | boolean | null;
-  // Mirror columns from `call_reveals`. Read paths LEFT JOIN call_reveals and
-  // forward these so the projection can hydrate post-Phase-E rows whose
-  // submissions plaintext was NULL'd. When reveal_hash_valid is truthy we
-  // prefer the revealed_* values over the (now-NULL) submission columns.
-  revealed_side?: string | null;
-  revealed_asset_id?: string | null;
-  revealed_horizon_hours?: number | null;
-  revealed_confidence?: number | null;
-  revealed_rationale?: string | null;
-  revealed_strategy_tag?: string | null;
 }
 
 export interface PublicCallProjection {
@@ -67,7 +50,9 @@ export interface PublicCallProjection {
    *  the public projection for one release so already-deployed dashboards
    *  don't crash on missing keys; safe to drop after Wave 5. */
   acceptance_receipt_hash: string | null;
-  // Plaintext fields — populated only when shouldExposePlaintext() returns true.
+  // Wave 2b — under FHE-mandatory the projection never populates these.
+  // Fields kept on the interface so already-deployed consumers that
+  // read `projected.side` etc. compile cleanly (the read is undefined).
   side?: string;
   asset_id?: string;
   horizon_hours?: number;
@@ -78,39 +63,21 @@ export interface PublicCallProjection {
   call_score?: number | null;
   signed_return?: string | null;
   resolved_at?: string | null;
-  submitted_at?: string | null;
+  submitted_at?: string;
 }
 
 /**
- * True when the projection should include plaintext (side, asset, horizon,
- * confidence, rationale, strategy_tag). False when it must be scrubbed.
- *
- * Rules:
- *   - committed-mode + pending status → SCRUB (the whole point of
- *     committed mode is hiding the call until horizon)
- *   - committed-mode + non-pending status → REVEAL only when a valid
- *     call_reveals row exists. This prevents oracle_unavailable terminal
- *     rows from leaking before horizon.
- *   - legacy_plaintext + any status → REVEAL (no commitment was made)
+ * Wave 2b — under FHE-mandatory, every submission is operator-blind and
+ * plaintext is never surfaced through public projections. This helper is
+ * retained as a stub for back-compat with consumers that still call it,
+ * but the answer is always `false`.
  */
 export function shouldExposePlaintext(
-  privacy_mode: string | null | undefined,
-  status: string,
-  reveal_hash_valid?: number | boolean | null,
+  _privacy_mode: string | null | undefined,
+  _status: string,
+  _reveal_hash_valid?: number | boolean | null,
 ): boolean {
-  // Codex Z1 review fix — fhe_direct rows must NEVER expose plaintext
-  // through projectCallRow. Z1 already nulls the plaintext columns at
-  // submit time, but relying on "the column is null" is brittle: a
-  // future column added without nulling would silently leak. Fail-closed
-  // here so every public projection (/v1/calls/:id, /v1/agents/:slug/calls,
-  // /v1/feed/today, RSS, SSE accepted-event) returns operator-blind
-  // shapes for fhe_direct rows regardless of underlying column state.
-  // The bounded score lands on t1_resolutions via Z3 threshold release;
-  // until then operator-blind callers see only commit_hash + privacy_mode.
-  if (privacy_mode === "fhe_direct") return false;
-  if (privacy_mode !== "committed") return true;
-  if (PENDING_STATUSES.has(status as never)) return false;
-  return reveal_hash_valid === true || reveal_hash_valid === 1;
+  return false;
 }
 
 /**
@@ -122,8 +89,13 @@ export function projectCallRow(
   row: CallRowFields,
   agent_slug?: string,
 ): PublicCallProjection {
-  const privacy_mode = row.privacy_mode ?? "legacy_plaintext";
-  const projection: PublicCallProjection = {
+  const privacy_mode = row.privacy_mode ?? "fhe_direct";
+  // Wave 2b — under FHE-mandatory the projection is always operator-blind.
+  // Plaintext (side / asset_id / horizon_hours / confidence / rationale /
+  // strategy_tag) is never surfaced. The projection returns only the
+  // operator-blind core: identifier, status, timestamps, privacy_mode,
+  // commit_hash, acceptance_receipt_hash.
+  return {
     call_id: row.call_id,
     ...(agent_slug ? { agent_slug } : {}),
     status: row.status,
@@ -133,44 +105,4 @@ export function projectCallRow(
     // Wave 4b — receipts subsystem dropped. Always null on the wire.
     acceptance_receipt_hash: null,
   };
-  if (shouldExposePlaintext(privacy_mode, row.status, row.reveal_hash_valid)) {
-    // Phase E scrubs side/asset_id/horizon_hours/confidence/rationale/
-    // strategy_tag on submissions for committed-mode rows. The plaintext
-    // still lives in call_reveals when reveal_hash_valid=1, so we prefer
-    // the legacy submission columns when present and fall back to the
-    // call_reveals mirror columns. COALESCE is done at the projection
-    // layer so every read path stays consistent without each one knowing
-    // about Phase E.
-    const side = row.side ?? row.revealed_side ?? null;
-    const asset_id = row.asset_id ?? row.revealed_asset_id ?? null;
-    const horizon_hours =
-      typeof row.horizon_hours === "number"
-        ? row.horizon_hours
-        : typeof row.revealed_horizon_hours === "number"
-          ? row.revealed_horizon_hours
-          : null;
-    const confidence =
-      typeof row.confidence === "number"
-        ? row.confidence
-        : typeof row.revealed_confidence === "number"
-          ? row.revealed_confidence
-          : null;
-    const rationale = row.rationale ?? row.revealed_rationale ?? null;
-    const strategy_tag = row.strategy_tag ?? row.revealed_strategy_tag ?? null;
-    if (side) projection.side = side;
-    if (asset_id) projection.asset_id = asset_id;
-    if (typeof horizon_hours === "number") projection.horizon_hours = horizon_hours;
-    if (typeof confidence === "number") projection.confidence = confidence;
-    if (rationale) projection.rationale = rationale;
-    if (strategy_tag) projection.strategy_tag = strategy_tag;
-    if (typeof row.submitted_at === "string") projection.submitted_at = row.submitted_at;
-    // resolution-side fields surface even when scrubbed since they're
-    // post-horizon canonical record. But scoped to non-pending statuses
-    // by definition (resolved_at only exists for resolved calls).
-    if (row.outcome) projection.outcome = row.outcome;
-    if (row.call_score !== undefined) projection.call_score = row.call_score;
-    if (row.signed_return !== undefined) projection.signed_return = row.signed_return;
-    if (row.resolved_at) projection.resolved_at = row.resolved_at;
-  }
-  return projection;
 }

@@ -390,14 +390,12 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   });
 
   router.get("/v1/health", (_req, res) => {
-    // Phase G H1/M2 — surface privacy-stack status without doing the
-    // expensive drand round-trip. /v1/readyz does the actual probes;
-    // /v1/health is cheap.
+    // Wave 2b — committed-mode / age-envelope / drand binding privacy
+    // stack removed. /v1/health surfaces only the FHE-direct readiness
+    // signal; the deeper threshold-committee posture lives at
+    // /v1/readyz.privacy and /v1/meta.privacy.
     const privacy = {
-      committed_mode_open: process.env.MURMUR_PRIVACY_COMMITTED_OPEN === "1",
-      age_recipient_configured: !!deps.ctx.ageContext,
-      age_fallback_decrypt: !!deps.ctx.ageContext?.identity,
-      drand_configured: !!deps.ctx.drandContext,
+      fhe_direct_enabled: deps.ctx.fheProvider !== null && deps.ctx.fheProvider !== undefined,
     };
     res.json({
       ok: true,
@@ -526,13 +524,9 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     }
 
     const privacy = {
-      committed_mode_open: process.env.MURMUR_PRIVACY_COMMITTED_OPEN === "1",
-      age: {
-        recipient_configured: !!deps.ctx.ageContext,
-        fallback_decrypt_enabled: !!deps.ctx.ageContext?.identity,
-        daemon_key_id: deps.ctx.ageContext?.daemon_key_id ?? null,
-      },
-      drand: await probeDrandHealth(deps.ctx.drandContext),
+      // Wave 2b — committed-mode / age / drand fields removed. FHE-direct
+      // is the only privacy mode now; the readyz privacy block surfaces
+      // the threshold-committee posture + Z5 prod gate state.
       fhe_direct_enabled: fheEnabled,
       provider: fheProv?.name ?? null,
       active_keyset_id: fheActiveKeysetId,
@@ -723,18 +717,13 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       registrations: [] as Array<{ chain_id: string; registration_id: string }>,
       // Phase H — operator UX. Marketplace clients see exactly which
       // privacy primitives this Murmur deployment supports. v0.3 fhEVM
-      // adds 'fhevm' to submission_modes; v0.2 ships commit_reveal.
+      // Wave 2b — ERC-8004 agent card privacy block rewritten to the
+      // FHE-mandatory shape. submission_modes is single-entry; the
+      // committed/age/drand fields are deleted. Threshold-committee
+      // posture lives at /v1/meta.privacy.threshold_mode.
       privacy: {
-        submission_modes: ["committed", "legacy_plaintext"],
-        commit_scheme: "murmur-verdict-v0.2-commit@1",
-        commit_alg: "keccak256",
-        envelope_alg: "age-x25519-v1",
-        trustless_reveal: !!deps.ctx.drandContext,
-        trustless_reveal_alg: deps.ctx.drandContext
-          ? "drand-tlock-bls-unchained-g1-rfc9380@1"
-          : null,
-        operator_can_decrypt_pre_horizon: !!deps.ctx.ageContext?.identity,
-        public_envelope_endpoint: `${apiBase}/v1/calls/{call_id}/envelope`,
+        submission_modes: ["fhe_direct"],
+        operator_can_decrypt_pre_horizon: false,
         threat_model_url: `${apiBase}/v1/skill.md#threat-model--privacy-guarantees`,
       },
       // Optional v0.3+ fields surfaced when present. Always included off
@@ -778,30 +767,24 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     // Phase E hydration: pull cr.* mirror columns alongside s.* so the
     // projection can COALESCE legacy submission plaintext (NULL after
     // MURMUR_PHASE_E_CLEANUP) with the still-present call_reveals values.
+    // Wave 2b — call_reveals JOIN + cr.* SELECT removed. The plaintext
+    // s.side / s.asset_id / s.horizon_hours / s.confidence columns are
+    // still SELECT'd for now because the schema retains them through
+    // Wave 3 (Migration 031 drops them outright); projectCallRow's
+    // operator-blind projection ignores them under FHE-mandatory.
     const rawRows = deps.db
       .prepare(
-        `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
-                s.confidence, s.rationale, s.strategy_tag,
+        `SELECT s.call_id, s.status,
                 s.submitted_at, s.accepted_at,
                 s.privacy_mode, s.commit_hash,
-                r.outcome, r.call_score, r.signed_return, r.resolved_at,
-                cr.reveal_hash_valid,
-                cr.side          AS revealed_side,
-                cr.asset_id      AS revealed_asset_id,
-                cr.horizon_hours AS revealed_horizon_hours,
-                cr.confidence    AS revealed_confidence,
-                cr.rationale     AS revealed_rationale,
-                cr.strategy_tag  AS revealed_strategy_tag
+                r.outcome, r.call_score, r.signed_return, r.resolved_at
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
-         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.agent_id = ?
          ORDER BY s.accepted_at DESC
          LIMIT ?`,
       )
       .all(agent.agent_id, limit) as Array<Record<string, unknown>>;
-    // Phase E: scrub plaintext on committed-mode pending rows; hydrate
-    // post-scrub committed rows from call_reveals when reveal_hash_valid=1.
     const calls = rawRows.map((row) =>
       projectCallRow(
         {
@@ -812,24 +795,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           commit_hash: row.commit_hash as string | null,
           // Wave 4b: receipts subsystem dropped; projection always emits null.
           acceptance_receipt_hash: null,
-          side: row.side as string | null,
-          asset_id: row.asset_id as string | null,
-          horizon_hours: row.horizon_hours as number | null,
-          confidence: row.confidence as number | null,
-          rationale: row.rationale as string | null,
-          strategy_tag: row.strategy_tag as string | null,
           outcome: row.outcome as string | null,
           call_score: row.call_score as number | null,
           signed_return: row.signed_return as string | null,
           resolved_at: row.resolved_at as string | null,
           submitted_at: row.submitted_at as string | null,
-          reveal_hash_valid: row.reveal_hash_valid as number | null,
-          revealed_side: row.revealed_side as string | null,
-          revealed_asset_id: row.revealed_asset_id as string | null,
-          revealed_horizon_hours: row.revealed_horizon_hours as number | null,
-          revealed_confidence: row.revealed_confidence as number | null,
-          revealed_rationale: row.revealed_rationale as string | null,
-          revealed_strategy_tag: row.revealed_strategy_tag as string | null,
         },
         agent.display_slug,
       ),
@@ -1123,29 +1093,26 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     // Phase E hydration: pull cr.* mirror columns so the RSS surface stays
     // populated for committed-mode rows whose submissions plaintext has
     // been NULL'd by MURMUR_PHASE_E_CLEANUP.
+    // Wave 2b — call_reveals JOIN + cr.* SELECT removed. Plaintext
+    // submission columns dropped from the projection input (projectCallRow
+    // ignores them under FHE-mandatory). The RSS row shape still
+    // exposes the placeholder fields (asset_id / side / horizon_hours /
+    // confidence) because the consumer at rssAgentFeed treats them as
+    // optional rendering hints — they collapse to "" / "BUY" / 0 / 0
+    // under FHE-mandatory, which the formatter handles.
     const raw = deps.db
       .prepare(
-        `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
-                s.confidence, s.submitted_at, s.accepted_at,
+        `SELECT s.call_id, s.status, s.submitted_at, s.accepted_at,
                 s.privacy_mode, s.commit_hash,
                 s.adapter_id, s.market_family,
-                cr.reveal_hash_valid,
-                cr.side          AS revealed_side,
-                cr.asset_id      AS revealed_asset_id,
-                cr.horizon_hours AS revealed_horizon_hours,
-                cr.confidence    AS revealed_confidence,
                 r.outcome, r.call_score, r.signed_return, r.resolved_at
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
-         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.agent_id = ?
          ORDER BY s.accepted_at DESC
          LIMIT ?`,
       )
       .all(agent.agent_id, limit) as Array<Record<string, unknown>>;
-    // Phase E: committed-mode rows render as "[committed]" until a valid
-    // reveal row exists, without leaking side/asset/horizon. Once revealed
-    // (reveal_hash_valid=1) the projection hydrates from cr.* columns.
     const rows = raw.map((r) => {
       const projected = projectCallRow({
         call_id: r.call_id as string,
@@ -1153,20 +1120,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         accepted_at: r.accepted_at as string,
         privacy_mode: r.privacy_mode as string | null,
         commit_hash: r.commit_hash as string | null,
-        side: r.side as string | null,
-        asset_id: r.asset_id as string | null,
-        horizon_hours: r.horizon_hours as number | null,
-        confidence: r.confidence as number | null,
         submitted_at: r.submitted_at as string | null,
-        reveal_hash_valid: r.reveal_hash_valid as number | null,
-        revealed_side: r.revealed_side as string | null,
-        revealed_asset_id: r.revealed_asset_id as string | null,
-        revealed_horizon_hours: r.revealed_horizon_hours as number | null,
-        revealed_confidence: r.revealed_confidence as number | null,
       });
-      // Phase 10 / Z4-extra Drift C — adapter/family flow to the RSS
-      // formatter so non-native rows render outcome + score without a
-      // misleading "—" / "null" signed_return line.
+      // Phase 10 / Z4-extra Drift C — adapter/family discriminators flow
+      // to the RSS formatter so non-native rows omit signed_return.
       const adapter_id = (r.adapter_id as string | null) ?? "native-price";
       const market_family =
         (r.market_family as string | null) ?? "financial-direction";
@@ -1176,12 +1133,15 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         status: projected.status,
         privacy_mode: projected.privacy_mode,
         commit_hash: projected.commit_hash,
-        asset_id: projected.asset_id ?? "",
-        side: (projected.side as "BUY" | "SELL" | undefined) ?? "BUY",
-        horizon_hours: projected.horizon_hours ?? 0,
-        confidence: projected.confidence ?? 0,
+        // Wave 2b — operator-blind placeholders. The RSS formatter
+        // tolerates these; future Wave 3 drops the legacy SQL columns
+        // entirely and the formatter will need updating.
+        asset_id: "",
+        side: "BUY" as const,
+        horizon_hours: 0,
+        confidence: 0,
         submitted_at: projected.submitted_at ?? "",
-        is_committed_scrubbed: projected.side === undefined,
+        is_committed_scrubbed: true,
         accepted_at: projected.accepted_at,
         adapter_id,
         market_family,
@@ -1500,34 +1460,17 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       return;
     }
     // Phase E: scrub plaintext from the submission sub-object while a
-    // committed call lacks a valid reveal row. The acceptance receipt on
-    // the same response never carries plaintext for v2 by construction.
-    // Hydration: forward cr.* mirror columns so post-Phase-E committed
-    // rows still render side/asset/horizon/confidence from call_reveals.
+    // Wave 2b — call_reveals JOIN + cr.* SELECT removed. Single
+    // submissions row read for the privacy-mode + commit-hash needed
+    // to construct the operator-blind projection.
     const subRow = deps.db
       .prepare(
-        `SELECT s.privacy_mode, s.commit_hash, cr.reveal_hash_valid,
-                cr.side          AS revealed_side,
-                cr.asset_id      AS revealed_asset_id,
-                cr.horizon_hours AS revealed_horizon_hours,
-                cr.confidence    AS revealed_confidence,
-                cr.rationale     AS revealed_rationale,
-                cr.strategy_tag  AS revealed_strategy_tag
-         FROM submissions s
-         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
-         WHERE s.call_id = ?`,
+        `SELECT privacy_mode, commit_hash FROM submissions WHERE call_id = ?`,
       )
       .get(call_id) as
       | {
           privacy_mode: string | null;
           commit_hash: string | null;
-          reveal_hash_valid: number | null;
-          revealed_side: string | null;
-          revealed_asset_id: string | null;
-          revealed_horizon_hours: number | null;
-          revealed_confidence: number | null;
-          revealed_rationale: string | null;
-          revealed_strategy_tag: string | null;
         }
       | undefined;
     const projected = projectCallRow({
@@ -1538,20 +1481,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       commit_hash: subRow?.commit_hash ?? null,
       // Wave 4b: receipts subsystem dropped — projection emits null.
       acceptance_receipt_hash: null,
-      side: full.submission.side,
-      asset_id: full.submission.asset_id,
-      horizon_hours: full.submission.horizon_hours,
-      confidence: full.submission.confidence,
-      rationale: full.submission.rationale,
-      strategy_tag: full.submission.strategy_tag,
       submitted_at: full.submission.submitted_at,
-      reveal_hash_valid: subRow?.reveal_hash_valid ?? null,
-      revealed_side: subRow?.revealed_side ?? null,
-      revealed_asset_id: subRow?.revealed_asset_id ?? null,
-      revealed_horizon_hours: subRow?.revealed_horizon_hours ?? null,
-      revealed_confidence: subRow?.revealed_confidence ?? null,
-      revealed_rationale: subRow?.revealed_rationale ?? null,
-      revealed_strategy_tag: subRow?.revealed_strategy_tag ?? null,
     });
     const scrubbedSubmission = {
       call_id: full.submission.call_id,
@@ -1561,17 +1491,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       status: full.submission.status,
       privacy_mode: projected.privacy_mode,
       commit_hash: projected.commit_hash,
-      // Only present when shouldExposePlaintext returned true.
-      ...(projected.side ? { side: projected.side } : {}),
-      ...(projected.asset_id ? { asset_id: projected.asset_id } : {}),
-      ...(projected.horizon_hours !== undefined
-        ? { horizon_hours: projected.horizon_hours }
-        : {}),
-      ...(projected.confidence !== undefined
-        ? { confidence: projected.confidence }
-        : {}),
-      ...(projected.rationale ? { rationale: projected.rationale } : {}),
-      ...(projected.strategy_tag ? { strategy_tag: projected.strategy_tag } : {}),
+      // Wave 2b — operator-blind always. No plaintext fields are
+      // included on the response.
       ...(projected.submitted_at ? { submitted_at: projected.submitted_at } : {}),
     };
     // Z2 — for fhe_direct rows, surface the encrypted-score status. The

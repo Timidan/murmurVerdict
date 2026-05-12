@@ -54,11 +54,9 @@ export function CallLog({ title = "RECENT CALLS", calls, verifyAffordance = true
 
 function CallRow({ call, verifyAffordance }: { call: AgentCallRow; verifyAffordance: boolean }) {
   const ts = formatTs(call.submitted_at ?? call.accepted_at);
-  const scrubbed = call.privacy_mode === "committed" && call.side === undefined;
-  const isSell = call.side === "SELL";
-  const horizon = scrubbed
-    ? "sealed"
-    : `${call.horizon_hours}H · ${((call.confidence ?? 0) * 100).toFixed(0)}%`;
+  // Wave 2b — FHE-mandatory. Side, asset, and horizon are encrypted
+  // under the threshold keyset; the row renders blind placards rather
+  // than plaintext fields. The PrivacyTierBadge handles the tier label.
   const note = formatNote(call);
 
   return (
@@ -73,13 +71,13 @@ function CallRow({ call, verifyAffordance }: { call: AgentCallRow; verifyAfforda
       }
     >
       <span role="cell" className="t-data text-[var(--color-secondary)]">{ts}</span>
-      <span role="cell" className={`t-button ${isSell ? sideTokens.sell : sideTokens.buy}`}>
-        {scrubbed ? "HASH" : call.side}
+      <span role="cell" className={`t-button ${sideTokens.buy}`}>
+        HASH
       </span>
       <span role="cell" className="t-data text-[var(--color-display)]">
-        {scrubbed ? "COMMIT" : call.asset_id?.split(":").pop() ?? call.asset_id}
+        BLIND
       </span>
-      <span role="cell" className="t-data text-[var(--color-secondary)]">{horizon}</span>
+      <span role="cell" className="t-data text-[var(--color-secondary)]">sealed</span>
       <span role="cell" className="t-body-sm truncate">{note}</span>
       <span role="cell" className="text-right flex items-center justify-end gap-2">
         <OutcomeChip outcome={call.outcome ?? "live"}>
@@ -112,17 +110,12 @@ function formatTs(iso: string): string {
 }
 
 function formatNote(c: AgentCallRow): string {
-  if (c.privacy_mode === "committed" && c.side === undefined) {
-    return c.commit_hash ? `commit ${c.commit_hash.slice(0, 10)}` : "committed";
-  }
-  if (!c.outcome && !c.signed_return) return "acceptance";
-  if (c.outcome === "void") return "inside void band · ±0%";
-  if (c.signed_return) {
-    const pct = (Number(c.signed_return) * 100).toFixed(2);
-    const sign = pct.startsWith("-") ? "" : "+";
-    return `resolved · ${sign}${pct}%`;
-  }
-  return c.outcome ?? "—";
+  // Wave 2b — FHE-mandatory. Every call is operator-blind; expose only
+  // the commit hash anchor and the resolved outcome label.
+  if (c.commit_hash) return `commit ${c.commit_hash.slice(0, 10)}`;
+  if (!c.outcome) return "encrypted";
+  if (c.outcome === "void") return "inside void band";
+  return c.outcome;
 }
 
 function formatOutcomeLabel(c: AgentCallRow): string {

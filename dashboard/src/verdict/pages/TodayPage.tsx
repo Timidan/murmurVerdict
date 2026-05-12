@@ -92,16 +92,9 @@ function FeedRows({ rows, pending }: { rows: TodayFeedRow[]; pending?: boolean }
   return (
     <ul className="m-0 p-0 list-none">
       {rows.map((row) => {
-        const scrubbed = isScrubbed(row);
+        // Wave 2b — FHE-mandatory. Every call is operator-blind; side
+        // and asset render as encrypted placards rather than plaintext.
         const ts = (row.submitted_at ?? row.accepted_at).slice(11, 19);
-        const sideClass =
-          scrubbed || pending
-            ? "ck-dim"
-            : row.side === "BUY"
-              ? "ck-pos"
-              : row.side === "SELL"
-                ? "ck-neg"
-                : "ck-dim";
         const outcomeText = pending
           ? "PEND"
           : row.call_score !== null && row.call_score !== undefined
@@ -121,10 +114,8 @@ function FeedRows({ rows, pending }: { rows: TodayFeedRow[]; pending?: boolean }
           >
             <a href={`#/calls/${row.call_id}`} className="contents no-underline">
               <span className="ck-mono ck-dim">{ts}</span>
-              <span className={"ck-label " + sideClass}>{scrubbed ? "HASH" : row.side}</span>
-              <span className="ck-mono ck-pos truncate">
-                {scrubbed ? "COMMIT" : row.asset_id?.split(":").pop() ?? row.asset_id}
-              </span>
+              <span className="ck-label ck-dim">HASH</span>
+              <span className="ck-mono ck-pos truncate">BLIND</span>
               <span className="ck-mono ck-dim truncate">@{row.agent_slug}</span>
               <span className={"ck-mono text-right " + outcomeTone}>{outcomeText}</span>
             </a>
@@ -154,6 +145,3 @@ function Stat({
   );
 }
 
-function isScrubbed(row: TodayFeedRow): boolean {
-  return row.privacy_mode === "committed" && row.side === undefined;
-}

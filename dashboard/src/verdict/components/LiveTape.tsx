@@ -35,17 +35,14 @@ export function LiveTape() {
 
 function TapeEntry({ event }: { event: CallAcceptedEvent | CallResolvedEvent }) {
   if (event.type === "call.accepted") {
-    const scrubbed = event.privacy_mode === "committed" && event.side === undefined;
+    // Wave 2b — FHE-mandatory. Side, asset, horizon are encrypted under
+    // the threshold keyset; the tape renders blind placards.
     return (
       <li className="flex items-center gap-2 t-data flex-shrink-0">
         <span className="text-[var(--color-secondary)]">@{event.agent_slug}</span>
-        <span className={event.side === "SELL" ? "text-[var(--color-accent)] t-button" : "text-[var(--color-display)] t-button"}>
-          {scrubbed ? "HASH" : event.side}
-        </span>
-        <span className="text-[var(--color-display)]">
-          {scrubbed ? "COMMIT" : event.asset_id?.split(":").pop() ?? event.asset_id}
-        </span>
-        <span className="text-[var(--color-secondary)]">{scrubbed ? "sealed" : `${event.horizon_hours}h`}</span>
+        <span className="text-[var(--color-secondary)] t-button">HASH</span>
+        <span className="text-[var(--color-display)]">BLIND</span>
+        <span className="text-[var(--color-secondary)]">sealed</span>
         <span className="t-label text-[var(--color-accent)]">PEND</span>
       </li>
     );

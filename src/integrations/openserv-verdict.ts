@@ -128,14 +128,14 @@ export async function startVerdictOpenServAgent(
         if (!full) return jsonError(404, "not_found", "call not found");
         const projectionMeta = params.db
           .prepare(
-            `SELECT s.privacy_mode, s.commit_hash, cr.reveal_hash_valid
-             FROM submissions s
-             LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
-             WHERE s.call_id = ?`,
+            `SELECT privacy_mode, commit_hash FROM submissions WHERE call_id = ?`,
           )
           .get(args.call_id) as
-          | { privacy_mode: string | null; commit_hash: string | null; reveal_hash_valid: number | null }
+          | { privacy_mode: string | null; commit_hash: string | null }
           | undefined;
+        // Wave 2b — call_reveals JOIN + reveal_hash_valid + plaintext
+        // projection inputs removed. Single operator-blind projection
+        // under FHE-mandatory.
         const projected = projectCallRow({
           call_id: full.submission.call_id,
           status: full.submission.status,
@@ -144,14 +144,7 @@ export async function startVerdictOpenServAgent(
           commit_hash: projectionMeta?.commit_hash ?? null,
           // Wave 4b — receipts subsystem dropped; field surfaces null.
           acceptance_receipt_hash: null,
-          side: full.submission.side,
-          asset_id: full.submission.asset_id,
-          horizon_hours: full.submission.horizon_hours,
-          confidence: full.submission.confidence,
-          rationale: full.submission.rationale,
-          strategy_tag: full.submission.strategy_tag,
           submitted_at: full.submission.submitted_at,
-          reveal_hash_valid: projectionMeta?.reveal_hash_valid ?? null,
         });
         const submission = {
           call_id: full.submission.call_id,
@@ -161,12 +154,6 @@ export async function startVerdictOpenServAgent(
           status: full.submission.status,
           privacy_mode: projected.privacy_mode,
           commit_hash: projected.commit_hash,
-          ...(projected.side ? { side: projected.side } : {}),
-          ...(projected.asset_id ? { asset_id: projected.asset_id } : {}),
-          ...(projected.horizon_hours !== undefined ? { horizon_hours: projected.horizon_hours } : {}),
-          ...(projected.confidence !== undefined ? { confidence: projected.confidence } : {}),
-          ...(projected.rationale ? { rationale: projected.rationale } : {}),
-          ...(projected.strategy_tag ? { strategy_tag: projected.strategy_tag } : {}),
           ...(projected.submitted_at ? { submitted_at: projected.submitted_at } : {}),
         };
         return JSON.stringify({
@@ -223,16 +210,16 @@ export async function startVerdictOpenServAgent(
       async run({ args }) {
         const agentRow = agentsRepo.bySlug(params.db, args.slug);
         if (!agentRow) return jsonError(404, ERROR_CODES.unknown_agent, "agent not found");
+        // Wave 2b — call_reveals JOIN + plaintext columns removed
+        // from the SELECT and from the projection input. Operator-blind
+        // projection under FHE-mandatory.
         const rows = params.db
           .prepare(
-            `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
-                    s.confidence, s.rationale, s.strategy_tag,
-                    s.submitted_at, s.accepted_at, s.privacy_mode, s.commit_hash,
-                    cr.reveal_hash_valid,
+            `SELECT s.call_id, s.status, s.submitted_at, s.accepted_at,
+                    s.privacy_mode, s.commit_hash,
                     r.outcome, r.call_score, r.signed_return, r.resolved_at
              FROM submissions s
              LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
-             LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
              WHERE s.agent_id = ?
              ORDER BY s.accepted_at DESC
              LIMIT ?`,
@@ -247,18 +234,11 @@ export async function startVerdictOpenServAgent(
               privacy_mode: row.privacy_mode as string | null,
               commit_hash: row.commit_hash as string | null,
               acceptance_receipt_hash: null,
-              side: row.side as string | null,
-              asset_id: row.asset_id as string | null,
-              horizon_hours: row.horizon_hours as number | null,
-              confidence: row.confidence as number | null,
-              rationale: row.rationale as string | null,
-              strategy_tag: row.strategy_tag as string | null,
               outcome: row.outcome as string | null,
               call_score: row.call_score as number | null,
               signed_return: row.signed_return as string | null,
               resolved_at: row.resolved_at as string | null,
               submitted_at: row.submitted_at as string | null,
-              reveal_hash_valid: row.reveal_hash_valid as number | null,
             },
             agentRow.display_slug,
           ),

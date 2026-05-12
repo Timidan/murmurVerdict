@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { projectCallRow, shouldExposePlaintext } from "./projections.js";
+import { projectCallRow } from "./projections.js";
 
 // ─── /v1/feed/today data shape ────────────────────────────────────────────────
 // Live tape backing the Today page. Three rolling lists:
@@ -10,9 +10,11 @@ import { projectCallRow, shouldExposePlaintext } from "./projections.js";
 //   - resolved_recent: last N resolutions (the outcome tape)
 // All three return enough fields to render a card without a second fetch.
 //
-// P2 Phase E: committed-mode rows scrub side / asset_id / horizon_hours /
-// confidence / rationale / strategy_tag / t1_estimate until a valid reveal;
-// only commit_hash + acceptance_receipt_hash + privacy_mode are surfaced.
+// Wave 2b — under FHE-mandatory every submission is operator-blind: side /
+// asset_id / horizon_hours / confidence / rationale / strategy_tag /
+// t1_estimate are NEVER surfaced. Only commit_hash + privacy_mode +
+// discriminators (adapter_id, market_family, market_id) ride along with
+// the public submission timestamps and the resolved-side outcome fields.
 
 export interface TodayFeedRow {
   call_id: string;
@@ -28,11 +30,9 @@ export interface TodayFeedRow {
   adapter_id?: string;
   market_family?: string;
   market_id?: string;
-  // Plaintext envelope — populated only when shouldExposePlaintext().
-  side?: "BUY" | "SELL";
-  asset_id?: string;
-  horizon_hours?: number;
-  confidence?: number;
+  // Wave 2b — under FHE-mandatory plaintext (side / asset_id /
+  // horizon_hours / confidence) is never surfaced. Submission timestamps
+  // and identifiers remain public.
   submitted_at?: string;
   accepted_at: string;
   status: string;
@@ -44,8 +44,6 @@ export interface TodayFeedRow {
   signed_return?: string | null;
   call_score?: number | null;
   resolved_at?: string | null;
-  // Pending-only — scrubbed when committed (would leak the horizon)
-  t1_estimate?: string | null;
 }
 
 export interface TodayMover {
@@ -83,30 +81,18 @@ const MOVERS_LIMIT = 5;
 export function getTodayFeed(db: Database.Database, now: Date = new Date()): TodayFeed {
   const nowIso = now.toISOString().replace(/\.\d+Z$/, "Z");
 
-  // SQL pulls the FULL row including plaintext columns; the projection
-  // helper scrubs committed rows until a valid reveal exists. One source
-  // of truth so feed/api/SSE/RSS/MCP can't drift apart.
-  // Phase E hydration: after MURMUR_PHASE_E_CLEANUP=1 the plaintext columns
-  // on submissions are NULL for committed-mode rows, but the same plaintext
-  // still lives in call_reveals when reveal_hash_valid=1. We forward both
-  // sets of columns and let projectCallRow COALESCE them.
+  // Wave 2b — under FHE-mandatory the projection is always operator-blind,
+  // so we no longer SELECT plaintext columns from submissions or hydrate
+  // from call_reveals. The feed surfaces commit_hash + privacy_mode +
+  // discriminators only.
   const rawAccepted = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
-              s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
-              s.adapter_id, s.market_family, s.market_id,
-              cr.reveal_hash_valid,
-              cr.side          AS revealed_side,
-              cr.asset_id      AS revealed_asset_id,
-              cr.horizon_hours AS revealed_horizon_hours,
-              cr.confidence    AS revealed_confidence,
-              cr.rationale     AS revealed_rationale,
-              cr.strategy_tag  AS revealed_strategy_tag
+              s.adapter_id, s.market_family, s.market_id
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
-       LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        ORDER BY s.accepted_at DESC
        LIMIT ?`,
     )
@@ -116,71 +102,30 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
   const rawPending = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
-              s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
-              s.adapter_id, s.market_family, s.market_id,
-              cr.reveal_hash_valid,
-              cr.side          AS revealed_side,
-              cr.asset_id      AS revealed_asset_id,
-              cr.horizon_hours AS revealed_horizon_hours,
-              cr.confidence    AS revealed_confidence,
-              cr.rationale     AS revealed_rationale,
-              cr.strategy_tag  AS revealed_strategy_tag
+              s.adapter_id, s.market_family, s.market_id
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
-       LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        WHERE s.status IN ('accepted','pending_t0','pending_t1')
        ORDER BY s.accepted_at DESC
        LIMIT ?`,
     )
     .all(PENDING_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
-  const pendingRows: TodayFeedRow[] = rawPending.map((row) => {
-    const projected = toFeedRow(row);
-    // t1_estimate leaks horizon, so only emit it when the row's
-    // plaintext is exposed (not committed-pending). After Phase E the
-    // submission column is NULL even on revealed rows — fall back to
-    // the call_reveals mirror so the projection stays consistent.
-    const horizon =
-      typeof row.horizon_hours === "number"
-        ? (row.horizon_hours as number)
-        : typeof row.revealed_horizon_hours === "number"
-          ? (row.revealed_horizon_hours as number)
-          : null;
-    if (
-      shouldExposePlaintext(
-        (row.privacy_mode as string | null) ?? null,
-        row.status as string,
-        row.reveal_hash_valid as number | null,
-      ) &&
-      typeof horizon === "number"
-    ) {
-      const t1 = new Date(
-        Date.parse(row.accepted_at as string) + horizon * 3600 * 1000,
-      );
-      projected.t1_estimate = t1.toISOString().replace(/\.\d+Z$/, "Z");
-    }
-    return projected;
-  });
+  // Wave 2b — under FHE-mandatory the pending row has no plaintext horizon
+  // to derive a t1_estimate from. The field is permanently null on the
+  // pending list; the dashboard renders "resolves on…" without a clock.
+  const pendingRows: TodayFeedRow[] = rawPending.map(toFeedRow);
 
   const rawResolved = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
-              s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
-              r.outcome, r.signed_return, r.call_score, r.resolved_at,
-              cr.reveal_hash_valid,
-              cr.side          AS revealed_side,
-              cr.asset_id      AS revealed_asset_id,
-              cr.horizon_hours AS revealed_horizon_hours,
-              cr.confidence    AS revealed_confidence,
-              cr.rationale     AS revealed_rationale,
-              cr.strategy_tag  AS revealed_strategy_tag
+              r.outcome, r.signed_return, r.call_score, r.resolved_at
        FROM t1_resolutions r
        JOIN submissions s ON s.call_id = r.call_id
        JOIN agents a ON a.agent_id = s.agent_id
-       LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
        ORDER BY r.resolved_at DESC
        LIMIT ?`,
     )
@@ -251,10 +196,12 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
 }
 
 /**
- * Map a raw SQL row to a TodayFeedRow, scrubbing committed-mode
- * plaintext from pending rows. agent_id + agent_slug + agent_kind
- * are passed through (they're public). Plaintext fields are dropped
- * when shouldExposePlaintext returns false.
+ * Map a raw SQL row to a TodayFeedRow. Wave 2b — under FHE-mandatory the
+ * projection is always operator-blind, so plaintext (side / asset_id /
+ * horizon_hours / confidence) is never populated. agent_id + agent_slug +
+ * agent_kind + discriminators + resolved-side fields (outcome,
+ * signed_return, call_score, resolved_at) are public and pass through
+ * from the SQL row.
  */
 function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
   const projected = projectCallRow(
@@ -266,26 +213,7 @@ function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
       commit_hash: row.commit_hash as string | null,
       // Wave 4b: receipts subsystem dropped; projection always emits null.
       acceptance_receipt_hash: null,
-      side: row.side as string | null,
-      asset_id: row.asset_id as string | null,
-      horizon_hours: row.horizon_hours as number | null,
-      confidence: row.confidence as number | null,
-      rationale: row.rationale as string | null,
-      strategy_tag: row.strategy_tag as string | null,
-      outcome: row.outcome as string | null,
-      call_score: row.call_score as number | null,
-      signed_return: row.signed_return as string | null,
-      resolved_at: row.resolved_at as string | null,
       submitted_at: row.submitted_at as string | null,
-      reveal_hash_valid: row.reveal_hash_valid as number | null,
-      // Phase E hydration: forward call_reveals mirror columns so
-      // projectCallRow can COALESCE post-scrub committed rows.
-      revealed_side: row.revealed_side as string | null,
-      revealed_asset_id: row.revealed_asset_id as string | null,
-      revealed_horizon_hours: row.revealed_horizon_hours as number | null,
-      revealed_confidence: row.revealed_confidence as number | null,
-      revealed_rationale: row.revealed_rationale as string | null,
-      revealed_strategy_tag: row.revealed_strategy_tag as string | null,
     },
     row.agent_slug as string,
   );
@@ -301,18 +229,25 @@ function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
   // don't render a misleading "null %" / "0%" formatting for event-
   // based markets.
   const isNativePrice = adapter_id === "native-price";
-  const result = {
+  const result: TodayFeedRow = {
     ...projected,
     agent_id: row.agent_id as string,
     agent_slug: row.agent_slug as string,
     agent_kind: row.agent_kind as string,
-    side: projected.side as TodayFeedRow["side"],
     adapter_id,
     market_family,
     ...(market_id ? { market_id } : {}),
-  } as TodayFeedRow;
-  if (!isNativePrice && "signed_return" in result) {
-    delete result.signed_return;
+  };
+  // Resolved-side fields come from t1_resolutions (public, not under FHE).
+  // Forward straight from the SQL row when present.
+  if (typeof row.submitted_at === "string") {
+    result.submitted_at = row.submitted_at;
+  }
+  if (typeof row.outcome === "string") result.outcome = row.outcome;
+  if (typeof row.call_score === "number") result.call_score = row.call_score;
+  if (typeof row.resolved_at === "string") result.resolved_at = row.resolved_at;
+  if (isNativePrice && typeof row.signed_return === "string") {
+    result.signed_return = row.signed_return;
   }
   return result;
 }
