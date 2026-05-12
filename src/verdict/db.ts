@@ -542,6 +542,54 @@ function applyMigrations(db: Database.Database): void {
     v = 28;
     set.run("schema_version", String(v));
   }
+
+  if (v < 29) {
+    // Phase 11.5 prep — registry groundwork for external (non-native-price)
+    // market adapters.
+    //
+    // Two-part: (a) recreate `oracles` with a broader `kind` CHECK so
+    // 'external_adapter' is a legal value; (b) seed one synthetic asset
+    // + one synthetic oracle for Polymarket. Future external adapters
+    // (Kalshi, Drift, etc.) reuse the same 'external_adapter' value
+    // with their own oracle_id — no further migration needed when adding
+    // a new adapter family at the registry layer.
+    //
+    // Why a table rebuild on oracles: SQLite ALTER TABLE doesn't support
+    // dropping or replacing a CHECK constraint. The applyTableRebuildMigration
+    // helper (BEGIN..COMMIT around the rename pattern, with foreign_keys=OFF)
+    // safely recreates oracles, preserving existing rows (chainlink-base-*,
+    // pyth-pull-*).
+    //
+    // ── Scope boundary ──
+    //
+    // This migration is REGISTRY-only. Operational use of Polymarket
+    // conditionIds via the agent /v2/calls path remains blocked on:
+    //   1. MarketIdSchema regex (schema.ts) — currently constrains to
+    //      lowercase dot-separated segments (e.g. 'eth.1h'); Polymarket
+    //      conditionIds are '0x[hex64]'.
+    //   2. AssetIdSchema enum — closed list of native-price assets;
+    //      'polymarket:event' isn't a member.
+    //   3. AcceptedCallSchema — native-price-shaped: requires asset_id,
+    //      side, horizon_hours, oracle_policy. Z4 introduces the
+    //      discriminated variant.
+    //   4. submitCall rate limiters — per-asset cap keys on asset_id,
+    //      which is meaningless for external markets.
+    //
+    // All four unblock together with Z4 (discriminated AcceptedCall +
+    // adapter-aware schema variants). At that point the synthetic asset
+    // + oracle seeded here become the anchor rows that external markets'
+    // markets-row INSERTs reference, satisfying the NOT NULL FKs on
+    // markets.asset_id and markets.primary_oracle_id without rewriting
+    // the markets table.
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_029_ORACLES_REBUILD,
+      () => set.run("schema_version", "29"),
+      ["oracles", "oracles_v029"],
+    );
+    db.exec(MIGRATION_029_SEED);
+    v = 29;
+  }
 }
 
 /**
@@ -2096,6 +2144,59 @@ const MIGRATION_028 = `
   CREATE INDEX IF NOT EXISTS idx_sync_state_next_poll
     ON external_market_sync_state(next_poll_at)
     WHERE next_poll_at IS NOT NULL;
+`;
+
+// ─── Migration 029 — Polymarket-registerable oracles + synthetic seed ──────
+//
+// Rebuilds `oracles` to widen the `kind` CHECK with 'external_adapter'.
+// SQLite cannot drop a CHECK in place, so we use the same
+// applyTableRebuildMigration pattern that migrations 010/011 used for
+// the submissions rebuild. The temp table is `oracles_v029`.
+//
+// Then seeds one synthetic asset ('polymarket:event') and one synthetic
+// oracle ('polymarket-gamma-oracle'). All Polymarket conditionIds
+// registered via the admin route will reference these two rows so the
+// existing NOT NULL constraints on `markets.asset_id` and
+// `markets.primary_oracle_id` are satisfied without rewriting `markets`.
+//
+// The oracle row stays at kind='external_adapter' so any future external
+// adapter (Kalshi, Drift, etc.) reuses the same legal CHECK value with
+// its own oracle_id.
+const MIGRATION_029_ORACLES_REBUILD = `
+  DROP TABLE IF EXISTS oracles_v029;
+  CREATE TABLE oracles_v029 (
+    oracle_id     TEXT PRIMARY KEY,
+    asset_id      TEXT NOT NULL REFERENCES assets(asset_id),
+    kind          TEXT NOT NULL CHECK (kind IN ('chainlink_evm','pyth_pull','pyth_solana','external_adapter')),
+    adapter       TEXT NOT NULL,
+    chain         TEXT NOT NULL,
+    config_json   TEXT NOT NULL DEFAULT '{}',
+    status        TEXT NOT NULL DEFAULT 'listed'
+                  CHECK (status IN ('draft','listed','frozen','retired')),
+    created_at    TEXT NOT NULL
+  );
+  INSERT INTO oracles_v029 (oracle_id, asset_id, kind, adapter, chain, config_json, status, created_at)
+  SELECT oracle_id, asset_id, kind, adapter, chain, config_json, status, created_at
+    FROM oracles;
+  DROP TABLE oracles;
+  ALTER TABLE oracles_v029 RENAME TO oracles;
+  CREATE INDEX idx_oracles_asset ON oracles(asset_id);
+  CREATE INDEX idx_oracles_status ON oracles(status);
+`;
+
+// Seed runs OUTSIDE the table-rebuild transaction so a partial rebuild
+// can't double-insert. INSERT OR IGNORE keeps it idempotent on retry.
+const MIGRATION_029_SEED = `
+  INSERT OR IGNORE INTO assets (asset_id, display_short, display_name, native_chain, pyth_feed_id, chainlink_base_address, decimals_hint, status, notes, created_at) VALUES
+    ('polymarket:event', 'pmevent', 'Polymarket Event', 'polygon',
+     NULL, NULL, 0, 'listed',
+     'synthetic anchor for all Polymarket conditionId markets; not a priced asset',
+     '2026-05-12T00:00:00Z');
+
+  INSERT OR IGNORE INTO oracles (oracle_id, asset_id, kind, adapter, chain, config_json, status, created_at) VALUES
+    ('polymarket-gamma-oracle', 'polymarket:event', 'external_adapter', 'polymarket-gamma', 'polygon',
+     '{"protocol":"polymarket-gamma","note":"resolution observed via gamma adapter, no price feed"}',
+     'listed', '2026-05-12T00:00:00Z');
 `;
 
 const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
