@@ -31,7 +31,7 @@ import {
   AdapterError,
   type OracleObservation as AdapterObservation,
 } from "../integrations/oracles/types.js";
-import { feedToOracleId } from "./oracle-routing.js";
+import { derivePolicyFromMarket, feedToOracleId } from "./oracle-routing.js";
 import {
   computeSignedReturn,
   outcomeFromSignedReturn,
@@ -731,19 +731,12 @@ export class Resolver {
       return "pending";
     }
 
-    // For fhe_direct rows, ctx.side is BUY/SELL but it's a fixed default
-    // from the submissions row (Z1 records it as 'BUY' on the encrypted
-    // path because the schema still has the column NOT NULL). The
-    // adapter needs the canonical resolved payout vector, which for
-    // native-price binary markets uses side to decide which bucket
-    // "wins". Z1 binds side into the commit preimage so the agent's
-    // claimed side is non-repudiable; we use ctx.side here. For
-    // markets whose outcome is side-independent (categorical), this is
-    // a no-op.
-    const voidBand =
-      args.ctx.market_config_version !== null
-        ? voidBandFloat(marketRow)
-        : voidBandFloat(marketRow);
+    // Wave 3 — `side` no longer passed to observeResolution. The
+    // native-price adapter's resolved Outcome is side-independent (the
+    // payout vector keyed on actual price direction); FHE-direct rows
+    // never carried a real side anyway. Migration 031 drops the
+    // submissions.side column outright.
+    const voidBand = voidBandFloat(marketRow);
     const marketRef = {
       protocol: adapter.name,
       sourceId: marketId,
@@ -765,7 +758,6 @@ export class Resolver {
         t1_feed: args.obs.feed,
         t1_source_id: args.obs.source_id,
         void_band: voidBand,
-        side: args.ctx.side,
         market_id: marketId,
       });
     } catch (err) {
@@ -1464,33 +1456,35 @@ export class Resolver {
     return this.now().toISOString().replace(/\.\d+Z$/, "Z");
   }
 
+  /**
+   * Wave 3 — the oracle_policies table is gone (MIGRATION_031). The
+   * resolver re-derives a call's T0Policy from its market_id on every
+   * read by walking the markets registry via derivePolicyFromMarket().
+   *
+   * The trade-off vs the old per-call snapshot:
+   *   - A market frozen between submit and the resolver tick swaps the
+   *     policy under us. With receipts/disputes gone (Wave 1/3a) there
+   *     is no off-chain attestation pinned to the original policy.
+   *   - The markets registry is still the source of truth for
+   *     "which feeds anchor this market today"; a v0.3 dispute path
+   *     that needs snapshotted policies would re-introduce a typed
+   *     per-call audit log rather than the SQL join.
+   */
   private policyFromCtx(
     ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>,
   ): T0Policy {
-    // Phase 2d: ctx.fallback_feed / fallback_max_staleness_sec are nullable.
-    // T0Policy uses the optional shape — both fields go missing together
-    // for sub-hour Pyth-only markets.
-    const hasFeed = ctx.fallback_feed !== null;
-    const hasStaleness = ctx.fallback_max_staleness_sec !== null;
-    if (hasFeed !== hasStaleness) {
+    if (!ctx.market_id) {
       throw new Error(
-        `oracle_policies row for call ${ctx.call_id} has half-configured fallback (fallback_feed=${hasFeed ? "set" : "null"}, fallback_max_staleness_sec=${hasStaleness ? "set" : "null"}); both must be set or both NULL`,
+        `call ${ctx.call_id} has no market_id; cannot derive oracle policy`,
       );
     }
-    return {
-      primary_feed: ctx.primary_feed as T0Policy["primary_feed"],
-      primary_max_staleness_sec: ctx.primary_max_staleness_sec,
-      t0_grace_seconds: ctx.t0_grace_seconds,
-      t0_extended_grace_seconds: ctx.t0_extended_grace_seconds,
-      ...(ctx.fallback_feed !== null && ctx.fallback_max_staleness_sec !== null
-        ? {
-            fallback_feed: ctx.fallback_feed as NonNullable<
-              T0Policy["fallback_feed"]
-            >,
-            fallback_max_staleness_sec: ctx.fallback_max_staleness_sec,
-          }
-        : {}),
-    };
+    const market = marketsRepo.get(this.db, ctx.market_id);
+    if (!market) {
+      throw new Error(
+        `call ${ctx.call_id} references unknown market_id ${ctx.market_id}`,
+      );
+    }
+    return derivePolicyFromMarket(this.db, market);
   }
 
   private makeUsage(

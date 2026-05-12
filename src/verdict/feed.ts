@@ -144,7 +144,7 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
        JOIN submissions s ON s.agent_id = a.agent_id
        JOIN t1_resolutions r ON r.call_id = s.call_id
        WHERE r.resolved_at >= datetime('now', '-1 day')
-         AND a.kind IN ('verified','benchmark')
+         AND a.kind IN ('agent','attested','benchmark')
        GROUP BY a.agent_id
        ORDER BY resolved_24h DESC, wins_24h DESC
        LIMIT ?`,

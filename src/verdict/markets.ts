@@ -265,17 +265,18 @@ export function computeDedupBucketSeconds(horizon_seconds: number): number {
 }
 
 /**
- * New dedup key shape. Includes market_id (encodes asset + horizon) instead
- * of carrying both, so the same call on (eth.1h vs eth.4h) buckets cleanly.
- *
- * For the four legacy ETH horizons, this produces the SAME bucket boundaries
- * as the old buildDedupKey() — the bucket math is byte-stable for callers
- * that already had market_id backfilled by migration 009.
+ * Dedup key for a single submission. Keyed on (agent_id, market_id,
+ * accepted_at-bucket). Wave 3 dropped the `side` factor — FHE-direct
+ * submissions never reveal side at acceptance time, so two opposite-
+ * direction calls on the same market within the same bucket should
+ * collapse to one dedup_key (the agent can't claim "I had BUY AND SELL
+ * conviction" without a price-leaking timing oracle). The horizon
+ * factor is implicit in market_id (each market is single-horizon by
+ * registry contract).
  */
 export function buildMarketDedupKey(args: {
   agent_id: string;
   market_id: string;
-  side: "BUY" | "SELL";
   horizon_seconds: number;
   /** Server-stamped accepted_at. NEVER use the agent-supplied submitted_at. */
   accepted_at_iso: string;
@@ -289,7 +290,7 @@ export function buildMarketDedupKey(args: {
   const bucketSec = computeDedupBucketSeconds(args.horizon_seconds);
   const bucketMs = bucketSec * 1000;
   const bucket = Math.floor(ms / bucketMs) * bucketMs;
-  return `${args.agent_id}|${args.market_id}|${args.side}|${bucket}`;
+  return `${args.agent_id}|${args.market_id}|${bucket}`;
 }
 
 /**

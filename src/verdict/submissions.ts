@@ -5,6 +5,7 @@ import {
   AcceptedCallSchema,
   CallStatus,
   ERROR_CODES,
+  StrategyTag,
   SubmittedCall,
   SubmittedCallSchema,
   SUBMISSION_LIMITS,
@@ -17,6 +18,7 @@ import {
 import {
   agentsRepo,
   isUniqueViolation,
+  marketsRepo,
   submissionsRepo,
   usageRepo,
   type AcceptanceWriteInput,
@@ -404,20 +406,10 @@ export async function submitCall(args: {
   const since = new Date(now().getTime() - 24 * 60 * 60 * 1000)
     .toISOString()
     .replace(/\.\d+Z$/, "Z");
-  const todayAssetCount = submissionsRepo.countCallsForAgentAssetWindow(
-    db,
-    identity.agent_id,
-    submission.asset_id!,
-    since,
-  );
-  if (todayAssetCount >= SUBMISSION_LIMITS.max_calls_per_asset_per_day) {
-    usageRepo.emit(db, makeUsage(identity.agent_id, "submission_rejected", { reason: "daily_cap_asset" }, now));
-    throw new VerdictError(
-      `max ${SUBMISSION_LIMITS.max_calls_per_asset_per_day} calls per asset per day`,
-      ERROR_CODES.rate_limited,
-      429,
-    );
-  }
+  // Wave 3 — the per-asset daily cap was removed alongside the asset_id
+  // column drop in MIGRATION_031. The per-market cap below subsumes it
+  // for the common case (one market per asset); a family-aggregate cap
+  // can re-land on (agent_id, market_family) once we have load telemetry.
   const perMarketCap = perMarketDailyCap(market.market_id);
   const todayMarketCount = submissionsRepo.countCallsForAgentMarketWindow(
     db,
@@ -451,7 +443,6 @@ export async function submitCall(args: {
   const dedup_key = buildMarketDedupKey({
     agent_id: identity.agent_id,
     market_id: market.market_id,
-    side: submission.side,
     horizon_seconds: market.horizon_seconds,
     accepted_at_iso: accepted_at,
   });
@@ -490,7 +481,8 @@ export async function submitCall(args: {
   // point means the caller posted the legacy plaintext wire shape, so
   // we keep the privacy-mode gate to reject anything outside the
   // surviving set (which is just `fhe_direct`).
-  const envelopeForRepo: AcceptanceWriteInput["envelope"] = undefined;
+  // Wave 3 — the call_private_envelopes table was dropped, so the
+  // envelope field is gone from AcceptanceWriteInput.
   const privacyModeForRepo: string = "legacy_plaintext";
   const commitHashForRepo: string | undefined = undefined;
   const commitSchemeForRepo: string | undefined = undefined;
@@ -579,7 +571,6 @@ export async function submitCall(args: {
       outcome_labels_json: outcomeLabelsJsonStamp,
       ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
       ...(commitSchemeForRepo ? { commit_scheme: commitSchemeForRepo } : {}),
-      ...(envelopeForRepo ? { envelope: envelopeForRepo } : {}),
     });
   } catch (err) {
     if (isUniqueViolation(err)) {
@@ -837,17 +828,16 @@ async function submitFheDirectCall(args: {
     );
   }
 
-  // 7. accepted_at stamp + dedup-key bucket.
-  //    fhe_direct dedup omits `side` because there is no side on the
-  //    wire — we substitute the literal 'fhe' so the bucket still
-  //    collapses two near-simultaneous identical-market submits but
-  //    can't accidentally collide with a legacy_plaintext BUY/SELL
-  //    bucket (different prefix).
+  // 7. accepted_at stamp + dedup-key bucket. Wave 3 — `side` is no
+  //    longer part of the key (buildMarketDedupKey collapses opposite
+  //    directions in the same bucket). The fhe_direct path was the
+  //    last consumer that needed the side-free shape; with the legacy
+  //    plaintext path's bucket realigned, both paths now produce the
+  //    same per-(agent, market, bucket) key.
   const accepted_at = nowIso(now());
   const dedup_key = buildMarketDedupKey({
     agent_id: identity.agent_id,
     market_id: market.market_id,
-    side: "fhe" as unknown as "BUY",
     horizon_seconds: market.horizon_seconds,
     accepted_at_iso: accepted_at,
   });
@@ -893,40 +883,39 @@ async function submitFheDirectCall(args: {
     accepted_at,
   });
 
-  // 10. Persist. Same transaction shape as the legacy acceptCall, but
-  //     we (a) leave commitment_json / predicted_outcome_json NULL,
-  //     (b) leave side / asset_id / horizon_hours / confidence NULL on
-  //     the row, (c) insert the ciphertext row alongside.
+  // 10. Persist. Wave 3 — the four plaintext columns (side / asset_id /
+  //     horizon_hours / confidence) are gone from the submissions table;
+  //     the AcceptedCall type's matching fields are now optional. The
+  //     synthesized acceptedRow leaves them undefined so the operator-
+  //     blind invariant is enforced at the SCHEMA layer, not by a
+  //     downstream null-out UPDATE. The Commitment ciphertext on
+  //     fhe_call_ciphertexts remains the only durable record of the
+  //     prediction.
   const submittedAt =
     submission.submitted_at ?? accepted_at;
-  // The synthesized AcceptedCall satisfies the legacy type but every
-  // plaintext-prediction field is overridden to NULL inside the
-  // transaction below. The cast is unavoidable: AcceptedCall predates
-  // operator-blind privacy and bakes in side/confidence/horizon as
-  // required. Z4 introduces a discriminated AcceptedCall variant; for
-  // Z1 the cast is the price of leaving public types stable while a
-  // single mode goes "blind".
-  const acceptedRow = {
+  // FheDirectPayloadSchema types `strategy_tag` as a bounded free-form
+  // string (operator label, no enum); AcceptedCallSchema narrows it to
+  // the StrategyTag enum for v1 receipt back-compat. The cast bridges
+  // the two — operator-blind privacy doesn't care about the label
+  // taxonomy, so loosening the AcceptedCall side is a Wave 4a chore.
+  const acceptedRow: AcceptedCall = {
     schema_version: SCHEMA_VERSION,
     scoring_version: SCORING_VERSION,
     call_id,
     agent_id: submission.agent_id,
     client_order_id: submission.client_order_id,
-    asset_id: market.asset_id,
-    side: "BUY",
-    horizon_hours: legacyHorizonHoursForMarket(market) ?? 24,
-    confidence: 0.51,
     submitted_at: submittedAt,
     ...(submission.rationale !== undefined
       ? { rationale: submission.rationale }
       : {}),
     ...(submission.strategy_tag !== undefined
-      ? { strategy_tag: submission.strategy_tag }
+      ? { strategy_tag: submission.strategy_tag as StrategyTag }
       : {}),
     accepted_at,
     status: "accepted",
     oracle_policy: oraclePolicy,
-  } as unknown as AcceptedCall;
+  };
+  void legacyHorizonHoursForMarket; // kept for legacy adapter handoff
 
   // Run the multi-statement insert inside a single transaction so a
   // crash between submissions and fhe_call_ciphertexts can't leave a
@@ -939,15 +928,12 @@ async function submitFheDirectCall(args: {
           schema_version: SCHEMA_VERSION,
           agent_id: submission.agent_id,
           client_order_id: submission.client_order_id,
-          // The repo writes these onto the submissions row. For
-          // fhe_direct we want them NULL — `acceptCall` reads from
-          // `i.accepted`, so we override after the call below via a
-          // direct UPDATE. Pass the synthetic acceptedRow shape here
-          // to satisfy the typed insert; we then null the leak-y
-          // columns in the same transaction.
+          // The repo uses these fields only for the legacy v1 row
+          // shape; the FHE-direct write path doesn't persist any of
+          // them onto the submissions row anymore (MIGRATION_031
+          // dropped the columns). Pass a minimal valid SubmittedCall
+          // shape so the AcceptanceWriteInput typecheck succeeds.
           market_id: market.market_id,
-          side: "BUY",
-          confidence: 0.51,
           submitted_at: submittedAt,
         } as unknown as SubmittedCall,
         accepted: acceptedRow,
@@ -958,37 +944,17 @@ async function submitFheDirectCall(args: {
         horizon_seconds: market.horizon_seconds,
         adapter_id: market.adapter_id ?? "native-price",
         market_family: market.market_family ?? "financial-direction",
-        // Operator-blind invariant: NULL on every plaintext-derived
-        // column. Phase 5 resolver's universal hot path falls back to
-        // legacy-synthesis when commitment_json is null; Z2 will add
-        // an `fhe_direct` short-circuit there that consults
-        // fhe_call_ciphertexts instead.
+        // Operator-blind invariant: the Commitment + Outcome rows on
+        // submissions stay NULL for FHE-direct calls. The encrypted
+        // prediction lives in fhe_call_ciphertexts; the resolver's
+        // universal hot path short-circuits to the threshold-release
+        // path instead of decoding commitment_json.
         commitment_json: null,
         predicted_outcome_json: null,
         outcome_labels_json: null,
         commit_hash: fheCommit.commit_hash,
         commit_scheme: "keccak256",
       });
-      // Wave 2b — DON'T null the plaintext-prediction columns. The
-      // operator-blind invariant is enforced at the PROJECTION layer
-      // (projectCallRow returns operator-blind only; no plaintext is
-      // ever surfaced on /v1/agents/:slug/calls, /v1/feed/today,
-      // /v1/calls/:id, SSE events, RSS, MCP). The columns themselves
-      // hold MEANINGLESS PLACEHOLDERS for FHE rows:
-      //   side='BUY' (fixed default from the legacy insert path)
-      //   asset_id='base:ETH:USD' (default native-price asset)
-      //   horizon_hours=1 (default)
-      //   confidence=0.51 (default)
-      // These placeholders are needed because the resolver's native-
-      // price encrypted-scoring path threads `side` into the adapter's
-      // observeResolution context (codex Wave 2b review BLOCKER E:
-      // nulling side broke the native-price FHE scoring path). Wave 3
-      // drops these columns outright, at which point this comment
-      // becomes obsolete and the placeholders disappear.
-      //
-      // The TRUE prediction lives encrypted in fhe_call_ciphertexts
-      // and never decrypts on the daemon side; the threshold committee
-      // releases only the bounded score after resolution.
       insertFheCiphertext({
         db,
         call_id,
@@ -1113,13 +1079,11 @@ function nowIso(d: Date): string {
 }
 
 /**
- * Z1 — idempotent loader for fhe_direct rows. AcceptedCallSchema requires
- * non-null side/asset_id/horizon_hours/confidence, but fhe_direct rows
- * deliberately persist all four as NULL (operator-blind invariant). We
- * build the AcceptedCall via the loose cast that the submit path already
- * uses, so an idempotent retry hydrates exactly what the original submit
- * returned — null on every plaintext field, populated on call_id /
- * accepted_at / status / strategy_tag.
+ * Idempotent loader for fhe_direct rows. Wave 3 — the oracle_policies
+ * table is gone (MIGRATION_031); T0Policy is re-derived from the call's
+ * market_id via derivePolicyFromMarket(). The four plaintext market-
+ * signal columns are gone too, so an idempotent retry rebuilds exactly
+ * the operator-blind AcceptedCall the original submit returned.
  */
 function loadExistingFheDirectCall(
   db: Database.Database,
@@ -1128,14 +1092,11 @@ function loadExistingFheDirectCall(
 ): SubmitResult {
   const row = db
     .prepare(
-      `SELECT s.call_id, s.agent_id, s.client_order_id, s.submitted_at,
-              s.accepted_at, s.strategy_tag, s.rationale,
-              s.schema_version, s.scoring_version,
-              op.primary_feed, op.fallback_feed, op.primary_max_staleness_sec,
-              op.fallback_max_staleness_sec, op.t0_grace_seconds, op.t0_extended_grace_seconds
-       FROM submissions s
-       JOIN oracle_policies op ON op.call_id = s.call_id
-       WHERE s.call_id = ?`,
+      `SELECT call_id, agent_id, client_order_id, submitted_at,
+              accepted_at, strategy_tag, rationale,
+              schema_version, scoring_version, market_id
+       FROM submissions
+       WHERE call_id = ?`,
     )
     .get(call_id) as Record<string, unknown> | undefined;
   if (!row) {
@@ -1145,23 +1106,21 @@ function loadExistingFheDirectCall(
       500,
     );
   }
-  // Build a synthetic AcceptedCall whose plaintext fields are undefined
-  // (so JSON serialization drops them on the wire). The cast bypasses
-  // AcceptedCallSchema for the same reason the submit path bypasses
-  // it: the schema predates operator-blind privacy.
-  const accepted = {
-    schema_version: row.schema_version,
-    scoring_version: row.scoring_version,
-    call_id: row.call_id,
-    agent_id: row.agent_id,
-    client_order_id: row.client_order_id,
-    submitted_at: row.submitted_at,
-    accepted_at: row.accepted_at,
-    status: "accepted" as const,
-    ...(row.rationale ? { rationale: row.rationale } : {}),
-    ...(row.strategy_tag ? { strategy_tag: row.strategy_tag } : {}),
-    oracle_policy: buildT0PolicyFromRow(row),
-  } as unknown as AcceptedCall;
+  const accepted: AcceptedCall = {
+    schema_version: row.schema_version as 1,
+    scoring_version: row.scoring_version as 1,
+    call_id: row.call_id as string,
+    agent_id: row.agent_id as string,
+    client_order_id: row.client_order_id as string,
+    submitted_at: row.submitted_at as string,
+    accepted_at: row.accepted_at as string,
+    status: "accepted",
+    ...(typeof row.rationale === "string" ? { rationale: row.rationale } : {}),
+    ...(typeof row.strategy_tag === "string"
+      ? { strategy_tag: row.strategy_tag as StrategyTag }
+      : {}),
+    oracle_policy: resolveOraclePolicyFromMarket(db, row.market_id),
+  };
   return {
     call: accepted,
     status: "accepted",
@@ -1174,28 +1133,17 @@ function loadExistingAcceptedCall(
   call_id: string,
   idempotent_hit: boolean,
 ): SubmitResult {
-  // Wave 4b — receipts subsystem is gone; idempotent retries hydrate from
-  // the submissions row alone. The call_id is the only canonical identifier
-  // an old client expected back from this path.
-  // Wave 4b-2 — preflights table dropped; oracle_policies remains as the
-  // sole join below.
-  // Codex Z2 Drift B follow-up — explicit submissions columns (was
-  // `SELECT s.*`). Same defense-in-depth rationale as
-  // resolutionsRepo.loadFullCall: a future plaintext column added to
-  // submissions would land in the row dict on day one with no audit
-  // moment, and a naive widening of AcceptedCallSchema.parse below
-  // would auto-surface it. Enumerating fields here forces a deliberate
-  // review.
+  // Wave 3 — the four plaintext market-signal columns are gone, and the
+  // oracle_policies join with them. Idempotent retries reconstruct the
+  // AcceptedCall from the surviving columns + a fresh derivePolicyFromMarket
+  // lookup. AcceptedCallSchema's plaintext fields are now optional, so the
+  // parse succeeds without them.
   const stmt = db.prepare(`
-    SELECT s.schema_version, s.scoring_version,
-           s.call_id, s.agent_id, s.client_order_id,
-           s.asset_id, s.side, s.horizon_hours, s.confidence,
-           s.submitted_at, s.accepted_at, s.rationale, s.strategy_tag,
-           op.primary_feed, op.fallback_feed, op.primary_max_staleness_sec,
-           op.fallback_max_staleness_sec, op.t0_grace_seconds, op.t0_extended_grace_seconds
-    FROM submissions s
-    JOIN oracle_policies op ON op.call_id = s.call_id
-    WHERE s.call_id = ?
+    SELECT schema_version, scoring_version,
+           call_id, agent_id, client_order_id,
+           submitted_at, accepted_at, rationale, strategy_tag, market_id
+    FROM submissions
+    WHERE call_id = ?
   `);
   const row = stmt.get(call_id) as Record<string, unknown> | undefined;
   if (!row) {
@@ -1211,21 +1159,12 @@ function loadExistingAcceptedCall(
     call_id: row.call_id,
     agent_id: row.agent_id,
     client_order_id: row.client_order_id,
-    asset_id: row.asset_id,
-    side: row.side,
-    horizon_hours: row.horizon_hours,
-    confidence: row.confidence,
     submitted_at: row.submitted_at,
     rationale: row.rationale ?? undefined,
     strategy_tag: row.strategy_tag ?? undefined,
     accepted_at: row.accepted_at,
     status: "accepted",
-    // P3 Phase 2d: oracle_policies fallback columns are nullable for
-    // sub-hour Pyth-only markets. T0PolicySchema's optional fields accept
-    // omission/undefined but NOT null; hydrate the conditional shape so
-    // an idempotent retry on a Pyth-only call doesn't blow up at parse
-    // time (Codex audit Bug 4).
-    oracle_policy: buildT0PolicyFromRow(row),
+    oracle_policy: resolveOraclePolicyFromMarket(db, row.market_id),
   });
   return {
     call: accepted,
@@ -1235,34 +1174,34 @@ function loadExistingAcceptedCall(
 }
 
 /**
- * Build a T0Policy object from an oracle_policies row read. Sub-hour
- * Pyth-only markets stamp NULL into fallback_feed + fallback_max_staleness_sec
- * (migration 011); T0PolicySchema's optional fields accept omission/undefined
- * but NOT null. This helper translates row nulls → omitted keys so the
- * caller's Zod parse succeeds (Codex audit Bug 4).
+ * Resolve a call's T0Policy by re-deriving it from the call's market_id.
+ * Wave 3 replaced the per-call oracle_policies row with a fresh lookup
+ * on the markets registry every time a hydrated AcceptedCall is needed.
+ * The trade-off: a market frozen between submit and idempotent retry
+ * could swap the policy under us, which is fine — receipts/disputes
+ * subsystems are gone, so there's no off-chain attestation to a stable
+ * policy snapshot anymore.
  */
-function buildT0PolicyFromRow(row: Record<string, unknown>): T0Policy {
-  const hasFeed = row.fallback_feed !== null;
-  const hasStaleness = row.fallback_max_staleness_sec !== null;
-  if (hasFeed !== hasStaleness) {
-    throw new Error(
-      `oracle_policies row has half-configured fallback (fallback_feed=${hasFeed ? "set" : "null"}, fallback_max_staleness_sec=${hasStaleness ? "set" : "null"}); both must be set or both NULL`,
+function resolveOraclePolicyFromMarket(
+  db: Database.Database,
+  market_id: unknown,
+): T0Policy {
+  if (typeof market_id !== "string" || market_id.length === 0) {
+    throw new VerdictError(
+      "call has no market_id; cannot derive oracle policy",
+      ERROR_CODES.internal_error,
+      500,
     );
   }
-  return {
-    primary_feed: row.primary_feed as T0Policy["primary_feed"],
-    primary_max_staleness_sec: row.primary_max_staleness_sec as number,
-    t0_grace_seconds: row.t0_grace_seconds as number,
-    t0_extended_grace_seconds: row.t0_extended_grace_seconds as number,
-    ...(row.fallback_feed !== null && row.fallback_max_staleness_sec !== null
-      ? {
-          fallback_feed: row.fallback_feed as NonNullable<
-            T0Policy["fallback_feed"]
-          >,
-          fallback_max_staleness_sec: row.fallback_max_staleness_sec as number,
-        }
-      : {}),
-  };
+  const market = marketsRepo.get(db, market_id);
+  if (!market) {
+    throw new VerdictError(
+      `market '${market_id}' no longer exists`,
+      ERROR_CODES.internal_error,
+      500,
+    );
+  }
+  return derivePolicyFromMarket(db, market);
 }
 
 // Wave 2b — `deriveLegacyCommitment` and `commitmentToWire` deleted.

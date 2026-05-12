@@ -330,8 +330,14 @@ function narrowNativePriceContext(
   if (typeof ctx.t1_feed !== "string") return null;
   if (typeof ctx.t1_source_id !== "string") return null;
   if (typeof ctx.void_band !== "number") return null;
-  if (ctx.side !== "BUY" && ctx.side !== "SELL") return null;
   if (typeof ctx.market_id !== "string") return null;
+  // Wave 3 — `side` is now optional. Accept BUY/SELL when provided (legacy
+  // debug callers, verifier harness), otherwise omit it. The resolved
+  // Outcome is computed side-independently regardless.
+  const sideField: { side?: "BUY" | "SELL" } =
+    ctx.side === "BUY" || ctx.side === "SELL"
+      ? { side: ctx.side as "BUY" | "SELL" }
+      : {};
   return {
     t0_p0: ctx.t0_p0,
     t1_p1: ctx.t1_p1,
@@ -339,8 +345,8 @@ function narrowNativePriceContext(
     t1_feed: ctx.t1_feed,
     t1_source_id: ctx.t1_source_id,
     void_band: ctx.void_band,
-    side: ctx.side,
     market_id: ctx.market_id,
+    ...sideField,
   };
 }
 
@@ -396,9 +402,19 @@ export interface NativePriceObservationContext {
   t1_source_id: string;
   /** From `markets.void_band` parsed via `voidBandFloat()`. */
   void_band: number;
-  /** Legacy side. Maps to the commitment's predictedOutcome via
-   *  {@link sideToPayoutNumerators}. */
-  side: "BUY" | "SELL";
+  /**
+   * OPTIONAL. Wave 3 made the adapter's resolved Outcome side-independent
+   * (the payout vector is keyed on the actual price direction [UP, DOWN],
+   * not the agent's prediction). FHE-direct rows omit this entirely —
+   * the agent's prediction is encrypted in fhe_call_ciphertexts and the
+   * FHE scoring step compares ciphertext to the public resolved Outcome.
+   *
+   * When supplied (legacy / debug callers), it's used purely to compute
+   * the SIDE-ADJUSTED signed_return on evidence.raw (a display-only
+   * metadata field). When absent, evidence.raw.signed_return falls back
+   * to the canonical BUY-perspective return r = ln(p1/p0).
+   */
+  side?: "BUY" | "SELL";
   /** marketRef.sourceId — used as evidence.sourceId on the Outcome. */
   market_id: string;
 }
@@ -447,8 +463,12 @@ export function observeResolutionForCall(
     buyPerspectiveReturn,
     ctx.void_band,
   );
+  // Wave 3 — when `side` is absent (FHE-direct rows, post-Wave-3 default)
+  // evidence.raw.signed_return is the canonical BUY-perspective return.
+  // When `side` is present (legacy callers), retain the side-adjusted
+  // semantic for parity with v1 t1_resolutions.signed_return.
   const sideAdjustedReturn =
-    ctx.side === "BUY" ? buyPerspectiveReturn : -buyPerspectiveReturn;
+    ctx.side === "SELL" ? -buyPerspectiveReturn : buyPerspectiveReturn;
   const resolvedAt = Math.floor(Date.parse(ctx.t1_iso) / 1000);
   return {
     kind: "binary",

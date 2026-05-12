@@ -20,11 +20,12 @@ export interface LeaderboardOptions {
   tier?: LeaderboardTier;
 }
 
-// wallet_only agents proved control of a wallet via /claim/wallet-only —
-// they're real marketplace participants and appear on the default
-// leaderboard alongside verified (X/Telegram-bound) and benchmark agents.
-// Dashboards distinguish them via the `kind` field on each row.
-const DEFAULT_KINDS: AgentKind[] = ["verified", "benchmark", "wallet_only"];
+// Wave 3 collapse — the leaderboard's default audience is every kind that
+// represents a marketplace-eligible reputation surface: operator-owned
+// agents (the 'agent' kind, the only path post-Wave-1) plus benchmarks
+// (Murmur-run baselines that anchor the top of the board) plus attested
+// (Olas-bonded variant of 'agent'). `internal_test` stays off the board.
+const DEFAULT_KINDS: AgentKind[] = ["agent", "benchmark", "attested"];
 
 /**
  * Compute the leaderboard from current DB state. The query joins resolutions
@@ -817,9 +818,13 @@ export function getCrossFamilyLeaderboard(
 }
 
 /**
- * 24h Verified Verdict Volume — count of `submission_accepted` events from
- * verified agents in the last 24 hours. v0.1 has no fees yet, so this number
- * is a count proxy until the billing/meter wiring lands.
+ * 24h Verdict Volume — count of `submission_accepted` events in the last
+ * 24 hours from kinds that surface on the public leaderboard ('agent' and
+ * 'attested'). Wave 3 collapsed the agent.kind enum; the prior 'verified'
+ * filter is now the union of 'agent' + 'attested'. Benchmarks are excluded
+ * here because they're Murmur-operated baselines, not operator activity.
+ * v0.1 has no fees yet, so this number is a count proxy until the
+ * billing/meter wiring lands.
  */
 export function get24hVerifiedVolume(db: Database.Database): {
   count: number;
@@ -831,7 +836,7 @@ export function get24hVerifiedVolume(db: Database.Database): {
        FROM usage_events u
        JOIN agents a ON a.agent_id = u.agent_id
        WHERE u.kind = 'submission_accepted'
-         AND a.kind = 'verified'
+         AND a.kind IN ('agent', 'attested')
          AND u.ts >= datetime('now', '-1 day')`,
     )
     .get() as { n: number } | undefined;

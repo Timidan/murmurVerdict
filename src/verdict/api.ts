@@ -610,7 +610,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   router.get("/v1/agents", (req, res) => {
     const kind = String(req.query.kind ?? "");
     const limit = Math.max(1, Math.min(200, Number(req.query.limit ?? "100")));
-    const allowed = ["verified", "benchmark", "shadow", "internal_test"] as const;
+    const allowed = ["agent", "attested", "benchmark", "internal_test"] as const;
     if (!allowed.includes(kind as (typeof allowed)[number])) {
       res.status(400).json({
         code: "invalid_kind",
@@ -827,8 +827,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       .prepare(
         `SELECT
            (SELECT COUNT(*) FROM agents)                                   AS agents_total,
-           (SELECT COUNT(*) FROM agents WHERE kind = 'verified')           AS agents_verified,
-           (SELECT COUNT(*) FROM agents WHERE kind = 'shadow')             AS agents_shadow,
+           (SELECT COUNT(*) FROM agents WHERE kind = 'agent')              AS agents_active,
+           (SELECT COUNT(*) FROM agents WHERE kind = 'attested')           AS agents_attested,
            (SELECT COUNT(*) FROM agents WHERE kind = 'benchmark')          AS agents_benchmark,
            (SELECT COUNT(*) FROM submissions)                              AS calls_total,
            (SELECT COUNT(*) FROM submissions WHERE status = 'resolved')    AS calls_resolved,

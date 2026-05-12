@@ -238,24 +238,33 @@ export const VerifiedIdentitySchema = z.object({
 });
 export type VerifiedIdentity = z.infer<typeof VerifiedIdentitySchema>;
 
+// Wave 3 collapse — the agent.kind taxonomy compresses to four values now
+// that the off-platform reputation pipes (verified/wallet_only via X/
+// Telegram/wallet claim) and the shadow scraping pipeline are gone. Murmur
+// reputation only accrues from on-platform FHE calls, so a single 'agent'
+// kind covers everyone who submits via /v2/calls; the other three are
+// system-internal markers.
+//
+// Mapping handled in MIGRATION_031: legacy 'casual'/'shadow'/'verified'/
+// 'wallet_only' rows all → 'agent'. The dashboard collapse in Wave 3a
+// already renders the new enum.
+//
+//   benchmark    — Murmur-run baseline strategies (e.g. constant BUY/SELL,
+//                  trend-follow). Excluded from the marketplace; sit at
+//                  the top of the leaderboard as anchor rows.
+//   agent        — every operator-owned, FHE-submitting agent. Identity is
+//                  Privy-bound at the account level; the on-platform
+//                  prediction history is the only reputation surface.
+//   internal_test — Murmur-side QA agents, never marketplace-eligible.
+//   attested     — Olas Service Registry bond + Safe multisig governance.
+//                  Strong non-transferability (forfeits the OLAS bond on
+//                  transfer). Sits on top of the same on-platform record
+//                  as a regular `agent`; attestation is an additional
+//                  trust band, not a separate reputation pool.
 export const AgentKindSchema = z.enum([
   "benchmark",
-  "shadow",
-  "verified",
+  "agent",
   "internal_test",
-  // wallet_only: agents that self-registered via /claim/wallet-only — they
-  // proved control of a wallet but have no public X/Telegram identity.
-  // Marketplace participants; appear on the default leaderboard but are
-  // tagged distinctly from `verified` (which requires public identity).
-  "wallet_only",
-  // casual: indie operator running a fine-tuned LLM agent on commodity
-  // infrastructure. Auth via account (email / OAuth / passkey) + HMAC API
-  // key bound to the account; non-transferability is soft (TOS +
-  // behavioural fraud detection). Lowest-friction tier — see V2_DECISION_RECORD §7.1.
-  "casual",
-  // attested: Olas Service Registry bond + Safe-multisig-managed service.
-  // Non-transferability is strong — operator forfeits the OLAS bond on
-  // transfer. Highest-friction tier — see V2_DECISION_RECORD §7.1.
   "attested",
 ]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
@@ -513,8 +522,26 @@ export const DEFAULT_T0_POLICY: T0Policy = {
   t0_extended_grace_seconds: 300,
 };
 
-// ─── AcceptedCall (post-preflight, receipt issued) ───────────────────────────
-
+// ─── AcceptedCall (post-acceptance, public-shape projection) ────────────────
+//
+// Wave 3 — operator-blind variant. The four plaintext market-signal fields
+// (asset_id / side / horizon_hours / confidence) are OPTIONAL on the public
+// type because under FHE-direct submit they never leave the daemon in
+// clear: the prediction lives inside the Commitment ciphertext only.
+//
+// Legacy plaintext and committed-mode submission paths have been excised
+// (Wave 2b) — the only reason these four fields survive on the type at all
+// is so historical receipts + dashboard projections that happen to know
+// them (e.g. benchmark adapter telemetry) can keep round-tripping the
+// shape. New /v2/calls acceptances stamp them as undefined.
+//
+// market_id is still the canonical handle the resolver/dispatch/leaderboard
+// chain on; oracle_policy travels along so the resolver doesn't need to
+// re-derive it inside the hot path. (The MIGRATION_031 drop of the
+// oracle_policies TABLE shifts the persistence story to derive-on-read via
+// derivePolicyFromMarket(); the in-memory AcceptedCall still carries the
+// resolved policy so downstream consumers can reason about it
+// uniformly.)
 export const AcceptedCallSchema = z
   .object({
     schema_version: z.literal(SCHEMA_VERSION),
@@ -522,10 +549,10 @@ export const AcceptedCallSchema = z
     call_id: z.string().uuid(),
     agent_id: z.string().uuid(),
     client_order_id: z.string().min(8).max(128),
-    asset_id: AssetIdSchema,
-    side: SideSchema,
-    horizon_hours: HorizonHoursSchema,
-    confidence: z.number().min(0.51).max(0.95),
+    asset_id: AssetIdSchema.optional(),
+    side: SideSchema.optional(),
+    horizon_hours: HorizonHoursSchema.optional(),
+    confidence: z.number().min(0.51).max(0.95).optional(),
     submitted_at: z.string().datetime({ offset: false }),
     rationale: z.string().max(240).optional(),
     strategy_tag: StrategyTagSchema.optional(),

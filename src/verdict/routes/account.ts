@@ -301,7 +301,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
             {
               agent_id,
               display_slug: parsed.data.display_slug,
-              kind: "casual",
+              kind: "agent",
               display_name: parsed.data.display_name,
               bio: parsed.data.bio,
               created_at: ts,
@@ -338,7 +338,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
         agent_id,
         display_slug: parsed.data.display_slug,
         display_name: parsed.data.display_name,
-        kind: "casual",
+        kind: "agent",
         created_at: ts,
       });
     }),

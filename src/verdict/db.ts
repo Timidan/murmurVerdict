@@ -4,10 +4,6 @@ import {
   AgentKind,
   AgentProfile,
   CallStatus,
-  ClaimChallenge,
-  Dispute,
-  DisputeGrounds,
-  DisputeStatus,
   Outcome,
   SubmittedCall,
   SCHEMA_VERSION,
@@ -638,6 +634,89 @@ function applyMigrations(db: Database.Database): void {
     db.exec(MIGRATION_027_TABLES);
     v = 30;
     set.run("schema_version", String(v));
+  }
+
+  if (v < 31) {
+    // Wave 3 reshape — operator-blind invariant + collapsed agent.kind enum.
+    //
+    // Four moves bundled (codex-greenlit consolidated reshape):
+    //   1. Drop six dead tables emptied by Wave 1/3a:
+    //        verified_identities, claim_challenges, oracle_policies,
+    //        call_reveals, call_private_envelopes, disputes.
+    //      Wave 1 deleted the X/Telegram/wallet claim flows + shadow
+    //      scraping + Phase E cleanup; Wave 3a deleted the disputes
+    //      runtime. No app code touches them anymore.
+    //   2. Drop four plaintext market-signal columns from submissions:
+    //        side, asset_id, horizon_hours, confidence.
+    //      These were the only DB-level leakage paths the operator could
+    //      see today. FHE-only submit means everything load-bearing for
+    //      scoring lives inside the Commitment ciphertext + the resolved
+    //      Outcome row; the four columns survived only as placeholders
+    //      to satisfy code paths now excised. Native-price's
+    //      observeResolution stopped taking `side` in Wave 3b (BUY-
+    //      perspective fallback), so the column is finally orphaned.
+    //   3. Rebuild agents.kind CHECK to the collapsed enum
+    //        ('benchmark','agent','internal_test','attested').
+    //      Maps any legacy 'casual'/'shadow'/'verified'/'wallet_only'
+    //      rows to 'agent' so dashboards + leaderboard renderers can
+    //      drop the deprecated branches (Wave 3a already collapsed the
+    //      dashboard enum).
+    //   4. Add agents.program_version + submissions.program_version
+    //      (default 1). Reserves the wire-shape upgrade slot for future
+    //      scorer/program versions per V2 §6.3; additive now so a later
+    //      bump doesn't require another migration.
+    //
+    // Crash safety — four sub-steps, each independently idempotent so a
+    // crashed run converges on retry:
+    //   (a) Dead-table drops: DROP IF EXISTS; safe to re-run.
+    //   (b) ALTER ADD COLUMN: routed through applyAlterTableAddColumn so
+    //       a partial state is reconciled by re-checking
+    //       PRAGMA table_info() at boot (codex Z2 review FAIL #4 fix).
+    //   (c) Agents rebuild: applyTableRebuildMigration with its
+    //       (original, temp) crash-recovery protocol. The CASE-WHEN
+    //       remap is itself idempotent — running it twice on already-
+    //       remapped data is a no-op because none of the WHEN branches
+    //       match the modern enum values.
+    //   (d) Submissions rebuild: applyTableRebuildMigration too. The
+    //       schema_version=31 bump rides inside this second rebuild's
+    //       transaction so the boundary is well-defined: either the
+    //       whole Wave-3 step landed (v=31) or it didn't (v=30, retry
+    //       on next boot).
+    //
+    // Why no single applyTableRebuildMigration covers both: the helper
+    // accepts a single (original, temp) tuple and the two rebuilds need
+    // distinct temp names. The agents rebuild therefore uses a no-op
+    // bumpSchemaVersion; the schema_version bump rides with submissions.
+    // Each rebuild remains crash-recoverable on its own thanks to the
+    // (a)–(c) idempotency above.
+    db.exec(MIGRATION_031_DROP_DEAD_TABLES);
+    applyAlterTableAddColumn(
+      db,
+      "agents",
+      "program_version",
+      "ALTER TABLE agents ADD COLUMN program_version INTEGER NOT NULL DEFAULT 1",
+    );
+    applyAlterTableAddColumn(
+      db,
+      "submissions",
+      "program_version",
+      "ALTER TABLE submissions ADD COLUMN program_version INTEGER NOT NULL DEFAULT 1",
+    );
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_031_AGENTS_REBUILD,
+      () => {
+        /* schema_version bump rides with the submissions rebuild below. */
+      },
+      ["agents", "agents_v031"],
+    );
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_031_SUBMISSIONS_REBUILD,
+      () => set.run("schema_version", "31"),
+      ["submissions", "submissions_v031"],
+    );
+    v = 31;
   }
 }
 
@@ -2256,6 +2335,146 @@ const MIGRATION_029_SEED = `
      'listed', '2026-05-12T00:00:00Z');
 `;
 
+// ─── Migration 031 — Wave 3 reshape ─────────────────────────────────────────
+//
+// See the prose in applyMigrations() above. Three SQL constants:
+//   - MIGRATION_031_DROP_DEAD_TABLES: six DROP IF EXISTS for the tables
+//     emptied by Wave 1/3a.
+//   - MIGRATION_031_AGENTS_REBUILD: agents.kind CHECK collapse to four
+//     values, with CASE-WHEN remap of legacy enum members to 'agent'.
+//     Preserves all other columns (wallet_address/chain_id from
+//     MIGRATION_005, destination_address/destination_address_updated_at
+//     from MIGRATION_014, program_version added by the v<31 ALTERs).
+//   - MIGRATION_031_SUBMISSIONS_REBUILD: drops side/asset_id/horizon_hours/
+//     confidence. Recreates every index that survived the column drop
+//     (idx_submissions_asset_horizon is gone — the two columns it
+//     covered are no longer in the table; the resolver pages on
+//     horizon_seconds + market_id now).
+const MIGRATION_031_DROP_DEAD_TABLES = `
+  DROP TABLE IF EXISTS verified_identities;
+  DROP TABLE IF EXISTS claim_challenges;
+  DROP TABLE IF EXISTS oracle_policies;
+  DROP TABLE IF EXISTS call_reveals;
+  DROP TABLE IF EXISTS call_private_envelopes;
+  DROP TABLE IF EXISTS disputes;
+`;
+
+const MIGRATION_031_AGENTS_REBUILD = `
+  DROP TABLE IF EXISTS agents_v031;
+
+  CREATE TABLE agents_v031 (
+    agent_id                       TEXT PRIMARY KEY,
+    display_slug                   TEXT UNIQUE NOT NULL COLLATE NOCASE,
+    kind                           TEXT NOT NULL CHECK (kind IN ('benchmark','agent','internal_test','attested')),
+    display_name                   TEXT NOT NULL,
+    bio                            TEXT,
+    created_at                     TEXT NOT NULL,
+    api_key_hash                   TEXT,
+    wallet_address                 TEXT,
+    chain_id                       TEXT,
+    destination_address            TEXT,
+    destination_address_updated_at TEXT,
+    program_version                INTEGER NOT NULL DEFAULT 1
+  );
+
+  INSERT INTO agents_v031 (
+    agent_id, display_slug, kind, display_name, bio, created_at,
+    api_key_hash, wallet_address, chain_id,
+    destination_address, destination_address_updated_at, program_version
+  )
+  SELECT
+    agent_id, display_slug,
+    CASE kind
+      WHEN 'casual'      THEN 'agent'
+      WHEN 'shadow'      THEN 'agent'
+      WHEN 'verified'    THEN 'agent'
+      WHEN 'wallet_only' THEN 'agent'
+      ELSE kind
+    END AS kind,
+    display_name, bio, created_at,
+    api_key_hash, wallet_address, chain_id,
+    destination_address, destination_address_updated_at, program_version
+  FROM agents;
+
+  DROP TABLE agents;
+  ALTER TABLE agents_v031 RENAME TO agents;
+
+  CREATE INDEX idx_agents_kind ON agents(kind);
+  CREATE INDEX idx_agents_wallet ON agents(wallet_address) WHERE wallet_address IS NOT NULL;
+  CREATE INDEX idx_agents_destination ON agents(destination_address) WHERE destination_address IS NOT NULL;
+`;
+
+const MIGRATION_031_SUBMISSIONS_REBUILD = `
+  DROP TABLE IF EXISTS submissions_v031;
+
+  CREATE TABLE submissions_v031 (
+    call_id                TEXT PRIMARY KEY,
+    agent_id               TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    client_order_id        TEXT NOT NULL,
+    horizon_seconds        INTEGER NOT NULL CHECK (horizon_seconds > 0),
+    submitted_at           TEXT NOT NULL,
+    accepted_at            TEXT NOT NULL,
+    status                 TEXT NOT NULL CHECK (status IN ('accepted','pending_t0','pending_t1','resolved','disputed','re_resolved','rejected')),
+    rationale              TEXT,
+    strategy_tag           TEXT,
+    schema_version         INTEGER NOT NULL,
+    scoring_version        INTEGER NOT NULL,
+    dedup_key              TEXT NOT NULL,
+    privacy_mode           TEXT,
+    commit_hash            TEXT,
+    commit_scheme          TEXT,
+    market_id              TEXT,
+    market_config_version  INTEGER,
+    prediction_value       TEXT,
+    prediction_low         TEXT,
+    prediction_high        TEXT,
+    round_id               TEXT,
+    commitment_json        TEXT,
+    predicted_outcome_json TEXT,
+    outcome_labels_json    TEXT,
+    adapter_id             TEXT,
+    market_family          TEXT,
+    program_version        INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(agent_id, client_order_id),
+    UNIQUE(dedup_key)
+  );
+
+  INSERT INTO submissions_v031 (
+    call_id, agent_id, client_order_id, horizon_seconds,
+    submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id,
+    commitment_json, predicted_outcome_json, outcome_labels_json,
+    adapter_id, market_family, program_version
+  )
+  SELECT
+    call_id, agent_id, client_order_id, horizon_seconds,
+    submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id,
+    commitment_json, predicted_outcome_json, outcome_labels_json,
+    adapter_id, market_family, program_version
+  FROM submissions;
+
+  DROP TABLE submissions;
+  ALTER TABLE submissions_v031 RENAME TO submissions;
+
+  CREATE INDEX idx_submissions_agent ON submissions(agent_id);
+  CREATE INDEX idx_submissions_status ON submissions(status);
+  CREATE INDEX idx_submissions_commit_hash ON submissions(commit_hash) WHERE commit_hash IS NOT NULL;
+  CREATE INDEX idx_submissions_privacy_mode ON submissions(privacy_mode);
+  CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
+  CREATE INDEX idx_submissions_round ON submissions(round_id) WHERE round_id IS NOT NULL;
+  CREATE INDEX idx_submissions_market_family
+    ON submissions(market_family) WHERE market_family IS NOT NULL;
+  CREATE INDEX idx_submissions_adapter
+    ON submissions(adapter_id) WHERE adapter_id IS NOT NULL;
+`;
+
 const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
   {
     table: "t1_resolutions",
@@ -2619,38 +2838,35 @@ function hydrateAgent(db: Database.Database, row: RawAgentRow): AgentRow {
 }
 
 // ─── Verified identities ─────────────────────────────────────────────────────
+//
+// Wave 3 — the verified_identities table was dropped by MIGRATION_031.
+// Wave 1 deleted the X/Telegram/wallet claim flows that populated it; the
+// repo persists here as a no-op so call sites that still hand the daemon
+// a (now always-empty) `verified_identities` array on agent inserts keep
+// compiling. listForAgent / findByExternal return empty results — there
+// is no source of truth for off-platform identity in v0.2 anymore.
+//
+// Removing the call sites is a separate cleanup; they're inert here.
 
 export const verifiedIdentitiesRepo = {
   insert(
-    db: Database.Database,
-    agent_id: string,
-    identity: VerifiedIdentity,
+    _db: Database.Database,
+    _agent_id: string,
+    _identity: VerifiedIdentity,
   ): void {
-    prep(
-      db,
-      `INSERT INTO verified_identities (agent_id, kind, value, verified_at)
-       VALUES (?, ?, ?, ?)`,
-    ).run(agent_id, identity.kind, identity.value, identity.verified_at);
+    /* no-op — verified_identities table dropped in Wave 3. */
   },
 
-  listForAgent(db: Database.Database, agent_id: string): VerifiedIdentity[] {
-    const rows = prep(
-      db,
-      "SELECT kind, value, verified_at FROM verified_identities WHERE agent_id = ? ORDER BY verified_at",
-    ).all(agent_id) as VerifiedIdentity[];
-    return rows;
+  listForAgent(_db: Database.Database, _agent_id: string): VerifiedIdentity[] {
+    return [];
   },
 
   findByExternal(
-    db: Database.Database,
-    kind: VerifiedIdentity["kind"],
-    value: string,
+    _db: Database.Database,
+    _kind: VerifiedIdentity["kind"],
+    _value: string,
   ): { agent_id: string } | null {
-    const row = prep(
-      db,
-      "SELECT agent_id FROM verified_identities WHERE kind = ? AND value = ?",
-    ).get(kind, value) as { agent_id: string } | undefined;
-    return row ?? null;
+    return null;
   },
 };
 
@@ -2660,25 +2876,20 @@ export interface AcceptanceWriteInput {
   submission: SubmittedCall;
   accepted: AcceptedCall;
   dedup_key: string;
-  /**
-   * P2 committed-mode metadata. When `privacy_mode='committed'`, the
-   * caller MUST also pass `commit_hash` (the daemon-computed keccak of
-   * the canonical preimage) and `envelope` (the age-encrypted body).
-   * The transaction writes them atomically alongside the submission row.
-   */
+  /** Wave 3 — the only privacy_mode that produces a row is 'fhe_direct';
+   *  legacy_plaintext / committed paths were excised in Waves 2a/2b. The
+   *  field stays nullable on the wire shape so test harnesses that mint
+   *  rows without a mode can keep their explicit-null call sites. */
   privacy_mode?: string;
   commit_hash?: string;
   commit_scheme?: string;
-  /** P3 — market registry stamps. Both nullable for legacy plaintext flows
-   *  that haven't been backfilled (migration 009 covers ETH; future assets
-   *  populate at submit time). */
+  /** P3 — market registry stamps. Both nullable for back-compat with any
+   *  callers that bypass the registry; submitCall always populates them. */
   market_id?: string;
   market_config_version?: number;
-  /** P3 Phase 2c — canonical horizon. Caller stamps from
-   *  market.horizon_seconds. Optional in this interface so legacy callers
-   *  that haven't migrated still work; the repo derives from
-   *  horizon_hours * 3600 when absent. */
-  horizon_seconds?: number;
+  /** P3 Phase 2c — canonical horizon. REQUIRED post-Wave-3 because the
+   *  horizon_hours column the legacy fallback derived from is gone. */
+  horizon_seconds: number;
   /** FIX 5 / migration 016 — adapter dispatch stamps. Migration 016 backfills
    *  these on EXISTING rows; new rows must populate at insert time so the
    *  family / adapter columns aren't NULL after the deploy. Both nullable
@@ -2688,58 +2899,48 @@ export interface AcceptanceWriteInput {
    *  the same way migration 016 does. */
   adapter_id?: string | null;
   market_family?: string | null;
-  /** Phase 4 — universal-commitment storage stamps (V2 §2.2). Caller
-   *  (submitCall) derives a {@link Commitment} from the legacy submission
-   *  via `legacySubmissionToCommitment` for /v1 and uses the validated
-   *  v2 body directly for /v2. Both columns persist the wire-shape JSON
-   *  (bigints stringified) so the resolver's universal hot path can read
-   *  them without re-deriving. NULL stays acceptable so smoke / legacy
-   *  paths that haven't migrated still write — Phase 5's resolver falls
-   *  back to {@link legacySubmissionToCommitment} when null.
-   *  Render-only `outcome_labels_json` carries the adapter's labels for
-   *  the payout vector positions (e.g. ['UP','DOWN'] for native-price).
-   */
+  /** Phase 4 — universal-commitment storage stamps (V2 §2.2). Render-only
+   *  `outcome_labels_json` carries the adapter's labels for the payout
+   *  vector positions (e.g. ['UP','DOWN'] for native-price). */
   commitment_json?: string | null;
   predicted_outcome_json?: string | null;
   outcome_labels_json?: string | null;
-  envelope?: {
-    encrypted_body: string;
-    encrypted_body_alg: string;
-    encrypted_body_hash: string;
-    daemon_key_id: string;
-    commit_preimage_schema: string;
-    fallback_after: string | null;
-    received_at: string;
-    // Optional drand/tlock parallel envelope (Phase B-3). When present,
-    // the v2 acceptance receipt also carries a `drand` block so a
-    // verifier can attest the daemon committed to a specific drand
-    // round at acceptance time.
-    drand_chain_hash?: string;
-    drand_round?: number;
-    drand_ciphertext?: string;
-    drand_ciphertext_hash?: string;
-  };
 }
 
 export const submissionsRepo = {
-  /** Inserts submission + oracle policy atomically. (Wave 4b — receipts gone;
-   *  Wave 4b-2 — Santiment-derived preflight insert gone.) */
+  /**
+   * Insert a submissions row. Wave 3 collapsed this from a multi-table
+   * transaction to a single table write:
+   *   - The four plaintext market-signal columns (side / asset_id /
+   *     horizon_hours / confidence) are GONE from the submissions schema;
+   *     MIGRATION_031 dropped them. The Commitment ciphertext on
+   *     fhe_call_ciphertexts is the only durable record of the prediction.
+   *   - oracle_policies, call_private_envelopes, and call_reveals were
+   *     dropped by MIGRATION_031 too. T0 policy is re-derived on the
+   *     resolver read path via derivePolicyFromMarket(); committed-mode
+   *     envelopes are gone with the legacy submit path.
+   *
+   * Caller (submitCall on /v2/calls) supplies the universal Commitment
+   * JSON + the predicted Outcome JSON + the market metadata via the
+   * Wave-4-introduced columns; the FHE ciphertext is persisted by the
+   * /v2 fhe-direct path inside its own transaction wrapping this insert.
+   */
   acceptCall(db: Database.Database, input: AcceptanceWriteInput): void {
     const tx = db.transaction((i: AcceptanceWriteInput) => {
       prep(
         db,
         `INSERT INTO submissions
-         (call_id, agent_id, client_order_id, asset_id, side,
-          horizon_hours, horizon_seconds,
-          confidence, submitted_at, accepted_at, status, rationale, strategy_tag,
+         (call_id, agent_id, client_order_id,
+          horizon_seconds,
+          submitted_at, accepted_at, status, rationale, strategy_tag,
           schema_version, scoring_version, dedup_key,
           privacy_mode, commit_hash, commit_scheme,
           market_id, market_config_version,
           adapter_id, market_family,
           commitment_json, predicted_outcome_json, outcome_labels_json)
-         VALUES (@call_id, @agent_id, @client_order_id, @asset_id, @side,
-          @horizon_hours, @horizon_seconds,
-          @confidence, @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
+         VALUES (@call_id, @agent_id, @client_order_id,
+          @horizon_seconds,
+          @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
           @schema_version, @scoring_version, @dedup_key,
           @privacy_mode, @commit_hash, @commit_scheme,
           @market_id, @market_config_version,
@@ -2749,17 +2950,12 @@ export const submissionsRepo = {
         call_id: i.accepted.call_id,
         agent_id: i.accepted.agent_id,
         client_order_id: i.accepted.client_order_id,
-        asset_id: i.accepted.asset_id,
-        side: i.accepted.side,
-        horizon_hours: i.accepted.horizon_hours,
         // P3 Phase 2c: horizon_seconds is the canonical horizon. Caller
-        // (submitCall) passes it from market.horizon_seconds at acceptance;
-        // for legacy code paths that pre-date Phase 2c, fall back to
-        // horizon_hours * 3600 (always integer for the four legacy ETH
-        // horizons, so byte-stable).
-        horizon_seconds:
-          i.horizon_seconds ?? i.accepted.horizon_hours * 3600,
-        confidence: i.accepted.confidence,
+        // (submitCall) passes it from market.horizon_seconds at
+        // acceptance. The legacy fallback to `horizon_hours * 3600`
+        // disappeared with the column drop — i.horizon_seconds is now
+        // mandatory.
+        horizon_seconds: i.horizon_seconds,
         submitted_at: i.accepted.submitted_at,
         accepted_at: i.accepted.accepted_at,
         status: "accepted" satisfies CallStatus,
@@ -2768,7 +2964,7 @@ export const submissionsRepo = {
         schema_version: i.accepted.schema_version,
         scoring_version: i.accepted.scoring_version,
         dedup_key: i.dedup_key,
-        privacy_mode: i.privacy_mode ?? "legacy_plaintext",
+        privacy_mode: i.privacy_mode ?? "fhe_direct",
         commit_hash: i.commit_hash ?? null,
         commit_scheme: i.commit_scheme ?? null,
         market_id: i.market_id ?? null,
@@ -2783,71 +2979,14 @@ export const submissionsRepo = {
         adapter_id: i.adapter_id ?? null,
         market_family: i.market_family ?? null,
         // Phase 4 — universal commitment columns. /v2/calls passes the
-        // body-supplied Commitment (validated by adapter.commitmentSchema);
-        // /v1/calls derives via legacySubmissionToCommitment so the
-        // resolver's universal hot path can read both submit shapes
-        // uniformly without falling back to inverse derivation per call.
+        // body-supplied Commitment (validated by adapter.commitmentSchema).
+        // The resolver's universal hot path reads these as the source of
+        // truth for the prediction shape; native-price runs through them
+        // too now that the legacy submit path is excised.
         commitment_json: i.commitment_json ?? null,
         predicted_outcome_json: i.predicted_outcome_json ?? null,
         outcome_labels_json: i.outcome_labels_json ?? null,
       });
-      // Wave 4b-2 — preflights insert (Santiment-derived) gone. The
-      // preflights TABLE survives in the schema as a vestigial empty
-      // table; a future migration can drop it. Murmur is a pure ranking
-      // layer over canonical price/event oracles — no sentiment metadata.
-      prep(
-        db,
-        `INSERT INTO oracle_policies
-         (call_id, primary_feed, fallback_feed, primary_max_staleness_sec,
-          fallback_max_staleness_sec, t0_grace_seconds, t0_extended_grace_seconds)
-         VALUES (@call_id, @primary_feed, @fallback_feed, @primary_max_staleness_sec,
-          @fallback_max_staleness_sec, @t0_grace_seconds, @t0_extended_grace_seconds)`,
-      ).run({
-        call_id: i.accepted.call_id,
-        primary_feed: i.accepted.oracle_policy.primary_feed,
-        // Phase 2d: nullable fallback for sub-hour Pyth-only markets.
-        fallback_feed: i.accepted.oracle_policy.fallback_feed ?? null,
-        primary_max_staleness_sec:
-          i.accepted.oracle_policy.primary_max_staleness_sec,
-        fallback_max_staleness_sec:
-          i.accepted.oracle_policy.fallback_max_staleness_sec ?? null,
-        t0_grace_seconds: i.accepted.oracle_policy.t0_grace_seconds,
-        t0_extended_grace_seconds:
-          i.accepted.oracle_policy.t0_extended_grace_seconds,
-      });
-      // Wave 4b — receipts table dropped; calls + reveals + resolutions
-      // are the canonical evidence trail. The acceptance receipt insert
-      // that lived here previously is gone.
-      // P2 committed-mode: persist the age-encrypted body alongside
-      // the submission row in the same transaction. The plaintext is
-      // STILL written to submissions today (Phase E will scrub public
-      // surfaces, Phase E-cleanup will null the plaintext columns) —
-      // for now the envelope is what receipts and reveals attest to.
-      if (i.envelope) {
-        prep(
-          db,
-          `INSERT INTO call_private_envelopes
-           (call_id, encrypted_body, encrypted_body_alg, encrypted_body_hash,
-            daemon_key_id, commit_preimage_schema, fallback_after, received_at,
-            drand_chain_hash, drand_round, drand_ciphertext, drand_ciphertext_hash)
-           VALUES (@call_id, @encrypted_body, @encrypted_body_alg, @encrypted_body_hash,
-                   @daemon_key_id, @commit_preimage_schema, @fallback_after, @received_at,
-                   @drand_chain_hash, @drand_round, @drand_ciphertext, @drand_ciphertext_hash)`,
-        ).run({
-          call_id: i.accepted.call_id,
-          encrypted_body: i.envelope.encrypted_body,
-          encrypted_body_alg: i.envelope.encrypted_body_alg,
-          encrypted_body_hash: i.envelope.encrypted_body_hash,
-          daemon_key_id: i.envelope.daemon_key_id,
-          commit_preimage_schema: i.envelope.commit_preimage_schema,
-          fallback_after: i.envelope.fallback_after,
-          received_at: i.envelope.received_at,
-          drand_chain_hash: i.envelope.drand_chain_hash ?? null,
-          drand_round: i.envelope.drand_round ?? null,
-          drand_ciphertext: i.envelope.drand_ciphertext ?? null,
-          drand_ciphertext_hash: i.envelope.drand_ciphertext_hash ?? null,
-        });
-      }
     });
     tx(input);
   },
@@ -2876,41 +3015,17 @@ export const submissionsRepo = {
   },
 
   /**
-   * Per-asset rolling 24h count. P3 Phase 1.5 (Codex audit): bound to
-   * `accepted_at`, NOT `submitted_at`. Agent-supplied submitted_at is
-   * untrusted — an agent could otherwise stamp a future timestamp to slip
-   * the cap. The new per-market counter (countCallsForAgentMarketWindow)
-   * already used accepted_at; this brings the per-asset counter in line.
-   */
-  countCallsForAgentAssetWindow(
-    db: Database.Database,
-    agent_id: string,
-    asset_id: string,
-    sinceIso: string,
-  ): number {
-    // Phase E hydration: after MURMUR_PHASE_E_CLEANUP=1, asset_id on
-    // committed-mode submissions is NULL — the canonical asset still
-    // lives in call_reveals when reveal_hash_valid=1. LEFT JOIN +
-    // COALESCE keeps cleaned committed rows inside the per-asset rate
-    // cap so an agent can't slip the cap by repeatedly using committed
-    // mode and waiting for the boot-time scrub to drop them out.
-    // Legacy plaintext rows (no call_reveals) fall through to s.asset_id
-    // unchanged.
-    const row = prep(
-      db,
-      `SELECT COUNT(*) AS n FROM submissions s
-       LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
-       WHERE s.agent_id = ?
-         AND COALESCE(s.asset_id, cr.asset_id) = ?
-         AND s.accepted_at >= ?`,
-    ).get(agent_id, asset_id, sinceIso) as { n: number } | undefined;
-    return row?.n ?? 0;
-  },
-
-  /**
    * P3 D3: per-market rolling 24h count. Bound to accepted_at (server
    * stamp), not submitted_at, so an agent can't backdate to slip past
    * the cap. Includes legacy rows backfilled by migration 009.
+   *
+   * Wave 3 — the sibling `countCallsForAgentAssetWindow` was removed.
+   * submissions.asset_id was dropped by MIGRATION_031 and the rate
+   * limiter now pages strictly on market_id, which is the canonical
+   * post-registry handle. The per-asset family-wide cap (24/asset/day)
+   * collapses into the union of its per-market caps; callers that need
+   * a family-aggregate rate would re-add it here keyed on market_family
+   * once the operator-blind variant of that cap is decided.
    */
   countCallsForAgentMarketWindow(
     db: Database.Database,
@@ -2937,110 +3052,90 @@ export const submissionsRepo = {
     ).run(status, call_id);
   },
 
+  /**
+   * Pending calls for resolver passes. Wave 3 dropped the four plaintext
+   * market-signal columns (side / asset_id / horizon_hours / confidence)
+   * from the row shape — the resolver consumes the canonical horizon via
+   * `horizon_seconds` and pulls market/adapter metadata via
+   * `loadResolverContext()` on each call_id when it needs more.
+   */
   listPending(
     db: Database.Database,
     status: Extract<CallStatus, "accepted" | "pending_t0" | "pending_t1">,
   ): Array<{
     call_id: string;
     agent_id: string;
-    asset_id: string;
-    side: "BUY" | "SELL";
-    horizon_hours: number;
-    confidence: number;
+    horizon_seconds: number;
     accepted_at: string;
   }> {
     return prep(
       db,
-      `SELECT call_id, agent_id, asset_id, side, horizon_hours, confidence, accepted_at
+      `SELECT call_id, agent_id, horizon_seconds, accepted_at
        FROM submissions
        WHERE status = ?
        ORDER BY accepted_at`,
     ).all(status) as Array<{
       call_id: string;
       agent_id: string;
-      asset_id: string;
-      side: "BUY" | "SELL";
-      horizon_hours: number;
-      confidence: number;
+      horizon_seconds: number;
       accepted_at: string;
     }>;
   },
 
-  /** Hydrated row used by the resolver when working a call. */
+  /**
+   * Hydrated row used by the resolver when working a call. Wave 3 reshape:
+   *   - The four plaintext market-signal columns (side / asset_id /
+   *     horizon_hours / confidence) are gone with MIGRATION_031. The
+   *     prediction lives in the Commitment ciphertext (fhe_call_ciphertexts)
+   *     and the universal Outcome JSON the resolver scores against; the
+   *     resolver no longer reads any of them off submissions.
+   *   - The oracle_policies table is gone too. T0Policy is derived on the
+   *     fly from the market_id via derivePolicyFromMarket() inside the
+   *     resolver — keeping it OUT of the repo lets the repo stay a thin
+   *     SQL layer with no cross-module dependency on market lookup.
+   *
+   * Resolver-side adjustments live in resolver.ts: it now passes market_id
+   * (or the resolved market row) into derivePolicyFromMarket() at the
+   * point it would have read primary_feed off the joined op.* columns.
+   */
   loadResolverContext(
     db: Database.Database,
     call_id: string,
   ): {
     call_id: string;
     agent_id: string;
-    asset_id: string;
-    side: "BUY" | "SELL";
-    horizon_hours: number;
     horizon_seconds: number;
-    confidence: number;
     accepted_at: string;
     status: CallStatus;
     privacy_mode: string | null;
     commit_hash: string | null;
-    primary_feed: string;
-    fallback_feed: string | null;
-    primary_max_staleness_sec: number;
-    fallback_max_staleness_sec: number | null;
-    t0_grace_seconds: number;
-    t0_extended_grace_seconds: number;
-    // P4 Item 4: per-call market stamps for dispute / verify replay.
-    // Null on pre-Phase-1 legacy rows; downstream falls back to global
-    // VOID_BAND when null.
     market_id: string | null;
     market_config_version: number | null;
+    adapter_id: string | null;
+    market_family: string | null;
   } | null {
-    // Phase E hydration: after MURMUR_PHASE_E_CLEANUP=1, the plaintext
-    // columns on committed-mode submissions are NULL — the canonical
-    // values still live in call_reveals when reveal_hash_valid=1. The
-    // dispute resolver / replay path consumes these columns, so we
-    // LEFT JOIN call_reveals and COALESCE side / asset_id / confidence /
-    // horizon_hours. Legacy plaintext rows (no call_reveals) fall
-    // through to s.* unchanged.
     return (
       (prep(
         db,
-        `SELECT s.call_id, s.agent_id,
-                COALESCE(s.asset_id, cr.asset_id)             AS asset_id,
-                COALESCE(s.side, cr.side)                     AS side,
-                COALESCE(s.horizon_hours, cr.horizon_hours)   AS horizon_hours,
-                s.horizon_seconds,
-                COALESCE(s.confidence, cr.confidence)         AS confidence,
-                s.accepted_at, s.status, s.privacy_mode, s.commit_hash,
-                s.market_id, s.market_config_version,
-                op.primary_feed, op.fallback_feed,
-                op.primary_max_staleness_sec, op.fallback_max_staleness_sec,
-                op.t0_grace_seconds, op.t0_extended_grace_seconds
-         FROM submissions s
-         JOIN oracle_policies op ON op.call_id = s.call_id
-         LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
-         WHERE s.call_id = ?`,
+        `SELECT call_id, agent_id, horizon_seconds,
+                accepted_at, status, privacy_mode, commit_hash,
+                market_id, market_config_version,
+                adapter_id, market_family
+         FROM submissions
+         WHERE call_id = ?`,
       ).get(call_id) as
         | {
             call_id: string;
             agent_id: string;
-            asset_id: string;
-            side: "BUY" | "SELL";
-            horizon_hours: number;
             horizon_seconds: number;
-            confidence: number;
             accepted_at: string;
             status: CallStatus;
             privacy_mode: string | null;
             commit_hash: string | null;
             market_id: string | null;
             market_config_version: number | null;
-            primary_feed: string;
-            // Phase 2d: nullable for sub-hour markets (Pyth-only).
-            fallback_feed: string | null;
-            primary_max_staleness_sec: number;
-            fallback_max_staleness_sec: number | null;
-            t0_grace_seconds: number;
-            t0_extended_grace_seconds: number;
+            adapter_id: string | null;
+            market_family: string | null;
           }
         | undefined) ?? null
     );
@@ -3153,6 +3248,17 @@ export const resolutionsRepo = {
     });
   },
 
+  /**
+   * Hydrate the full per-call view. Wave 3 reshape:
+   *   - The four plaintext market-signal columns (side / asset_id /
+   *     horizon_hours / confidence) are gone with MIGRATION_031.
+   *     Consumers that displayed them now read the Commitment +
+   *     resolved Outcome JSON instead; everything load-bearing for the
+   *     leaderboard / verify path lives in those.
+   *   - rationale / strategy_tag survive — they're operator-supplied
+   *     metadata that don't leak prediction signal and are still part
+   *     of the FHE submit payload.
+   */
   loadFullCall(
     db: Database.Database,
     call_id: string,
@@ -3161,21 +3267,14 @@ export const resolutionsRepo = {
       call_id: string;
       agent_id: string;
       client_order_id: string;
-      // Plaintext columns. NULL when privacy_mode='fhe_direct' (the submit
-      // path explicitly nulls these — see submitFheDirectCall in
-      // submissions.ts). Public surfaces MUST route this object through
-      // projectCallRow to honour shouldExposePlaintext rather than trust
-      // the column-present-and-typed shape; the nullable types here
-      // enforce that contract at the type system layer (codex Z2 Drift B).
-      asset_id: string | null;
-      side: "BUY" | "SELL" | null;
-      horizon_hours: number | null;
-      confidence: number | null;
+      horizon_seconds: number;
       submitted_at: string;
       accepted_at: string;
       status: CallStatus;
       rationale: string | null;
       strategy_tag: string | null;
+      privacy_mode: string | null;
+      market_id: string | null;
     };
     t0: { t0: string; p0: string; feed: string } | null;
     resolution:
@@ -3195,25 +3294,19 @@ export const resolutionsRepo = {
           payout_vector_json: string | null;
           // Z2 — encrypted-score pointers. Populated only for fhe_direct
           // rows whose resolver tick computed an encrypted score; NULL
-          // for legacy_plaintext / committed / oracle_unavailable rows.
+          // for oracle_unavailable rows.
           score_ciphertext_hash: string | null;
           fhe_circuit_id: string | null;
         }
       | null;
   } | null {
-    // Codex Z2 Drift B fix — explicit column list instead of `SELECT s.*`.
-    // SELECT * is fail-open against future plaintext columns: if a
-    // maintainer adds e.g. `predicted_outcome_json` to submissions and a
-    // consumer later widens this return type to forward it, the column
-    // would be in the row dict the day the column lands, with no audit
-    // moment. Enumerating columns here forces a deliberate review when
-    // anything new gets surfaced.
     const subRow = prep(
       db,
       `SELECT call_id, agent_id, client_order_id,
-              asset_id, side, horizon_hours, confidence,
+              horizon_seconds,
               submitted_at, accepted_at, status,
-              rationale, strategy_tag
+              rationale, strategy_tag,
+              privacy_mode, market_id
        FROM submissions
        WHERE call_id = ?`,
     ).get(call_id) as
@@ -3221,15 +3314,14 @@ export const resolutionsRepo = {
           call_id: string;
           agent_id: string;
           client_order_id: string;
-          asset_id: string | null;
-          side: string | null;
-          horizon_hours: number | null;
-          confidence: number | null;
+          horizon_seconds: number;
           submitted_at: string;
           accepted_at: string;
           status: CallStatus;
           rationale: string | null;
           strategy_tag: string | null;
+          privacy_mode: string | null;
+          market_id: string | null;
         }
       | undefined;
     if (!subRow) return null;
@@ -3269,23 +3361,14 @@ export const resolutionsRepo = {
         call_id: subRow.call_id,
         agent_id: subRow.agent_id,
         client_order_id: subRow.client_order_id,
-        asset_id: subRow.asset_id,
-        // SQLite NULL → null; otherwise narrow into the 'BUY' | 'SELL'
-        // enum via a runtime guard. The MIGRATION_001 CHECK that bounded
-        // submissions.side to BUY/SELL was lifted in MIGRATION_015 (the
-        // column went to nullable plain TEXT to accommodate fhe_direct
-        // rows that null all plaintext fields). Application-layer
-        // validation (SubmittedCallSchema's SideSchema) is the live
-        // guard on the write path; this runtime guard is the
-        // matching fail-closed on the read path.
-        side: subRow.side === "BUY" || subRow.side === "SELL" ? subRow.side : null,
-        horizon_hours: subRow.horizon_hours,
-        confidence: subRow.confidence,
+        horizon_seconds: subRow.horizon_seconds,
         submitted_at: subRow.submitted_at,
         accepted_at: subRow.accepted_at,
         status: subRow.status,
         rationale: subRow.rationale,
         strategy_tag: subRow.strategy_tag,
+        privacy_mode: subRow.privacy_mode,
+        market_id: subRow.market_id,
       },
       t0: t0Row ?? null,
       resolution: resRow
@@ -3314,9 +3397,11 @@ export const resolutionsRepo = {
 
 // ─── Privacy: encrypted call envelopes ──────────────────────────────────────
 //
-// One row per `committed`-mode submission. Carries the daemon-encrypted
-// body that the resolver decrypts at t1+grace IF the agent fails to reveal
-// voluntarily. Empty until Phase B writes to it.
+// Wave 3 — the call_private_envelopes table was dropped by MIGRATION_031.
+// Committed-mode submissions (the only path that wrote to it) were excised
+// in Wave 2b. The repo persists here as no-op stubs so any straggler call
+// sites (resolution-subject.ts fallback paths, etc.) keep compiling and
+// return empty results.
 
 export interface CallPrivateEnvelopeRow {
   call_id: string;
@@ -3327,7 +3412,6 @@ export interface CallPrivateEnvelopeRow {
   commit_preimage_schema: string;
   fallback_after: string | null;
   received_at: string;
-  // Phase B-3: optional parallel drand/tlock envelope (D21).
   drand_chain_hash?: string | null;
   drand_round?: number | null;
   drand_ciphertext?: string | null;
@@ -3335,50 +3419,22 @@ export interface CallPrivateEnvelopeRow {
 }
 
 export const callPrivateEnvelopesRepo = {
-  insert(db: Database.Database, row: CallPrivateEnvelopeRow): void {
-    prep(
-      db,
-      `INSERT INTO call_private_envelopes
-       (call_id, encrypted_body, encrypted_body_alg, encrypted_body_hash,
-        daemon_key_id, commit_preimage_schema, fallback_after, received_at,
-        drand_chain_hash, drand_round, drand_ciphertext, drand_ciphertext_hash)
-       VALUES (@call_id, @encrypted_body, @encrypted_body_alg, @encrypted_body_hash,
-               @daemon_key_id, @commit_preimage_schema, @fallback_after, @received_at,
-               @drand_chain_hash, @drand_round, @drand_ciphertext, @drand_ciphertext_hash)`,
-    ).run({
-      ...row,
-      drand_chain_hash: row.drand_chain_hash ?? null,
-      drand_round: row.drand_round ?? null,
-      drand_ciphertext: row.drand_ciphertext ?? null,
-      drand_ciphertext_hash: row.drand_ciphertext_hash ?? null,
-    });
+  insert(_db: Database.Database, _row: CallPrivateEnvelopeRow): void {
+    /* no-op — call_private_envelopes table dropped in Wave 3. */
   },
 
-  byCallId(db: Database.Database, call_id: string): CallPrivateEnvelopeRow | null {
-    const row = prep(
-      db,
-      "SELECT * FROM call_private_envelopes WHERE call_id = ?",
-    ).get(call_id) as CallPrivateEnvelopeRow | undefined;
-    return row ?? null;
+  byCallId(
+    _db: Database.Database,
+    _call_id: string,
+  ): CallPrivateEnvelopeRow | null {
+    return null;
   },
 
-  /**
-   * Pending envelopes whose fallback window has closed and whose call
-   * has NOT been revealed by the agent yet. Resolver iterates this list
-   * to know which envelopes to daemon-decrypt.
-   */
   listOverdueForFallback(
-    db: Database.Database,
-    nowIso: string,
+    _db: Database.Database,
+    _nowIso: string,
   ): CallPrivateEnvelopeRow[] {
-    return prep(
-      db,
-      `SELECT e.* FROM call_private_envelopes e
-       LEFT JOIN call_reveals cr ON cr.call_id = e.call_id
-       WHERE e.fallback_after IS NOT NULL
-         AND e.fallback_after <= ?
-         AND cr.call_id IS NULL`,
-    ).all(nowIso) as CallPrivateEnvelopeRow[];
+    return [];
   },
 };
 
@@ -3394,6 +3450,13 @@ export const callPrivateEnvelopesRepo = {
 // `revealed_via` and `reveal_hash_valid` are surfaced on the resolution
 // receipt's `reveal` block so off-Murmur verifiers can attest the
 // commit→reveal binding without trusting the daemon.
+
+// Wave 3 — the call_reveals table was dropped by MIGRATION_031.
+// Committed-mode submissions (which produced reveals) were excised in
+// Wave 2b; FHE-direct calls never produce a reveal, they release a score
+// via the threshold-committee path instead. CallRevealRow stays as a type
+// stub so any leftover callers in resolution-subject.ts that read the
+// (now always-null) reveal row keep typechecking.
 
 export interface CallRevealRow {
   call_id: string;
@@ -3420,185 +3483,35 @@ export interface CallRevealRow {
 }
 
 export const callRevealsRepo = {
-  insert(db: Database.Database, row: CallRevealRow): void {
-    prep(
-      db,
-      `INSERT INTO call_reveals
-       (call_id, side, asset_id, horizon_hours, confidence,
-        rationale, strategy_tag, salt, t0, agent_wallet, chain_id,
-        commit_preimage_json, commit_preimage_hash,
-        revealed_at, revealed_via, reveal_hash_valid)
-       VALUES (@call_id, @side, @asset_id, @horizon_hours, @confidence,
-               @rationale, @strategy_tag, @salt, @t0, @agent_wallet, @chain_id,
-               @commit_preimage_json, @commit_preimage_hash,
-               @revealed_at, @revealed_via, @reveal_hash_valid)`,
-    ).run(row);
+  insert(_db: Database.Database, _row: CallRevealRow): void {
+    /* no-op — call_reveals table dropped in Wave 3. */
   },
 
-  byCallId(db: Database.Database, call_id: string): CallRevealRow | null {
-    const row = prep(
-      db,
-      "SELECT * FROM call_reveals WHERE call_id = ?",
-    ).get(call_id) as CallRevealRow | undefined;
-    return row ?? null;
+  byCallId(_db: Database.Database, _call_id: string): CallRevealRow | null {
+    return null;
   },
 
-  /**
-   * Reveal-reliability counts per agent: (agent_reveals, fallback_reveals).
-   * Excludes legacy_plaintext (v0.1 traffic) and fhevm_compute (v0.3) so
-   * the metric reflects the agent's behavior under the v0.2 contract.
-   */
   reliabilityByAgent(
-    db: Database.Database,
-  ): Array<{ agent_id: string; agent_reveals: number; daemon_reveals: number }> {
-    return prep(
-      db,
-      `SELECT s.agent_id,
-              SUM(CASE WHEN cr.revealed_via = 'agent' THEN 1 ELSE 0 END) AS agent_reveals,
-              SUM(CASE WHEN cr.revealed_via IN ('daemon_fallback','drand_fallback') THEN 1 ELSE 0 END) AS daemon_reveals
-       FROM submissions s
-       JOIN call_reveals cr ON cr.call_id = s.call_id
-       WHERE s.privacy_mode = 'committed'
-         AND cr.revealed_via IN ('agent', 'daemon_fallback', 'drand_fallback')
-       GROUP BY s.agent_id`,
-    ).all() as Array<{ agent_id: string; agent_reveals: number; daemon_reveals: number }>;
+    _db: Database.Database,
+  ): Array<{
+    agent_id: string;
+    agent_reveals: number;
+    daemon_reveals: number;
+  }> {
+    return [];
   },
 };
 
 // ─── Disputes ────────────────────────────────────────────────────────────────
-
-export const disputesRepo = {
-  insert(db: Database.Database, dispute: Dispute): void {
-    prep(
-      db,
-      `INSERT INTO disputes
-       (dispute_id, target_call_id, grounds, notes, filed_by, filed_at, status, resolved_at)
-       VALUES (@dispute_id, @target_call_id, @grounds, @notes, @filed_by, @filed_at, @status, @resolved_at)`,
-    ).run({
-      ...dispute,
-      notes: dispute.notes ?? null,
-    });
-  },
-
-  setStatus(
-    db: Database.Database,
-    dispute_id: string,
-    status: DisputeStatus,
-    resolved_at: string | null = null,
-  ): void {
-    prep(
-      db,
-      `UPDATE disputes
-       SET status = ?, resolved_at = ?
-       WHERE dispute_id = ?`,
-    ).run(status, resolved_at, dispute_id);
-  },
-
-  listOpen(db: Database.Database): Dispute[] {
-    return prep(
-      db,
-      "SELECT * FROM disputes WHERE status IN ('open','replay_in_progress') ORDER BY filed_at",
-    ).all() as Dispute[];
-  },
-};
+//
+// Wave 3a deleted the disputes runtime; MIGRATION_031 dropped the table.
+// The repo + types are gone — re-add only when a v0.3 dispute path lands.
 
 // ─── Claim challenges ────────────────────────────────────────────────────────
-
-export const claimsRepo = {
-  insert(db: Database.Database, c: ClaimChallenge): void {
-    prep(
-      db,
-      `INSERT INTO claim_challenges
-       (challenge_id, agent_id, target_kind, target_value, nonce, challenge_text, wallet_to_bind, expires_at, status, created_at)
-       VALUES (@challenge_id, @agent_id, @target_kind, @target_value, @nonce, @challenge_text, @wallet_to_bind, @expires_at, @status, @created_at)`,
-    ).run({
-      challenge_id: c.challenge_id,
-      agent_id: c.agent_id,
-      target_kind: c.target_identity.kind,
-      target_value: c.target_identity.value,
-      nonce: c.nonce,
-      challenge_text: c.challenge_text,
-      wallet_to_bind: c.wallet_to_bind,
-      expires_at: c.expires_at,
-      status: c.status,
-      created_at: c.created_at,
-    });
-  },
-
-  setStatus(
-    db: Database.Database,
-    challenge_id: string,
-    status: ClaimChallenge["status"],
-  ): void {
-    prep(
-      db,
-      "UPDATE claim_challenges SET status = ? WHERE challenge_id = ?",
-    ).run(status, challenge_id);
-  },
-
-  /**
-   * Atomically transition a challenge from "pending" to `next` only when its
-   * current status IS still pending. Returns true if the transition happened
-   * (the caller now owns the challenge), false if some other concurrent
-   * finalize already closed it. Use this BEFORE side-effects (issuing API
-   * keys, flipping kind) so two parallel finalizes can't both succeed.
-   */
-  claimIfPending(
-    db: Database.Database,
-    challenge_id: string,
-    next: Exclude<ClaimChallenge["status"], "pending">,
-  ): boolean {
-    const info = prep(
-      db,
-      "UPDATE claim_challenges SET status = ? WHERE challenge_id = ? AND status = 'pending'",
-    ).run(next, challenge_id);
-    return info.changes > 0;
-  },
-
-  /**
-   * Count pending claim_challenges for a (wallet, slug) pair. Used by the
-   * wallet-only init rate-limiter — one pending challenge per pair caps
-   * the abuse vector where an attacker spams init for a slug they don't
-   * actually own.
-   */
-  countPendingForWalletAndAgent(
-    db: Database.Database,
-    wallet: string,
-    agent_id: string,
-    nowIso: string,
-  ): number {
-    const row = prep(
-      db,
-      `SELECT COUNT(*) AS n FROM claim_challenges
-       WHERE wallet_to_bind = ? AND agent_id = ?
-         AND status = 'pending' AND expires_at > ?`,
-    ).get(wallet, agent_id, nowIso) as { n: number } | undefined;
-    return row?.n ?? 0;
-  },
-
-  /**
-   * GC sweep: mark expired-but-still-pending rows as expired, and delete
-   * everything older than `keepSinceIso` regardless of status. Keeps
-   * claim_challenges from becoming an infinite log.
-   */
-  gc(
-    db: Database.Database,
-    nowIso: string,
-    keepSinceIso: string,
-  ): { expired: number; deleted: number } {
-    const expired = prep(
-      db,
-      `UPDATE claim_challenges SET status = 'expired'
-       WHERE status = 'pending' AND expires_at <= ?`,
-    ).run(nowIso).changes;
-    const deleted = prep(
-      db,
-      `DELETE FROM claim_challenges
-       WHERE status != 'pending' AND created_at < ?`,
-    ).run(keepSinceIso).changes;
-    return { expired, deleted };
-  },
-};
+//
+// Wave 1 deleted the X/Telegram/wallet claim runtime; MIGRATION_031 dropped
+// the table. The repo + types are gone — Privy + admin-claim CLI (Wave 5)
+// replace the on-platform claim flow.
 
 // ─── Usage events (rail; no fees in v0.1) ────────────────────────────────────
 
@@ -3811,27 +3724,14 @@ export const webhooksRepo = {
 };
 
 // ─── Convenience: dedup_key builder ──────────────────────────────────────────
-
-/**
- * Per the spec: dedup_key = (agent_id, asset_id, side, horizon_hours, t_bucket)
- * where t_bucket = floor(submitted_at, horizon_hours/4 hours).
- */
-export function buildDedupKey(args: {
-  agent_id: string;
-  asset_id: string;
-  side: "BUY" | "SELL";
-  horizon_hours: number;
-  submitted_at_iso: string;
-}): string {
-  const bucketHours = Math.max(1, args.horizon_hours / 4);
-  const ms = Date.parse(args.submitted_at_iso);
-  if (Number.isNaN(ms)) {
-    throw new Error(`invalid submitted_at_iso: ${args.submitted_at_iso}`);
-  }
-  const bucketMs = bucketHours * 3600 * 1000;
-  const bucket = Math.floor(ms / bucketMs) * bucketMs;
-  return `${args.agent_id}|${args.asset_id}|${args.side}|${args.horizon_hours}|${bucket}`;
-}
+//
+// Wave 3 — the legacy buildDedupKey(agent_id, asset_id, side, horizon_hours)
+// was removed alongside the four plaintext column drops. The canonical
+// dedup key is the market-aware variant in markets.ts::buildMarketDedupKey
+// (agent_id, market_id, accepted_at) — `side` is gone from the key because
+// FHE-direct calls don't reveal side at submission time, so collapsing
+// BUY+SELL on the same market into a single bucket is the correct
+// privacy-preserving behavior.
 
 // ─── Asset / Oracle / Market repos (registry-driven matrix) ─────────────────
 //
@@ -4213,6 +4113,5 @@ export function isUniqueViolation(err: unknown): boolean {
   );
 }
 
-// Suppress unused-import warning for DisputeGrounds (kept for downstream type
-// re-exports and IDE hovers). — irrelevant since noUnusedLocals=false.
-export type { DisputeGrounds };
+// Wave 3 — DisputeGrounds re-export removed alongside the disputes
+// runtime (deleted in Wave 3a, table dropped by MIGRATION_031).
