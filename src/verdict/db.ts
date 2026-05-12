@@ -619,6 +619,26 @@ function applyMigrations(db: Database.Database): void {
     );
     v = 29;
   }
+
+  if (v < 30) {
+    // Z5 — repair migration for operators who upgraded from the
+    // previously-released schema_version=28 (the slot the prior Z5
+    // reservation note mentioned). Those operators never saw the
+    // `if (v < 27)` Z5 block fire — that conditional gate is permanently
+    // skipped at v=28+. Codex Z5 review BLOCKER fix: re-run the same
+    // idempotent statements at v<30 so existing 28/29 DBs catch up.
+    //
+    // Fresh installs already ran the Z5 work at v<27 (the canonical
+    // bootstrap path) and reach this block with the columns + table
+    // already in place. applyAlterTableAddColumn + CREATE TABLE IF NOT
+    // EXISTS make the re-run a no-op for those.
+    for (const { table, column, sql } of MIGRATION_027_ALTERS) {
+      applyAlterTableAddColumn(db, table, column, sql);
+    }
+    db.exec(MIGRATION_027_TABLES);
+    v = 30;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**

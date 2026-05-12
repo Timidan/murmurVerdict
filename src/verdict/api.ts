@@ -615,6 +615,44 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       ? `MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1 but threshold_mode=${thresholdMode ?? "null"} (need 'production')`
       : null;
 
+    // Z5 — audit-log emit on gate STATE TRANSITION. Codex Z5 review
+    // MAJOR fix: the privacy_policy_events table existed without any
+    // producer, leaving the audit log decorative. Emitting on every
+    // readyz call (typically once per second from a kubelet probe)
+    // would spam the table; emitting on transition catches the
+    // ok→fail (and recovery) events that operators actually want
+    // logged. In-memory module-scope flag — single-process daemon
+    // assumption matches the EventBus posture elsewhere.
+    if (prodGateOk !== lastProdGateOk) {
+      try {
+        deps.db
+          .prepare(
+            `INSERT INTO privacy_policy_events (
+               event_id, kind, payload_json, actor, created_at
+             ) VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(
+            randomUUID(),
+            "readyz_prod_gate_failed",
+            JSON.stringify({
+              transitioned_to_ok: prodGateOk,
+              threshold_mode: thresholdMode,
+              prod_require_operator_blind: prodRequireOperatorBlind,
+              reason: prodGateReason,
+            }),
+            "daemon:readyz",
+            nowIso(now()),
+          );
+      } catch (err) {
+        // Audit emit is best-effort — must not affect readyz response.
+        console.warn(
+          `[readyz] privacy_policy_events emit failed:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+      lastProdGateOk = prodGateOk;
+    }
+
     const privacy = {
       committed_mode_open: process.env.MURMUR_PRIVACY_COMMITTED_OPEN === "1",
       age: {
@@ -3294,6 +3332,14 @@ const walletOnlyInitLimiter = (() => {
  * Cached result: 30s TTL. Drand mainnet quicknet has a 3s period; we
  * don't need to hit it on every readyz call.
  */
+// Z5 — module-scope last-seen prod-gate state so readyz only emits a
+// privacy_policy_events row on TRANSITION, not on every probe call.
+// Default true so the very first 503 (gate trips at boot) emits one
+// event and subsequent failed probes stay silent until recovery.
+// Single-process daemon assumption — same posture as drandHealthCache
+// and the EventBus.
+let lastProdGateOk = true;
+
 let drandHealthCache: {
   fetchedAt: number;
   result: {
