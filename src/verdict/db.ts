@@ -3071,10 +3071,16 @@ export const resolutionsRepo = {
       call_id: string;
       agent_id: string;
       client_order_id: string;
-      asset_id: string;
-      side: "BUY" | "SELL";
-      horizon_hours: number;
-      confidence: number;
+      // Plaintext columns. NULL when privacy_mode='fhe_direct' (the submit
+      // path explicitly nulls these — see submitFheDirectCall in
+      // submissions.ts). Public surfaces MUST route this object through
+      // projectCallRow to honour shouldExposePlaintext rather than trust
+      // the column-present-and-typed shape; the nullable types here
+      // enforce that contract at the type system layer (codex Z2 Drift B).
+      asset_id: string | null;
+      side: "BUY" | "SELL" | null;
+      horizon_hours: number | null;
+      confidence: number | null;
       submitted_at: string;
       accepted_at: string;
       status: CallStatus;
@@ -3105,60 +3111,105 @@ export const resolutionsRepo = {
         }
       | null;
   } | null {
+    // Codex Z2 Drift B fix — explicit column list instead of `SELECT s.*`.
+    // SELECT * is fail-open against future plaintext columns: if a
+    // maintainer adds e.g. `predicted_outcome_json` to submissions and a
+    // consumer later widens this return type to forward it, the column
+    // would be in the row dict the day the column lands, with no audit
+    // moment. Enumerating columns here forces a deliberate review when
+    // anything new gets surfaced.
     const subRow = prep(
       db,
-      `SELECT s.*
-       FROM submissions s
-       WHERE s.call_id = ?`,
-    ).get(call_id) as Record<string, unknown> | undefined;
+      `SELECT call_id, agent_id, client_order_id,
+              asset_id, side, horizon_hours, confidence,
+              submitted_at, accepted_at, status,
+              rationale, strategy_tag
+       FROM submissions
+       WHERE call_id = ?`,
+    ).get(call_id) as
+      | {
+          call_id: string;
+          agent_id: string;
+          client_order_id: string;
+          asset_id: string | null;
+          side: string | null;
+          horizon_hours: number | null;
+          confidence: number | null;
+          submitted_at: string;
+          accepted_at: string;
+          status: CallStatus;
+          rationale: string | null;
+          strategy_tag: string | null;
+        }
+      | undefined;
     if (!subRow) return null;
     const t0Row = prep(
       db,
       "SELECT t0, p0, feed FROM t0_anchors WHERE call_id = ?",
     ).get(call_id) as { t0: string; p0: string; feed: string } | undefined;
+    // Same explicit-column treatment for t1_resolutions. The Z2 + Phase 5
+    // additive columns (resolved_outcome_json, payout_vector_json,
+    // score_ciphertext_hash, fhe_circuit_id) are pulled by name so adding
+    // a future column (e.g. a raw plaintext score) does NOT auto-surface
+    // here.
     const resRow = prep(
       db,
-      `SELECT r.*
-       FROM t1_resolutions r
-       WHERE r.call_id = ?`,
-    ).get(call_id) as Record<string, unknown> | undefined;
+      `SELECT t1, p1, t1_feed, signed_return, outcome, call_score,
+              resolved_at, resolved_outcome_json, payout_vector_json,
+              score_ciphertext_hash, fhe_circuit_id
+       FROM t1_resolutions
+       WHERE call_id = ?`,
+    ).get(call_id) as
+      | {
+          t1: string;
+          p1: string;
+          t1_feed: string;
+          signed_return: string;
+          outcome: string;
+          call_score: number | null;
+          resolved_at: string;
+          resolved_outcome_json: string | null;
+          payout_vector_json: string | null;
+          score_ciphertext_hash: string | null;
+          fhe_circuit_id: string | null;
+        }
+      | undefined;
     return {
       submission: {
-        call_id: subRow.call_id as string,
-        agent_id: subRow.agent_id as string,
-        client_order_id: subRow.client_order_id as string,
-        asset_id: subRow.asset_id as string,
-        side: subRow.side as "BUY" | "SELL",
-        horizon_hours: subRow.horizon_hours as number,
-        confidence: subRow.confidence as number,
-        submitted_at: subRow.submitted_at as string,
-        accepted_at: subRow.accepted_at as string,
-        status: subRow.status as CallStatus,
-        rationale: (subRow.rationale as string) ?? null,
-        strategy_tag: (subRow.strategy_tag as string) ?? null,
+        call_id: subRow.call_id,
+        agent_id: subRow.agent_id,
+        client_order_id: subRow.client_order_id,
+        asset_id: subRow.asset_id,
+        // SQLite NULL → null; cast the non-null path through the typed
+        // 'BUY' | 'SELL' enum. Schema CHECK constraint guarantees the
+        // value is one of the two when non-null.
+        side: subRow.side === "BUY" || subRow.side === "SELL" ? subRow.side : null,
+        horizon_hours: subRow.horizon_hours,
+        confidence: subRow.confidence,
+        submitted_at: subRow.submitted_at,
+        accepted_at: subRow.accepted_at,
+        status: subRow.status,
+        rationale: subRow.rationale,
+        strategy_tag: subRow.strategy_tag,
       },
       t0: t0Row ?? null,
       resolution: resRow
         ? {
-            t1: resRow.t1 as string,
-            p1: resRow.p1 as string,
-            t1_feed: resRow.t1_feed as string,
-            signed_return: resRow.signed_return as string,
-            outcome: resRow.outcome as string,
-            call_score: (resRow.call_score as number | null) ?? null,
-            resolved_at: resRow.resolved_at as string,
+            t1: resRow.t1,
+            p1: resRow.p1,
+            t1_feed: resRow.t1_feed,
+            signed_return: resRow.signed_return,
+            outcome: resRow.outcome,
+            call_score: resRow.call_score ?? null,
+            resolved_at: resRow.resolved_at,
             // Phase 5 — universal columns. NULL when the v2 path didn't
             // run; downstream call.resolved emit reads these and skips
             // populating the additive event fields.
-            resolved_outcome_json:
-              (resRow.resolved_outcome_json as string | null) ?? null,
-            payout_vector_json:
-              (resRow.payout_vector_json as string | null) ?? null,
+            resolved_outcome_json: resRow.resolved_outcome_json,
+            payout_vector_json: resRow.payout_vector_json,
             // Z2 additions — see resolutionsRepo.setResolution input shape.
-            score_ciphertext_hash:
-              (resRow.score_ciphertext_hash as string | null) ?? null,
-            fhe_circuit_id:
-              (resRow.fhe_circuit_id as string | null) ?? null,
+            score_ciphertext_hash: resRow.score_ciphertext_hash,
+            fhe_circuit_id: resRow.fhe_circuit_id,
           }
         : null,
     };
