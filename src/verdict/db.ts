@@ -3639,6 +3639,12 @@ export interface MarketRow {
   // adapter is registered.
   adapter_id: string | null;
   market_family: string | null;
+  // Codex P11 review Critical B fix — adapter-private config (e.g.
+  // Polymarket's conditionId/slug/outcomes/endDate snapshot). NOT NULL
+  // with default '{}' at the schema level; native-price markets carry
+  // an empty object today. The resolver parses this and spreads it into
+  // adapter.observeResolution() context.
+  config_json: string;
 }
 
 export const assetsRepo = {

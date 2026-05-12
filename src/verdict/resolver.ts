@@ -761,6 +761,13 @@ export class Resolver {
     let observed: UniversalOutcome | "pending" | "disputed";
     try {
       observed = await adapter.observeResolution(marketRef, {
+        // Codex P11 review Critical B fix — spread the parsed
+        // markets.config_json so adapter-private fields (e.g.
+        // Polymarket's conditionId) arrive in the observation
+        // context. Native-price adapter's config_json is empty and
+        // its narrower ignores unknown keys, so this is a safe
+        // additive change.
+        ...parseMarketConfigJson(marketRow.config_json),
         t0_p0: args.t0row.p0,
         t1_p1: args.obs.price,
         t1_iso: args.obs.feed_timestamp,
@@ -1232,6 +1239,10 @@ export class Resolver {
     let observed: UniversalOutcome | "pending" | "disputed";
     try {
       observed = await adapter.observeResolution(marketRef, {
+        // Codex P11 review Critical B fix (legacy plaintext path) —
+        // mirror the fhe_direct branch above. Spread markets.config_json
+        // so Polymarket gets conditionId from the markets row.
+        ...parseMarketConfigJson(marketRow.config_json),
         t0_p0: args.t0row.p0,
         t1_p1: args.obs.price,
         t1_iso: args.obs.feed_timestamp,
@@ -1543,6 +1554,31 @@ export class Resolver {
 
 function isoFromUnixMs(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+/**
+ * Parse `markets.config_json` to a plain object that the resolver can
+ * spread into the adapter's ObservationContext. Codex P11 review
+ * Critical B — adapter-private fields (e.g. Polymarket's `conditionId`)
+ * live on `markets.config_json` and never reached `observeResolution`
+ * before this helper threaded them through. Native-price markets ship
+ * empty config_json so the spread is a no-op for them.
+ *
+ * Fail-soft: malformed JSON, non-object payloads, or DB-side TEXT/NULL
+ * all collapse to `{}` rather than throwing. The resolver tick MUST
+ * NOT abort because one market's config_json was malformed.
+ */
+function parseMarketConfigJson(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string" || raw.length === 0) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // intentional swallow — see header comment
+  }
+  return {};
 }
 
 // (feedToOracleId is imported at the top of the file from oracle-routing.js
