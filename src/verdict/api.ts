@@ -20,7 +20,7 @@ import {
   parseAndRebuildPreimageObject,
 } from "./commit-preimage.js";
 import { projectCallRow } from "./projections.js";
-import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import {
@@ -295,6 +295,33 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           ERROR_CODES.asset_not_supported,
           404,
           { sourceId: body.marketRef.sourceId },
+        );
+      }
+
+      // Codex Wave 4b MAJOR fix — enforce that the agent-supplied
+      // marketRef.protocol matches the market row's adapter_id. Without
+      // this, an agent who claims protocol='native-price' for a
+      // Polymarket conditionId would route through the wrong adapter's
+      // commitment validation (the polymarket-gamma adapter's
+      // commitmentSchema enforces protocol='polymarket-gamma', but that
+      // schema isn't invoked on the FHE-direct path — only the registry
+      // lookup gates protocol selection).
+      //
+      // Markets backfilled by MIGRATION_016 may have adapter_id NULL;
+      // those rows are native-price ETH only (the migration backfilled
+      // them deliberately), so we admit a NULL adapter_id ONLY when the
+      // claimed protocol is 'native-price'.
+      const expectedProtocol = market.adapter_id ?? "native-price";
+      if (body.marketRef.protocol !== expectedProtocol) {
+        throw new VerdictError(
+          `marketRef.protocol mismatch: agent supplied '${body.marketRef.protocol}' but market '${market.market_id}' is owned by adapter '${expectedProtocol}'`,
+          ERROR_CODES.schema_invalid,
+          400,
+          {
+            supplied_protocol: body.marketRef.protocol,
+            market_adapter_id: expectedProtocol,
+            sourceId: body.marketRef.sourceId,
+          },
         );
       }
 
@@ -1128,8 +1155,29 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       const endDateMs = snapshot.endDate
         ? Date.parse(snapshot.endDate)
         : Number.NaN;
-      const derivedHorizonSec = Number.isFinite(endDateMs)
-        ? Math.max(60, Math.floor((endDateMs - Date.now()) / 1000))
+      // Codex Wave 4b BLOCKER fix — refuse to mark a past-ended Polymarket
+      // market `listed`. Without this guard, an operator who upserts a
+      // conditionId whose endDate is in the past gets a market that
+      // accepts agent submissions but resolves effectively immediately.
+      // The acceptable shapes are:
+      //   - status='listed' AND endDate is in the future (or absent)
+      //   - status='draft' / 'frozen' / 'retired' regardless of endDate
+      //     (operator opts in to a non-accepting state)
+      const remainingSec = Number.isFinite(endDateMs)
+        ? Math.floor((endDateMs - Date.now()) / 1000)
+        : Number.NaN;
+      const endDatePast = Number.isFinite(remainingSec) && remainingSec <= 0;
+      if (endDatePast && status === "listed") {
+        res.status(422).json({
+          code: "market_already_resolved",
+          message:
+            "Polymarket endDate is in the past; refuse to upsert as 'listed' (use status='frozen' to register a backfill row).",
+          endDate: snapshot.endDate ?? null,
+        });
+        return;
+      }
+      const derivedHorizonSec = Number.isFinite(remainingSec)
+        ? Math.max(60, remainingSec)
         : 7 * 24 * 60 * 60;
       const horizonSec = horizon_seconds ?? derivedHorizonSec;
       const slugCandidate =
@@ -2700,15 +2748,30 @@ If your slug appears on the leaderboard, you're done.
 }
 
 /**
- * Constant-time equality for short opaque secrets/tokens. Returns false on
- * length mismatch without comparing — but the compare itself is timing-safe.
+ * Constant-time equality for short opaque secrets/tokens.
+ *
+ * Codex Wave 4b MINOR fix — the prior implementation returned `false`
+ * immediately on length mismatch, which leaks the secret's byte length
+ * to a network adversary timing the response. The fixed implementation
+ * always runs `timingSafeEqual` on equal-length buffers derived from
+ * hashing both sides with a per-process random key, so:
+ *
+ *   - length-mismatch attempts and value-mismatch attempts take the same
+ *     amount of work (both hash + compare two 32-byte digests).
+ *   - the hash domain-separates with a process-local key so an attacker
+ *     cannot precompute target digests across daemon restarts.
+ *
+ * The randomBytes key is allocated lazily on first call and lives for
+ * the process lifetime (it has no security purpose beyond domain
+ * separation; the actual comparison is the timing-safe leg).
  */
+let safeStrEqKey: Buffer | null = null;
 function safeStrEq(a: string | undefined | null, b: string | undefined | null): boolean {
   if (typeof a !== "string" || typeof b !== "string") return false;
-  const ab = Buffer.from(a, "utf8");
-  const bb = Buffer.from(b, "utf8");
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
+  if (safeStrEqKey === null) safeStrEqKey = randomBytes(32);
+  const hashOf = (s: string): Buffer =>
+    createHmac("sha256", safeStrEqKey!).update(s, "utf8").digest();
+  return timingSafeEqual(hashOf(a), hashOf(b));
 }
 
 function sanitizeRef(raw: unknown): string | null {
