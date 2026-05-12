@@ -116,49 +116,20 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   // bootable without manual repair; Wave 3 (Migration 031) drops the
   // table outright.
 
-  // Capture raw body for HMAC verification on the submission route only.
+  // Wave 2a — /v1/calls returns 410 Gone. The legacy plaintext submit
+  // endpoint (wallet HMAC OR API key with side/asset_id/horizon_hours/
+  // confidence wire shape) is retired. Reputation is built up via
+  // FHE-direct calls on /v2/calls only; agents that previously
+  // targeted /v1/calls must migrate to /v2/calls with the `fhe` block.
   router.post(
     "/v1/calls",
-    express.text({ type: "application/json", limit: "32kb" }),
-    asyncHandler(async (req, res) => {
-      // Two auth modes — both produce a verified agent_id:
-      //   1. X-Murmur-Api-Key (claimed agents; key issued by claim flow,
-      //      verified against agents.api_key_hash). Preferred path in prod.
-      //   2. X-Murmur-Agent-Id + X-Murmur-Timestamp + X-Murmur-Signature
-      //      (legacy HMAC; required for benchmark agents whose secret lives
-      //      in env vars instead of the DB).
-      const apiKey = req.header("X-Murmur-Api-Key");
-      const headerAgentId = req.header("X-Murmur-Agent-Id");
-      let identity: { agent_id: string };
-      if (apiKey && headerAgentId) {
-        identity = verifyAgentApiKey(deps.db, headerAgentId, apiKey);
-      } else {
-        const headers = readHmacHeaders(req);
-        const secret = await deps.resolveSharedSecret(headers.agent_id);
-        if (!secret) {
-          throw new VerdictError(
-            "unknown agent_id",
-            ERROR_CODES.unknown_agent,
-            404,
-          );
-        }
-        verifyHmac({
-          rawBody: typeof req.body === "string" ? req.body : "",
-          headers,
-          shared_secret: secret,
-          now,
-        });
-        identity = { agent_id: headers.agent_id };
-      }
-      const payload = JSON.parse((req.body ?? "{}") as string);
-      const result = await submitCall({
-        db: deps.db,
-        ctx: deps.ctx,
-        identity,
-        payload,
+    asyncHandler(async (_req, res) => {
+      res.status(410).json({
+        code: "endpoint_removed",
+        message:
+          "/v1/calls is retired. Submit via /v2/calls with privacy_mode='fhe_direct' and the `fhe` block. See /v1/skill.md for the new flow.",
+        replacement: "/v2/calls",
       });
-      const status = result.idempotent_hit ? 200 : 201;
-      res.status(status).json(result);
     }),
   );
 
@@ -273,23 +244,28 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       }
       const body = parsed.data;
 
-      // Casual tier: privacy_mode locked to legacy_plaintext or
-      // fhe_direct (Z1). Committed mode still requires wallet binding
-      // (Phase 8); fhe_direct intentionally permits the casual tier
-      // because the cryptographic privacy stack does not require
-      // a verified wallet — the agent encrypts client-side against
-      // the keyset's public key.
-      if (
-        authResult.tier === "casual" &&
-        body.privacy_mode !== undefined &&
-        body.privacy_mode !== "legacy_plaintext" &&
-        body.privacy_mode !== "fhe_direct"
-      ) {
+      // Wave 2a — FHE-direct is the only accepted privacy_mode on
+      // /v2/calls. Legacy plaintext / committed-mode acceptance is
+      // dead; the daemon stores ciphertext-only and the operator
+      // cannot decrypt the prediction. Default the mode to fhe_direct
+      // when callers omit it so existing clients that previously
+      // omitted the field don't break — they fail downstream at the
+      // `fhe` block requirement instead.
+      const submittedMode = body.privacy_mode ?? "fhe_direct";
+      if (submittedMode !== "fhe_direct") {
         throw new VerdictError(
-          "casual tier accepts privacy_mode ∈ {'legacy_plaintext', 'fhe_direct'} on /v2/calls (committed mode requires Phase 8 wallet auth)",
+          "/v2/calls accepts only privacy_mode='fhe_direct' (committed + legacy_plaintext modes removed in Wave 2a — reputation is built up via FHE-direct calls only)",
           ERROR_CODES.schema_invalid,
           400,
-          { tier: authResult.tier, privacy_mode: body.privacy_mode },
+          { received: body.privacy_mode ?? null },
+        );
+      }
+      body.privacy_mode = "fhe_direct";
+      if (!body.fhe) {
+        throw new VerdictError(
+          "/v2/calls requires the `fhe` block (encrypted_predicted_outcome + keyset_id + circuit_id + ciphertext_hash + vector_len + payout_denominator + nonce). plaintext predictedOutcome/horizon/confidence are no longer accepted",
+          ERROR_CODES.schema_invalid,
+          400,
         );
       }
 
@@ -319,135 +295,53 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         );
       }
 
-      // Z1 — operator-blind submission. Route fhe_direct through the
-      // dedicated path before the legacy bridge; the wire shape is
-      // fundamentally different (no plaintext predictedOutcome /
-      // horizon / confidence) and forcing it through the legacy
-      // SubmittedCallSchema would either reject every submit OR leak
-      // synthetic plaintext into projections.
-      if (body.privacy_mode === "fhe_direct") {
-        const submittedAt =
-          body.submitted_at ?? now().toISOString().replace(/\.\d+Z$/, "Z");
-        const fhePayload: Record<string, unknown> = {
-          schema_version: SCHEMA_VERSION,
-          agent_id: authResult.agent_id,
-          client_order_id: body.client_order_id,
-          market_id: market.market_id,
-          privacy_mode: "fhe_direct",
-          submitted_at: submittedAt,
-          ...(body.rationale !== undefined ? { rationale: body.rationale } : {}),
-          ...(body.strategy_tag !== undefined
-            ? { strategy_tag: body.strategy_tag }
-            : {}),
-        };
-        const fheResult = await submitCall({
-          db: deps.db,
-          ctx: deps.ctx,
-          identity: { agent_id: authResult.agent_id },
-          payload: fhePayload,
-          fheDirect: { fhe: body.fhe!, market_id: market.market_id },
-        });
-        res.status(fheResult.idempotent_hit ? 200 : 201).json({
-          call_id: fheResult.call.call_id,
-          // Operator-blind response: do not echo the synthesized
-          // placeholder side/confidence the AcceptedCall carries; the
-          // submitFheDirectCall path already nulls these in the return,
-          // but we filter explicitly here in case a future refactor
-          // forgets.
-          call: {
-            schema_version: fheResult.call.schema_version,
-            scoring_version: fheResult.call.scoring_version,
-            call_id: fheResult.call.call_id,
-            agent_id: fheResult.call.agent_id,
-            client_order_id: fheResult.call.client_order_id,
-            submitted_at: fheResult.call.submitted_at,
-            accepted_at: fheResult.call.accepted_at,
-            status: fheResult.call.status,
-            ...(fheResult.call.rationale !== undefined
-              ? { rationale: fheResult.call.rationale }
-              : {}),
-            ...(fheResult.call.strategy_tag !== undefined
-              ? { strategy_tag: fheResult.call.strategy_tag }
-              : {}),
-            privacy_mode: "fhe_direct",
-          },
-          idempotent_hit: fheResult.idempotent_hit,
-          tier: authResult.tier,
-        });
-        return;
-      }
-
-      // Adapter-narrow validation. native-price's commitmentSchema today
-      // accepts the LEGACY direction-input shape (asset_id|market_id +
-      // side + horizon_hours), NOT the universal Commitment. Phase 4
-      // bypasses that transform — we already have a canonical Commitment
-      // from CommitmentSchema above; we just normalize the runtime shape.
-      const v2Commitment: Commitment = {
-        marketRef: body.marketRef,
-        predictedOutcome: {
-          kind: body.predictedOutcome!.kind,
-          payoutNumerators: body.predictedOutcome!.payoutNumerators.map(
-            (s) => BigInt(s),
-          ),
-          payoutDenominator: BigInt(body.predictedOutcome!.payoutDenominator),
-          ...(body.predictedOutcome!.scalarValue !== undefined
-            ? { scalarValue: BigInt(body.predictedOutcome!.scalarValue) }
-            : {}),
-        },
-        horizon: body.horizon!,
-        confidence: body.confidence!,
-      };
-
-      // Bridge to the legacy submitCall pipeline. The Phase 5 universal
-      // hot path reads from `commitment_json` regardless of submit
-      // surface; we still produce a legacy SubmittedCall here so the
-      // existing dedup / rate-limit / preflight code lights up unchanged.
-      const side = derivePayoutSide(v2Commitment.predictedOutcome.payoutNumerators);
-      if (!side) {
-        throw new VerdictError(
-          "v2 native-price predictedOutcome must reduce to BUY ([1,0]) or SELL ([0,1]); got " +
-            JSON.stringify(body.predictedOutcome!.payoutNumerators),
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      // Confidence: native-price submitCall narrows to [0.51, 0.95] via
-      // SubmittedCallSchema. The universal Commitment range is [0,1] so
-      // a casual caller submitting confidence < 0.51 would be rejected
-      // by the schema. We let SubmittedCallSchema do that — single
-      // validation point.
+      // Wave 2a — single FHE-direct submission path. Legacy
+      // plaintext bridge (Commitment → derivePayoutSide → SubmittedCall
+      // → submitCall) deleted; the privacy_mode check at the top of
+      // this handler refuses any non-fhe_direct submission before we
+      // reach this point.
       const submittedAt =
         body.submitted_at ?? now().toISOString().replace(/\.\d+Z$/, "Z");
-      const legacyPayload: Record<string, unknown> = {
+      const fhePayload: Record<string, unknown> = {
         schema_version: SCHEMA_VERSION,
         agent_id: authResult.agent_id,
         client_order_id: body.client_order_id,
         market_id: market.market_id,
-        side,
-        confidence: body.confidence!,
+        privacy_mode: "fhe_direct",
         submitted_at: submittedAt,
-        rationale: body.rationale,
-        strategy_tag: body.strategy_tag,
+        ...(body.rationale !== undefined ? { rationale: body.rationale } : {}),
+        ...(body.strategy_tag !== undefined
+          ? { strategy_tag: body.strategy_tag }
+          : {}),
       };
-      if (body.privacy_mode) {
-        legacyPayload.privacy_mode = body.privacy_mode;
-      }
-
-      const result = await submitCall({
+      const fheResult = await submitCall({
         db: deps.db,
         ctx: deps.ctx,
         identity: { agent_id: authResult.agent_id },
-        payload: legacyPayload,
-        precomputedCommitment: v2Commitment,
-        outcomeLabels: ["UP", "DOWN"],
+        payload: fhePayload,
+        fheDirect: { fhe: body.fhe, market_id: market.market_id },
       });
-      const httpStatus = result.idempotent_hit ? 200 : 200;
-      // V2 response shape per the brief: { call_id, call }. Wave 4b dropped
-      // the receipts subsystem; downstream consumers chain on call_id.
-      res.status(httpStatus).json({
-        call_id: result.call.call_id,
-        call: result.call,
-        idempotent_hit: result.idempotent_hit,
+      res.status(fheResult.idempotent_hit ? 200 : 201).json({
+        call_id: fheResult.call.call_id,
+        // Operator-blind response: no synthesized plaintext fields.
+        call: {
+          schema_version: fheResult.call.schema_version,
+          scoring_version: fheResult.call.scoring_version,
+          call_id: fheResult.call.call_id,
+          agent_id: fheResult.call.agent_id,
+          client_order_id: fheResult.call.client_order_id,
+          submitted_at: fheResult.call.submitted_at,
+          accepted_at: fheResult.call.accepted_at,
+          status: fheResult.call.status,
+          ...(fheResult.call.rationale !== undefined
+            ? { rationale: fheResult.call.rationale }
+            : {}),
+          ...(fheResult.call.strategy_tag !== undefined
+            ? { strategy_tag: fheResult.call.strategy_tag }
+            : {}),
+          privacy_mode: "fhe_direct",
+        },
+        idempotent_hit: fheResult.idempotent_hit,
         tier: authResult.tier,
       });
     }),
@@ -558,14 +452,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     // /readyz on drand UNREACHABLE (that's an opt-in upgrade), but
     // we DO surface the state so operators see the degradation.
     //
-    // Z0 — extend with an `fhe` sub-block so operators can tell at a
-    // glance whether the operator-blind path is wired. `provider`,
-    // `active_keyset_id`, and `threshold_mode` mirror the /v1/meta
-    // shape so SDKs read both surfaces consistently. We do NOT fail
-    // /readyz on a `mock` threshold_mode here — that gate ships in
-    // Z5 (MURMUR_PROD_REQUIRE_OPERATOR_BLIND).
-    const fheEnabled = process.env.MURMUR_FHE_DIRECT_ENABLED === "1";
+    // Wave 2a — FHE is mandatory; `fhe_direct_enabled` is now always
+    // true in the readyz/meta privacy block. The check kept for wire-
+    // shape stability with older SDK clients that read the field.
     const fheProv = deps.ctx.fheProvider ?? null;
+    const fheEnabled = fheProv !== null;
     let fheActiveKeysetId: string | null = null;
     if (fheProv) {
       try {
@@ -668,11 +559,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     // `privacy` block is additive; SDK clients reading existing fields
     // (schema_version, strategy_tags, assets, verified_volume_24h)
     // stay untouched. `active_keyset_id` is the row Z1 will FK against;
-    // it's null when the flag is off OR when the chosen provider has
-    // no keyset in `status='active'` yet (zama_local stub seeds in
-    // `pending`).
-    const fheEnabled = process.env.MURMUR_FHE_DIRECT_ENABLED === "1";
+    // Wave 2a — FHE is mandatory. `fhe_direct_enabled` is true iff a
+    // provider was loaded at boot; null means the daemon misconfigured
+    // and /v2/calls submissions will reject.
     const fheProv = deps.ctx.fheProvider ?? null;
+    const fheEnabled = fheProv !== null;
     let activeKeysetId: string | null = null;
     if (fheProv) {
       try {
@@ -1570,484 +1461,30 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   // The reveal is allowed BEFORE t1 too — the agent just shows their
   // hand early. Public surfaces still scrub pending rows (Phase E);
   // the reveal is private until resolution.
+  // Wave 2a — /v1/calls/:call_id/reveal and /v1/calls/:call_id/envelope
+  // both return 410 Gone. Committed-mode submissions don't exist in the
+  // FHE-mandatory world: there's no plaintext preimage to reveal and no
+  // age/drand envelope to publicly attest. fhe_direct calls use the
+  // threshold-decrypt flow under /v1/fhe/* instead (see Z3 routes).
   router.post(
     "/v1/calls/:call_id/reveal",
-    json,
-    asyncHandler(async (req, res) => {
-      const call_id = String(req.params.call_id ?? "");
-      // Auth: Bearer only on this endpoint (no HMAC). Wallet-only +
-      // verified agents both authenticate via X-Murmur-Api-Key.
-      const apiKey = req.header("X-Murmur-Api-Key");
-      const agentIdHdr = req.header("X-Murmur-Agent-Id");
-      if (!apiKey || !agentIdHdr) {
-        throw new VerdictError(
-          "X-Murmur-Agent-Id + X-Murmur-Api-Key required",
-          ERROR_CODES.agent_not_authorized,
-          401,
-        );
-      }
-      const identity = verifyAgentApiKey(deps.db, agentIdHdr, apiKey);
-
-      const subRow = deps.db
-        .prepare(
-          `SELECT s.call_id, s.agent_id, s.privacy_mode, s.commit_hash, s.accepted_at,
-                  s.market_id, s.market_config_version,
-                  a.wallet_address AS agent_wallet,
-                  a.chain_id       AS agent_chain_id
-           FROM submissions s
-           LEFT JOIN agents a ON a.agent_id = s.agent_id
-           WHERE s.call_id = ?`,
-        )
-        .get(call_id) as
-        | {
-            call_id: string;
-            agent_id: string;
-            privacy_mode: string | null;
-            commit_hash: string | null;
-            accepted_at: string;
-            // P4 Item 4: pulled to cross-check the agent's preimage
-            // claim against what the daemon stamped at acceptance.
-            market_id: string | null;
-            market_config_version: number | null;
-            // Wave 4b — agent wallet binding pulled directly from the
-            // agents row (receipts subsystem gone; nothing else is the
-            // canonical source for the agent's wallet).
-            agent_wallet: string | null;
-            agent_chain_id: string | null;
-          }
-        | undefined;
-      if (!subRow) {
-        throw new VerdictError("call not found", ERROR_CODES.unknown_agent, 404);
-      }
-      if (subRow.agent_id !== identity.agent_id) {
-        throw new VerdictError(
-          "call not owned by authenticated agent",
-          ERROR_CODES.agent_not_authorized,
-          403,
-        );
-      }
-      if (subRow.privacy_mode !== "committed" || !subRow.commit_hash) {
-        throw new VerdictError(
-          "call is not committed-mode (no preimage to reveal)",
-          ERROR_CODES.schema_invalid,
-          409,
-        );
-      }
-
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const rawPreimage = body.commit_preimage;
-      if (!rawPreimage || typeof rawPreimage !== "object") {
-        throw new VerdictError(
-          "commit_preimage object required",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-
-      // P3 Phase 1.5: dispatch on the stored preimage schema. v0.2 commits
-      // bind (asset_id, horizon_hours); v0.2.5 commits bind (market_id,
-      // market_config_version). The daemon recorded which schema it used
-      // on the call_private_envelopes row at submit time.
-      //
-      // Hardening (Codex audit P3 1.5): unknown stored schema fails
-      // closed — never default to legacy. Validation runs through the
-      // strict Zod schema (parseAndRebuildPreimageObject) so malformed
-      // agent inputs land as named errors instead of being papered over
-      // by lossy String()/Number() coercion.
-      const envSchemaRow = deps.db
-        .prepare(
-          `SELECT commit_preimage_schema FROM call_private_envelopes WHERE call_id = ?`,
-        )
-        .get(call_id) as { commit_preimage_schema: string } | undefined;
-      const storedSchema = envSchemaRow?.commit_preimage_schema;
-      if (
-        storedSchema !== COMMIT_PREIMAGE_SCHEMA &&
-        storedSchema !== MARKET_COMMIT_PREIMAGE_SCHEMA
-      ) {
-        throw new VerdictError(
-          storedSchema
-            ? `unsupported preimage schema on envelope: ${storedSchema}`
-            : "no preimage schema recorded for this call",
-          ERROR_CODES.internal_error,
-          500,
-        );
-      }
-
-      // Lowercase the wallet + salt before validation — the daemon stored
-      // the commit over the lowercase form (see submitCall F4); agents
-      // sending uppercase get normalized once at the edge.
-      const preimageInputRaw = rawPreimage as Record<string, unknown>;
-      const preimageInput: Record<string, unknown> = {
-        ...preimageInputRaw,
-        agent_wallet:
-          typeof preimageInputRaw.agent_wallet === "string"
-            ? preimageInputRaw.agent_wallet.toLowerCase()
-            : preimageInputRaw.agent_wallet,
-        salt:
-          typeof preimageInputRaw.salt === "string"
-            ? preimageInputRaw.salt.toLowerCase()
-            : preimageInputRaw.salt,
-      };
-
-      const validated = parseAndRebuildPreimageObject(
-        preimageInput,
-        storedSchema,
-      );
-      if (!validated) {
-        throw new VerdictError(
-          "commit_preimage malformed or wrong schema",
-          ERROR_CODES.schema_invalid,
-          400,
-          { expected_schema: storedSchema },
-        );
-      }
-
-      // Cross-checks that don't fit in the Zod schema (would couple it to
-      // call-specific runtime state). Hash-only would catch them, but
-      // explicit messages beat hash-mismatch for misbehaving agents.
-      if (validated.preimage.call_id !== call_id) {
-        throw new VerdictError(
-          "commit_preimage.call_id does not match URL",
-          ERROR_CODES.schema_invalid,
-          422,
-        );
-      }
-      if (validated.preimage.t0 !== subRow.accepted_at) {
-        throw new VerdictError(
-          "commit_preimage.t0 does not match daemon-canonical accepted_at",
-          ERROR_CODES.schema_invalid,
-          422,
-        );
-      }
-
-      let revealSide: "BUY" | "SELL";
-      let revealConfidence: number;
-      let revealSalt: string;
-      let revealT0: string;
-      let revealAssetId: string;
-      let revealHorizonHours: number;
-      let revealAgentWallet: string;
-      let revealChainId: string;
-
-      if (validated.kind === "market") {
-        // P4 Item 4 (Codex audit): validate the agent's preimage market_id
-        // + market_config_version against the SUBMISSION ROW (what the
-        // daemon stamped at acceptance), not the live markets registry.
-        // A live-registry-only check would let an agent reveal under a
-        // post-bumpConfig version that wasn't what the daemon committed
-        // to at submit time — silent policy substitution.
-        if (
-          subRow.market_id !== validated.preimage.market_id ||
-          subRow.market_config_version !==
-            validated.preimage.market_config_version
-        ) {
-          throw new VerdictError(
-            "commit_preimage.market_id / market_config_version do not match the submission row",
-            ERROR_CODES.schema_invalid,
-            422,
-            {
-              expected_market_id: subRow.market_id,
-              expected_market_config_version: subRow.market_config_version,
-              got_market_id: validated.preimage.market_id,
-              got_market_config_version:
-                validated.preimage.market_config_version,
-            },
-          );
-        }
-        // For asset_id synthesis on the call_reveals row, the historical
-        // snapshot at the stamped version is the right source — never
-        // the live row (might have drifted via bumpConfig). Fall back
-        // to live registry only if history is missing (shouldn't happen
-        // for any post-migration-012 row).
-        const histSnapshot =
-          subRow.market_id !== null && subRow.market_config_version !== null
-            ? marketsRepo.getConfigAt(
-                deps.db,
-                subRow.market_id,
-                subRow.market_config_version,
-              )
-            : null;
-        const market = histSnapshot ?? marketsRepo.get(deps.db, validated.preimage.market_id);
-        if (!market) {
-          throw new VerdictError(
-            `commit_preimage.market_id ${validated.preimage.market_id} not in registry or history`,
-            ERROR_CODES.asset_not_supported,
-            422,
-          );
-        }
-        revealSide = validated.preimage.side;
-        revealConfidence = validated.preimage.confidence;
-        revealSalt = validated.preimage.salt;
-        revealT0 = validated.preimage.t0;
-        revealAssetId = market.asset_id;
-        // Synthesize legacy-shape horizon_hours for the call_reveals row.
-        // Sub-hour markets give horizon_hours=0; harmless today since
-        // those markets aren't 'listed' yet (Phase 2 territory).
-        // Codex follow-up F2: explicit fail-closed mapping. Replaces
-        // Math.round(market.horizon_seconds / 3600). For seeded markets
-        // the values match; for arbitrary future horizons this throws
-        // instead of silently choosing the wrong sentinel.
-        revealHorizonHours = legacyHorizonHoursForMarket(market as MarketRow);
-        revealAgentWallet = validated.preimage.agent_wallet;
-        revealChainId = validated.preimage.chain_id;
-      } else {
-        revealSide = validated.preimage.side;
-        revealConfidence = validated.preimage.confidence;
-        revealSalt = validated.preimage.salt;
-        revealT0 = validated.preimage.t0;
-        revealAssetId = validated.preimage.asset_id;
-        revealHorizonHours = validated.preimage.horizon_hours;
-        revealAgentWallet = validated.preimage.agent_wallet;
-        revealChainId = validated.preimage.chain_id;
-      }
-
-      const recomputed = validated.hash;
-      const preimageCanonical = validated.canonical;
-
-      // Wallet binding cross-check is independent of the preimage schema.
-      // Wave 4b: receipts table is gone — pull the agent's wallet binding
-      // directly from the agents row instead. Same trust boundary
-      // (admin-rotated wallet on the agent IS the authoritative binding
-      // for any committed call this agent owns).
-      if (!subRow.agent_wallet || !subRow.agent_chain_id) {
-        throw new VerdictError(
-          "committed-mode call agent is missing a wallet binding",
-          ERROR_CODES.schema_invalid,
-          409,
-        );
-      }
-      if (
-        revealAgentWallet !== subRow.agent_wallet ||
-        revealChainId !== subRow.agent_chain_id
-      ) {
-        throw new VerdictError(
-          "commit_preimage wallet/chain_id does not match the agent binding",
-          ERROR_CODES.schema_invalid,
-          422,
-        );
-      }
-      if (recomputed.toLowerCase() !== subRow.commit_hash.toLowerCase()) {
-        throw new VerdictError(
-          "commit_preimage hash does not match stored commit_hash (commit_mismatch)",
-          ERROR_CODES.schema_invalid,
-          422,
-        );
-      }
-
-      const revealed_at = nowIso(now());
-      const rationale =
-        typeof body.rationale === "string" && body.rationale.length > 0
-          ? body.rationale.slice(0, 240)
-          : null;
-      const strategy_tag =
-        typeof body.strategy_tag === "string" && body.strategy_tag.length > 0
-          ? body.strategy_tag.slice(0, 64)
-          : null;
-      const revealRow: CallRevealRow = {
-        call_id,
-        side: revealSide,
-        asset_id: revealAssetId,
-        horizon_hours: revealHorizonHours,
-        confidence: revealConfidence,
-        rationale,
-        strategy_tag,
-        salt: revealSalt,
-        t0: revealT0,
-        agent_wallet: revealAgentWallet,
-        chain_id: revealChainId,
-        commit_preimage_json: preimageCanonical,
-        commit_preimage_hash: recomputed,
-        revealed_at,
-        revealed_via: "agent",
-        reveal_hash_valid: 1,
-      };
-
-      // Idempotency: existing call_reveals row with identical preimage
-      // hash is a no-op replay. Any other shape is a conflict.
-      const existing = callRevealsRepo.byCallId(deps.db, call_id);
-      if (existing) {
-        if (existing.reveal_hash_valid === 0) {
-          repairInvalidReveal(deps.db, revealRow);
-          res.status(200).json({
-            call_id,
-            revealed_via: "agent",
-            revealed_at,
-            reveal_hash_valid: true,
-            commit_hash: subRow.commit_hash,
-            note: "repaired_invalid_reveal",
-          });
-          return;
-        }
-        if (
-          existing.commit_preimage_hash &&
-          existing.commit_preimage_hash.toLowerCase() === recomputed.toLowerCase()
-        ) {
-          res.status(200).json({
-            call_id,
-            revealed_via: existing.revealed_via,
-            revealed_at: existing.revealed_at,
-            reveal_hash_valid: true,
-            commit_hash: subRow.commit_hash,
-            note: "idempotent_replay",
-          });
-          return;
-        }
-        throw new VerdictError(
-          "call already revealed with a different preimage",
-          ERROR_CODES.duplicate,
-          409,
-        );
-      }
-
-      try {
-        callRevealsRepo.insert(deps.db, revealRow);
-      } catch (err) {
-        const raced = callRevealsRepo.byCallId(deps.db, call_id);
-        if (raced?.reveal_hash_valid === 0) {
-          repairInvalidReveal(deps.db, revealRow);
-          res.status(200).json({
-            call_id,
-            revealed_via: "agent",
-            revealed_at,
-            reveal_hash_valid: true,
-            commit_hash: subRow.commit_hash,
-            note: "repaired_invalid_reveal_race",
-          });
-          return;
-        }
-        if (
-          raced?.commit_preimage_hash &&
-          raced.commit_preimage_hash.toLowerCase() === recomputed.toLowerCase()
-        ) {
-          res.status(200).json({
-            call_id,
-            revealed_via: raced.revealed_via,
-            revealed_at: raced.revealed_at,
-            reveal_hash_valid: raced.reveal_hash_valid === 1,
-            commit_hash: subRow.commit_hash,
-            note: "idempotent_race",
-          });
-          return;
-        }
-        throw err;
-      }
-
-      res.status(201).json({
-        call_id,
-        revealed_via: "agent",
-        revealed_at,
-        reveal_hash_valid: true,
-        commit_hash: subRow.commit_hash,
+    asyncHandler(async (_req, res) => {
+      res.status(410).json({
+        code: "endpoint_removed",
+        message:
+          "/v1/calls/:call_id/reveal is retired alongside committed-mode submissions. fhe_direct calls release the bounded score via the threshold-decrypt routes (/v1/fhe/*); the prediction itself stays encrypted.",
       });
     }),
   );
 
-  // ── Public envelope read (Phase B-3 + Codex F1) ──────────────────────
-  // Returns the encrypted ciphertexts + commit metadata for a committed-
-  // mode call. The whole point of the drand commitment is daemon-less
-  // reveal: anyone with this endpoint's payload + the receipt's
-  // drand.ciphertext_hash can verify the bytes match what the daemon
-  // committed to, then run tlock-decrypt with the released drand
-  // beacon for the bound round. No daemon trust required past round-
-  // emission time.
-  //
-  // For non-committed (legacy_plaintext) calls, returns 404 — there's
-  // no envelope.
-  router.get("/v1/calls/:call_id/envelope", (req, res) => {
-    const call_id = String(req.params.call_id ?? "");
-    const subRow = deps.db
-      .prepare(
-        `SELECT call_id, privacy_mode, commit_hash, commit_scheme
-         FROM submissions WHERE call_id = ?`,
-      )
-      .get(call_id) as
-      | {
-          call_id: string;
-          privacy_mode: string | null;
-          commit_hash: string | null;
-          commit_scheme: string | null;
-        }
-      | undefined;
-    if (!subRow) {
-      res.status(404).json({ code: "not_found", message: "call not found" });
-      return;
-    }
-    if (subRow.privacy_mode !== "committed") {
-      res.status(404).json({
-        code: "no_envelope",
-        message: "call is not committed-mode (no envelope)",
-      });
-      return;
-    }
-    const envRow = deps.db
-      .prepare(
-        `SELECT encrypted_body, encrypted_body_alg, encrypted_body_hash,
-                daemon_key_id, commit_preimage_schema, fallback_after,
-                received_at,
-                drand_chain_hash, drand_round, drand_ciphertext, drand_ciphertext_hash
-         FROM call_private_envelopes WHERE call_id = ?`,
-      )
-      .get(call_id) as
-      | {
-          encrypted_body: string;
-          encrypted_body_alg: string;
-          encrypted_body_hash: string;
-          daemon_key_id: string;
-          commit_preimage_schema: string;
-          fallback_after: string | null;
-          received_at: string;
-          drand_chain_hash: string | null;
-          drand_round: number | null;
-          drand_ciphertext: string | null;
-          drand_ciphertext_hash: string | null;
-        }
-      | undefined;
-    if (!envRow) {
-      res.status(404).json({
-        code: "envelope_missing",
-        message: "envelope row not found for committed call",
-      });
-      return;
-    }
-    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=3600");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.json({
-      schema_version: SCHEMA_VERSION,
-      call_id: subRow.call_id,
-      privacy_mode: subRow.privacy_mode,
-      commit: {
-        hash: subRow.commit_hash,
-        scheme: subRow.commit_scheme,
-        preimage_schema: envRow.commit_preimage_schema,
-      },
-      // age envelope — daemon-trusted decrypt path past fallback_after.
-      // Anyone holding the daemon's age identity can decrypt at any time;
-      // listed here for completeness so a verifier can attest the
-      // ciphertext bytes match the receipt's `fallback.encrypted_body_hash`.
-      age: {
-        encrypted_body: envRow.encrypted_body,
-        encrypted_body_alg: envRow.encrypted_body_alg,
-        encrypted_body_hash: envRow.encrypted_body_hash,
-        daemon_key_id: envRow.daemon_key_id,
-        fallback_after: envRow.fallback_after,
-      },
-      // drand timelock — daemon-LESS decrypt path. Anyone past the
-      // bound round can fetch the drand beacon and decrypt without
-      // operator cooperation. Null when drand was disabled at submit.
-      drand:
-        envRow.drand_chain_hash &&
-        envRow.drand_round !== null &&
-        envRow.drand_ciphertext
-          ? {
-              chain_hash: envRow.drand_chain_hash,
-              round: envRow.drand_round,
-              ciphertext: envRow.drand_ciphertext,
-              ciphertext_hash: envRow.drand_ciphertext_hash,
-            }
-          : null,
-      received_at: envRow.received_at,
+  router.get("/v1/calls/:call_id/envelope", (_req, res) => {
+    res.status(410).json({
+      code: "endpoint_removed",
+      message:
+        "/v1/calls/:call_id/envelope is retired alongside committed-mode submissions. fhe_direct ciphertext hashes live on the call's submission row + fhe_call_ciphertexts; the threshold release transcript at /v1/calls/:call_id (fhe_extras) is the public attestation path.",
     });
   });
+
 
   // Wave 4b — /v1/calls/:call_id/verify is gone alongside the receipts
   // subsystem. Call/reveal/resolution rows are the canonical evidence

@@ -11,19 +11,22 @@ import { hashSharedSecret } from "../verdict/submissions.js";
 import { VerdictEventBus } from "../verdict/events.js";
 import { getLeaderboard } from "../verdict/leaderboard.js";
 import { startWebhookDispatcher } from "../verdict/webhooks.js";
-import {
-  registerBaselines,
-  runBaselinesOnce,
-} from "../benchmark/agents.js";
+import { registerBaselines } from "../benchmark/agents.js";
+// Wave 2a — runBaselinesOnce dropped from the daemon's tick. The
+// import is gone alongside the disabled benchmark ticker; the
+// register-only call keeps the kind='benchmark' rows in the DB so
+// historical leaderboard entries don't disappear.
 import { loadAgeContextFromEnv } from "../verdict/age-envelope.js";
 import { loadDrandContextFromEnv } from "../verdict/drand-envelope.js";
-// Codex Z0 review FAIL #1 — do NOT statically import the FHE loader.
-// A static import drags fhe/{provider,mock-provider,zama-local-provider}
-// into the daemon bundle on every boot regardless of
-// MURMUR_FHE_DIRECT_ENABLED; that violates the "byte-identical legacy
-// boot" invariant. The loader is dynamic-imported inside the boot
-// function only when the flag is set. Type-only imports stay safe.
+// Wave 2a (consolidated reshape) — FHE is now mandatory. The dynamic-
+// import gate from Z0 is gone; the loader runs unconditionally at
+// boot. Z0's "byte-identical legacy boot" invariant no longer applies
+// because there IS no legacy boot anymore — FHE-direct is the only
+// privacy mode the daemon accepts.
 import type { FheProvider } from "../verdict/fhe/provider.js";
+import { loadFheProviderFromEnv } from "../verdict/fhe/loader.js";
+import { MockQuorumPool } from "../verdict/fhe/mock-quorum.js";
+import type { ThresholdHolder } from "../verdict/fhe/threshold.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server } from "node:http";
@@ -114,33 +117,31 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // alongside the provider; the resolver and the routes share the same
   // instance. The dynamic import keeps the legacy boot path free of any
   // threshold-related imports — same posture as the provider load.
-  let quorumPool: {
-    holders(): ReadonlyArray<
-      import("../verdict/fhe/threshold.js").ThresholdHolder
-    >;
-  } | null = null;
-  if (process.env.MURMUR_FHE_DIRECT_ENABLED === "1") {
-    const { loadFheProviderFromEnv } = await import("../verdict/fhe/loader.js");
-    fheProvider = loadFheProviderFromEnv(db);
-    if (fheProvider) {
-      console.log(
-        `[daemon] fhe provider ready (name=${fheProvider.name}, threshold_mode=${fheProvider.threshold_mode})`,
-      );
-    } else {
-      console.log(
-        "[daemon] MURMUR_FHE_DIRECT_ENABLED=1 but loadFheProviderFromEnv returned null — fhe_direct will reject",
-      );
-    }
-    if (process.env.MURMUR_FHE_THRESHOLD_MODE === "mock_5of9") {
-      const { MockQuorumPool } = await import(
-        "../verdict/fhe/mock-quorum.js"
-      );
-      const nowIso = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-      quorumPool = MockQuorumPool.init(db, nowIso);
-      console.log(
-        `[daemon] mock-quorum pool ready (9 holders; mock_5of9 — NOT production-ready, Z5 prod gate refuses)`,
-      );
-    }
+  // Wave 2a — FHE provider + quorum pool eager-loaded. No flag gate.
+  let quorumPool: { holders(): ReadonlyArray<ThresholdHolder> } | null = null;
+  fheProvider = loadFheProviderFromEnv(db);
+  if (fheProvider) {
+    console.log(
+      `[daemon] fhe provider ready (name=${fheProvider.name}, threshold_mode=${fheProvider.threshold_mode})`,
+    );
+  } else {
+    console.error(
+      "[daemon] FATAL: loadFheProviderFromEnv returned null. FHE is mandatory; /v2/calls will reject every submission. Configure MURMUR_FHE_PROVIDER (and any provider-specific env) and restart.",
+    );
+  }
+  // Quorum pool defaults to mock_5of9 — this is the in-process Z3
+  // posture, the only one reachable in code today. Real KMS/committee
+  // is v0.3 work. The Z5 production gate refuses readyz under this
+  // posture if MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1.
+  if (
+    process.env.MURMUR_FHE_THRESHOLD_MODE === "mock_5of9" ||
+    !process.env.MURMUR_FHE_THRESHOLD_MODE
+  ) {
+    const nowIso = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    quorumPool = MockQuorumPool.init(db, nowIso);
+    console.log(
+      "[daemon] mock-quorum pool ready (9 holders; mock_5of9 — NOT production-ready, Z5 prod gate refuses)",
+    );
   }
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
   // matching subscription on call.accepted / call.resolved.
@@ -334,10 +335,10 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // handlers — `/v1/account/*` is a fresh path prefix with no collision.
   app.use(accountRouter({ db }));
 
-  // Z3 — FHE threshold-decrypt routes. Mounted only when the wave's
-  // feature flag is on; the route file is dynamic-imported so legacy
-  // boot stays untouched.
-  if (process.env.MURMUR_FHE_DIRECT_ENABLED === "1") {
+  // Wave 2a — FHE threshold-decrypt routes mounted unconditionally.
+  // FHE is the only privacy mode now; the dynamic-import gate from Z3
+  // is gone.
+  {
     const { createFheThresholdRouter } = await import(
       "../verdict/routes/fhe-threshold.js"
     );
@@ -391,19 +392,19 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         "[daemon] resolver disabled — set BASE_MAINNET_RPC_URL to enable",
       );
     }
-    // Wave 4b-2 — market refresh ticker dropped (no Santiment cache to refresh).
-    // Wave 4c-A — baselines re-armed against the same Chainlink/Pyth feeds the
-    // resolver consumes; pass the existing OracleClient instance so baselines
-    // never construct a parallel HTTP/RPC pool. When `oracle` is null (dev
-    // mode without BASE_MAINNET_RPC_URL), runBaselinesOnce no-ops gracefully.
-    tickers.push(
-      setIntervalGuarded(BENCHMARK_TICK_SEC * 1000, "benchmark", async () => {
-        await runBaselinesOnce({
-          db,
-          ...(oracle ? { oracle } : {}),
-        });
-      }),
-    );
+    // Wave 2a — benchmark ticker disabled. The baseline bots
+    // (murmur-momentum, murmur-contrarian, murmur-risk-off) submit
+    // plaintext `side / asset_id / horizon_hours / confidence` payloads
+    // via submitCall on the legacy path. Under FHE-mandatory those
+    // submissions would be rejected at /v2/calls. Rewriting them to
+    // encrypt their predictedOutcome under the mock FHE provider is a
+    // post-Wave-2 follow-up — they'll re-arm as proper FHE-direct
+    // submitters at that point. Until then they stay registered as
+    // kind='benchmark' agents (decorative leaderboard rows) but
+    // produce no new calls.
+    // Original ticker for reference:
+    //   setIntervalGuarded(BENCHMARK_TICK_SEC * 1000, "benchmark",
+    //     async () => { await runBaselinesOnce({ db, oracle }); });
     // Stats heartbeat — emits a `stats.tick` every 10s so the landing-page
     // hero counter stays current even when no calls flow through. Cheap:
     // single COUNT-with-WHERE query; no oracle calls.
