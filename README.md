@@ -295,14 +295,25 @@ Murmur ingests **tagged-only** public posts. We do not LLM-parse free-form tweet
 #murmurcall ETH SELL 168h 60% rolling exhaustion thesis
 ```
 
-Operators graduate from shadow → verified by:
+Operators graduate from shadow → verified via the Telegram-identity
+claim flow:
 
-1. POST `/v1/agents/<slug>/claim/init` with `{target_identity, wallet_to_bind}`.
-2. Post the returned `challenge_text` on the target identity verbatim.
-3. Sign the returned `nonce` with the bound wallet (EIP-191 personal_sign).
-4. POST `/v1/agents/<slug>/claim/finalize` with `{challenge_id, signature, post_url}`.
+1. POST `/v1/agents/<slug>/claim/init` with `{target_identity: {kind:
+   'telegram', value: '<channel>'}, wallet_to_bind}`.
+2. Post the returned `challenge_text` in the Telegram channel verbatim.
+3. Sign the returned canonical claim message with the bound wallet
+   (EIP-191 personal_sign).
+4. POST `/v1/agents/<slug>/claim/finalize` with
+   `{challenge_id, signature, post_url}`.
 
 The dashboard `/agents/<slug>/claim` page walks through this UI-side.
+
+**X (Twitter) claim flow is currently disabled.** The legacy
+`XPostVerifier` silently passed text-content verification, making
+shadow-X agents hijackable by anyone with a public tweet URL from the
+target handle. Re-enabled once the Privy X connector (OAuth-based
+handle proof) ships. Until then, X-handle owners use Telegram identity
+or contact an operator for a manual verified flip.
 
 ## Scoring formula (frozen, scoring_version = 1)
 

@@ -7,7 +7,10 @@ export function ClaimPage({ slug }: { slug: string }) {
   const [stage, setStage] = useState<"init" | "challenge" | "done">("init");
   const [error, setError] = useState<string | null>(null);
 
-  const [identityKind, setIdentityKind] = useState("x");
+  // Default to telegram — X (Twitter) claim flow is disabled until
+  // the Privy X connector lands (security review). See the select
+  // options below.
+  const [identityKind, setIdentityKind] = useState("telegram");
   const [identityValue, setIdentityValue] = useState("@");
   const [wallet, setWallet] = useState("");
 
@@ -120,10 +123,18 @@ export function ClaimPage({ slug }: { slug: string }) {
                   onChange={(e) => setIdentityKind(e.target.value)}
                   className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
                 >
-                  <option value="x">x (twitter)</option>
+                  {/* X (Twitter) claim flow is temporarily disabled —
+                      the previous text-content verifier silently passed
+                      (security review). Re-enabled once the Privy X
+                      connector OAuth path lands. */}
                   <option value="telegram">telegram</option>
                 </select>
               </CompactField>
+              <p className="px-2 py-1 ck-mono ck-dim text-xs">
+                X (Twitter) claim flow is temporarily disabled pending the
+                Privy X connector. Use Telegram identity OR contact an
+                operator if you need a manual claim.
+              </p>
               <CompactField label="identity_value">
                 <input
                   value={identityValue}

@@ -80,10 +80,13 @@ export interface ClaimFinalizeInput {
    * still finalize A — the URL slug was previously decorative
    * (codex slug-takeover review).
    *
-   * Optional ONLY for backward-compat with internal direct-service
-   * callers (smokes, admin tools). The route handlers always pass it.
+   * REQUIRED — codex post-Z5 follow-up review made this non-optional.
+   * Internal direct callers (smokes, admin tools) must construct the
+   * full ClaimFinalizeInput including url_slug; the optional pattern
+   * was a future-footgun where a forgotten arg silently skips the
+   * cross-slug check.
    */
-  url_slug?: string;
+  url_slug: string;
   now?: () => Date;
 }
 
@@ -296,13 +299,10 @@ export class ClaimService {
     // the agent the challenge was issued for. Previously the route's
     // :slug param was decorative — a challenge for slug-A could finalize
     // via /v1/agents/slug-B/claim/finalize and still bind slug-A.
-    // Same fix at walletOnlyFinalize below. Skip the check when
-    // url_slug is omitted (internal direct-service callers like smokes
-    // / admin tools — the route handlers always pass it).
-    if (
-      input.url_slug !== undefined &&
-      input.url_slug.toLowerCase() !== agent.display_slug.toLowerCase()
-    ) {
+    // url_slug is now REQUIRED (codex follow-up nit) — callers must
+    // construct it explicitly so a future code path can't silently
+    // skip the cross-slug check.
+    if (input.url_slug.toLowerCase() !== agent.display_slug.toLowerCase()) {
       throw new VerdictError(
         `URL slug "${input.url_slug}" does not match the challenge's agent "${agent.display_slug}"`,
         ERROR_CODES.schema_invalid,
@@ -364,17 +364,6 @@ export class ClaimService {
       );
     }
 
-    // 3. Single-use guard. Race-safe: only one parallel finalize can flip
-    //    pending → verified. Losers see the row already verified and
-    //    abort BEFORE any side-effects (api_key issuance, kind flip).
-    if (!claimsRepo.claimIfPending(this.db, row.challenge_id, "verified")) {
-      throw new VerdictError(
-        "challenge already finalized by a parallel request",
-        ERROR_CODES.agent_not_authorized,
-        409,
-      );
-    }
-
     // 3. Atomically: flip agent to verified, bind wallet identity, retro-import
     //    shadow calls in lookback window, issue API key, mark challenge verified.
     const verified_at = now.toISOString().replace(/\.\d+Z$/, "Z");
@@ -388,6 +377,38 @@ export class ClaimService {
     const importedCallIds: string[] = [];
 
     const tx = this.db.transaction(() => {
+      // SECURITY: claimIfPending moved INSIDE the tx (codex post-Z5
+      // review NIT). If a downstream check throws, the tx rolls back
+      // the status change instead of leaving the challenge stuck at
+      // 'verified' without any agent writes.
+      if (!claimsRepo.claimIfPending(this.db, row.challenge_id, "verified")) {
+        throw new VerdictError(
+          "challenge already finalized by a parallel request",
+          ERROR_CODES.agent_not_authorized,
+          409,
+        );
+      }
+
+      // SECURITY: claimability re-check inside the tx — same pattern
+      // as walletOnlyFinalize. The init guard only ran at challenge
+      // issuance; refuse if the agent was claimed by a parallel flow.
+      const reread = agentsRepo.byId(this.db, row.agent_id);
+      if (!reread) {
+        throw new VerdictError(
+          "agent vanished between challenge issuance and finalize",
+          ERROR_CODES.unknown_agent,
+          404,
+        );
+      }
+      if (reread.kind !== "shadow" || reread.api_key_hash !== null) {
+        throw new VerdictError(
+          `agent ${reread.display_slug} was claimed by a parallel request between this challenge's issuance and finalize`,
+          ERROR_CODES.agent_not_authorized,
+          409,
+          { current_kind: reread.kind, reason: "race_lost" },
+        );
+      }
+
       // Bind wallet identity if not present.
       const existingWallet = this.db
         .prepare(
@@ -537,16 +558,19 @@ export class ClaimService {
         //
         // 'rejected' is excluded since those submissions failed
         // validation before scoring; they don't carry reputation.
+        // True early-exit existence probe — COUNT(*) ignores LIMIT inside
+        // aggregation, so `SELECT 1 ... LIMIT 1` is the right pattern for
+        // "any non-rejected submission exists?" (codex review NIT).
         const submissionRow = this.db
           .prepare(
-            `SELECT COUNT(*) AS n
+            `SELECT 1 AS hit
                FROM submissions
               WHERE agent_id = ?
                 AND status <> 'rejected'
               LIMIT 1`,
           )
-          .get(existing.agent_id) as { n: number };
-        if (submissionRow.n > 0) {
+          .get(existing.agent_id) as { hit: number } | undefined;
+        if (submissionRow !== undefined) {
           throw new VerdictError(
             `agent ${input.display_slug} has accumulated submissions and cannot be re-claimed; ` +
               `contact an operator if you are the legitimate owner`,
@@ -716,11 +740,8 @@ export class ClaimService {
     }
 
     // SECURITY: route URL slug must match the challenge's agent. Same
-    // rationale as ClaimFinalizeInput — previously decorative.
-    if (
-      input.url_slug !== undefined &&
-      input.url_slug.toLowerCase() !== agent.display_slug.toLowerCase()
-    ) {
+    // rationale as ClaimFinalizeInput — REQUIRED, not optional.
+    if (input.url_slug.toLowerCase() !== agent.display_slug.toLowerCase()) {
       throw new VerdictError(
         `URL slug "${input.url_slug}" does not match the challenge's agent "${agent.display_slug}"`,
         ERROR_CODES.schema_invalid,
@@ -760,21 +781,27 @@ export class ClaimService {
       );
     }
 
-    // Atomic single-use guard.
-    if (!claimsRepo.claimIfPending(this.db, row.challenge_id, "verified")) {
-      throw new VerdictError(
-        "challenge already finalized by a parallel request",
-        ERROR_CODES.agent_not_authorized,
-        409,
-      );
-    }
-
     const verified_at = now.toISOString().replace(/\.\d+Z$/, "Z");
     const apiKey = randomBytes(32).toString("hex");
     const apiKeyHash = hashSharedSecret(apiKey);
     const chainId = input.chain_id ?? "eip155:8453";
 
     const tx = this.db.transaction(() => {
+      // SECURITY: claimIfPending moved INSIDE the tx so a different-
+      // challenge race that fails the agent re-check below rolls the
+      // challenge status back to 'pending' instead of leaving a
+      // spurious 'verified' row in the audit log (codex security
+      // review NIT). The atomic UPDATE-WHERE-status='pending' still
+      // serializes concurrent finalizes; what changes is the rollback
+      // semantics when subsequent in-tx checks throw.
+      if (!claimsRepo.claimIfPending(this.db, row.challenge_id, "verified")) {
+        throw new VerdictError(
+          "challenge already finalized by a parallel request",
+          ERROR_CODES.agent_not_authorized,
+          409,
+        );
+      }
+
       // SECURITY: atomic claimability re-check (codex slug-takeover
       // review). Two different wallets can race walletOnlyInit on the
       // same unclaimed agent (the init's per-(wallet, agent) pending
@@ -807,13 +834,15 @@ export class ClaimService {
           { current_kind: reread.kind, reason: "race_lost" },
         );
       }
+      // True early-exit existence probe (codex review NIT — COUNT(*)
+      // ignores LIMIT inside aggregation).
       const submissionRow = this.db
         .prepare(
-          `SELECT COUNT(*) AS n FROM submissions
+          `SELECT 1 AS hit FROM submissions
             WHERE agent_id = ? AND status <> 'rejected' LIMIT 1`,
         )
-        .get(row.agent_id) as { n: number };
-      if (submissionRow.n > 0) {
+        .get(row.agent_id) as { hit: number } | undefined;
+      if (submissionRow !== undefined) {
         throw new VerdictError(
           `agent ${reread.display_slug} accumulated submissions between this challenge's issuance and finalize; ` +
             `track_record_lock prevents the claim`,
@@ -901,8 +930,11 @@ export interface WalletOnlyClaimFinalizeInput {
   origin: string;
   /** CAIP-2 chain_id, optional — defaults must match init's default. */
   chain_id?: string;
-  /** SECURITY: route URL slug. See ClaimFinalizeInput.url_slug. */
-  url_slug?: string;
+  /**
+   * SECURITY: route URL slug. REQUIRED — see ClaimFinalizeInput.url_slug
+   * for the rationale.
+   */
+  url_slug: string;
   now?: () => Date;
 }
 
