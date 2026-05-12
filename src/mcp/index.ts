@@ -71,42 +71,15 @@ const TOOLS: Tool[] = [
       },
     },
   },
-  {
-    name: "submit_call",
-    description:
-      "Submit a market call to Murmur for scoring. Requires VERDICT_AGENT_ID + VERDICT_API_KEY in the server environment (set them when registering this MCP server). The call is scored against canonical Chainlink + Pyth feeds at horizon expiry.",
-    inputSchema: {
-      type: "object",
-      required: [
-        "client_order_id",
-        "asset_id",
-        "side",
-        "horizon_hours",
-        "confidence",
-      ],
-      properties: {
-        client_order_id: {
-          type: "string",
-          description: "Idempotency key — the same value returns the same call_id on retry.",
-        },
-        asset_id: { type: "string", description: "e.g. ETH or BTC" },
-        side: { type: "string", enum: ["BUY", "SELL"] },
-        horizon_hours: { type: "number", description: "1, 4, or 24 typical" },
-        confidence: { type: "number", minimum: 0, maximum: 1 },
-        rationale: { type: "string" },
-        strategy_tag: { type: "string" },
-        privacy_mode: {
-          type: "string",
-          enum: ["committed", "legacy_plaintext"],
-          description: "Use committed with a fresh 64-hex salt to hide the public call envelope until reveal.",
-        },
-        salt: {
-          type: "string",
-          description: "Required for privacy_mode=committed; 32 random bytes as 64 hex chars.",
-        },
-      },
-    },
-  },
+  // Wave 2a — submit_call MCP tool removed. It posted plaintext
+  // {asset_id, side, horizon_hours, confidence, privacy_mode} payloads
+  // to /v1/calls, which now returns 410. Submitting under the new
+  // FHE-mandatory contract requires the caller to encrypt the
+  // predictedOutcome ciphertext client-side against the active
+  // threshold keyset — that's a separate SDK surface, not in scope
+  // for the MCP tool's "give me an LLM-friendly POST helper" role.
+  // The read-only tools (get_leaderboard, get_agent, get_agent_score)
+  // remain.
 ];
 
 const server = new Server(
@@ -126,8 +99,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req: CallToolRequest) => 
         return text(await getAgent(args ?? {}));
       case "get_agent_score":
         return text(await getAgentScore(args ?? {}));
-      case "submit_call":
-        return text(await submitCallViaApi(args ?? {}));
+      // Wave 2a — case "submit_call" removed alongside submitCallViaApi.
       default:
         return error(`unknown tool: ${name}`);
     }
@@ -185,31 +157,12 @@ async function getAgentScore(args: Record<string, unknown>) {
   };
 }
 
-async function submitCallViaApi(args: Record<string, unknown>) {
-  if (!VERDICT_AGENT_ID || !VERDICT_API_KEY) {
-    throw new Error(
-      "submit_call requires VERDICT_AGENT_ID and VERDICT_API_KEY in the MCP server environment. Claim a profile via the dashboard first.",
-    );
-  }
-  const body = {
-    schema_version: 1,
-    agent_id: VERDICT_AGENT_ID,
-    client_order_id: requireString(args, "client_order_id"),
-    asset_id: requireString(args, "asset_id"),
-    side: requireString(args, "side"),
-    horizon_hours: requireNumber(args, "horizon_hours"),
-    confidence: requireNumber(args, "confidence"),
-    submitted_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
-    rationale: typeof args.rationale === "string" ? args.rationale : undefined,
-    strategy_tag: typeof args.strategy_tag === "string" ? args.strategy_tag : undefined,
-    privacy_mode: typeof args.privacy_mode === "string" ? args.privacy_mode : undefined,
-    salt: typeof args.salt === "string" ? args.salt : undefined,
-  };
-  return await postJson("/v1/calls", body, {
-    "X-Murmur-Agent-Id": VERDICT_AGENT_ID,
-    "X-Murmur-Api-Key": VERDICT_API_KEY,
-  });
-}
+// Wave 2a — submitCallViaApi removed alongside the submit_call MCP
+// tool and the deleted /v1/calls endpoint. FHE-mandatory submission
+// requires client-side ciphertext encryption against the active
+// threshold keyset; that's a separate SDK surface, not in scope for
+// the MCP tool's LLM-friendly-helper role. Read-only tools
+// (get_leaderboard / get_agent / get_agent_score) remain.
 
 async function getJson(path: string): Promise<unknown> {
   const res = await fetch(`${VERDICT_API_URL}${path}`);

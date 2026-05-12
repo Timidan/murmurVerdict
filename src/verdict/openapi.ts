@@ -149,23 +149,39 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           responses: { "200": { description: "FullCall payload" }, "404": { description: "Unknown call" } },
         },
       },
+      // Wave 2a — /v1/calls retired. The legacy plaintext submit
+      // endpoint returns 410 Gone; all reputation flows through
+      // /v2/calls with privacy_mode='fhe_direct'.
       "/v1/calls": {
         post: {
           tags: ["calls"],
-          summary: "Submit a market call. HMAC or X-Murmur-Api-Key auth required.",
-          requestBody: { required: true, content: { "application/json": {} } },
-          responses: { "201": { description: "Accepted call" }, "200": { description: "Idempotent hit" }, "400": { description: "Schema invalid" }, "403": { description: "Auth failed" }, "409": { description: "Duplicate inside dedup window" }, "429": { description: "Rate limited" } },
-          security: [{ hmacAuth: [] }, { apiKeyAuth: [] }],
+          deprecated: true,
+          summary: "RETIRED. Returns 410 Gone. Submit via /v2/calls with privacy_mode='fhe_direct' instead.",
+          responses: { "410": { description: "Endpoint removed — see /v1/skill.md for the new flow" } },
         },
       },
       "/v2/calls": {
         post: {
           tags: ["calls"],
           summary:
-            "Submit a market call as a universal Commitment (V2 §2.2). Tier-aware auth — casual (Privy or account API key) and legacy (single-key API agents) accepted; wallet HMAC must use /v1/calls until Phase 8 EIP-712.",
+            "Submit an FHE-direct market call. Reputation accrues to the agent's slug; the daemon never decrypts the prediction.",
           description:
-            "Body shape: { marketRef:{protocol,sourceId,configVersion}, predictedOutcome:{kind,payoutNumerators,payoutDenominator}, horizon:{iso}, confidence, client_order_id, rationale|strategy_tag }. Auth tiers: Authorization: Bearer <privy-jwt> → casual; X-Murmur-Api-Key → casual or legacy; HMAC → wallet_legacy (rejected 426). Adapter dispatch by marketRef.protocol; only 'native-price' registered at v2.0 (others 422). " +
-            "Privacy: pass `privacy_mode='fhe_direct'` together with the `fhe` block to submit operator-blind — the daemon stores only the ciphertext; the prediction is decryptable only by a 5-of-9 threshold committee after market resolution (no single party, including the operator, can decrypt). Otherwise the submission is plaintext.",
+            "Wave 2a (consolidated reshape): /v2/calls accepts only " +
+            "`privacy_mode='fhe_direct'`. The body carries `marketRef` " +
+            "(adapter + sourceId), an `fhe` block with the encrypted " +
+            "predicted-outcome ciphertext + binding metadata, and " +
+            "client_order_id + rationale|strategy_tag. " +
+            "Auth: `X-Murmur-Api-Key` (the key minted under your Privy " +
+            "account at POST /v1/account/agents/:slug/api-keys) or " +
+            "`Authorization: Bearer <privy-jwt>` for owner-on-behalf " +
+            "submissions. Wallet HMAC tier is retired (legacy /v1/calls " +
+            "returns 410). " +
+            "Privacy: the daemon stores only the ciphertext + sha256 " +
+            "binding; resolution scores the ciphertext against the " +
+            "public outcome; the bounded score is released by a 5-of-9 " +
+            "threshold committee (see /v1/meta.privacy.threshold_mode " +
+            "for the active posture — `mock_quorum` is dev, `production` " +
+            "is what makes the operator out of the trust root).",
           requestBody: {
             required: true,
             content: {
@@ -174,9 +190,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
                   type: "object",
                   required: [
                     "marketRef",
-                    "predictedOutcome",
-                    "horizon",
-                    "confidence",
+                    "fhe",
                     "client_order_id",
                   ],
                   properties: {
@@ -189,47 +203,6 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
                         configVersion: { type: "integer", minimum: 0 },
                       },
                     },
-                    predictedOutcome: {
-                      type: "object",
-                      required: [
-                        "kind",
-                        "payoutNumerators",
-                        "payoutDenominator",
-                      ],
-                      properties: {
-                        kind: {
-                          type: "string",
-                          enum: ["binary", "categorical", "scalar", "invalid"],
-                        },
-                        payoutNumerators: {
-                          type: "array",
-                          items: { type: "string", pattern: "^[0-9]+$" },
-                          minItems: 1,
-                        },
-                        payoutDenominator: {
-                          type: "string",
-                          pattern: "^[0-9]+$",
-                          example: "1",
-                        },
-                        scalarValue: {
-                          type: "string",
-                          pattern: "^[0-9]+$",
-                          nullable: true,
-                        },
-                      },
-                    },
-                    horizon: {
-                      type: "object",
-                      required: ["iso"],
-                      properties: {
-                        iso: { type: "string", format: "date-time" },
-                        resolvesAfterMin: {
-                          type: "integer",
-                          minimum: 0,
-                        },
-                      },
-                    },
-                    confidence: { type: "number", minimum: 0, maximum: 1 },
                     client_order_id: {
                       type: "string",
                       minLength: 8,
@@ -247,14 +220,10 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
                     },
                     privacy_mode: {
                       type: "string",
-                      enum: ["legacy_plaintext", "fhe_direct"],
+                      enum: ["fhe_direct"],
                       description:
-                        "Trust posture for the submitted prediction. " +
-                        "`legacy_plaintext` (default) writes side/confidence/horizon to the daemon DB and is operator-readable. " +
-                        "`fhe_direct` encrypts the prediction under a threshold keyset (Zama TFHE-rs); the daemon CANNOT decrypt the prediction alone — only a 5-of-9 threshold-key committee can release the bounded score after the market resolves. " +
-                        "When `fhe_direct` is set, supply the `fhe` block instead of `predictedOutcome`/`horizon`/`confidence`. " +
-                        "Casual tier accepts both modes; `committed` mode (age-encrypted body with reveal) requires Phase 8 wallet auth and is not yet exposed here. " +
-                        "See /v1/meta.privacy.threshold_mode for the active committee posture (mock / stub / mock_quorum / production).",
+                        "Only `fhe_direct` is accepted (Wave 2a). " +
+                        "Defaulted to `fhe_direct` when omitted.",
                     },
                     fhe: {
                       type: "object",
@@ -307,11 +276,11 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           responses: {
             "200": {
               description:
-                "Accepted call (or idempotent hit). Body: { call_id, call, idempotent_hit, tier }. Wave 4b retired the receipts subsystem — submission, reveal, and resolution rows are the canonical evidence; no acceptance_receipt is returned.",
+                "Accepted call (or idempotent hit). Body: { call_id, call, idempotent_hit, tier }. The `call` block is operator-blind — no plaintext side/asset/horizon/confidence.",
             },
             "400": {
               description:
-                "Schema invalid (malformed Commitment, casual tier requesting committed mode, missing rationale/strategy_tag, multi-agent account without slug header).",
+                "Schema invalid (privacy_mode not 'fhe_direct'; missing fhe block; missing rationale/strategy_tag; legacy predictedOutcome/horizon/confidence fields included; multi-agent account without slug header).",
             },
             "401": { description: "No matching auth tier verified" },
             "403": { description: "Slug not owned by account" },
@@ -321,14 +290,10 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
               description:
                 "marketRef.protocol references an adapter not registered in this build",
             },
-            "426": {
-              description:
-                "Wallet HMAC tier — must use /v1/calls until Phase 8 EIP-712 wallet auth",
-            },
             "429": { description: "Rate limited" },
             "503": {
               description:
-                "Attested tier — Phase 13 wires Olas Service Registry; not enabled in v2.0",
+                "Attested tier — Phase 13 wires Olas Service Registry; not enabled today",
             },
           },
           security: [

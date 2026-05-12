@@ -19,19 +19,20 @@ import { ZamaLocalFheProvider } from "./zama-local-provider.js";
 
 export type FheProviderEnv = "mock" | "zama_local";
 
+// Wave 2a — FHE is mandatory. The previous MURMUR_FHE_DIRECT_ENABLED
+// gate is gone; the loader now constructs a provider unconditionally
+// at boot. Operators select the backend via MURMUR_FHE_PROVIDER
+// ('mock' default for dev; 'zama_local' for the sidecar IPC; v0.3
+// adds 'zama_kms' for the real committee). isFheDirectEnabled is
+// retained for back-compat callers that just want "yes, FHE is on" —
+// it now always returns true.
 export function isFheDirectEnabled(): boolean {
-  return process.env.MURMUR_FHE_DIRECT_ENABLED === "1";
+  return true;
 }
 
 export function loadFheProviderFromEnv(
   db: Database.Database,
 ): FheProvider | null {
-  if (!isFheDirectEnabled()) {
-    // Hard contract: when the flag is off, the daemon must behave
-    // byte-identically to today's master. We do not even instantiate
-    // a provider, so no DB rows get touched.
-    return null;
-  }
   const raw = (process.env.MURMUR_FHE_PROVIDER ?? "mock").trim().toLowerCase();
   let kind: FheProviderEnv;
   if (raw === "mock" || raw === "zama_local") {

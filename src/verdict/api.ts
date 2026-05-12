@@ -2023,20 +2023,14 @@ const FheBlockSchema = z
   })
   .strict();
 
+// Wave 2a — /v2/calls is FHE-direct-only. The schema requires the
+// `fhe` block, defaults privacy_mode to 'fhe_direct' when omitted,
+// rejects any other value, and forbids the legacy plaintext fields
+// (predictedOutcome / horizon / confidence) since fhe_direct hides
+// them inside the ciphertext.
 const V2SubmissionBodySchema = z
   .object({
-    // Inline mirror of CommitmentSchema fields rather than `.merge` so
-    // .strict() catches typos like `marketref` / `predicted_outcome`.
-    // Z1: marketRef stays required for both modes (the route still needs
-    // to know which adapter / market the call targets). predictedOutcome
-    // / horizon / confidence become OPTIONAL because fhe_direct hides
-    // them inside the encrypted blob.
     marketRef: CommitmentSchema.shape.marketRef,
-    predictedOutcome: CommitmentSchema.shape.predictedOutcome.optional(),
-    horizon: CommitmentSchema.shape.horizon.optional(),
-    confidence: CommitmentSchema.shape.confidence.optional(),
-    // Idempotency. Mirrors SubmittedCallSchema bounds so the v2 surface
-    // matches v1 expectations end-to-end.
     client_order_id: z.string().min(8).max(128),
     rationale: z.string().max(240).optional(),
     strategy_tag: z.string().min(2).max(32).optional(),
@@ -2044,8 +2038,26 @@ const V2SubmissionBodySchema = z
       .string()
       .datetime({ offset: false })
       .optional(),
-    privacy_mode: z.string().optional(),
-    fhe: FheBlockSchema.optional(),
+    // Default to 'fhe_direct' when omitted so existing clients that
+    // never set the field get the right behavior. The superRefine
+    // below still rejects any explicit non-FHE value (the legacy
+    // legacy_plaintext / committed modes are gone in Wave 2a).
+    privacy_mode: z
+      .string()
+      .optional()
+      .transform((v) => v ?? "fhe_direct"),
+    fhe: FheBlockSchema,
+    // Wave 2a — predictedOutcome/horizon/confidence are no longer
+    // accepted on /v2/calls. They were optional under Z1 because the
+    // wire shape had to support both fhe_direct and legacy_plaintext;
+    // with legacy_plaintext gone, they're forbidden. The schema
+    // explicitly captures them with .never() so .strict() surfaces a
+    // clear error if a stale client still sends them. .never() inside
+    // .strict() emits "Expected never, received ..." — the message is
+    // helpful enough that we don't superRefine on top.
+    predictedOutcome: z.never().optional(),
+    horizon: z.never().optional(),
+    confidence: z.never().optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -2056,115 +2068,21 @@ const V2SubmissionBodySchema = z
         path: ["rationale"],
       });
     }
-    // Z1 — mutually-exclusive shape. fhe_direct hides the prediction;
-    // submitting it alongside a plaintext predictedOutcome / confidence
-    // would defeat the operator-blind invariant by exposing both wire
-    // shapes on the same row.
-    if (v.privacy_mode === "fhe_direct") {
-      if (!v.fhe) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "fhe block is required when privacy_mode='fhe_direct'",
-          path: ["fhe"],
-        });
-      }
-      if (v.predictedOutcome !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "predictedOutcome MUST NOT be set when privacy_mode='fhe_direct' (would leak the prediction)",
-          path: ["predictedOutcome"],
-        });
-      }
-      if (v.horizon !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "horizon MUST NOT be set when privacy_mode='fhe_direct' (derived from market_id)",
-          path: ["horizon"],
-        });
-      }
-      if (v.confidence !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "confidence MUST NOT be set when privacy_mode='fhe_direct' (would leak the prediction)",
-          path: ["confidence"],
-        });
-      }
-    } else {
-      // Non-fhe_direct submissions still need the legacy Commitment
-      // fields. The pre-Z1 schema had them all required; we keep that
-      // contract for legacy_plaintext / committed modes.
-      if (!v.predictedOutcome) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "predictedOutcome is required for non-fhe_direct submissions",
-          path: ["predictedOutcome"],
-        });
-      }
-      if (!v.horizon) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "horizon is required for non-fhe_direct submissions",
-          path: ["horizon"],
-        });
-      }
-      if (v.confidence === undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "confidence is required for non-fhe_direct submissions",
-          path: ["confidence"],
-        });
-      }
-      if (v.fhe !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "fhe block is only valid when privacy_mode='fhe_direct'",
-          path: ["fhe"],
-        });
-      }
+    if (v.privacy_mode !== "fhe_direct") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "/v2/calls accepts only privacy_mode='fhe_direct' (legacy_plaintext + committed removed in Wave 2a)",
+        path: ["privacy_mode"],
+      });
     }
   });
 
-/**
- * Reduce a v2 universal payout-vector to the legacy SubmittedCall side.
- * Native-price markets are direction-binary; the payoutNumerators MUST be
- * exactly [1,0] (BUY / price-up) or [0,1] (SELL / price-down). Anything
- * else (categorical / scalar / void [0,0]) is rejected at the route
- * boundary — those shapes are valid universal Outcomes but native-price
- * v2.0 only commits to direction.
- *
- * Returns null on unsupported shape so the caller can throw
- * schema_invalid with the offending vector in the error detail.
- */
-function derivePayoutSide(numerators: bigint[]): "BUY" | "SELL" | null {
-  if (numerators.length !== 2) return null;
-  const [a, b] = numerators;
-  if (a === 1n && b === 0n) return "BUY";
-  if (a === 0n && b === 1n) return "SELL";
-  return null;
-}
-
-function readHmacHeaders(req: Request): {
-  agent_id: string;
-  timestamp: string;
-  signature: string;
-} {
-  const agent_id = String(req.header("X-Murmur-Agent-Id") ?? "");
-  const timestamp = String(req.header("X-Murmur-Timestamp") ?? "");
-  const signature = String(req.header("X-Murmur-Signature") ?? "");
-  if (!agent_id || !timestamp || !signature) {
-    throw new VerdictError(
-      "missing HMAC headers",
-      ERROR_CODES.agent_not_authorized,
-      403,
-    );
-  }
-  return { agent_id, timestamp, signature };
-}
+// Wave 2a — `derivePayoutSide` + `readHmacHeaders` helpers removed
+// alongside the legacy plaintext bridge and the /v1/calls HMAC submit
+// endpoint. The FHE-direct submit path doesn't reduce payoutNumerators
+// at the API edge (the ciphertext is opaque to the daemon), and HMAC
+// auth headers are unused now that /v1/calls returns 410.
 
 function repairInvalidReveal(db: Database.Database, row: CallRevealRow): void {
   const info = db
