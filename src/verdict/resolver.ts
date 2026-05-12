@@ -375,6 +375,10 @@ export class Resolver {
           });
           continue;
         }
+        // Adapter-resolved (Polymarket) — same threshold-release fan-out
+        // contract as the native-price FHE-direct branch. Don't fire
+        // onResolved here; the SSE emit + leaderboard refresh ride with
+        // the score release in tryReleaseDecryptRequest.
         resolved++;
         this.log({
           kind: "anchored_t1",
@@ -383,16 +387,8 @@ export class Resolver {
           p1: "0",
           outcome: "win",
         });
-        try {
-          await this.onResolved(ctx.call_id);
-        } catch (err) {
-          this.log({
-            kind: "still_pending",
-            call_id: ctx.call_id,
-            phase: "t1",
-            reason: `notify_failed:${err instanceof Error ? err.message : String(err)}`,
-          });
-        }
+        // No onResolved fan-out here — fires in tryReleaseDecryptRequest
+        // after the threshold committee releases the bounded score.
         continue;
       }
 
@@ -475,9 +471,14 @@ export class Resolver {
             });
             continue;
           }
-          // fhe_direct resolved — the call is in 'resolved' status with an
-          // encrypted score recorded. Increment the counter, fire onResolved,
-          // and skip the legacy plaintext path entirely.
+          // fhe_direct enqueued — the encrypted score is recorded but the
+          // bounded call_score is NOT yet on t1_resolutions. The
+          // threshold-release phase (runFheThresholdReleasePhase) flips
+          // submissions.status='resolved' AND fires onResolved once the
+          // quorum decrypt lands — see the codex bundle-review fix at
+          // tryReleaseDecryptRequest. Emitting the SSE event here would
+          // hand subscribers a call.resolved with call_score=null and
+          // never re-notify, breaking the leaderboard.
           resolved++;
           this.log({
             kind: "anchored_t1",
@@ -490,16 +491,6 @@ export class Resolver {
             // on t1_resolutions carries the truth.
             outcome: "win",
           });
-          try {
-            await this.onResolved(ctx.call_id);
-          } catch (err) {
-            this.log({
-              kind: "still_pending",
-              call_id: ctx.call_id,
-              phase: "t1",
-              reason: `notify_failed:${err instanceof Error ? err.message : String(err)}`,
-            });
-          }
           continue;
         }
         // ── end Z2 fhe_direct branch ─────────────────────────────────────
@@ -1126,6 +1117,24 @@ export class Resolver {
       p1: aggregated.score.toFixed(9),
       outcome: "win",
     });
+
+    // Codex bundle-review MAJOR fix — fire onResolved (SSE fan-out +
+    // leaderboard refresh) AFTER the score is durable on t1_resolutions
+    // and submissions.status='resolved'. The t1-phase fhe_direct branch
+    // previously emitted call.resolved at score-record time, when
+    // call_score was still NULL — subscribers received the event with a
+    // null score and never got a follow-up notify when the threshold
+    // committee released the real value.
+    try {
+      await this.onResolved(req.call_id);
+    } catch (err) {
+      this.log({
+        kind: "still_pending",
+        call_id: req.call_id,
+        phase: "t1",
+        reason: `notify_failed:${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 
   // ── Phase 5 — adapter-dispatched universal payout-vector path ──

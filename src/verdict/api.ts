@@ -4,13 +4,11 @@ import type Database from "better-sqlite3";
 import {
   agentSecurityEventsRepo,
   agentsRepo,
-  callRevealsRepo,
   marketsRepo,
   refsRepo,
   resolutionsRepo,
   submissionsRepo,
   webhooksRepo,
-  type CallRevealRow,
   type MarketRow,
   type RegistryStatus,
 } from "./db.js";
@@ -2173,37 +2171,10 @@ const V2SubmissionBodySchema = z
 // at the API edge (the ciphertext is opaque to the daemon), and HMAC
 // auth headers are unused now that /v1/calls returns 410.
 
-function repairInvalidReveal(db: Database.Database, row: CallRevealRow): void {
-  const info = db
-    .prepare(
-      `UPDATE call_reveals
-       SET side = @side,
-           asset_id = @asset_id,
-           horizon_hours = @horizon_hours,
-           confidence = @confidence,
-           rationale = @rationale,
-           strategy_tag = @strategy_tag,
-           salt = @salt,
-           t0 = @t0,
-           agent_wallet = @agent_wallet,
-           chain_id = @chain_id,
-           commit_preimage_json = @commit_preimage_json,
-           commit_preimage_hash = @commit_preimage_hash,
-           revealed_at = @revealed_at,
-           revealed_via = @revealed_via,
-           reveal_hash_valid = @reveal_hash_valid
-       WHERE call_id = @call_id
-         AND reveal_hash_valid = 0`,
-    )
-    .run(row);
-  if (info.changes !== 1) {
-    throw new VerdictError(
-      "call already revealed with a different preimage",
-      ERROR_CODES.duplicate,
-      409,
-    );
-  }
-}
+// Wave 3b — repairInvalidReveal deleted alongside the call_reveals table
+// drop (MIGRATION_031). The helper rewrote a `reveal_hash_valid=0` row to
+// the agent's preimage when they belatedly revealed; FHE-mandatory means
+// no reveal flow exists anymore.
 
 function rssEmpty(slug: string, reason: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -2542,49 +2513,11 @@ function readClientIp(req: Request): string {
 // and the EventBus.
 let lastProdGateOk = true;
 
-let drandHealthCache: {
-  fetchedAt: number;
-  result: {
-    configured: boolean;
-    reachable: boolean;
-    chain_hash: string | null;
-    latest_round: number | null;
-    period_seconds: number | null;
-    error?: string;
-  };
-} | null = null;
-const DRAND_HEALTH_TTL_MS = 30_000;
-
-async function probeDrandHealth(
-  drandCtx?: import("./drand-envelope.js").DrandContext,
-): Promise<NonNullable<typeof drandHealthCache>["result"]> {
-  if (!drandCtx) {
-    return { configured: false, reachable: false, chain_hash: null, latest_round: null, period_seconds: null };
-  }
-  if (drandHealthCache && Date.now() - drandHealthCache.fetchedAt < DRAND_HEALTH_TTL_MS) {
-    return drandHealthCache.result;
-  }
-  let reachable = false;
-  let latest_round: number | null = null;
-  let error: string | undefined;
-  try {
-    const beacon = await drandCtx.client.latest();
-    reachable = true;
-    latest_round = beacon.round;
-  } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
-  }
-  const result = {
-    configured: true,
-    reachable,
-    chain_hash: drandCtx.chain.hash,
-    latest_round,
-    period_seconds: drandCtx.chain.period,
-    ...(error ? { error } : {}),
-  };
-  drandHealthCache = { fetchedAt: Date.now(), result };
-  return result;
-}
+// Wave 3b — drand health probe deleted. The committed-mode + drand
+// fallback paths it supported were removed in Wave 2b; nothing in the
+// readyz / status surfaces called it. age-envelope.ts + drand-envelope.ts
+// are kept as dead modules for one more release in case an off-chain
+// verifier still imports the types; safe to delete entirely after Wave 5.
 
 function buildSkillMarkdown(apiBase: string): string {
   // Wave 1 (consolidated reshape) — rewritten end-to-end. The old

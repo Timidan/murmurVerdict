@@ -92,9 +92,15 @@ export function projectCallRow(
   const privacy_mode = row.privacy_mode ?? "fhe_direct";
   // Wave 2b — under FHE-mandatory the projection is always operator-blind.
   // Plaintext (side / asset_id / horizon_hours / confidence / rationale /
-  // strategy_tag) is never surfaced. The projection returns only the
-  // operator-blind core: identifier, status, timestamps, privacy_mode,
-  // commit_hash, acceptance_receipt_hash.
+  // strategy_tag) is never surfaced.
+  //
+  // Codex bundle-review MAJOR fix — resolved-side fields (outcome /
+  // call_score / signed_return / resolved_at) are PUBLIC: every public
+  // surface (verify endpoint, agent calls list, RSS, MCP) wants them.
+  // The pre-fix projection dropped them, so the agent-calls list rendered
+  // "pending" for every resolved row. Forward them through when the
+  // input row carries them; they stay undefined for surfaces that only
+  // know the submission half (e.g. pending list).
   return {
     call_id: row.call_id,
     ...(agent_slug ? { agent_slug } : {}),
@@ -104,5 +110,14 @@ export function projectCallRow(
     commit_hash: row.commit_hash ?? null,
     // Wave 4b — receipts subsystem dropped. Always null on the wire.
     acceptance_receipt_hash: null,
+    ...(row.submitted_at !== undefined && row.submitted_at !== null
+      ? { submitted_at: row.submitted_at }
+      : {}),
+    ...(row.outcome !== undefined ? { outcome: row.outcome } : {}),
+    ...(row.call_score !== undefined ? { call_score: row.call_score } : {}),
+    ...(row.signed_return !== undefined
+      ? { signed_return: row.signed_return }
+      : {}),
+    ...(row.resolved_at !== undefined ? { resolved_at: row.resolved_at } : {}),
   };
 }

@@ -117,11 +117,16 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
   // pending list; the dashboard renders "resolves on…" without a clock.
   const pendingRows: TodayFeedRow[] = rawPending.map(toFeedRow);
 
+  // Codex bundle-review MAJOR fix — include adapter_id / market_family /
+  // market_id on the resolved tape. Without these, `toFeedRow` defaults
+  // every resolved row to ('native-price', 'financial-direction'),
+  // mislabeling Polymarket Gamma rows on the Today feed.
   const rawResolved = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
+              s.adapter_id, s.market_family, s.market_id,
               r.outcome, r.signed_return, r.call_score, r.resolved_at
        FROM t1_resolutions r
        JOIN submissions s ON s.call_id = r.call_id

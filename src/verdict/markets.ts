@@ -73,16 +73,18 @@ export function getAdapterForMarket(marketRow: MarketRow): MarketMakerAdapter {
 
 /**
  * Resolve the adapter_id + market_family that the public market-list API
- * surfaces for a given row. Until migration 016 lands these are constants;
- * the helper isolates the synthesis so Phase 5 can swap to row-driven dispatch.
+ * surfaces for a given row. Reads the stamped columns first (MIGRATION_016
+ * backfilled native-price rows; Wave 4b's `upsertExternalMarket` stamps
+ * adapter-specific values for Polymarket rows); falls back to the legacy
+ * defaults only when the row pre-dates the adapter columns.
  */
-export function adapterIdentityForMarket(_marketRow: MarketRow): {
+export function adapterIdentityForMarket(marketRow: MarketRow): {
   adapter_id: string;
   market_family: string;
 } {
   return {
-    adapter_id: NATIVE_PRICE_ADAPTER_ID,
-    market_family: FINANCIAL_DIRECTION_FAMILY,
+    adapter_id: marketRow.adapter_id ?? NATIVE_PRICE_ADAPTER_ID,
+    market_family: marketRow.market_family ?? FINANCIAL_DIRECTION_FAMILY,
   };
 }
 
