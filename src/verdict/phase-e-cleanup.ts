@@ -97,6 +97,12 @@ export function runPhaseECleanupIfRequested(
     OR (horizon_hours IS NOT NULL AND ${horizonScrubbablePredicate})
   )`;
 
+  // Z5 — Phase E is a committed-mode-only cleanup. fhe_direct rows have
+  // their plaintext columns NULLed at submit time (see submitFheDirectCall
+  // in submissions.ts) and legacy_plaintext rows MUST keep their
+  // plaintext because that's the whole privacy contract. The
+  // privacy_mode='committed' filter below is what makes Phase E a no-op
+  // for fhe_direct, per the operator-blind plan §4 Z5.
   const candidatePredicate = `
     privacy_mode = 'committed'
       AND status NOT IN ('accepted', 'pending_t0')

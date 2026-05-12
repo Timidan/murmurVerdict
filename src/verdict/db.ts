@@ -506,14 +506,36 @@ function applyMigrations(db: Database.Database): void {
     set.run("schema_version", String(v));
   }
 
-  // Migration 027 is RESERVED for Z5 (production-gate for the FHE
-  // threshold-committee promotion). Phase 11 takes 028 even though
-  // 027 isn't filled yet — the gap is intentional so the FHE block
-  // stays contiguous, and Z5 lands without renumbering Polymarket
-  // state. The ladder helper `if (v < 27)` would simply be a no-op
-  // here today; rather than ship a sentinel that has to be deleted
-  // when Z5 lands, we let the version cursor jump straight to 28 on
-  // a clean boot.
+  if (v < 27) {
+    // Z5 — production-gate cleanup. Two additive parts:
+    //
+    //   1. Ciphertext retention columns on fhe_call_ciphertexts:
+    //      `purge_after` (TEXT, NULL until the resolver writes the
+    //      retention deadline), `purged_at` (TEXT, NULL until a
+    //      purge job runs), `purge_reason` (TEXT, NULL or one of
+    //      'dispute_window_passed' | 'committee_rotation' |
+    //      'manual_ops'). Driven by Z5's retention sweep; the
+    //      ciphertext blob itself stays in place until purged so
+    //      dispute replay can verify hashes for the entire window.
+    //
+    //   2. `privacy_policy_events` audit log — one row per privacy-
+    //      policy state transition (e.g. fhe_direct toggled off,
+    //      threshold committee rotation completed, retention sweep
+    //      ran). Used by the readyz prod gate to surface "what
+    //      happened" without operators having to grep logs. Optional
+    //      per the plan §4 Z5 row but cheap enough to land now.
+    //
+    // Idempotency: ALTER TABLE ADD COLUMN goes through
+    // applyAlterTableAddColumn so a crash between the ALTER and the
+    // schema_version bump is safe (codex Z2 review FAIL #4 fix
+    // pattern). The new table uses CREATE TABLE IF NOT EXISTS.
+    for (const { table, column, sql } of MIGRATION_027_ALTERS) {
+      applyAlterTableAddColumn(db, table, column, sql);
+    }
+    db.exec(MIGRATION_027_TABLES);
+    v = 27;
+    set.run("schema_version", String(v));
+  }
 
   if (v < 28) {
     // Phase 11 — Polymarket Gamma adapter (Tier 1).
@@ -2226,6 +2248,54 @@ const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: 
     sql: "ALTER TABLE t1_resolutions ADD COLUMN fhe_circuit_id TEXT REFERENCES fhe_circuits(circuit_id)",
   },
 ];
+
+// ─── Migration 027 — Z5 production-gate cleanup ─────────────────────────────
+//
+// Two additive parts: retention columns on fhe_call_ciphertexts (the
+// Z5 retention sweep stamps purge_after at score release, then a
+// follow-up job sets purged_at + zeroes the blob), and an audit log
+// table for privacy-policy state transitions.
+//
+// ALTERs are idempotent via applyAlterTableAddColumn (codex Z2 review
+// FAIL #4 pattern). The new table uses CREATE TABLE IF NOT EXISTS.
+const MIGRATION_027_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
+  {
+    table: "fhe_call_ciphertexts",
+    column: "purge_after",
+    sql: "ALTER TABLE fhe_call_ciphertexts ADD COLUMN purge_after TEXT",
+  },
+  {
+    table: "fhe_call_ciphertexts",
+    column: "purged_at",
+    sql: "ALTER TABLE fhe_call_ciphertexts ADD COLUMN purged_at TEXT",
+  },
+  {
+    table: "fhe_call_ciphertexts",
+    column: "purge_reason",
+    sql: "ALTER TABLE fhe_call_ciphertexts ADD COLUMN purge_reason TEXT",
+  },
+];
+
+const MIGRATION_027_TABLES = `
+  CREATE TABLE IF NOT EXISTS privacy_policy_events (
+    event_id    TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL CHECK (kind IN (
+      'fhe_direct_enabled',
+      'fhe_direct_disabled',
+      'threshold_mode_changed',
+      'committee_rotation_completed',
+      'retention_sweep_completed',
+      'readyz_prod_gate_failed'
+    )),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    actor        TEXT,
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_privacy_policy_events_kind
+    ON privacy_policy_events(kind);
+  CREATE INDEX IF NOT EXISTS idx_privacy_policy_events_created
+    ON privacy_policy_events(created_at DESC);
+`;
 
 /**
  * Apply an ALTER TABLE ADD COLUMN only if the column doesn't already exist.

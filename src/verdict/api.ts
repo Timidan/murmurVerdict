@@ -600,6 +600,21 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         // Pre-migration-023 race; surface as no active keyset.
       }
     }
+    // Z5 — production gate. When MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1
+    // the daemon refuses to report ready unless the threshold committee
+    // posture is 'production'. mock / stub / mock_quorum are explicitly
+    // rejected — those are development postures that keep the operator
+    // in the trust root (see skill.md threat-model + Z3 plan §3).
+    // Default off so single-operator dev environments can boot the
+    // legacy plaintext or committed-mode stack without flipping this.
+    const prodRequireOperatorBlind =
+      process.env.MURMUR_PROD_REQUIRE_OPERATOR_BLIND === "1";
+    const thresholdMode = fheProv?.threshold_mode ?? null;
+    const prodGateOk = !prodRequireOperatorBlind || thresholdMode === "production";
+    const prodGateReason = prodRequireOperatorBlind && !prodGateOk
+      ? `MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1 but threshold_mode=${thresholdMode ?? "null"} (need 'production')`
+      : null;
+
     const privacy = {
       committed_mode_open: process.env.MURMUR_PRIVACY_COMMITTED_OPEN === "1",
       age: {
@@ -611,10 +626,15 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       fhe_direct_enabled: fheEnabled,
       provider: fheProv?.name ?? null,
       active_keyset_id: fheActiveKeysetId,
-      threshold_mode: fheProv?.threshold_mode ?? null,
+      threshold_mode: thresholdMode,
+      // Z5 — prod-gate observability.
+      prod_require_operator_blind: prodRequireOperatorBlind,
+      prod_gate_ok: prodGateOk,
+      prod_gate_reason: prodGateReason,
     };
 
-    const ready = dbOk && (oracleStatus === "ok" || oracleStatus === "disabled");
+    const ready =
+      dbOk && (oracleStatus === "ok" || oracleStatus === "disabled") && prodGateOk;
     res.status(ready ? 200 : 503).json({
       ready,
       now: nowIso(now()),
