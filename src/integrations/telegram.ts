@@ -61,13 +61,19 @@ export class TelegramNotifier {
     if (!agent) return { ok: false, text: "", posted: false, reason: "agent_missing" };
     const projectionMeta = db
       .prepare(
-        `SELECT s.privacy_mode, s.commit_hash, cr.reveal_hash_valid
+        `SELECT s.privacy_mode, s.commit_hash, s.adapter_id,
+                cr.reveal_hash_valid
          FROM submissions s
          LEFT JOIN call_reveals cr ON cr.call_id = s.call_id
          WHERE s.call_id = ?`,
       )
       .get(call_id) as
-      | { privacy_mode: string | null; commit_hash: string | null; reveal_hash_valid: number | null }
+      | {
+          privacy_mode: string | null;
+          commit_hash: string | null;
+          adapter_id: string | null;
+          reveal_hash_valid: number | null;
+        }
       | undefined;
     const projected = projectCallRow({
       call_id: full.submission.call_id,
@@ -84,6 +90,11 @@ export class TelegramNotifier {
 
     const lb = getLeaderboard(db);
     const rankRow = lb.find((r) => r.agent_id === agent.agent_id);
+    // Phase 10 / Z4-extra Drift C — signed_return only makes sense for
+    // native-price adapters. Non-native (Polymarket today) renders the
+    // card without a return %, just outcome + score.
+    const adapterId = projectionMeta?.adapter_id ?? "native-price";
+    const isNativePrice = adapterId === "native-price";
     const text = formatResolutionCard({
       agent_kind: agent.kind,
       agent_slug: agent.display_slug,
@@ -91,7 +102,9 @@ export class TelegramNotifier {
       horizon_hours: projected.horizon_hours,
       confidence: projected.confidence,
       outcome: full.resolution.outcome,
-      signed_return: Number(full.resolution.signed_return),
+      signed_return: isNativePrice
+        ? Number(full.resolution.signed_return)
+        : null,
       call_score: full.resolution.call_score,
       // Wave 4b: receipts subsystem dropped. Card uses a short call_id
       // identifier to give readers something to chain on (the call_id
@@ -228,7 +241,9 @@ interface ResolutionCardArgs {
   horizon_hours?: number;
   confidence?: number;
   outcome: string;
-  signed_return: number;
+  /** null for non-native-price adapters (Polymarket etc.). When null
+   *  the card omits the return % entirely (Drift C). */
+  signed_return: number | null;
   call_score: number | null;
   call_id: string;
   rank: number | null;
@@ -243,7 +258,6 @@ export function formatResolutionCard(a: ResolutionCardArgs): string {
   const subject = a.side && a.horizon_hours && a.confidence !== undefined
     ? `${a.side} ETH ${a.horizon_hours}h @${(a.confidence * 100).toFixed(0)}%`
     : `COMMITTED SEALED`;
-  const ret = (a.signed_return * 100).toFixed(2);
   const score = a.call_score === null ? "—" : a.call_score.toFixed(3);
   const rankLine = a.rank ? `#${a.rank}` : a.tier;
   // Wave 4b: receipts subsystem dropped. Surface the last 8 chars of
@@ -253,9 +267,14 @@ export function formatResolutionCard(a: ResolutionCardArgs): string {
   const shadowLine = a.claim_url
     ? `\n— Shadow agent. Claim this profile: ${a.claim_url}`
     : "";
+  // Drift C — return segment only for native-price adapters.
+  const returnSegment =
+    a.signed_return !== null
+      ? `${(a.signed_return * 100).toFixed(2)}%  · `
+      : "";
   return [
     `${emoji} <b>${esc(a.agent_slug)}</b> ${subject}`,
-    `→ <b>${a.outcome.toUpperCase()}</b> ${ret}%  · score ${score}  · ${rankLine}`,
+    `→ <b>${a.outcome.toUpperCase()}</b> ${returnSegment}score ${score}  · ${rankLine}`,
     `<a href="${a.call_url}">…${shortId}</a>${shadowLine}`,
   ].join("\n");
 }

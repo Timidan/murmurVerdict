@@ -41,8 +41,13 @@ export interface CallAcceptedEvent {
   // Phase 10 / Z4-extra discriminators — Polymarket and other
   // non-native-price adapters land on the same SSE channel; subscribers
   // use these to route render without inferring from the optional
-  // plaintext block. NEVER load-bearing for any privacy guarantee —
-  // omitted (not null) for legacy pre-v2 rows where the column is null.
+  // plaintext block. NEVER load-bearing for any privacy guarantee.
+  // Emitters default missing values to 'native-price' / 'financial-direction'
+  // (the MIGRATION_016 backfill semantic), so in practice subscribers
+  // will see these fields on every event — they're typed optional so
+  // older consumers reading historical wire bytes don't break, and so
+  // backend authors of new emitters aren't forced to populate them at
+  // call sites where the adapter is genuinely unknowable (none today).
   adapter_id?: string;
   market_family?: string;
   market_id?: string;

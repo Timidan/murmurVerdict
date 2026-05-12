@@ -1198,6 +1198,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         `SELECT s.call_id, s.status, s.asset_id, s.side, s.horizon_hours,
                 s.confidence, s.submitted_at, s.accepted_at,
                 s.privacy_mode, s.commit_hash,
+                s.adapter_id, s.market_family,
                 cr.reveal_hash_valid,
                 cr.side          AS revealed_side,
                 cr.asset_id      AS revealed_asset_id,
@@ -1233,6 +1234,13 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         revealed_horizon_hours: r.revealed_horizon_hours as number | null,
         revealed_confidence: r.revealed_confidence as number | null,
       });
+      // Phase 10 / Z4-extra Drift C — adapter/family flow to the RSS
+      // formatter so non-native rows render outcome + score without a
+      // misleading "—" / "null" signed_return line.
+      const adapter_id = (r.adapter_id as string | null) ?? "native-price";
+      const market_family =
+        (r.market_family as string | null) ?? "financial-direction";
+      const isNativePrice = adapter_id === "native-price";
       return {
         call_id: projected.call_id,
         status: projected.status,
@@ -1245,9 +1253,13 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         submitted_at: projected.submitted_at ?? "",
         is_committed_scrubbed: projected.side === undefined,
         accepted_at: projected.accepted_at,
+        adapter_id,
+        market_family,
         outcome: r.outcome as string | null,
         call_score: r.call_score as number | null,
-        signed_return: r.signed_return as string | null,
+        signed_return: isNativePrice
+          ? (r.signed_return as string | null)
+          : null,
         resolved_at: r.resolved_at as string | null,
       };
     });
@@ -2914,6 +2926,8 @@ function rssAgentFeed(
     confidence: number;
     submitted_at: string;
     accepted_at: string;
+    adapter_id?: string;
+    market_family?: string;
     outcome: string | null;
     call_score: number | null;
     signed_return: string | null;
@@ -2941,11 +2955,20 @@ function rssAgentFeed(
       <description>${xmlEscape(description)}</description>
     </item>`;
       }
+      // Phase 10 / Z4-extra Drift C — adapter-aware description.
+      // Native-price renders the signed_return %; non-native omits the
+      // segment entirely (Polymarket has no return concept).
+      const adapterId = r.adapter_id ?? "native-price";
+      const isNativePrice = adapterId === "native-price";
       const subjectAsset = r.asset_id.split(":").pop() ?? r.asset_id;
       const title = `${r.side} ${subjectAsset} ${r.horizon_hours}h · ${titleAction}`;
       const pubDate = new Date(r.resolved_at ?? r.accepted_at).toUTCString();
+      const returnSegment =
+        isResolved && isNativePrice
+          ? ` · signed_return ${r.signed_return ?? "—"}`
+          : "";
       const description = isResolved
-        ? `${r.side} ${subjectAsset} ${r.horizon_hours}h @ ${(r.confidence * 100).toFixed(0)}% conf · outcome ${r.outcome} · signed_return ${r.signed_return ?? "—"} · score ${r.call_score?.toFixed(3) ?? "—"}`
+        ? `${r.side} ${subjectAsset} ${r.horizon_hours}h @ ${(r.confidence * 100).toFixed(0)}% conf · outcome ${r.outcome}${returnSegment} · score ${r.call_score?.toFixed(3) ?? "—"}`
         : `${r.side} ${subjectAsset} ${r.horizon_hours}h @ ${(r.confidence * 100).toFixed(0)}% conf · pending t1`;
       return `    <item>
       <title>${xmlEscape(title)}</title>

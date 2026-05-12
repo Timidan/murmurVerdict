@@ -22,6 +22,12 @@ export interface TodayFeedRow {
   privacy_mode: string;
   commit_hash?: string | null;
   acceptance_receipt_hash?: string | null;
+  // Phase 10 / Z4-extra discriminators. Always present (defaults to
+  // native-price / financial-direction for pre-MIGRATION_016 legacy
+  // rows where the columns are null on the submissions row).
+  adapter_id?: string;
+  market_family?: string;
+  market_id?: string;
   // Plaintext envelope — populated only when shouldExposePlaintext().
   side?: "BUY" | "SELL";
   asset_id?: string;
@@ -30,7 +36,10 @@ export interface TodayFeedRow {
   submitted_at?: string;
   accepted_at: string;
   status: string;
-  // Resolved-only
+  // Resolved-only. signed_return is a price-return concept — present
+  // ONLY when adapter_id === 'native-price'. Non-native adapters
+  // (Polymarket today, future event/category families) omit the field
+  // entirely (Drift C).
   outcome?: string | null;
   signed_return?: string | null;
   call_score?: number | null;
@@ -87,6 +96,7 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
+              s.adapter_id, s.market_family, s.market_id,
               cr.reveal_hash_valid,
               cr.side          AS revealed_side,
               cr.asset_id      AS revealed_asset_id,
@@ -109,6 +119,7 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
               s.side, s.asset_id, s.horizon_hours, s.confidence, s.rationale, s.strategy_tag,
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
+              s.adapter_id, s.market_family, s.market_id,
               cr.reveal_hash_valid,
               cr.side          AS revealed_side,
               cr.asset_id      AS revealed_asset_id,
@@ -278,11 +289,30 @@ function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
     },
     row.agent_slug as string,
   );
-  return {
+  // Phase 10 / Z4-extra Drift C — discriminators travel with the row.
+  // Native-price defaults match MIGRATION_016 backfill semantics.
+  const adapter_id = (row.adapter_id as string | null) ?? "native-price";
+  const market_family =
+    (row.market_family as string | null) ?? "financial-direction";
+  const market_id = (row.market_id as string | null) ?? null;
+  // signed_return is a price-return concept — keep it only for the
+  // native-price adapter. Non-native rows surface outcome + call_score
+  // but omit signed_return entirely so consumers (RSS, embed, mobile)
+  // don't render a misleading "null %" / "0%" formatting for event-
+  // based markets.
+  const isNativePrice = adapter_id === "native-price";
+  const result = {
     ...projected,
     agent_id: row.agent_id as string,
     agent_slug: row.agent_slug as string,
     agent_kind: row.agent_kind as string,
     side: projected.side as TodayFeedRow["side"],
+    adapter_id,
+    market_family,
+    ...(market_id ? { market_id } : {}),
   } as TodayFeedRow;
+  if (!isNativePrice && "signed_return" in result) {
+    delete result.signed_return;
+  }
+  return result;
 }

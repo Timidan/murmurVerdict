@@ -44,6 +44,13 @@ export interface CallResolvedEvent {
   adapter_id?: string;
   market_family?: string;
   market_id?: string;
+  // Phase 5 — universal payout-vector additive fields. Populated by the
+  // resolver when the v2 adapter dispatch ran (Outcome JSON +
+  // payoutNumerators stringified). Consumers that want the universal
+  // outcome shape read these; legacy consumers reading outcome /
+  // call_score continue working unchanged.
+  resolved_outcome?: unknown;
+  payout_vector?: string[];
 }
 
 export interface LeaderboardUpdateEvent {
