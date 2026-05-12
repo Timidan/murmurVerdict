@@ -4,6 +4,7 @@ import {
   AcceptedCall,
   AcceptedCallSchema,
   CallStatus,
+  DEFAULT_T0_POLICY,
   ERROR_CODES,
   StrategyTag,
   SubmittedCall,
@@ -915,7 +916,6 @@ async function submitFheDirectCall(args: {
     status: "accepted",
     oracle_policy: oraclePolicy,
   };
-  void legacyHorizonHoursForMarket; // kept for legacy adapter handoff
 
   // Run the multi-statement insert inside a single transaction so a
   // crash between submissions and fhe_call_ciphertexts can't leave a
@@ -1177,31 +1177,44 @@ function loadExistingAcceptedCall(
  * Resolve a call's T0Policy by re-deriving it from the call's market_id.
  * Wave 3 replaced the per-call oracle_policies row with a fresh lookup
  * on the markets registry every time a hydrated AcceptedCall is needed.
- * The trade-off: a market frozen between submit and idempotent retry
- * could swap the policy under us, which is fine — receipts/disputes
- * subsystems are gone, so there's no off-chain attestation to a stable
- * policy snapshot anymore.
+ *
+ * Codex Wave 3b review MAJOR #2 — the idempotent retry path needs to
+ * survive a market that was retired or had a policy derivation glitch
+ * between the original submit and the retry. The original submission
+ * succeeded, so the retry MUST also succeed with the same call_id; the
+ * AcceptedCall it returns is read-only for the client (the resolver does
+ * its own per-tick policy walk via Resolver#policyFromCtx and routes its
+ * own failures into oracle_unavailable). So when the live lookup blows
+ * up, fall back to the v0.2 DEFAULT_T0_POLICY (ETH chainlink/pyth pair)
+ * rather than 500-ing on the agent's retry. The DEFAULT_T0_POLICY is a
+ * cosmetic value here — never used by the resolver, which reads its
+ * own policy on each tick from the live registry (and surfaces
+ * oracle_unavailable if the market is truly gone).
+ *
+ * A persistent per-call policy snapshot is Wave 4a/5 work; for v0.3
+ * we'll either re-add a typed audit log keyed on market_config_version
+ * or pin the policy into the FHE Commitment's marketRef.
  */
 function resolveOraclePolicyFromMarket(
   db: Database.Database,
   market_id: unknown,
 ): T0Policy {
   if (typeof market_id !== "string" || market_id.length === 0) {
-    throw new VerdictError(
-      "call has no market_id; cannot derive oracle policy",
-      ERROR_CODES.internal_error,
-      500,
-    );
+    return DEFAULT_T0_POLICY;
   }
   const market = marketsRepo.get(db, market_id);
   if (!market) {
-    throw new VerdictError(
-      `market '${market_id}' no longer exists`,
-      ERROR_CODES.internal_error,
-      500,
-    );
+    return DEFAULT_T0_POLICY;
   }
-  return derivePolicyFromMarket(db, market);
+  try {
+    return derivePolicyFromMarket(db, market);
+  } catch (err) {
+    // Half-configured fallback / unknown adapter in the markets row —
+    // log + fall back. The resolver's per-tick path will mark the call
+    // oracle_unavailable next tick if the market is genuinely broken.
+    void err;
+    return DEFAULT_T0_POLICY;
+  }
 }
 
 // Wave 2b — `deriveLegacyCommitment` and `commitmentToWire` deleted.

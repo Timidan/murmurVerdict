@@ -17,10 +17,9 @@ import {
   submissionsRepo,
   usageRepo,
 } from "./db.js";
-import { loadResolutionSubject } from "./resolution-subject.js";
-// Wave 2b — AgeContext / DrandContext imports removed; the dead
-// envelope-decrypt paths in loadResolutionSubject are no longer
-// passed contexts.
+// Wave 3b — loadResolutionSubject import dropped. The legacy plaintext +
+// committed-mode resolver branch that called it was deleted; FHE-direct
+// rows never went through that path (they have no plaintext to load).
 import {
   OracleClient,
   OracleError,
@@ -199,11 +198,33 @@ export class Resolver {
     for (const c of candidates) {
       const ctx = submissionsRepo.loadResolverContext(this.db, c.call_id);
       if (!ctx) continue;
+      // Wave 3b BLOCKER fix — policyFromCtx now walks the markets registry
+      // on every tick. A retired/deleted market or a half-configured
+      // policy would previously throw out of the per-call loop and crash
+      // the entire pass. Bound the throw to this call: log + route to
+      // oracle_unavailable so the rest of the tick keeps making progress.
+      let policy: T0Policy;
+      try {
+        policy = this.policyFromCtx(ctx);
+      } catch (err) {
+        this.log({
+          kind: "still_pending",
+          call_id: ctx.call_id,
+          phase: "t0",
+          reason: `policy_derivation_failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        });
+        if (await this.markOracleUnavailable(ctx, "t0")) {
+          oracleUnavailable++;
+        }
+        continue;
+      }
       const outcome = await this.tryAnchor({
         call_id: ctx.call_id,
         mustBeAfterIso: ctx.accepted_at,
         elapsedSec: this.elapsedSecSince(ctx.accepted_at),
-        policy: this.policyFromCtx(ctx),
+        policy,
         phase: "t0",
       });
       if (outcome.kind === "anchored") {
@@ -266,7 +287,26 @@ export class Resolver {
       const elapsedSinceT1 = this.elapsedSecSince(t1Iso);
       if (elapsedSinceT1 < 0) continue; // not yet
 
-      const policy = this.policyFromCtx(ctx);
+      // Wave 3b BLOCKER fix — same per-call policy try/catch as T0.
+      // Market gone or half-configured → terminal oracle_unavailable for
+      // this call, never a tick-killing throw.
+      let policy: T0Policy;
+      try {
+        policy = this.policyFromCtx(ctx);
+      } catch (err) {
+        this.log({
+          kind: "still_pending",
+          call_id: ctx.call_id,
+          phase: "t1",
+          reason: `policy_derivation_failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        });
+        if (await this.markOracleUnavailable(ctx, "t1")) {
+          oracleUnavailable++;
+        }
+        continue;
+      }
       const outcome = await this.tryAnchor({
         call_id: ctx.call_id,
         mustBeAfterIso: t1Iso,
@@ -364,182 +404,29 @@ export class Resolver {
         }
         // ── end Z2 fhe_direct branch ─────────────────────────────────────
 
-        // P2 Phase C-2: load resolution subject. For committed rows
-        // this prefers the agent's voluntary reveal, falls back to
-        // daemon age decrypt past fallback_after, then drand decrypt
-        // past the bound round. Returns "not_yet_revealable" if the
-        // call is committed but no path is open yet — skip + retry
-        // next tick. Legacy_plaintext rows hydrate from submissions
-        // on first access and behave like agent reveals from then on.
-        const subjectResult = await loadResolutionSubject(this.db, ctx.call_id, {
-          // Wave 2b — ageCtx + drandCtx removed; the envelope-decrypt
-          // fallback paths inside loadResolutionSubject are dead.
-          now: this.now,
-        });
-        if (!subjectResult.ok) {
-          this.log({
-            kind: "still_pending",
-            call_id: ctx.call_id,
-            phase: "t1",
-            reason: `subject:${subjectResult.reason}`,
-          });
-          continue;
-        }
-        const subject = subjectResult.subject;
-        // Use the resolved plaintext (agent-revealed, daemon-decrypted,
-        // drand-decrypted, or legacy-hydrated) as the truth for scoring.
-        // For legacy_plaintext rows this is identical to ctx.* — just
-        // routed through call_reveals so every code path reads from one
-        // place going forward.
-        const r = computeSignedReturn(subject.side, t0row.p0, obs.price);
-        // P4 Item 4 (Codex audit): outcome boundary comes from the
-        // subject's stamped void_band, not the global VOID_BAND. A
-        // post-acceptance bumpConfig must NOT rewrite this call's
-        // outcome. Falls back to global VOID_BAND for legacy rows
-        // without enrichment.
-        const subjectVoidBand =
-          subject.void_band !== null ? Number(subject.void_band) : undefined;
-        const verdictOutcome = outcomeFromSignedReturn(r, subjectVoidBand);
-        const score = scoreCall({
-          asset_id: subject.asset_id as AssetId,
-          horizon_hours: subject.horizon_hours as HorizonHours,
-          // Phase 2e: prefer canonical horizon_seconds from the resolver
-          // context (preserves sub-hour precision). horizon_hours stays on
-          // the call for back-compat with the legacy fallback path.
-          horizon_seconds: ctx.horizon_seconds,
-          confidence: subject.confidence,
-          signed_return: r,
-          outcome: verdictOutcome,
-        });
-
-        // Phase 5 — universal payout-vector path. Dispatched alongside the
-        // legacy code above so the leaderboard/verify/receipt paths all
-        // continue to read the same legacy columns byte-identically. The
-        // universal shape is ADDITIVE — written to t1_resolutions.{
-        // resolved_outcome_json, payout_vector_json } and a sibling v2
-        // receipt with kind='resolution_v2'.
-        //
-        // Adapter dispatch:
-        //   1. Look up the call's market row → adapter.
-        //   2. Lift the legacy resolver-scoped values (t0 anchor, t1 obs,
-        //      void_band, side, market_id) into a NativePriceObservationContext.
-        //   3. Adapter computes the universal Outcome.
-        //   4. Build the universal Commitment from submissions.commitment_json
-        //      (Phase 4 v2 submit) OR derive on-the-fly from the legacy
-        //      submission row (legacySubmissionToCommitment).
-        //   5. scoreOutcomeVector reconciles the void buckets.
-        //
-        // Legacy compatibility check: scoreOutcomeVector returns null
-        // call_score iff the legacy verdictOutcome is 'void'. Asserting
-        // this would catch any future divergence at the adapter cutover.
-        // BLOCKER #1 isolation: the v2 dual-write path MUST NEVER abort the
-        // legacy resolution transaction. Wrap the whole compute in try/catch
-        // and honor the MURMUR_V2_RESOLVER_DISABLED kill switch so an
-        // operator can hot-disable v2 without redeploy if a bad adapter or
-        // malformed commitment lands in production.
-        let v2: Awaited<ReturnType<Resolver["computeV2OutcomePath"]>> = null;
-        if (process.env.MURMUR_V2_RESOLVER_DISABLED !== "1") {
-          try {
-            v2 = await this.computeV2OutcomePath({
-              ctx,
-              subject,
-              t0row,
-              obs,
-              subjectVoidBand,
-            });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `[resolver] v2 path failed for call ${ctx.call_id}: ${msg}`,
-            );
-            v2 = null;
-          }
-        }
-
-        const resolved_at = this.nowIso();
-
-        // Wave 4b — committed-mode commit_hash + reveal binding sanity
-        // checks before resolution lands. Receipts no longer chain the
-        // attestation but the commit/reveal pair is still the canonical
-        // committed-mode evidence; refuse to resolve if either is missing.
-        if (subject.source !== "legacy_plaintext") {
-          const subRow = this.db
-            .prepare("SELECT commit_hash FROM submissions WHERE call_id = ?")
-            .get(ctx.call_id) as { commit_hash: string | null } | undefined;
-          if (!subRow?.commit_hash) {
-            this.log({
-              kind: "still_pending",
-              call_id: ctx.call_id,
-              phase: "t1",
-              reason: "committed-mode row missing commit_hash",
-            });
-            continue;
-          }
-          if (!subject.agent_wallet || !subject.chain_id) {
-            this.log({
-              kind: "still_pending",
-              call_id: ctx.call_id,
-              phase: "t1",
-              reason: "committed-mode reveal without wallet binding",
-            });
-            continue;
-          }
-        }
-
-        const tx = this.db.transaction(() => {
-          resolutionsRepo.setResolution(this.db, {
-            call_id: ctx.call_id,
-            t1: obs.feed_timestamp,
-            p1: obs.price,
-            t1_feed: obs.feed,
-            signed_return: r.toFixed(8),
-            outcome: verdictOutcome,
-            call_score: score.call_score,
-            resolved_at,
-            // Phase 5 — additive universal columns. NULL when the v2 path
-            // was unavailable (shouldn't happen for native-price markets;
-            // future markets without an adapter would land here).
-            ...(v2
-              ? {
-                  resolved_outcome_json: JSON.stringify(
-                    serializeOutcome(v2.outcome),
-                  ),
-                  payout_vector_json: JSON.stringify(
-                    v2.outcome.payoutNumerators.map((n) => n.toString()),
-                  ),
-                }
-              : {}),
-          });
-          submissionsRepo.setStatus(this.db, ctx.call_id, "resolved");
-          usageRepo.emit(
-            this.db,
-            this.makeUsage(ctx.agent_id, "resolution_completed", {
-              call_id: ctx.call_id,
-              outcome: verdictOutcome,
-              call_score: score.call_score,
-            }),
-          );
-        });
-        tx();
-
-        resolved++;
+        // Wave 3b — the legacy plaintext + committed-mode resolution path
+        // was deleted. Waves 2a/2b made FHE-direct the only accepted
+        // submit mode, and MIGRATION_031 dropped the 4 plaintext columns
+        // (side / asset_id / horizon_hours / confidence) the legacy
+        // resolver relied on. Any pending row reaching this branch is
+        // either a stale dev-DB record from before Wave 2b or a row
+        // whose privacy_mode somehow drifted; either way we don't
+        // attempt to resolve it. Mark terminal so it doesn't pin the
+        // resolver tick forever, and log the reason for forensic
+        // visibility.
         this.log({
-          kind: "anchored_t1",
+          kind: "still_pending",
           call_id: ctx.call_id,
-          feed: obs.feed,
-          p1: obs.price,
-          outcome: verdictOutcome,
+          phase: "t1",
+          reason: `legacy_non_fhe_row_skipped:privacy_mode=${ctx.privacy_mode ?? "null"}`,
         });
-        try {
-          await this.onResolved(ctx.call_id);
-        } catch (err) {
-          // Notification failures must not block the resolver.
-          this.log({
-            kind: "still_pending",
-            call_id: ctx.call_id,
-            phase: "t1",
-            reason: `notify_failed:${err instanceof Error ? err.message : String(err)}`,
-          });
+        if (await this.markOracleUnavailable(ctx, "t1")) {
+          oracleUnavailable++;
+          try {
+            await this.onResolved(ctx.call_id);
+          } catch {
+            // swallow — terminal state already persisted
+          }
         }
       } else if (outcome.kind === "oracle_unavailable") {
         if (await this.markOracleUnavailable(ctx, "t1")) {
@@ -1157,157 +1044,12 @@ export class Resolver {
   // resolved_outcome_json, no v2 receipt). Today every active call has a
   // market_id post-MIGRATION_009 backfill, so this null path is exercised
   // only in regression scenarios.
-  private async computeV2OutcomePath(args: {
-    ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>;
-    subject: {
-      side: Side;
-      asset_id: string;
-      horizon_hours: number;
-      confidence: number;
-      void_band: string | number | null;
-      market_id: string | null;
-      market_config_version?: number | null;
-    };
-    t0row: { p0: string };
-    obs: OracleObservation;
-    subjectVoidBand: number | undefined;
-  }): Promise<{
-    commitment: ReturnType<typeof legacySubmissionToCommitment>;
-    outcome: UniversalOutcome;
-    score: ReturnType<typeof scoreOutcomeVector>;
-    adapter_id: string;
-  } | null> {
-    // Resolve the market row to dispatch the adapter. Legacy rows without
-    // market_id (pre-MIGRATION_009) fall through; the adapter dispatch
-    // requires a market row to honor markets.adapter_id (Phase 11+).
-    //
-    // FIX 1c — defensive: missing market row, missing/unknown adapter,
-    // unparseable commitment_json all return null instead of throwing.
-    // The outer try/catch in the resolver tick (FIX 1a) is a backstop
-    // for unexpected programmer errors; the well-known partial-state
-    // cases land here as a quiet `null` so a single bad call can't
-    // poison the tick.
-    const marketId = args.subject.market_id ?? args.ctx.market_id ?? null;
-    if (!marketId) return null;
-    const marketRow = marketsRepo.get(this.db, marketId);
-    if (!marketRow) return null;
-
-    let adapter;
-    try {
-      adapter = getAdapterForMarket(marketRow);
-    } catch (err) {
-      if (err instanceof AdapterNotFoundError) {
-        return null;
-      }
-      throw err;
-    }
-
-    // Wave 4d — dispatch t1 observation through the adapter via the registry.
-    // Lift the resolver-scoped values into the adapter's observation context.
-    // The adapter (native-price today) narrows the context structurally; a
-    // malformed context maps to "pending" so the resolver falls through to its
-    // still-pending path rather than crashing the tick.
-    const voidBand =
-      args.subjectVoidBand !== undefined
-        ? args.subjectVoidBand
-        : voidBandFloat(marketRow);
-    const marketRef = {
-      protocol: adapter.name,
-      sourceId: marketId,
-      configVersion:
-        marketRow.market_config_version ??
-        args.subject.market_config_version ??
-        1,
-    };
-    let observed: UniversalOutcome | "pending" | "disputed";
-    try {
-      observed = await adapter.observeResolution(marketRef, {
-        // Codex P11 review Critical B fix (legacy plaintext path) —
-        // mirror the fhe_direct branch above. Spread markets.config_json
-        // so Polymarket gets conditionId from the markets row.
-        ...parseMarketConfigJson(marketRow.config_json),
-        t0_p0: args.t0row.p0,
-        t1_p1: args.obs.price,
-        t1_iso: args.obs.feed_timestamp,
-        t1_feed: args.obs.feed,
-        t1_source_id: args.obs.source_id,
-        void_band: voidBand,
-        side: args.subject.side,
-        market_id: marketId,
-      });
-    } catch {
-      return null;
-    }
-    if (observed === "pending" || observed === "disputed") {
-      // Adapter declined to resolve this tick — fall through to legacy-only
-      // path; the resolver's outer loop will surface a still_pending log.
-      return null;
-    }
-    const outcome: UniversalOutcome = observed;
-
-    // Build the universal Commitment. Prefer the stored canonical
-    // commitment_json (Phase 4 submit path); fall back to deriving from
-    // the legacy submission fields (v1 calls / pre-Phase-4 rows).
-    const subRow = this.db
-      .prepare(
-        "SELECT commitment_json FROM submissions WHERE call_id = ?",
-      )
-      .get(args.ctx.call_id) as { commitment_json: string | null } | undefined;
-    const stored = parseStoredCommitment(subRow?.commitment_json ?? null);
-    let commitment;
-    if (stored) {
-      commitment = stored;
-    } else {
-      // Legacy fallback. Wrap in try/catch so a malformed legacy row
-      // (e.g. Phase E-cleaned committed row with no stored commitment_json
-      // and nulled-out plaintext columns) returns null instead of throwing
-      // through the outer resolver loop.
-      try {
-        commitment = legacySubmissionToCommitment({
-          side: args.subject.side,
-          confidence: args.subject.confidence,
-          asset_id: args.subject.asset_id,
-          horizon_hours: args.subject.horizon_hours,
-          // The Commitment.horizon.iso is render-only — scoreOutcomeVector
-          // never reads it. Use accepted_at + horizon_seconds as a stable
-          // canonical value (matches what Phase 4 v2 submit stamps).
-          expected_resolves_at_iso: this.computeExpectedResolvesAt(args.ctx),
-          market_id: marketId,
-          market_config_version: args.subject.market_config_version ?? null,
-        });
-      } catch {
-        return null;
-      }
-    }
-
-    let score;
-    try {
-      // Wave 4d — dispatch scoring via the registry-resolved adapter so the
-      // call_score number is produced by adapter.score(commitment, outcome).
-      // Void / kind-mismatch reconciliation stays inside scoreOutcomeVector.
-      score = scoreOutcomeVector(commitment, outcome, adapter);
-    } catch {
-      return null;
-    }
-    return {
-      commitment,
-      outcome,
-      score,
-      adapter_id: adapter.name,
-    };
-  }
-
-  /** Helper for legacySubmissionToCommitment fallback path. The actual
-   *  expected_resolves_at_iso is canonical (accepted_at + horizon_seconds);
-   *  the value is render-only on the Commitment so any stable derivation
-   *  works for Phase 5's void-mapping verification. */
-  private computeExpectedResolvesAt(
-    ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>,
-  ): string {
-    const acceptedMs = Date.parse(ctx.accepted_at);
-    const t1Ms = acceptedMs + ctx.horizon_seconds * 1000;
-    return new Date(t1Ms).toISOString().replace(/\.\d+Z$/, "Z");
-  }
+  // Wave 3b — computeV2OutcomePath + computeExpectedResolvesAt were the
+  // legacy plaintext path's dual-write into the universal payout shape.
+  // Wave 2b deleted legacy submit + Wave 3b deleted the legacy resolver
+  // branch, so both helpers are now unreachable. The FHE-direct
+  // resolution path (runFheDirectScoring) does its own adapter dispatch
+  // against the encrypted prediction.
 
   // ── core anchoring step (used for both t0 and t1) ──
 

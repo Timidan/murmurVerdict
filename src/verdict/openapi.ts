@@ -95,7 +95,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
           tags: ["agents"],
           summary: "List agents by kind.",
           parameters: [
-            { name: "kind", in: "query", required: true, schema: { type: "string", enum: ["verified", "benchmark", "shadow", "internal_test"] } },
+            { name: "kind", in: "query", required: true, schema: { type: "string", enum: ["agent", "attested", "benchmark", "internal_test"] } },
             { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 100 } },
           ],
           responses: { "200": { description: "Filtered agents list" } },

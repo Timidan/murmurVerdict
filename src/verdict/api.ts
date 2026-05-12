@@ -691,9 +691,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         },
         {
           type: "murmur-verdict.calls",
-          name: "Submit a market call",
-          endpoint: `${apiBase}/v1/calls`,
-          // Auth: X-Murmur-Agent-Id + X-Murmur-Api-Key (Bearer).
+          name: "Submit a market call (FHE-direct)",
+          endpoint: `${apiBase}/v2/calls`,
+          // Auth: Bearer API key on the account/agent pair. /v1/calls
+          // returns 410 post-Wave-2a; /v2/calls is the only accepted
+          // submit surface (FHE-mandatory, operator-blind invariant).
         },
         {
           type: "murmur-verdict.skill",
