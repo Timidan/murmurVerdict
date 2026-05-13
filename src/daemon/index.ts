@@ -11,11 +11,6 @@ import { hashSharedSecret } from "../verdict/submissions.js";
 import { VerdictEventBus } from "../verdict/events.js";
 import { getLeaderboard } from "../verdict/leaderboard.js";
 import { startWebhookDispatcher } from "../verdict/webhooks.js";
-import { registerBaselines } from "../benchmark/agents.js";
-// Wave 2a — runBaselinesOnce dropped from the daemon's tick. The
-// import is gone alongside the disabled benchmark ticker; the
-// register-only call keeps the kind='benchmark' rows in the DB so
-// historical leaderboard entries don't disappear.
 // Wave 2b — loadAgeContextFromEnv + loadDrandContextFromEnv imports
 // removed. The committed-mode envelope-decrypt fallback paths in
 // resolution-subject.ts are dead under FHE-mandatory; the daemon no
@@ -35,7 +30,6 @@ import type { Server } from "node:http";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const RESOLVER_TICK_SEC = Number(process.env.RESOLVER_TICK_SEC ?? 30);
-const BENCHMARK_TICK_SEC = Number(process.env.BENCHMARK_TICK_SEC ?? 600);
 const VERDICT_DB_PATH = process.env.VERDICT_DB_PATH ?? "./data/verdict.db";
 const DASHBOARD_ORIGIN = (process.env.DASHBOARD_ORIGIN ?? "*").trim();
 
@@ -69,9 +63,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
 
   ensureParentDir(dbPath);
   const db = openDb({ path: dbPath });
-  // BLOCKER #5 fix — Phase-E plaintext scrub runs at boot when env is set.
-  // Idempotent + decoupled from MIGRATION_015's single-shot schema gate.
-  registerBaselines(db);
 
   // Wave 4b-2 — MarketContextProvider (Santiment scout/analyst) removed.
   // Murmur is a pure ranking layer over canonical price/event oracles;
@@ -332,33 +323,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         "[daemon] resolver disabled — set BASE_MAINNET_RPC_URL to enable",
       );
     }
-    // Wave 6 — benchmark ticker re-armed under FHE-mandatory. The
-    // baseline bots now build a binary payout vector for their
-    // decision, run it through the active FHE provider's
-    // encryptPredicted method, and submit FHE-direct via /v2/calls.
-    // Under the mock provider the encryption is the canonical JSON
-    // wrapper (matches what scoreEncrypted decodes); under the real
-    // zama_local provider it routes through the TFHE-rs sidecar.
-    // Off when the oracle or FHE provider is unwired (runBaselinesOnce
-    // no-ops silently in those cases).
-    if (resolver && fheProvider) {
-      tickers.push(
-        setIntervalGuarded(
-          BENCHMARK_TICK_SEC * 1000,
-          "benchmark",
-          async () => {
-            const { runBaselinesOnce } = await import(
-              "../benchmark/agents.js"
-            );
-            await runBaselinesOnce({
-              db,
-              ...(oracle ? { oracle } : {}),
-              fheProvider,
-            });
-          },
-        ),
-      );
-    }
     // Stats heartbeat — emits a `stats.tick` every 10s so the landing-page
     // hero counter stays current even when no calls flow through. Cheap:
     // single COUNT-with-WHERE query; no oracle calls.
@@ -415,7 +379,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   }
 
   console.log(
-    `[daemon] verdict listening on :${actualPort} (resolver=${RESOLVER_TICK_SEC}s, benchmark=${BENCHMARK_TICK_SEC}s)`,
+    `[daemon] verdict listening on :${actualPort} (resolver=${RESOLVER_TICK_SEC}s)`,
   );
 
   const close = async (): Promise<void> => {
