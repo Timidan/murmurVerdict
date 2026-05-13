@@ -134,31 +134,52 @@ export class ZamaLocalFheProvider implements FheProvider {
 
   async getActivePublicKey(): Promise<FheActiveKey> {
     if (this.cachedActive) return this.cachedActive;
-    const hash = createHash("sha256").update(this.placeholderBlob).digest("hex");
-    const keyset_id = `kset_zama_local_${hash.slice(0, 12)}`;
-    // Z0 seeds the row in `pending` so /v1/meta accurately reports
-    // that the provider is wired but not accepting submissions yet.
-    // Z2's bootstrap will flip an instance to `active` only after the
-    // sidecar reports a real keygen.
+    // Real path: hit the Rust sidecar over UDS for the live keyset.
+    // The sidecar generates a TFHE-rs key pair at its own boot and
+    // holds the server key in-process; we surface its keyset_id +
+    // public_key_hash to the daemon and stamp them into fhe_keysets.
+    const sidecarOpts: { socketPath: string; timeoutMs?: number } = {
+      socketPath: this.socketPath,
+    };
+    if (this.sidecarTimeoutMs !== undefined) {
+      sidecarOpts.timeoutMs = this.sidecarTimeoutMs;
+    }
+    const resp = await sendRequest({ op: "get_active_keyset" }, sidecarOpts);
+    if (resp.kind === "error") {
+      throw new FheUnavailableError("get_active_keyset", resp.message);
+    }
+    if (resp.kind !== "keyset_info") {
+      throw new FheUnavailableError(
+        "get_active_keyset",
+        `unexpected response kind '${resp.kind}'`,
+      );
+    }
+    // Stamp the row 'active'. Sidecar-provided public_key_blob is
+    // intentionally empty (the 180MB server key stays inside the
+    // sidecar process) — we persist a deterministic stub here so the
+    // FK target still satisfies submissions.commit_hash linkage.
+    const blob = this.placeholderBlob;
     this.db
       .prepare(
         `INSERT INTO fhe_keysets
            (keyset_id, provider, public_key_blob, public_key_hash,
-            status, vector_max_len, created_at, notes)
+            status, vector_max_len, created_at, activated_at, notes)
          VALUES (@keyset_id, 'zama_local', @blob, @hash,
-                 'pending', 32, @now,
-                 'zama_local stub — Z0 placeholder, sidecar offline')
-         ON CONFLICT(keyset_id) DO NOTHING`,
+                 'active', 32, @now, @now,
+                 'zama_local real — TFHE-rs sidecar keypair')
+         ON CONFLICT(keyset_id) DO UPDATE SET
+           status='active',
+           activated_at=COALESCE(fhe_keysets.activated_at, excluded.activated_at)`,
       )
       .run({
-        keyset_id,
-        blob: this.placeholderBlob,
-        hash,
+        keyset_id: resp.keyset_id,
+        blob,
+        hash: resp.public_key_hash,
         now: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
       });
     this.cachedActive = {
-      keyset_id,
-      public_key_hash: hash,
+      keyset_id: resp.keyset_id,
+      public_key_hash: resp.public_key_hash,
       provider: "zama_local",
     };
     return this.cachedActive;
@@ -168,39 +189,87 @@ export class ZamaLocalFheProvider implements FheProvider {
     name: FheCircuit["name"],
     vectorLen: number,
   ): Promise<FheCircuit> {
-    // Z0 surface only — return whatever the DB has. Z2 will dispatch
-    // to the sidecar's circuit registry once the IPC is wired.
-    const row = this.db
-      .prepare(
-        `SELECT circuit_id, handle FROM fhe_circuits
-         WHERE provider = 'zama_local' AND name = ? AND vector_max_len = ?
-         ORDER BY compiled_at DESC LIMIT 1`,
-      )
-      .get(name, vectorLen) as { circuit_id: string; handle: string } | undefined;
-    if (!row) {
-      throw new FheNotImplementedError(
-        "z2",
-        `getCircuit(${name}, ${vectorLen}) — no compiled artifact; Z2 sidecar bootstrap will register one`,
+    // Real path: ask the sidecar; cache the row.
+    const sidecarOpts: { socketPath: string; timeoutMs?: number } = {
+      socketPath: this.socketPath,
+    };
+    if (this.sidecarTimeoutMs !== undefined) {
+      sidecarOpts.timeoutMs = this.sidecarTimeoutMs;
+    }
+    const resp = await sendRequest(
+      { op: "get_circuit", name, vector_max_len: vectorLen },
+      sidecarOpts,
+    );
+    if (resp.kind === "error") {
+      throw new FheUnavailableError("get_circuit", resp.message);
+    }
+    if (resp.kind !== "circuit_info") {
+      throw new FheUnavailableError(
+        "get_circuit",
+        `unexpected response kind '${resp.kind}'`,
       );
     }
+    // Stamp the row so /v1/meta + Z3 release paths can join on it.
+    const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    this.db
+      .prepare(
+        `INSERT INTO fhe_circuits
+           (circuit_id, name, description, vector_max_len, compiled_at,
+            provider, handle)
+         VALUES (?, ?, ?, ?, ?, 'zama_local', ?)
+         ON CONFLICT(circuit_id) DO NOTHING`,
+      )
+      .run(
+        resp.circuit_id,
+        resp.name,
+        `Real TFHE-rs circuit (name=${resp.name}, vector_max_len=${resp.vector_max_len})`,
+        resp.vector_max_len,
+        now,
+        resp.handle,
+      );
     return {
-      circuit_id: row.circuit_id,
-      name,
-      handle: row.handle,
-      vector_max_len: vectorLen,
+      circuit_id: resp.circuit_id,
+      name: resp.name as FheCircuit["name"],
+      handle: resp.handle,
+      vector_max_len: resp.vector_max_len,
       provider: "zama_local",
     };
   }
 
   async encryptPredicted(
-    _args: FheEncryptPredictedArgs,
+    args: FheEncryptPredictedArgs,
   ): Promise<FheEncryptPredictedResult> {
-    // Z2 — real TFHE-rs sidecar handles agent-side encryption. The
-    // operator-run benchmark baselines reach this path; once the
-    // sidecar lands the implementation calls op-code 0x05
-    // (ENCRYPT_PREDICTED, planned) over the Unix domain socket and
-    // returns the ciphertext + hash + nonce.
-    throw new FheNotImplementedError("z2", "encryptPredicted");
+    // Real path: TFHE-rs FheUint8 encryption inside the Rust sidecar.
+    const sidecarOpts: { socketPath: string; timeoutMs?: number } = {
+      socketPath: this.socketPath,
+    };
+    if (this.sidecarTimeoutMs !== undefined) {
+      sidecarOpts.timeoutMs = this.sidecarTimeoutMs;
+    }
+    const resp = await sendRequest(
+      {
+        op: "encrypt_predicted",
+        keyset_id: args.keyset.keyset_id,
+        circuit_id: args.circuit.circuit_id,
+        numerators: [...args.numerators],
+        denominator: args.denominator,
+      } as SidecarRequest,
+      sidecarOpts,
+    );
+    if (resp.kind === "error") {
+      throw new FheUnavailableError("encrypt_predicted", resp.message);
+    }
+    if (resp.kind !== "predicted_ciphertext") {
+      throw new FheUnavailableError(
+        "encrypt_predicted",
+        `unexpected response kind '${resp.kind}'`,
+      );
+    }
+    return {
+      ciphertext: wireToBytes(resp.ciphertext),
+      ciphertext_hash: resp.ciphertext_hash,
+      nonce: resp.nonce,
+    };
   }
 
   async scoreEncrypted(

@@ -1,0 +1,29 @@
+[package]
+name = "murmur-fhe-sidecar"
+version = "0.1.0"
+edition = "2021"
+description = "Real-deal Zama TFHE-rs sidecar for Murmur Verdict. Speaks the length-prefixed JSON protocol the TS daemon expects on a Unix-domain socket."
+publish = false
+
+[[bin]]
+name = "murmur-fhe-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+# Zama's official TFHE-rs. Implements the cryptographic primitives the
+# sidecar uses for encrypt / score / decrypt. BSD-3-Clause licensed; no
+# payment, no API keys.
+tfhe = { version = "1.6", features = ["integer"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+sha2 = "0.10"
+hex = "0.4"
+log = "0.4"
+env_logger = "0.11"
+getrandom = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

@@ -34,16 +34,23 @@
 import { Socket } from "node:net";
 import { FheUnavailableError } from "./provider.js";
 
-/** Sidecar request shapes (mirror docker/fhe-sidecar/src/protocol.rs Request). */
+/** Sidecar request shapes (mirror tools/fhe-sidecar/src/protocol.rs Request). */
 export type SidecarRequest =
   | { op: "get_active_keyset" }
   | { op: "get_circuit"; name: string; vector_max_len: number }
+  | {
+      op: "encrypt_predicted";
+      keyset_id: string;
+      circuit_id: string;
+      numerators: string[];
+      denominator: string;
+    }
   | {
       op: "score_encrypted";
       // Codex Z2 review fixes #6 + #7 — extended request shape so the
       // sidecar can compute a transcript hash that binds (call_id,
       // keyset_id, circuit_id, score_ciphertext_hash, resolved_outcome_hash,
-      // score_range). The Rust side (docker/fhe-sidecar/src/protocol.rs)
+      // score_range). The Rust side (tools/fhe-sidecar/src/protocol.rs)
       // mirrors this exactly; cross-language byte equality of the
       // canonical transcript bytes is the contract.
       call_id: string;
@@ -75,6 +82,12 @@ export type SidecarResponse =
       name: string;
       vector_max_len: number;
       handle: string;
+    }
+  | {
+      kind: "predicted_ciphertext";
+      ciphertext: number[];
+      ciphertext_hash: string;
+      nonce: string;
     }
   | {
       kind: "score_ciphertext";
