@@ -1086,8 +1086,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   // The synthetic anchors seeded by MIGRATION_029 satisfy the
   // markets.asset_id + markets.primary_oracle_id FK constraints
   // ('polymarket:event' asset; 'polymarket-gamma-oracle' oracle).
-  // The sync ticker (started behind MURMUR_POLYMARKET_GAMMA_ENABLED=1)
-  // auto-seeds the external_market_sync_state row on its next pass.
+  // The daemon no longer starts the Gamma sync ticker at boot; this admin
+  // path registers the adapter lazily without passing a DB handle.
   //
   // Guard: requires VERDICT_ADMIN_TOKEN, same posture as the other
   // admin-gated endpoints. Body is validated with a Zod schema; any
@@ -1135,6 +1135,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         return;
       }
       const { conditionId, status, horizon_seconds } = parsed.data;
+      const { registerPolymarketGammaAdapter } = await import(
+        "../markets/polymarket-gamma/register.js"
+      );
+      registerPolymarketGammaAdapter();
       const { PolymarketGammaClient } = await import(
         "../markets/polymarket-gamma/client.js"
       );
