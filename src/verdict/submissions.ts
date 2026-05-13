@@ -33,6 +33,7 @@ import {
   resolveMarketFromPayload,
 } from "./markets.js";
 import type { Commitment } from "./markets-core.js";
+import { legacySubmissionToCommitment } from "./submission-normalizers.js";
 import {
   derivePolicyFromMarket,
   PolicyDerivationError,
@@ -40,14 +41,12 @@ import {
 import type { MarketRow } from "./db.js";
 
 /**
- * Privacy modes the daemon accepts at submit. Wave 2b: FHE-mandatory
- * means `fhe_direct` is the only surviving mode. Committed-mode and
- * legacy_plaintext have been excised — every submission must arrive
- * via the operator-blind path. Any unrecognized privacy_mode string
- * is rejected with schema_invalid (Codex H2 silent-downgrade closure
- * still applies).
+ * Privacy modes the daemon accepts at submit. Legacy plaintext is restored for
+ * demand-evidence native-price calls; fhe_direct remains available when an
+ * explicit ciphertext block is supplied.
  */
 export const ACCEPTED_PRIVACY_MODES: ReadonlySet<string> = new Set<string>([
+  "legacy_plaintext",
   "fhe_direct",
 ]);
 import type { FheProvider } from "./fhe/provider.js";
@@ -188,6 +187,9 @@ export async function submitCall(args: {
    *  own (e.g. ['YES','NO'] or category names). NEVER load-bearing for
    *  scoring (V2 §2.3); the leaderboard / dashboard just renders them. */
   outcomeLabels?: readonly string[];
+  /** Cleartext legacy payload persisted separately from the post-031
+   * submissions schema so the dropped plaintext columns stay dropped. */
+  legacyPayloadJson?: string | null;
   /**
    * Z1 — operator-blind submission. When the /v2/calls route detects
    * `privacy_mode === 'fhe_direct'`, it passes the parsed `fhe` block
@@ -520,15 +522,18 @@ export async function submitCall(args: {
   }
 
   // 8. construct AcceptedCall, validate, persist atomically
+  const acceptedAssetId = submission.asset_id ?? market.asset_id;
+  const acceptedHorizonHours =
+    submission.horizon_hours ?? legacyHorizonHoursForMarket(market);
   const accepted: AcceptedCall = AcceptedCallSchema.parse({
     schema_version: SCHEMA_VERSION,
     scoring_version: SCORING_VERSION,
     call_id,
     agent_id: submission.agent_id,
     client_order_id: submission.client_order_id,
-    asset_id: submission.asset_id,
+    asset_id: acceptedAssetId,
     side: submission.side,
-    horizon_hours: submission.horizon_hours,
+    horizon_hours: acceptedHorizonHours,
     confidence: submission.confidence,
     submitted_at: submission.submitted_at,
     rationale: submission.rationale,
@@ -538,17 +543,35 @@ export async function submitCall(args: {
     ...(oraclePolicy ? { oracle_policy: oraclePolicy } : {}),
   });
 
-  // Wave 2b — the legacy plaintext fallthrough that reaches this point
-  // is unreachable at runtime (the v2 surface rejects non-FHE at the
-  // route layer; fhe_direct branches out at the top of submitCall).
-  // We stamp nulls into the commitment columns so the call site stays
-  // compilable without dragging the deleted Phase 4 helpers
-  // (`deriveLegacyCommitment` / `commitmentToWire`) back in.
-  void precomputedCommitment;
-  void args.outcomeLabels;
-  const commitmentJsonStamp: string | null = null;
-  const predictedOutcomeJsonStamp: string | null = null;
-  const outcomeLabelsJsonStamp: string | null = null;
+  const expectedResolvesAtIso = nowIso(
+    new Date(Date.parse(accepted_at) + market.horizon_seconds * 1000),
+  );
+  const commitment =
+    precomputedCommitment ??
+    legacySubmissionToCommitment({
+      side: submission.side,
+      confidence: submission.confidence,
+      asset_id: acceptedAssetId,
+      horizon_hours: acceptedHorizonHours,
+      expected_resolves_at_iso: expectedResolvesAtIso,
+      market_id: market.market_id,
+      market_config_version: market.market_config_version,
+    });
+  const commitmentWire = commitmentToWire(commitment);
+  const commitmentJsonStamp = JSON.stringify(commitmentWire);
+  const predictedOutcomeJsonStamp = JSON.stringify(commitmentWire.predictedOutcome);
+  const outcomeLabelsJsonStamp = args.outcomeLabels
+    ? JSON.stringify([...args.outcomeLabels])
+    : null;
+  const legacyPayloadJsonStamp =
+    args.legacyPayloadJson ??
+    JSON.stringify({
+      side: submission.side,
+      asset_id: acceptedAssetId,
+      horizon_hours: acceptedHorizonHours,
+      confidence: submission.confidence,
+      market_id: market.market_id,
+    });
 
   try {
     submissionsRepo.acceptCall(db, {
@@ -573,6 +596,7 @@ export async function submitCall(args: {
       commitment_json: commitmentJsonStamp,
       predicted_outcome_json: predictedOutcomeJsonStamp,
       outcome_labels_json: outcomeLabelsJsonStamp,
+      legacy_payload_json: legacyPayloadJsonStamp,
       ...(commitHashForRepo ? { commit_hash: commitHashForRepo } : {}),
       ...(commitSchemeForRepo ? { commit_scheme: commitSchemeForRepo } : {}),
     });
@@ -1148,7 +1172,8 @@ function loadExistingAcceptedCall(
   const stmt = db.prepare(`
     SELECT schema_version, scoring_version,
            call_id, agent_id, client_order_id,
-           submitted_at, accepted_at, rationale, strategy_tag, market_id
+           submitted_at, accepted_at, rationale, strategy_tag, market_id,
+           legacy_payload_json
     FROM submissions
     WHERE call_id = ?
   `);
@@ -1161,12 +1186,14 @@ function loadExistingAcceptedCall(
     );
   }
   const retryPolicy = resolveOraclePolicyFromMarket(db, row.market_id);
+  const legacyPayload = parseLegacyPayloadJson(row.legacy_payload_json);
   const accepted = AcceptedCallSchema.parse({
     schema_version: row.schema_version,
     scoring_version: row.scoring_version,
     call_id: row.call_id,
     agent_id: row.agent_id,
     client_order_id: row.client_order_id,
+    ...legacyPayload,
     submitted_at: row.submitted_at,
     rationale: row.rationale ?? undefined,
     strategy_tag: row.strategy_tag ?? undefined,
@@ -1228,8 +1255,56 @@ function resolveOraclePolicyFromMarket(
   }
 }
 
-// Wave 2b — `deriveLegacyCommitment` and `commitmentToWire` deleted.
-// Under FHE-mandatory the only path stamping `commitment_json` /
-// `predicted_outcome_json` is the fhe_direct branch (which writes NULL
-// into both, per the operator-blind invariant). The legacy plaintext
-// fallthrough in submitCall() now stamps null directly.
+function commitmentToWire(c: Commitment): {
+  marketRef: Commitment["marketRef"];
+  predictedOutcome: {
+    kind: Commitment["predictedOutcome"]["kind"];
+    payoutNumerators: string[];
+    payoutDenominator: string;
+    scalarValue?: string;
+  };
+  horizon: Commitment["horizon"];
+  confidence: number;
+} {
+  return {
+    marketRef: c.marketRef,
+    predictedOutcome: {
+      kind: c.predictedOutcome.kind,
+      payoutNumerators: c.predictedOutcome.payoutNumerators.map((n) =>
+        n.toString(),
+      ),
+      payoutDenominator: c.predictedOutcome.payoutDenominator.toString(),
+      ...(c.predictedOutcome.scalarValue !== undefined
+        ? { scalarValue: c.predictedOutcome.scalarValue.toString() }
+        : {}),
+    },
+    horizon: c.horizon,
+    confidence: c.confidence,
+  };
+}
+
+const LegacyPayloadJsonSchema = z
+  .object({
+    side: z.enum(["BUY", "SELL"]),
+    asset_id: z.string().min(1),
+    horizon_hours: z.union([
+      z.literal(0),
+      z.literal(1),
+      z.literal(4),
+      z.literal(24),
+      z.literal(168),
+    ]),
+    confidence: z.number().min(0.51).max(0.95),
+  })
+  .strict();
+
+function parseLegacyPayloadJson(
+  raw: unknown,
+): Partial<Pick<AcceptedCall, "side" | "asset_id" | "horizon_hours" | "confidence">> {
+  if (typeof raw !== "string" || raw.length === 0) return {};
+  try {
+    return LegacyPayloadJsonSchema.parse(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}

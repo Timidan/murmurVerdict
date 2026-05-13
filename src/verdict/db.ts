@@ -3058,6 +3058,7 @@ export interface AcceptanceWriteInput {
   commitment_json?: string | null;
   predicted_outcome_json?: string | null;
   outcome_labels_json?: string | null;
+  legacy_payload_json?: string | null;
 }
 
 export const submissionsRepo = {
@@ -3090,7 +3091,8 @@ export const submissionsRepo = {
           privacy_mode, commit_hash, commit_scheme,
           market_id, market_config_version,
           adapter_id, market_family,
-          commitment_json, predicted_outcome_json, outcome_labels_json)
+          commitment_json, predicted_outcome_json, outcome_labels_json,
+          legacy_payload_json)
          VALUES (@call_id, @agent_id, @client_order_id,
           @horizon_seconds,
           @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
@@ -3098,7 +3100,8 @@ export const submissionsRepo = {
           @privacy_mode, @commit_hash, @commit_scheme,
           @market_id, @market_config_version,
           @adapter_id, @market_family,
-          @commitment_json, @predicted_outcome_json, @outcome_labels_json)`,
+          @commitment_json, @predicted_outcome_json, @outcome_labels_json,
+          @legacy_payload_json)`,
       ).run({
         call_id: i.accepted.call_id,
         agent_id: i.accepted.agent_id,
@@ -3139,6 +3142,7 @@ export const submissionsRepo = {
         commitment_json: i.commitment_json ?? null,
         predicted_outcome_json: i.predicted_outcome_json ?? null,
         outcome_labels_json: i.outcome_labels_json ?? null,
+        legacy_payload_json: i.legacy_payload_json ?? null,
       });
     });
     tx(input);
@@ -3262,6 +3266,7 @@ export const submissionsRepo = {
     status: CallStatus;
     privacy_mode: string | null;
     commit_hash: string | null;
+    commitment_json: string | null;
     market_id: string | null;
     market_config_version: number | null;
     adapter_id: string | null;
@@ -3272,6 +3277,7 @@ export const submissionsRepo = {
         db,
         `SELECT call_id, agent_id, horizon_seconds,
                 accepted_at, status, privacy_mode, commit_hash,
+                commitment_json,
                 market_id, market_config_version,
                 adapter_id, market_family
          FROM submissions
@@ -3285,6 +3291,7 @@ export const submissionsRepo = {
             status: CallStatus;
             privacy_mode: string | null;
             commit_hash: string | null;
+            commitment_json: string | null;
             market_id: string | null;
             market_config_version: number | null;
             adapter_id: string | null;

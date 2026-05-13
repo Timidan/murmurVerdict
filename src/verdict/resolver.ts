@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
+  AssetId,
   HORIZONS_HOURS,
+  HorizonHours,
   OracleFeed,
   Outcome,
+  Side,
   T0Policy,
   UsageEvent,
 } from "./schema.js";
@@ -28,6 +31,22 @@ import {
   type OracleObservation as AdapterObservation,
 } from "../integrations/oracles/types.js";
 import { derivePolicyFromMarket, feedToOracleId } from "./oracle-routing.js";
+import {
+  computeSignedReturn,
+  outcomeFromSignedReturn,
+  scoreCall,
+} from "./scoring.js";
+import {
+  getAdapterForMarket,
+  legacyHorizonHoursForMarket,
+  voidBandFloat,
+} from "./markets.js";
+import { parseStoredCommitment } from "./submission-normalizers.js";
+import {
+  serializeOutcome,
+  type Commitment,
+  type Outcome as UniversalOutcome,
+} from "./markets-core.js";
 
 // ─── Env knobs ──────────────────────────────────────────────────────────────
 //
@@ -291,6 +310,37 @@ export class Resolver {
         }
         // ── end fhe_direct branch ───────────────────────────────────────
 
+        if (ctx.privacy_mode === "legacy_plaintext") {
+          const legacyResult = await this.runLegacyPlaintextScoring({
+            ctx,
+            t0row,
+            obs,
+          });
+          if (legacyResult.kind === "resolved") {
+            resolved++;
+            this.log({
+              kind: "anchored_t1",
+              call_id: ctx.call_id,
+              feed: obs.feed,
+              p1: obs.price,
+              outcome: legacyResult.outcome,
+            });
+            try {
+              await this.onResolved(ctx.call_id);
+            } catch {
+              // terminal state already persisted
+            }
+          } else if (legacyResult.kind === "oracle_unavailable") {
+            oracleUnavailable++;
+            try {
+              await this.onResolved(ctx.call_id);
+            } catch {
+              // terminal state already persisted
+            }
+          }
+          continue;
+        }
+
         // Wave 3b — the legacy plaintext + committed-mode resolution path
         // was deleted. Waves 2a/2b made FHE-direct the only accepted
         // submit mode, and MIGRATION_031 dropped the 4 plaintext columns
@@ -358,6 +408,158 @@ export class Resolver {
   // branch, so both helpers are now unreachable. The FHE-direct
   // resolution path (runFheDirectScoring) does its own adapter dispatch
   // against the encrypted prediction.
+
+  private async runLegacyPlaintextScoring(args: {
+    ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>;
+    t0row: { p0: string };
+    obs: OracleObservation;
+  }): Promise<
+    | { kind: "resolved"; outcome: Outcome }
+    | { kind: "oracle_unavailable" }
+    | { kind: "pending" }
+  > {
+    const marketId = args.ctx.market_id;
+    if (!marketId) {
+      this.log({
+        kind: "still_pending",
+        call_id: args.ctx.call_id,
+        phase: "t1",
+        reason: "legacy_plaintext:missing_market_id",
+      });
+      await this.markOracleUnavailable(args.ctx, "t1");
+      return { kind: "oracle_unavailable" };
+    }
+    const marketRow = marketsRepo.get(this.db, marketId);
+    if (!marketRow) {
+      this.log({
+        kind: "still_pending",
+        call_id: args.ctx.call_id,
+        phase: "t1",
+        reason: `legacy_plaintext:unknown_market:${marketId}`,
+      });
+      await this.markOracleUnavailable(args.ctx, "t1");
+      return { kind: "oracle_unavailable" };
+    }
+    const commitment = parseStoredCommitment(args.ctx.commitment_json);
+    if (!commitment) {
+      this.log({
+        kind: "still_pending",
+        call_id: args.ctx.call_id,
+        phase: "t1",
+        reason: "legacy_plaintext:missing_commitment_json",
+      });
+      await this.markOracleUnavailable(args.ctx, "t1");
+      return { kind: "oracle_unavailable" };
+    }
+    const side = sideFromNativePriceCommitment(commitment);
+    if (!side) {
+      this.log({
+        kind: "still_pending",
+        call_id: args.ctx.call_id,
+        phase: "t1",
+        reason: "legacy_plaintext:commitment_not_native_price_one_hot",
+      });
+      await this.markOracleUnavailable(args.ctx, "t1");
+      return { kind: "oracle_unavailable" };
+    }
+
+    let adapter;
+    try {
+      adapter = getAdapterForMarket(marketRow);
+    } catch (err) {
+      this.log({
+        kind: "still_pending",
+        call_id: args.ctx.call_id,
+        phase: "t1",
+        reason: `legacy_plaintext:adapter_missing:${err instanceof Error ? err.message : String(err)}`,
+      });
+      return { kind: "pending" };
+    }
+    if (adapter.name !== "native-price") {
+      this.log({
+        kind: "still_pending",
+        call_id: args.ctx.call_id,
+        phase: "t1",
+        reason: `legacy_plaintext:unsupported_adapter:${adapter.name}`,
+      });
+      await this.markOracleUnavailable(args.ctx, "t1");
+      return { kind: "oracle_unavailable" };
+    }
+
+    const voidBand = voidBandFloat(marketRow);
+    const marketRef = {
+      protocol: adapter.name,
+      sourceId: marketId,
+      configVersion: marketRow.market_config_version ?? 1,
+    };
+    let observed: UniversalOutcome | "pending" | "disputed";
+    try {
+      observed = await adapter.observeResolution(marketRef, {
+        ...parseMarketConfigJson(marketRow.config_json),
+        t0_p0: args.t0row.p0,
+        t1_p1: args.obs.price,
+        t1_iso: args.obs.feed_timestamp,
+        t1_feed: args.obs.feed,
+        t1_source_id: args.obs.source_id,
+        void_band: voidBand,
+        side,
+        market_id: marketId,
+      });
+    } catch (err) {
+      this.log({
+        kind: "still_pending",
+        call_id: args.ctx.call_id,
+        phase: "t1",
+        reason: `legacy_plaintext:adapter_observe_failed:${err instanceof Error ? err.message : String(err)}`,
+      });
+      return { kind: "pending" };
+    }
+    if (observed === "pending" || observed === "disputed") {
+      return { kind: "pending" };
+    }
+
+    const signedReturn = computeSignedReturn(side, args.t0row.p0, args.obs.price);
+    const outcome = outcomeFromSignedReturn(signedReturn, voidBand);
+    const horizonHours = legacyHorizonHoursForMarket(marketRow) as HorizonHours;
+    const score = scoreCall({
+      asset_id: marketRow.asset_id as AssetId,
+      horizon_hours: horizonHours,
+      horizon_seconds: marketRow.horizon_seconds,
+      confidence: commitment.confidence,
+      signed_return: signedReturn,
+      outcome,
+    });
+    const resolvedOutcomeJson = JSON.stringify(serializeOutcome(observed));
+    const payoutVectorJson = JSON.stringify(
+      observed.payoutNumerators.map((n) => n.toString()),
+    );
+    const nowIso = this.nowIso();
+    const tx = this.db.transaction(() => {
+      resolutionsRepo.setResolution(this.db, {
+        call_id: args.ctx.call_id,
+        t1: args.obs.feed_timestamp,
+        p1: args.obs.price,
+        t1_feed: args.obs.feed,
+        signed_return: String(signedReturn),
+        outcome,
+        call_score: score.call_score,
+        resolved_at: nowIso,
+        resolved_outcome_json: resolvedOutcomeJson,
+        payout_vector_json: payoutVectorJson,
+      });
+      submissionsRepo.setStatus(this.db, args.ctx.call_id, "resolved");
+      usageRepo.emit(
+        this.db,
+        this.makeUsage(args.ctx.agent_id, "resolution_completed", {
+          call_id: args.ctx.call_id,
+          outcome,
+          call_score: score.call_score,
+        }),
+      );
+    });
+    tx();
+    return { kind: "resolved", outcome };
+  }
 
   // ── core anchoring step (used for both t0 and t1) ──
 
@@ -560,6 +762,21 @@ export class Resolver {
 
 function isoFromUnixMs(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+function sideFromNativePriceCommitment(commitment: Commitment): Side | null {
+  const predicted = commitment.predictedOutcome;
+  if (
+    predicted.kind !== "binary" ||
+    predicted.payoutNumerators.length !== 2 ||
+    predicted.payoutDenominator <= 0n
+  ) {
+    return null;
+  }
+  const [up, down] = predicted.payoutNumerators;
+  if (up === predicted.payoutDenominator && down === 0n) return "BUY";
+  if (up === 0n && down === predicted.payoutDenominator) return "SELL";
+  return null;
 }
 
 /**

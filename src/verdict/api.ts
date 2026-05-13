@@ -246,26 +246,22 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       }
       const body = parsed.data;
 
-      // Wave 2a — FHE-direct is the only accepted privacy_mode on
-      // /v2/calls. Legacy plaintext / committed-mode acceptance is
-      // dead; the daemon stores ciphertext-only and the operator
-      // cannot decrypt the prediction. Default the mode to fhe_direct
-      // when callers omit it so existing clients that previously
-      // omitted the field don't break — they fail downstream at the
-      // `fhe` block requirement instead.
-      const submittedMode = body.privacy_mode ?? "fhe_direct";
-      if (submittedMode !== "fhe_direct") {
+      const hasLegacyFields =
+        body.predictedOutcome !== undefined &&
+        body.horizon !== undefined &&
+        body.confidence !== undefined;
+      const submittedMode =
+        body.privacy_mode ??
+        (body.fhe !== undefined && !hasLegacyFields
+          ? "fhe_direct"
+          : "legacy_plaintext");
+      if (
+        body.privacy_mode === undefined &&
+        body.fhe !== undefined &&
+        hasLegacyFields
+      ) {
         throw new VerdictError(
-          "/v2/calls accepts only privacy_mode='fhe_direct' (committed + legacy_plaintext modes removed in Wave 2a — reputation is built up via FHE-direct calls only)",
-          ERROR_CODES.schema_invalid,
-          400,
-          { received: body.privacy_mode ?? null },
-        );
-      }
-      body.privacy_mode = "fhe_direct";
-      if (!body.fhe) {
-        throw new VerdictError(
-          "/v2/calls requires the `fhe` block (encrypted_predicted_outcome + keyset_id + circuit_id + ciphertext_hash + vector_len + payout_denominator + nonce). plaintext predictedOutcome/horizon/confidence are no longer accepted",
+          "ambiguous /v2/calls body: specify privacy_mode when both fhe and cleartext commitment fields are present",
           ERROR_CODES.schema_invalid,
           400,
         );
@@ -324,53 +320,138 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         );
       }
 
-      // Wave 2a — single FHE-direct submission path. Legacy
-      // plaintext bridge (Commitment → derivePayoutSide → SubmittedCall
-      // → submitCall) deleted; the privacy_mode check at the top of
-      // this handler refuses any non-fhe_direct submission before we
-      // reach this point.
       const submittedAt =
         body.submitted_at ?? now().toISOString().replace(/\.\d+Z$/, "Z");
-      const fhePayload: Record<string, unknown> = {
+      if (submittedMode === "fhe_direct") {
+        if (!body.fhe) {
+          throw new VerdictError(
+            "/v2/calls requires the `fhe` block when privacy_mode='fhe_direct'",
+            ERROR_CODES.schema_invalid,
+            400,
+          );
+        }
+        const fhePayload: Record<string, unknown> = {
+          schema_version: SCHEMA_VERSION,
+          agent_id: authResult.agent_id,
+          client_order_id: body.client_order_id,
+          market_id: market.market_id,
+          privacy_mode: "fhe_direct",
+          submitted_at: submittedAt,
+          ...(body.rationale !== undefined ? { rationale: body.rationale } : {}),
+          ...(body.strategy_tag !== undefined
+            ? { strategy_tag: body.strategy_tag }
+            : {}),
+        };
+        const fheResult = await submitCall({
+          db: deps.db,
+          ctx: deps.ctx,
+          identity: { agent_id: authResult.agent_id },
+          payload: fhePayload,
+          fheDirect: { fhe: body.fhe, market_id: market.market_id },
+        });
+        res.status(fheResult.idempotent_hit ? 200 : 201).json({
+          call_id: fheResult.call.call_id,
+          call: {
+            schema_version: fheResult.call.schema_version,
+            scoring_version: fheResult.call.scoring_version,
+            call_id: fheResult.call.call_id,
+            agent_id: fheResult.call.agent_id,
+            client_order_id: fheResult.call.client_order_id,
+            submitted_at: fheResult.call.submitted_at,
+            accepted_at: fheResult.call.accepted_at,
+            status: fheResult.call.status,
+            ...(fheResult.call.rationale !== undefined
+              ? { rationale: fheResult.call.rationale }
+              : {}),
+            ...(fheResult.call.strategy_tag !== undefined
+              ? { strategy_tag: fheResult.call.strategy_tag }
+              : {}),
+            privacy_mode: "fhe_direct",
+          },
+          idempotent_hit: fheResult.idempotent_hit,
+          tier: authResult.tier,
+        });
+        return;
+      }
+
+      if (!hasLegacyFields) {
+        throw new VerdictError(
+          "legacy_plaintext submissions require predictedOutcome, horizon, and confidence",
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+      if (body.fhe !== undefined) {
+        throw new VerdictError(
+          "legacy_plaintext submissions must not include an fhe block",
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+      if (expectedProtocol !== "native-price") {
+        throw new VerdictError(
+          "legacy_plaintext submissions are only enabled for native-price markets",
+          ERROR_CODES.schema_invalid,
+          400,
+          { market_adapter_id: expectedProtocol },
+        );
+      }
+      const commitment = v2BodyToRuntimeCommitment({
+        marketRef: body.marketRef,
+        predictedOutcome: body.predictedOutcome!,
+        horizon: body.horizon!,
+        confidence: body.confidence!,
+      });
+      const side = deriveNativePriceSide(commitment);
+      if (!side) {
+        throw new VerdictError(
+          "native-price legacy_plaintext predictedOutcome must be one-hot [UP,DOWN]",
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+      if (commitment.confidence < 0.51 || commitment.confidence > 0.95) {
+        throw new VerdictError(
+          "native-price legacy_plaintext confidence must be between 0.51 and 0.95",
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+      const legacyPayload: Record<string, unknown> = {
         schema_version: SCHEMA_VERSION,
         agent_id: authResult.agent_id,
         client_order_id: body.client_order_id,
         market_id: market.market_id,
-        privacy_mode: "fhe_direct",
+        side,
+        confidence: commitment.confidence,
+        privacy_mode: "legacy_plaintext",
         submitted_at: submittedAt,
         ...(body.rationale !== undefined ? { rationale: body.rationale } : {}),
         ...(body.strategy_tag !== undefined
           ? { strategy_tag: body.strategy_tag }
           : {}),
       };
-      const fheResult = await submitCall({
+      const legacyResult = await submitCall({
         db: deps.db,
         ctx: deps.ctx,
         identity: { agent_id: authResult.agent_id },
-        payload: fhePayload,
-        fheDirect: { fhe: body.fhe, market_id: market.market_id },
+        payload: legacyPayload,
+        precomputedCommitment: commitment,
+        outcomeLabels: ["UP", "DOWN"],
+        legacyPayloadJson: JSON.stringify({
+          side,
+          asset_id: market.asset_id,
+          horizon_hours: legacyHorizonHoursForMarket(market),
+          confidence: commitment.confidence,
+        }),
       });
-      res.status(fheResult.idempotent_hit ? 200 : 201).json({
-        call_id: fheResult.call.call_id,
-        // Operator-blind response: no synthesized plaintext fields.
+      res.status(legacyResult.idempotent_hit ? 200 : 201).json({
+        call_id: legacyResult.call.call_id,
         call: {
-          schema_version: fheResult.call.schema_version,
-          scoring_version: fheResult.call.scoring_version,
-          call_id: fheResult.call.call_id,
-          agent_id: fheResult.call.agent_id,
-          client_order_id: fheResult.call.client_order_id,
-          submitted_at: fheResult.call.submitted_at,
-          accepted_at: fheResult.call.accepted_at,
-          status: fheResult.call.status,
-          ...(fheResult.call.rationale !== undefined
-            ? { rationale: fheResult.call.rationale }
-            : {}),
-          ...(fheResult.call.strategy_tag !== undefined
-            ? { strategy_tag: fheResult.call.strategy_tag }
-            : {}),
-          privacy_mode: "fhe_direct",
+          ...legacyResult.call,
+          privacy_mode: "legacy_plaintext",
         },
-        idempotent_hit: fheResult.idempotent_hit,
+        idempotent_hit: legacyResult.idempotent_hit,
         tier: authResult.tier,
       });
     }),
@@ -2069,11 +2150,9 @@ const FheBlockSchema = z
   })
   .strict();
 
-// Wave 2a — /v2/calls is FHE-direct-only. The schema requires the
-// `fhe` block, defaults privacy_mode to 'fhe_direct' when omitted,
-// rejects any other value, and forbids the legacy plaintext fields
-// (predictedOutcome / horizon / confidence) since fhe_direct hides
-// them inside the ciphertext.
+// /v2/calls accepts two shapes:
+//   - legacy_plaintext: universal Commitment fields in cleartext
+//   - fhe_direct: encrypted prediction in `fhe`
 const V2SubmissionBodySchema = z
   .object({
     marketRef: CommitmentSchema.shape.marketRef,
@@ -2084,26 +2163,11 @@ const V2SubmissionBodySchema = z
       .string()
       .datetime({ offset: false })
       .optional(),
-    // Default to 'fhe_direct' when omitted so existing clients that
-    // never set the field get the right behavior. The superRefine
-    // below still rejects any explicit non-FHE value (the legacy
-    // legacy_plaintext / committed modes are gone in Wave 2a).
-    privacy_mode: z
-      .string()
-      .optional()
-      .transform((v) => v ?? "fhe_direct"),
-    fhe: FheBlockSchema,
-    // Wave 2a — predictedOutcome/horizon/confidence are no longer
-    // accepted on /v2/calls. They were optional under Z1 because the
-    // wire shape had to support both fhe_direct and legacy_plaintext;
-    // with legacy_plaintext gone, they're forbidden. The schema
-    // explicitly captures them with .never() so .strict() surfaces a
-    // clear error if a stale client still sends them. .never() inside
-    // .strict() emits "Expected never, received ..." — the message is
-    // helpful enough that we don't superRefine on top.
-    predictedOutcome: z.never().optional(),
-    horizon: z.never().optional(),
-    confidence: z.never().optional(),
+    privacy_mode: z.enum(["legacy_plaintext", "fhe_direct"]).optional(),
+    fhe: FheBlockSchema.optional(),
+    predictedOutcome: CommitmentSchema.shape.predictedOutcome.optional(),
+    horizon: CommitmentSchema.shape.horizon.optional(),
+    confidence: CommitmentSchema.shape.confidence.optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -2114,15 +2178,77 @@ const V2SubmissionBodySchema = z
         path: ["rationale"],
       });
     }
-    if (v.privacy_mode !== "fhe_direct") {
+    const hasLegacyFields =
+      v.predictedOutcome !== undefined &&
+      v.horizon !== undefined &&
+      v.confidence !== undefined;
+    if (v.privacy_mode === "fhe_direct" && !v.fhe) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "fhe block is required when privacy_mode='fhe_direct'",
+        path: ["fhe"],
+      });
+    }
+    if (v.privacy_mode === "fhe_direct" && hasLegacyFields) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "/v2/calls accepts only privacy_mode='fhe_direct' (legacy_plaintext + committed removed in Wave 2a)",
-        path: ["privacy_mode"],
+          "predictedOutcome, horizon, and confidence must be omitted when privacy_mode='fhe_direct'",
+        path: ["predictedOutcome"],
+      });
+    }
+    if (v.privacy_mode === "legacy_plaintext" && !hasLegacyFields) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "predictedOutcome, horizon, and confidence are required when privacy_mode='legacy_plaintext'",
+        path: ["predictedOutcome"],
+      });
+    }
+    if (v.privacy_mode === "legacy_plaintext" && v.fhe !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "fhe block must be omitted when privacy_mode='legacy_plaintext'",
+        path: ["fhe"],
       });
     }
   });
+
+type CommitmentWire = z.infer<typeof CommitmentSchema>;
+
+function v2BodyToRuntimeCommitment(input: CommitmentWire): Commitment {
+  return {
+    marketRef: input.marketRef,
+    predictedOutcome: {
+      kind: input.predictedOutcome.kind,
+      payoutNumerators: input.predictedOutcome.payoutNumerators.map((n) =>
+        BigInt(n),
+      ),
+      payoutDenominator: BigInt(input.predictedOutcome.payoutDenominator),
+      ...(input.predictedOutcome.scalarValue !== undefined
+        ? { scalarValue: BigInt(input.predictedOutcome.scalarValue) }
+        : {}),
+    },
+    horizon: input.horizon,
+    confidence: input.confidence,
+  };
+}
+
+function deriveNativePriceSide(commitment: Commitment): "BUY" | "SELL" | null {
+  const nums = commitment.predictedOutcome.payoutNumerators;
+  const denom = commitment.predictedOutcome.payoutDenominator;
+  if (
+    commitment.predictedOutcome.kind !== "binary" ||
+    nums.length !== 2 ||
+    denom <= 0n
+  ) {
+    return null;
+  }
+  const [up, down] = nums;
+  if (up === denom && down === 0n) return "BUY";
+  if (up === 0n && down === denom) return "SELL";
+  return null;
+}
 
 // Wave 2a — `derivePayoutSide` + `readHmacHeaders` helpers removed
 // alongside the legacy plaintext bridge and the /v1/calls HMAC submit
