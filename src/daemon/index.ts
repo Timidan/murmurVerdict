@@ -27,8 +27,6 @@ import { registerBaselines } from "../benchmark/agents.js";
 // privacy mode the daemon accepts.
 import type { FheProvider } from "../verdict/fhe/provider.js";
 import { loadFheProviderFromEnv } from "../verdict/fhe/loader.js";
-import { MockQuorumPool } from "../verdict/fhe/mock-quorum.js";
-import type { ThresholdHolder } from "../verdict/fhe/threshold.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server } from "node:http";
@@ -93,12 +91,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // Z0 — FHE provider boundary. Dynamic-import only when the flag is set
   // so legacy boot never touches the fhe/* modules (codex Z0 review fix).
   let fheProvider: FheProvider | null = null;
-  // Z3 — opt-in single-process mock quorum. The pool is constructed
-  // alongside the provider; the resolver and the routes share the same
-  // instance. The dynamic import keeps the legacy boot path free of any
-  // threshold-related imports — same posture as the provider load.
-  // Wave 2a — FHE provider + quorum pool eager-loaded. No flag gate.
-  let quorumPool: { holders(): ReadonlyArray<ThresholdHolder> } | null = null;
   fheProvider = loadFheProviderFromEnv(db);
   if (fheProvider) {
     console.log(
@@ -106,21 +98,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     );
   } else {
     console.error(
-      "[daemon] FATAL: loadFheProviderFromEnv returned null. FHE is mandatory; /v2/calls will reject every submission. Configure MURMUR_FHE_PROVIDER (and any provider-specific env) and restart.",
-    );
-  }
-  // Quorum pool defaults to mock_5of9 — this is the in-process Z3
-  // posture, the only one reachable in code today. Real KMS/committee
-  // is v0.3 work. The Z5 production gate refuses readyz under this
-  // posture if MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1.
-  if (
-    process.env.MURMUR_FHE_THRESHOLD_MODE === "mock_5of9" ||
-    !process.env.MURMUR_FHE_THRESHOLD_MODE
-  ) {
-    const nowIso = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    quorumPool = MockQuorumPool.init(db, nowIso);
-    console.log(
-      "[daemon] mock-quorum pool ready (9 holders; mock_5of9 — NOT production-ready, Z5 prod gate refuses)",
+      "[daemon] loadFheProviderFromEnv returned null; fhe_direct submissions will reject until a provider is configured.",
     );
   }
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
@@ -131,8 +109,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         db,
         oracle,
         // Wave 2b — ageContext + drandContext removed from Resolver deps.
-        ...(fheProvider ? { fheProvider } : {}),
-        ...(quorumPool ? { quorumPool } : {}),
         onResolved: async (call_id) => {
           // 1. Fan out to SSE subscribers
           try {
@@ -314,22 +290,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // router so `/v1/calls` / `/v1/agents/...` still resolve to the legacy
   // handlers — `/v1/account/*` is a fresh path prefix with no collision.
   app.use(accountRouter({ db }));
-
-  // Wave 2a — FHE threshold-decrypt routes mounted unconditionally.
-  // FHE is the only privacy mode now; the dynamic-import gate from Z3
-  // is gone.
-  {
-    const { createFheThresholdRouter } = await import(
-      "../verdict/routes/fhe-threshold.js"
-    );
-    app.use(
-      createFheThresholdRouter({
-        db,
-        adminToken:
-          process.env.VERDICT_ADMIN_TOKEN ?? undefined,
-      }),
-    );
-  }
 
   // Phase 11 — Polymarket Gamma adapter. Off by default; dynamic-import
   // only when MURMUR_POLYMARKET_GAMMA_ENABLED=1 so the legacy boot path

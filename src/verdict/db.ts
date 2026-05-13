@@ -762,6 +762,27 @@ function applyMigrations(db: Database.Database): void {
     v = 33;
     set.run("schema_version", String(v));
   }
+
+  if (v < 34) {
+    // Demand-evidence retreat — remove the in-process threshold-release
+    // theater while preserving audit/security tables and FHE submission
+    // primitives. FHE-direct rows can still be accepted when configured,
+    // but there is no mock 5-of-9 release pipeline in-process anymore.
+    // The legacy_payload_json column gives the relaxed native-price path
+    // somewhere explicit to store its cleartext legacy wire body without
+    // reintroducing the plaintext submissions columns dropped in 031.
+    db.transaction(() => {
+      db.exec(MIGRATION_034_RETREAT);
+      applyAlterTableAddColumn(
+        db,
+        "submissions",
+        "legacy_payload_json",
+        "ALTER TABLE submissions ADD COLUMN legacy_payload_json TEXT",
+      );
+      set.run("schema_version", "34");
+    })();
+    v = 34;
+  }
 }
 
 /**
@@ -2584,6 +2605,27 @@ const MIGRATION_032 = `
   BEGIN
     SELECT RAISE(ABORT, 'agent_security_events rows are append-only');
   END;
+`;
+
+// ─── Migration 034 — demand-evidence retreat ───────────────────────────────
+//
+// Removes the in-process FHE threshold-release pipeline:
+//   - fhe_score_jobs
+//   - fhe_decrypt_requests
+//   - fhe_decrypt_shares
+//   - fhe_key_holders
+//   - fhe_score_releases
+//
+// Retains FHE keysets/circuits/ciphertexts so optional fhe_direct submission
+// storage remains available, but no daemon-local mock quorum can release
+// scores. Adds submissions.legacy_payload_json separately through the
+// idempotent ALTER helper in applyMigrations().
+const MIGRATION_034_RETREAT = `
+  DROP TABLE IF EXISTS fhe_decrypt_shares;
+  DROP TABLE IF EXISTS fhe_score_releases;
+  DROP TABLE IF EXISTS fhe_decrypt_requests;
+  DROP TABLE IF EXISTS fhe_key_holders;
+  DROP TABLE IF EXISTS fhe_score_jobs;
 `;
 
 const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
