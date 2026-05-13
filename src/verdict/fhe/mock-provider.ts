@@ -76,13 +76,11 @@ interface ScoreBlob {
 export class MockFheProvider implements FheProvider {
   readonly name = "mock" as const;
   /**
-   * Z3 — when the daemon opts into `MURMUR_FHE_THRESHOLD_MODE=mock_5of9`
-   * AND the mock-provider is the scoring backend, we bump the reported
-   * threshold mode to `"mock_quorum"`. Without the env opt-in it stays
-   * `"mock"` (no quorum at all — the daemon mock decrypts in-process,
-   * legacy Z0/Z1/Z2 posture). Z5's prod gate refuses both.
+   * Demand-evidence retreat: the mock provider has no external holder
+   * committee. Report the posture honestly instead of implying a threshold
+   * quorum exists inside the daemon.
    */
-  readonly threshold_mode: FheThresholdMode;
+  readonly threshold_mode: FheThresholdMode = "operator_trusted";
 
   private readonly db: Database.Database;
   private readonly supportedLens: readonly number[];
@@ -93,10 +91,6 @@ export class MockFheProvider implements FheProvider {
     this.db = opts.db;
     this.supportedLens = opts.supportedVectorLens ?? [2, 32];
     this.seed = opts.seed ?? MOCK_PUBLIC_KEY_SEED;
-    this.threshold_mode =
-      process.env.MURMUR_FHE_THRESHOLD_MODE === "mock_5of9"
-        ? "mock_quorum"
-        : "mock";
   }
 
   async getActivePublicKey(): Promise<FheActiveKey> {
@@ -290,17 +284,9 @@ export class MockFheProvider implements FheProvider {
   }
 
   async decryptScore(_args: FheDecryptScoreArgs): Promise<FheDecryptScoreResult> {
-    // Codex Z3 review FAIL #1 — single-operator decrypt path is REMOVED,
-    // not flagged. Z3's mock-quorum is the only legitimate way to
-    // recover the cleartext score (it parses the partial_decrypt bytes
-    // inside aggregateShares() in src/verdict/fhe/threshold.ts).
-    //
-    // Earlier this method decoded the score blob locally, which would
-    // have let an operator with daemon access bypass quorum entirely
-    // by constructing the encrypted_score from DB state and calling
-    // `mockProvider.decryptScore()` directly. The operator-blind
-    // invariant requires that single-party decryption be impossible,
-    // not just inconvenient. Mirrors the zama-local stub posture.
+    // Demand-evidence retreat — no daemon-local quorum exists. Keep
+    // single-operator score decryption refused rather than restoring a
+    // theatrical release path.
     throw new FheNotImplementedError("z3", "decryptScore_via_quorum_only");
   }
 }
@@ -377,4 +363,3 @@ function decodeScore(bytes: Uint8Array): ScoreBlob {
   }
   return raw as ScoreBlob;
 }
-

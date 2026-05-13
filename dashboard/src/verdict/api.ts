@@ -42,12 +42,11 @@ export interface MetaResponse {
   strategy_tags: string[];
   assets: string[];
   verified_volume_24h: { count: number; since_iso: string };
-  /** Z0+/Z3 — operator-blind privacy block. `threshold_mode` is the
-   *  load-bearing field for the dashboard's FheStatusPanel:
-   *    - "mock" / "stub"        → development-only postures, banner displays
-   *    - "mock_quorum"          → Z3 5-of-9 in-process pool; non-prod
-   *    - "production"           → real KMS/committee (Z5)
-   *  null means MURMUR_FHE_DIRECT_ENABLED is off. */
+  /** Operator-trust privacy block. `threshold_mode` is the load-bearing field
+   *  for the dashboard's FheStatusPanel:
+   *    - "operator_trusted" → no real external committee; development posture
+   *    - "production"       → real KMS/committee (Z5)
+   *  null means FHE is not configured on this daemon. */
   privacy?: {
     fhe_direct_enabled: boolean;
     provider: string | null;

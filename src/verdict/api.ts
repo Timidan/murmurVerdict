@@ -582,9 +582,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     }
     // Z5 — production gate. When MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1
     // the daemon refuses to report ready unless the threshold committee
-    // posture is 'production'. mock / stub / mock_quorum are explicitly
-    // rejected — those are development postures that keep the operator
-    // in the trust root (see skill.md threat-model + Z3 plan §3).
+    // posture is 'production'. operator_trusted is explicitly rejected:
+    // it keeps the operator in the trust root.
     // Default off so single-operator dev environments can boot the
     // legacy plaintext or committed-mode stack without flipping this.
     const prodRequireOperatorBlind =
@@ -2758,11 +2757,8 @@ Inspect \`GET ${apiBase}/v1/meta.privacy.threshold_mode\`:
 - \`production\` — operator is OUT of the trust root. Real KMS /
   committee. The bounded score release is the only decryption that
   happens; the operator cannot decrypt your prediction.
-- \`mock_quorum\` — Z3 in-process 5-of-9 holder pool. Cryptographic
-  surface area is real (canonical transcript bytes, ed25519 share
-  verification) but the holders are not independent parties.
-  Development posture.
-- \`mock\` / \`stub\` — pre-Z3 postures, development only.
+- \`operator_trusted\` — FHE storage may be enabled, but no external
+  holder committee is wired. The operator remains in the trust root.
 - \`null\` — fhe_direct is disabled on this daemon.
 
 Agents that require the operator-blind guarantee should refuse to

@@ -82,17 +82,11 @@ export interface FheActiveKey {
 
 export type FheProviderName = "mock" | "zama_local";
 
-// Codex Z0 review fix — added "stub" between "mock" and "production". Z5's
-// prod gate (MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1) refuses any non-"production"
-// mode, so the Zama Z0 stub must NOT claim "production" while throwing on
-// every operation. "stub" makes the gate fail-closed on incomplete providers.
-//
-// Z3 — added "mock_quorum" for the single-process 5-of-9 mock holder pool
-// (see fhe/mock-quorum.ts). The protocol data flow is the same as real
-// Zama KMS quorum, but the holders all live in the daemon process so it
-// is structurally not a real threshold ceremony. Z5's prod gate must
-// refuse both "mock" AND "mock_quorum" — only "production" passes.
-export type FheThresholdMode = "mock" | "mock_quorum" | "stub" | "production";
+// Live threshold posture. `operator_trusted` is the honest non-production
+// label: FHE submission/storage may be enabled, but no external holder
+// committee is wired, so the operator remains in the trust root. Z5's
+// production gate still accepts only "production".
+export type FheThresholdMode = "operator_trusted" | "production";
 
 /**
  * Inputs for the homomorphic score computation.
@@ -265,11 +259,10 @@ export interface FheEncryptPredictedResult {
 export interface FheProvider {
   readonly name: FheProviderName;
   /**
-   * `mock` means the provider has NO real threshold ceremony — used
-   * for CI/offline smoke. `production` means the active keyset is
-   * backed by a real quorum (Zama KMS or equivalent). Z5's
-   * MURMUR_PROD_REQUIRE_OPERATOR_BLIND readiness gate refuses to
-   * promote `mock` to prod.
+   * `operator_trusted` means the provider has no external threshold
+   * ceremony. `production` means the active keyset is backed by a real
+   * quorum (Zama KMS or equivalent). Z5's readiness gate accepts only
+   * `production`.
    */
   readonly threshold_mode: FheThresholdMode;
 
@@ -314,10 +307,9 @@ export interface FheProvider {
    * predicted-outcome ciphertexts; this entry point is bounded to
    * the score range by design.
    *
-   * In a real provider this either (a) reconstructs from threshold
-   * shares supplied out-of-band, or (b) issues a decrypt request to
-   * the KMS and awaits quorum (Z3). The mock variant decrypts
-   * locally because its "encryption" is the identity transform.
+   * In a real provider this reconstructs from threshold shares supplied
+   * out-of-band or issues a decrypt request to the KMS and awaits quorum.
+   * Development providers refuse this entry point.
    */
   decryptScore(args: FheDecryptScoreArgs): Promise<FheDecryptScoreResult>;
 }

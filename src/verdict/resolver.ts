@@ -304,7 +304,7 @@ export class Resolver {
             kind: "still_pending",
             call_id: ctx.call_id,
             phase: "t1",
-            reason: "fhe_direct:scoring_deferred_no_committee",
+            reason: "fhe_direct:scoring_deferred_operator_trusted",
           });
           continue;
         }

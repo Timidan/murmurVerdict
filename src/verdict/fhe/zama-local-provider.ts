@@ -90,23 +90,11 @@ const DEFAULT_PLACEHOLDER = Buffer.from(
 export class ZamaLocalFheProvider implements FheProvider {
   readonly name = "zama_local" as const;
   /**
-   * Codex Z0 review fix — was "production" (intent-based), then "stub"
-   * so Z5's prod gate fails CLOSED until the real Rust sidecar +
-   * threshold release lands.
-   *
-   * Z3 — when `MURMUR_FHE_THRESHOLD_MODE=mock_5of9` is set at boot, the
-   * daemon registers the in-process MockQuorumPool and decryptScore
-   * routes through that pool (instead of throwing). In that
-   * configuration we report `"mock_quorum"` so /v1/readyz exposes the
-   * mode AND Z5's prod gate refuses it (real prod requires the off-
-   * process Zama KMS pool, which reports `"production"`).
-   *
-   * Resolution order:
-   *   - real production holder pool registered → "production"
-   *   - mock_quorum env opt-in                → "mock_quorum"
-   *   - otherwise (Z2 + scoring sidecar)      → "stub"
+   * Local sidecar mode still has no external holder committee. The Rust TFHE
+   * sidecar can remain available behind explicit provider opt-in, but the
+   * live threshold posture is operator-trusted until a real committee is wired.
    */
-  readonly threshold_mode: FheThresholdMode;
+  readonly threshold_mode: FheThresholdMode = "operator_trusted";
 
   private readonly db: Database.Database;
   private readonly placeholderBlob: Buffer;
@@ -122,14 +110,6 @@ export class ZamaLocalFheProvider implements FheProvider {
       process.env.MURMUR_FHE_SIDECAR_SOCKET ??
       DEFAULT_SIDECAR_SOCKET;
     this.sidecarTimeoutMs = opts.sidecarTimeoutMs;
-    // Threshold mode is environment-driven: Z3 v0 only writes
-    // "mock_quorum" (when the operator opts into the single-process
-    // pool) or "stub" (Z2 default). "production" never gets set here
-    // — that branch lands when a real off-process Zama KMS pool ships.
-    this.threshold_mode =
-      process.env.MURMUR_FHE_THRESHOLD_MODE === "mock_5of9"
-        ? "mock_quorum"
-        : "stub";
   }
 
   async getActivePublicKey(): Promise<FheActiveKey> {
@@ -350,15 +330,9 @@ export class ZamaLocalFheProvider implements FheProvider {
   async decryptScore(
     _args: FheDecryptScoreArgs,
   ): Promise<FheDecryptScoreResult> {
-    // Z3 — single-operator decrypt is permanently dead on the
-    // operator-blind path. The score is only ever decrypted by the
-    // threshold quorum (mock or real Zama KMS), and the resolver
-    // drives that flow directly through the quorum coordinator in
-    // `routes/fhe-threshold.ts` and `mock-quorum.ts`. The provider's
-    // decryptScore entry point exists to keep the FheProvider
-    // interface honest about the operation it represents, but no
-    // production caller invokes it — including the sidecar, which
-    // also returns `decrypt_via_quorum_only`.
+    // Single-operator decrypt is refused. The sidecar may be explicitly
+    // selected for local FHE work, but score release requires a real
+    // external committee before this can become a production path.
     //
     // Surface a stable, distinguishable error so a caller that finds
     // this in a stack trace (a curious operator running a debug

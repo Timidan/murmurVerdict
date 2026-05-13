@@ -180,7 +180,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
             "binding; resolution scores the ciphertext against the " +
             "public outcome; the bounded score is released by a 5-of-9 " +
             "threshold committee (see /v1/meta.privacy.threshold_mode " +
-            "for the active posture — `mock_quorum` is dev, `production` " +
+            "for the active posture — `operator_trusted` is dev, `production` " +
             "is what makes the operator out of the trust root).",
           requestBody: {
             required: true,

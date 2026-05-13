@@ -3,10 +3,8 @@
 // Reads /v1/meta.privacy. Renders one of three postures:
 //
 //   off          fhe_direct_enabled=false → grey "FHE OFF"
-//   mock-tier    threshold_mode ∈ {mock, stub, mock_quorum} → amber banner
-//                "DEV: <mode>" — operator-blind path exists in code but the
-//                trust root is NOT a real KMS/committee. Z5 will gate this
-//                value off in prod readyz.
+//   dev          threshold_mode='operator_trusted' → amber banner
+//                "DEV: <mode>" — the operator remains in the trust root.
 //   production   threshold_mode='production' → green "OPERATOR-BLIND LIVE"
 //
 // The component is intentionally read-only and tiny: the source of truth
@@ -36,7 +34,7 @@ const POSTURE_STYLES: Record<Posture, PostureStyle> = {
   dev: {
     label: "FHE DEV",
     cls: "ck-neg",
-    note: "operator-blind path runs against a mock/stub trust root, not a real KMS committee",
+    note: "FHE storage is available, but no external threshold committee is wired",
   },
   production: {
     label: "OPERATOR-BLIND LIVE",
@@ -55,7 +53,7 @@ function classifyPosture(privacy: MetaResponse["privacy"]): Posture {
   if (!privacy.fhe_direct_enabled) return "off";
   const mode = privacy.threshold_mode;
   if (mode === "production") return "production";
-  if (mode === "mock" || mode === "stub" || mode === "mock_quorum") return "dev";
+  if (mode === "operator_trusted") return "dev";
   return "unknown";
 }
 
