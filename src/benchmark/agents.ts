@@ -1,7 +1,9 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { agentsRepo } from "../verdict/db.js";
+import { agentsRepo, marketsRepo } from "../verdict/db.js";
 import { submitCall } from "../verdict/submissions.js";
+import { legacyHorizonHoursForMarket } from "../verdict/markets.js";
 import {
   AssetId,
   HorizonHours,
@@ -13,6 +15,8 @@ import {
 } from "../verdict/schema.js";
 import type { OracleClient, OracleObservation } from "../integrations/oracle.js";
 import type { OracleFeed } from "../verdict/schema.js";
+import type { FheProvider } from "../verdict/fhe/provider.js";
+import { FheNotImplementedError } from "../verdict/fhe/provider.js";
 import {
   PriceHistory,
   pctChange,
@@ -142,6 +146,13 @@ export interface BenchmarkRunDeps {
    */
   oracle?: OracleClient;
   /**
+   * FheProvider used to encrypt the baseline's predicted-outcome vector
+   * client-side BEFORE submitting through /v2/calls. When undefined, the
+   * benchmark run no-ops — under FHE-mandatory the legacy plaintext
+   * submit path is gone. Daemon passes its loaded provider.
+   */
+  fheProvider?: FheProvider;
+  /**
    * Override the in-process price-history ring buffer (for tests). The
    * daemon shares ONE instance across ticks via module-scoped state below.
    */
@@ -210,12 +221,27 @@ export function registerBaselines(
 }
 
 /**
- * Wave 4c-A — live decision logic. Per supported asset:
+ * Wave 6 — operator-blind baselines. The legacy plaintext submit path
+ * was excised in Waves 2a/2b, so the baselines now encrypt their
+ * predicted vector under the active FHE provider's keyset BEFORE
+ * routing through `/v2/calls` (via `submitCall` with `fheDirect`).
+ *
+ * Decision logic per asset stays unchanged:
  *   1. Fetch latest price (Chainlink primary, Pyth fallback).
  *   2. Append to the shared ring buffer.
- *   3. For each baseline, evaluate its rule and (maybe) submit a call.
- * Each baseline emits at most one call per asset per horizon-bucket via
- * submitCall's existing client_order_id idempotency.
+ *   3. For each baseline, evaluate the rule. If it fires, build a
+ *      binary payout vector ([1,0] for BUY, [0,1] for SELL), encrypt
+ *      it via provider.encryptPredicted, and submit FHE-direct.
+ *
+ * Idempotency: client_order_id encodes the horizon bucket so a
+ * baseline emits at most one call per (slug, asset, bucket).
+ *
+ * No-op posture:
+ *   - oracle undefined → silent (daemon dev mode without an RPC URL).
+ *   - fheProvider undefined → silent (mock provider always loaded
+ *     in production; this branch is for early-boot or test harnesses).
+ *   - encryptPredicted throws FheNotImplementedError → record error
+ *     and keep running; the bot stays silent until the sidecar lands.
  */
 export async function runBaselinesOnce(
   deps: BenchmarkRunDeps,
@@ -237,6 +263,28 @@ export async function runBaselinesOnce(
   if (!deps.oracle) {
     // No oracle wired — daemon dev mode (BASE_MAINNET_RPC_URL unset).
     // Stay silent rather than crash; the resolver behaves identically.
+    return report;
+  }
+  if (!deps.fheProvider) {
+    // FHE-mandatory: no provider means no submissions. Stay silent.
+    return report;
+  }
+  const provider = deps.fheProvider;
+  void SCHEMA_VERSION; // pulled through legacy submit; FHE path computes wire-shape directly
+
+  // Pull the active keyset + the binary scoring circuit once per tick.
+  // The provider methods are idempotent under load (mock stamps DB rows
+  // via INSERT OR IGNORE; real sidecar caches on its side).
+  let keyset: Awaited<ReturnType<FheProvider["getActivePublicKey"]>>;
+  let circuit: Awaited<ReturnType<FheProvider["getCircuit"]>>;
+  try {
+    keyset = await provider.getActivePublicKey();
+    circuit = await provider.getCircuit("half_l1_distance_binary", 2);
+  } catch (err) {
+    report.errors.push({
+      slug: "fhe-bootstrap",
+      reason: `provider init failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
     return report;
   }
 
@@ -282,29 +330,95 @@ export async function runBaselinesOnce(
         report.silent++;
         continue;
       }
+
+      // Resolve the target market_id. Baselines run on native-price
+      // markets; the legacy mapping (asset, horizon_hours) → market_id
+      // is exactly the one Wave 3b kept on `marketsRepo.legacyIdFor`.
+      const market_id = marketsRepo.legacyIdFor(asset_id, baseline.horizon_hours);
+      if (!market_id) {
+        report.errors.push({
+          slug: baseline.display_slug,
+          reason: `no native-price market registered for asset=${asset_id}, horizon=${baseline.horizon_hours}h`,
+        });
+        continue;
+      }
+      const marketRow = marketsRepo.get(deps.db, market_id);
+      if (!marketRow || marketRow.status !== "listed") {
+        // Market is draft / frozen / retired — skip without error noise.
+        report.silent++;
+        continue;
+      }
+      // legacyHorizonHoursForMarket is kept in scope so a future swap to
+      // legacy-shape clients reuses the same source of truth.
+      void legacyHorizonHoursForMarket;
+
       const confidence = clampConfidence(decision.confidence);
+      // Build the binary payout vector. The mock provider preserves it
+      // in cleartext; the real Zama provider encrypts under the public
+      // keyset. Either way the on-wire `encrypted_predicted_outcome`
+      // arrives at /v2/calls already opaque to the operator.
+      const numerators = decision.side === "BUY" ? ["1", "0"] : ["0", "1"];
+      let encrypted: Awaited<ReturnType<FheProvider["encryptPredicted"]>>;
+      try {
+        encrypted = await provider.encryptPredicted({
+          numerators,
+          denominator: "1",
+          keyset,
+          circuit,
+        });
+      } catch (err) {
+        if (err instanceof FheNotImplementedError) {
+          // zama_local stub — sidecar not yet shipped. Stay silent so
+          // benchmark rows survive on the leaderboard without errors
+          // flooding the log.
+          report.silent++;
+          continue;
+        }
+        report.errors.push({
+          slug: baseline.display_slug,
+          reason: `encryptPredicted: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        continue;
+      }
+
       const tickBucket = horizonBucket(now(), baseline.horizon_hours);
-      const client_order_id = `${baseline.display_slug}-${asset_id}-${tickBucket}`.slice(
-        0,
-        128,
-      );
-      const payload: SubmittedCall = {
+      const client_order_id =
+        `${baseline.display_slug}-${asset_id}-${tickBucket}`.slice(0, 128);
+      // Build the FHE-direct payload + fhe block. submitCall routes to
+      // submitFheDirectCall when fheDirect is set; the validators inside
+      // re-check ciphertext_hash + keyset_id + circuit_id, so this loop
+      // can't accidentally relax the wire contract.
+      const fheBlock = {
+        keyset_id: keyset.keyset_id,
+        circuit_id: circuit.circuit_id,
+        encrypted_predicted_outcome: Buffer.from(encrypted.ciphertext).toString("base64"),
+        ciphertext_hash: encrypted.ciphertext_hash,
+        vector_len: numerators.length,
+        payout_denominator: "1",
+        nonce: encrypted.nonce,
+      };
+      const fhePayload = {
         schema_version: SCHEMA_VERSION,
         agent_id: agent.agent_id,
         client_order_id,
-        asset_id,
-        side: decision.side,
-        horizon_hours: baseline.horizon_hours,
-        confidence,
-        submitted_at: now().toISOString().replace(/\.\d+Z$/, "Z"),
+        market_id,
+        privacy_mode: "fhe_direct" as const,
         strategy_tag: baseline.strategy_tag,
+        // Confidence rides as a strategy-tag-adjacent label for the
+        // baselines (their plaintext side / confidence is intentionally
+        // a no-op under operator-blind anyway); we keep it readable for
+        // the wire shape via rationale.
+        rationale: `baseline:${baseline.display_slug}:${decision.side}:${confidence.toFixed(2)}`,
+        submitted_at: now().toISOString().replace(/\.\d+Z$/, "Z"),
       };
+
       try {
         const result = await submit({
           db: deps.db,
           ctx: { now },
           identity: { agent_id: agent.agent_id },
-          payload,
+          payload: fhePayload,
+          fheDirect: { fhe: fheBlock, market_id },
         });
         if (result.idempotent_hit) {
           report.skipped_dedup++;

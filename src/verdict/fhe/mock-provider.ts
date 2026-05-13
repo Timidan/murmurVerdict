@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
   canonicalResolvedOutcomeBytes,
@@ -8,6 +8,8 @@ import {
   type FheCircuit,
   type FheDecryptScoreArgs,
   type FheDecryptScoreResult,
+  type FheEncryptPredictedArgs,
+  type FheEncryptPredictedResult,
   type FheProvider,
   type FheScoreEncryptedArgs,
   type FheScoreEncryptedResult,
@@ -176,6 +178,35 @@ export class MockFheProvider implements FheProvider {
       vector_max_len: vectorLen,
       provider: "mock",
     };
+  }
+
+  async encryptPredicted(
+    args: FheEncryptPredictedArgs,
+  ): Promise<FheEncryptPredictedResult> {
+    if (args.numerators.length > args.circuit.vector_max_len) {
+      throw new Error(
+        `encryptPredicted: vector len ${args.numerators.length} exceeds circuit max ${args.circuit.vector_max_len}`,
+      );
+    }
+    if (args.keyset.provider !== "mock") {
+      throw new Error(
+        `encryptPredicted: keyset.provider must be 'mock' for MockFheProvider (got '${args.keyset.provider}')`,
+      );
+    }
+    // Mirror the wire shape `scoreEncrypted` already parses. bigint
+    // strings round-trip as-is; we leave them in agent-supplied form so
+    // a deterministic test can build the same blob the agent SDK would.
+    const blob: PredictedBlob = {
+      v: 1,
+      kind: "predicted",
+      numerators: [...args.numerators],
+      denominator: args.denominator,
+    };
+    const ciphertext = new TextEncoder().encode(JSON.stringify(blob));
+    const ciphertext_hash = createHash("sha256").update(ciphertext).digest("hex");
+    // 32 random bytes hex — matches the FheBlockSchema's nonce regex.
+    const nonce = randomBytes(32).toString("hex");
+    return { ciphertext, ciphertext_hash, nonce };
   }
 
   async scoreEncrypted(

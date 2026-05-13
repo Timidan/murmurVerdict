@@ -218,6 +218,46 @@ export interface FheDecryptScoreResult {
 }
 
 /**
+ * Server-side encryption of a predicted-outcome vector. Used by Murmur-
+ * operated submitters (the benchmark baselines) that build their
+ * predictions in-process and need a wire-shape ciphertext to post to
+ * /v2/calls. Agents submitting from outside the daemon encrypt
+ * client-side under the keyset's public key; this entrypoint is the
+ * in-process equivalent.
+ *
+ * For MockFheProvider: returns the canonical JSON wrapper
+ * (`{v:1, kind:"predicted", numerators, denominator}`) that
+ * `scoreEncrypted` already knows how to decode.
+ *
+ * For ZamaLocalFheProvider: throws `FheNotImplementedError("z2")` until
+ * the real TFHE-rs sidecar lands.
+ *
+ * The provider does NOT persist the plaintext, log it, or accept it
+ * from outside the daemon process — this surface is for the operator-
+ * run baseline bots ONLY. Agent submissions still encrypt client-side
+ * and never hand the daemon plaintext.
+ */
+export interface FheEncryptPredictedArgs {
+  /** Vector numerators as decimal-string bigints (matches the wire form). */
+  readonly numerators: readonly string[];
+  /** Denominator as a decimal-string bigint. */
+  readonly denominator: string;
+  /** Active keyset to encrypt against. */
+  readonly keyset: FheActiveKey;
+  /** Circuit the eventual scoring will use (drives vector_len + handle). */
+  readonly circuit: FheCircuit;
+}
+
+export interface FheEncryptPredictedResult {
+  /** Encrypted-predicted-outcome bytes for the wire `fhe` block. */
+  readonly ciphertext: Uint8Array;
+  /** sha256(ciphertext) hex — what the submit handler verifies. */
+  readonly ciphertext_hash: string;
+  /** 32-byte hex nonce — agent-supplied entropy on the wire. */
+  readonly nonce: string;
+}
+
+/**
  * The provider boundary. Implementations live under `src/verdict/fhe/`
  * and are constructed once in `src/daemon/index.ts` based on
  * MURMUR_FHE_PROVIDER=mock|zama_local.
@@ -257,6 +297,17 @@ export interface FheProvider {
    * keeps the cleartext only inside the function scope.
    */
   scoreEncrypted(args: FheScoreEncryptedArgs): Promise<FheScoreEncryptedResult>;
+
+  /**
+   * In-process encryption of a predicted-outcome vector for operator-
+   * run submitters (the benchmark baselines). See
+   * {@link FheEncryptPredictedArgs} for the contract. The mock provider
+   * encodes the canonical JSON wrapper; the zama_local stub throws
+   * FheNotImplementedError("z2").
+   */
+  encryptPredicted(
+    args: FheEncryptPredictedArgs,
+  ): Promise<FheEncryptPredictedResult>;
 
   /**
    * Decrypts an encrypted score. The committee never decrypts

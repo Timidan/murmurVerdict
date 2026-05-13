@@ -372,19 +372,33 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         "[daemon] resolver disabled — set BASE_MAINNET_RPC_URL to enable",
       );
     }
-    // Wave 2a — benchmark ticker disabled. The baseline bots
-    // (murmur-momentum, murmur-contrarian, murmur-risk-off) submit
-    // plaintext `side / asset_id / horizon_hours / confidence` payloads
-    // via submitCall on the legacy path. Under FHE-mandatory those
-    // submissions would be rejected at /v2/calls. Rewriting them to
-    // encrypt their predictedOutcome under the mock FHE provider is a
-    // post-Wave-2 follow-up — they'll re-arm as proper FHE-direct
-    // submitters at that point. Until then they stay registered as
-    // kind='benchmark' agents (decorative leaderboard rows) but
-    // produce no new calls.
-    // Original ticker for reference:
-    //   setIntervalGuarded(BENCHMARK_TICK_SEC * 1000, "benchmark",
-    //     async () => { await runBaselinesOnce({ db, oracle }); });
+    // Wave 6 — benchmark ticker re-armed under FHE-mandatory. The
+    // baseline bots now build a binary payout vector for their
+    // decision, run it through the active FHE provider's
+    // encryptPredicted method, and submit FHE-direct via /v2/calls.
+    // Under the mock provider the encryption is the canonical JSON
+    // wrapper (matches what scoreEncrypted decodes); under the real
+    // zama_local provider it routes through the TFHE-rs sidecar.
+    // Off when the oracle or FHE provider is unwired (runBaselinesOnce
+    // no-ops silently in those cases).
+    if (resolver && fheProvider) {
+      tickers.push(
+        setIntervalGuarded(
+          BENCHMARK_TICK_SEC * 1000,
+          "benchmark",
+          async () => {
+            const { runBaselinesOnce } = await import(
+              "../benchmark/agents.js"
+            );
+            await runBaselinesOnce({
+              db,
+              ...(oracle ? { oracle } : {}),
+              fheProvider,
+            });
+          },
+        ),
+      );
+    }
     // Stats heartbeat — emits a `stats.tick` every 10s so the landing-page
     // hero counter stays current even when no calls flow through. Cheap:
     // single COUNT-with-WHERE query; no oracle calls.
@@ -477,7 +491,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function makeOracle(): OracleClient | null {
-  if (!process.env.BASE_MAINNET_RPC_URL) return null;
+  // Default to the free public Base mainnet RPC when no override is set.
+  // The public endpoint is rate-limited but sufficient for dev + low-volume
+  // production; operators expecting real load should set a paid RPC URL
+  // (Alchemy / Infura / QuickNode) via env. Removing the env-gate here
+  // lets the resolver enable out of the box on a fresh boot.
+  if (!process.env.BASE_MAINNET_RPC_URL) {
+    process.env.BASE_MAINNET_RPC_URL = "https://mainnet.base.org";
+    console.log(
+      "[daemon] BASE_MAINNET_RPC_URL unset; defaulting to public https://mainnet.base.org (rate-limited; set a paid RPC URL for production load)",
+    );
+  }
   try {
     return new OracleClient();
   } catch (err) {

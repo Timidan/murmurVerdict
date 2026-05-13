@@ -45,6 +45,8 @@ import {
   type FheCircuit,
   type FheDecryptScoreArgs,
   type FheDecryptScoreResult,
+  type FheEncryptPredictedArgs,
+  type FheEncryptPredictedResult,
   FheNotImplementedError,
   type FheProvider,
   type FheScoreEncryptedArgs,
@@ -188,6 +190,17 @@ export class ZamaLocalFheProvider implements FheProvider {
       vector_max_len: vectorLen,
       provider: "zama_local",
     };
+  }
+
+  async encryptPredicted(
+    _args: FheEncryptPredictedArgs,
+  ): Promise<FheEncryptPredictedResult> {
+    // Z2 — real TFHE-rs sidecar handles agent-side encryption. The
+    // operator-run benchmark baselines reach this path; once the
+    // sidecar lands the implementation calls op-code 0x05
+    // (ENCRYPT_PREDICTED, planned) over the Unix domain socket and
+    // returns the ciphertext + hash + nonce.
+    throw new FheNotImplementedError("z2", "encryptPredicted");
   }
 
   async scoreEncrypted(
