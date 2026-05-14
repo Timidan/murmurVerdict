@@ -282,6 +282,30 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // handlers — `/v1/account/*` is a fresh path prefix with no collision.
   app.use(accountRouter({ db }));
 
+  // Polymarket Gamma adapter — real HTTP client against
+  // gamma-api.polymarket.com, no key required. Off by default; an operator
+  // who actually wants Polymarket conditionIds to resolve sets
+  // MURMUR_POLYMARKET_GAMMA_ENABLED=1. When unset, the admin upsert route
+  // and adapter dispatch still exist but no rows ever enter the registry
+  // sweep, so the ticker has nothing to do anyway.
+  //
+  // Registration is the load-bearing piece: without it, `/v2/calls`
+  // submissions targeting a Polymarket conditionId can't route through
+  // `getMarketMakerRegistry().get('polymarket-gamma')` and the protocol
+  // lookup 422s. The sync ticker is the secondary piece — it polls Gamma
+  // for resolution status; without it, conditionIds must be polled by the
+  // resolver tick directly via adapter.observeResolution.
+  let polymarketStop: (() => void) | null = null;
+  if (process.env.MURMUR_POLYMARKET_GAMMA_ENABLED === "1") {
+    const { registerPolymarketGammaAdapter } = await import(
+      "../markets/polymarket-gamma/register.js"
+    );
+    const handle = registerPolymarketGammaAdapter(
+      opts.skipTickers ? {} : { db },
+    );
+    polymarketStop = handle.stop;
+  }
+
   const server: Server = await new Promise((resolve, reject) => {
     const s = app.listen(port, () => resolve(s));
     s.once("error", reject);
@@ -367,6 +391,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   const close = async (): Promise<void> => {
     for (const t of tickers) clearInterval(t);
     webhookDispatcher.stop();
+    if (polymarketStop) polymarketStop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     db.close();
   };

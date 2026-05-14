@@ -322,56 +322,19 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
       const submittedAt =
         body.submitted_at ?? now().toISOString().replace(/\.\d+Z$/, "Z");
-      if (submittedMode === "fhe_direct") {
-        if (!body.fhe) {
-          throw new VerdictError(
-            "/v2/calls requires the `fhe` block when privacy_mode='fhe_direct'",
-            ERROR_CODES.schema_invalid,
-            400,
-          );
-        }
-        const fhePayload: Record<string, unknown> = {
-          schema_version: SCHEMA_VERSION,
-          agent_id: authResult.agent_id,
-          client_order_id: body.client_order_id,
-          market_id: market.market_id,
-          privacy_mode: "fhe_direct",
-          submitted_at: submittedAt,
-          ...(body.rationale !== undefined ? { rationale: body.rationale } : {}),
-          ...(body.strategy_tag !== undefined
-            ? { strategy_tag: body.strategy_tag }
-            : {}),
-        };
-        const fheResult = await submitCall({
-          db: deps.db,
-          ctx: deps.ctx,
-          identity: { agent_id: authResult.agent_id },
-          payload: fhePayload,
-          fheDirect: { fhe: body.fhe, market_id: market.market_id },
-        });
-        res.status(fheResult.idempotent_hit ? 200 : 201).json({
-          call_id: fheResult.call.call_id,
-          call: {
-            schema_version: fheResult.call.schema_version,
-            scoring_version: fheResult.call.scoring_version,
-            call_id: fheResult.call.call_id,
-            agent_id: fheResult.call.agent_id,
-            client_order_id: fheResult.call.client_order_id,
-            submitted_at: fheResult.call.submitted_at,
-            accepted_at: fheResult.call.accepted_at,
-            status: fheResult.call.status,
-            ...(fheResult.call.rationale !== undefined
-              ? { rationale: fheResult.call.rationale }
-              : {}),
-            ...(fheResult.call.strategy_tag !== undefined
-              ? { strategy_tag: fheResult.call.strategy_tag }
-              : {}),
-            privacy_mode: "fhe_direct",
-          },
-          idempotent_hit: fheResult.idempotent_hit,
-          tier: authResult.tier,
-        });
-        return;
+      if (submittedMode === "fhe_direct" || body.fhe !== undefined) {
+        // Demand-evidence retreat: fhe_direct has no terminal scoring path
+        // until a real ≥9-org holder committee + sidecar decrypt land
+        // together. Accepting submissions would leave them at
+        // status='pending_t1' forever (operator-trapping, not
+        // operator-blind). Refuse explicitly with a 422 + actionable
+        // message rather than silently accept-and-trap.
+        throw new VerdictError(
+          "/v2/calls does not currently accept privacy_mode='fhe_direct': there is no terminal score-release path until a real holder committee + decrypt path are wired. Submit with privacy_mode='legacy_plaintext' (default).",
+          ERROR_CODES.asset_not_supported,
+          422,
+          { reason: "fhe_direct_unsupported_no_committee" },
+        );
       }
 
       if (!hasLegacyFields) {

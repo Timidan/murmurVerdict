@@ -41,13 +41,22 @@ import {
 import type { MarketRow } from "./db.js";
 
 /**
- * Privacy modes the daemon accepts at submit. Legacy plaintext is restored for
- * demand-evidence native-price calls; fhe_direct remains available when an
- * explicit ciphertext block is supplied.
+ * Privacy modes the daemon accepts at submit.
+ *
+ * Demand-evidence retreat: `fhe_direct` was previously accepted, but the
+ * threshold-release pipeline that turned an encrypted score into a public
+ * call_score was removed (retreat-001). Without a terminal decrypt path,
+ * fhe_direct rows would sit at status='pending_t1' forever — accepting them
+ * is operator-trapping, not operator-blind. Refuse them at the gate until
+ * a real holder committee + sidecar decrypt path lands together.
+ *
+ * The mock FHE provider isn't "real" privacy. ZamaLocalFheProvider.decryptScore
+ * deliberately throws ("Single-operator decrypt is refused"), so even with the
+ * real Zama sidecar this mode has no terminal path. The honest fix: only accept
+ * the mode the daemon can actually resolve end-to-end.
  */
 export const ACCEPTED_PRIVACY_MODES: ReadonlySet<string> = new Set<string>([
   "legacy_plaintext",
-  "fhe_direct",
 ]);
 import type { FheProvider } from "./fhe/provider.js";
 import {
@@ -211,23 +220,24 @@ export async function submitCall(args: {
   const { db, ctx, identity, payload, precomputedCommitment } = args;
   const now = ctx.now ?? (() => new Date());
 
-  // Z1 — operator-blind early branch. Detect fhe_direct from the
-  // payload BEFORE schema validation: SubmittedCallSchema's
-  // `side`/`confidence` requirements would otherwise reject every
-  // fhe_direct submission at byte 0. The privacy gate inside the
-  // legacy path still rejects fhe_direct strings when the caller
-  // mistakenly routes through there (defense in depth).
+  // Demand-evidence retreat: fhe_direct submissions are refused at the
+  // submit boundary because the threshold-release pipeline that turned
+  // an encrypted score into a public call_score was removed
+  // (retreat-001). Without a terminal path, accepting these submissions
+  // leaves them stranded at pending_t1 — operator-trapping rather than
+  // operator-blind. The /v2/calls route also rejects this case with a
+  // matching 422; this branch is defense in depth for any internal
+  // caller that bypasses the route.
   if (
     args.fheDirect !== undefined ||
     (isObject(payload) && payload.privacy_mode === "fhe_direct")
   ) {
-    return submitFheDirectCall({
-      db,
-      ctx,
-      identity,
-      payload,
-      fheDirect: args.fheDirect,
-    });
+    throw new VerdictError(
+      "fhe_direct submissions are not currently supported: no terminal score-release path is wired. Use privacy_mode='legacy_plaintext'.",
+      ERROR_CODES.asset_not_supported,
+      422,
+      { reason: "fhe_direct_unsupported_no_committee" },
+    );
   }
   // Phase 2b: oracle policy is derived from the resolved market row at the
   // point we know which market this call targets — see derivedOraclePolicy
