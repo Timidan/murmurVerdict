@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { verdictApi, type LeaderboardRow } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
-import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { FamilyLeaderboards } from "../components/FamilyLeaderboards.js";
 import { useStream } from "../hooks/useStream.js";
@@ -114,7 +113,7 @@ export function LeaderboardPageCompact() {
         <RibbonCell label="total" value={sorted?.length ?? "—"} />
         <RibbonCell label="main" value={summary?.main ?? "—"} />
         <RibbonCell label="prov" value={summary?.prov ?? "—"} tone="dim" />
-        <RibbonCell label="pend" value={summary?.pend ?? "—"} tone="neg" />
+        <RibbonCell label="pend" value={summary?.pend ?? "—"} tone="dim" />
         <RibbonCell
           label="avg·wr"
           value={summary && Number.isFinite(summary.avgWR) ? `${Math.round(summary.avgWR * 100)}%` : "—"}
@@ -157,7 +156,23 @@ export function LeaderboardPageCompact() {
         >
           {error && <div className="px-2 py-2 ck-mono ck-neg">[err] {error}</div>}
           {!error && sorted === null && (
-            <div className="px-2 py-2 ck-mono ck-dim">[loading…]</div>
+            <div className="opacity-50">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="grid grid-cols-[28px_1fr_70px_50px_44px_50px_60px_24px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
+                >
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                </div>
+              ))}
+            </div>
           )}
           {!error && sorted && sorted.length === 0 && (
             <div className="px-2 py-2 ck-mono ck-dim">[no rows]</div>
@@ -220,9 +235,9 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
               {String(r.resolved_calls).padStart(3, "0")}
             </span>
             <span className="flex justify-end items-center">
-              <CompactSparkline values={synth(r.verdict_score ?? 0)} width={56} height={12} />
+              <div className="h-px bg-[var(--color-border)] w-full" />
             </span>
-            <span className="text-right ck-mono ck-neg">
+            <span className="text-right ck-mono ck-dim">
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
             </span>
           </a>
@@ -259,12 +274,3 @@ function formatScore(s: number | null): string {
   return `${sign}${Math.round(Math.abs(s) * 1000)}`;
 }
 
-function synth(seed: number): number[] {
-  const out: number[] = [];
-  let v = seed * 1000;
-  for (let i = 0; i < 12; i++) {
-    v += Math.sin((seed + i) * 1.7) * 5;
-    out.push(v);
-  }
-  return out;
-}
