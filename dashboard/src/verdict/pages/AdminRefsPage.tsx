@@ -140,7 +140,7 @@ export function AdminRefsPage() {
                     href={`https://x.com/${r.ref}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="t-subheading text-[var(--color-display)] no-underline hover:text-[var(--color-accent)]"
+                    className="t-subheading text-[var(--color-display)] no-underline hover:text-[var(--color-display)]"
                   >
                     @{r.ref}
                   </a>
@@ -148,7 +148,7 @@ export function AdminRefsPage() {
                   <span
                     className={
                       "t-data text-right font-mono " +
-                      (r.converted > 0 ? "text-[var(--color-accent)]" : "text-[var(--color-disabled)]")
+                      (r.converted > 0 ? "text-[var(--color-display)]" : "text-[var(--color-disabled)]")
                     }
                   >
                     {r.converted}

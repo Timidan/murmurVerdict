@@ -108,7 +108,7 @@ function Table({ rows }: { rows: Sender[] }) {
               <span
                 className={
                   "t-data text-right font-mono " +
-                  (r.converted > 0 ? "text-[var(--color-accent)]" : "text-[var(--color-disabled)]")
+                  (r.converted > 0 ? "text-[var(--color-display)]" : "text-[var(--color-disabled)]")
                 }
               >
                 {r.converted}
