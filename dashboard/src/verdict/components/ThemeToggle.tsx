@@ -1,7 +1,12 @@
 // dashboard/src/verdict/components/ThemeToggle.tsx
+//
+// Compact-shell two-state toggle. Click flips between dark and paper.
+// First-paint value comes from the inline bootstrap in dashboard/index.html;
+// runtime apply is delegated to `applyTheme` in ../ui/theme.ts so there is
+// a single source of truth for the DOM/meta/localStorage write.
 
 import { useEffect, useState } from "react";
-import { resolveTheme, STORAGE_KEY, type Theme } from "../ui/theme.js";
+import { applyTheme, resolveTheme, STORAGE_KEY, type Theme } from "../ui/theme.js";
 
 function readCurrent(): Theme {
   if (typeof document === "undefined") return "dark";
@@ -10,29 +15,6 @@ function readCurrent(): Theme {
     : "dark";
 }
 
-function apply(theme: Theme) {
-  if (theme === "paper") {
-    document.documentElement.setAttribute("data-theme", "paper");
-  } else {
-    document.documentElement.removeAttribute("data-theme");
-  }
-  const meta = document.getElementById("meta-theme-color");
-  if (meta) meta.setAttribute("content", theme === "paper" ? "#FCF9F2" : "#000000");
-  try {
-    localStorage.setItem(STORAGE_KEY, theme);
-  } catch {
-    /* private mode */
-  }
-}
-
-/**
- * Two-state ◐ button. Click flips between dark and paper. Persists to
- * localStorage["murmur.theme"]. Pre-mount value comes from the inline
- * bootstrap in dashboard/index.html so first paint is correct.
- *
- * Styled to match compact `ck-btn` discipline — no radius, 3×8 px,
- * Space Mono uppercase.
- */
 export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(() => readCurrent());
 
@@ -46,16 +28,17 @@ export function ThemeToggle() {
           window.matchMedia &&
           window.matchMedia("(prefers-color-scheme: light)").matches,
       });
-      apply(next);
+      if (next === theme) return; // idempotency short-circuit
+      applyTheme(next);
       setTheme(next);
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [theme]);
 
   function flip() {
     const next: Theme = theme === "paper" ? "dark" : "paper";
-    apply(next);
+    applyTheme(next);
     setTheme(next);
   }
 
