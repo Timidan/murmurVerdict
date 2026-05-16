@@ -281,7 +281,7 @@ export function AgentNewPage() {
                   type="button"
                   disabled={minting}
                   onClick={() => doMint(createdSlug)}
-                  className="ck-btn ck-btn-accent justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   [ retry key mint → ]
                 </button>
@@ -344,7 +344,7 @@ export function AgentNewPage() {
                 placeholder={slug.replace(/-/g, " ") || "my agent"}
                 maxLength={NAME_MAX}
                 autoComplete="off"
-                className="ck-mono uppercase bg-transparent border border-[var(--color-border-vis)] px-2 py-1 outline-none focus:border-[var(--color-display)]"
+                className="ck-mono bg-transparent border border-[var(--color-border-vis)] px-2 py-1 outline-none focus:border-[var(--color-display)]"
               />
               <span className="ck-mono ck-dim text-[10px]">
                 defaults to slug · {name.length}/{NAME_MAX}
@@ -384,7 +384,7 @@ export function AgentNewPage() {
               <button
                 type="submit"
                 disabled={!formReady}
-                className="ck-btn ck-btn-accent justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 [ mint agent → ]
               </button>

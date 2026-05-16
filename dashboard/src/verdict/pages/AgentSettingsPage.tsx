@@ -68,7 +68,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
         crumb={
           <span>
             <a href="#/account" className="ck-dim hover:ck-pos no-underline">
-              ACCOUNT
+              account
             </a>
             <span className="ck-dim mx-1">/</span>
             <a
@@ -93,7 +93,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             className="ck-btn"
             title="public profile"
           >
-            [ VIEW PUBLIC → ]
+            [ view public → ]
           </a>
         </header>
 
@@ -103,10 +103,10 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           aria-label="agent settings tabs"
         >
           <TabLink slug={slug} tab="payout" active={tab === "payout"}>
-            PAYOUT
+            payout
           </TabLink>
           <TabLink slug={slug} tab="keys" active={tab === "keys"}>
-            KEYS
+            keys
           </TabLink>
         </nav>
 

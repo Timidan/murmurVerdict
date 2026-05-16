@@ -297,7 +297,7 @@ function ConfigErrorShell({ slug }: { slug: string }) {
       <CompactTopbar
         crumb={
           <span className="ck-neg">
-            {slug} · INTEGRATE · UNCONFIGURED
+            {slug} · integrate · unconfigured
           </span>
         }
       />

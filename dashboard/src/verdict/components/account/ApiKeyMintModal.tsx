@@ -107,7 +107,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
       <div className="ck-frame-strong w-full max-w-[560px] bg-[var(--color-bg)]">
         <div className="ck-header">
           <span id="mint-modal-title" className="ck-label ck-neg">
-            ⚠ API KEY · ONE-TIME REVEAL
+            ⚠ api key · one-time reveal
           </span>
           <span className="ck-mono ck-dim">{slug}</span>
         </div>
@@ -117,7 +117,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
             className="ck-mono ck-neg leading-relaxed"
             style={{ color: "var(--color-accent)" }}
           >
-            ⚠ THIS KEY WILL NOT BE SHOWN AGAIN. COPY IT NOW.
+            ⚠ key revealed once — copy it now.
           </p>
           <p className="ck-mono ck-dim text-[10px] leading-relaxed">
             store it in your secrets manager or environment now. murmur stores
@@ -138,14 +138,14 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               onClick={() => void copyToClipboard(result.secret, "raw")}
               className="ck-btn ck-btn-accent justify-center"
             >
-              [ COPY KEY ]
+              [ copy key ]
             </button>
             <button
               type="button"
               onClick={() => void copyToClipboard(envLine, "env")}
               className="ck-btn justify-center"
             >
-              [ COPY AS .ENV LINE ]
+              [ copy as .env line ]
             </button>
           </div>
 
@@ -173,10 +173,10 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               className="mt-[3px]"
             />
             <span className="ck-mono ck-dim leading-relaxed">
-              I have saved this key somewhere safe.
+              i have saved this key somewhere safe.
               <br />
               <span className="text-[10px]">
-                checking this box enables the DONE button. unchecking it again
+                checking this box enables the done button. unchecking it again
                 does not retroactively undo the mint — the key is already
                 active.
               </span>
@@ -188,9 +188,9 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               type="button"
               onClick={onDone}
               disabled={!saved}
-              className="ck-btn ck-btn-accent justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+              className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              [ DONE → ]
+              [ done → ]
             </button>
           </div>
         </div>

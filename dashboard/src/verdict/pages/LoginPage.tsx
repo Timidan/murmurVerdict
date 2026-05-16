@@ -93,9 +93,9 @@ export function LoginPage({ next }: LoginPageProps) {
               type="button"
               onClick={onSignInClick}
               disabled={!account.configured || !account.ready || account.loading}
-              className="ck-btn ck-btn-accent justify-center py-2"
+              className="ck-btn ck-pos justify-center py-2"
             >
-              [ SIGN IN ]
+              [ sign in ]
             </button>
 
             <p className="ck-mono ck-dim text-[10px]">

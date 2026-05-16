@@ -276,9 +276,9 @@ export function DestinationAddressForm({
           <button
             type="submit"
             disabled={!canSubmit}
-            className="ck-btn ck-btn-accent justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+            className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            [ UPDATE ADDRESS → ]
+            [ update address → ]
           </button>
           {submitting && <span className="ck-mono ck-dim text-[10px]">working…</span>}
         </div>

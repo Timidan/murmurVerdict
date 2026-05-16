@@ -172,8 +172,8 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
   return (
     <section className="ck-frame w-full max-w-[720px] flex flex-col">
       <div className="ck-header">
-        <span className="ck-label ck-pos">API KEYS · {slug}</span>
-        <span className="ck-mono ck-dim">{active.length} ACTIVE</span>
+        <span className="ck-label ck-pos">api keys · {slug}</span>
+        <span className="ck-mono ck-dim">{active.length} active</span>
       </div>
 
       {error && (
@@ -217,7 +217,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
                       className="ck-btn ck-btn-accent"
                       aria-label={`confirm rotate ${k.api_key_id}`}
                     >
-                      [ CONFIRM ]
+                      [ confirm ]
                     </button>
                     <button
                       type="button"
@@ -235,7 +235,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
                     className="ck-btn"
                     aria-label={`rotate ${k.api_key_id}`}
                   >
-                    [ ROTATE ]
+                    [ rotate ]
                   </button>
                 )}
               </div>
@@ -256,7 +256,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
       {rotated.length > 0 && (
         <details className="border-t border-[var(--color-border)]">
           <summary className="px-3 py-2 ck-label ck-dim cursor-pointer select-none">
-            ROTATED · {rotated.length}
+            rotated · {rotated.length}
           </summary>
           <ul className="divide-y divide-[var(--color-border)]">
             {rotated.map((k) => (
@@ -284,9 +284,9 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
           type="button"
           disabled={minting}
           onClick={() => void doMint()}
-          className="ck-btn ck-btn-accent disabled:opacity-40 disabled:cursor-not-allowed"
+          className="ck-btn ck-pos disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          [ + MINT NEW KEY ]
+          [ + mint new key ]
         </button>
         {minting && <span className="ck-mono ck-dim text-[10px]">working…</span>}
         {mintError && (

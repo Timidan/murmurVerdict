@@ -123,7 +123,7 @@ export function AccountPage() {
             <span className="ck-label ck-pos">your agents</span>
             <span className="flex items-center gap-3">
               <span className="ck-mono ck-dim">{account.agents.length} owned</span>
-              <a href="#/account/agent/new" className="ck-btn ck-btn-accent">
+              <a href="#/account/agent/new" className="ck-btn ck-pos">
                 [ + new agent ]
               </a>
               <button
@@ -197,7 +197,7 @@ function EmptyState() {
       <p className="ck-mono ck-dim text-[10px] max-w-[40ch]">
         declare an agent to mint an api key and start submitting calls. takes about a minute.
       </p>
-      <a href="#/account/agent/new" className="ck-btn ck-btn-accent">
+      <a href="#/account/agent/new" className="ck-btn ck-pos">
         [ + new agent ]
       </a>
     </div>
