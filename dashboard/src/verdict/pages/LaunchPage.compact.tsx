@@ -2,10 +2,9 @@ import { useState } from "react";
 import { verdictApi } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
-import { CompactMarketsGrid } from "../components/compact/MarketsGrid.js";
 import { CodeSnippetPanel } from "../components/account/CodeSnippetPanel.js";
 
-type TrackKey = "A" | "B" | "C" | "D";
+type TrackKey = "A" | "B" | "C";
 
 /**
  * COMPACT install/launch — terminal pages reading like a man page.
@@ -53,7 +52,7 @@ export function LaunchPageCompact() {
       />
 
       {/* DEPLOY ROW ───────────────────────────────────────────── */}
-      <section className="grid grid-cols-3 border-b border-[var(--color-border)]">
+      <section className="grid grid-cols-2 border-b border-[var(--color-border)]">
         <DeployCell
           label="DAEMON"
           stack="RENDER · DOCKER"
@@ -66,21 +65,14 @@ export function LaunchPageCompact() {
           href="https://vercel.com/new"
           note="vercel.json builds dashboard/dist. Set VITE_VERDICT_API_URL."
         />
-        <DeployCell
-          label="OPENSERV"
-          stack="MARKETPLACE · CAPABILITY"
-          href="https://platform.openserv.ai"
-          note="OPENSERV_VERDICT_ENABLED=true. Murmur registers as agent capability."
-        />
       </section>
 
       {/* TRACK TABS ───────────────────────────────────────────── */}
       <div className="flex items-stretch border-b border-[var(--color-border)]">
         {([
-          ["A", "BUILD AGENT", "HTTP + HMAC"],
-          ["B", "TALK TO MURMUR", "MCP STDIO"],
+          ["A", "BUILD AGENT", "FHENIX + HTTP"],
+          ["B", "QUERY MURMUR", "REST JSON"],
           ["C", "SUBSCRIBE", "WEBHOOKS"],
-          ["D", "VERIFY REP", "RECEIPT (SOON)"],
         ] as Array<[TrackKey, string, string]>).map(([k, name, sub]) => {
           const active = track === k;
           return (
@@ -112,25 +104,21 @@ export function LaunchPageCompact() {
             // Phase 7d refactor: Track A's TS/PY/curl trio is now rendered
             // via the shared CodeSnippetPanel — same snippets the new-agent
             // /integrate page uses, so users see one canonical example
-            // shape whether they're learning or onboarding. Track B/C/D
+            // shape whether they're learning or onboarding. Tracks B/C
             // keep the old TrackBrief snippet renderer because their
-            // snippet shapes (Claude MCP config, Cursor stdio command,
-            // webhook register, HMAC verify middleware) don't fit the
-            // TS/PY/curl trifecta the new panel encodes.
+            // snippet shapes don't fit the TS/PY/curl trifecta the new
+            // panel encodes.
             //
-            // TrackBriefHeader still owns the heading + facts block; the
-            // snippet body is the only part swapping. No API key prop —
-            // Launch page is public, snippets render with env-var refs.
             <TrackBriefHeader
               tag="TRACK·A · PRIMARY"
               title="BUILD AN AGENT"
-              note="Submit market calls; Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles. Committed mode hides side / asset / horizon / confidence from the public feed until reveal at horizon."
+              note="Submit calls (sealed today via Fhenix, gateway-relayed soon). Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles."
               cta={{ label: "SEE LB →", href: "#/leaderboard" }}
               extras={
                 <>
-                  <FactRow label="AUTH" value="HMAC · X-Murmur-Agent-Id + X-Murmur-Api-Key" />
-                  <FactRow label="MODE" value="committed (sealed) · revealed at horizon" />
-                  <FactRow label="PERSIST" value="salt · call_id · accepted_at" />
+                  <FactRow label="AUTH" value="X-Murmur-Api-Key" />
+                  <FactRow label="MODE" value="sealed_fhenix · revealed after horizon" />
+                  <FactRow label="PERSIST" value="call_id · onchain_call_id" />
                   <FactRow label="SKILL" value={`${base}/v1/skill.md`} copy />
                 </>
               }
@@ -144,21 +132,18 @@ export function LaunchPageCompact() {
           {track === "B" && (
             <TrackBrief
               tag="TRACK·B"
-              title="TALK TO MURMUR"
-              note="MCP stdio server with four tools (get_leaderboard / get_agent / get_agent_score / submit_call). For human operators querying rankings from Claude Desktop, Cursor, or any other MCP host."
-              cta={{
-                label: "MCP SRC →",
-                href: "https://github.com/Timidan/synth-x/tree/master/src/mcp",
-              }}
+              title="QUERY MURMUR"
+              note="Public JSON endpoints expose rankings, agent profiles, call history, markets, and OpenAPI. No local integration server required."
+              cta={{ label: "OPENAPI →", href: `${base}/v1/openapi.json` }}
               extras={
                 <>
-                  <FactRow label="TRANSPORT" value="STDIO" />
-                  <FactRow label="TOOLS" value="5 — see /v1/skill.md" />
+                  <FactRow label="TRANSPORT" value="HTTPS" />
+                  <FactRow label="AUTH" value="none for public reads" />
                 </>
               }
               snippets={[
-                ["CLAUDE", claudeConfig(base)],
-                ["CURSOR", cursorConfig(base)],
+                ["LEADERBOARD", readLeaderboard(base)],
+                ["AGENT", readAgent(base)],
               ]}
               snippet={snippet}
               setSnippet={setSnippet}
@@ -183,28 +168,6 @@ export function LaunchPageCompact() {
                 ["REGISTER", webhookCreate(base)],
                 ["VERIFY", webhookVerify()],
               ]}
-              snippet={snippet}
-              setSnippet={setSnippet}
-              copied={copied}
-              copy={copy}
-            />
-          )}
-          {track === "D" && (
-            <TrackBrief
-              tag="TRACK·D · SOON"
-              title="VERIFY REPUTATION"
-              note="Receipts will be wallet-bound and signed. A small verifier — receipt JSON + our public signing key + canonical oracle observation — will let any marketplace check an agent's score without a daemon round-trip."
-              cta={{ label: "ROADMAP →", href: "#/spec" }}
-              extras={
-                <>
-                  <FactRow label="STATUS" value="V0.2 — landing alongside ERC-8004 agent card" />
-                  <FactRow
-                    label="ENDPOINT"
-                    value="/v1/agents/<slug>/agent-card"
-                  />
-                </>
-              }
-              snippets={[]}
               snippet={snippet}
               setSnippet={setSnippet}
               copied={copied}
@@ -250,9 +213,6 @@ export function LaunchPageCompact() {
             </pre>
           </Panel>
 
-          <Panel title="MARKETS · LISTED">
-            <CompactMarketsGrid limit={8} />
-          </Panel>
         </div>
       </main>
     </div>
@@ -434,33 +394,20 @@ function DeployCell({
 }
 
 /* ── Snippets ────────────────────────────────────────────────────────────
- * Phase 7d — Track A's TS/PY/curl snippets moved into CodeSnippetPanel
- * (see usage in the JSX above). The remaining track-specific snippets
- * (MCP config, webhook register, HMAC verify) stay inline because their
- * shape doesn't fit the TS/PY/curl trifecta the new panel encodes.
+ * Track A's TS/PY/curl snippets live in CodeSnippetPanel. The remaining
+ * track-specific snippets stay inline because their shapes are different.
  * ─────────────────────────────────────────────────────────────────── */
 
-function claudeConfig(base: string): string {
-  return `{
-  "mcpServers": {
-    "murmur-verdict": {
-      "command": "npx",
-      "args": ["-y", "tsx", "/path/to/murmur/src/mcp/index.ts"],
-      "env": {
-        "VERDICT_API_URL": "${base}",
-        "VERDICT_AGENT_ID": "<agent-id-from-claim-flow>",
-        "VERDICT_API_KEY":  "<api-key-from-claim-flow>"
-      }
-    }
-  }
-}`;
+function readLeaderboard(base: string): string {
+  return `curl "${base}/v1/leaderboard?limit=10" | jq
+curl "${base}/v1/leaderboard/families/native-price?limit=10" | jq
+curl "${base}/v1/markets" | jq`;
 }
 
-function cursorConfig(base: string): string {
-  return `# Cursor → Settings → MCP → Add MCP Server
-Type:    stdio
-Command: npx -y tsx /path/to/murmur/src/mcp/index.ts
-Env:     VERDICT_API_URL=${base}`;
+function readAgent(base: string): string {
+  return `curl "${base}/v1/agents/<slug>" | jq
+curl "${base}/v1/agents/<slug>/calls?limit=20" | jq
+curl "${base}/v1/agents/<slug>/grid" | jq`;
 }
 
 function webhookCreate(base: string): string {
