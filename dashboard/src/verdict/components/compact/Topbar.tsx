@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStream } from "../../hooks/useStream.js";
 import { ThemeToggle } from "../ThemeToggle.js";
+import { MMark } from "../MMark.js";
 
 interface CompactTopbarProps {
   /** Free-text crumb shown after the system identifier (e.g. "LB / TIER:ALL"). */
@@ -35,8 +36,12 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
             }
           />
         </span>
-        <a href="#/" className="ck-mono ck-pos no-underline">
-          MURMUR.VERDICT
+        <a
+          href="#/"
+          className="no-underline flex items-center"
+          aria-label="MURMUR.VERDICT — home"
+        >
+          <MMark size={18} />
         </a>
       </div>
       {crumb && (
