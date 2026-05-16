@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactMiniLB } from "../components/compact/MiniLB.js";
@@ -6,12 +6,11 @@ import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { CompactMarketsGrid } from "../components/compact/MarketsGrid.js";
 import { useStream } from "../hooks/useStream.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
-import { verdictApi } from "../api.js";
 
 /**
  * COMPACT landing — cockpit mode. Three panels visible at once on desktop:
  *   ┌─ STATS RIBBON ────────────────────────────────────────────────┐
- *   │  ACC24  RES24  WINS  LOSS  VOID  AGENTS  SCHEMA  SCORING       │
+ *   │  ACC24  RES24  WINS  LOSS  VOID                                │
  *   ├─ LEADERBOARD ──── LIVE FEED ──── MARKETS MATRIX ───────────────┤
  *   │  top-12 (mono)   recent N evts   per-(asset,hzn) ladder         │
  *   └────────────────────────────────────────────────────────────────┘
@@ -20,26 +19,6 @@ import { verdictApi } from "../api.js";
 export function LandingPageCompact() {
   const { stats } = useStream();
   const emitFunnel = useFunnelEmit();
-  const [meta, setMeta] = useState<{ schema: number; scoring: number; agents: number } | null>(
-    null,
-  );
-
-  useEffect(() => {
-    let cancel = false;
-    Promise.all([verdictApi.meta(), verdictApi.leaderboard({ limit: 100 })])
-      .then(([m, lb]) => {
-        if (cancel) return;
-        setMeta({
-          schema: m.schema_version,
-          scoring: m.scoring_version,
-          agents: lb.rows.length,
-        });
-      })
-      .catch(() => {});
-    return () => {
-      cancel = true;
-    };
-  }, []);
 
   // Phase 7d — funnel pageview. Best-effort: only fires when Privy is
   // configured + the user has a session. Anonymous visitors are dropped
@@ -53,15 +32,12 @@ export function LandingPageCompact() {
       <CompactTopbar crumb="HOME / OVERVIEW" />
 
       {/* STATS RIBBON ─────────────────────────────────────────── */}
-      <section className="grid grid-cols-4 md:grid-cols-8 border-b border-[var(--color-border)]">
+      <section className="grid grid-cols-5 border-b border-[var(--color-border)]">
         <Stat label="ACC·24H" value={stats?.accepted_24h ?? "—"} />
         <Stat label="RES·24H" value={stats?.resolved_24h ?? "—"} />
         <Stat label="WIN·24H" value={stats?.wins_24h ?? "—"} tone="pos" />
         <Stat label="LOSS·24H" value={stats?.losses_24h ?? "—"} tone="neg" />
         <Stat label="VOID·24H" value={stats?.void_24h ?? "—"} tone="dim" />
-        <Stat label="AGENTS" value={meta?.agents ?? "—"} />
-        <Stat label="SCHEMA" value={meta ? `v${meta.schema}` : "—"} tone="dim" />
-        <Stat label="SCORING" value={meta ? `v${meta.scoring}` : "—"} tone="dim" />
       </section>
 
       {/* MAIN GRID ────────────────────────────────────────────── */}
@@ -135,11 +111,11 @@ export function LandingPageCompact() {
       {/* FOOTER STATUS ────────────────────────────────────────── */}
       <footer className="flex items-center gap-3 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">
         <span>
-          ORACLE · <span className="ck-pos">CHAINLINK</span> +{" "}
+          <span className="ck-pos">CHAINLINK</span> +{" "}
           <span className="ck-pos">PYTH</span>
         </span>
         <span className="ck-dim">·</span>
-        <span>NETWORK · BASE-MAINNET</span>
+        <span>BASE</span>
         <span className="ck-dim">·</span>
         <a href="#/spec" className="ck-mono ck-dim hover:ck-pos no-underline">
           SPEC
@@ -153,7 +129,6 @@ export function LandingPageCompact() {
         >
           GITHUB
         </a>
-        <span className="ml-auto ck-mono ck-dim">v0.1 · COMPACT</span>
       </footer>
     </div>
   );
