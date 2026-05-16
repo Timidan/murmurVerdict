@@ -26,19 +26,6 @@ export function TodayPage() {
     <div className="compact-shell min-h-dvh flex flex-col">
       <CompactTopbar crumb="FEED · LAST 24H" />
 
-      {/* STATS RIBBON ───────────────────────────────────────────── */}
-      <section className="grid grid-cols-5 border-b border-[var(--color-border)]">
-        <Stat label="ACC·24H" value={feed?.totals.accepted_24h ?? "—"} />
-        <Stat label="RES·24H" value={feed?.totals.resolved_24h ?? "—"} />
-        <Stat label="WIN·24H" value={feed?.totals.wins_24h ?? "—"} tone="ck-pos" />
-        <Stat
-          label="LOSS·24H"
-          value={feed?.totals.losses_24h ?? "—"}
-          tone={feed && feed.totals.losses_24h > 0 ? "ck-neg" : "ck-dim"}
-        />
-        <Stat label="VOID·24H" value={feed?.totals.void_24h ?? "—"} tone="ck-dim" />
-      </section>
-
       {error && (
         <div className="px-2 py-2 ck-mono ck-neg border-b border-[var(--color-border)]">
           [ERROR] {error}
@@ -71,16 +58,6 @@ export function TodayPage() {
         </main>
       )}
 
-      <footer className="flex items-center gap-3 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">
-        <a href="#/" className="ck-mono ck-dim hover:ck-pos no-underline">
-          ← HOME
-        </a>
-        <span>·</span>
-        <a href="#/leaderboard" className="ck-mono ck-dim hover:ck-pos no-underline">
-          LEADERBOARD
-        </a>
-        <span className="ml-auto ck-mono ck-dim">FEED · 24H ROLLING</span>
-      </footer>
     </div>
   );
 }
@@ -92,8 +69,7 @@ function FeedRows({ rows, pending }: { rows: TodayFeedRow[]; pending?: boolean }
   return (
     <ul className="m-0 p-0 list-none">
       {rows.map((row) => {
-        // Wave 2b — FHE-mandatory. Every call is operator-blind; side
-        // and asset render as encrypted placards rather than plaintext.
+        // Pending calls render sealed placards rather than verdict fields.
         const ts = (row.submitted_at ?? row.accepted_at).slice(11, 19);
         const outcomeText = pending
           ? "PEND"
@@ -110,12 +86,11 @@ function FeedRows({ rows, pending }: { rows: TodayFeedRow[]; pending?: boolean }
         return (
           <li
             key={row.call_id}
-            className="grid grid-cols-[60px_36px_46px_1fr_60px] gap-2 px-2 py-1 border-b border-[var(--color-border)] items-center"
+            className="grid grid-cols-[60px_14px_1fr_60px] gap-2 px-2 py-1 border-b border-[var(--color-border)] items-center"
           >
             <a href={`#/calls/${row.call_id}`} className="contents no-underline">
               <span className="ck-mono ck-dim">{ts}</span>
-              <span className="ck-label ck-dim">HASH</span>
-              <span className="ck-mono ck-pos truncate">BLIND</span>
+              <span aria-label="sealed" className="ck-dim">▪</span>
               <span className="ck-mono ck-dim truncate">@{row.agent_slug}</span>
               <span className={"ck-mono text-right " + outcomeTone}>{outcomeText}</span>
             </a>
@@ -123,25 +98,6 @@ function FeedRows({ rows, pending }: { rows: TodayFeedRow[]; pending?: boolean }
         );
       })}
     </ul>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  tone = "ck-pos",
-}: {
-  label: string;
-  value: number | string;
-  tone?: string;
-}) {
-  return (
-    <div className="px-2 py-1.5 border-r border-[var(--color-border)] last:border-r-0 flex flex-col gap-0.5">
-      <span className="ck-label">{label}</span>
-      <span className={"ck-mono " + tone} style={{ fontSize: 14, fontWeight: 700 }}>
-        {value}
-      </span>
-    </div>
   );
 }
 
