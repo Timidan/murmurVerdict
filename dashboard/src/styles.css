@@ -46,6 +46,9 @@
   --color-accent: #FD3C3C;
   --color-accent-tint: rgba(253, 60, 60, 0.15);
 
+  /* Modal/overlay scrim — derived per-theme so paper mode never blacks out. */
+  --color-scrim: rgba(0, 0, 0, 0.8);
+
   /* Status colors (data-encoding only — not part of UI hierarchy) */
   --color-success: #4A9E5C;
   --color-warning: #D4A843;
@@ -75,6 +78,10 @@
   /* Accent is brand-red in both themes. Pinned for emphasis. */
   --color-accent: #FD3C3C;
   --color-accent-tint: rgba(253, 60, 60, 0.15);
+
+  /* Paper-mode scrim — ink wash, slightly less opaque than dark
+     (paper has lower native contrast so 70% reads as full dim). */
+  --color-scrim: rgba(31, 27, 20, 0.7);
 
   /* Darker variants of status colors for paper-mode contrast. */
   --color-success: #2E6F3D;

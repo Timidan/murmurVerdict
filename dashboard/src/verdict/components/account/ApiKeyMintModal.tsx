@@ -102,7 +102,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
       role="dialog"
       aria-modal="true"
       aria-labelledby="mint-modal-title"
-      className="fixed inset-0 z-50 grid place-items-center bg-black/80 px-3"
+      className="fixed inset-0 z-50 grid place-items-center bg-[var(--color-scrim)] px-3"
     >
       <div className="ck-frame-strong w-full max-w-[560px] bg-[var(--color-bg)]">
         <div className="ck-header">
