@@ -30,10 +30,9 @@ export function Splash() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        transition: "opacity 200ms var(--ease-out)",
       }}
     >
-      <MMark size={96} className="nothing-live" />
+      <MMark size={96} decorative className="nothing-live" />
     </div>
   );
 }

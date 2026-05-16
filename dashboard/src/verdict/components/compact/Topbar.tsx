@@ -41,7 +41,7 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
           className="no-underline flex items-center"
           aria-label="MURMUR.VERDICT — home"
         >
-          <MMark size={18} />
+          <MMark size={18} decorative />
         </a>
       </div>
       {crumb && (

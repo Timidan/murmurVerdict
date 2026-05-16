@@ -3,6 +3,10 @@
 // Static SVG of the Murmur Verdict M waveform mark.
 // Geometry extracted from murmur-verdict__full-asset-pack__final/01_murmur-verdict__mark__dark.png
 // via the script in docs/plans/2026-05-16-paper-mode-and-mark-plan.md Task 2.1.
+//
+// Note on sub-pixel coordinates: geometry uses 2-decimal viewBox values
+// (e.g. 0.27, 11.77). At small render sizes (18px) edges antialias; this
+// preserves higher-DPI fidelity at the cost of slight 1× softness.
 
 export interface MMarkProps {
   /** px size (rendered as square). Defaults to 18 (topbar size). */
@@ -10,7 +14,14 @@ export interface MMarkProps {
   /** Show the red verdict dot. Defaults to true. */
   showDot?: boolean;
   className?: string;
-  /** Optional aria-label override. Defaults to "Murmur Verdict". */
+  /**
+   * Mark the SVG as decorative (aria-hidden, no role).
+   * Use when the parent already owns the accessible name (e.g., a labeled
+   * anchor or wrapper). Mutually exclusive with `label`.
+   */
+  decorative?: boolean;
+  /** Optional aria-label override. Ignored if `decorative` is true.
+   * Defaults to "Murmur Verdict". */
   label?: string;
 }
 
@@ -33,14 +44,23 @@ const DOT = {
   size: 3.92 * 2,
 };
 
-export function MMark({ size = 18, showDot = true, className, label = "Murmur Verdict" }: MMarkProps) {
+export function MMark({
+  size = 18,
+  showDot = true,
+  className,
+  decorative = false,
+  label = "Murmur Verdict",
+}: MMarkProps) {
+  const a11yProps = decorative
+    ? ({ "aria-hidden": true } as const)
+    : ({ role: "img" as const, "aria-label": label });
+
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 100 100"
-      role="img"
-      aria-label={label}
+      {...a11yProps}
       className={className}
       style={{ display: "inline-block", verticalAlign: "middle" }}
     >

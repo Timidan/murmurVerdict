@@ -26,9 +26,10 @@ export function Wordmark({ size = 24, orientation = "horizontal", className }: W
           alignItems: "flex-start",
           gap: Math.round(size * 0.25),
         }}
+        role="img"
         aria-label="Murmur Verdict"
       >
-        <MMark size={markSize} label="" />
+        <MMark size={markSize} decorative />
         <span
           aria-hidden
           style={{
@@ -51,9 +52,10 @@ export function Wordmark({ size = 24, orientation = "horizontal", className }: W
     <span
       className={className}
       style={{ display: "inline-flex", alignItems: "center", gap: Math.round(size * 0.5) }}
+      role="img"
       aria-label="Murmur Verdict"
     >
-      <MMark size={markSize} label="" />
+      <MMark size={markSize} decorative />
       <span
         aria-hidden
         style={{
