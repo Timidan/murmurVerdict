@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useStream } from "../../hooks/useStream.js";
+import { ThemeToggle } from "../ThemeToggle.js";
 
 interface CompactTopbarProps {
   /** Free-text crumb shown after the system identifier (e.g. "LB / TIER:ALL"). */
@@ -51,6 +52,7 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
         <span className="px-2 ck-mono ck-dim border-l border-[var(--color-border)] tabular-nums">
           {now.toISOString().slice(11, 19)}Z
         </span>
+        <ThemeToggle />
         <span className={"px-2 ck-label border-l border-[var(--color-border)] " + (live ? "ck-pos" : "ck-neg")}>
           {live ? "LIVE" : "OFFLINE"}
         </span>
