@@ -107,7 +107,7 @@ export function AgentPageCompact({ slug }: { slug: string }) {
             <RCell
               label="pend"
               value={stats ? String(stats.pending).padStart(2, "0") : "—"}
-              tone={stats && stats.pending > 0 ? "neg" : "dim"}
+              tone="dim"
             />
             <RCell label="streak" value={stats ? `${stats.streak}w` : "—"} />
           </section>
@@ -267,7 +267,7 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
             </span>
             <span className="flex justify-end">
-              <CompactSparkline values={synth(r.verdict_score ?? 0)} width={56} height={12} />
+              <CompactSparkline values={[]} width={56} height={12} />
             </span>
           </a>
         </li>
@@ -437,12 +437,3 @@ function formatOutcome(c: AgentCallRow): string {
   return c.outcome.slice(0, 4);
 }
 
-function synth(seed: number): number[] {
-  const out: number[] = [];
-  let v = seed * 1000;
-  for (let i = 0; i < 12; i++) {
-    v += Math.sin((seed + i) * 1.7) * 5;
-    out.push(v);
-  }
-  return out;
-}
