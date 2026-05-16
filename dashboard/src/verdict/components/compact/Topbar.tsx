@@ -9,7 +9,7 @@ interface CompactTopbarProps {
 }
 
 /**
- * COMPACT cockpit chrome — 26px tall, four square LEDs, system name,
+ * COMPACT cockpit chrome — 26px tall, single live-state dot, system name,
  * UTC clock, terminal nav. Single line, zero padding above/below.
  */
 export function CompactTopbar({ crumb }: CompactTopbarProps) {
@@ -25,17 +25,13 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
   return (
     <header className="h-[26px] flex items-stretch border-b border-[var(--color-border)] sticky top-0 z-30 bg-[var(--color-bg)]">
       <div className="flex items-center gap-2 px-2 border-r border-[var(--color-border)]">
-        <span className="inline-flex gap-[3px]" aria-hidden>
-          <span className="w-[5px] h-[5px] bg-[var(--color-display)]" />
-          <span className="w-[5px] h-[5px] bg-[var(--color-display)]" />
-          <span className="w-[5px] h-[5px] bg-[var(--color-display)]" />
-          <span
-            className={
-              "w-[5px] h-[5px] " +
-              (live ? "bg-[var(--color-accent)] ck-dot-live" : "bg-[var(--color-border-vis)]")
-            }
-          />
-        </span>
+        <span
+          aria-hidden
+          className={
+            "w-[5px] h-[5px] " +
+            (live ? "bg-[var(--color-accent)] ck-dot-live" : "bg-[var(--color-border-vis)]")
+          }
+        />
         <a
           href="#/"
           className="no-underline flex items-center"
