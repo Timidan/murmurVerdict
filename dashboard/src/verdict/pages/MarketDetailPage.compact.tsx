@@ -218,9 +218,9 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
             </span>
             <span className="flex justify-end items-center">
-              <CompactSparkline values={synth(r.verdict_score ?? 0)} width={56} height={12} />
+              <CompactSparkline values={[]} width={56} height={12} />
             </span>
-            <span className="text-right ck-mono ck-neg">
+            <span className="text-right ck-mono ck-dim">
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
             </span>
           </a>
@@ -290,14 +290,4 @@ function shortAssetSlug(asset_id: string): string {
   const parts = asset_id.split(":");
   const sym = parts.length >= 2 ? parts[1] : asset_id;
   return (sym ?? asset_id).toLowerCase();
-}
-
-function synth(seed: number): number[] {
-  const out: number[] = [];
-  let v = seed * 1000;
-  for (let i = 0; i < 12; i++) {
-    v += Math.sin((seed + i) * 1.7) * 5;
-    out.push(v);
-  }
-  return out;
 }
