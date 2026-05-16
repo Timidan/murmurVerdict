@@ -16,7 +16,9 @@
      - Space Grotesk: UI / body
      - Space Mono: labels, data, ALL CAPS chrome
 
-   Single chromatic accent: #D71921 (Nothing red).
+   Single chromatic accent: #FD3C3C (brand red, sampled from asset pack).
+   Was #D71921 (Nothing red) — corrected 2026-05-16 per
+   docs/specs/2026-05-16-paper-mode-and-mark-design.md §3.2.
    Canvas: pure #000 (OLED). Override of "no pure black" rule —
    intentional brand choice per V14_HANDOFF.md §3.
    ──────────────────────────────────────────────────────────────────────── */
@@ -40,9 +42,9 @@
   --color-primary: #E8E8E8;
   --color-display: #FFFFFF;
 
-  /* Single accent — Nothing red. */
-  --color-accent: #D71921;
-  --color-accent-tint: rgba(215, 25, 33, 0.15);
+  /* Single accent — brand red (asset pack `#FD3C3C`). */
+  --color-accent: #FD3C3C;
+  --color-accent-tint: rgba(253, 60, 60, 0.15);
 
   /* Status colors (data-encoding only — not part of UI hierarchy) */
   --color-success: #4A9E5C;
@@ -51,6 +53,35 @@
   /* Motion: subtle ease-out only. No spring, no bounce. */
   --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Paper mode — light theme twin.
+   Tokens color-picked from murmur-verdict__full-asset-pack__final/ via PIL.
+   Activated via `<html data-theme="paper">`. See
+   docs/specs/2026-05-16-paper-mode-and-mark-design.md §3.1.
+   ──────────────────────────────────────────────────────────────────────── */
+
+[data-theme="paper"] {
+  --color-bg: #FCF9F2;
+  --color-surface: #F4EFE5;
+  --color-raised: #EAE3D3;
+  --color-border: #D8D2C8;
+  --color-border-vis: #B8AE99;
+  --color-disabled: #A39A85;
+  --color-secondary: #6B6453;
+  --color-primary: #1F1B14;
+  --color-display: #0A0A0A;
+
+  /* Accent is brand-red in both themes. Pinned for emphasis. */
+  --color-accent: #FD3C3C;
+  --color-accent-tint: rgba(253, 60, 60, 0.15);
+
+  /* Darker variants of status colors for paper-mode contrast. */
+  --color-success: #2E6F3D;
+  --color-warning: #8A6A1F;
+}
+
+/* Theme-color meta gets updated by the bootstrap script in index.html, not here. */
 
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
