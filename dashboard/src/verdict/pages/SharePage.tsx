@@ -50,10 +50,8 @@ export function SharePage({ slug }: { slug: string }) {
   }, [slug]);
 
   // Outreach attribution: when a visitor lands here from an outreach DM
-  // (?ref=<sender>) fire a single click ping AND sticky the (ref, slug)
-  // pair to localStorage. Wave 1 deleted ClaimPage; the localStorage
-  // sticky is now unused for finalize attribution but kept as a no-op
-  // hook for the future Privy-account-claim flow that lands in Wave 5.
+  // (?ref=<sender>) fire a single click ping and sticky the (ref, slug)
+  // pair for account-page attribution.
   useEffect(() => {
     if (!ref) return;
     const apiBase = verdictApi.apiUrl.replace(/\/$/, "");
@@ -91,7 +89,7 @@ export function SharePage({ slug }: { slug: string }) {
   };
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
+    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)] brand-pattern">
       <Topbar
         crumb={
           <span>

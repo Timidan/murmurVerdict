@@ -37,7 +37,7 @@ export function RecruitersPage() {
   }, []);
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
+    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)] brand-pattern">
       <Topbar crumb="recruiters" />
 
       <main className="flex-1 max-w-[1280px] w-full mx-auto px-6 md:px-10 py-12">

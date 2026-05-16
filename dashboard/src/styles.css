@@ -182,3 +182,28 @@
 
 /* Tactile press — Nothing's "percussive, not fluid" rule. */
 .press-feedback:active { transform: translateY(1px); }
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Brand pattern — paper-mode only. Applied to marketing surfaces
+   (recruiters, share, spec). Asset: public/brand/pattern-paper.png
+   (160x160 tile). Subtle: ~50% opacity layer on top of bg.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.brand-pattern {
+  position: relative;
+}
+[data-theme="paper"] .brand-pattern::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("/brand/pattern-paper.png");
+  background-repeat: repeat;
+  background-size: 160px 160px;
+  opacity: 0.5;
+  pointer-events: none;
+  z-index: 0;
+}
+.brand-pattern > * {
+  position: relative;
+  z-index: 1;
+}

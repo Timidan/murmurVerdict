@@ -2,11 +2,10 @@ import { useEffect, useState, lazy, Suspense } from "react";
 
 const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ default: m.TodayPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
-// Wave 1 — ClaimPage deleted alongside the public-identity claim flow.
-// New agents are minted under a Privy account via /v1/account/agents.
 const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ default: m.SharePage })));
 const RecruitersPage = lazy(() => import("./pages/RecruitersPage.js").then((m) => ({ default: m.RecruitersPage })));
 const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => ({ default: m.AdminRefsPage })));
+const AdminGatewayPage = lazy(() => import("./pages/AdminGatewayPage.js").then((m) => ({ default: m.AdminGatewayPage })));
 
 // Phase 7a — account-area pages. Lazy so the Privy SDK chunk isn't pulled
 // into the landing/leaderboard bundles.
@@ -142,6 +141,7 @@ interface ParsedRoute {
     | "share"
     | "recruiters"
     | "admin_refs"
+    | "admin_gateway"
     | "market"
     | "account"
     | "account_login"
@@ -166,6 +166,7 @@ function parseHash(hash: string): ParsedRoute {
   if (path === "/launch") return { name: "launch" };
   if (path === "/recruiters") return { name: "recruiters" };
   if (path === "/admin/refs") return { name: "admin_refs" };
+  if (path === "/admin/gateway") return { name: "admin_gateway" };
   if (path === "/spec") return { name: "spec" };
   // Phase 7a — account area. `?next=` is parsed below via parseNext()
   // so deep links like #/account/login?next=/account survive sign-in.
@@ -291,6 +292,7 @@ export function VerdictRouter() {
       {route.name === "share" && <SharePage slug={route.params!.slug} />}
       {route.name === "recruiters" && <RecruitersPage />}
       {route.name === "admin_refs" && <AdminRefsPage />}
+      {route.name === "admin_gateway" && <AdminGatewayPage />}
       {route.name === "market" &&
         (variant === "bold" ? (
           <MarketDetailPageBold marketId={route.params!.market_id} />
@@ -340,7 +342,7 @@ function decodeNext(raw: string | null): string | null {
 
 function SpecPage() {
   return (
-    <div className="min-h-dvh bg-[var(--color-bg)] text-[var(--color-primary)] font-sans">
+    <div className="min-h-dvh bg-[var(--color-bg)] text-[var(--color-primary)] font-sans brand-pattern">
       <div className="mx-auto max-w-[960px] px-6 md:px-10 py-16">
         <p className="t-label mb-3 text-[var(--color-secondary)]">spec</p>
         <h1 className="t-heading mb-6">murmur verdict v0.1</h1>
