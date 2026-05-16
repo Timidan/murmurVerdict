@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useStream } from "../../hooks/useStream.js";
 import { ThemeToggle } from "../ThemeToggle.js";
 import { MMark } from "../MMark.js";
-import { MOCK_MODE } from "../../__mocks__/mode.js";
 
 interface CompactTopbarProps {
   /** Free-text crumb shown after the system identifier (e.g. "LB / TIER:ALL"). */
@@ -40,14 +39,6 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
         >
           <MMark size={18} decorative />
         </a>
-        {MOCK_MODE && (
-          <span
-            className="px-1 ck-label border border-[var(--color-warning)] text-[var(--color-warning)]"
-            title="mock data — reload without ?mock=1 to use real backend"
-          >
-            mock
-          </span>
-        )}
       </div>
       {crumb && (
         <div className="flex items-center px-2 border-r border-[var(--color-border)] ck-label whitespace-nowrap overflow-hidden">

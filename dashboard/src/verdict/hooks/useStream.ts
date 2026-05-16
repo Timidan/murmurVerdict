@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 import { verdictApi, type AgentMarketRow } from "../api.js";
-import { MOCK_MODE } from "../__mocks__/mode.js";
-import { useMockStream } from "../__mocks__/stream-mock.js";
 
 // Mirrors the union from src/verdict/events.ts on the daemon side.
 // Kept loose here (string fields where the backend uses literals) to
@@ -231,7 +229,7 @@ function disconnect(): void {
  * last one unmounts. Honours `prefers-reduced-motion` only in CSS — the
  * data itself updates the same regardless of motion preference.
  */
-function useRealStream(): StreamSnapshot {
+export function useStream(): StreamSnapshot {
   const [local, setLocal] = useState<StreamSnapshot>(snapshot);
 
   useEffect(() => {
@@ -251,8 +249,3 @@ function useRealStream(): StreamSnapshot {
 
   return local;
 }
-
-// Mock toggle: when `?mock=1`, useStream subscribes to a synthesised
-// fixture-backed feed (see __mocks__/stream-mock.ts). Module-level
-// conditional swap — no React context, no re-render coupling.
-export const useStream: () => StreamSnapshot = MOCK_MODE ? useMockStream : useRealStream;

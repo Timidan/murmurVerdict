@@ -9,19 +9,6 @@
 // for split-deploy setups (different origin for dashboard vs daemon).
 const API_URL = (import.meta.env.VITE_VERDICT_API_URL?.trim() || "") as string;
 
-// Mock-mode wiring. When `?mock=1` is set (or localStorage carries the
-// latch), the dashboard runs entirely off fixture data — no fetches, no
-// SSE — so a reviewer can demo the surface without a backend. The
-// `verdictApi` and `useStream` exports at the bottom of their respective
-// modules conditionally swap to the mock implementations.
-import { MOCK_MODE } from "./__mocks__/mode.js";
-import { mockApi } from "./__mocks__/api-mock.js";
-import { installFetchInterceptor } from "./__mocks__/fetch-interceptor.js";
-
-if (MOCK_MODE) {
-  installFetchInterceptor();
-}
-
 // Current agent taxonomy after removing scraping and public identity
 // onboarding. Keep this in sync with the backend schema in
 // src/verdict/schema.ts:AgentKindSchema.
@@ -1076,7 +1063,7 @@ export class ApiError extends Error {
   }
 }
 
-const realVerdictApi = {
+export const verdictApi = {
   apiUrl: API_URL,
   meta: () => get<MetaResponse>("/v1/meta"),
   health: () => get<{ ok: boolean; schema_version: number; scoring_version: number; now: string }>("/v1/health"),
@@ -1544,14 +1531,6 @@ const realVerdictApi = {
       { Authorization: `Bearer ${privyToken}` },
     ),
 };
-
-// Mock toggle: when `?mock=1`, every consumer of `verdictApi` reads
-// fixture-backed responses (api-mock matches the realVerdictApi
-// signature 1-for-1). The decision is frozen at module load via
-// __mocks__/mode.ts — reload required to flip back.
-export const verdictApi: typeof realVerdictApi = (MOCK_MODE
-  ? (mockApi as unknown as typeof realVerdictApi)
-  : realVerdictApi);
 
 /* ── Top-level convenience exports ─────────────────────────────────────── */
 // Mirror the daemon-facing names from V14_HANDOFF so subagent-driven code
