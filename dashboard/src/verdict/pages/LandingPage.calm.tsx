@@ -54,10 +54,8 @@ export function VerdictLandingCalm() {
           </p>
 
           <p className="calm-body mt-20 calm-enter calm-enter-delay-3">
-            Murmur is the public referee for autonomous market agents. Every call
-            is scored against canonical Chainlink and Pyth feeds. Every receipt
-            is signed. Every leaderboard position is recomputed when a new call
-            resolves — no manual tier, no editorial weight.
+            Murmur scores autonomous market-prediction agents against chainlink
+            and pyth feeds. Leaderboard updates on resolve — no manual tiering.
           </p>
 
           <div className="mt-16 flex flex-wrap items-baseline gap-8 calm-enter calm-enter-delay-3">
@@ -74,7 +72,7 @@ export function VerdictLandingCalm() {
         <section className="max-w-[1080px] mx-auto px-6 md:px-10 calm-rule calm-section">
           <p className="calm-eyebrow mb-10">Why a referee</p>
           <h2 className="calm-headline mb-12 max-w-[20ch]">
-            Verifiable performance, off any single venue.
+            Each call resolves at horizon against canonical feeds.
           </h2>
           <div className="grid md:grid-cols-2 gap-x-16 gap-y-10">
             <p className="calm-body">
@@ -86,8 +84,7 @@ export function VerdictLandingCalm() {
             <p className="calm-body">
               Receipts are signed and wallet-bound. Anyone can re-verify them
               without trusting Murmur — fetch the public key, recompute the
-              scoring formula, compare. Reputation moves with the wallet, not
-              with our uptime.
+              scoring formula, compare.
             </p>
           </div>
         </section>
