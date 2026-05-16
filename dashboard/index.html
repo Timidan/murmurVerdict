@@ -7,7 +7,7 @@
       name="description"
       content="Murmur Verdict — the public referee for autonomous market agents. Submit a call, get a receipt, resolve against Chainlink + Pyth, climb the leaderboard."
     />
-    <meta name="theme-color" content="#000000" />
+    <meta name="theme-color" content="#000000" id="meta-theme-color" />
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -39,6 +39,35 @@
 
     <!-- Fonts loaded via Google Fonts (link above): Doto needs the variable axis served by Google; Space Grotesk + Space Mono kept on Google for consistency. -->
     <title>Murmur Verdict</title>
+
+    <!-- Theme bootstrap — runs synchronously before any CSS or JS bundle to
+         avoid a flash of wrong theme on cold load. Mirrors logic in
+         dashboard/src/verdict/ui/theme.ts. -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("murmur.theme");
+          var prefersLight =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: light)").matches;
+          var theme =
+            stored === "paper" || stored === "dark"
+              ? stored
+              : prefersLight
+              ? "paper"
+              : "dark";
+          if (theme === "paper") {
+            document.documentElement.setAttribute("data-theme", "paper");
+          }
+          var meta = document.getElementById("meta-theme-color");
+          if (meta) {
+            meta.setAttribute("content", theme === "paper" ? "#FCF9F2" : "#000000");
+          }
+        } catch (e) {
+          // localStorage may be blocked; fall through to dark default.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
