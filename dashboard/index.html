@@ -31,24 +31,25 @@
           var meta = document.getElementById("meta-theme-color");
           if (meta) meta.setAttribute("content", theme === "paper" ? "#FCF9F2" : "#000000");
         }
+        var stored = null;
         try {
-          var stored = localStorage.getItem("murmur.theme");
-          var prefersLight =
-            window.matchMedia &&
-            window.matchMedia("(prefers-color-scheme: light)").matches;
-          var theme =
-            stored === "paper" || stored === "dark"
-              ? stored
-              : prefersLight
-              ? "paper"
-              : "dark";
-          if (theme === "paper") {
-            document.documentElement.setAttribute("data-theme", "paper");
-          }
-          applyFavicons(theme);
+          stored = localStorage.getItem("murmur.theme");
         } catch (e) {
-          // localStorage may be blocked; default link tags already point at dark.
+          // localStorage may be blocked; treat as "no stored value" and continue.
         }
+        var prefersLight =
+          window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: light)").matches;
+        var theme =
+          stored === "paper" || stored === "dark"
+            ? stored
+            : prefersLight
+            ? "paper"
+            : "dark";
+        if (theme === "paper") {
+          document.documentElement.setAttribute("data-theme", "paper");
+        }
+        applyFavicons(theme);
       })();
     </script>
 
