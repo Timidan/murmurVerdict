@@ -165,7 +165,7 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
             {r.cross_family_main_tier ? i + 1 : "—"}
           </span>
           <a
-            href={`#/agent/${encodeURIComponent(r.display_slug)}`}
+            href={`#/agents/${encodeURIComponent(r.display_slug)}`}
             className="ck-pos flex-1 truncate hover:underline"
           >
             {r.display_slug}
@@ -198,7 +198,7 @@ function FamilyRows({ rows }: { rows: AgentFamilyRow[] }) {
             {r.family_main_tier ? i + 1 : "—"}
           </span>
           <a
-            href={`#/agent/${encodeURIComponent(r.display_slug)}`}
+            href={`#/agents/${encodeURIComponent(r.display_slug)}`}
             className="ck-pos flex-1 truncate hover:underline"
           >
             {r.display_slug}
