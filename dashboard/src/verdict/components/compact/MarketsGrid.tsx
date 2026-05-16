@@ -69,7 +69,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     return <div className="px-2 py-2 ck-mono ck-neg">[err] {error}</div>;
   }
   if (!markets) {
-    return <div className="px-2 py-2 ck-mono ck-dim">[loading markets…]</div>;
+    return <MarketsSkeleton />;
   }
   if (markets.length === 0) {
     return <div className="px-2 py-2 ck-mono ck-dim">[no markets listed]</div>;
@@ -129,6 +129,35 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
           </li>
         );
       })}
+    </ul>
+  );
+}
+
+function MarketsSkeleton() {
+  // Hairline skeleton matching the row grid. No spinner per DESIGN.md §10.
+  return (
+    <ul className="m-0 p-0 list-none">
+      <li className="grid grid-cols-[110px_88px_56px_46px_1fr_60px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+        <span>market</span>
+        <span>class</span>
+        <span>hzn</span>
+        <span className="text-right">n</span>
+        <span>top-3</span>
+        <span className="text-right">lead</span>
+      </li>
+      {[0, 1, 2, 3, 4, 5].map((i) => (
+        <li
+          key={i}
+          className="grid grid-cols-[110px_88px_56px_46px_1fr_60px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)]"
+        >
+          <div className="h-[10px] bg-[var(--color-border)] w-[80%]" />
+          <div className="h-[10px] bg-[var(--color-border)] w-[60%]" />
+          <div className="h-[8px] bg-[var(--color-border)] w-[28px]" />
+          <div className="h-[8px] bg-[var(--color-border)] w-[18px] justify-self-end" />
+          <div className="h-[10px] bg-[var(--color-border)] w-[70%]" />
+          <div className="h-[8px] bg-[var(--color-border)] w-[40px] justify-self-end" />
+        </li>
+      ))}
     </ul>
   );
 }

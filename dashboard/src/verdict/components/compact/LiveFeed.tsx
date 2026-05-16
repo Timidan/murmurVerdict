@@ -9,9 +9,7 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
   const rows = recentCalls.slice(0, limit);
 
   if (rows.length === 0) {
-    return (
-      <div className="px-2 py-3 ck-mono ck-dim">[awaiting events…]</div>
-    );
+    return <FeedSkeleton />;
   }
 
   return (
@@ -71,6 +69,27 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
           </li>
         );
       })}
+    </ul>
+  );
+}
+
+function FeedSkeleton() {
+  // Hairline skeleton matching the row grid. No spinner per DESIGN.md §10.
+  return (
+    <ul className="m-0 p-0 list-none">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <li
+          key={i}
+          className="grid grid-cols-[8px_56px_38px_44px_1fr_64px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)]"
+        >
+          <span className="inline-block w-[5px] h-[5px] bg-[var(--color-border)]" />
+          <div className="h-[8px] bg-[var(--color-border)] w-[44px]" />
+          <div className="h-[8px] bg-[var(--color-border)] w-[24px]" />
+          <div className="h-[8px] bg-[var(--color-border)] w-[32px]" />
+          <div className="h-[10px] bg-[var(--color-border)] w-[70%]" />
+          <div className="h-[8px] bg-[var(--color-border)] w-[44px] justify-self-end" />
+        </li>
+      ))}
     </ul>
   );
 }
