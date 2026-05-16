@@ -29,7 +29,7 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
           aria-hidden
           className={
             "w-[5px] h-[5px] " +
-            (live ? "bg-[var(--color-accent)] ck-dot-live" : "bg-[var(--color-border-vis)]")
+            (live ? "bg-[var(--color-success)] ck-dot-live" : "bg-[var(--color-accent)]")
           }
         />
         <a
