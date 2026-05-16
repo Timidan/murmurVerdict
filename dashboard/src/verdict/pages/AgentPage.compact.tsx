@@ -120,15 +120,10 @@ export function AgentPageCompact({ slug }: { slug: string }) {
                 target="_blank"
                 rel="noreferrer"
                 className="ck-mono ck-pos no-underline"
-                title={`${agent.wallet_address} on ${agent.chain_id ?? "eip155:8453"}`}
+                title={`${agent.wallet_address} on ${humanChain(agent.chain_id)}`}
               >
                 {agent.wallet_address.slice(0, 8)}…{agent.wallet_address.slice(-6)}
               </a>
-            )}
-            {agent.verified_identities && agent.verified_identities.length > 0 && (
-              <span className="ck-label ck-dim">
-                ID: {agent.verified_identities.map((v) => v.kind.toUpperCase()).join(" · ")}
-              </span>
             )}
             <span className="ck-label ck-dim">
               SINCE {agent.created_at.slice(0, 10)}
@@ -199,30 +194,27 @@ export function AgentPageCompact({ slug }: { slug: string }) {
 function CallTable({ calls }: { calls: AgentCallRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[64px_36px_36px_44px_1fr_50px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[64px_14px_1fr_50px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
         <span>TIME</span>
-        <span>SIDE</span>
-        <span>AST</span>
-        <span>HZN</span>
+        <span aria-hidden="true"></span>
         <span>NOTE</span>
         <span className="text-right">OUT</span>
       </li>
       {calls.map((c) => {
         const ts = formatTs(c.submitted_at ?? c.accepted_at);
-        // Wave 2b — FHE-mandatory. Every call is operator-blind; side,
-        // asset, and horizon are encrypted under the threshold keyset.
+        // Pending Fhenix-sealed verdicts are not public; the compact row
+        // stays blind until the post-horizon reveal. A single seal glyph
+        // signals "sealed/private" without the three-token placeholder noise.
         const note = formatNote(c);
         const outLabel = formatOutcome(c);
         return (
           <li
             key={c.call_id}
-            className="grid grid-cols-[64px_36px_36px_44px_1fr_50px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
+            className="grid grid-cols-[64px_14px_1fr_50px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
           >
             <a href={`#/calls/${c.call_id}`} className="contents no-underline">
               <span className="ck-mono ck-dim">{ts}</span>
-              <span className="ck-mono ck-dim">HASH</span>
-              <span className="ck-mono ck-pos truncate">BLIND</span>
-              <span className="ck-mono ck-dim">SEAL</span>
+              <span aria-label="sealed" className="ck-dim">▪</span>
               <span className="ck-mono ck-dim truncate">{note}</span>
               <span
                 className={
@@ -315,10 +307,9 @@ function SidebarStats({
       <FactRow label="STREAK" value={stats ? `${stats.streak}W` : "—"} />
       <FactRow label="TOTAL" value={stats ? String(stats.total) : "—"} tone="dim" />
       <FactRow label="KIND" value={agent.kind.toUpperCase()} tone="dim" />
-      <FactRow label="WALLET" value={agent.wallet_address ? "BOUND" : "NONE"} tone="dim" />
       <FactRow
         label="CHAIN"
-        value={agent.chain_id ?? "eip155:8453"}
+        value={humanChain(agent.chain_id)}
         tone="dim"
       />
       <div className="px-2 py-2 ck-mono ck-dim leading-tight border-t border-[var(--color-border)]">
@@ -400,6 +391,13 @@ function kindTone(kind: AgentProfile["kind"]): "pos" | "neg" | "dim" | "default"
   return "dim";
 }
 
+function humanChain(chainId: string | null | undefined): string {
+  // CAIP-2 → human label. Base is the canonical deploy target.
+  const id = chainId ?? "eip155:8453";
+  if (id === "eip155:8453") return "BASE";
+  return id.toUpperCase();
+}
+
 function formatScore(s: number | null): string {
   if (s === null || s === undefined) return "—";
   const sign = s >= 0 ? "+" : "−";
@@ -420,8 +418,8 @@ function formatTs(iso: string): string {
 }
 
 function formatNote(c: AgentCallRow): string {
-  // Wave 2b — FHE-mandatory. Every call is operator-blind; the only
-  // legible note is the commit hash that anchors the encrypted body.
+  // Pending calls expose only the commit anchor; resolved calls may expose
+  // the public outcome label.
   if (c.commit_hash) return `commit ${c.commit_hash.slice(0, 8)}`;
   if (!c.outcome) return "encrypted";
   if (c.outcome === "void") return "void";
