@@ -66,6 +66,7 @@ export function MarketDetailPageCompact({ marketId }: { marketId: string }) {
 
   const horizon = market ? formatHorizon(market.horizon_seconds) : "—";
   const assetSlug = market ? shortAssetSlug(market.asset_id) : "—";
+  const taxonomy = market?.market_taxonomy ?? null;
   const mainCount = agents ? agents.filter((a) => a.market_main_tier).length : 0;
   const totalCalls = agents
     ? agents.reduce((acc, a) => acc + a.resolved_calls + a.pending_calls, 0)
@@ -107,16 +108,39 @@ export function MarketDetailPageCompact({ marketId }: { marketId: string }) {
           </section>
 
           {/* META FACTS ─────────────────────────────────── */}
-          <section className="grid grid-cols-2 md:grid-cols-4 border-b border-[var(--color-border)]">
-            <RCell label="ORACLE" value={market?.primary_oracle_id ?? "—"} tone="dim" />
-            <RCell label="FALLBACK" value={market?.fallback_oracle_id ?? "—"} tone="dim" />
-            <RCell label="VOID·BAND" value={market?.void_band ?? "—"} tone="dim" />
-            <RCell
-              label="CFG·VER"
-              value={market ? `v${market.market_config_version}` : "—"}
-              tone="dim"
-            />
-          </section>
+          <details className="border-b border-[var(--color-border)]">
+            <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
+              MARKET CONFIG
+            </summary>
+            <div className="grid grid-cols-2 md:grid-cols-6 border-t border-[var(--color-border)]">
+              <RCell
+                label="CLASS"
+                value={taxonomy?.label?.toUpperCase() ?? market?.market_kind?.toUpperCase() ?? "—"}
+                tone={taxonomy?.support_status === "reserved" ? "dim" : "pos"}
+              />
+              <RCell
+                label="SUPPORT"
+                value={taxonomy?.support_status?.toUpperCase() ?? "—"}
+                tone={taxonomy?.support_status === "reserved" ? "dim" : "pos"}
+              />
+              <RCell
+                label="PAYOFF"
+                value={taxonomy?.payoff_model?.toUpperCase() ?? "—"}
+                tone="dim"
+              />
+              <RCell
+                label="SETTLE"
+                value={taxonomy?.settlement_model?.replace(/_/g, " ").toUpperCase() ?? "—"}
+                tone="dim"
+              />
+              <RCell
+                label="FEEDS"
+                value={`${market?.primary_oracle_id ?? "—"} / ${market?.fallback_oracle_id ?? "—"}`}
+                tone="dim"
+              />
+              <RCell label="VOID·BAND" value={market?.void_band ?? "—"} tone="dim" />
+            </div>
+          </details>
 
           {/* MAIN ────────────────────────────────────────── */}
           <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)] min-h-0">
@@ -124,7 +148,7 @@ export function MarketDetailPageCompact({ marketId }: { marketId: string }) {
               title="AGENT LADDER"
               meta={agents ? `${agents.length}` : ""}
               actions={
-                <a href="#/launch" className="ck-btn">
+                <a href="#/" className="ck-btn">
                   ALL MARKETS
                 </a>
               }
