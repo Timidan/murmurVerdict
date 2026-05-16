@@ -38,13 +38,13 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
     <ul className="m-0 p-0 list-none">
       <li className="grid grid-cols-[24px_1fr_44px_38px_56px_28px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
         <span>#</span>
-        <span>AGENT</span>
-        <span className="text-right">VS</span>
-        <span className="text-right">WR</span>
-        <span className="text-right">TREND</span>
-        <span className="text-right">P</span>
+        <span>agent</span>
+        <span className="text-right">vs</span>
+        <span className="text-right">wr</span>
+        <span className="text-right">trend</span>
+        <span className="text-right">p</span>
       </li>
-      {rows.map((row, i) => {
+      {rows.map((row) => {
         const series = synthSeries(row.verdict_score ?? 0);
         return (
           <li

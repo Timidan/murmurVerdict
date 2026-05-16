@@ -46,16 +46,16 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
         </div>
       )}
       <nav className="flex-1 flex items-center justify-end gap-0">
-        <CompactNavLink href="#/leaderboard">LB</CompactNavLink>
-        <CompactNavLink href="#/today">FEED</CompactNavLink>
-        <CompactNavLink href="#/launch">INSTL</CompactNavLink>
-        <CompactNavLink href="#/recruiters">RECR</CompactNavLink>
+        <CompactNavLink href="#/leaderboard">leaderboard</CompactNavLink>
+        <CompactNavLink href="#/today">feed</CompactNavLink>
+        <CompactNavLink href="#/launch">install</CompactNavLink>
+        <CompactNavLink href="#/recruiters">recruiters</CompactNavLink>
         <span className="px-2 ck-mono ck-dim border-l border-[var(--color-border)] tabular-nums">
           {now.toISOString().slice(11, 19)}Z
         </span>
         <ThemeToggle />
         <span className={"px-2 ck-label border-l border-[var(--color-border)] " + (live ? "ck-pos" : "ck-neg")}>
-          {live ? "LIVE" : "OFFLINE"}
+          {live ? "live" : "offline"}
         </span>
       </nav>
     </header>

@@ -23,15 +23,14 @@ export function CallPage({ callId }: { callId: string }) {
     };
   }, [callId]);
 
-  // Wave 2b — FHE-mandatory. Every call is operator-blind; subject and
-  // signed_return rendering collapse to the FHE-direct branch. The
-  // PrivacyTierBadge still surfaces the literal privacy_mode label.
-  const subjectLabel = !data ? "" : "OPERATOR-BLIND";
+  // Pending calls are sealed; the page shows only the privacy-mode label
+  // and public resolution data after scoring.
+  const subjectLabel = !data ? "" : "operator-blind";
   const outcomeText = !data
     ? ""
     : data.resolution
-      ? data.resolution.outcome.toUpperCase()
-      : "PEND";
+      ? data.resolution.outcome
+      : "pend";
   const outcomeTone = !data
     ? "ck-dim"
     : !data.resolution
@@ -47,7 +46,7 @@ export function CallPage({ callId }: { callId: string }) {
       <CompactTopbar
         crumb={
           <span>
-            CALLS <span className="ck-dim mx-1">/</span>
+            calls <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{callId.slice(0, 8)}</span>
           </span>
         }
@@ -56,23 +55,23 @@ export function CallPage({ callId }: { callId: string }) {
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] min-h-0">
         {error && (
           <div className="lg:col-span-2 px-2 py-2 ck-mono ck-neg border-b border-[var(--color-border)]">
-            [ERROR] {error}
+            [error] {error}
           </div>
         )}
 
         {!error && !data && (
-          <div className="lg:col-span-2 px-2 py-4 ck-label ck-dim">[LOADING…]</div>
+          <div className="lg:col-span-2 px-2 py-4 ck-label ck-dim">[loading…]</div>
         )}
 
         {data && (
           <>
             <div className="lg:col-span-2 grid grid-cols-3 border-b border-[var(--color-border)]">
-              <Stat label="SUBJECT" value={subjectLabel} mono />
-              <Stat label="OUTCOME" value={outcomeText} tone={outcomeTone} />
-              <Stat label="SCORE" value={data.resolution?.call_score?.toFixed(4) ?? "—"} mono />
+              <Stat label="subject" value={subjectLabel} mono />
+              <Stat label="outcome" value={outcomeText} tone={outcomeTone} />
+              <Stat label="score" value={data.resolution?.call_score?.toFixed(4) ?? "—"} mono />
             </div>
 
-            <Panel title="SUBMISSION" className="lg:border-r-0">
+            <Panel title="submission" className="lg:border-r-0">
               <Kv k="call_id" v={data.submission.call_id} mono />
               <Kv k="agent_id" v={data.submission.agent_id} mono />
               {data.submission.privacy_mode && (
@@ -96,7 +95,7 @@ export function CallPage({ callId }: { callId: string }) {
               )}
             </Panel>
 
-            <Panel title="ANCHOR · RESOLUTION">
+            <Panel title="anchor · resolution">
               {data.t0 ? (
                 <>
                   <Kv k="t0" v={data.t0.t0} />
@@ -112,10 +111,8 @@ export function CallPage({ callId }: { callId: string }) {
                   <Kv k="t1" v={data.resolution.t1} />
                   <Kv k="p1" v={data.resolution.p1} />
                   <Kv k="t1_feed" v={data.resolution.t1_feed} />
-                  {/* Wave 2b — FHE-mandatory. signed_return is a
-                      native-price post-resolution stat; FHE-direct
-                      calls release a bounded score, no return concept.
-                      Hidden from the active call display. */}
+                  {/* signed_return is native-price evidence; the active
+                      call display only needs the public score. */}
                   {data.resolution.call_score !== null && (
                     <Kv k="call_score" v={data.resolution.call_score.toFixed(4)} />
                   )}
@@ -131,13 +128,13 @@ export function CallPage({ callId }: { callId: string }) {
 
       <footer className="flex items-center gap-3 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">
         <a href="#/" className="ck-mono ck-dim hover:ck-pos no-underline">
-          ← HOME
+          ← home
         </a>
         <span>·</span>
         <a href="#/leaderboard" className="ck-mono ck-dim hover:ck-pos no-underline">
-          LEADERBOARD
+          leaderboard
         </a>
-        <span className="ml-auto ck-mono ck-dim">CALL · {callId.slice(0, 8)}</span>
+        <span className="ml-auto ck-mono ck-dim">call · {callId.slice(0, 8)}</span>
       </footer>
     </div>
   );

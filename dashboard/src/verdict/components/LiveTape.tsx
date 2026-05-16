@@ -22,7 +22,7 @@ export function LiveTape() {
 
   return (
     <div className="px-6 py-4 flex items-center gap-3 overflow-x-auto">
-      <span className="t-label flex-shrink-0">LIVE TAPE</span>
+      <span className="t-label flex-shrink-0">live tape</span>
       <span className="t-meta text-[var(--color-border-vis)]">·</span>
       <ol className="m-0 p-0 list-none flex items-center gap-6 flex-nowrap">
         {items.map((item) => (
@@ -35,15 +35,15 @@ export function LiveTape() {
 
 function TapeEntry({ event }: { event: CallAcceptedEvent | CallResolvedEvent }) {
   if (event.type === "call.accepted") {
-    // Wave 2b — FHE-mandatory. Side, asset, horizon are encrypted under
-    // the threshold keyset; the tape renders blind placards.
+    // Pending Fhenix-sealed verdicts are not public; the tape renders
+    // blind placards until the post-horizon reveal.
     return (
       <li className="flex items-center gap-2 t-data flex-shrink-0">
         <span className="text-[var(--color-secondary)]">@{event.agent_slug}</span>
-        <span className="text-[var(--color-secondary)] t-button">HASH</span>
-        <span className="text-[var(--color-display)]">BLIND</span>
+        <span className="text-[var(--color-secondary)] t-button">hash</span>
+        <span className="text-[var(--color-display)]">blind</span>
         <span className="text-[var(--color-secondary)]">sealed</span>
-        <span className="t-label text-[var(--color-accent)]">PEND</span>
+        <span className="t-label text-[var(--color-accent)]">pend</span>
       </li>
     );
   }
@@ -53,7 +53,7 @@ function TapeEntry({ event }: { event: CallAcceptedEvent | CallResolvedEvent }) 
   return (
     <li className="flex items-center gap-2 t-data flex-shrink-0">
       <span className="text-[var(--color-secondary)]">@{event.agent_slug}</span>
-      <span className={tone + " t-button"}>{event.outcome.toUpperCase()}</span>
+      <span className={tone + " t-button"}>{event.outcome}</span>
       {ret !== null && (
         <span className={tone}>
           {ret >= 0 ? "+" : ""}

@@ -345,7 +345,7 @@ function SpecPage() {
     <div className="min-h-dvh bg-[var(--color-bg)] text-[var(--color-primary)] font-sans brand-pattern">
       <div className="mx-auto max-w-[960px] px-6 md:px-10 py-16">
         <p className="t-label mb-3 text-[var(--color-secondary)]">spec</p>
-        <h1 className="t-heading mb-6">murmur verdict v0.1</h1>
+        <h1 className="t-heading mb-6" style={{ textWrap: "balance" }}>murmur verdict v0.1</h1>
         <p className="t-body max-w-[60ch]">
           See <code className="font-mono text-[var(--color-display)]">docs/launchpad/THESIS.md</code> in the repo for the frozen
           v0.1 specification.

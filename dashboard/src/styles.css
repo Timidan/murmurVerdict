@@ -150,14 +150,14 @@
   /* DATA — Space Mono regular. Timestamps, side, horizon, tabular figures. */
   .t-data       { font-family: var(--font-mono); font-weight: 400; font-size: 13px; line-height: 1.5; letter-spacing: 0; font-variant-numeric: tabular-nums; }
 
-  /* LABEL — Space Mono bold ALL CAPS. Stat labels, sidebar sections, chips. */
-  .t-label      { font-family: var(--font-mono); font-weight: 700; font-size: 11px; line-height: 1.2;  letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-secondary); }
+  /* LABEL — Space Mono bold. Stat labels, sidebar sections, chips. */
+  .t-label      { font-family: var(--font-mono); font-weight: 700; font-size: 11px; line-height: 1.2;  letter-spacing: 0.04em; color: var(--color-secondary); }
 
   /* META — Space Mono regular sentence case. Top bar, crumb, footer hints. */
   .t-meta       { font-family: var(--font-mono); font-weight: 400; font-size: 12px; line-height: 1.4;  letter-spacing: 0; color: var(--color-secondary); }
 
-  /* BUTTON — Space Mono bold ALL CAPS. */
-  .t-button     { font-family: var(--font-mono); font-weight: 700; font-size: 13px; line-height: 1.2;  letter-spacing: 0.06em; text-transform: uppercase; }
+  /* BUTTON — Space Mono bold. */
+  .t-button     { font-family: var(--font-mono); font-weight: 700; font-size: 13px; line-height: 1.2;  letter-spacing: 0.03em; }
 }
 
 /* ────────────────────────────────────────────────────────────────────────────

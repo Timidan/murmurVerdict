@@ -24,35 +24,35 @@ export function TodayPage() {
 
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb="FEED · LAST 24H" />
+      <CompactTopbar crumb="feed · last 24h" />
 
       {error && (
         <div className="px-2 py-2 ck-mono ck-neg border-b border-[var(--color-border)]">
-          [ERROR] {error}
+          [error] {error}
         </div>
       )}
 
       {!error && !feed && (
-        <div className="px-2 py-4 ck-label ck-dim">[LOADING…]</div>
+        <div className="px-2 py-4 ck-label ck-dim">[loading…]</div>
       )}
 
       {feed && (
         <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 min-h-0">
           <Panel
-            title="LIVE · PENDING"
+            title="live · pending"
             meta={feed.pending_resolution.length.toString()}
             className="lg:border-r-0"
           >
             <FeedRows rows={feed.pending_resolution} pending />
           </Panel>
           <Panel
-            title="RESOLVED · 24H"
+            title="resolved · 24h"
             meta={feed.resolved_recent.length.toString()}
             className="lg:border-r-0"
           >
             <FeedRows rows={feed.resolved_recent} />
           </Panel>
-          <Panel title="ACCEPTED · 24H" meta={feed.accepted_recent.length.toString()}>
+          <Panel title="accepted · 24h" meta={feed.accepted_recent.length.toString()}>
             <FeedRows rows={feed.accepted_recent} />
           </Panel>
         </main>
@@ -72,10 +72,10 @@ function FeedRows({ rows, pending }: { rows: TodayFeedRow[]; pending?: boolean }
         // Pending calls render sealed placards rather than verdict fields.
         const ts = (row.submitted_at ?? row.accepted_at).slice(11, 19);
         const outcomeText = pending
-          ? "PEND"
+          ? "pend"
           : row.call_score !== null && row.call_score !== undefined
             ? `${row.call_score >= 0 ? "+" : ""}${row.call_score.toFixed(3)}`
-            : (row.outcome ?? "live").toUpperCase();
+            : (row.outcome ?? "live");
         const outcomeTone = pending
           ? "ck-dim"
           : row.outcome === "win"

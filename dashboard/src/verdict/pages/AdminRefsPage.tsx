@@ -90,9 +90,9 @@ export function AdminRefsPage() {
         <header className="mb-10 flex items-baseline justify-between flex-wrap gap-4">
           <div>
             <p className="t-label text-[var(--color-secondary)] mb-3">admin · sender board</p>
-            <h1 className="t-heading">full attribution data.</h1>
+            <h1 className="t-heading" style={{ textWrap: "balance" }}>full attribution data.</h1>
           </div>
-          <PillButton variant="secondary" onClick={signOut}>SIGN OUT</PillButton>
+          <PillButton variant="secondary" onClick={signOut}>sign out</PillButton>
         </header>
 
         {error && (
@@ -163,7 +163,7 @@ export function AdminRefsPage() {
                       disabled={busy === r.ref}
                       className="t-button text-[var(--color-accent)] hover:underline press-feedback"
                     >
-                      {busy === r.ref ? "…" : "DELETE"}
+                      {busy === r.ref ? "…" : "delete"}
                     </button>
                   </span>
                 </li>
@@ -229,7 +229,7 @@ function TokenPrompt({
             placeholder="VERDICT_ADMIN_TOKEN"
             autoFocus
           />
-          <PillButton variant="primary" type="submit">UNLOCK</PillButton>
+          <PillButton variant="primary" type="submit">unlock</PillButton>
         </form>
       </main>
     </div>

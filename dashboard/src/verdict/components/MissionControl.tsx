@@ -19,13 +19,13 @@ export function MissionControl() {
 
   return (
     <section className="grid grid-cols-1 md:grid-cols-2 gap-px bg-[var(--color-border)] border-y border-[var(--color-border)]">
-      <Column title="PENDING" subtitle="in flight">
+      <Column title="pending" subtitle="in flight">
         {pending.length === 0 && <Empty label="awaiting next call" />}
         {pending.slice(0, 5).map((event) => (
           <PendingCard key={event.call_id} event={event} />
         ))}
       </Column>
-      <Column title="RESOLVED" subtitle="last 5">
+      <Column title="resolved" subtitle="last 5">
         {resolved.length === 0 && <Empty label="nothing settled yet" />}
         {resolved.slice(0, 5).map((event) => (
           <ResolvedCard key={event.call_id} event={event} />
@@ -62,9 +62,8 @@ function Empty({ label }: { label: string }) {
 }
 
 function PendingCard({ event }: { event: CallAcceptedEvent }) {
-  // Wave 2b — FHE-mandatory. Side, asset, horizon, confidence are
-  // encrypted under the threshold keyset; the card renders the
-  // operator-blind placard rather than plaintext fields.
+  // Pending Fhenix-sealed verdicts are not public; the card renders the
+  // blind placard rather than plaintext fields.
   return (
     <li className="border-b border-[var(--color-border)]">
       <a
@@ -78,8 +77,8 @@ function PendingCard({ event }: { event: CallAcceptedEvent }) {
           <span className="inline-block w-[5px] h-[5px] bg-[var(--color-accent)] nothing-live" />
         </div>
         <div className="flex items-center gap-3 t-data text-[var(--color-secondary)]">
-          <span className={sideTokens.buy}>HASH</span>
-          <span className="text-[var(--color-display)]">BLIND</span>
+          <span className={sideTokens.buy}>hash</span>
+          <span className="text-[var(--color-display)]">blind</span>
           <span>sealed</span>
         </div>
       </a>
@@ -102,7 +101,7 @@ function ResolvedCard({ event }: { event: CallResolvedEvent }) {
           <OutcomeChip outcome={event.outcome}>
             {event.call_score !== null
               ? `${event.call_score >= 0 ? "+" : ""}${event.call_score.toFixed(3)}`
-              : event.outcome.toUpperCase()}
+              : event.outcome}
           </OutcomeChip>
         </div>
         <div className="flex items-center gap-3 t-data text-[var(--color-secondary)]">

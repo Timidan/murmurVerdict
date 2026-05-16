@@ -78,14 +78,14 @@ export function MarketDetailPageCompact({ marketId }: { marketId: string }) {
       <CompactTopbar
         crumb={
           <span>
-            MARKETS <span className="ck-dim mx-1">/</span>
+            markets <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{marketId}</span>
           </span>
         }
       />
 
       {error && (
-        <div className="px-2 py-2 ck-mono ck-neg">[ERR] {error}</div>
+        <div className="px-2 py-2 ck-mono ck-neg">[err] {error}</div>
       )}
       {notFound && <NotFound marketId={marketId} />}
 
@@ -93,15 +93,15 @@ export function MarketDetailPageCompact({ marketId }: { marketId: string }) {
         <>
           {/* RIBBON ──────────────────────────────────────── */}
           <section className="grid grid-cols-2 md:grid-cols-8 border-b border-[var(--color-border)]">
-            <RCell label="MARKET" value={marketId} />
-            <RCell label="ASSET" value={assetSlug.toUpperCase()} />
-            <RCell label="HZN" value={horizon} />
-            <RCell label="STATUS" value={market?.status?.toUpperCase() ?? "—"} tone="dim" />
-            <RCell label="AGENTS" value={agents?.length ?? "—"} />
-            <RCell label="MAIN" value={mainCount} />
-            <RCell label="VOL·OPEN" value={totalCalls} tone="dim" />
+            <RCell label="market" value={marketId} />
+            <RCell label="asset" value={assetSlug.toUpperCase()} />
+            <RCell label="hzn" value={horizon} />
+            <RCell label="status" value={market?.status ?? "—"} tone="dim" />
+            <RCell label="agents" value={agents?.length ?? "—"} />
+            <RCell label="main" value={mainCount} />
+            <RCell label="vol·open" value={totalCalls} tone="dim" />
             <RCell
-              label="LEAD·VS"
+              label="lead·vs"
               value={leader ? formatScore(leader.verdict_score) : "—"}
               tone={leader && (leader.verdict_score ?? 0) >= 0 ? "pos" : "neg"}
             />
@@ -110,59 +110,59 @@ export function MarketDetailPageCompact({ marketId }: { marketId: string }) {
           {/* META FACTS ─────────────────────────────────── */}
           <details className="border-b border-[var(--color-border)]">
             <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
-              MARKET CONFIG
+              market config
             </summary>
             <div className="grid grid-cols-2 md:grid-cols-6 border-t border-[var(--color-border)]">
               <RCell
-                label="CLASS"
-                value={taxonomy?.label?.toUpperCase() ?? market?.market_kind?.toUpperCase() ?? "—"}
+                label="class"
+                value={taxonomy?.label ?? market?.market_kind ?? "—"}
                 tone={taxonomy?.support_status === "reserved" ? "dim" : "pos"}
               />
               <RCell
-                label="SUPPORT"
-                value={taxonomy?.support_status?.toUpperCase() ?? "—"}
+                label="support"
+                value={taxonomy?.support_status ?? "—"}
                 tone={taxonomy?.support_status === "reserved" ? "dim" : "pos"}
               />
               <RCell
-                label="PAYOFF"
-                value={taxonomy?.payoff_model?.toUpperCase() ?? "—"}
+                label="payoff"
+                value={taxonomy?.payoff_model ?? "—"}
                 tone="dim"
               />
               <RCell
-                label="SETTLE"
-                value={taxonomy?.settlement_model?.replace(/_/g, " ").toUpperCase() ?? "—"}
+                label="settle"
+                value={taxonomy?.settlement_model?.replace(/_/g, " ") ?? "—"}
                 tone="dim"
               />
               <RCell
-                label="FEEDS"
+                label="feeds"
                 value={`${market?.primary_oracle_id ?? "—"} / ${market?.fallback_oracle_id ?? "—"}`}
                 tone="dim"
               />
-              <RCell label="VOID·BAND" value={market?.void_band ?? "—"} tone="dim" />
+              <RCell label="void·band" value={market?.void_band ?? "—"} tone="dim" />
             </div>
           </details>
 
           {/* MAIN ────────────────────────────────────────── */}
           <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)] min-h-0">
             <Panel
-              title="AGENT LADDER"
+              title="agent ladder"
               meta={agents ? `${agents.length}` : ""}
               actions={
                 <a href="#/" className="ck-btn">
-                  ALL MARKETS
+                  all markets
                 </a>
               }
               className="lg:border-r-0"
             >
               {agents === null && (
-                <div className="px-2 py-2 ck-mono ck-dim">[loading...]</div>
+                <div className="px-2 py-2 ck-mono ck-dim">[loading…]</div>
               )}
               {agents !== null && agents.length === 0 && (
                 <div className="px-2 py-2 ck-mono ck-dim">[no agents have resolved a call here yet]</div>
               )}
               {agents !== null && agents.length > 0 && <Ladder rows={agents} />}
             </Panel>
-            <Panel title="LIVE TAPE">
+            <Panel title="live tape">
               <CompactLiveFeed limit={60} />
             </Panel>
           </main>
@@ -177,13 +177,13 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
     <ul className="m-0 p-0 list-none">
       <li className="grid grid-cols-[28px_1fr_56px_44px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
         <span>#</span>
-        <span>AGENT</span>
-        <span className="text-right">VS</span>
-        <span className="text-right">VS·LB</span>
-        <span className="text-right">RES</span>
-        <span className="text-right">WR</span>
-        <span className="text-right">TREND</span>
-        <span className="text-right">P</span>
+        <span>agent</span>
+        <span className="text-right">vs</span>
+        <span className="text-right">vs·lb</span>
+        <span className="text-right">res</span>
+        <span className="text-right">wr</span>
+        <span className="text-right">trend</span>
+        <span className="text-right">p</span>
       </li>
       {rows.map((r, i) => (
         <li
@@ -197,7 +197,7 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
                 {r.display_slug}
               </span>
               <span className={"ck-label " + (r.market_main_tier ? "ck-pos" : "ck-dim")}>
-                {r.market_main_tier ? "·MAIN" : "·PROV"}
+                {r.market_main_tier ? "·main" : "·prov"}
               </span>
             </span>
             <span
@@ -260,13 +260,13 @@ function NotFound({ marketId }: { marketId: string }) {
     <div className="px-2 py-3 ck-mono">
       <div className="ck-label ck-dim mb-1">404</div>
       <div className="ck-pos" style={{ fontSize: 14, fontWeight: 700 }}>
-        MARKET NOT FOUND
+        market not found
       </div>
       <p className="ck-mono ck-dim mt-1 leading-tight">
         No market is registered under <span className="ck-pos">{marketId}</span>. It may be retired or stale.
       </p>
       <a href="#/launch" className="ck-btn mt-2 inline-flex">
-        ← BACK TO INSTALL
+        ← back to install
       </a>
     </div>
   );

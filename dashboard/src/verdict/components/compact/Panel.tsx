@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 interface PanelProps {
-  /** Panel name in ALL CAPS. */
+  /** Panel name (lowercase chrome label). */
   title: string;
   /** Right-aligned annotation (count, status, timestamp). */
   meta?: ReactNode;

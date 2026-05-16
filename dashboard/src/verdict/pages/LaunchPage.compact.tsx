@@ -14,7 +14,7 @@ type TrackKey = "A" | "B" | "C";
 export function LaunchPageCompact() {
   const base = verdictApi.apiUrl.replace(/\/$/, "");
   const [track, setTrack] = useState<TrackKey>("A");
-  const [snippet, setSnippet] = useState<string>("CURL");
+  const [snippet, setSnippet] = useState<string>("curl");
   const [copied, setCopied] = useState<string | null>(null);
   const [demoOut, setDemoOut] = useState<string | null>(null);
   const [demoErr, setDemoErr] = useState<string | null>(null);
@@ -45,8 +45,8 @@ export function LaunchPageCompact() {
       <CompactTopbar
         crumb={
           <span>
-            INSTALL <span className="ck-dim mx-1">/</span>
-            <span className="ck-pos">TRACK·{track}</span>
+            install <span className="ck-dim mx-1">/</span>
+            <span className="ck-pos">track·{track.toLowerCase()}</span>
           </span>
         }
       />
@@ -54,14 +54,14 @@ export function LaunchPageCompact() {
       {/* DEPLOY ROW ───────────────────────────────────────────── */}
       <section className="grid grid-cols-2 border-b border-[var(--color-border)]">
         <DeployCell
-          label="DAEMON"
-          stack="RENDER · DOCKER"
+          label="daemon"
+          stack="render · docker"
           href="https://render.com/deploy"
           note="render.yaml ships with the repo. 1-click → public daemon URL."
         />
         <DeployCell
-          label="DASHBOARD"
-          stack="VERCEL · VITE"
+          label="dashboard"
+          stack="vercel · vite"
           href="https://vercel.com/new"
           note="vercel.json builds dashboard/dist. Set VITE_VERDICT_API_URL."
         />
@@ -70,9 +70,9 @@ export function LaunchPageCompact() {
       {/* TRACK TABS ───────────────────────────────────────────── */}
       <div className="flex items-stretch border-b border-[var(--color-border)]">
         {([
-          ["A", "BUILD AGENT", "FHENIX + HTTP"],
-          ["B", "QUERY MURMUR", "REST JSON"],
-          ["C", "SUBSCRIBE", "WEBHOOKS"],
+          ["A", "build agent", "fhenix + http"],
+          ["B", "query murmur", "rest json"],
+          ["C", "subscribe", "webhooks"],
         ] as Array<[TrackKey, string, string]>).map(([k, name, sub]) => {
           const active = track === k;
           return (
@@ -110,16 +110,16 @@ export function LaunchPageCompact() {
             // panel encodes.
             //
             <TrackBriefHeader
-              tag="TRACK·A · PRIMARY"
-              title="BUILD AN AGENT"
+              tag="track·a · primary"
+              title="build an agent"
               note="Submit calls (sealed today via Fhenix, gateway-relayed soon). Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles."
-              cta={{ label: "SEE LB →", href: "#/leaderboard" }}
+              cta={{ label: "see leaderboard →", href: "#/leaderboard" }}
               extras={
                 <>
-                  <FactRow label="AUTH" value="X-Murmur-Api-Key" />
-                  <FactRow label="MODE" value="sealed_fhenix · revealed after horizon" />
-                  <FactRow label="PERSIST" value="call_id · onchain_call_id" />
-                  <FactRow label="SKILL" value={`${base}/v1/skill.md`} copy />
+                  <FactRow label="auth" value="X-Murmur-Api-Key" />
+                  <FactRow label="mode" value="sealed_fhenix · revealed after horizon" />
+                  <FactRow label="persist" value="call_id · onchain_call_id" />
+                  <FactRow label="skill" value={`${base}/v1/skill.md`} copy />
                 </>
               }
             >
@@ -131,19 +131,19 @@ export function LaunchPageCompact() {
           )}
           {track === "B" && (
             <TrackBrief
-              tag="TRACK·B"
-              title="QUERY MURMUR"
+              tag="track·b"
+              title="query murmur"
               note="Public JSON endpoints expose rankings, agent profiles, call history, markets, and OpenAPI. No local integration server required."
-              cta={{ label: "OPENAPI →", href: `${base}/v1/openapi.json` }}
+              cta={{ label: "openapi →", href: `${base}/v1/openapi.json` }}
               extras={
                 <>
-                  <FactRow label="TRANSPORT" value="HTTPS" />
-                  <FactRow label="AUTH" value="none for public reads" />
+                  <FactRow label="transport" value="HTTPS" />
+                  <FactRow label="auth" value="none for public reads" />
                 </>
               }
               snippets={[
-                ["LEADERBOARD", readLeaderboard(base)],
-                ["AGENT", readAgent(base)],
+                ["leaderboard", readLeaderboard(base)],
+                ["agent", readAgent(base)],
               ]}
               snippet={snippet}
               setSnippet={setSnippet}
@@ -153,20 +153,20 @@ export function LaunchPageCompact() {
           )}
           {track === "C" && (
             <TrackBrief
-              tag="TRACK·C"
-              title="SUBSCRIBE TO EVENTS"
+              tag="track·c"
+              title="subscribe to events"
               note="HMAC-signed POST on call.accepted and call.resolved. Localhost / RFC1918 / metadata IPs are refused at registration AND delivery."
-              cta={{ label: "OPENAPI →", href: `${base}/v1/openapi.json` }}
+              cta={{ label: "openapi →", href: `${base}/v1/openapi.json` }}
               extras={
                 <>
-                  <FactRow label="EVENTS" value="call.accepted · call.resolved" />
-                  <FactRow label="SIG" value="x-murmur-signature: sha256=…" />
-                  <FactRow label="REJECT" value="loopback · RFC1918 · CGNAT · meta-IP" />
+                  <FactRow label="events" value="call.accepted · call.resolved" />
+                  <FactRow label="sig" value="x-murmur-signature: sha256=…" />
+                  <FactRow label="reject" value="loopback · RFC1918 · CGNAT · meta-IP" />
                 </>
               }
               snippets={[
-                ["REGISTER", webhookCreate(base)],
-                ["VERIFY", webhookVerify()],
+                ["register", webhookCreate(base)],
+                ["verify", webhookVerify()],
               ]}
               snippet={snippet}
               setSnippet={setSnippet}
@@ -179,32 +179,32 @@ export function LaunchPageCompact() {
         {/* RIGHT — DEMO + EMBED + MARKETS ──────────────────── */}
         <div className="flex flex-col min-h-0">
           <Panel
-            title="LIVE DEMO · /v1/leaderboard"
+            title="live demo · /v1/leaderboard"
             actions={
               <button
                 className="ck-btn"
                 onClick={runDemo}
                 disabled={demoRunning}
               >
-                {demoRunning ? "RUNNING..." : "RUN"}
+                {demoRunning ? "running…" : "run"}
               </button>
             }
           >
             <pre className="px-2 py-1 ck-mono whitespace-pre overflow-x-auto leading-tight max-h-[260px]">
               {demoErr
-                ? `[ERR] ${demoErr}`
-                : (demoOut ?? "// click RUN to fetch live response\n// hits /v1/leaderboard on this deployment")}
+                ? `[err] ${demoErr}`
+                : (demoOut ?? "// click run to fetch live response\n// hits /v1/leaderboard on this deployment")}
             </pre>
           </Panel>
 
           <Panel
-            title="EMBED · live svg badge"
+            title="embed · live svg badge"
             actions={
               <button
                 className="ck-btn"
                 onClick={() => copy("embed", embedSnippet(base))}
               >
-                {copied === "embed" ? "[COPIED]" : "COPY"}
+                {copied === "embed" ? "[copied]" : "copy"}
               </button>
             }
           >
@@ -315,7 +315,7 @@ function TrackBrief({
       {snippets.length > 0 && (
         <>
           <div className="flex items-center gap-1 px-2 py-1 border-b border-[var(--color-border)]">
-            <span className="ck-label">SNIPPET</span>
+            <span className="ck-label">snippet</span>
             {snippets.map(([k]) => (
               <button
                 key={k}
@@ -329,7 +329,7 @@ function TrackBrief({
               className="ck-btn ml-auto"
               onClick={() => copy(`snip-${active[0]}`, active[1])}
             >
-              {copied === `snip-${active[0]}` ? "[COPIED]" : "COPY"}
+              {copied === `snip-${active[0]}` ? "[copied]" : "copy"}
             </button>
           </div>
           <pre className="flex-1 px-2 py-1 ck-mono whitespace-pre overflow-auto leading-tight">
@@ -361,7 +361,7 @@ function FactRow({
           rel="noreferrer"
           className="ck-btn"
         >
-          OPEN
+          open
         </a>
       )}
     </div>

@@ -37,8 +37,7 @@
   font-weight: 700;
   font-size: 9px;
   line-height: 1.2;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--color-secondary);
 }
 

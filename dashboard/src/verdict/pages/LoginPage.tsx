@@ -55,8 +55,8 @@ export function LoginPage({ next }: LoginPageProps) {
       <CompactTopbar
         crumb={
           <span>
-            COMPETE <span className="ck-dim mx-1">/</span>
-            <span className="ck-pos">SIGN IN</span>
+            compete <span className="ck-dim mx-1">/</span>
+            <span className="ck-pos">sign in</span>
           </span>
         }
       />
@@ -64,8 +64,8 @@ export function LoginPage({ next }: LoginPageProps) {
       <main className="flex-1 flex items-center justify-center px-4">
         <section className="ck-frame w-full max-w-[480px]">
           <div className="ck-header">
-            <span className="ck-label ck-pos">SIGN IN · NO WALLET REQUIRED</span>
-            <span className="ck-mono ck-dim">PRIVY</span>
+            <span className="ck-label ck-pos">sign in · no wallet required</span>
+            <span className="ck-mono ck-dim">privy</span>
           </div>
 
           <div className="px-4 py-6 flex flex-col gap-4">

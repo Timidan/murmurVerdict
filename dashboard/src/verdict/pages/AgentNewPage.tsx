@@ -240,10 +240,10 @@ export function AgentNewPage() {
         crumb={
           <span>
             <a href="#/account" className="ck-dim hover:ck-pos no-underline">
-              ACCOUNT
+              account
             </a>
             <span className="ck-dim mx-1">/</span>
-            <span className="ck-pos">NEW AGENT</span>
+            <span className="ck-pos">new agent</span>
           </span>
         }
       />
@@ -256,7 +256,7 @@ export function AgentNewPage() {
           // agent without a key (operator state, harmless).
           <section className="ck-frame-strong w-full max-w-[560px] flex flex-col">
             <div className="ck-header">
-              <span className="ck-label ck-pos">AGENT CREATED · KEY PENDING</span>
+              <span className="ck-label ck-pos">agent created · key pending</span>
               <span className="ck-mono ck-dim">{createdSlug}</span>
             </div>
             <div className="px-4 py-4 flex flex-col gap-3">
@@ -275,7 +275,7 @@ export function AgentNewPage() {
               )}
               <div className="flex flex-wrap items-center gap-3 pt-2">
                 <a href="#/account" className="ck-btn">
-                  [ ← ABANDON ]
+                  [ ← abandon ]
                 </a>
                 <button
                   type="button"
@@ -283,7 +283,7 @@ export function AgentNewPage() {
                   onClick={() => doMint(createdSlug)}
                   className="ck-btn ck-btn-accent justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  [ RETRY KEY MINT → ]
+                  [ retry key mint → ]
                 </button>
                 {minting && (
                   <span className="ck-mono ck-dim text-[10px]">working…</span>
@@ -298,14 +298,14 @@ export function AgentNewPage() {
           noValidate
         >
           <div className="ck-header">
-            <span className="ck-label ck-pos">DECLARE AGENT · CASUAL TIER</span>
-            <span className="ck-mono ck-dim">PRIVATE</span>
+            <span className="ck-label ck-pos">declare agent · casual tier</span>
+            <span className="ck-mono ck-dim">private</span>
           </div>
 
           <div className="px-4 py-4 flex flex-col gap-4">
             {/* ── display_slug ───────────────────────────────────────── */}
             <label className="flex flex-col gap-1">
-              <span className="ck-label ck-pos">SLUG</span>
+              <span className="ck-label ck-pos">slug</span>
               <input
                 type="text"
                 value={slug}
@@ -336,12 +336,12 @@ export function AgentNewPage() {
 
             {/* ── display_name ──────────────────────────────────────── */}
             <label className="flex flex-col gap-1">
-              <span className="ck-label ck-pos">DISPLAY NAME</span>
+              <span className="ck-label ck-pos">display name</span>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.currentTarget.value)}
-                placeholder={slug.replace(/-/g, " ") || "MY AGENT"}
+                placeholder={slug.replace(/-/g, " ") || "my agent"}
                 maxLength={NAME_MAX}
                 autoComplete="off"
                 className="ck-mono uppercase bg-transparent border border-[var(--color-border-vis)] px-2 py-1 outline-none focus:border-[var(--color-display)]"
@@ -353,7 +353,7 @@ export function AgentNewPage() {
 
             {/* ── bio ───────────────────────────────────────────────── */}
             <label className="flex flex-col gap-1">
-              <span className="ck-label ck-pos">BIO · OPTIONAL</span>
+              <span className="ck-label ck-pos">bio · optional</span>
               <textarea
                 value={bio}
                 onChange={(e) => setBio(e.currentTarget.value)}
@@ -379,14 +379,14 @@ export function AgentNewPage() {
 
             <div className="flex items-center gap-2 pt-2">
               <a href="#/account" className="ck-btn">
-                [ ← BACK ]
+                [ ← back ]
               </a>
               <button
                 type="submit"
                 disabled={!formReady}
                 className="ck-btn ck-btn-accent justify-center disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                [ MINT AGENT → ]
+                [ mint agent → ]
               </button>
               {submitting && (
                 <span className="ck-mono ck-dim text-[10px]">working…</span>
@@ -411,7 +411,7 @@ export function AgentNewPage() {
 function LoadingShell() {
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-pos">NEW AGENT</span>} />
+      <CompactTopbar crumb={<span className="ck-pos">new agent</span>} />
       <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
         <div className="ck-frame px-4 py-6">
           <p className="ck-mono ck-dim">loading…</p>
@@ -424,7 +424,7 @@ function LoadingShell() {
 function ConfigErrorShell() {
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-neg">NEW AGENT · UNCONFIGURED</span>} />
+      <CompactTopbar crumb={<span className="ck-neg">new agent · unconfigured</span>} />
       <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
           <p className="ck-mono ck-neg">privy not configured.</p>

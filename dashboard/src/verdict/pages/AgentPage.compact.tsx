@@ -82,34 +82,34 @@ export function AgentPageCompact({ slug }: { slug: string }) {
       <CompactTopbar
         crumb={
           <span>
-            AGENTS <span className="ck-dim mx-1">/</span>
+            agents <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{agent?.display_slug ?? slug}</span>
           </span>
         }
       />
 
-      {error && <div className="px-2 py-2 ck-mono ck-neg">[ERR] {error}</div>}
+      {error && <div className="px-2 py-2 ck-mono ck-neg">[err] {error}</div>}
 
       {agent && (
         <>
           {/* IDENTITY RIBBON ─────────────────────────────────── */}
           <section className="grid grid-cols-2 md:grid-cols-8 border-b border-[var(--color-border)]">
-            <RCell label="HANDLE" value={`@${agent.display_slug}`} />
-            <RCell label="NAME" value={agent.display_name} />
-            <RCell label="KIND" value={agent.kind.toUpperCase()} tone={kindTone(agent.kind)} />
+            <RCell label="handle" value={`@${agent.display_slug}`} />
+            <RCell label="name" value={agent.display_name} />
+            <RCell label="kind" value={agent.kind} tone={kindTone(agent.kind)} />
             <RCell
-              label="VERDICT·30D"
+              label="verdict·30d"
               value={stats ? formatScore(stats.avgScore) : "—"}
               tone={(stats?.avgScore ?? 0) >= 0 ? "pos" : "neg"}
             />
-            <RCell label="WR" value={stats ? formatWR(stats.winRate) : "—"} />
-            <RCell label="RES" value={stats ? String(stats.resolved).padStart(2, "0") : "—"} />
+            <RCell label="wr" value={stats ? formatWR(stats.winRate) : "—"} />
+            <RCell label="res" value={stats ? String(stats.resolved).padStart(2, "0") : "—"} />
             <RCell
-              label="PEND"
+              label="pend"
               value={stats ? String(stats.pending).padStart(2, "0") : "—"}
               tone={stats && stats.pending > 0 ? "neg" : "dim"}
             />
-            <RCell label="STREAK" value={stats ? `${stats.streak}W` : "—"} />
+            <RCell label="streak" value={stats ? `${stats.streak}w` : "—"} />
           </section>
 
           {/* IDENTITY META + ACTIONS ─────────────────────────── */}
@@ -126,17 +126,17 @@ export function AgentPageCompact({ slug }: { slug: string }) {
               </a>
             )}
             <span className="ck-label ck-dim">
-              SINCE {agent.created_at.slice(0, 10)}
+              since {agent.created_at.slice(0, 10)}
             </span>
             <span className="ml-auto flex items-center gap-1">
               <button
                 onClick={toggle}
                 className={"ck-btn " + (following ? "ck-btn-accent" : "ck-btn-active")}
               >
-                {following ? "× UNFOLLOW" : "+ FOLLOW"}
+                {following ? "× unfollow" : "+ follow"}
               </button>
               <a href={`#/share/${agent.display_slug}`} className="ck-btn">
-                SHARE
+                share
               </a>
               {/* Wave 1 — shadow CLAIM CTA removed alongside the
                   deleted /agents/:slug/claim route. Shadow agents are
@@ -154,12 +154,12 @@ export function AgentPageCompact({ slug }: { slug: string }) {
           {/* MAIN GRID ───────────────────────────────────────── */}
           <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)] min-h-0">
             <Panel
-              title="CALL LOG"
+              title="call log"
               meta={calls ? `${calls.length}` : ""}
               className="lg:border-r-0"
             >
               {calls === null && (
-                <div className="px-2 py-2 ck-mono ck-dim">[loading...]</div>
+                <div className="px-2 py-2 ck-mono ck-dim">[loading…]</div>
               )}
               {calls !== null && calls.length === 0 && (
                 <div className="px-2 py-2 ck-mono ck-dim">[no calls yet]</div>
@@ -168,12 +168,12 @@ export function AgentPageCompact({ slug }: { slug: string }) {
             </Panel>
 
             <Panel
-              title="MARKET HEAT"
+              title="market heat"
               meta={grid ? `${grid.length} mkts` : ""}
               className="lg:border-r-0"
             >
               {grid === null && (
-                <div className="px-2 py-2 ck-mono ck-dim">[loading...]</div>
+                <div className="px-2 py-2 ck-mono ck-dim">[loading…]</div>
               )}
               {grid !== null && grid.length === 0 && (
                 <div className="px-2 py-2 ck-mono ck-dim">[no per-market data]</div>
@@ -181,7 +181,7 @@ export function AgentPageCompact({ slug }: { slug: string }) {
               {grid !== null && grid.length > 0 && <GridTable rows={grid} />}
             </Panel>
 
-            <Panel title="DETAIL · SCORES">
+            <Panel title="detail · scores">
               <SidebarStats stats={stats} agent={agent} />
             </Panel>
           </main>
@@ -195,10 +195,10 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
       <li className="grid grid-cols-[64px_14px_1fr_50px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
-        <span>TIME</span>
+        <span>time</span>
         <span aria-hidden="true"></span>
-        <span>NOTE</span>
-        <span className="text-right">OUT</span>
+        <span>note</span>
+        <span className="text-right">out</span>
       </li>
       {calls.map((c) => {
         const ts = formatTs(c.submitted_at ?? c.accepted_at);
@@ -240,10 +240,10 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
       <li className="grid grid-cols-[1fr_44px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
-        <span>MARKET</span>
-        <span className="text-right">VS</span>
-        <span className="text-right">WR</span>
-        <span className="text-right">TREND</span>
+        <span>market</span>
+        <span className="text-right">vs</span>
+        <span className="text-right">wr</span>
+        <span className="text-right">trend</span>
       </li>
       {rows.map((r) => (
         <li
@@ -296,19 +296,19 @@ function SidebarStats({
 }) {
   return (
     <div className="flex flex-col">
-      <FactRow label="WINS" value={stats ? String(stats.wins) : "—"} tone="pos" />
-      <FactRow label="LOSSES" value={stats ? String(stats.losses) : "—"} tone="neg" />
+      <FactRow label="wins" value={stats ? String(stats.wins) : "—"} tone="pos" />
+      <FactRow label="losses" value={stats ? String(stats.losses) : "—"} tone="neg" />
       <FactRow
-        label="VERDICT"
+        label="verdict"
         value={stats ? formatScore(stats.avgScore) : "—"}
         tone={(stats?.avgScore ?? 0) >= 0 ? "pos" : "neg"}
       />
-      <FactRow label="WR" value={stats ? formatWR(stats.winRate) : "—"} />
-      <FactRow label="STREAK" value={stats ? `${stats.streak}W` : "—"} />
-      <FactRow label="TOTAL" value={stats ? String(stats.total) : "—"} tone="dim" />
-      <FactRow label="KIND" value={agent.kind.toUpperCase()} tone="dim" />
+      <FactRow label="wr" value={stats ? formatWR(stats.winRate) : "—"} />
+      <FactRow label="streak" value={stats ? `${stats.streak}w` : "—"} />
+      <FactRow label="total" value={stats ? String(stats.total) : "—"} tone="dim" />
+      <FactRow label="kind" value={agent.kind} tone="dim" />
       <FactRow
-        label="CHAIN"
+        label="chain"
         value={humanChain(agent.chain_id)}
         tone="dim"
       />
@@ -317,16 +317,16 @@ function SidebarStats({
             the deleted tiers. `agent` is the canonical Privy-owned default
             and gets the main-tier-eligible note. */}
         {agent.kind === "agent" && (
-          <span>AGENT · Privy-owned · main-tier eligible.</span>
+          <span>agent · Privy-owned · main-tier eligible.</span>
         )}
         {agent.kind === "benchmark" && (
-          <span>BENCHMARK · system-curated comparison agent.</span>
+          <span>benchmark · system-curated comparison agent.</span>
         )}
         {agent.kind === "attested" && (
-          <span>ATTESTED · Olas Service Registry bond · sentinel tier.</span>
+          <span>attested · Olas Service Registry bond · sentinel tier.</span>
         )}
         {agent.kind === "internal_test" && (
-          <span>INTERNAL · operator-only test agent.</span>
+          <span>internal · operator-only test agent.</span>
         )}
       </div>
     </div>
@@ -427,14 +427,14 @@ function formatNote(c: AgentCallRow): string {
 }
 
 function formatOutcome(c: AgentCallRow): string {
-  if (!c.outcome) return "PEND";
+  if (!c.outcome) return "pend";
   if (c.outcome === "win" && c.call_score !== null && c.call_score !== undefined) {
     return `+${c.call_score.toFixed(2)}`;
   }
   if (c.outcome === "loss" && c.call_score !== null && c.call_score !== undefined) {
     return c.call_score < 0 ? c.call_score.toFixed(2) : `−${c.call_score.toFixed(2)}`;
   }
-  return c.outcome.toUpperCase().slice(0, 4);
+  return c.outcome.slice(0, 4);
 }
 
 function synth(seed: number): number[] {

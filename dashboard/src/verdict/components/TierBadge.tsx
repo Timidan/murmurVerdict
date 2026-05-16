@@ -12,10 +12,10 @@
 //
 // Anything else — including stale `casual`/`wallet_only`/`verified`/`shadow`
 // literals lingering in local-dev DBs before the backend migration lands —
-// falls through to the `unknown` style and renders the raw upper-cased label.
+// falls through to the `unknown` style and renders the raw label.
 // We do NOT crash on unknown values; the DB migration handles the rename.
 //
-// Uses ALL CAPS Space Mono via .ck-label + the existing color tokens. The
+// Uses lowercase Space Mono via .ck-label + the existing color tokens. The
 // chip itself is a hairline-bordered pill — same visual class as elsewhere
 // in COMPACT — so it doesn't break the Nothing density rhythm.
 
@@ -37,15 +37,15 @@ interface TierStyle {
 // fall through to the `unknown` style — defensive vs. backend additions
 // and against stale pre-Wave-3 literals in local-dev DBs.
 const TIER_STYLES: Record<string, TierStyle> = {
-  agent: { label: "AGENT", cls: "ck-pos" },
-  attested: { label: "ATTESTED", cls: "ck-neg" },
-  benchmark: { label: "BENCHMARK", cls: "ck-dim" },
-  internal_test: { label: "INTERNAL", cls: "ck-dim" },
+  agent: { label: "agent", cls: "ck-pos" },
+  attested: { label: "attested", cls: "ck-neg" },
+  benchmark: { label: "benchmark", cls: "ck-dim" },
+  internal_test: { label: "internal", cls: "ck-dim" },
 };
 
 export function TierBadge({ kind }: TierBadgeProps) {
   const k = (kind ?? "agent").toString();
-  const style = TIER_STYLES[k] ?? { label: k.toUpperCase(), cls: "ck-dim" };
+  const style = TIER_STYLES[k] ?? { label: k, cls: "ck-dim" };
   return (
     <span
       className={

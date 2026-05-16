@@ -66,10 +66,10 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
   }, [leaderboards, liveMarkets]);
 
   if (error) {
-    return <div className="px-2 py-2 ck-mono ck-neg">[ERR] {error}</div>;
+    return <div className="px-2 py-2 ck-mono ck-neg">[err] {error}</div>;
   }
   if (!markets) {
-    return <div className="px-2 py-2 ck-mono ck-dim">[loading markets...]</div>;
+    return <div className="px-2 py-2 ck-mono ck-dim">[loading markets…]</div>;
   }
   if (markets.length === 0) {
     return <div className="px-2 py-2 ck-mono ck-dim">[no markets listed]</div>;
@@ -79,13 +79,13 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
 
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[110px_60px_56px_46px_1fr_60px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
-        <span>MARKET</span>
-        <span>ASSET</span>
-        <span>HZN</span>
-        <span className="text-right">N</span>
-        <span>TOP-3</span>
-        <span className="text-right">LEAD</span>
+      <li className="grid grid-cols-[110px_88px_56px_46px_1fr_60px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+        <span>market</span>
+        <span>class</span>
+        <span>hzn</span>
+        <span className="text-right">n</span>
+        <span>top-3</span>
+        <span className="text-right">lead</span>
       </li>
       {visible.map((m) => {
         const top = merged[m.market_id] ?? [];
@@ -93,7 +93,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
         return (
           <li
             key={m.market_id}
-            className="grid grid-cols-[110px_60px_56px_46px_1fr_60px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
+            className="grid grid-cols-[110px_88px_56px_46px_1fr_60px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
           >
             <a
               href={`#/markets/${encodeURIComponent(m.market_id)}`}
@@ -102,8 +102,11 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
               <span className="ck-mono ck-pos truncate" title={m.market_id}>
                 {m.market_id}
               </span>
-              <span className="ck-mono ck-dim">
-                {shortAssetSlug(m.asset_id).toUpperCase()}
+              <span
+                className="ck-mono ck-dim truncate"
+                title={m.market_taxonomy?.label ?? m.market_kind}
+              >
+                {shortTaxonomyLabel(m)}
               </span>
               <span className="ck-mono ck-dim">{formatHorizon(m.horizon_seconds)}</span>
               <span className="ck-mono ck-dim text-right">
@@ -148,4 +151,13 @@ function shortAssetSlug(asset_id: string): string {
   const parts = asset_id.split(":");
   const sym = parts.length >= 2 ? parts[1] : asset_id;
   return (sym ?? asset_id).toLowerCase();
+}
+
+function shortTaxonomyLabel(market: MarketRow): string {
+  const klass = market.market_taxonomy?.resolution_class ?? market.market_kind;
+  if (klass === "price_direction") return shortAssetSlug(market.asset_id).toUpperCase();
+  return klass
+    .split("_")
+    .map((part) => part.slice(0, 4))
+    .join("-");
 }

@@ -10,7 +10,7 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
 
   if (rows.length === 0) {
     return (
-      <div className="px-2 py-3 ck-mono ck-dim">[awaiting events...]</div>
+      <div className="px-2 py-3 ck-mono ck-dim">[awaiting events…]</div>
     );
   }
 
@@ -38,7 +38,7 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
             />
             <span className="ck-mono ck-dim">{ts}</span>
             <span className="ck-label">
-              {isResolved ? "RES" : "ACC"}
+              {isResolved ? "res" : "acc"}
             </span>
             <span
               className={
@@ -51,8 +51,8 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
               }
             >
               {evt.type === "call.accepted"
-                ? (evt.side ?? "HASH")
-                : (evt.outcome ?? "—").toUpperCase().slice(0, 4)}
+                ? (evt.side ?? "hash").toLowerCase()
+                : (evt.outcome ?? "—").slice(0, 4)}
             </span>
             <a
               href={`#/agents/${evt.agent_slug}`}

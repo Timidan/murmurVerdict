@@ -49,7 +49,7 @@ export function DiscoveredBy({ slug }: DiscoveredByProps) {
 
   return (
     <div className="mt-4 flex flex-wrap items-baseline gap-3 t-meta">
-      <span className="t-label text-[var(--color-secondary)]">DISCOVERED BY</span>
+      <span className="t-label text-[var(--color-secondary)]">discovered by</span>
       {rows.map((r, i) => (
         <span key={r.ref} className="flex items-baseline gap-2">
           <a

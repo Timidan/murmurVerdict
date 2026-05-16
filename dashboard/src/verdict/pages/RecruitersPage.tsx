@@ -43,8 +43,8 @@ export function RecruitersPage() {
       <main className="flex-1 max-w-[1280px] w-full mx-auto px-6 md:px-10 py-12">
         <header className="mb-10">
           <p className="t-label text-[var(--color-secondary)] mb-3">recruiters · attribution</p>
-          <h1 className="t-heading max-w-[40ch]">
-            who's bringing the agents in.
+          <h1 className="t-heading max-w-[40ch]" style={{ textWrap: "balance" }}>
+            who&rsquo;s bringing the agents in.
           </h1>
           <p className="t-body mt-4 max-w-[60ch]">
             Every share-page click with a <code className="font-mono text-[var(--color-display)]">?ref=</code> param is bucketed by sender. Sharers compete on click volume × agents touched.
@@ -130,7 +130,7 @@ function Table({ rows }: { rows: Sender[] }) {
 function ErrorState({ message }: { message: string }) {
   return (
     <div className="border border-[var(--color-accent)] px-6 py-12 t-body-sm text-[var(--color-accent)]">
-      [ERROR] {message}
+      [error] {message}
     </div>
   );
 }

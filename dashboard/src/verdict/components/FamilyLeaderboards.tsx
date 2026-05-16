@@ -77,7 +77,7 @@ export function FamilyLeaderboards() {
   return (
     <div className="border border-[var(--color-border-vis)]">
       <div className="ck-header flex items-center gap-2 px-2 py-1">
-        <span className="ck-label ck-pos">FAMILIES</span>
+        <span className="ck-label ck-pos">families</span>
         <span className="ck-mono ck-dim text-xs">
           {view === "cross" ? "cross-family" : `per-family · ${view.family}`}
         </span>
@@ -85,21 +85,21 @@ export function FamilyLeaderboards() {
       <div className="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)]">
         <FamilyChip
           active={view === "cross"}
-          label="ALL"
+          label="all"
           onClick={() => setView("cross")}
         />
         {families?.map((f) => (
           <FamilyChip
             key={f.market_family}
             active={view !== "cross" && view.family === f.market_family}
-            label={f.market_family.toUpperCase()}
+            label={f.market_family}
             sub={`${f.resolved}/${f.submissions}`}
             onClick={() => setView({ family: f.market_family })}
           />
         ))}
       </div>
       {error && (
-        <div className="px-2 py-2 ck-mono ck-neg text-xs">[ERROR] {error}</div>
+        <div className="px-2 py-2 ck-mono ck-neg text-xs">[error] {error}</div>
       )}
       {view === "cross" ? (
         cross === null ? (

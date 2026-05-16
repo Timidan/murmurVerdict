@@ -195,7 +195,7 @@ function LoadingShell({ slug }: { slug: string }) {
 function ConfigErrorShell() {
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-neg">SETTINGS · UNCONFIGURED</span>} />
+      <CompactTopbar crumb={<span className="ck-neg">settings · unconfigured</span>} />
       <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
           <p className="ck-mono ck-neg">privy not configured.</p>

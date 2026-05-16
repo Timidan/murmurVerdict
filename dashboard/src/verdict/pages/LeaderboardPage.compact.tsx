@@ -101,30 +101,30 @@ export function LeaderboardPageCompact() {
       <CompactTopbar
         crumb={
           <span>
-            LEADERBOARD <span className="ck-dim mx-1">/</span>
-            <span className="ck-pos">{tier.toUpperCase()}</span>
-            <span className="ck-dim mx-1">·</span>SORT:
-            <span className="ck-pos ml-1">{sort.toUpperCase()}</span>
+            leaderboard <span className="ck-dim mx-1">/</span>
+            <span className="ck-pos">{tier}</span>
+            <span className="ck-dim mx-1">·</span>sort:
+            <span className="ck-pos ml-1">{sort}</span>
           </span>
         }
       />
 
       {/* RIBBON ─────────────────────────────────────── */}
       <section className="grid grid-cols-2 md:grid-cols-6 border-b border-[var(--color-border)]">
-        <RibbonCell label="TOTAL" value={sorted?.length ?? "—"} />
-        <RibbonCell label="MAIN" value={summary?.main ?? "—"} />
-        <RibbonCell label="PROV" value={summary?.prov ?? "—"} tone="dim" />
-        <RibbonCell label="PEND" value={summary?.pend ?? "—"} tone="neg" />
+        <RibbonCell label="total" value={sorted?.length ?? "—"} />
+        <RibbonCell label="main" value={summary?.main ?? "—"} />
+        <RibbonCell label="prov" value={summary?.prov ?? "—"} tone="dim" />
+        <RibbonCell label="pend" value={summary?.pend ?? "—"} tone="neg" />
         <RibbonCell
-          label="AVG·WR"
+          label="avg·wr"
           value={summary && Number.isFinite(summary.avgWR) ? `${Math.round(summary.avgWR * 100)}%` : "—"}
         />
-        <RibbonCell label="WINDOW" value="30D" tone="dim" />
+        <RibbonCell label="window" value="30d" tone="dim" />
       </section>
 
       {/* CONTROL BAR ─────────────────────────────────── */}
       <div className="flex items-center gap-1 px-2 py-1 border-b border-[var(--color-border)]">
-        <span className="ck-label mr-2">TIER</span>
+        <span className="ck-label mr-2">tier</span>
         {(["all", "main", "provisional"] as Tier[]).map((t) => (
           <button
             key={t}
@@ -134,7 +134,7 @@ export function LeaderboardPageCompact() {
             {t}
           </button>
         ))}
-        <span className="ck-label mx-2 ml-4">SORT</span>
+        <span className="ck-label mx-2 ml-4">sort</span>
         {(["rank", "score", "wr", "res", "pend"] as SortKey[]).map((k) => (
           <button
             key={k}
@@ -145,19 +145,19 @@ export function LeaderboardPageCompact() {
           </button>
         ))}
         <span className="ml-auto ck-mono ck-dim">
-          {sorted ? `${sorted.length} ROWS` : ""}
+          {sorted ? `${sorted.length} rows` : ""}
         </span>
       </div>
 
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.5fr)_minmax(0,1fr)] min-h-0">
         <Panel
-          title="AGENT LADDER"
+          title="agent ladder"
           meta={sorted ? `${sorted.length}` : ""}
           className="lg:border-r-0"
         >
-          {error && <div className="px-2 py-2 ck-mono ck-neg">[ERR] {error}</div>}
+          {error && <div className="px-2 py-2 ck-mono ck-neg">[err] {error}</div>}
           {!error && sorted === null && (
-            <div className="px-2 py-2 ck-mono ck-dim">[loading...]</div>
+            <div className="px-2 py-2 ck-mono ck-dim">[loading…]</div>
           )}
           {!error && sorted && sorted.length === 0 && (
             <div className="px-2 py-2 ck-mono ck-dim">[no rows]</div>
@@ -165,7 +165,7 @@ export function LeaderboardPageCompact() {
           {!error && sorted && sorted.length > 0 && <Ladder rows={sorted} />}
         </Panel>
         <div className="flex flex-col">
-          <Panel title="LIVE TAPE" meta="REALTIME">
+          <Panel title="live tape" meta="realtime">
             <CompactLiveFeed limit={60} />
           </Panel>
           <div className="px-2 py-2">
@@ -182,13 +182,13 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
     <ul className="m-0 p-0 list-none">
       <li className="grid grid-cols-[28px_1fr_70px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
         <span>#</span>
-        <span>AGENT</span>
-        <span>KIND</span>
-        <span className="text-right">VS</span>
-        <span className="text-right">WR</span>
-        <span className="text-right">RES</span>
-        <span className="text-right">TREND</span>
-        <span className="text-right">P</span>
+        <span>agent</span>
+        <span>kind</span>
+        <span className="text-right">vs</span>
+        <span className="text-right">wr</span>
+        <span className="text-right">res</span>
+        <span className="text-right">trend</span>
+        <span className="text-right">p</span>
       </li>
       {rows.map((r) => (
         <li
@@ -203,7 +203,7 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
               {r.display_slug}
             </span>
             <span className="ck-mono ck-dim truncate" title={r.kind}>
-              {r.kind.slice(0, 6).toUpperCase()}
+              {r.kind.slice(0, 6).toLowerCase()}
             </span>
             <span
               className={

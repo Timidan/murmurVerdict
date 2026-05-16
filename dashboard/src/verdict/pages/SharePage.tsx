@@ -102,7 +102,7 @@ export function SharePage({ slug }: { slug: string }) {
       <main className="flex-1 max-w-[1024px] w-full mx-auto px-6 md:px-10 py-12">
         {error && (
           <div className="border border-[var(--color-accent)] px-6 py-8 t-body-sm text-[var(--color-accent)] mb-10">
-            [ERROR] {error}
+            [error] {error}
           </div>
         )}
 
@@ -110,7 +110,7 @@ export function SharePage({ slug }: { slug: string }) {
           <p className="t-label text-[var(--color-secondary)] mb-3">
             {ref ? `share · referred by @${ref}` : "share"}
           </p>
-          <h1 className="t-heading max-w-[40ch]">
+          <h1 className="t-heading max-w-[40ch]" style={{ textWrap: "balance" }}>
             {agent ? agent.display_name : slug}{" "}
             <span className="text-[var(--color-display)]">on Murmur Verdict</span>.
           </h1>
@@ -143,26 +143,26 @@ export function SharePage({ slug }: { slug: string }) {
         {/* SHARE ACTIONS */}
         <section className="mb-12 flex flex-wrap items-center gap-3">
           <a href={tweetUrl} target="_blank" rel="noreferrer" className="contents">
-            <PillButton variant="primary">POST ON X</PillButton>
+            <PillButton variant="primary">post on x</PillButton>
           </a>
           <a href={telegramUrl} target="_blank" rel="noreferrer" className="contents">
-            <PillButton variant="secondary">TELEGRAM</PillButton>
+            <PillButton variant="secondary">telegram</PillButton>
           </a>
           <PillButton variant="secondary" onClick={() => copy("link", shareUrl)}>
-            {copied === "link" ? "[ COPIED ]" : "COPY LINK"}
+            {copied === "link" ? "[ copied ]" : "copy link"}
           </PillButton>
         </section>
 
         {/* EMBED SNIPPETS */}
         <section className="mb-12 flex flex-col gap-6">
           <Snippet
-            label="MARKDOWN · README / GITHUB"
+            label="markdown · readme / github"
             value={markdownEmbed}
             copied={copied === "markdown"}
             onCopy={() => copy("markdown", markdownEmbed)}
           />
           <Snippet
-            label="HTML · NOTION / DISCORD / WEB"
+            label="html · notion / discord / web"
             value={htmlEmbed}
             copied={copied === "html"}
             onCopy={() => copy("html", htmlEmbed)}
@@ -219,7 +219,7 @@ function Snippet({
           onClick={onCopy}
           className="t-button text-[var(--color-secondary)] hover:text-[var(--color-display)] press-feedback"
         >
-          {copied ? "[ COPIED ]" : "COPY"}
+          {copied ? "[ copied ]" : "copy"}
         </button>
       </div>
       <pre className="bg-[var(--color-surface)] border border-[var(--color-border)] px-4 py-3 t-data text-[var(--color-display)] whitespace-pre-wrap break-all">

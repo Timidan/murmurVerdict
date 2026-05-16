@@ -96,12 +96,9 @@ export function IntegratePage({ slug }: IntegratePageProps) {
 
   const apiKey = envelope?.secret ?? null;
 
-  // Resolve the matching agent row from the cached account list. The
-  // backend's /v1/calls accepts ONLY the agent_id UUID in the X-Murmur-
-  // Agent-Id header (verifyAgentApiKey does an agentsRepo.byId lookup);
-  // it does NOT accept the slug. Earlier this fell back to the slug while
-  // account.agents loaded, which produced "unknown agent" 404s for users
-  // who pasted the snippet immediately after mint.
+  // Resolve the matching agent row from the cached account list so snippets
+  // can display the canonical agent_id when needed by tooling around the
+  // sealed Fhenix flow.
   const agent = useMemo(
     () => account.agents.find((a) => a.display_slug === slug),
     [account.agents, slug],
@@ -141,12 +138,12 @@ export function IntegratePage({ slug }: IntegratePageProps) {
         crumb={
           <span>
             <a href="#/account" className="ck-dim hover:ck-pos no-underline">
-              ACCOUNT
+              account
             </a>
             <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{slug}</span>
             <span className="ck-dim mx-1">/</span>
-            <span className={headerAccent}>INTEGRATE</span>
+            <span className={headerAccent}>integrate</span>
           </span>
         }
       />
@@ -154,7 +151,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
       <main className="flex-1 px-3 py-4 flex flex-col gap-3 max-w-[820px] w-full mx-auto">
         <section>
           <h1 className="ck-mono ck-pos text-[14px] font-bold mb-1">
-            INTEGRATE · {slug}
+            integrate · {slug}
           </h1>
           {!arrivedWithKey && (
             <p className="ck-mono ck-dim text-[10px] leading-relaxed max-w-[60ch]">
@@ -177,7 +174,6 @@ export function IntegratePage({ slug }: IntegratePageProps) {
         {agent ? (
           <CodeSnippetPanel
             agentSlug={slug}
-            agentId={agent.agent_id}
             apiKey={apiKey ?? undefined}
           />
         ) : agentMissing ? (
@@ -193,9 +189,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           <section className="ck-frame px-4 py-4">
             <p className="ck-mono ck-dim">resolving agent id…</p>
             <p className="ck-mono ck-dim text-[10px] mt-2">
-              snippets render with your agent&apos;s uuid (header
-              {" "}
-              <code>X-Murmur-Agent-Id</code> requires it, not the slug).
+              snippets render once your account agent is available.
             </p>
             {agentLoading && (
               <p className="ck-mono ck-dim text-[10px] mt-1">
@@ -207,7 +201,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
 
         <section className="ck-frame">
           <div className="ck-header">
-            <span className="ck-label ck-pos">NEXT STEPS</span>
+            <span className="ck-label ck-pos">next steps</span>
           </div>
           <ul className="divide-y divide-[var(--color-border)]">
             <li>
@@ -215,9 +209,9 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 href={`#/agents/${encodeURIComponent(slug)}`}
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
               >
-                <span className="ck-pos">VIEW MY AGENT</span>
+                <span className="ck-pos">view my agent</span>
                 <span className="ck-dim text-[10px]">
-                  [ AGENT PROFILE → ]
+                  [ agent profile → ]
                 </span>
               </a>
             </li>
@@ -226,8 +220,8 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 href={`#/account/agent/${encodeURIComponent(slug)}/keys`}
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
               >
-                <span className="ck-pos">MANAGE API KEYS</span>
-                <span className="ck-dim text-[10px]">[ ROTATE / MINT → ]</span>
+                <span className="ck-pos">manage api keys</span>
+                <span className="ck-dim text-[10px]">[ rotate / mint → ]</span>
               </a>
             </li>
             <li>
@@ -237,8 +231,8 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 rel="noreferrer"
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
               >
-                <span className="ck-pos">FULL API REFERENCE</span>
-                <span className="ck-dim text-[10px]">[ MORE DOCS → ]</span>
+                <span className="ck-pos">full api reference</span>
+                <span className="ck-dim text-[10px]">[ more docs → ]</span>
               </a>
             </li>
           </ul>
@@ -280,11 +274,11 @@ function LoadingShell({ slug }: { slug: string }) {
       <CompactTopbar
         crumb={
           <span>
-            <span className="ck-dim">ACCOUNT</span>
+            <span className="ck-dim">account</span>
             <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{slug}</span>
             <span className="ck-dim mx-1">/</span>
-            <span className="ck-dim">INTEGRATE</span>
+            <span className="ck-dim">integrate</span>
           </span>
         }
       />

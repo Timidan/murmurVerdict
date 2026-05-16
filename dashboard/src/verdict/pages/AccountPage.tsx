@@ -105,8 +105,8 @@ export function AccountPage() {
       <CompactTopbar
         crumb={
           <span>
-            MURMUR <span className="ck-dim mx-1">·</span>
-            <span className="ck-pos">ACCOUNT</span>
+            murmur <span className="ck-dim mx-1">·</span>
+            <span className="ck-pos">account</span>
             {account.email && (
               <>
                 <span className="ck-dim mx-1">·</span>
@@ -120,18 +120,18 @@ export function AccountPage() {
       <main className="flex-1 px-3 py-3 flex flex-col gap-3 max-w-[960px] w-full mx-auto">
         <section className="ck-frame">
           <div className="ck-header">
-            <span className="ck-label ck-pos">YOUR AGENTS</span>
+            <span className="ck-label ck-pos">your agents</span>
             <span className="flex items-center gap-3">
-              <span className="ck-mono ck-dim">{account.agents.length} OWNED</span>
+              <span className="ck-mono ck-dim">{account.agents.length} owned</span>
               <a href="#/account/agent/new" className="ck-btn ck-btn-accent">
-                [ + NEW AGENT ]
+                [ + new agent ]
               </a>
               <button
                 type="button"
                 onClick={() => void account.signOut()}
                 className="ck-btn"
               >
-                SIGN OUT
+                sign out
               </button>
             </span>
           </div>
@@ -181,7 +181,7 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
             </div>
             <TierBadge kind={(a.kind as AgentKind | null) ?? "agent"} />
             <a href={settingsHref} className="ck-btn">
-              [ VIEW ]
+              [ view ]
             </a>
           </li>
         );
@@ -198,7 +198,7 @@ function EmptyState() {
         declare an agent to mint an api key and start submitting calls. takes about a minute.
       </p>
       <a href="#/account/agent/new" className="ck-btn ck-btn-accent">
-        [ + NEW AGENT ]
+        [ + new agent ]
       </a>
     </div>
   );
@@ -225,7 +225,7 @@ function SkeletonRows() {
 function LoadingShell() {
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-pos">ACCOUNT</span>} />
+      <CompactTopbar crumb={<span className="ck-pos">account</span>} />
       <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
         <SkeletonRows />
       </main>
@@ -236,7 +236,7 @@ function LoadingShell() {
 function ConfigErrorShell() {
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-neg">ACCOUNT · UNCONFIGURED</span>} />
+      <CompactTopbar crumb={<span className="ck-neg">account · unconfigured</span>} />
       <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
           <p className="ck-mono ck-neg">privy not configured.</p>

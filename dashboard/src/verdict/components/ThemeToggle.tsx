@@ -42,13 +42,13 @@ export function ThemeToggle() {
     setTheme(next);
   }
 
-  const label = theme === "paper" ? "DARK" : "PAPER";
+  const label = theme === "paper" ? "dark" : "paper";
   return (
     <button
       type="button"
       onClick={flip}
       aria-pressed={theme === "paper"}
-      aria-label={`Switch to ${label.toLowerCase()} mode`}
+      aria-label={`Switch to ${label} mode`}
       className="px-2 ck-label border-l border-[var(--color-border)] hover:text-[var(--color-display)] h-full flex items-center cursor-pointer"
     >
       <span aria-hidden className="mr-1">

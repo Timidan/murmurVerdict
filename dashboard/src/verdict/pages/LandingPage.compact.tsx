@@ -29,25 +29,25 @@ export function LandingPageCompact() {
 
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb="HOME / OVERVIEW" />
+      <CompactTopbar crumb="home / overview" />
 
       {/* STATS RIBBON ─────────────────────────────────────────── */}
       <section className="grid grid-cols-5 border-b border-[var(--color-border)]">
-        <Stat label="ACC·24H" value={stats?.accepted_24h ?? "—"} />
-        <Stat label="RES·24H" value={stats?.resolved_24h ?? "—"} />
-        <Stat label="WIN·24H" value={stats?.wins_24h ?? "—"} tone="pos" />
-        <Stat label="LOSS·24H" value={stats?.losses_24h ?? "—"} tone="neg" />
-        <Stat label="VOID·24H" value={stats?.void_24h ?? "—"} tone="dim" />
+        <Stat label="acc·24h" value={stats?.accepted_24h ?? "—"} />
+        <Stat label="res·24h" value={stats?.resolved_24h ?? "—"} />
+        <Stat label="win·24h" value={stats?.wins_24h ?? "—"} tone="pos" />
+        <Stat label="loss·24h" value={stats?.losses_24h ?? "—"} tone="neg" />
+        <Stat label="void·24h" value={stats?.void_24h ?? "—"} tone="dim" />
       </section>
 
       {/* MAIN GRID ────────────────────────────────────────────── */}
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1.2fr)] min-h-0">
         <Panel
-          title="LEADERBOARD · 30D"
-          meta="TOP 12"
+          title="leaderboard · 30d"
+          meta="top 12"
           actions={
             <a href="#/leaderboard" className="ck-btn">
-              FULL
+              full
             </a>
           }
           className="lg:border-r-0"
@@ -55,7 +55,7 @@ export function LandingPageCompact() {
           <CompactMiniLB limit={12} />
         </Panel>
         <Panel
-          title="LIVE TAPE"
+          title="live tape"
           meta={
             stats
               ? `${stats.accepted_24h + stats.resolved_24h} evt/24h`
@@ -66,11 +66,11 @@ export function LandingPageCompact() {
           <CompactLiveFeed limit={50} />
         </Panel>
         <Panel
-          title="MARKETS MATRIX"
+          title="markets matrix"
           actions={
             <span className="flex items-center gap-1">
               <a href="#/launch" className="ck-btn">
-                INSTL
+                install
               </a>
               {/* Phase 7d — primary "compete" CTA. The ?ref=landing-cta
                   param is the attribution tag AccountPage reads to fire
@@ -99,7 +99,7 @@ export function LandingPageCompact() {
                   }
                 }}
               >
-                COMPETE
+                compete
               </a>
             </span>
           }
@@ -111,14 +111,14 @@ export function LandingPageCompact() {
       {/* FOOTER STATUS ────────────────────────────────────────── */}
       <footer className="flex items-center gap-3 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">
         <span>
-          <span className="ck-pos">CHAINLINK</span> +{" "}
-          <span className="ck-pos">PYTH</span>
+          <span className="ck-pos">chainlink</span> +{" "}
+          <span className="ck-pos">pyth</span>
         </span>
         <span className="ck-dim">·</span>
-        <span>BASE</span>
+        <span>base</span>
         <span className="ck-dim">·</span>
         <a href="#/spec" className="ck-mono ck-dim hover:ck-pos no-underline">
-          SPEC
+          spec
         </a>
         <span className="ck-dim">·</span>
         <a
@@ -127,7 +127,7 @@ export function LandingPageCompact() {
           rel="noreferrer"
           className="ck-mono ck-dim hover:ck-pos no-underline"
         >
-          GITHUB
+          github
         </a>
       </footer>
     </div>
