@@ -49,6 +49,12 @@ export function applyTheme(theme: Theme): void {
   if (meta) {
     meta.setAttribute("content", theme === "paper" ? THEME_COLOR_PAPER : THEME_COLOR_DARK);
   }
+  const svg = document.getElementById("favicon-svg") as HTMLLinkElement | null;
+  const ico = document.getElementById("favicon-ico") as HTMLLinkElement | null;
+  const apple = document.getElementById("apple-touch") as HTMLLinkElement | null;
+  if (svg) svg.href = `/brand/favicon-${theme}.svg`;
+  if (ico) ico.href = `/brand/favicon-${theme}.ico`;
+  if (apple) apple.href = `/brand/app-icon-${theme}.png`;
   try {
     localStorage.setItem(STORAGE_KEY, theme);
   } catch {

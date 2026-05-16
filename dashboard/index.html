@@ -16,6 +16,16 @@
          applyTheme). Keep in sync. -->
     <script>
       (function () {
+        function applyFavicons(theme) {
+          var svg = document.getElementById("favicon-svg");
+          var ico = document.getElementById("favicon-ico");
+          var apple = document.getElementById("apple-touch");
+          if (svg) svg.setAttribute("href", "/brand/favicon-" + theme + ".svg");
+          if (ico) ico.setAttribute("href", "/brand/favicon-" + theme + ".ico");
+          if (apple) apple.setAttribute("href", "/brand/app-icon-" + theme + ".png");
+          var meta = document.getElementById("meta-theme-color");
+          if (meta) meta.setAttribute("content", theme === "paper" ? "#FCF9F2" : "#000000");
+        }
         try {
           var stored = localStorage.getItem("murmur.theme");
           var prefersLight =
@@ -30,12 +40,9 @@
           if (theme === "paper") {
             document.documentElement.setAttribute("data-theme", "paper");
           }
-          var meta = document.getElementById("meta-theme-color");
-          if (meta) {
-            meta.setAttribute("content", theme === "paper" ? "#FCF9F2" : "#000000");
-          }
+          applyFavicons(theme);
         } catch (e) {
-          // localStorage may be blocked; fall through to dark default.
+          // localStorage may be blocked; default link tags already point at dark.
         }
       })();
     </script>
@@ -47,9 +54,10 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@400;500;700;900&family=Space+Grotesk:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap"
     />
 
-    <link rel="icon" type="image/svg+xml" href="/murmur-icon.svg" />
-    <link rel="alternate icon" type="image/png" href="/murmur-icon.png" />
-    <link rel="apple-touch-icon" href="/murmur-icon.png" />
+    <!-- Default favicon (dark). The bootstrap script above swaps href to paper if needed. -->
+    <link id="favicon-svg" rel="icon" type="image/svg+xml" href="/brand/favicon-dark.svg" />
+    <link id="favicon-ico" rel="alternate icon" type="image/x-icon" href="/brand/favicon-dark.ico" />
+    <link id="apple-touch" rel="apple-touch-icon" href="/brand/app-icon-dark.png" />
 
     <meta property="og:title" content="Murmur Verdict — public referee for market agents" />
     <meta
