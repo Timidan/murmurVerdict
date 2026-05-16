@@ -12,7 +12,7 @@ Five principles. If a screen breaks one, the screen is wrong.
 
 1. **Subtract, don't add.** Every element earns its pixel. Default to removal.
 2. **Structure is ornament.** The grid, the data, the hierarchy itself are the visuals.
-3. **Monochrome is the canvas.** Color is an event, not a default. Only data status (win/loss/void) and the single Nothing-red interrupt break this.
+3. **Monochrome is the canvas.** Color is an event, not a default. Only data status (win/loss/void) and the single brand-red interrupt break this. The canvas is monochrome in both themes (dark OLED black + paper cream); the interrupt red is pinned across themes.
 4. **Type does the heavy lifting.** Scale + weight + spacing build hierarchy. Not color, not icons, not shadows.
 5. **Industrial warmth.** Technical and precise. A human hand should still be felt — never sterile.
 
@@ -34,25 +34,31 @@ All values from `dashboard/src/styles.css` `@theme` block.
 
 Loaded via Google Fonts in `dashboard/index.html:14-17`. No fontsource package — Doto needs the variable axis only Google serves.
 
-### 2.2 Colors (dark, OLED-canvas)
+### 2.2 Colors (dual theme: dark + paper)
 
-| Var | Hex | Use |
-|---|---|---|
-| `--color-bg` | `#000000` | Pure OLED black canvas (override of "no pure black" — intentional brand) |
-| `--color-surface` | `#111111` | Card/panel surface (rare; we usually skip surfaces entirely) |
-| `--color-raised` | `#1A1A1A` | Even rarer raised surface |
-| `--color-border` | `#222222` | Hairline divider — most common border |
-| `--color-border-vis` | `#333333` | Visible/interactive border |
-| `--color-disabled` | `#666666` | Disabled, timestamps, hints |
-| `--color-secondary` | `#999999` | Labels, captions, metadata |
-| `--color-primary` | `#E8E8E8` | Body text, primary content |
-| `--color-display` | `#FFFFFF` | Hero numerals, the ONE thing per screen |
-| `--color-accent` | `#D71921` | **Single chromatic accent — Nothing red.** Interrupt only. |
-| `--color-accent-tint` | `rgba(215,25,33,0.15)` | Selection highlight |
-| `--color-success` | `#4A9E5C` | Win outcome, healthy oracle (data-encoding ONLY, not UI hierarchy) |
-| `--color-warning` | `#D4A843` | Stale-but-acceptable, void band (same caveat) |
+Two themes share the same CSS-variable surface. Dark is the default. Paper is activated by `<html data-theme="paper">`. The accent red is the SAME hex in both themes — pinned for brand emphasis.
 
-**Hierarchy rule**: max 4 text levels per screen, drawn from `disabled / secondary / primary / display`. Red is not part of the hierarchy — if nothing is urgent, no red on screen.
+| Var | Dark | Paper | Use |
+|---|---|---|---|
+| `--color-bg` | `#000000` | `#FCF9F2` | Canvas |
+| `--color-surface` | `#111111` | `#F4EFE5` | Card/panel surface (rare) |
+| `--color-raised` | `#1A1A1A` | `#EAE3D3` | Raised surface (rarer) |
+| `--color-border` | `#222222` | `#D8D2C8` | Hairline divider |
+| `--color-border-vis` | `#333333` | `#B8AE99` | Visible/interactive border |
+| `--color-disabled` | `#666666` | `#A39A85` | Disabled, timestamps, hints |
+| `--color-secondary` | `#999999` | `#6B6453` | Labels, captions, metadata |
+| `--color-primary` | `#E8E8E8` | `#1F1B14` | Body text |
+| `--color-display` | `#FFFFFF` | `#0A0A0A` | Hero numerals, the ONE thing per screen |
+| `--color-accent` | `#FD3C3C` | `#FD3C3C` | **Single chromatic accent — brand red.** Pinned in both modes. Interrupt only. |
+| `--color-accent-tint` | `rgba(253, 60, 60, 0.15)` | `rgba(253, 60, 60, 0.15)` | Selection highlight (same in both themes — verified against `dashboard/src/styles.css`) |
+| `--color-success` | `#4A9E5C` | `#2E6F3D` | Win outcome, healthy oracle (data-encoding only) |
+| `--color-warning` | `#D4A843` | `#8A6A1F` | Stale-but-acceptable, void band (data-encoding only) |
+
+Dark uses pure `#000` (OLED canvas — intentional brand override of "no pure black"). Paper uses cream `#FCF9F2` sampled from the approved asset pack.
+
+**Hierarchy rule:** max 4 text levels per screen, drawn from `disabled / secondary / primary / display`. Red is not part of the hierarchy — if nothing is urgent, no red on screen.
+
+**Brand red migration (2026-05-16):** the accent was previously `#D71921` (Nothing red). It moved to `#FD3C3C` (brand red, sampled from the approved Murmur Verdict asset pack). The bold variant's `--bold-accent` in `dashboard/src/verdict/styles/bold.css` deliberately retains `#D71921` because bold is out of scope for the rebrand and lives behind `?variant=bold`.
 
 ### 2.3 Spacing
 
@@ -99,12 +105,12 @@ Hash-based router at `dashboard/src/verdict/Router.tsx`. Variants are gated by `
 | `#/markets/:market_id` | `MarketDetailPage.compact` | bold, calm | public |
 | `#/agents/:slug` | `AgentPage.compact` | bold, calm | public |
 | `#/agents/:slug/calls` | `AgentPage.compact` (alias) | bold, calm | public |
-| `#/agents/:slug/claim` | `ClaimPage` (compact-only) | — | wallet-gated finalize |
 | `#/calls/:call_id` | `CallPage` (compact-only) | — | public |
 | `#/today` | `TodayPage` (compact-only) | — | public |
 | `#/share/:slug` | `SharePage` | — | public (also has daemon-rendered OG variant at `/share/:slug` outside the SPA) |
 | `#/recruiters` | `RecruitersPage` | — | public |
 | `#/admin/refs` | `AdminRefsPage` | — | token-gated |
+| `#/admin/gateway` | `AdminGatewayPage` | — | token-gated |
 | `#/spec` | inline `SpecPage` | — | public |
 
 Malformed `%`-escapes in `:market_id` and `:call_id` fall through to landing (Codex audit fix at `Router.tsx:131-141`).
@@ -134,8 +140,8 @@ Lives at `dashboard/src/verdict/components/`.
 | Component | Purpose |
 |---|---|
 | `OutcomeChip` | win/loss/void/oracle_unavailable status pill |
-| `PillButton` | Rounded CTA — used on legacy paths and some claim flows |
-| `Topbar` | Generic dashboard topbar (used by Call, Claim — those are compact-only pages but use the generic chrome under-the-hood for now) |
+| `PillButton` | Rounded CTA used by share and account flows |
+| `Topbar` | Generic dashboard topbar used by utility pages outside the compact/calm/bold shells |
 | `LiveCounter` | Big animated counter (calm + bold variants) |
 | `LiveTape` | Generic SSE tape component |
 | `AgentTicker` | Side-rail vertical agent ticker |
@@ -188,11 +194,11 @@ Tier filter (ALL / MAIN / PROVISIONAL), sortable columns (rank, slug, score, lb,
 
 ### 5.4 Launch (`#/launch`) — `LaunchPage.compact.tsx`
 
-Install/onboarding tracks for new agents. A/B/C/D paths covering MCP server registration, raw HTTP submission, OpenServ skill, etc. Pulls onboarding copy from `/v1/skill.md`.
+Install/onboarding tracks for new agents. A/B/C/D paths covering sealed Fhenix submission, public HTTP reads, webhooks, and the OpenServ Launchpad discovery agent. Pulls onboarding copy from `/v1/skill.md`.
 
 ### 5.5 Market detail (`#/markets/:market_id`) — `MarketDetailPage.compact.tsx`
 
-Header: `eth.1h · ETH · 1h · LISTED`. 4-cell stats (resolved, accepted, win-rate, median-conf). Agent ladder for this market via `/v1/markets/:id/leaderboard`.
+Header: `eth.1h · ETH · 1h · LISTED`. Ribbon includes Murmur-native market taxonomy (`price_direction`, `event_binary`, `sports_match`, etc.), support status, payoff model, settlement model, oracle metadata, and config version. Agent ladder for this market via `/v1/markets/:id/leaderboard`.
 
 **Missing today**: oracle health for the specific feed. Today the Chainlink ETH/USD oracle is broken (decimals() read fail) and the page doesn't surface that. **Gap.**
 
@@ -200,32 +206,37 @@ Header: `eth.1h · ETH · 1h · LISTED`. 4-cell stats (resolved, accepted, win-r
 
 Hero score + sparkline + recent calls. `MarketHeatGrid` for per-market score breakdown. `CallLog` for the agent's resolved + pending calls. `DiscoveredBy` attribution if a `?ref=` cookie sticks.
 
-**Missing today**: no display of `agent.wallet_address` or chain-id, no "this agent's wallet is verified on-chain" badge. Buyers can't see what wallet is bound. **Gap, blocks identity story.**
+**Missing today**: public profile does not distinguish Controller Wallet identity
+from the future Gateway relayer address. Buyers need a clear "owner-authorized"
+badge once the runtime-key/Gateway flow is visible.
 
-### 5.7 Claim (`#/agents/:slug/claim`) — `ClaimPage.tsx`
+### 5.7 Account Agent Creation (`#/account/agent/new`)
 
-2-column: stage progress (init → challenge → done) on left; form on right.
+Account-owned agent creation is the only self-serve path.
 
-Two flows under the hood (selected by daemon, not the user):
-- **wallet-only**: `POST /claim/wallet-only/init` → user signs EIP-191 personal_sign of canonical claim message → `POST /claim/wallet-only/finalize` → API key issued ONCE.
-- **X / Telegram + wallet**: same but with a public-post URL to verify identity.
-
-API key is shown in plain on the success screen. `pre.break-all` block. **The agent must store it now — daemon only keeps the hash.**
+Flow: Privy account → `POST /v1/account/agents` → Controller Wallet challenge
+and signature → Runtime Key challenge and signature → one-time Runtime Key
+modal. The agent program should use the Runtime Key against the Gateway path.
 
 **Missing today**:
-- No mention that the daemon's `XPostVerifier` actually doesn't check the post body (Codex P0 finding). The user thinks proof of identity is enforced.
-- No EIP-712 per-call sig key disclosure. After claim, the agent's bearer api_key is the only auth proof — there's no separate "signing key" concept yet because per-call sig isn't built. **Gap, identity P0.**
+- Dashboard UI has not yet grown the Controller Wallet signature screens even
+  though the backend routes and client types now exist.
+- Runtime Key list/revoke surfaces are typed in the client but not rendered.
+- Gateway submit UI is not built; `/v2/calls` remains transitional.
 
 ### 5.8 Call detail (`#/calls/:call_id`) — `CallPage.tsx`
 
 3-cell ribbon: SUBJECT / OUTCOME / SCORE. Two panels: SUBMISSION, ANCHOR+RESOLUTION. The call + reveal + resolution rows are the canonical evidence shown on the page.
 
-**Wave 4b context**: the receipts subsystem (acceptance / resolution receipt chain, `/v1/calls/:id/verify`) was retired; the page-level verify affordance went with it. A per-call signature panel — surfacing the EIP-712 signature recovered from the wallet binding — lands when Phase 8 EIP-712 ships. Until then, "this agent owns this wallet" is the strongest binding we can show.
+**Wave 4b context**: the receipts subsystem (acceptance / resolution receipt
+chain, `/v1/calls/:id/verify`) was retired; the page-level verify affordance
+went with it. The next identity panel should show Controller Wallet
+authorization and Gateway relayer evidence as separate facts.
 
 ### 5.9 Share (`#/share/:slug` and `/share/:slug`) — `SharePage.tsx` + daemon
 
 Two layers:
-- **SPA route** `#/share/:slug` — sticks `(ref, slug)` to localStorage so the claim flow can credit the inbound sender as a discoverer.
+- **SPA route** `#/share/:slug` — sticks `(ref, slug)` to localStorage so account-page attribution can credit the inbound sender as a discoverer.
 - **Daemon-rendered HTML** at `/share/:slug` (no hash) — sets OG-meta tags so X / Slack scrapers unfurl with the per-agent OG card. Then `<meta http-equiv=refresh>` to the SPA route.
 
 Both produce the same visual landing if a human hits it in a browser.
@@ -236,11 +247,19 @@ Static-ish copy block + leaderboard preview for journalists/investors. No intera
 
 ### 5.11 Admin refs (`#/admin/refs`) — `AdminRefsPage.tsx`
 
-Token-gated. Shows ref-click conversion table. Read-only.
+Token-gated. Shows ref-click conversion table and sender cleanup actions.
 
-### 5.12 Spec (`#/spec`) — inline `SpecPage` in Router
+### 5.12 Admin Gateway (`#/admin/gateway`) — `AdminGatewayPage.tsx`
 
-Just a link to `docs/launchpad/THESIS.md` (which is gitignored — no public version). Should probably 404 or redirect to a real spec page. **Gap.**
+Token-gated. Shows Fhenix Gateway status counts, queue depth, recent attempts,
+stuck attempts, gas/RPC telemetry, reveal lifecycle monitoring, live canaries,
+operator alerts, Controller Wallet re-attestation health, open feed SLA
+incidents, manual ticks, and safe retry actions for queued/retryable rows.
+
+### 5.13 Spec (`#/spec`) — inline `SpecPage` in Router
+
+Should render or link to the tracked current spec (`CONTEXT.md` + `HANDOFF.md`)
+instead of old launchpad scratch docs. **Gap.**
 
 ---
 
@@ -255,60 +274,78 @@ Kept gated as A/B fodder. Not the production default. Drop them when we either p
 
 ---
 
-## 7. Identity-substitution screens (P0 work, NOT YET BUILT)
+## 7. Controller Wallet + Gateway Screens (P0 work, PARTIAL BACKEND)
 
-The product promise is "buy verified-agent expertise." Today the daemon authenticates calls via bearer api_key only — buyers cannot independently verify a call came from the agent's bound wallet. We need three new surfaces before this is honest.
+The product promise is "buy verified-agent expertise." The identity story now
+has three separate facts:
 
-### 7.1 Call signature panel (in `CallPage`)
+- Human owner controls the agent's Controller Wallet.
+- Controller Wallet authorized revocable Runtime Keys.
+- Gateway accepted a Runtime Key and relayed the Fhenix operation.
 
-```
-┌─ SUBMISSION ───────────┬─ SIGNATURE ───────────────────┐
-│ call_id  ed4cf3…       │ signed_by    0x7a3f…2b1c      │
-│ agent    0x7a3f…2b1c   │ recovered    0x7a3f…2b1c   ✓  │
-│ submitted_at  10:14Z   │ matches      agent.wallet  ✓  │
-│ accepted_at   10:14Z   │ scheme       eip-712 v1       │
-│ ...                    │ signed_at    10:14:02Z        │
-└────────────────────────┴───────────────────────────────┘
-```
+Backend routes and dashboard client types exist for Controller Wallet binding
+and Runtime Key lifecycle. The visual product surfaces are still missing.
 
-Shows: signer recovered from EIP-712 sig embedded in the receipt; matches `agent.wallet_address`; the typed-data domain/scheme. `recovered === agent.wallet` evaluates to a green check or red `MISMATCH`.
+### 7.1 Controller Wallet bind panel (`AgentSettingsPage`)
 
-**Depends on**: per-call EIP-712 sig wired into `submitCall` (Codex action #1).
+```text
+CONTROLLER WALLET
+status      unbound
+provider    Privy embedded wallet
+chain       eip155:84532
+wallet      0x7a3f...2b1c
 
-### 7.2 Agent identity card (in `AgentPage`)
-
-```
-┌─ IDENTITY ─────────────────────────────────────────────┐
-│ wallet     0x7a3f…2b1c    chain  base (8453)           │
-│ on-chain   ✓ registered at block 18,234,567            │
-│            Registry · 0xMerkleAnchor…  Tx · 0xabc…     │
-│ verified   x.com/handle (challenge proven 2026-04-12)  │
-│ rotations  none                                        │
-└────────────────────────────────────────────────────────┘
+[CREATE WALLET] [SIGN BINDING] [BIND]
 ```
 
-Shows: bound wallet, chain-id, on-chain registration block + tx, verified social handles, rotation history. Pulls from a future `/v1/agents/:slug/identity` endpoint that joins `agents` + `verified_identities` + the on-chain Merkle anchor proof.
+Flow:
 
-**Depends on**: hourly Merkle root anchor of agent table (Codex action B-light) OR full `AgentRegistry.sol`. Either way the daemon needs to surface a verifiable on-chain attestation.
+1. UI asks Privy for an agent-specific embedded wallet.
+2. UI calls `/v1/account/agents/:slug/wallet/challenge`.
+3. Embedded wallet signs the returned message.
+4. UI calls `PATCH /v1/account/agents/:slug/wallet`.
 
-### 7.3 Wallet/key rotation flow (extends `ClaimPage`)
+### 7.2 Runtime Key panel (`AgentSettingsPage`)
 
+```text
+RUNTIME KEYS
+prefix       policy                         status
+mrt_a91d...  12/hr, feed packets enabled    active
+mrt_778b...  polymarket allowlist           revoked
+
+[MINT RUNTIME KEY] [REVOKE]
 ```
-┌─ ROTATION REQUEST ─────────────────────────────────────┐
-│ current  0x7a3f…2b1c                                   │
-│ propose  [ wallet input + sign challenge ]             │
-│                                                        │
-│ confirm window: 24h. Both events emit on-chain.        │
-│                                                        │
-│ pending: 0xnew…  proposed at 10:20Z, confirms 11:20Z+1d│
-│                                                        │
-│         [ × CANCEL ROTATION ]   [ CONFIRM (after 24h) ]│
-└────────────────────────────────────────────────────────┘
+
+The plaintext Runtime Key appears once in a modal. All later surfaces show
+prefix, policy hash, created/expires/revoked timestamps, and revoke reason.
+
+### 7.3 Feed availability proof panel (`AdminGatewayPage`)
+
+Feed SLA/admin panel includes feed-health rows from `/v1/admin/feeds/sla`:
+health, reliability %, open/total missed packets, next expected sequence, next
+deadline, and availability-proof hash. The full proof is public at
+`/v1/feeds/:feed_id/availability` and carries payment execution as off.
+
+### 7.4 Call evidence panel (`CallPage`)
+
+```text
+IDENTITY EVIDENCE
+agent             murmur-alpha
+controller        0x7a3f...2b1c
+runtime policy    0xpolicy...
+gateway relayer   0xrelay...
+fhenix reveal     verified
 ```
 
-Wallet rotation requires propose/confirm with a delay window — both events visible on-chain so a buyer can detect mid-stream rebinding. API-key rotation goes through wallet-signed challenge (NOT old-key-signed) so a leaked key is recoverable.
+This depends on the Gateway submit path. The page should not imply the
+Controller Wallet directly submitted the Fhenix transaction once the relayer is
+live.
 
-**Depends on**: rotation API (Codex action #2) + on-chain anchor (B-light).
+### 7.4 Gateway health panel (`Admin` / operator surface)
+
+Shows relayer queue, latest Fhenix block indexed, retry count, stuck calls,
+missed reveals, and runtime-key rejection counts. This is part of production
+readiness for Fhenix reveal automation.
 
 ---
 
@@ -317,13 +354,13 @@ Wallet rotation requires propose/confirm with a delay window — both events vis
 | # | Question | Default if no input | Whose call |
 |---|---|---|---|
 | 1 | Drop bold + calm variants entirely, or keep gated? | Keep gated, dead code rots — drop in a follow-up | product |
-| 2 | Per-row `[V]` verify on leaderboard (V14 locked decision 6) — wire it now? | Hold until per-call sig lands so `[V]` actually means something | product |
-| 3 | Should `AgentPage` show wallet address on the public profile, or hide until rotation flow exists? | Show, with a "verified" badge tied to the future Merkle anchor — buyers want to see this | product |
+| 2 | Per-row `[V]` verify on leaderboard — wire it now? | Hold until Gateway evidence exists so `[V]` actually means something | product |
+| 3 | Should `AgentPage` show Controller Wallet publicly before rotation exists? | Show truncated address with "owner-authorized"; do not call it onchain registration | product |
 | 4 | Mobile hamburger drawer for nav (V14 decision 4) — build now or punt? | Build with the next claim/call iteration; current nav is desktop-only | product |
 | 5 | Reduce-motion fallback for the live status dot — already handled? | Yes via `@media (prefers-reduced-motion: no-preference)` at `compact.css:94` | shipped |
 | 6 | Stat-cell hover tooltip (V14 decision 7) — formula reveal on hover | Build with the leaderboard polish pass | product |
 | 7 | `× UNFOLLOW` post-state (V14 decision 5) — does follow even matter without notifications? | Skip until we have a notification channel | product |
-| 8 | `#/spec` page is currently a placeholder pointing to a gitignored doc — replace with a public spec page or 404? | Render a public version of the v0.1 spec inline | product |
+| 8 | `#/spec` page should point where? | Render tracked current spec from `CONTEXT.md`/`HANDOFF.md` or remove the route | product |
 | 9 | Operator-facing oracle health page — needed before mainnet? | Yes; resolver health is the gate for mainnet, surface it for the operator | infra |
 | 10 | Is `MarketHeatGrid` doing its job, or merge into the agent ladder cell? | Keep separate — different question (per-market spread vs per-call detail) | shipped |
 
@@ -331,13 +368,18 @@ Wallet rotation requires propose/confirm with a delay window — both events vis
 
 ## 9. What changes when we ship the next milestones
 
-When **#0 (verifier fail-closed + XPostVerifier real)** lands: nothing visible. ClaimPage error states will simply not lie about identity verification anymore.
+When **Controller Wallet UI** lands: `AgentSettingsPage` can create/bind the
+embedded wallet using the backend challenge route. `AgentPage` can show an
+owner-authorized identity badge.
 
-When **A (EIP-712 per-call sig)** lands: `CallPage` gets the SIGNATURE panel from §7.1. `AgentPage` gets a small "all calls signed" badge. The daemon receipts now embed the sig; the verify button cross-checks recovered signer.
+When **Runtime Key UI** lands: owners can mint/revoke bot keys without touching
+their Controller Wallet after setup.
 
-When **B-light (Merkle anchor)** lands: `AgentPage` gets the IDENTITY card from §7.2. New endpoint `/v1/agents/:slug/identity`. Receipts embed `registry_block` + `merkle_proof`. `CallPage` SIGNATURE panel adds a "registered at block N" line.
+When **Gateway submit** lands: `CallPage` gets the evidence panel from §7.3 and
+the dashboard should stop presenting `/v2/calls` as the active agent entrypoint.
 
-When **rotation API** lands: `ClaimPage` gains the rotation flow from §7.3. New tab on the agent's authenticated UI (which we don't have yet — needs auth context).
+When **rotation/re-attestation** lands: the authenticated agent settings area
+gets controlled Controller Wallet replacement and periodic human confirmation.
 
 ---
 
@@ -349,4 +391,47 @@ When **rotation API** lands: `ClaimPage` gains the rotation flow from §7.3. New
 - a missing screen ships (move from §7 → §5)
 - an open question gets answered (move from §8 → wherever applies)
 
-The reference design source — `docs/launchpad/V14_HANDOFF.md` and `ui-explorations.html` — is gitignored. Lift snippets here when they help; don't link.
+Old launchpad scratch docs were removed. Keep current product/architecture notes
+in tracked docs only.
+
+---
+
+## 11. Theme system
+
+Dual theme: **dark** (default) + **paper** (cream/ink twin). Activation via `[data-theme="paper"]` on `<html>`. Persisted to `localStorage["murmur.theme"]`. `prefers-color-scheme: light` fills in when no stored value exists.
+
+**No-FOUC:** inline script in `dashboard/index.html`, positioned BEFORE the Google Fonts stylesheet link, runs synchronously to apply `data-theme`, update `meta-theme-color`, and swap the favicon `<link>` hrefs. The favicon `<link>` tags appear BEFORE the script in document order so `getElementById` can find them at script-execution time. Pre-mount value resolution uses the same order as `resolveTheme()` in `dashboard/src/verdict/ui/theme.ts`.
+
+**Runtime apply:** `applyTheme(theme)` in `dashboard/src/verdict/ui/theme.ts` is the single source for runtime theme writes (DOM attribute, meta-theme-color, favicon hrefs, localStorage). The bootstrap script mirrors this logic — flagged "keep in sync" with comments in both files.
+
+**Toggle:** `ThemeToggle` (`dashboard/src/verdict/components/ThemeToggle.tsx`) mounts in the compact topbar's right cluster, between the UTC clock and the LIVE/OFFLINE status. Cross-tab sync via the `storage` event with an idempotency short-circuit.
+
+---
+
+## 12. Logo + wordmark
+
+| Asset | Source | Used by |
+|---|---|---|
+| M waveform mark | `verdict/components/MMark.tsx` — inline SVG, 8 bar rects + 1 dot rect, geometry extracted from `murmur-verdict__full-asset-pack__final/01_mark__dark.png` via PIL | topbar (18px), splash (96px), wordmark |
+| Wordmark | `verdict/components/Wordmark.tsx` — horizontal or stacked, composes MMark + `MURMUR.verdict` text via flex | future hero/share/recruiters/spec headers |
+| App icon (paper, dark) | `public/brand/app-icon-{paper,dark}.png` | Apple touch icon, also feeds favicon ICO generation |
+| Splash | `verdict/components/Splash.tsx` — mounts at root, removes self after first rAF, uses MMark at 96px with `.nothing-live` breathing | first-paint cold load |
+| Favicons | `public/brand/favicon-{paper,dark}.{ico,svg}` — SVG primary, ICO fallback, both swap with theme via bootstrap + applyTheme | tab icon |
+| Wordmark rasters | `public/brand/wordmark-{horizontal,stacked}-{paper,dark}.png` | reference / fallback for non-React surfaces |
+
+Mark bars render with `currentColor` (inherits from parent text color → flips with theme); verdict dot is pinned to `var(--color-accent)` (brand red, same in both themes).
+
+When MMark is nested inside a wrapper that owns the accessible name (e.g. labeled anchor, labeled span, role="status" splash), pass `decorative` to MMark — it renders `aria-hidden=true` and drops the inner `role="img"` + `aria-label` to avoid duplicate accessible names.
+
+---
+
+## 13. Brand pattern
+
+Asset: `public/brand/pattern-paper.png` (paper-mode tile of scattered M-marks on cream). Applied via the `.brand-pattern` utility class in `dashboard/src/styles.css`, scoped to `[data-theme="paper"]` only.
+
+Used on three marketing routes:
+- `#/recruiters`
+- `#/share/:slug`
+- `#/spec`
+
+Dense data routes (landing, leaderboard, today, calls, markets, agent, launch, admin) do NOT get the pattern — they keep the clean canvas. Dark mode shows no pattern (the asset pack ships paper-only).
