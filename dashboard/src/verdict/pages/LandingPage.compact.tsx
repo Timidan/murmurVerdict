@@ -85,7 +85,7 @@ export function LandingPageCompact() {
                   through the login flow. */}
               <a
                 href="#/account?ref=landing-cta"
-                className="ck-btn ck-btn-accent"
+                className="ck-btn ck-pos"
                 onClick={() => {
                   try {
                     window.localStorage.setItem(
