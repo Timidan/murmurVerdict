@@ -2,7 +2,7 @@
 //
 // Wraps the underlying `@privy-io/react-auth` <PrivyProvider> with:
 //   1) Env-driven `appId` (read from VITE_PRIVY_APP_ID).
-//   2) Nothing-design styling defaults (dark theme, accent #D71921).
+//   2) Nothing-design styling defaults (dark theme, brand accent #FD3C3C).
 //   3) Login methods scoped to email + Google + wallet (per UX spec §2 step-b).
 //   4) `embeddedWallets.createOnLogin = "off"` — Maya path is wallet-less; the
 //      wallet-tier upgrade in Phase 7c+ explicitly creates one when needed.
@@ -60,7 +60,7 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
         loginMethods: ["email", "google", "wallet"],
         appearance: {
           theme: "dark",
-          accentColor: "#D71921",
+          accentColor: "#FD3C3C",
           showWalletLoginFirst: false,
         },
         embeddedWallets: {

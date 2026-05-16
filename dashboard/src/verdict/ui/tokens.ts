@@ -3,7 +3,7 @@
 // Source: nothing-design skill (~/.claude/skills/nothing-design/references/)
 // Spec: docs/launchpad/V14_HANDOFF.md
 //
-// Discipline: 3 fonts (Doto / Space Grotesk / Space Mono), 1 accent (#D71921),
+// Discipline: 3 fonts (Doto / Space Grotesk / Space Mono), 1 accent (#FD3C3C),
 // pill 999px buttons, ALL CAPS labels via Space Mono, ease-out only motion,
 // pure #000 OLED canvas (intentional override per Nothing brand).
 // ──────────────────────────────────────────────────────────────────────────────
