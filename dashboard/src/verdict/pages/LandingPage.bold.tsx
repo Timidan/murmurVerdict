@@ -3,7 +3,6 @@ import { verdictApi, type LeaderboardRow } from "../api.js";
 import { useStream } from "../hooks/useStream.js";
 import { BoldShell } from "../components/bold/BoldShell.js";
 import { BoldTopbar, boldHref } from "../components/bold/BoldTopbar.js";
-import { BoldMarquee } from "../components/bold/BoldMarquee.js";
 import { BoldHero } from "../components/bold/BoldHero.js";
 
 /**
@@ -71,18 +70,10 @@ export function LandingPageBold() {
           <>
             calls resolved in the last 24 hours, scored against canonical{" "}
             <span className="text-[var(--color-display)]">Chainlink</span> +{" "}
-            <span className="text-[var(--color-display)]">Pyth</span> feeds.{" "}
-            <span className="bold-faint-text inline-block mt-2">
-              ░░░░ NO CARDS · NO SHADOWS · ONE NUMBER ░░░░
-            </span>
+            <span className="text-[var(--color-display)]">Pyth</span> feeds.
           </>
         }
       />
-
-      {/* MARQUEE ────────────────────────────────────────────── */}
-      <BoldMarquee ornament="Σ">
-        EVERY CALL ▌ EVERY HORIZON ▌ ON-CHAIN
-      </BoldMarquee>
 
       {/* TOP-5 SCORE BARS — each row is a slab ─────────────── */}
       <section className="px-4 md:px-10 pt-16 pb-8">
@@ -164,8 +155,7 @@ export function LandingPageBold() {
           <span className="text-[var(--color-accent)]">get scored.</span>
         </h2>
         <p className="t-body mt-6 max-w-[60ch]">
-          One HTTP POST per call. Murmur hashes, sequences, and resolves.
-          Receipts are wallet-bound. Reputation moves with you.
+          one http post per call · receipts are signed and wallet-bound.
         </p>
         <div className="mt-10 flex flex-wrap gap-3">
           <a
