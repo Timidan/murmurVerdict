@@ -1,35 +1,36 @@
 import "dotenv/config";
 import express from "express";
-import http from "node:http";
 import cors from "cors";
 import { OracleClient } from "../integrations/oracle.js";
 import { Resolver } from "../verdict/resolver.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import { accountRouter } from "../verdict/routes/account.js";
-import { agentsRepo, openDb, resolutionsRepo, submissionsRepo } from "../verdict/db.js";
-import { hashSharedSecret } from "../verdict/submissions.js";
+import { agentsRepo, openDb, resolutionsRepo } from "../verdict/db.js";
 import { VerdictEventBus } from "../verdict/events.js";
+import { runFeedSlaTick } from "../verdict/feed-sla.js";
 import { getLeaderboard } from "../verdict/leaderboard.js";
+import {
+  operatorAlertSinkFromEnv,
+  runOperatorAlertTick,
+} from "../verdict/operator-alerts.js";
 import { startWebhookDispatcher } from "../verdict/webhooks.js";
-// Wave 2b — loadAgeContextFromEnv + loadDrandContextFromEnv imports
-// removed. The committed-mode envelope-decrypt fallback paths in
-// resolution-subject.ts are dead under FHE-mandatory; the daemon no
-// longer wires age / drand contexts into the Resolver.
-// Wave 2a (consolidated reshape) — FHE is now mandatory. The dynamic-
-// import gate from Z0 is gone; the loader runs unconditionally at
-// boot. Z0's "byte-identical legacy boot" invariant no longer applies
-// because there IS no legacy boot anymore — FHE-direct is the only
-// privacy mode the daemon accepts.
-import type { FheProvider } from "../verdict/fhe/provider.js";
-import { loadFheProviderFromEnv } from "../verdict/fhe/loader.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server } from "node:http";
+import { createFhenixEventVerifierFromEnv } from "../integrations/fhenix-events.js";
+import { loadDeployment } from "../integrations/deployments.js";
+import { createLiveCanaryRunnerFromEnv } from "../integrations/live-canaries.js";
+import { SCHEMA_VERSION } from "../verdict/schema.js";
 
 // ─── Env knobs ──────────────────────────────────────────────────────────────
 
 const PORT = Number(process.env.PORT ?? 8080);
 const RESOLVER_TICK_SEC = Number(process.env.RESOLVER_TICK_SEC ?? 30);
+const FHENIX_EVENT_TICK_SEC = Number(process.env.FHENIX_EVENT_TICK_SEC ?? RESOLVER_TICK_SEC);
+const FHENIX_GATEWAY_TICK_SEC = Number(process.env.FHENIX_GATEWAY_TICK_SEC ?? 10);
+const FEED_SLA_TICK_SEC = Number(process.env.FEED_SLA_TICK_SEC ?? 60);
+const LIVE_CANARY_TICK_SEC = Number(process.env.LIVE_CANARY_TICK_SEC ?? 300);
+const OPERATOR_ALERT_TICK_SEC = Number(process.env.OPERATOR_ALERT_TICK_SEC ?? 60);
 const VERDICT_DB_PATH = process.env.VERDICT_DB_PATH ?? "./data/verdict.db";
 const DASHBOARD_ORIGIN = (process.env.DASHBOARD_ORIGIN ?? "*").trim();
 
@@ -51,7 +52,7 @@ export interface DaemonOpts {
   dbPath?: string;
   /** Override port; default $PORT or 8080 */
   port?: number;
-  /** Skip OpenServ agent registration (useful in tests) */
+  /** Skip OpenServ Launchpad agent registration (useful in tests) */
   skipOpenServ?: boolean;
   /** Skip cron tickers (useful in tests; smoke driver still calls .tick() manually) */
   skipTickers?: boolean;
@@ -67,39 +68,57 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // Wave 4b-2 — MarketContextProvider (Santiment scout/analyst) removed.
   // Murmur is a pure ranking layer over canonical price/event oracles;
   // no sentiment cache or 5-minute refresh tick.
-  // Wave 1 (consolidated reshape) — TelegramNotifier deleted. Outbound
-  // Telegram bot (resolution cards, daily top-10, weekly recap) was a
-  // v0.1 distribution channel that doesn't survive the FHE-only +
-  // operator-blind invariant: cards would either leak the prediction
-  // (legacy_plaintext was the path that produced render-worthy text)
-  // or have nothing meaningful to post (fhe_direct emits only commit
-  // hash + outcome + bounded score).
   const oracle = makeOracle();
   const events = new VerdictEventBus();
-  // Wave 2b — ageCtx + drandCtx loaders removed. Committed-mode
-  // envelope encryption is dead alongside the deleted submission
-  // path; the daemon no longer needs to construct either context.
-  // Z0 — FHE provider boundary. Dynamic-import only when the flag is set
-  // so legacy boot never touches the fhe/* modules (codex Z0 review fix).
-  let fheProvider: FheProvider | null = null;
-  fheProvider = loadFheProviderFromEnv(db);
-  if (fheProvider) {
-    console.log(
-      `[daemon] fhe provider ready (name=${fheProvider.name}, threshold_mode=${fheProvider.threshold_mode})`,
+  const fhenixVerifier = createFhenixEventVerifierFromEnv();
+  let fhenixIngestor: { tick: () => Promise<unknown> } | null = null;
+  let fhenixGateway: import("../integrations/fhenix-gateway.js").FhenixGatewayBroadcaster | null = null;
+  if (fhenixVerifier) {
+    const { createFhenixEventIngestorFromEnv } = await import(
+      "../integrations/fhenix-watcher.js"
     );
-  } else {
-    console.error(
-      "[daemon] loadFheProviderFromEnv returned null; fhe_direct submissions will reject until a provider is configured.",
+    fhenixIngestor = createFhenixEventIngestorFromEnv(db, fhenixVerifier);
+    const { createFhenixGatewayFromEnv } = await import(
+      "../integrations/fhenix-gateway.js"
     );
+    fhenixGateway = createFhenixGatewayFromEnv(db, fhenixVerifier);
+    if (!fhenixIngestor && process.env.FHENIX_RPC_URL) {
+      console.warn(
+        "[daemon] Fhenix verifier is configured, but event watcher is disabled; set FHENIX_CHAIN_ID and either FHENIX_SEALED_VERDICTS_ADDRESS or run sync-deployments to index reveals",
+      );
+    }
   }
+  const fhenixChainId = Number(process.env.FHENIX_CHAIN_ID ?? "0") || null;
+  const fhenixSealedVerdictsAddress =
+    process.env.FHENIX_SEALED_VERDICTS_ADDRESS?.trim() ||
+    process.env.FHENIX_CONTRACT_ADDRESS?.trim() ||
+    (fhenixChainId ? loadDeployment(fhenixChainId, "MurmurSealedVerdicts")?.address : null) ||
+    null;
+  const fhenixEscrowAddress =
+    process.env.FHENIX_ESCROW_ADDRESS?.trim() ||
+    (fhenixChainId ? loadDeployment(fhenixChainId, "MurmurEscrow")?.address : null) ||
+    null;
+  console.log(
+    "[daemon] Fhenix config:",
+    JSON.stringify({
+      chainId: fhenixChainId,
+      sealedVerdictsAddress: fhenixSealedVerdictsAddress,
+      escrowAddress: fhenixEscrowAddress,
+      gatewayEnabled: (process.env.FHENIX_GATEWAY_ENABLED ?? "false").toLowerCase() === "true",
+      verifierActive: Boolean(fhenixVerifier),
+      ingestorActive: Boolean(fhenixIngestor),
+      gatewayActive: Boolean(fhenixGateway),
+    }),
+  );
   // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
   // matching subscription on call.accepted / call.resolved.
   const webhookDispatcher = startWebhookDispatcher(db, events);
+  const liveCanaries = createLiveCanaryRunnerFromEnv(db, SCHEMA_VERSION);
+  const operatorAlertSink = operatorAlertSinkFromEnv();
   const resolver = oracle
     ? new Resolver({
         db,
         oracle,
-        // Wave 2b — ageContext + drandContext removed from Resolver deps.
         onResolved: async (call_id) => {
           // 1. Fan out to SSE subscribers
           try {
@@ -198,18 +217,11 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
           } catch (err) {
             console.warn(`[daemon] sse fan-out failed for ${call_id}:`, err);
           }
-          // Wave 1 — Telegram outbound publish removed alongside
-          // src/integrations/telegram.ts. SSE remains the canonical
-          // fan-out; subscribers route their own bridges if needed.
+          // SSE remains the canonical fan-out; subscribers route their own
+          // Discord/Zapier/OpenServ/custom bridges through webhooks.
         },
       })
     : null;
-  // Wave 1 — ClaimService removed alongside the public-identity /
-  // wallet-only claim flow. The new model is Privy-account-owned
-  // agents (linkAgentToAccount) + API-key submissions; no on-platform
-  // claim service is needed. Operator-mediated manual claim CLI lands
-  // in Wave 5.
-
   const app = express();
   // Phase 4 Hardening B — trust the first reverse-proxy hop. The casual
   // tier (V2 §7.1) lives behind express-rate-limit's IP-keyed buckets
@@ -233,13 +245,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     createVerdictRouter({
       db,
       events,
-      ctx: {
-        events,
-        // Wave 2b — ageContext + drandContext removed from
-        // SubmissionContext alongside the deleted committed-mode
-        // submit path. FHE-direct submissions don't need them.
-        ...(fheProvider ? { fheProvider } : {}),
-      },
       oracleProbe: oracle
         ? async () => {
             try {
@@ -251,19 +256,11 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
             }
           }
         : undefined,
-      resolveSharedSecret: async (agent_id) => {
-        const row = agentsRepo.byId(db, agent_id);
-        if (!row?.api_key_hash) return null;
-        // The HTTP layer expects the actual secret, not the hash. We don't
-        // store secrets in v0.1, so we compute a HMAC against an env-supplied
-        // shared secret table for benchmark agents only. External agents must
-        // bring their own key via the claim flow.
-        const benchmarkKey = process.env[`BENCHMARK_KEY_${row.display_slug}`];
-        if (benchmarkKey && hashSharedSecret(benchmarkKey) === row.api_key_hash) {
-          return benchmarkKey;
-        }
-        return null;
-      },
+      fhenixVerifier,
+      fhenixGateway,
+      liveCanaries,
+      requireLiveCanaries: process.env.MURMUR_REQUIRE_LIVE_CANARIES === "true",
+      operatorAlertSink,
     }),
   );
 
@@ -277,24 +274,13 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   //
   // Each route ships with its own express-rate-limit middleware (in-process
   // MemoryStore — single-instance; multi-replica requires Redis-backed
-  // store, tracked in scaling research §6). Mounted AFTER the verdict
-  // router so `/v1/calls` / `/v1/agents/...` still resolve to the legacy
-  // handlers — `/v1/account/*` is a fresh path prefix with no collision.
+  // store, tracked in scaling research §6). Mounted after the verdict router;
+  // `/v1/account/*` is a fresh path prefix with no collision.
   app.use(accountRouter({ db }));
 
-  // Polymarket Gamma adapter — real HTTP client against
-  // gamma-api.polymarket.com, no key required. Off by default; an operator
-  // who actually wants Polymarket conditionIds to resolve sets
-  // MURMUR_POLYMARKET_GAMMA_ENABLED=1. When unset, the admin upsert route
-  // and adapter dispatch still exist but no rows ever enter the registry
-  // sweep, so the ticker has nothing to do anyway.
-  //
-  // Registration is the load-bearing piece: without it, `/v2/calls`
-  // submissions targeting a Polymarket conditionId can't route through
-  // `getMarketMakerRegistry().get('polymarket-gamma')` and the protocol
-  // lookup 422s. The sync ticker is the secondary piece — it polls Gamma
-  // for resolution status; without it, conditionIds must be polled by the
-  // resolver tick directly via adapter.observeResolution.
+  // Polymarket Gamma adapter registration happens in the market-maker
+  // registry at module load. The optional ticker only pre-warms/syncs Gamma
+  // rows; the resolver can still observe a listed conditionId directly.
   let polymarketStop: (() => void) | null = null;
   if (process.env.MURMUR_POLYMARKET_GAMMA_ENABLED === "1") {
     const { registerPolymarketGammaAdapter } = await import(
@@ -315,7 +301,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     typeof addr === "object" && addr !== null ? addr.port : port;
 
   // Cron tickers — every ticker is wrapped in an in-flight guard so a slow
-  // run (e.g. oracle/Telegram path) never overlaps with the next tick.
+  // oracle or event-indexing run never overlaps with the next tick.
   const tickers: NodeJS.Timeout[] = [];
   if (!opts.skipTickers) {
     if (resolver) {
@@ -329,6 +315,44 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
         "[daemon] resolver disabled — set BASE_MAINNET_RPC_URL to enable",
       );
     }
+    if (fhenixIngestor) {
+      tickers.push(
+        setIntervalGuarded(FHENIX_EVENT_TICK_SEC * 1000, "fhenix-events", async () => {
+          await fhenixIngestor.tick();
+        }),
+      );
+    }
+    if (fhenixGateway) {
+      tickers.push(
+        setIntervalGuarded(FHENIX_GATEWAY_TICK_SEC * 1000, "fhenix-gateway", async () => {
+          await fhenixGateway.tick();
+        }),
+      );
+    }
+    tickers.push(
+      setIntervalGuarded(FEED_SLA_TICK_SEC * 1000, "feed-sla", async () => {
+        runFeedSlaTick(db);
+      }),
+    );
+    if (liveCanaries.hasEnabledChecks()) {
+      void liveCanaries.runNow().catch((err) => {
+        console.warn("[daemon] live canary startup check failed:", err);
+      });
+      tickers.push(
+        setIntervalGuarded(LIVE_CANARY_TICK_SEC * 1000, "live-canaries", async () => {
+          await liveCanaries.runNow();
+        }),
+      );
+    }
+    tickers.push(
+      setIntervalGuarded(OPERATOR_ALERT_TICK_SEC * 1000, "operator-alerts", async () => {
+        await runOperatorAlertTick({
+          db,
+          liveCanaries,
+          sink: operatorAlertSink,
+        });
+      }),
+    );
     // Stats heartbeat — emits a `stats.tick` every 10s so the landing-page
     // hero counter stays current even when no calls flow through. Cheap:
     // single COUNT-with-WHERE query; no oracle calls.
@@ -362,25 +386,23 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     );
   }
 
-  // Optional OpenServ adapter — opt-in only. The @openserv-labs/sdk has
-  // `openai` as a peer dep that we don't ship by default, so we only attempt
-  // the dynamic import when the operator explicitly sets
-  // OPENSERV_VERDICT_ENABLED=true.
+  // Optional OpenServ Launchpad agent — opt-in only. This is a public
+  // discovery/growth surface for OpenServ, not part of Murmur's private
+  // verdict submission, Fhenix reveal, scoring, or resolution path.
   if (
     !opts.skipOpenServ &&
-    process.env.OPENSERV_VERDICT_ENABLED === "true" &&
+    process.env.OPENSERV_LAUNCHPAD_ENABLED === "true" &&
     process.env.OPENSERV_API_KEY
   ) {
     try {
-      const { startVerdictOpenServAgent } = await import(
-        "../integrations/openserv-verdict.js"
+      const { startLaunchpadOpenServAgent } = await import(
+        "../integrations/openserv-launchpad.js"
       );
-      await startVerdictOpenServAgent({
+      await startLaunchpadOpenServAgent({
         db,
-        ctx: {},
       });
     } catch (err) {
-      console.warn("[daemon] OpenServ adapter failed to start:", err);
+      console.warn("[daemon] OpenServ Launchpad agent failed to start:", err);
     }
   }
 
