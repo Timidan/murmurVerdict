@@ -43,7 +43,7 @@ function entriesFromBroadcast(path: string, chainId: number): DeploymentEntry[] 
       address: tx.contractAddress,
       deployedAt,
       txHash: tx.hash,
-      blockNumber: blockByHash.get(tx.hash) ?? 0,
+      blockNumber: blockByHash.get(tx.hash) ?? (console.warn(`[sync] no receipt for tx ${tx.hash} in ${path}, using blockNumber=0`), 0),
     });
   }
   return out;
@@ -69,11 +69,10 @@ function patchEnv(latest: Map<string, DeploymentEntry>, envPath = ".env"): void 
     const entry = latest.get(contractName);
     if (!entry) continue;
     const line = `${envKey}=${entry.address}`;
-    if (body.match(new RegExp(`^${envKey}=.*$`, "m"))) {
-      body = body.replace(new RegExp(`^${envKey}=.*$`, "m"), line);
-    } else {
-      body += (body.endsWith("\n") ? "" : "\n") + line + "\n";
-    }
+    const matcher = new RegExp(`^${envKey}=.*$\\r?\\n?`, "gm");
+    body = body.replace(matcher, "");
+    if (!body.endsWith("\n") && body.length > 0) body += "\n";
+    body += line + "\n";
   }
   writeFileSync(envPath, body);
   console.log(`[sync] patched ${envPath} (backup at ${envPath}.bak)`);
