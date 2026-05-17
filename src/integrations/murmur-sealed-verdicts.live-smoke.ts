@@ -54,7 +54,23 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { cofhejs, Encryptable, FheTypes, type Permission } from "cofhejs/node";
+// cofhejs/node.mjs has broken dynamic requires in ESM context; load via CJS path.
+// The .js (CJS) build works fine when required via createRequire in the ESM host.
+// We use an absolute filesystem path to bypass the package exports map restriction.
+import { createRequire } from "node:module";
+import { resolve as pathResolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+const _require = createRequire(import.meta.url);
+const _cofhejsCjsPath = pathResolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../node_modules/cofhejs/dist/node.js",
+);
+const {
+  cofhejs,
+  Encryptable,
+  FheTypes,
+} = _require(_cofhejsCjsPath) as typeof import("cofhejs/node");
+type Permission = import("cofhejs/node").Permission;
 import { loadDeployment } from "./deployments.js";
 
 const CHAIN_ID = 84532;
