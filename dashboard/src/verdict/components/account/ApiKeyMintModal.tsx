@@ -137,6 +137,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               type="button"
               onClick={() => void copyToClipboard(result.secret, "raw")}
               className="ck-btn ck-btn-accent justify-center"
+              aria-label="copy key"
             >
               [ copy key ]
             </button>
@@ -144,6 +145,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               type="button"
               onClick={() => void copyToClipboard(envLine, "env")}
               className="ck-btn justify-center"
+              aria-label="copy as .env line"
             >
               [ copy as .env line ]
             </button>
@@ -189,6 +191,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               onClick={onDone}
               disabled={!saved}
               className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+              aria-label="done"
             >
               [ done → ]
             </button>

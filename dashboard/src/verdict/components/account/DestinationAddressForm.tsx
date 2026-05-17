@@ -277,6 +277,7 @@ export function DestinationAddressForm({
             type="submit"
             disabled={!canSubmit}
             className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+            aria-label="update address"
           >
             [ update address → ]
           </button>

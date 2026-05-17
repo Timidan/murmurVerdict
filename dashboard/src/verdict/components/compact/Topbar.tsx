@@ -50,11 +50,18 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
         <CompactNavLink href="#/today">feed</CompactNavLink>
         <CompactNavLink href="#/launch">install</CompactNavLink>
         <CompactNavLink href="#/recruiters">recruiters</CompactNavLink>
-        <span className="px-2 ck-mono ck-dim border-l border-[var(--color-border)] tabular-nums">
+        <span
+          aria-hidden="true"
+          className="px-2 ck-mono ck-dim border-l border-[var(--color-border)] tabular-nums"
+        >
           {now.toISOString().slice(11, 19)}Z
         </span>
         <ThemeToggle />
-        <span className={"px-2 ck-label border-l border-[var(--color-border)] " + (live ? "ck-pos" : "ck-neg")}>
+        <span
+          role="status"
+          aria-live="polite"
+          className={"px-2 ck-label border-l border-[var(--color-border)] " + (live ? "ck-pos" : "ck-neg")}
+        >
           {live ? "live" : "offline"}
         </span>
       </nav>

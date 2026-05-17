@@ -90,7 +90,7 @@ function FeedRows({ rows, pending }: { rows: TodayFeedRow[]; pending?: boolean }
           >
             <a href={`#/calls/${row.call_id}`} className="contents no-underline">
               <span className="ck-mono ck-dim">{ts}</span>
-              <span aria-label="sealed" className="ck-dim">▪</span>
+              <span aria-hidden="true" className="ck-dim">▪</span>
               <span className="ck-mono ck-dim truncate">@{row.agent_slug}</span>
               <span className={"ck-mono text-right " + outcomeTone}>{outcomeText}</span>
             </a>

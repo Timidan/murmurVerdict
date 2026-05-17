@@ -285,6 +285,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
           disabled={minting}
           onClick={() => void doMint()}
           className="ck-btn ck-pos disabled:opacity-40 disabled:cursor-not-allowed"
+          aria-label="mint new key"
         >
           [ + mint new key ]
         </button>

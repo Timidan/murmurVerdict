@@ -951,7 +951,9 @@ function TokenPrompt({
           }}
           className="flex flex-col gap-4"
         >
+          <label htmlFor="admin-gateway-token" className="ck-label">admin token</label>
           <input
+            id="admin-gateway-token"
             type="password"
             value={value}
             onChange={(e) => onChange(e.target.value)}

@@ -208,10 +208,9 @@ export function AgentNewPage() {
     // happens immediately and the hook flushes the result by the time
     // IntegratePage's useMemo lands.
     void account.refreshAgents();
-    // Phase 7d sessionStorage handoff — stash the just-minted secret so
-    // IntegratePage can render it inline in the TS/Python/curl snippets
-    // for the next 5 minutes. Refresh past that window or close the tab
-    // and the snippets fall back to MURMUR_API_KEY env-var refs.
+    // Legacy sessionStorage handoff — consume and clear the just-minted API
+    // key on IntegratePage so retired submission credentials are not re-shown
+    // beside the Runtime Key Gateway snippets.
     if (minted) {
       stashJustMinted(minted.slug, minted.result.secret);
     }
@@ -282,6 +281,7 @@ export function AgentNewPage() {
                   disabled={minting}
                   onClick={() => doMint(createdSlug)}
                   className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                  aria-label="retry key mint"
                 >
                   [ retry key mint → ]
                 </button>
@@ -385,6 +385,7 @@ export function AgentNewPage() {
                 type="submit"
                 disabled={!formReady}
                 className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label="mint agent"
               >
                 [ mint agent → ]
               </button>

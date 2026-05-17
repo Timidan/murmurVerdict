@@ -94,6 +94,7 @@ export function LoginPage({ next }: LoginPageProps) {
               onClick={onSignInClick}
               disabled={!account.configured || !account.ready || account.loading}
               className="ck-btn ck-pos justify-center py-2"
+              aria-label="sign in"
             >
               [ sign in ]
             </button>

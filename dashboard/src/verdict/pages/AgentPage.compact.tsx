@@ -197,7 +197,7 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
       <li className="grid grid-cols-[64px_14px_1fr_50px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
         <span>time</span>
         <span aria-hidden="true"></span>
-        <span>note</span>
+        <span>note<span className="sr-only"> (each row sealed)</span></span>
         <span className="text-right">out</span>
       </li>
       {calls.map((c) => {
@@ -214,7 +214,7 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
           >
             <a href={`#/calls/${c.call_id}`} className="contents no-underline">
               <span className="ck-mono ck-dim">{ts}</span>
-              <span aria-label="sealed" className="ck-dim">▪</span>
+              <span aria-hidden="true" className="ck-dim">▪</span>
               <span className="ck-mono ck-dim truncate">{note}</span>
               <span
                 className={
