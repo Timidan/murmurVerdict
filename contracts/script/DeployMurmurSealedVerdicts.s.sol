@@ -11,7 +11,7 @@ contract DeployMurmurSealedVerdicts is Script {
     function run() external returns (MurmurSealedVerdicts verdicts) {
         uint256 deployerKey = vm.envUint("DEPLOY_PRIVATE_KEY");
         address relayer = vm.envAddress("RELAYER_ADDRESS");
-        require(relayer != address(0), "RELAYER_ADDRESS unset");
+        require(relayer != address(0), "RELAYER_ADDRESS must not be zero");
 
         vm.startBroadcast(deployerKey);
         verdicts = new MurmurSealedVerdicts();
