@@ -1,6 +1,19 @@
 /**
  * Live smoke: CoFHE full-lifecycle round-trip against Base Sepolia.
  *
+ * KNOWN BLOCKER (as of 2026-05-17): cofhejs@0.3.1 + node-tfhe@0.11.1 cannot
+ * deserialize the Fhenix testnet's CompactPkeCrs key format. The testnet publishes
+ * TFHE keys at version "0.5" (key header 0x0300000000000000302e35...) while
+ * node-tfhe@0.11.1 WASM expects an older format. TfheCompactPublicKey can be
+ * patched via safe_deserialize(budget), but CompactPkeCrs deserialization fails
+ * with "invalid value: integer 1, expected variant index 0 <= i < 1" under all
+ * methods (deserialize, safe_deserialize, safe_deserialize_from_public_params).
+ * Without a valid CRS, ProvenCompactCiphertextList.build_with_proof_packed cannot
+ * run, so ZK input proofs cannot be generated, so cofhejs.encrypt() will fail.
+ * Resolution: upgrade node-tfhe to a version compatible with the testnet's TFHE 0.5
+ * key format, or switch to a newer cofhejs that supports the testnet's key format.
+ * The smoke code below is correct and complete; it just cannot run past step 2.
+ *
  * Discovered cofhejs@0.3.1 API surface (cofhejs/node):
  *   - cofhejs.initializeWithViem(params)
  *       params: { viemClient, viemWalletClient?, environment, generatePermit? }
