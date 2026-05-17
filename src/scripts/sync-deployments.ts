@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { readManifest, manifestPath, type DeploymentEntry } from "../integrations/deployments.js";
@@ -32,7 +33,7 @@ interface ForgeBroadcast {
 function entriesFromBroadcast(path: string, chainId: number): DeploymentEntry[] {
   const data = JSON.parse(readFileSync(path, "utf8")) as ForgeBroadcast;
   const blockByHash = new Map(data.receipts.map(r => [r.transactionHash, parseInt(r.blockNumber, 16)]));
-  const deployedAt = new Date(data.timestamp * 1000).toISOString();
+  const deployedAt = new Date(data.timestamp).toISOString();
   const out: DeploymentEntry[] = [];
   for (const tx of data.transactions) {
     if (tx.transactionType !== "CREATE" && tx.transactionType !== "CREATE2") continue;

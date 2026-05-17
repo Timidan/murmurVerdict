@@ -19,7 +19,7 @@
     "smoke:fhenix-watcher": "tsx src/integrations/fhenix-watcher.smoke.ts",
     "smoke:openserv": "tsx src/integrations/openserv-launchpad.smoke.ts",
     "smoke:contracts": "PATH=\"$HOME/.foundry/bin:$PATH\" forge test --root contracts",
-    "deploy:contracts": "PATH=\"$HOME/.foundry/bin:$PATH\" bash -c 'forge script --root contracts script/DeployMurmurSealedVerdicts.s.sol:DeployMurmurSealedVerdicts --rpc-url \"$BASE_RPC_URL\" --broadcast -vvv && forge script --root contracts script/DeployMurmurEscrow.s.sol:DeployMurmurEscrow --rpc-url \"$BASE_RPC_URL\" --broadcast -vvv'",
+    "deploy:contracts": "PATH=\"$HOME/.foundry/bin:$PATH\" bash -c 'cd contracts && forge script script/DeployMurmurSealedVerdicts.s.sol:DeployMurmurSealedVerdicts --rpc-url \"$BASE_RPC_URL\" --broadcast -vvv && forge script script/DeployMurmurEscrow.s.sol:DeployMurmurEscrow --rpc-url \"$BASE_RPC_URL\" --broadcast -vvv'",
     "sync:deployments": "tsx src/scripts/sync-deployments.ts",
     "verify:deployments": "tsx src/scripts/verify-deployments.ts",
     "dashboard": "vite --config dashboard/vite.config.ts",

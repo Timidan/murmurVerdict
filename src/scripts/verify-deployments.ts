@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { createPublicClient, http, getAddress, parseAbi } from "viem";
 import { baseSepolia } from "viem/chains";
 import { loadDeployment } from "../integrations/deployments.js";
