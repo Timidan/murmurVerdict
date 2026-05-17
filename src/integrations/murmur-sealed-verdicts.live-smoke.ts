@@ -273,15 +273,18 @@ async function main() {
   const callId = submittedLog!.topics[1] as Hex;
   console.log(`[smoke] ok: sealed call submitted (callId=${callId}, tx=${submitTx})`);
 
-  // Step 4 — wait until the reveal window opens
+  // Step 4 — wait until the reveal window opens (max 15 min guard)
   const revealOpenAt = await publicClient.readContract({
     address: contractAddress,
     abi: ABI,
     functionName: "callRevealOpenAt",
     args: [callId],
   });
+  const maxWaitMs = 15 * 60 * 1000;
+  const waitDeadline = Date.now() + maxWaitMs;
   console.log(`[smoke] waiting for reveal window (revealOpenAt=${revealOpenAt}, now=${Math.floor(Date.now() / 1000)})`);
   while (Math.floor(Date.now() / 1000) < Number(revealOpenAt)) {
+    if (Date.now() > waitDeadline) throw new Error("Timed out waiting for reveal window");
     const remaining = Number(revealOpenAt) - Math.floor(Date.now() / 1000);
     console.log(`[smoke] ${remaining}s until reveal window opens…`);
     await new Promise((r) => setTimeout(r, 5_000));
