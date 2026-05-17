@@ -1,1 +1,18 @@
-[]
+[
+  {
+    "chainId": 84532,
+    "contractName": "MurmurEscrow",
+    "address": "0x0385ea24f0777ad24b9203548f4916d3ae06e0b3",
+    "deployedAt": "2026-05-17T16:56:02.370Z",
+    "txHash": "0x50871c385ffc4d3c7c4d234662bd757e22cf90b631ca8e64d4e29e0b4fb0a26c",
+    "blockNumber": 41634338
+  },
+  {
+    "chainId": 84532,
+    "contractName": "MurmurSealedVerdicts",
+    "address": "0xe2ee519bfa5e8fcd8b6d6339b123968e23bc00f7",
+    "deployedAt": "2026-05-17T16:55:40.935Z",
+    "txHash": "0x462b15e94ade0e54ec02aa6652ccc7e30483dbbf5339157d17d07042d83f4e0f",
+    "blockNumber": 41634327
+  }
+]
