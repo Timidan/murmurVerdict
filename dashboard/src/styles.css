@@ -192,7 +192,7 @@
 
 /* ────────────────────────────────────────────────────────────────────────────
    Brand pattern — paper-mode only. Applied to marketing surfaces
-   (recruiters, share, spec). Asset: public/brand/pattern-paper.png
+   (recruiters, share, spec). Asset: public/brand/pattern-paper.webp
    (160x160 tile). Subtle: ~50% opacity layer on top of bg.
    ──────────────────────────────────────────────────────────────────────── */
 
@@ -203,7 +203,7 @@
   content: "";
   position: absolute;
   inset: 0;
-  background-image: url("/brand/pattern-paper.png");
+  background-image: url("/brand/pattern-paper.webp");
   background-repeat: repeat;
   background-size: 160px 160px;
   opacity: 0.5;
