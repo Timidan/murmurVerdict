@@ -162,20 +162,23 @@ async function pollDecrypt(
   permission: Permission,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let attempt = 0;
   while (Date.now() < deadline) {
+    attempt++;
     try {
       const result = await fetchDecryptWithSignature(ctHashBigint, permission);
       if (result.signature && result.signature !== "0x" && result.signature.length > 4) {
+        console.log(`[smoke] ${label} decrypted after ${attempt} poll(s)`);
         return result;
       }
-      console.log(`[smoke] polling ${label} (no signature yet)…`);
+      console.log(`[smoke] polling ${label} (attempt=${attempt}, no signature yet)…`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.log(`[smoke] polling ${label}… (${msg})`);
+      console.log(`[smoke] polling ${label} (attempt=${attempt}, ${msg})…`);
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
-  throw new Error(`Timed out waiting for ${label}`);
+  throw new Error(`Timed out waiting for ${label} after ${attempt} attempts`);
 }
 
 async function main() {
