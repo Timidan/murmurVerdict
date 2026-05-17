@@ -121,10 +121,10 @@ contracts/broadcast/
 **/__*_smoke__.tsx
 
 # Local SQLite databases
-/data/
 data/*.db
 data/*.db-journal
 data/*.db-wal
+data/*.db-shm
 
 # Claude Code session-local state
 /.claude/
