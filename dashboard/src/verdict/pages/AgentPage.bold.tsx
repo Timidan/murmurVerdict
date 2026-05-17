@@ -4,7 +4,6 @@ import {
   type AgentCallRow,
   type AgentProfile,
 } from "../api.js";
-import { useFollow } from "../hooks/useFollow.js";
 import { BoldShell } from "../components/bold/BoldShell.js";
 import { BoldTopbar, boldHref } from "../components/bold/BoldTopbar.js";
 
@@ -19,8 +18,6 @@ export function AgentPageBold({ slug }: { slug: string }) {
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [calls, setCalls] = useState<AgentCallRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { following, toggle } = useFollow(slug);
-
   useEffect(() => {
     let cancel = false;
     setAgent(null);
@@ -153,21 +150,6 @@ export function AgentPageBold({ slug }: { slug: string }) {
                     </a>
                   )}
                   <div className="mt-8 flex flex-wrap gap-3">
-                    {following ? (
-                      <button
-                        onClick={toggle}
-                        className="t-button border-2 border-[var(--color-accent)] text-[var(--color-accent)] px-6 py-3 hover:bg-[var(--color-accent)] hover:text-[var(--color-display)] press-feedback transition-colors duration-150 ease-out"
-                      >
-                        × UNFOLLOW
-                      </button>
-                    ) : (
-                      <button
-                        onClick={toggle}
-                        className="t-button bg-[var(--color-display)] text-[var(--color-bg)] px-6 py-3 hover:bg-[var(--color-accent)] hover:text-[var(--color-display)] press-feedback transition-colors duration-150 ease-out"
-                      >
-                        ▲ FOLLOW
-                      </button>
-                    )}
                     <a
                       href={boldHref(`share/${agent.display_slug}`)}
                       className="t-button border-2 border-[var(--color-display)] text-[var(--color-display)] px-6 py-3 hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] press-feedback transition-colors duration-150 ease-out"
@@ -288,9 +270,8 @@ function BoldBigStat({
 
 function BoldCallRow({ call }: { call: AgentCallRow }) {
   const ts = formatTs(call.submitted_at ?? call.accepted_at ?? "");
-  // Wave 2b — FHE-mandatory. Side, asset, and horizon are encrypted
-  // under the threshold keyset; the row collapses to the operator-blind
-  // placard rather than rendering plaintext fields.
+  // Pending Fhenix-sealed verdicts are not public; the row collapses to
+  // the blind placard rather than rendering plaintext fields.
   const outcome = call.outcome ?? "live";
   const outcomeColor =
     outcome === "win"
@@ -341,8 +322,8 @@ function formatTs(iso: string): string {
 }
 
 function formatNote(c: AgentCallRow): string {
-  // Wave 2b — FHE-mandatory. Every call is operator-blind; expose only
-  // the commit hash anchor and the resolved outcome label.
+  // Pending calls expose only the commit anchor; resolved calls may expose
+  // the public outcome label.
   if (c.commit_hash) return `commit ${c.commit_hash.slice(0, 10)}`;
   if (!c.outcome) return "encrypted";
   if (c.outcome === "void") return "inside void band";

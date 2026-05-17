@@ -9,7 +9,6 @@ import {
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
-import { useFollow } from "../hooks/useFollow.js";
 
 /**
  * COMPACT per-agent dashboard. Single screen splits:
@@ -22,8 +21,6 @@ export function AgentPageCompact({ slug }: { slug: string }) {
   const [calls, setCalls] = useState<AgentCallRow[] | null>(null);
   const [grid, setGrid] = useState<AgentMarketRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { following, toggle } = useFollow(slug);
-
   useEffect(() => {
     let cancel = false;
     setAgent(null);
@@ -129,12 +126,6 @@ export function AgentPageCompact({ slug }: { slug: string }) {
               since {agent.created_at.slice(0, 10)}
             </span>
             <span className="ml-auto flex items-center gap-1">
-              <button
-                onClick={toggle}
-                className={"ck-btn " + (following ? "ck-btn-accent" : "ck-btn-active")}
-              >
-                {following ? "× unfollow" : "+ follow"}
-              </button>
               <a href={`#/share/${agent.display_slug}`} className="ck-btn">
                 share
               </a>

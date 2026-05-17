@@ -4,7 +4,6 @@ import {
   type AgentCallRow,
   type AgentProfile,
 } from "../api.js";
-import { useFollow } from "../hooks/useFollow.js";
 import { CalmShell } from "../components/calm/CalmShell.js";
 import { CalmTopbar } from "../components/calm/CalmTopbar.js";
 import { CalmFooter } from "../components/calm/CalmFooter.js";
@@ -25,8 +24,6 @@ export function AgentPageCalm({ slug }: { slug: string }) {
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [calls, setCalls] = useState<AgentCallRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { following, toggle } = useFollow(slug);
-
   useEffect(() => {
     let cancel = false;
     setAgent(null);
@@ -136,15 +133,6 @@ export function AgentPageCalm({ slug }: { slug: string }) {
                   )}
                 </div>
                 <div className="flex items-center gap-6">
-                  {following ? (
-                    <button onClick={toggle} className="calm-button-ghost">
-                      Following · unfollow
-                    </button>
-                  ) : (
-                    <button onClick={toggle} className="calm-button">
-                      Follow
-                    </button>
-                  )}
                   <a href={`#/share/${agent.display_slug}`} className="calm-link">
                     Share
                   </a>
@@ -190,12 +178,6 @@ export function AgentPageCalm({ slug }: { slug: string }) {
                 <CalmCallList calls={calls} title="Recent calls" />
               </section>
             )}
-
-            {/* Wave 1 — shadow profile notice + CLAIM CTA removed.
-                Self-serve claim flow deleted; shadow agents from the
-                v0.1 era are now decorative leaderboard entries until
-                an operator manually flips them via the admin CLI
-                (Wave 5). */}
           </>
         )}
       </main>
