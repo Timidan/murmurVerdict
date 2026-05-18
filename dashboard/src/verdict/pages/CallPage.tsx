@@ -84,7 +84,15 @@ export function CallPage({ callId }: { callId: string }) {
                 <Kv k="commit_hash" v={data.submission.commit_hash} mono />
               )}
               {data.submission.confidence !== undefined && (
-                <Kv k="confidence" v={`${(data.submission.confidence * 100).toFixed(0)}%`} />
+                <Kv
+                  k="confidence"
+                  v={
+                    data.resolution !== null
+                      ? `${(data.submission.confidence * 100).toFixed(0)}%`
+                      : "sealed"
+                  }
+                  tone={data.resolution !== null ? undefined : "ck-dim"}
+                />
               )}
               {data.submission.submitted_at && (
                 <Kv k="submitted_at" v={data.submission.submitted_at} />

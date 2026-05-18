@@ -38,18 +38,9 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
             <span className="ck-label">
               {isResolved ? "res" : "acc"}
             </span>
-            <span
-              className={
-                "ck-mono " +
-                (evt.type === "call.accepted"
-                  ? evt.side === "SELL"
-                    ? "ck-neg"
-                    : "ck-pos"
-                  : "ck-dim")
-              }
-            >
+            <span className="ck-mono ck-dim">
               {evt.type === "call.accepted"
-                ? (evt.side ?? "hash").toLowerCase()
+                ? "sealed"
                 : (evt.outcome ?? "—").slice(0, 4)}
             </span>
             <a
@@ -61,7 +52,7 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
             </a>
             <span className="ck-mono ck-dim text-right truncate">
               {evt.type === "call.accepted"
-                ? (evt.asset_id?.split(":").pop() ?? "—")
+                ? "blind"
                 : evt.call_score !== null && evt.call_score !== undefined
                   ? formatScore(evt.call_score)
                   : "—"}
