@@ -5,3 +5,4 @@ import MurmurFV.Common.Time
 import MurmurFV.Escrow.State
 import MurmurFV.Escrow.Transitions
 import MurmurFV.SealedVerdicts.State
+import MurmurFV.SealedVerdicts.Transitions
