@@ -7,3 +7,4 @@ import MurmurFV.Escrow.Transitions
 import MurmurFV.Escrow.InvariantE2
 import MurmurFV.SealedVerdicts.State
 import MurmurFV.SealedVerdicts.Transitions
+import MurmurFV.SealedVerdicts.InvariantV1
