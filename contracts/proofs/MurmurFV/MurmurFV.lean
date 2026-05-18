@@ -9,3 +9,4 @@ import MurmurFV.SealedVerdicts.State
 import MurmurFV.SealedVerdicts.Transitions
 import MurmurFV.SealedVerdicts.InvariantV1
 import MurmurFV.SealedVerdicts.InvariantV1Feed
+import MurmurFV.SealedVerdicts.InvariantV2
