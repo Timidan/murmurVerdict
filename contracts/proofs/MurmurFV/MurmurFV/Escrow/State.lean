@@ -27,14 +27,18 @@ inductive RequestState where
   | Canceled
 deriving DecidableEq, Repr
 
-/-- InferenceRequest. Mirrors `MurmurEscrow.sol:69-90`. -/
+/-- InferenceRequest. Mirrors `MurmurEscrow.sol:76-85`. The Solidity
+    `marketDataCutoff` field is intentionally omitted — it's
+    operator-declared input-freshness metadata that doesn't participate
+    in the E1 / E2 invariants (per spec §4). -/
 structure InferenceRequest where
   pipelineId  : Bytes32
   buyer       : Address
   paidAmount  : Nat        -- uint96
-  acceptedAt  : Nat        -- uint64
-  committedAt : Nat        -- uint64
+  paidAt      : Nat        -- uint64
+  slaDeadline : Nat        -- uint64; paidAt + slaSeconds at create time
   commitHash  : Bytes32
+  committedAt : Nat        -- uint64
   state       : RequestState
 deriving Repr
 
