@@ -134,11 +134,14 @@ export function MobileNavDrawer() {
         <div className="flex flex-col">
           {ROWS.map((row) =>
             row.button ? (
-              <div key={row.label} className="px-4 py-3">
+              <div
+                key={row.label}
+                className="flex items-center h-12 px-4 border-t border-[var(--color-border)] first:border-t-0"
+              >
                 <a
                   href={row.href}
                   onClick={close}
-                  className="t-button block text-center border border-[var(--color-display)] text-[var(--color-display)] px-3 py-2 hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] transition-colors duration-150 ease-out press-feedback no-underline"
+                  className="t-button block w-full text-center border border-[var(--color-display)] text-[var(--color-display)] px-3 py-1 hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] transition-colors duration-150 ease-out press-feedback no-underline"
                 >
                   INSTALL
                 </a>
