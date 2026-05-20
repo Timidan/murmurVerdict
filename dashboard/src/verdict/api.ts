@@ -111,6 +111,31 @@ export interface FullCall {
     call_score: number | null;
     resolved_at: string;
   } | null;
+  // Sealed-Fhenix lifecycle projection. The daemon emits this sub-object
+  // only when the call's privacy_mode is "sealed_fhenix" (see
+  // src/verdict/api.ts:2254-2278). Pre-reveal it carries only opaque
+  // ciphertext handles + lifecycle timestamps. Post-publish it gains a
+  // `revealed_verdict` sub-object with plaintext binary_index /
+  // confidence_bps. Field names + nullability mirror the daemon
+  // projection verbatim — operator-blind invariant means revealed_verdict
+  // is absent (not null) pre-reveal.
+  fhenix?: {
+    chain_id: number;
+    contract_address: string;
+    onchain_call_id: string;
+    binary_index_ct_hash: string;
+    confidence_ct_hash: string;
+    reveal_open_at: string;
+    reveal_status: "pending" | "revealed" | "invalid" | "missed";
+    invalid_reason: string | null;
+    terminal_at: string | null;
+    revealed_at: string | null;
+    revealed_verdict?: {
+      binary_index: number;
+      confidence_bps: number;
+      confidence: number;
+    };
+  };
 }
 
 // Wave 4b-2 — MarketPreflightSnapshot dropped alongside the Santiment

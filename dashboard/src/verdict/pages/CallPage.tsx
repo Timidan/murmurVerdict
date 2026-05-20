@@ -83,16 +83,37 @@ export function CallPage({ callId }: { callId: string }) {
               {data.submission.commit_hash && (
                 <Kv k="commit_hash" v={data.submission.commit_hash} mono />
               )}
-              {data.submission.confidence !== undefined && (
-                <Kv
-                  k="confidence"
-                  v={
-                    data.resolution !== null
-                      ? `${(data.submission.confidence * 100).toFixed(0)}%`
-                      : "sealed"
-                  }
-                  tone={data.resolution !== null ? undefined : "ck-dim"}
-                />
+              {/* Sealed-Fhenix plaintext reveal. The daemon's projection
+                  strips submission.confidence (see
+                  src/verdict/projections.ts), so the only authoritative
+                  source for plaintext post-reveal is
+                  fhenix.revealed_verdict. Pre-reveal we show a "sealed"
+                  affordance; post-reveal we show binary_index → side and
+                  confidence_bps as a percentage. */}
+              {data.fhenix && (
+                <>
+                  {data.fhenix.revealed_verdict ? (
+                    <>
+                      <Kv
+                        k="side"
+                        v={
+                          data.fhenix.revealed_verdict.binary_index === 0
+                            ? "UP"
+                            : "DOWN"
+                        }
+                      />
+                      <Kv
+                        k="confidence"
+                        v={`${(data.fhenix.revealed_verdict.confidence_bps / 100).toFixed(2)}%`}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <Kv k="side" v="sealed" tone="ck-dim" />
+                      <Kv k="confidence" v="sealed" tone="ck-dim" />
+                    </>
+                  )}
+                </>
               )}
               {data.submission.submitted_at && (
                 <Kv k="submitted_at" v={data.submission.submitted_at} />
