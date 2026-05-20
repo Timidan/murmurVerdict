@@ -48,7 +48,9 @@ The `NoDonation` axiom is a documented invocation point. The
 `Transition` inductive in `Escrow/Transitions.lean` has no constructor
 that lets an external party transfer USDC into the escrow outside
 `RequestInference`, so the property is automatically true under the
-abstract model. The axiom is retained as a named grep target.
+abstract model. E1's headline theorem still invokes the axiom explicitly
+so the real-world USDC no-donation assumption is visible in
+`#print axioms` output.
 
 ### `Time.lean`
 
@@ -60,8 +62,10 @@ axiom BlockTimeMonotone : ∀ (t₁ t₂ : BlockTime), t₁ ≤ t₂ ∨ t₂ �
 `block.timestamp` modelled as a free `Nat` per transition. Each
 `step`-arm that takes a `now` argument writes `s.blockTime := now` on
 success; nothing forces consecutive transitions to use a monotone
-`now`. `BlockTimeMonotone` is a placeholder for trace-level proofs that
-would require it (none of the current 6 invariants do).
+`now`. The V2 and V2Feed reveal-gating corollaries invoke
+`BlockTimeMonotone` at the successful-open proof step that turns the
+rejected `now < reveal...` guard into the ordered
+`now ≥ reveal...` conclusion.
 
 ## Escrow layer (`MurmurFV/Escrow/`)
 
@@ -184,6 +188,90 @@ chains. Critical guard summary:
 
 `step : EscrowState → Transition → Option EscrowState` is total and
 deterministic; `none` ≡ revert; `some s'` ≡ committed new state.
+
+### Off-chain invariants assumed by the proofs
+
+E1 is stated with a `WellFormed s₀` precondition
+(`MurmurFV/Escrow/InvariantE1.lean:1058`). The predicate is:
+
+```lean
+-- MurmurFV/Escrow/InvariantE1.lean:89-93
+def WellFormed (s : EscrowState) : Prop :=
+  s.escrowAddr ≠ s.protocolFeeSink ∧
+  (∀ pid p, s.pipelines pid = some p → s.escrowAddr ≠ p.agentOwner) ∧
+  (∀ rid r, s.requests rid = some r → s.escrowAddr ≠ r.buyer) ∧
+  s.protocolFeeBps ≤ BPS_DENOMINATOR
+```
+
+`ReachableWF` also requires transition inputs that preserve those
+clauses:
+
+```lean
+-- MurmurFV/Escrow/InvariantE1.lean:106-111
+def WellFormedTx (s : EscrowState) (tx : Transition) : Prop :=
+  match tx with
+  | .RequestInference caller _ _ _ => s.escrowAddr ≠ caller
+  | .CreatePipeline _ _ p          => s.escrowAddr ≠ p.agentOwner
+  | .SetProtocolFeeSink _ newSink  => s.escrowAddr ≠ newSink
+  | _ => True
+```
+
+These are proof preconditions, not new Solidity guards. The address
+separation clauses are operator/deployment invariants: the constructor
+stores `protocolFeeSink_` directly
+(`MurmurEscrow.sol:155-158`), `createPipeline` stores the supplied
+`agentOwner` directly (`MurmurEscrow.sol:170-182`), and
+`requestInference` records `buyer: msg.sender`
+(`MurmurEscrow.sol:226-229`). The bps clause is still part of
+`WellFormed`; current Solidity maintains a stronger runtime bound with
+`MAX_PROTOCOL_FEE_BPS = 1000` (`MurmurEscrow.sol:44`) and
+`if (newBps > MAX_PROTOCOL_FEE_BPS) revert FeeTooHigh();`
+(`MurmurEscrow.sol:336-337`).
+
+| Clause | Why E1 needs it | Operator check | Production harm if violated |
+|--------|-----------------|----------------|-----------------------------|
+| `s.escrowAddr ≠ s.protocolFeeSink` (`InvariantE1.lean:90`) | `Finalize` uses it to prove the fee transfer reduces escrow balance (`InvariantE1.lean:896-923`). | Deploy script must reject a fee sink equal to the escrow address, or post-deploy set a non-escrow sink before enabling traffic. | The fee leg becomes an escrow-to-escrow transfer; the request can finalize while fee value remains trapped in escrow, so live request sum and escrow balance diverge. |
+| `∀ pid p, s.pipelines pid = some p → s.escrowAddr ≠ p.agentOwner` (`InvariantE1.lean:91`) | `Finalize` uses it to prove the agent payout reduces escrow balance (`InvariantE1.lean:896-898`, `InvariantE1.lean:931-933`). | Pipeline construction must assert `agentOwner != escrowAddr` before calling `createPipeline`. | The payout leg becomes an escrow-to-escrow transfer; the request is finalized but the agent is not paid and funds remain stranded. |
+| `∀ rid r, s.requests rid = some r → s.escrowAddr ≠ r.buyer` (`InvariantE1.lean:92`) | `RequestInference` uses the transition-level caller check to prove escrow balance increases (`InvariantE1.lean:538-554`); `Refund`/`Cancel` use the stored-buyer clause to prove refunds reduce escrow balance (`InvariantE1.lean:658-665`). | The x402/router path must never submit a request from the escrow address; deployment smoke tests should assert no self-call path records the escrow as buyer. | A payment or refund can degenerate to a self-transfer; request bookkeeping moves while escrow balance does not, and refunds/cancellations can leave funds stuck. |
+| `s.protocolFeeBps ≤ BPS_DENOMINATOR` (`InvariantE1.lean:93`) | `Finalize` uses it to prove `fee ≤ paidAmount` and `fee + agentPayout = paidAmount` (`InvariantE1.lean:899-915`). | Keep `MAX_PROTOCOL_FEE_BPS <= BPS_DENOMINATOR` in contract changes and deployment checks; current Solidity caps setter input at 1000 bps (`MurmurEscrow.sol:44`, `MurmurEscrow.sol:336-337`). | If a future contract version allowed bps above the denominator, finalization could revert or overdraw pooled escrow value, invalidating the per-request conservation argument. |
+
+### Authority narrowing
+
+`SetPipelineActive` is intentionally narrower in the Lean model than in
+the Solidity contract. Solidity allows either the pipeline owner or the
+contract owner:
+
+```solidity
+// MurmurEscrow.sol:190-194
+function setPipelineActive(bytes32 pipelineId, bool active_) external {
+    Pipeline storage p = pipelines[pipelineId];
+    if (p.agentOwner == address(0)) revert PipelineNotFound();
+    if (msg.sender != p.agentOwner && msg.sender != owner) revert NotPipelineOwner();
+    p.active = active_;
+```
+
+The Lean transition constructor carries a caller, but the `step` arm only
+accepts the pipeline `agentOwner`:
+
+```lean
+-- MurmurFV/Escrow/Transitions.lean:85-90
+| .SetPipelineActive caller pid active =>
+    match s.pipelines pid with
+    | none => none
+    | some p =>
+      if caller ≠ p.agentOwner then none
+      else some { s with pipelines := updateMap s.pipelines pid (some { p with active := active }) }
+```
+
+This narrowing is sound for the current E1/E2 claims because the extra
+Solidity owner branch has the same state effect as the modeled
+agent-owner branch after the same pipeline-existence check: it only
+writes `p.active = active_`. Any Solidity owner call can therefore be
+simulated, for these state/commit-count invariants, by the Lean
+agent-owner call with the same `pipelineId` and `active` value. This is
+not a general authority proof; any future caller-sensitive invariant
+must widen this arm to `owner OR agentOwner` or prove the simulation
+lemma explicitly.
 
 ## SealedVerdicts layer (`MurmurFV/SealedVerdicts/`)
 
@@ -323,11 +411,13 @@ Solidity helper at `sol:569-572`: `Rolling` markets return
 - **Token model = trusted ERC-20, no hooks.** `TokenState.transfer`
   takes effect only on the two named balances; nothing else can move
   funds (matches USDC reality). The `NoDonation` axiom is an audit
-  hook for this assumption.
+  hook for this assumption and is consumed by E1's
+  `fundsConservation` theorem.
 - **`BlockTime = Nat`, free per transition.** Each transition that
   takes a `now` argument writes it onto `s.blockTime`. There is no
   cross-transition monotonicity enforced by the model. The
-  `BlockTimeMonotone` axiom is reserved for future trace-level proofs.
+  `BlockTimeMonotone` axiom is consumed by V2/V2Feed reveal-gating
+  corollaries as the named timestamp-ordering assumption.
 - **`Option Pipeline` / `Option InferenceRequest` / etc., not
   sentinel-row detection.** Solidity uses zero-field detection (e.g.
   `p.agentOwner == address(0)` for `PipelineNotFound`); the Lean model
