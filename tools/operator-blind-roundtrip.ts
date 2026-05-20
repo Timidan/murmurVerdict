@@ -846,22 +846,48 @@ async function main() {
     const binCtHashBigint = BigInt(binaryIndexCtHash);
     const confCtHashBigint = BigInt(confidenceCtHash);
 
-    log(`polling threshold network for decrypts (timeout=${POLL_TIMEOUT_MS / 1000}s)`);
-    const binDecrypt = await pollDecrypt("binaryIndex decrypt", binCtHashBigint, permission);
-    const confDecrypt = await pollDecrypt("confidenceBps decrypt", confCtHashBigint, permission);
-    if (Number(binDecrypt.decrypted) !== sentinelBinaryIndex) {
+    // Threshold network needs ~5-30s to observe the on-chain FHE.allowPublic
+    // from openReveal before it will issue a decrypt signature. Retry on
+    // 403/Forbidden errors with backoff.
+    const decryptWithRetry = async (label: string, ctHash: bigint) => {
+      const deadline = Date.now() + POLL_TIMEOUT_MS;
+      let attempt = 0;
+      while (Date.now() < deadline) {
+        attempt++;
+        try {
+          return await cofheClient
+            .decryptForTx(ctHash)
+            .withPermit(selfPermit as never)
+            .execute();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (Date.now() + POLL_INTERVAL_MS > deadline) {
+            throw new Error(`${label} timed out after ${attempt} attempt(s): ${msg}`);
+          }
+          log(`${label} attempt=${attempt} retrying after ${POLL_INTERVAL_MS / 1000}s (${msg})…`);
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        }
+      }
+      throw new Error(`${label} timed out (no attempts succeeded)`);
+    };
+
+    log(`decryptForTx binaryIndex (ctHash=${binCtHashBigint})`);
+    const binDecrypt = await decryptWithRetry("binaryIndex decryptForTx", binCtHashBigint);
+    log(`decryptForTx confidenceBps (ctHash=${confCtHashBigint})`);
+    const confDecrypt = await decryptWithRetry("confidenceBps decryptForTx", confCtHashBigint);
+    if (Number(binDecrypt.decryptedValue) !== sentinelBinaryIndex) {
       die(
         "decrypt",
-        `binaryIndex plaintext mismatch — expected ${sentinelBinaryIndex} got ${binDecrypt.decrypted}`,
+        `binaryIndex plaintext mismatch — expected ${sentinelBinaryIndex} got ${binDecrypt.decryptedValue}`,
       );
     }
-    if (Number(confDecrypt.decrypted) !== sentinelConfidence) {
+    if (Number(confDecrypt.decryptedValue) !== sentinelConfidence) {
       die(
         "decrypt",
-        `confidenceBps plaintext mismatch — expected ${sentinelConfidence} got ${confDecrypt.decrypted}`,
+        `confidenceBps plaintext mismatch — expected ${sentinelConfidence} got ${confDecrypt.decryptedValue}`,
       );
     }
-    log(`decrypted ok: binaryIndex=${binDecrypt.decrypted} confidenceBps=${confDecrypt.decrypted}`);
+    log(`decrypted ok: binaryIndex=${binDecrypt.decryptedValue} confidenceBps=${confDecrypt.decryptedValue}`);
 
     log(`publishReveal onchainCallId=${onchainCallId}`);
     const publishTx = await walletClient.writeContract({
@@ -870,8 +896,8 @@ async function main() {
       functionName: "publishReveal",
       args: [
         onchainCallId,
-        Number(binDecrypt.decrypted),
-        Number(confDecrypt.decrypted),
+        Number(binDecrypt.decryptedValue),
+        Number(confDecrypt.decryptedValue),
         binDecrypt.signature,
         confDecrypt.signature,
       ],
