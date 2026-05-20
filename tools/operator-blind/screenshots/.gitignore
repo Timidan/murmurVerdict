@@ -1,0 +1,3 @@
+# Captured Playwright PNGs from operator-blind-roundtrip.ts runs are local
+# artifacts for human eyeballing; do not commit them.
+*.png
