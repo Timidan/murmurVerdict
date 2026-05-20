@@ -1,21 +1,20 @@
 import { useEffect, useState } from "react";
 import { useStream } from "../hooks/useStream.js";
+import { MobileNavDrawer } from "./MobileNavDrawer.js";
 
 interface TopbarProps {
   systemName?: string;
-  oracleSource?: string;
   /** Optional crumb on the right (page-level breadcrumb context). */
   crumb?: React.ReactNode;
 }
 
 /**
  * 38px-tall instrument-panel chrome. Four square status dots on the left
- * (1 pulsing red while live), system identifier, optional crumb, oracle
- * source. No clock, no schema chips — clutter pass cut those.
+ * (1 pulsing red while live), system identifier, and optional crumb.
+ * No clock or schema chips — clutter pass cut those.
  */
 export function Topbar({
   systemName = "murmur.verdict",
-  oracleSource = "chainlink + pyth",
   crumb,
 }: TopbarProps) {
   const stream = useStream();
@@ -25,7 +24,7 @@ export function Topbar({
     <header
       className={
         "h-[38px] border-b border-[var(--color-border)] bg-[var(--color-bg)] " +
-        "flex items-center justify-between px-4 t-meta sticky top-0 z-30"
+        "flex items-center justify-between px-4 t-meta sticky top-0 z-30 relative"
       }
     >
       <div className="flex items-center gap-4">
@@ -49,6 +48,7 @@ export function Topbar({
         >
           INSTALL
         </a>
+        <MobileNavDrawer />
       </nav>
     </header>
   );
