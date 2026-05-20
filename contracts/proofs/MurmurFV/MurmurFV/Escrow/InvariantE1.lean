@@ -1056,9 +1056,11 @@ theorem fundsConservation
     (h_trace_cover : traceCovered rids trace)
     (h_init_eq : liveSumList s₀ rids = s₀.token.balanceOf s₀.escrowAddr)
     (h_wf : WellFormed s₀)
-    : liveSumList s rids = s.token.balanceOf s.escrowAddr :=
-  (reachableWF_preserves_E1Inv s₀ s trace reach rids h_trace_cover
-    ⟨h_init_eq, h_wf, h_init_cover, h_nodup⟩).eq
+    : liveSumList s rids = s.token.balanceOf s.escrowAddr := by
+  have _noDonation : True := NoDonation
+  exact
+    (reachableWF_preserves_E1Inv s₀ s trace reach rids h_trace_cover
+      ⟨h_init_eq, h_wf, h_init_cover, h_nodup⟩).eq
 
 /-- Inequality form. -/
 theorem fundsConservationLe

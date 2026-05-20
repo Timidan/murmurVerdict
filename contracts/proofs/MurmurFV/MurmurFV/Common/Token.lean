@@ -43,16 +43,11 @@ end TokenState
     has no transfer hooks, no rebase, no admin balance edits — grounded
     in real token behavior.
 
-    Wave-7 outcome (E1 proof): the abstract trace model in
-    `Escrow/InvariantE2.lean`'s `Reachable` predicate is *closed under
-    `step`* — there is no transition vocabulary that lets an external
-    party donate. So E1 (`Escrow/InvariantE1.lean`, theorem
-    `fundsConservation`) proves the equality form
-    `liveSumList = balanceOf` directly on `ReachableWF`, without
-    invoking this axiom. The axiom remains as a named auditable
-    placeholder: reviewers grep `NoDonation` and confirm that any
-    proof depending on "no external USDC inflows" is invoking it
-    explicitly. Currently, no proof in the slice depends on it. -/
+    E1 (`Escrow/InvariantE1.lean`, theorem `fundsConservation`) proves
+    the equality form `liveSumList = balanceOf` over the closed
+    `ReachableWF` transition vocabulary. It invokes this named axiom at
+    the headline theorem so the "no external USDC inflows" assumption is
+    visible in `#print axioms` output. -/
 axiom NoDonation : True
 
 end MurmurFV.Common

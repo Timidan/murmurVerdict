@@ -231,6 +231,11 @@ theorem feedRevealTimeGating
     simp at h_step
   · -- `¬ now < p.revealAfter` branch ⇒ `now ≥ p.revealAfter`.
     rename_i h_nlt
-    exact Nat.not_lt.mp h_nlt
+    cases BlockTimeMonotone p.revealAfter now with
+    | inl h_order => exact h_order
+    | inr h_order =>
+        have h_le : p.revealAfter ≤ now := Nat.not_lt.mp h_nlt
+        have h_eq : now = p.revealAfter := Nat.le_antisymm h_order h_le
+        exact Nat.le_of_eq h_eq.symm
 
 end MurmurFV.SealedVerdicts

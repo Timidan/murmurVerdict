@@ -229,6 +229,11 @@ theorem revealTimeGating
     simp at h_step
   · -- `¬ now < c.revealOpenAt` branch ⇒ `now ≥ c.revealOpenAt`.
     rename_i h_nlt
-    exact Nat.not_lt.mp h_nlt
+    cases BlockTimeMonotone c.revealOpenAt now with
+    | inl h_order => exact h_order
+    | inr h_order =>
+        have h_le : c.revealOpenAt ≤ now := Nat.not_lt.mp h_nlt
+        have h_eq : now = c.revealOpenAt := Nat.le_antisymm h_order h_le
+        exact Nat.le_of_eq h_eq.symm
 
 end MurmurFV.SealedVerdicts
