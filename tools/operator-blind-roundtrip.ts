@@ -35,7 +35,6 @@ import { strict as assert } from "node:assert";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import {
   createPublicClient,
   createWalletClient,
@@ -51,20 +50,14 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
-// ── cofhejs is loaded the same way the sibling live-smoke loads it.
-//    cofhejs/node.mjs has broken dynamic requires in ESM context, so we
-//    require the CJS dist via an absolute path. See the live-smoke header
-//    for the full rationale.
-const _require = createRequire(import.meta.url);
-const _cofhejsCjsPath = pathResolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../node_modules/cofhejs/dist/node.js",
-);
-const {
-  cofhejs,
-  Encryptable,
-} = _require(_cofhejsCjsPath) as typeof import("cofhejs/node");
-type Permission = import("cofhejs/node").Permission;
+// ── @cofhe/sdk replaces the deprecated `cofhejs` package. cofhejs@0.3.1 +
+//    node-tfhe@0.11.1 could not deserialize the Fhenix testnet's TFHE 0.5
+//    public key format; the new SDK ships node-tfhe@1.5.3 which handles it.
+//    Migration verified via tools/cofhe-sdk-spike.ts (2026-05-20).
+import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
+import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { Encryptable } from "@cofhe/sdk";
+import type { Permit } from "@cofhe/sdk/permits";
 
 // ── deployments loader — same module the live-smoke uses.
 import { loadDeployment } from "../src/integrations/deployments.js";
@@ -260,7 +253,7 @@ const ABI = parseAbi([
 //    it, so we call the endpoint directly.
 async function fetchDecryptWithSignature(
   ctHashBigint: bigint,
-  permission: Permission,
+  permission: Permit,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const ct_tempkey = ctHashBigint.toString(16).padStart(64, "0");
   const body = JSON.stringify({
@@ -293,7 +286,7 @@ async function fetchDecryptWithSignature(
 async function pollDecrypt(
   label: string,
   ctHashBigint: bigint,
-  permission: Permission,
+  permission: Permit,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let attempt = 0;
@@ -503,38 +496,28 @@ async function main() {
     await publicClient.waitForTransactionReceipt({ hash: registerTx });
     ok(`market registered (tx=${registerTx})`);
 
-    log(`initializing cofhejs (environment=TESTNET, chain=${CHAIN_ID})`);
-    const initResult = await cofhejs.initializeWithViem({
-      viemClient: publicClient as never,
-      viemWalletClient: walletClient as never,
-      environment: "TESTNET",
-      generatePermit: true,
+    log(`initializing @cofhe/sdk client (chain=${CHAIN_ID})`);
+    const cofheConfig = createCofheConfig({
+      environment: "node",
+      supportedChains: [cofheBaseSepolia],
     });
-    if (!initResult.success) {
-      throw new Error(`cofhejs init failed: ${initResult.error?.message}`);
-    }
-    let permResult = cofhejs.getPermission();
-    if (!permResult.success) {
-      const createResult = await cofhejs.createPermit({ type: "self", issuer: account.address });
-      if (!createResult.success) {
-        throw new Error(`createPermit failed: ${createResult.error?.message}`);
-      }
-      permResult = cofhejs.getPermission();
-      if (!permResult.success) {
-        throw new Error(`getPermission failed: ${permResult.error?.message}`);
-      }
-    }
-    const permission: Permission = permResult.data!;
+    const cofheClient = createCofheClient(cofheConfig);
+    await cofheClient.connect(publicClient as never, walletClient as never);
+    const selfPermit = await cofheClient.permits.createSelf({
+      type: "self",
+      issuer: account.address,
+    });
+    const permission: Permit = selfPermit as unknown as Permit;
 
     log(`encrypting inputs (binaryIndex=${sentinelBinaryIndex}, confidenceBps=${sentinelConfidence})`);
-    const encryptResult = await cofhejs.encrypt([
-      Encryptable.uint8(BigInt(sentinelBinaryIndex)),
-      Encryptable.uint16(BigInt(sentinelConfidence)),
-    ]);
-    if (!encryptResult.success) {
-      throw new Error(`cofhejs.encrypt failed: ${encryptResult.error?.message}`);
-    }
-    const [binEnc, confEnc] = encryptResult.data;
+    const encryptedInputs = await cofheClient
+      .encryptInputs([
+        Encryptable.uint8(BigInt(sentinelBinaryIndex)),
+        Encryptable.uint16(BigInt(sentinelConfidence)),
+      ])
+      .execute();
+    const binEnc = encryptedInputs[0];
+    const confEnc = encryptedInputs[1];
     log(`encrypted: bin.ctHash=${binEnc.ctHash} conf.ctHash=${confEnc.ctHash}`);
 
     const clientNonce = keccak256(toHex(`${runId}-nonce-${Math.random()}`));

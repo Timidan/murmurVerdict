@@ -29,6 +29,7 @@
     "outreach:thread": "tsx tools/operations/launch-thread.ts"
   },
   "dependencies": {
+    "@cofhe/sdk": "^0.5.2",
     "@openserv-labs/sdk": "^2.4.1",
     "@privy-io/node": "^0.18.0",
     "@privy-io/react-auth": "3.23.1",
