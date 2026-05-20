@@ -55,6 +55,7 @@ import { baseSepolia } from "viem/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
+import { PermitUtils } from "@cofhe/sdk/permits";
 import type { Permit } from "@cofhe/sdk/permits";
 
 // ── deployments loader — same module the live-smoke uses.
@@ -265,10 +266,13 @@ async function fetchDecryptWithSignature(
   permission: Permit,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const ct_tempkey = ctHashBigint.toString(16).padStart(64, "0");
+  // Threshold network expects a Permission (Permit minus name/type/sealingPair/hash).
+  // PermitUtils.getPermission does that projection.
+  const permissionPayload = PermitUtils.getPermission(permission, true);
   const body = JSON.stringify({
     ct_tempkey,
     host_chain_id: CHAIN_ID,
-    permit: permission,
+    permit: permissionPayload,
   });
   const res = await fetch(`${THRESHOLD_NETWORK_URL}/decrypt`, {
     method: "POST",
@@ -757,7 +761,7 @@ async function main() {
     log(`playwright goto ${preUrl}`);
     const prePage: Page = await browser.newPage();
     try {
-      await prePage.goto(preUrl, { waitUntil: "networkidle", timeout: 60_000 });
+      await prePage.goto(preUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
       // Wait for the CallPage to render past the [loading…] placeholder.
       // The sealed affordance is rendered as the literal text "sealed"
       // inside the submission panel's confidence row (see
@@ -919,7 +923,7 @@ async function main() {
     log(`playwright goto ${postUrl} (post-publish render)`);
     const postPage: Page = await browser.newPage();
     try {
-      await postPage.goto(postUrl, { waitUntil: "networkidle", timeout: 60_000 });
+      await postPage.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
       // Give the SPA up to 30s to flip from sealed → revealed render. We
       // poll for ANY sentinel form (raw "7531" or percent "75.31%") so
       // either render path passes. CallPage.tsx today renders the percent
