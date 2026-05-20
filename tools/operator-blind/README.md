@@ -141,12 +141,12 @@ previous run can't false-positive A2.
 ## Spec-vs-daemon contract pinning
 
 The spec's §13 pins the daemon's `revealed_verdict` sub-object field names as
-`revealed_binary_index` and `revealed_confidence_bps`. The script asserts on
-those exact names per the wave-1 instruction to pin to §13. If the actual
-daemon emits a different shape, A3 will fail with a clear `expected key X but
-got keys [a, b, c]` diagnostic — that's a contract drift between spec and
-daemon, not a privacy leak. Fix by either updating the daemon's `/v1/calls/:id`
-projection or updating the spec + this script in lockstep.
+`binary_index` and `confidence_bps` (verified against
+[src/verdict/api.ts:2269-2272](../../src/verdict/api.ts)). The script asserts
+on those exact names. If the daemon projection drifts, A3 will fail with a
+clear `expected key X but got keys [a, b, c]` diagnostic — that's contract
+drift, not a privacy leak. Fix the daemon and the spec + this script in
+lockstep.
 
 ## What this does NOT prove
 

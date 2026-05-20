@@ -93,8 +93,8 @@ const FHENIX_SEALED_HANDLE_KEYS = {
 } as const;
 const FHENIX_REVEALED_SUBOBJECT_KEY = "revealed_verdict";
 const FHENIX_REVEALED_PLAINTEXT_KEYS = {
-  binaryIndex: "revealed_binary_index",
-  confidenceBps: "revealed_confidence_bps",
+  binaryIndex: "binary_index",
+  confidenceBps: "confidence_bps",
 } as const;
 
 // ── ANSI helpers (same palette as tools/verify/verify-deploy.ts) ─────────
