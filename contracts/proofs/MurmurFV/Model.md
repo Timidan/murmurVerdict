@@ -44,13 +44,13 @@ allowance mapping is not modelled (Solidity enforces it on-chain;
 removing it from the Lean model just shrinks the spec). No hooks /
 callbacks — matches USDC reality.
 
-The `NoDonation` axiom is a documented invocation point. The
-`Transition` inductive in `Escrow/Transitions.lean` has no constructor
-that lets an external party transfer USDC into the escrow outside
-`RequestInference`, so the property is automatically true under the
-abstract model. E1's headline theorem still invokes the axiom explicitly
-so the real-world USDC no-donation assumption is visible in
-`#print axioms` output.
+`NoDonation` is declared but currently unused. The `Transition`
+inductive in `Escrow/Transitions.lean` has no constructor that lets an
+external party transfer USDC into the escrow outside `RequestInference`,
+so `fundsConservation` proves `liveSumList = balanceOf` directly from
+the closed `ReachableWF` vocabulary without invoking the axiom. See
+`MurmurFV/Common/Token.lean` for the Codex review verdict that made this
+an honest placeholder rather than a claimed proof dependency.
 
 ### `Time.lean`
 
@@ -62,10 +62,11 @@ axiom BlockTimeMonotone : ∀ (t₁ t₂ : BlockTime), t₁ ≤ t₂ ∨ t₂ �
 `block.timestamp` modelled as a free `Nat` per transition. Each
 `step`-arm that takes a `now` argument writes `s.blockTime := now` on
 success; nothing forces consecutive transitions to use a monotone
-`now`. The V2 and V2Feed reveal-gating corollaries invoke
-`BlockTimeMonotone` at the successful-open proof step that turns the
-rejected `now < reveal...` guard into the ordered
-`now ≥ reveal...` conclusion.
+`now`. `BlockTimeMonotone` is declared but currently unused: the V2 and
+V2Feed reveal-gating corollaries discharge the successful-open ordering
+from the rejected `now < reveal...` guard via `Nat.not_lt.mp`. See
+`MurmurFV/Common/Time.lean` for the Codex review verdict that made this
+an audit hook rather than a load-bearing axiom.
 
 ## Escrow layer (`MurmurFV/Escrow/`)
 
@@ -410,14 +411,15 @@ Solidity helper at `sol:569-572`: `Rolling` markets return
 
 - **Token model = trusted ERC-20, no hooks.** `TokenState.transfer`
   takes effect only on the two named balances; nothing else can move
-  funds (matches USDC reality). The `NoDonation` axiom is an audit
-  hook for this assumption and is consumed by E1's
-  `fundsConservation` theorem.
+  funds (matches USDC reality). The `NoDonation` axiom is a currently
+  unused audit hook retained for future extensions that add donation
+  vocabulary; E1's `fundsConservation` theorem does not consume it.
 - **`BlockTime = Nat`, free per transition.** Each transition that
   takes a `now` argument writes it onto `s.blockTime`. There is no
   cross-transition monotonicity enforced by the model. The
-  `BlockTimeMonotone` axiom is consumed by V2/V2Feed reveal-gating
-  corollaries as the named timestamp-ordering assumption.
+  `BlockTimeMonotone` axiom is a currently unused audit hook retained
+  for future extensions that thread a global clock across transitions;
+  V2/V2Feed reveal-gating corollaries do not consume it today.
 - **`Option Pipeline` / `Option InferenceRequest` / etc., not
   sentinel-row detection.** Solidity uses zero-field detection (e.g.
   `p.agentOwner == address(0)` for `PipelineNotFound`); the Lean model

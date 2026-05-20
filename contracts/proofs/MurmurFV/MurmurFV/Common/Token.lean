@@ -36,18 +36,24 @@ def transferFrom (s : TokenState) (from_ to_ : Address) (amount : Nat) : Option 
 
 end TokenState
 
-/-- `NoDonation` axiom stub.
+/-- `NoDonation` axiom placeholder.
 
     Documents the real-world assumption: no third party transfers USDC
     directly into the escrow contract outside `requestInference`. USDC
     has no transfer hooks, no rebase, no admin balance edits — grounded
     in real token behavior.
 
-    E1 (`Escrow/InvariantE1.lean`, theorem `fundsConservation`) proves
-    the equality form `liveSumList = balanceOf` over the closed
-    `ReachableWF` transition vocabulary. It invokes this named axiom at
-    the headline theorem so the "no external USDC inflows" assumption is
-    visible in `#print axioms` output. -/
+    Codex review verdict for Wave A: the prior cosmetic invocation was
+    RED because `NoDonation : True` is type-trivial, and E1
+    (`Escrow/InvariantE1.lean`, theorem `fundsConservation`) already
+    proves the equality form `liveSumList = balanceOf` directly from the
+    closed `ReachableWF` transition vocabulary without invoking this
+    axiom. The vocabulary has no donation transition today.
+
+    Currently unused. Retained as a named auditable placeholder: a future
+    extension adding a donation transition would gate on it. Reviewers
+    grep `NoDonation` to confirm no proof secretly relies on no external
+    USDC inflows without saying so. -/
 axiom NoDonation : True
 
 end MurmurFV.Common
