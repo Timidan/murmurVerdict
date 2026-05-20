@@ -224,6 +224,26 @@ function randomSentinel(): number {
   return lo + Math.floor(Math.random() * (hi - lo + 1));
 }
 
+// ── sentinel text forms. The daemon's JSON carries `confidence_bps` as a
+//    raw integer (e.g. 7531), but the dashboard's CallPage renders it as
+//    `(confidence_bps / 100).toFixed(2) + "%"` → "75.31%". A DOM substring
+//    search for the raw "7531" misses that render because the "." breaks
+//    the substring. Both forms must be considered when scanning innerText.
+//
+//    Canonical forms returned:
+//      - raw integer: `${sentinel}` (e.g. 7531 → "7531")
+//      - percent:     `${(sentinel/100).toFixed(2)}%` (e.g. 7531 → "75.31%",
+//                     5100 → "51.00%", 9500 → "95.00%")
+//
+//    The two are always distinct strings within the valid band (the
+//    percent form always contains "."; the raw form never does), so this
+//    is safe for both A2 (negative search) and A3 (positive search).
+function sentinelTextForms(sentinel: number): string[] {
+  const raw = `${sentinel}`;
+  const percent = `${(sentinel / 100).toFixed(2)}%`;
+  return [raw, percent];
+}
+
 // ── minimal contract ABI (subset of live-smoke's) ─────────────────────────
 const ABI = parseAbi([
   "function registerFixedRevealMarket(bytes32 marketId, uint64 revealAfter, bool active)",
@@ -645,10 +665,19 @@ async function main() {
           preInnerText.slice(0, 2000),
         );
       }
-      if (preInnerText.includes(`${sentinelConfidence}`)) {
-        const idx = preInnerText.indexOf(`${sentinelConfidence}`);
+      // Scan for BOTH the raw integer form ("7531") and the percent form
+      // ("75.31%") — CallPage.tsx renders the latter, so the raw form
+      // alone is not sufficient. Any hit on either is a leak.
+      const preForms = sentinelTextForms(sentinelConfidence);
+      const preLeakForm = preForms.find((f) => preInnerText.includes(f));
+      if (preLeakForm) {
+        const idx = preInnerText.indexOf(preLeakForm);
         const excerpt = preInnerText.slice(Math.max(0, idx - 200), idx + 200);
-        die("A2", `dashboard DOM innerText contains confidence sentinel ${sentinelConfidence}`, excerpt);
+        die(
+          "A2",
+          `dashboard DOM innerText contains confidence sentinel "${preLeakForm}" (scanned for both raw=${preForms[0]} and percent=${preForms[1]})`,
+          excerpt,
+        );
       }
       const prePath = pathResolve(screenshotDir, `pre-${runId}.png`);
       await prePage.screenshot({ path: prePath, fullPage: true });
@@ -774,27 +803,35 @@ async function main() {
     const postPage: Page = await browser.newPage();
     try {
       await postPage.goto(postUrl, { waitUntil: "networkidle", timeout: 60_000 });
-      // Give the SPA up to 20s to flip from sealed → revealed render. We
-      // poll for the sentinel substring rather than a fixed timeout so
-      // slow indexers don't false-fail.
+      // Give the SPA up to 30s to flip from sealed → revealed render. We
+      // poll for ANY sentinel form (raw "7531" or percent "75.31%") so
+      // either render path passes. CallPage.tsx today renders the percent
+      // form; we still accept the raw form so a future render-shape change
+      // (e.g. surfacing the bps integer next to the percent) doesn't
+      // false-fail this gate.
+      const postForms = sentinelTextForms(sentinelConfidence);
       await postPage.waitForFunction(
-        (sentinelStr) => (document.body?.innerText ?? "").includes(sentinelStr),
-        `${sentinelConfidence}`,
+        (forms) => {
+          const t = document.body?.innerText ?? "";
+          return forms.some((f) => t.includes(f));
+        },
+        postForms,
         { timeout: 30_000 },
       ).catch(() => {
         /* fall through — innerText snapshot below produces the diagnostic */
       });
       const postInnerText = await postPage.evaluate(() => document.body?.innerText ?? "");
-      if (!postInnerText.includes(`${sentinelConfidence}`)) {
+      const postHitForm = postForms.find((f) => postInnerText.includes(f));
+      if (!postHitForm) {
         die(
           "A3",
-          `dashboard DOM never surfaced confidence sentinel ${sentinelConfidence} post-publish (innerText excerpt below)`,
+          `dashboard DOM never surfaced confidence sentinel post-publish; scanned for raw=${postForms[0]} and percent=${postForms[1]} (innerText excerpt below)`,
           postInnerText.slice(0, 2000),
         );
       }
       const postPath = pathResolve(screenshotDir, `post-${runId}.png`);
       await postPage.screenshot({ path: postPath, fullPage: true });
-      ok(`A3 (dashboard): DOM carries confidence sentinel ${sentinelConfidence}. screenshot=${postPath}`);
+      ok(`A3 (dashboard): DOM carries confidence sentinel "${postHitForm}" (scanned raw=${postForms[0]}, percent=${postForms[1]}). screenshot=${postPath}`);
     } finally {
       await postPage.close();
     }
