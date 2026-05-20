@@ -14,7 +14,7 @@ takes ~7 minutes wall-clock, and is run by hand before any prod deploy.
 ## What it asserts (3 assertions across 3 snapshots)
 
 - **A1 — Daemon DB is opaque pre-reveal.**
-  After `submitSealedFor` lands and the daemon indexes `SealedCallSubmitted`,
+  After `/v2/gateway/calls` accepts and the daemon Gateway records the submit,
   `GET /v1/calls/<callId>` returns ciphertext handles
   (`fhenix.binary_index_ct_hash`, `fhenix.confidence_ct_hash`) but no
   `fhenix.revealed_verdict` sub-object. A per-run randomized confidence sentinel
@@ -43,20 +43,24 @@ takes ~7 minutes wall-clock, and is run by hand before any prod deploy.
    - Dashboard running and reachable at `DASHBOARD_URL` (its `/` returns 200).
    - Both pointed at the same Base Sepolia node as `BASE_RPC_URL`.
 
-2. **Funded EOA on Base Sepolia.**
-   The relayer key in `FHENIX_GATEWAY_RELAYER_PRIVATE_KEY` is also used as the
-   "agent" address for the test call. It needs Base Sepolia ETH for ~4 txs
-   (`registerFixedRevealMarket`, `submitSealedFor`, `openReveal`,
-   `publishReveal`).
+2. **Seeded Gateway fixture.**
+   Run `tsx tools/seed-operator-blind-fixtures.ts` before the round-trip. It
+   writes real account / agent / controller-wallet / Runtime Key / market rows
+   into the daemon DB and registers the deterministic test market on-chain.
 
-3. **Playwright Chromium browser installed.**
+3. **Funded EOA on Base Sepolia.**
+   `FHENIX_GATEWAY_RELAYER_PRIVATE_KEY` pays for the Gateway submit tx and the
+   script's `openReveal` / `publishReveal` txs. `AGENT_ADDRESS` must match the
+   seeded controller wallet.
+
+4. **Playwright Chromium browser installed.**
    ```sh
    npx playwright install chromium
    ```
    The `playwright` npm package is a devDep on this repo. The browser binary
    is a separate one-time download that lives outside `node_modules`.
 
-4. **Deployment manifest populated.** `data/deployments.json` must already
+5. **Deployment manifest populated.** `data/deployments.json` must already
    carry the live Base Sepolia `MurmurSealedVerdicts` deployment for chain
    `84532`. The script aborts with a clear error if not.
 
@@ -65,21 +69,27 @@ takes ~7 minutes wall-clock, and is run by hand before any prod deploy.
 | Var | Used for |
 |---|---|
 | `BASE_RPC_URL` | viem public + wallet client transport |
-| `FHENIX_GATEWAY_RELAYER_PRIVATE_KEY` | the EOA that signs all four lifecycle txs |
+| `FHENIX_GATEWAY_RELAYER_PRIVATE_KEY` | Gateway relayer / reveal EOA private key |
+| `AGENT_ADDRESS` | seeded controller wallet EOA |
+| `OPERATOR_BLIND_RUNTIME_KEY` | `runtime_key_secret` printed by the seed tool |
 | `DAEMON_URL` | base URL of the running local daemon (no trailing slash) |
 | `DASHBOARD_URL` | base URL of the running local dashboard (no trailing slash) |
+| `FHENIX_GATEWAY_ENABLED=true` | enables `/v2/gateway/calls` broadcaster in the daemon |
+| `FHENIX_RPC_URL` / `FHENIX_CHAIN_ID` | daemon Gateway RPC configuration |
 
 Optional:
 
-- `AGENT_ADDRESS` — override the on-chain "agent" address used in
-  `submitSealedFor`. Defaults to the relayer's own EOA address.
+- `OPERATOR_BLIND_MARKET_ID` — override the deterministic fixture market ID.
 
 Loaded via `dotenv/config` (the repo's existing convention). Pre-flight aborts
-loudly if any of the four required vars are missing.
+loudly if any required var is missing.
 
 ## How to run
 
 ```sh
+tsx tools/seed-operator-blind-fixtures.ts
+export OPERATOR_BLIND_RUNTIME_KEY="<runtime_key_secret from seed stdout>"
+# Set FHENIX_GATEWAY_ENABLED=true in .env, then restart the daemon.
 tsx tools/operator-blind-roundtrip.ts
 ```
 
@@ -95,7 +105,7 @@ decrypt latency + tx confirmations + the two snapshot delays).
 Stdout walks through nine labelled steps, ending in something like:
 
 ```text
-[operator-blind] PASS runId=ob-1715812345-7531 callId=0xabc… elapsed=412s
+[operator-blind] PASS runId=ob-1715812345-7531 callId=<daemon-call-id> onchainCallId=0xabc… elapsed=412s
 [operator-blind]   A1 daemon opaque pre-reveal: ok
 [operator-blind]   A2 dashboard masked pre-reveal: ok
 [operator-blind]   A3 daemon + dashboard carry plaintext post-publish: ok

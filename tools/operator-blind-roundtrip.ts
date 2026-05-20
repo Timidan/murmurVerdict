@@ -12,8 +12,8 @@
  * Five phases:
  *   0. pre-flight — env vars present, daemon + dashboard reachable.
  *   1. snapshot 0 — baseline of the daemon DB before any new call.
- *   2. snapshot 1 — submit sealed call, then assert daemon (A1) + DOM (A2)
- *      are opaque pre-reveal.
+ *   2. snapshot 1 — submit sealed call through /v2/gateway/calls, then assert
+ *      daemon (A1) + DOM (A2) are opaque pre-reveal.
  *   3. contract steps — wait for reveal window, openReveal, poll cofhejs
  *      threshold network for plaintext + signatures, publishReveal.
  *   4. snapshot 2 — assert daemon + DOM (A3) carry plaintext post-publish.
@@ -22,16 +22,15 @@
  * no `npm run` shortcut (spec §8). Exit 0 on full PASS; non-zero with the
  * offending excerpt printed on any assertion failure.
  *
- * Develop-as-prod: no mocks, no fixtures. If the live RPC, local daemon, or
- * local dashboard isn't available, this script fails fast with a clear
- * diagnostic — it never falls back to a fake.
+ * Develop-as-prod: no mocks. Account/agent/runtime-key prerequisites are real
+ * daemon DB rows seeded by tools/seed-operator-blind-fixtures.ts; the submit
+ * itself goes through the daemon's production Gateway broadcaster and real RPC.
  *
  * Spec: docs/superpowers/specs/2026-05-19-operator-blind-roundtrip-design.md
  * Sibling smoke (contract steps): src/integrations/murmur-sealed-verdicts.live-smoke.ts
  */
 
 import "dotenv/config";
-import { strict as assert } from "node:assert";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,7 +42,6 @@ import {
   parseAbi,
   toHex,
   keccak256,
-  encodePacked,
   type Address,
   type Hex,
 } from "viem";
@@ -71,11 +69,14 @@ import { chromium, type Browser, type Page } from "playwright";
 const CHAIN_ID = 84532;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_MS = 5_000;
+const GATEWAY_ACCEPT_TIMEOUT_MS = 5 * 60 * 1000;
 const THRESHOLD_NETWORK_URL = "https://testnet-cofhe-tn.fhenix.zone";
-const REVEAL_WINDOW_SEC = 90;
 const INDEXER_LAG_BUDGET_MS = 60 * 1000;
 const INDEXER_POLL_INTERVAL_MS = 3_000;
 const SNAPSHOT_GRACE_MS = 10_000;
+const DEFAULT_OPERATOR_BLIND_MARKET_ID = keccak256(
+  toHex("murmur:operator-blind-test:market:v1"),
+).toLowerCase() as Hex;
 
 // Daemon API names pinned from spec §13 (2026-05-19). The script asserts on
 // these EXACT names; if the daemon's projection has drifted, A3 fails with a
@@ -84,6 +85,7 @@ const FHENIX_SEALED_HANDLE_KEYS = {
   binaryIndexCtHash: "binary_index_ct_hash",
   confidenceCtHash: "confidence_ct_hash",
 } as const;
+const FHENIX_ONCHAIN_CALL_ID_KEY = "onchain_call_id";
 const FHENIX_REVEALED_SUBOBJECT_KEY = "revealed_verdict";
 const FHENIX_REVEALED_PLAINTEXT_KEYS = {
   binaryIndex: "binary_index",
@@ -120,9 +122,11 @@ function die(label: string, detail: string, excerpt?: unknown): never {
 interface PreflightEnv {
   baseRpcUrl: string;
   relayerKey: Hex;
+  runtimeKey: string;
   daemonUrl: string;
   dashboardUrl: string;
   agentAddress: Address;
+  marketId: Hex;
 }
 
 function preflightEnv(): PreflightEnv {
@@ -133,26 +137,34 @@ function preflightEnv(): PreflightEnv {
   if (!/^0x[0-9a-fA-F]{64}$/.test(relayerKeyRaw)) {
     die("pre-flight", "FHENIX_GATEWAY_RELAYER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex");
   }
+  const runtimeKey = (process.env.OPERATOR_BLIND_RUNTIME_KEY ?? "").trim();
+  if (!runtimeKey) {
+    die(
+      "pre-flight",
+      "OPERATOR_BLIND_RUNTIME_KEY is required; run tools/seed-operator-blind-fixtures.ts and export the printed runtime_key_secret",
+    );
+  }
   const daemonUrl = (process.env.DAEMON_URL ?? "").trim().replace(/\/$/, "");
   if (!daemonUrl) die("pre-flight", "DAEMON_URL is required (e.g. http://localhost:8080)");
   const dashboardUrl = (process.env.DASHBOARD_URL ?? "").trim().replace(/\/$/, "");
   if (!dashboardUrl) die("pre-flight", "DASHBOARD_URL is required (e.g. http://localhost:5173)");
 
   const relayerKey = relayerKeyRaw as Hex;
-  // Default the agent address to the relayer's own EOA; AGENT_ADDRESS env
-  // can override for the case where the operator wants to test a different
-  // agent identity. Self-call is fine here — this script is testing the
-  // privacy invariant, not auth boundaries.
-  const account = privateKeyToAccount(relayerKey);
-  const agentRaw = (process.env.AGENT_ADDRESS ?? account.address).trim();
+  const agentRaw = (process.env.AGENT_ADDRESS ?? "").trim();
+  if (!agentRaw) die("pre-flight", "AGENT_ADDRESS is required and must match the seeded fixture wallet");
   let agentAddress: Address;
   try {
     agentAddress = getAddress(agentRaw);
   } catch {
     die("pre-flight", `AGENT_ADDRESS "${agentRaw}" is not a valid checksummed address`);
   }
+  const marketRaw = (process.env.OPERATOR_BLIND_MARKET_ID ?? DEFAULT_OPERATOR_BLIND_MARKET_ID).trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(marketRaw)) {
+    die("pre-flight", "OPERATOR_BLIND_MARKET_ID must be a 0x-prefixed bytes32 market id");
+  }
+  const marketId = marketRaw.toLowerCase() as Hex;
 
-  return { baseRpcUrl, relayerKey, daemonUrl, dashboardUrl, agentAddress };
+  return { baseRpcUrl, relayerKey, runtimeKey, daemonUrl, dashboardUrl, agentAddress, marketId };
 }
 
 async function probeUrl(label: string, url: string, expectStatuses: number[] = [200]): Promise<void> {
@@ -239,13 +251,10 @@ function sentinelTextForms(sentinel: number): string[] {
 
 // ── minimal contract ABI (subset of live-smoke's) ─────────────────────────
 const ABI = parseAbi([
-  "function registerFixedRevealMarket(bytes32 marketId, uint64 revealAfter, bool active)",
-  "function submitSealedFor(address agent, bytes32 marketId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) binaryIndexInput, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) confidenceInput, bytes32 clientNonce) returns (bytes32 callId)",
   "function openReveal(bytes32 callId)",
   "function publishReveal(bytes32 callId, uint8 binaryIndex, uint16 confidenceBps, bytes binaryIndexSignature, bytes confidenceSignature)",
   "function getCall(bytes32 callId) view returns (address agent, bytes32 marketId, uint64 acceptedAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, uint8 revealedBinaryIndex, uint16 revealedConfidenceBps, uint8 state)",
   "function callRevealOpenAt(bytes32 callId) view returns (uint64)",
-  "event SealedCallSubmitted(bytes32 indexed callId, address indexed agent, bytes32 indexed marketId, uint64 acceptedAt, uint64 revealOpenAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bytes32 clientNonce)",
 ]);
 
 // ── threshold network direct /decrypt call (same shape as live-smoke). The
@@ -308,13 +317,151 @@ async function pollDecrypt(
   throw new Error(`timed out polling ${label} after ${attempt} attempts`);
 }
 
+interface GatewayCallResponse {
+  attempt_id: string;
+  status: string;
+  tx_hash: string | null;
+  call_id: string | null;
+  next_attempt_at: string;
+  idempotent_hit: boolean;
+}
+
+interface GatewayCofheInput {
+  ct_hash: Hex;
+  security_zone: number;
+  utype: number;
+  signature: Hex;
+}
+
+interface GatewaySealedCallBody {
+  marketRef: {
+    protocol: string;
+    sourceId: string;
+    configVersion: number;
+  };
+  client_order_id: string;
+  client_nonce: Hex;
+  rationale: string;
+  privacy_mode: "sealed_fhenix";
+  binary_index_input: GatewayCofheInput;
+  confidence_input: GatewayCofheInput;
+}
+
+function cofheCtHashToHex32(value: unknown, label: string): Hex {
+  let hex: string;
+  if (typeof value === "bigint") {
+    hex = value.toString(16);
+  } else if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      die("encrypt", `${label}.ctHash is not a safe non-negative integer`, value);
+    }
+    hex = BigInt(value).toString(16);
+  } else if (typeof value === "string") {
+    hex = value.startsWith("0x") ? value.slice(2) : BigInt(value).toString(16);
+  } else {
+    die("encrypt", `${label}.ctHash has unsupported type ${typeof value}`);
+  }
+  const out = `0x${hex.padStart(64, "0")}`.toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(out)) {
+    die("encrypt", `${label}.ctHash did not normalize to bytes32`, { value, normalized: out });
+  }
+  return out as Hex;
+}
+
+function normalizeBytesHex(value: unknown, label: string): Hex {
+  if (typeof value !== "string") {
+    die("encrypt", `${label}.signature must be a hex string`, value);
+  }
+  const out = value.startsWith("0x") ? value : `0x${value}`;
+  if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(out)) {
+    die("encrypt", `${label}.signature is not even-length hex`, out);
+  }
+  return out as Hex;
+}
+
+function requireHex32(value: unknown, label: string): Hex {
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    die(label, "expected 0x-prefixed bytes32", value);
+  }
+  return value.toLowerCase() as Hex;
+}
+
+async function postGatewayCall(
+  daemonUrl: string,
+  runtimeKey: string,
+  body: GatewaySealedCallBody,
+): Promise<GatewayCallResponse> {
+  const res = await fetch(`${daemonUrl}/v2/gateway/calls`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Murmur-Runtime-Key": runtimeKey,
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    die("gateway-submit", `daemon returned non-JSON status ${res.status}`, text);
+  }
+  if (res.status !== 200 && res.status !== 202) {
+    die("gateway-submit", `POST /v2/gateway/calls returned ${res.status}`, json);
+  }
+  const out = json as Partial<GatewayCallResponse>;
+  if (
+    typeof out.attempt_id !== "string" ||
+    typeof out.status !== "string" ||
+    !("call_id" in out)
+  ) {
+    die("gateway-submit", "response shape did not match GatewaySubmitResult", json);
+  }
+  return {
+    attempt_id: out.attempt_id,
+    status: out.status,
+    tx_hash: typeof out.tx_hash === "string" ? out.tx_hash : null,
+    call_id: typeof out.call_id === "string" ? out.call_id : null,
+    next_attempt_at: typeof out.next_attempt_at === "string" ? out.next_attempt_at : "",
+    idempotent_hit: out.idempotent_hit === true,
+  };
+}
+
+async function submitGatewayCallAndWaitForAccepted(
+  daemonUrl: string,
+  runtimeKey: string,
+  body: GatewaySealedCallBody,
+): Promise<GatewayCallResponse & { call_id: string }> {
+  const deadline = Date.now() + GATEWAY_ACCEPT_TIMEOUT_MS;
+  let attempt = 0;
+  let last: GatewayCallResponse | null = null;
+  while (Date.now() < deadline) {
+    attempt++;
+    last = await postGatewayCall(daemonUrl, runtimeKey, body);
+    if (last.call_id && last.status === "accepted") {
+      log(`gateway accepted after ${attempt} poll(s): call_id=${last.call_id}`);
+      return { ...last, call_id: last.call_id };
+    }
+    if (last.status === "failed_terminal") {
+      die("gateway-submit", "gateway attempt failed terminally", last);
+    }
+    log(`waiting for gateway acceptance (attempt=${attempt}, status=${last.status}, tx=${last.tx_hash ?? "n/a"})…`);
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+  die(
+    "gateway-submit",
+    `timed out waiting for accepted/call_id after ${GATEWAY_ACCEPT_TIMEOUT_MS / 1000}s`,
+    last ?? undefined,
+  );
+}
+
 // ── daemon indexer poll. Waits until the call shows up with both ctHashes
 //    populated, OR fails the run with an indexer-lag diagnostic (NOT a
 //    privacy pass). Bounded at INDEXER_LAG_BUDGET_MS so we never silently
 //    retry past the budget.
 async function waitForIndexedSealedCall(
   daemonUrl: string,
-  callId: Hex,
+  callId: string,
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + INDEXER_LAG_BUDGET_MS;
   let lastStatus: number | null = null;
@@ -359,7 +506,7 @@ async function waitForIndexedSealedCall(
 //    Same bounded-retry posture as waitForIndexedSealedCall.
 async function waitForIndexedReveal(
   daemonUrl: string,
-  callId: Hex,
+  callId: string,
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + INDEXER_LAG_BUDGET_MS;
   let lastBody: string | null = null;
@@ -480,22 +627,12 @@ async function main() {
     }
     ok("snapshot-0: baseline taken (daemon reachable, runId not present yet)");
 
-    // 2. contract steps 1-3 — register market, encrypt inputs, submit sealed call.
-    //    Implemented inline because the live-smoke's main() isn't exported.
-    const marketId = keccak256(
-      encodePacked(["string", "uint64"], [`${runId}-market`, BigInt(Date.now())]),
-    );
-    const revealAfter = BigInt(Math.floor(Date.now() / 1000) + REVEAL_WINDOW_SEC);
-    log(`registerFixedRevealMarket marketId=${marketId} revealAfter=${revealAfter}`);
-    const registerTx = await walletClient.writeContract({
-      address: contractAddress,
-      abi: ABI,
-      functionName: "registerFixedRevealMarket",
-      args: [marketId, revealAfter, true],
-    });
-    await publicClient.waitForTransactionReceipt({ hash: registerTx });
-    ok(`market registered (tx=${registerTx})`);
-
+    // 2. Gateway submit — market/account/agent/runtime-key fixtures are
+    //    seeded by tools/seed-operator-blind-fixtures.ts. This script now
+    //    submits through the same Runtime-Key-authenticated Gateway path that
+    //    production agents use; the daemon broadcaster sends submitSealedFor.
+    const marketId = env.marketId;
+    log(`using seeded gateway marketId=${marketId} agentAddress=${env.agentAddress}`);
     log(`initializing @cofhe/sdk client (chain=${CHAIN_ID})`);
     const cofheConfig = createCofheConfig({
       environment: "node",
@@ -521,47 +658,40 @@ async function main() {
     log(`encrypted: bin.ctHash=${binEnc.ctHash} conf.ctHash=${confEnc.ctHash}`);
 
     const clientNonce = keccak256(toHex(`${runId}-nonce-${Math.random()}`));
-    log(`submitSealedFor agent=${env.agentAddress} marketId=${marketId} nonce=${clientNonce}`);
-    const submitTx = await walletClient.writeContract({
-      address: contractAddress,
-      abi: ABI,
-      functionName: "submitSealedFor",
-      args: [
-        env.agentAddress,
-        marketId,
-        {
-          ctHash: binEnc.ctHash,
-          securityZone: binEnc.securityZone,
-          utype: binEnc.utype,
-          signature: binEnc.signature as Hex,
-        },
-        {
-          ctHash: confEnc.ctHash,
-          securityZone: confEnc.securityZone,
-          utype: confEnc.utype,
-          signature: confEnc.signature as Hex,
-        },
-        clientNonce,
-      ],
-    });
-    const submitReceipt = await publicClient.waitForTransactionReceipt({ hash: submitTx });
-
-    const sealedCallTopic = keccak256(
-      toHex(
-        "SealedCallSubmitted(bytes32,address,bytes32,uint64,uint64,bytes32,bytes32,bytes32)",
-      ),
+    const gatewayBody: GatewaySealedCallBody = {
+      marketRef: {
+        protocol: "native-price",
+        sourceId: marketId,
+        configVersion: 1,
+      },
+      client_order_id: `${runId}-${clientNonce.slice(2, 14)}`,
+      client_nonce: clientNonce,
+      rationale: `operator-blind release gate ${runId}`,
+      privacy_mode: "sealed_fhenix",
+      binary_index_input: {
+        ct_hash: cofheCtHashToHex32(binEnc.ctHash, "binary_index_input"),
+        security_zone: binEnc.securityZone,
+        utype: binEnc.utype,
+        signature: normalizeBytesHex(binEnc.signature, "binary_index_input"),
+      },
+      confidence_input: {
+        ct_hash: cofheCtHashToHex32(confEnc.ctHash, "confidence_input"),
+        security_zone: confEnc.securityZone,
+        utype: confEnc.utype,
+        signature: normalizeBytesHex(confEnc.signature, "confidence_input"),
+      },
+    };
+    log(`POST /v2/gateway/calls marketId=${marketId} nonce=${clientNonce}`);
+    const accepted = await submitGatewayCallAndWaitForAccepted(
+      env.daemonUrl,
+      env.runtimeKey,
+      gatewayBody,
     );
-    const submittedLog = submitReceipt.logs.find(
-      (l) =>
-        l.address.toLowerCase() === contractAddress.toLowerCase() &&
-        l.topics[0] === sealedCallTopic,
-    );
-    assert.ok(submittedLog, "SealedCallSubmitted log not found in submit receipt");
-    const callId = submittedLog!.topics[1] as Hex;
-    ok(`sealed call submitted (callId=${callId}, tx=${submitTx})`);
+    const callId = accepted.call_id;
+    ok(`gateway sealed call accepted (callId=${callId}, tx=${accepted.tx_hash ?? "pending"})`);
 
     // 3. snapshot 1 — give the daemon ~10s + bounded poll for indexer lag.
-    log(`waiting ${SNAPSHOT_GRACE_MS / 1000}s + indexer poll for daemon to index SealedCallSubmitted…`);
+    log(`waiting ${SNAPSHOT_GRACE_MS / 1000}s + indexer poll for daemon call projection…`);
     await new Promise((r) => setTimeout(r, SNAPSHOT_GRACE_MS));
     const sealedSnapshot = await waitForIndexedSealedCall(env.daemonUrl, callId);
 
@@ -586,6 +716,10 @@ async function main() {
         fhenixPre,
       );
     }
+    const onchainCallId = requireHex32(
+      fhenixPre[FHENIX_ONCHAIN_CALL_ID_KEY],
+      `A1 fhenix.${FHENIX_ONCHAIN_CALL_ID_KEY}`,
+    );
     if (fhenixPre[FHENIX_REVEALED_SUBOBJECT_KEY] !== undefined && fhenixPre[FHENIX_REVEALED_SUBOBJECT_KEY] !== null) {
       die(
         "A1",
@@ -675,8 +809,8 @@ async function main() {
       address: contractAddress,
       abi: ABI,
       functionName: "callRevealOpenAt",
-      args: [callId],
-    });
+      args: [onchainCallId],
+    } as never) as bigint;
     const maxWaitMs = 15 * 60 * 1000;
     const waitDeadline = Date.now() + maxWaitMs;
     log(`waiting for reveal window (revealOpenAt=${revealOpenAt})`);
@@ -687,13 +821,13 @@ async function main() {
       await new Promise((r) => setTimeout(r, 5_000));
     }
 
-    log(`openReveal callId=${callId}`);
+    log(`openReveal onchainCallId=${onchainCallId}`);
     const openTx = await walletClient.writeContract({
       address: contractAddress,
       abi: ABI,
       functionName: "openReveal",
-      args: [callId],
-    });
+      args: [onchainCallId],
+    } as never) as Hex;
     await publicClient.waitForTransactionReceipt({ hash: openTx });
     ok(`reveal opened (tx=${openTx})`);
 
@@ -701,8 +835,8 @@ async function main() {
       address: contractAddress,
       abi: ABI,
       functionName: "getCall",
-      args: [callId],
-    });
+      args: [onchainCallId],
+    } as never) as readonly [Address, Hex, bigint, Hex, Hex, number, number, number];
     const binaryIndexCtHash = callData[3];
     const confidenceCtHash = callData[4];
     const binCtHashBigint = BigInt(binaryIndexCtHash);
@@ -725,19 +859,19 @@ async function main() {
     }
     log(`decrypted ok: binaryIndex=${binDecrypt.decrypted} confidenceBps=${confDecrypt.decrypted}`);
 
-    log(`publishReveal callId=${callId}`);
+    log(`publishReveal onchainCallId=${onchainCallId}`);
     const publishTx = await walletClient.writeContract({
       address: contractAddress,
       abi: ABI,
       functionName: "publishReveal",
       args: [
-        callId,
+        onchainCallId,
         Number(binDecrypt.decrypted),
         Number(confDecrypt.decrypted),
         binDecrypt.signature,
         confDecrypt.signature,
       ],
-    });
+    } as never) as Hex;
     await publicClient.waitForTransactionReceipt({ hash: publishTx });
     ok(`verdict revealed (tx=${publishTx})`);
 
@@ -821,8 +955,8 @@ async function main() {
 
     const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1);
     console.log("");
-    console.log(`${ANSI.green}${ANSI.bold}[operator-blind] PASS${ANSI.reset} runId=${runId} callId=${callId} elapsed=${elapsedSec}s`);
-    console.log(`${ANSI.dim}  txs: register=${registerTx} submit=${submitTx} open=${openTx} publish=${publishTx}${ANSI.reset}`);
+    console.log(`${ANSI.green}${ANSI.bold}[operator-blind] PASS${ANSI.reset} runId=${runId} callId=${callId} onchainCallId=${onchainCallId} elapsed=${elapsedSec}s`);
+    console.log(`${ANSI.dim}  txs: gateway_submit=${accepted.tx_hash ?? "n/a"} open=${openTx} publish=${publishTx}${ANSI.reset}`);
   } finally {
     await browser.close().catch(() => undefined);
   }
