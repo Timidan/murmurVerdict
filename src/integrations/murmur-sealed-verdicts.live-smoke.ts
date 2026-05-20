@@ -1,18 +1,12 @@
 /**
  * Live smoke: CoFHE full-lifecycle round-trip against Base Sepolia.
  *
- * KNOWN BLOCKER (as of 2026-05-17): cofhejs@0.3.1 + node-tfhe@0.11.1 cannot
- * deserialize the Fhenix testnet's CompactPkeCrs key format. The testnet publishes
- * TFHE keys at version "0.5" (key header 0x0300000000000000302e35...) while
- * node-tfhe@0.11.1 WASM expects an older format. TfheCompactPublicKey can be
- * patched via safe_deserialize(budget), but CompactPkeCrs deserialization fails
- * with "invalid value: integer 1, expected variant index 0 <= i < 1" under all
- * methods (deserialize, safe_deserialize, safe_deserialize_from_public_params).
- * Without a valid CRS, ProvenCompactCiphertextList.build_with_proof_packed cannot
- * run, so ZK input proofs cannot be generated, so cofhejs.encrypt() will fail.
- * Resolution: upgrade node-tfhe to a version compatible with the testnet's TFHE 0.5
- * key format, or switch to a newer cofhejs that supports the testnet's key format.
- * The smoke code below is correct and complete; it just cannot run past step 2.
+ * KNOWN BLOCKER RESOLVED (2026-05-20): commit 59dacbe migrated the sibling
+ * operator-blind live script from deprecated cofhejs@0.3.1 to @cofhe/sdk@0.5.2.
+ * cofhejs shipped node-tfhe@0.11.1, which could not deserialize the Fhenix
+ * testnet's TFHE 0.5 CompactPkeCrs key format; @cofhe/sdk@0.5.2 ships
+ * node-tfhe@1.5.3, which works against the current Base Sepolia testnet keys.
+ * This smoke now follows that SDK path.
  *
  * Discovered cofhejs@0.3.1 API surface (cofhejs/node):
  *   - cofhejs.initializeWithViem(params)
@@ -46,7 +40,7 @@
  *   POST /decrypt { ct_tempkey: hex64, host_chain_id: number, permit: Permission }
  *     → { decrypted: number[], signature: string, encryption_type: number, error_message?: string }
  *
- * IMPORTANT: cofhejs.decrypt() returns only the plaintext value.
+ * IMPORTANT: cofhejs.decrypt() and @cofhe/sdk decryptForView return only the plaintext value.
  * For publishReveal we need the threshold-network signature over (ctHash, result, chainId).
  * We call the threshold network /decrypt endpoint directly to retrieve it.
  */
@@ -67,23 +61,10 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-// cofhejs/node.mjs has broken dynamic requires in ESM context; load via CJS path.
-// The .js (CJS) build works fine when required via createRequire in the ESM host.
-// We use an absolute filesystem path to bypass the package exports map restriction.
-import { createRequire } from "node:module";
-import { resolve as pathResolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-const _require = createRequire(import.meta.url);
-const _cofhejsCjsPath = pathResolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../node_modules/cofhejs/dist/node.js",
-);
-const {
-  cofhejs,
-  Encryptable,
-  FheTypes,
-} = _require(_cofhejsCjsPath) as typeof import("cofhejs/node");
-type Permission = import("cofhejs/node").Permission;
+import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
+import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { Encryptable } from "@cofhe/sdk";
+import type { Permit } from "@cofhe/sdk/permits";
 import { loadDeployment } from "./deployments.js";
 
 const CHAIN_ID = 84532;
@@ -127,7 +108,7 @@ const ABI = parseAbi([
  */
 async function fetchDecryptWithSignature(
   ctHashBigint: bigint,
-  permission: Permission,
+  permission: Permit,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const ct_tempkey = ctHashBigint.toString(16).padStart(64, "0");
   const body = JSON.stringify({
@@ -159,7 +140,7 @@ async function fetchDecryptWithSignature(
 async function pollDecrypt(
   label: string,
   ctHashBigint: bigint,
-  permission: Permission,
+  permission: Permit,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let attempt = 0;
@@ -198,45 +179,32 @@ async function main() {
   await publicClient.waitForTransactionReceipt({ hash: registerTx });
   console.log(`[smoke] ok: market registered (tx=${registerTx})`);
 
-  // Step 2 — initialize cofhejs against Base Sepolia testnet CoFHE
-  // environment: "TESTNET" uses https://testnet-cofhe.fhenix.zone for keys,
-  // https://testnet-cofhe-vrf.fhenix.zone for ZK verification,
-  // https://testnet-cofhe-tn.fhenix.zone for threshold-network decrypt
-  console.log(`[smoke] initializing cofhejs (environment=TESTNET, chain=${CHAIN_ID})`);
-  const initResult = await cofhejs.initializeWithViem({
-    viemClient: publicClient as any,
-    viemWalletClient: walletClient as any,
-    environment: "TESTNET",
-    generatePermit: true,
+  // Step 2 — initialize @cofhe/sdk against Base Sepolia testnet CoFHE
+  console.log(`[smoke] initializing @cofhe/sdk client (chain=${CHAIN_ID})`);
+  const cofheConfig = createCofheConfig({
+    environment: "node",
+    supportedChains: [cofheBaseSepolia],
   });
-  if (!initResult.success) {
-    throw new Error(`cofhejs init failed: ${initResult.error?.message}`);
-  }
-  console.log(`[smoke] cofhejs initialized, permit=${initResult.data ? "created" : "none"}`);
+  const cofheClient = createCofheClient(cofheConfig);
+  await cofheClient.connect(publicClient as never, walletClient as never);
 
   // Get the permission struct needed for threshold network calls
-  const permitResult = cofhejs.getPermission();
-  if (!permitResult.success) {
-    // If no permit yet, create one
-    const createResult = await cofhejs.createPermit({ type: "self", issuer: account.address });
-    if (!createResult.success) {
-      throw new Error(`createPermit failed: ${createResult.error?.message}`);
-    }
-    const permResult = cofhejs.getPermission();
-    if (!permResult.success) throw new Error(`getPermission failed: ${permResult.error?.message}`);
-  }
-  const permission: Permission = cofhejs.getPermission().data!;
+  const selfPermit = await cofheClient.permits.createSelf({
+    type: "self",
+    issuer: account.address,
+  });
+  const permission: Permit = selfPermit as unknown as Permit;
 
   // Step 2 (continued) — encrypt binaryIndex=0 (euint8) and confidenceBps=7500 (euint16)
-  console.log(`[smoke] encrypting inputs via cofhejs`);
-  const encryptResult = await cofhejs.encrypt([
-    Encryptable.uint8(BigInt(0)),
-    Encryptable.uint16(BigInt(7500)),
-  ]);
-  if (!encryptResult.success) {
-    throw new Error(`cofhejs.encrypt failed: ${encryptResult.error?.message}`);
-  }
-  const [binEnc, confEnc] = encryptResult.data;
+  console.log(`[smoke] encrypting inputs via @cofhe/sdk`);
+  const encryptedInputs = await cofheClient
+    .encryptInputs([
+      Encryptable.uint8(BigInt(0)),
+      Encryptable.uint16(BigInt(7500)),
+    ])
+    .execute();
+  const binEnc = encryptedInputs[0];
+  const confEnc = encryptedInputs[1];
   console.log(`[smoke] encrypted: binEnc.ctHash=${binEnc.ctHash} confEnc.ctHash=${confEnc.ctHash}`);
 
   // Step 3 — submitSealedFor
