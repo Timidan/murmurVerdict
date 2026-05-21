@@ -52,7 +52,7 @@ export function CallPage({ callId }: { callId: string }) {
         }
       />
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] min-h-0">
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] min-h-0">
         {error && (
           <div className="lg:col-span-2 px-2 py-2 ck-mono ck-neg border-b border-[var(--color-border)]">
             [error] {error}
@@ -65,7 +65,7 @@ export function CallPage({ callId }: { callId: string }) {
 
         {data && (
           <>
-            <div className="lg:col-span-2 grid grid-cols-3 border-b border-[var(--color-border)]">
+            <div className="lg:col-span-3 grid grid-cols-3 border-b border-[var(--color-border)]">
               <Stat label="subject" value={subjectLabel} mono />
               <Stat label="outcome" value={outcomeText} tone={outcomeTone} />
               <Stat label="score" value={data.resolution?.call_score?.toFixed(4) ?? "—"} mono />
@@ -124,7 +124,7 @@ export function CallPage({ callId }: { callId: string }) {
               )}
             </Panel>
 
-            <Panel title="anchor · resolution">
+            <Panel title="anchor · resolution" className="lg:border-r-0">
               {data.t0 ? (
                 <>
                   <Kv k="t0" v={data.t0.t0} />
@@ -149,6 +149,64 @@ export function CallPage({ callId }: { callId: string }) {
                 </>
               ) : (
                 <Kv k="t1" v="awaiting resolution" tone="ck-dim" />
+              )}
+            </Panel>
+
+            <Panel title="identity evidence">
+              {data.fhenix ? (
+                <>
+                  <Kv
+                    k="chain"
+                    v={humanChain(data.fhenix.chain_id)}
+                    title={String(data.fhenix.chain_id)}
+                  />
+                  <Kv
+                    k="contract"
+                    v={
+                      <ExplorerLink
+                        address={data.fhenix.contract_address}
+                        chainId={data.fhenix.chain_id}
+                        kind="address"
+                      />
+                    }
+                    mono
+                  />
+                  <Kv
+                    k="onchain_call_id"
+                    v={
+                      <span className="ck-mono ck-pos break-all">
+                        {data.fhenix.onchain_call_id}
+                      </span>
+                    }
+                    mono
+                  />
+                  <KvDivider />
+                  <Kv
+                    k="reveal_status"
+                    v={data.fhenix.reveal_status}
+                    tone={revealTone(data.fhenix.reveal_status)}
+                  />
+                  <Kv
+                    k="reveal_open_at"
+                    v={data.fhenix.reveal_open_at}
+                    tone="ck-dim"
+                  />
+                  {data.fhenix.revealed_at && (
+                    <Kv k="revealed_at" v={data.fhenix.revealed_at} />
+                  )}
+                  {data.fhenix.terminal_at && (
+                    <Kv k="terminal_at" v={data.fhenix.terminal_at} tone="ck-dim" />
+                  )}
+                  {data.fhenix.invalid_reason && (
+                    <Kv
+                      k="invalid_reason"
+                      v={data.fhenix.invalid_reason}
+                      tone="ck-neg"
+                    />
+                  )}
+                </>
+              ) : (
+                <Kv k="fhenix" v="no sealed-call binding" tone="ck-dim" />
               )}
             </Panel>
           </>
@@ -199,16 +257,21 @@ function Kv({
   v,
   mono,
   tone,
+  title,
 }: {
   k: string;
   v: React.ReactNode;
   mono?: boolean;
   tone?: string;
+  title?: string;
 }) {
   return (
     <div className="grid grid-cols-[140px_1fr] gap-x-3 px-2 py-1 border-b border-[var(--color-border)]">
       <span className="ck-label truncate">{k}</span>
-      <span className={(mono ? "ck-mono " : "ck-mono ") + (tone ?? "ck-pos") + " break-all"}>
+      <span
+        className={(mono ? "ck-mono " : "ck-mono ") + (tone ?? "ck-pos") + " break-all"}
+        title={title}
+      >
         {v}
       </span>
     </div>
@@ -217,4 +280,46 @@ function Kv({
 
 function KvDivider() {
   return <div className="h-2 border-b border-[var(--color-border)]" />;
+}
+
+function humanChain(chainId: number | string): string {
+  const id = typeof chainId === "number" ? chainId : Number(chainId);
+  if (id === 8453) return "base";
+  if (id === 84532) return "base sepolia";
+  return `chain ${id}`;
+}
+
+function revealTone(status: string): string {
+  if (status === "revealed") return "ck-pos";
+  if (status === "invalid" || status === "missed") return "ck-neg";
+  return "ck-dim";
+}
+
+function ExplorerLink({
+  address,
+  chainId,
+  kind,
+}: {
+  address: string;
+  chainId: number | string;
+  kind: "address" | "tx";
+}) {
+  const id = typeof chainId === "number" ? chainId : Number(chainId);
+  let base: string | null = null;
+  if (id === 8453) base = "https://basescan.org";
+  else if (id === 84532) base = "https://sepolia.basescan.org";
+  if (!base) {
+    return <span className="ck-mono ck-pos break-all">{address}</span>;
+  }
+  return (
+    <a
+      href={`${base}/${kind}/${address}`}
+      target="_blank"
+      rel="noreferrer"
+      className="ck-mono ck-pos no-underline hover:underline underline-offset-2 break-all"
+      title={`${address} on ${humanChain(id)}`}
+    >
+      {address.slice(0, 10)}…{address.slice(-8)}
+    </a>
+  );
 }
