@@ -311,7 +311,9 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
             </span>
             <span className="flex justify-end">
               <CompactSparkline
-                values={r.call_scores.filter((s): s is number => s !== null)}
+                values={
+                  r.call_scores?.filter((s): s is number => s !== null) ?? []
+                }
                 width={56}
                 height={12}
               />

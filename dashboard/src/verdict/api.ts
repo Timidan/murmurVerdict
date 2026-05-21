@@ -303,8 +303,10 @@ export interface AgentMarketRow {
   /** resolved_calls >= 20 */
   market_main_tier: boolean;
   /** Chronological per-call score series for this market. Nulls = void /
-   * oracle_unavailable resolutions; render as gaps in the sparkline. */
-  call_scores: (number | null)[];
+   * oracle_unavailable resolutions; render as gaps in the sparkline.
+   * Optional in the type because older daemon versions don't project this
+   * field — the consumer must `?.filter() ?? []` defensively. */
+  call_scores?: (number | null)[];
 }
 
 export interface AgentGridSummary {
