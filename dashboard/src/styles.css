@@ -228,6 +228,24 @@
   .formula-tip__pop { transition: none; }
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+   Live tape row enter — V14 #2's "scrolling call tape". Each new row mounted
+   by React (a fresh `call.accepted` / `call.resolved` SSE event) animates in
+   with a brief slide-from-above + fade. Older rows stay still. Honors
+   prefers-reduced-motion via the @media gate below.
+   ──────────────────────────────────────────────────────────────────────── */
+
+@keyframes tape-row-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tape-row {
+    animation: tape-row-enter 220ms var(--ease-out) both;
+  }
+}
+
 /* Owner-authorized pill — used on agent profile chrome to surface
    controller-wallet binding presence. */
 .pill-owner {

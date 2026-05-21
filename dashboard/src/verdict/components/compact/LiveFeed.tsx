@@ -20,7 +20,7 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
         return (
           <li
             key={evt.call_id + (isResolved ? "r" : "a")}
-            className="grid grid-cols-[8px_56px_38px_44px_1fr_64px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
+            className="tape-row grid grid-cols-[8px_56px_38px_44px_1fr_64px_30px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
           >
             <span
               className={
@@ -57,6 +57,7 @@ export function CompactLiveFeed({ limit = 40 }: { limit?: number }) {
                   ? formatScore(evt.call_score)
                   : "—"}
             </span>
+            <VerifyCallLink callId={evt.call_id} />
           </li>
         );
       })}
@@ -71,7 +72,7 @@ function FeedSkeleton() {
       {[0, 1, 2, 3, 4].map((i) => (
         <li
           key={i}
-          className="grid grid-cols-[8px_56px_38px_44px_1fr_64px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)]"
+          className="grid grid-cols-[8px_56px_38px_44px_1fr_64px_30px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)]"
         >
           <span className="inline-block w-[5px] h-[5px] bg-[var(--color-border)]" />
           <div className="h-[8px] bg-[var(--color-border)] w-[44px]" />
@@ -79,9 +80,28 @@ function FeedSkeleton() {
           <div className="h-[8px] bg-[var(--color-border)] w-[32px]" />
           <div className="h-[10px] bg-[var(--color-border)] w-[70%]" />
           <div className="h-[8px] bg-[var(--color-border)] w-[44px] justify-self-end" />
+          <div className="h-[8px] bg-[var(--color-border)] w-[18px] justify-self-end" />
         </li>
       ))}
     </ul>
+  );
+}
+
+function VerifyCallLink({ callId }: { callId: string }) {
+  const shortId = callId.slice(0, 8);
+  return (
+    <a
+      href={`#/calls/${callId}`}
+      aria-label={`verify call ${shortId}`}
+      className={
+        "t-meta ck-mono justify-self-end border border-[var(--color-border-vis)] px-1 " +
+        "text-[9px] leading-[14px] text-[var(--color-secondary)] no-underline " +
+        "hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
+        "hover:border-[var(--color-display)]"
+      }
+    >
+      [V]
+    </a>
   );
 }
 
