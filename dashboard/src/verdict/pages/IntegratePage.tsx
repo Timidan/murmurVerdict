@@ -3,20 +3,15 @@
 // Route: #/account/agent/:slug/integrate. Auth-gated.
 //
 // Renders the CodeSnippetPanel keyed to the user's freshly-created agent.
-// The page exists primarily so ApiKeyMintModal has a destination for its
-// DONE button — closing the loop "minted the key → here's working code".
+// The canonical snippet path is Runtime Key + Fhenix Gateway.
 //
 // SessionStorage handoff (the only non-obvious bit):
-//   ApiKeyMintModal stashes `{ secret, expires_at }` in
+//   Older API-key flows may stash `{ secret, expires_at }` in
 //   sessionStorage[`murmur_just_minted:${slug}`] right before navigating
-//   here. We read it on mount, render snippets with the live key inline,
-//   then clear the entry so a refresh hides the key. The handoff window
-//   is 5 minutes — long enough for a slow page transition, short enough
-//   that an idle tab can't be hijacked into showing the key.
+//   here. We read and clear it so retired submission credentials are not
+//   re-shown on the Gateway integration screen.
 //
-//   We never persist the key beyond this tab session. Closing the tab,
-//   refreshing past the 5 min window, or navigating away → snippets fall
-//   back to env-var references.
+//   Runtime Key plaintext is shown only by the Runtime Key mint flow.
 
 import { useEffect, useMemo, useState } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
@@ -94,8 +89,6 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     return () => clearTimeout(t);
   }, [envelope]);
 
-  const apiKey = envelope?.secret ?? null;
-
   // Resolve the matching agent row from the cached account list so snippets
   // can display the canonical agent_id when needed by tooling around the
   // sealed Fhenix flow.
@@ -126,11 +119,8 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     return <LoadingShell slug={slug} />;
   }
 
-  // "Arrived without a key" means the sessionStorage handoff was empty
-  // (refresh, direct nav, expired window). We swap copy in that case to
-  // tell the user to use their already-saved key from the env var.
-  const arrivedWithKey = apiKey !== null;
-  const headerAccent = arrivedWithKey ? "ck-pos" : "ck-dim";
+  const arrivedWithRetiredApiKey = envelope !== null;
+  const headerAccent = arrivedWithRetiredApiKey ? "ck-pos" : "ck-dim";
 
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
@@ -153,20 +143,39 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           <h1 className="ck-mono ck-pos text-[14px] font-bold mb-1">
             integrate · {slug}
           </h1>
-          {!arrivedWithKey && (
+          {!arrivedWithRetiredApiKey && (
             <p className="ck-mono ck-dim text-[10px] leading-relaxed max-w-[60ch]">
-              paste this into your agent. replace the placeholder api key
-              with the one you minted — we only show plaintext keys once at
-              mint time, never again.
+              paste this into your agent. set <code className="ck-pos">MURMUR_RUNTIME_KEY</code>{" "}
+              to a Runtime Key authorized by the agent's Controller Wallet.{" "}
+              <a
+                href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
+                className="ck-pos no-underline underline-offset-2 hover:underline"
+              >
+                bind a wallet
+              </a>
+              {" → "}
+              <a
+                href={`#/account/agent/${encodeURIComponent(slug)}/runtime`}
+                className="ck-pos no-underline underline-offset-2 hover:underline"
+              >
+                mint a runtime key
+              </a>
+              .
             </p>
           )}
-          {arrivedWithKey && (
+          {arrivedWithRetiredApiKey && (
             <p
               className="ck-mono text-[10px] leading-relaxed max-w-[60ch]"
               style={{ color: "var(--color-accent)" }}
             >
-              ⚠ this view shows your key inline for ~5 minutes. copy what you
-              need now; refresh hides it permanently.
+              API keys no longer authorize agent submissions. Use a Runtime
+              Key for the Gateway snippet below.{" "}
+              <a
+                href={`#/account/agent/${encodeURIComponent(slug)}/runtime`}
+                className="ck-pos no-underline underline-offset-2 hover:underline"
+              >
+                mint one now →
+              </a>
             </p>
           )}
         </section>
@@ -174,7 +183,6 @@ export function IntegratePage({ slug }: IntegratePageProps) {
         {agent ? (
           <CodeSnippetPanel
             agentSlug={slug}
-            apiKey={apiKey ?? undefined}
           />
         ) : agentMissing ? (
           <section className="ck-frame-strong px-4 py-4">
