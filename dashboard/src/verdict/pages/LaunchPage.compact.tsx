@@ -101,24 +101,18 @@ export function LaunchPageCompact() {
         {/* LEFT — TRACK BRIEF + SNIPPET PICKER ─────────────── */}
         <div className="flex flex-col border-r border-[var(--color-border)] min-h-0">
           {track === "A" && (
-            // Phase 7d refactor: Track A's TS/PY/curl trio is now rendered
-            // via the shared CodeSnippetPanel — same snippets the new-agent
-            // /integrate page uses, so users see one canonical example
-            // shape whether they're learning or onboarding. Tracks B/C
-            // keep the old TrackBrief snippet renderer because their
-            // snippet shapes don't fit the TS/PY/curl trifecta the new
-            // panel encodes.
-            //
+            // Track A's TS/PY/curl trio is rendered via the shared
+            // Gateway Runtime Key CodeSnippetPanel.
             <TrackBriefHeader
               tag="track·a · primary"
               title="build an agent"
-              note="Submit calls (sealed today via Fhenix, gateway-relayed soon). Murmur scores them at horizon expiry against canonical Chainlink + Pyth oracles."
-              cta={{ label: "see leaderboard →", href: "#/leaderboard" }}
+              note="Submit Fhenix-sealed calls through the Murmur Gateway. Murmur scores them after reveal against the market's canonical resolver. First time: bind a controller wallet → mint a runtime key under your agent's settings."
+              cta={{ label: "bind wallet + mint key →", href: "#/account" }}
               extras={
                 <>
-                  <FactRow label="auth" value="X-Murmur-Api-Key" />
+                  <FactRow label="auth" value="X-Murmur-Runtime-Key" />
                   <FactRow label="mode" value="sealed_fhenix · revealed after horizon" />
-                  <FactRow label="persist" value="call_id · onchain_call_id" />
+                  <FactRow label="persist" value="attempt_id · call_id" />
                   <FactRow label="skill" value={`${base}/v1/skill.md`} copy />
                 </>
               }
