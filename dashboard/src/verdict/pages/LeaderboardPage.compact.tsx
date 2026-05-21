@@ -3,11 +3,12 @@ import { verdictApi, type LeaderboardRow } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
+import { FormulaTip } from "../components/compact/FormulaTip.js";
 import { FamilyLeaderboards } from "../components/FamilyLeaderboards.js";
 import { useStream } from "../hooks/useStream.js";
 
 type Tier = "all" | "main" | "provisional";
-type SortKey = "rank" | "score" | "wr" | "res" | "pend";
+type SortKey = "rank" | "score" | "lb" | "wr" | "res" | "pend";
 
 /**
  * COMPACT leaderboard — single-screen ladder with side panel for live tape.
@@ -42,22 +43,28 @@ export function LeaderboardPageCompact() {
   // Fold SSE deltas in for the "all" tier (mirrors default page).
   useEffect(() => {
     if (tier !== "all") return;
-    if (!stream.leaderboard) return;
-    setRows(
-      stream.leaderboard.rows.map((r) => ({
-        agent_id: r.agent_id,
-        display_slug: r.display_slug,
-        display_name: r.display_name,
-        kind: r.kind,
-        tier: r.rank ? "main" : "provisional",
-        rank: r.rank,
-        verdict_score: r.verdict_score,
-        resolved_calls: r.resolved_calls,
-        win_rate: r.win_rate,
-        pending_calls: r.pending_calls,
-        last_resolved_at: null,
-      })),
-    );
+    const lb = stream.leaderboard;
+    if (!lb) return;
+    setRows((prev) => {
+      const byAgent = new Map(prev?.map((row) => [row.agent_id, row]));
+      return lb.rows.map((r) => {
+        const previous = byAgent.get(r.agent_id);
+        return {
+          agent_id: r.agent_id,
+          display_slug: r.display_slug,
+          display_name: r.display_name,
+          kind: r.kind,
+          tier: r.rank ? "main" : "provisional",
+          rank: r.rank,
+          verdict_score: r.verdict_score,
+          verdict_score_lb: r.verdict_score_lb ?? previous?.verdict_score_lb ?? null,
+          resolved_calls: r.resolved_calls,
+          win_rate: r.win_rate,
+          pending_calls: r.pending_calls,
+          last_resolved_at: previous?.last_resolved_at ?? null,
+        };
+      });
+    });
   }, [stream.leaderboard, tier]);
 
   const sorted = useMemo(() => {
@@ -68,6 +75,8 @@ export function LeaderboardPageCompact() {
         switch (sort) {
           case "score":
             return (b.verdict_score ?? -Infinity) - (a.verdict_score ?? -Infinity);
+          case "lb":
+            return (b.verdict_score_lb ?? -Infinity) - (a.verdict_score_lb ?? -Infinity);
           case "wr":
             return (b.win_rate ?? -Infinity) - (a.win_rate ?? -Infinity);
           case "res":
@@ -134,7 +143,7 @@ export function LeaderboardPageCompact() {
           </button>
         ))}
         <span className="ck-label mx-2 ml-4">sort</span>
-        {(["rank", "score", "wr", "res", "pend"] as SortKey[]).map((k) => (
+        {(["rank", "score", "lb", "wr", "res", "pend"] as SortKey[]).map((k) => (
           <button
             key={k}
             onClick={() => setSort(k)}
@@ -160,8 +169,9 @@ export function LeaderboardPageCompact() {
               {Array.from({ length: 8 }).map((_, i) => (
                 <div
                   key={i}
-                  className="grid grid-cols-[28px_1fr_70px_50px_44px_50px_60px_24px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
+                  className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
                 >
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
                   <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
                   <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
                   <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
@@ -195,20 +205,39 @@ export function LeaderboardPageCompact() {
 function Ladder({ rows }: { rows: LeaderboardRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_70px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
         <span>#</span>
         <span>agent</span>
         <span>kind</span>
-        <span className="text-right">vs</span>
-        <span className="text-right">wr</span>
+        <span className="flex justify-end">
+          <FormulaTip
+            label="verdict_score"
+            formula="verdict_score = mean(call_score) - stdev(call_score) / sqrt(n)"
+          >
+            vs
+          </FormulaTip>
+        </span>
+        <span className="flex justify-end">
+          <FormulaTip
+            label="lb"
+            formula="lb = mean(call_score) - 1.6449 * standard_error(call_score)"
+          />
+        </span>
+        <span className="flex justify-end">
+          <FormulaTip label="win_rate" formula="win rate = wins / (wins + losses)">
+            wr
+          </FormulaTip>
+        </span>
         <span className="text-right">res</span>
-        <span className="text-right">trend</span>
+        <span className="flex justify-end">
+          <FormulaTip label="trend" formula="trend = recent resolved call_score series" />
+        </span>
         <span className="text-right">p</span>
       </li>
       {rows.map((r) => (
         <li
           key={r.agent_id}
-          className="grid grid-cols-[28px_1fr_70px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
+          className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
         >
           <a href={`#/agents/${r.display_slug}`} className="contents no-underline">
             <span className="ck-mono ck-dim">
@@ -227,6 +256,14 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
               }
             >
               {formatScore(r.verdict_score)}
+            </span>
+            <span
+              className={
+                "ck-mono text-right " +
+                ((r.verdict_score_lb ?? 0) >= 0 ? "ck-pos" : "ck-neg")
+              }
+            >
+              {formatScore(r.verdict_score_lb ?? null)}
             </span>
             <span className="ck-mono ck-dim text-right">
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
@@ -273,4 +310,3 @@ function formatScore(s: number | null): string {
   const sign = s >= 0 ? "+" : "−";
   return `${sign}${Math.round(Math.abs(s) * 1000)}`;
 }
-

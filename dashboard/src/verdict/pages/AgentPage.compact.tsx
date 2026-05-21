@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import {
   verdictApi,
   fetchAgentGrid,
@@ -9,6 +10,7 @@ import {
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
+import { FormulaTip } from "../components/compact/FormulaTip.js";
 
 /**
  * COMPACT per-agent dashboard. Single screen splits:
@@ -74,6 +76,11 @@ export function AgentPageCompact({ slug }: { slug: string }) {
     };
   }, [calls]);
 
+  const ownerExplorerUrl =
+    agent?.wallet_address && agent.chain_id
+      ? blockExplorerAddressUrl(agent.wallet_address, agent.chain_id)
+      : null;
+
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
       <CompactTopbar
@@ -95,22 +102,47 @@ export function AgentPageCompact({ slug }: { slug: string }) {
             <RCell label="name" value={agent.display_name} />
             <RCell label="kind" value={agent.kind} tone={kindTone(agent.kind)} />
             <RCell
-              label="verdict·30d"
+              label={
+                <FormulaTip
+                  label="avg score"
+                  formula="avg score = sum(resolved call_score) / resolved calls"
+                >
+                  verdict·30d
+                </FormulaTip>
+              }
               value={stats ? formatScore(stats.avgScore) : "—"}
               tone={(stats?.avgScore ?? 0) >= 0 ? "pos" : "neg"}
             />
-            <RCell label="wr" value={stats ? formatWR(stats.winRate) : "—"} />
+            <RCell
+              label={
+                <FormulaTip label="win rate" formula="win rate = wins / (wins + losses)">
+                  wr
+                </FormulaTip>
+              }
+              value={stats ? formatWR(stats.winRate) : "—"}
+            />
             <RCell label="res" value={stats ? String(stats.resolved).padStart(2, "0") : "—"} />
             <RCell
               label="pend"
               value={stats ? String(stats.pending).padStart(2, "0") : "—"}
               tone="dim"
             />
-            <RCell label="streak" value={stats ? `${stats.streak}w` : "—"} />
+            <RCell
+              label={
+                <FormulaTip
+                  label="streak"
+                  formula="streak = consecutive wins from newest call until first loss"
+                />
+              }
+              value={stats ? `${stats.streak}w` : "—"}
+            />
           </section>
 
           {/* IDENTITY META + ACTIONS ─────────────────────────── */}
           <div className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--color-border)] flex-wrap">
+            {agent.wallet_address && (
+              <OwnerAuthorizedPill explorerUrl={ownerExplorerUrl} />
+            )}
             {agent.wallet_address && (
               <a
                 href={`https://basescan.org/address/${agent.wallet_address}`}
@@ -185,11 +217,12 @@ export function AgentPageCompact({ slug }: { slug: string }) {
 function CallTable({ calls }: { calls: AgentCallRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[64px_14px_1fr_50px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[64px_14px_1fr_50px_30px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
         <span>time</span>
         <span aria-hidden="true"></span>
         <span>note<span className="sr-only"> (each row sealed)</span></span>
         <span className="text-right">out</span>
+        <span aria-hidden="true"></span>
       </li>
       {calls.map((c) => {
         const ts = formatTs(c.submitted_at ?? c.accepted_at);
@@ -201,7 +234,7 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
         return (
           <li
             key={c.call_id}
-            className="grid grid-cols-[64px_14px_1fr_50px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
+            className="grid grid-cols-[64px_14px_1fr_50px_30px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
           >
             <a href={`#/calls/${c.call_id}`} className="contents no-underline">
               <span className="ck-mono ck-dim">{ts}</span>
@@ -220,10 +253,29 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
                 {outLabel}
               </span>
             </a>
+            <VerifyCallLink callId={c.call_id} />
           </li>
         );
       })}
     </ul>
+  );
+}
+
+function VerifyCallLink({ callId }: { callId: string }) {
+  const shortId = callId.slice(0, 8);
+  return (
+    <a
+      href={`#/calls/${callId}`}
+      aria-label={`verify call ${shortId}`}
+      className={
+        "t-meta ck-mono justify-self-end border border-[var(--color-border-vis)] px-1 " +
+        "text-[9px] leading-[14px] text-[var(--color-secondary)] no-underline " +
+        "hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
+        "hover:border-[var(--color-display)]"
+      }
+    >
+      [V]
+    </a>
   );
 }
 
@@ -276,6 +328,52 @@ interface AgentStats {
   winRate: number | null;
   avgScore: number | null;
   streak: number;
+}
+
+function OwnerAuthorizedPill({ explorerUrl }: { explorerUrl: string | null }) {
+  const className =
+    "ck-mono inline-flex items-center gap-1 border border-[var(--color-border-vis)] " +
+    "px-1.5 py-[1px] text-[9px] leading-tight lowercase text-[var(--color-secondary)] " +
+    "no-underline hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
+    "hover:border-[var(--color-display)]";
+
+  const content = (
+    <>
+      <span>owner-authorized</span>
+      {explorerUrl && (
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 8 8"
+          className="h-2 w-2"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+        >
+          <path d="M2 1.5 5 4 2 6.5" />
+        </svg>
+      )}
+    </>
+  );
+
+  if (!explorerUrl) {
+    return (
+      <span className={className} title="controller wallet is bound to this public profile">
+        {content}
+      </span>
+    );
+  }
+
+  return (
+    <a
+      href={explorerUrl}
+      target="_blank"
+      rel="noreferrer"
+      className={className}
+      title="controller wallet is bound to this public profile"
+    >
+      {content}
+    </a>
+  );
 }
 
 function SidebarStats({
@@ -353,7 +451,7 @@ function RCell({
   value,
   tone = "default",
 }: {
-  label: string;
+  label: ReactNode;
   value: number | string;
   tone?: "pos" | "neg" | "dim" | "default";
 }) {
@@ -386,7 +484,14 @@ function humanChain(chainId: string | null | undefined): string {
   // CAIP-2 → human label. Base is the canonical deploy target.
   const id = chainId ?? "eip155:8453";
   if (id === "eip155:8453") return "BASE";
+  if (id === "eip155:84532") return "BASE SEPOLIA";
   return id.toUpperCase();
+}
+
+function blockExplorerAddressUrl(address: string, chainId: string): string | null {
+  if (chainId === "eip155:8453") return `https://basescan.org/address/${address}`;
+  if (chainId === "eip155:84532") return `https://sepolia.basescan.org/address/${address}`;
+  return null;
 }
 
 function formatScore(s: number | null): string {
@@ -427,4 +532,3 @@ function formatOutcome(c: AgentCallRow): string {
   }
   return c.outcome.slice(0, 4);
 }
-

@@ -214,3 +214,32 @@
   position: relative;
   z-index: 1;
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Formula tooltip — hover/focus only, no JS. Used on stat-cell headers to
+   reveal the formula behind a metric (V14 decision #7).
+   ──────────────────────────────────────────────────────────────────────── */
+
+.formula-tip:hover .formula-tip__pop,
+.formula-tip:focus-within .formula-tip__pop {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .formula-tip__pop { transition: none; }
+}
+
+/* Owner-authorized pill — used on agent profile chrome to surface
+   controller-wallet binding presence. */
+.pill-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  height: 18px;
+  border: 1px solid var(--color-border-vis);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  color: var(--color-display);
+}
