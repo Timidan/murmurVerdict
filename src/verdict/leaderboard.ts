@@ -7,7 +7,6 @@ import {
   MIN_RESOLVED_CALLS_FOR_MARKETPLACE_TIER,
 } from "./schema.js";
 import { computeVerdictScore } from "./scoring.js";
-import { callRevealsRepo } from "./db.js";
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -116,38 +115,19 @@ export function getLeaderboard(
     }
   }
 
-  // Phase F D26 — three-axis reputation. Pull reveal-reliability counts
-  // per agent in one query so we can populate marketplace_eligible +
-  // reveal_reliability without N round-trips.
-  const reliabilityRows = callRevealsRepo.reliabilityByAgent(db);
-  const reliabilityByAgent = new Map<
-    string,
-    { agent_reveals: number; daemon_reveals: number }
-  >();
-  for (const r of reliabilityRows) {
-    reliabilityByAgent.set(r.agent_id, {
-      agent_reveals: r.agent_reveals ?? 0,
-      daemon_reveals: r.daemon_reveals ?? 0,
-    });
-  }
-
+  const revealReliability = getRevealReliability(db);
   type Computed = LeaderboardRow & { _sortKey: number };
   const all: Computed[] = [];
   for (const a of byAgent.values()) {
     const score = computeVerdictScore(a.call_scores);
+    const reveal = revealReliability.get(a.agent_id) ?? {
+      total: 0,
+      revealed: 0,
+      failed: 0,
+    };
     const tier: LeaderboardTier =
       score.resolved_calls >= MIN_RESOLVED_CALLS_FOR_MAIN_TIER ? "main" : "provisional";
     const win_rate = a.wins + a.losses > 0 ? a.wins / (a.wins + a.losses) : null;
-    const reliability = reliabilityByAgent.get(a.agent_id) ?? {
-      agent_reveals: 0,
-      daemon_reveals: 0,
-    };
-    const reliabilityDenom =
-      reliability.agent_reveals + reliability.daemon_reveals;
-    const reveal_reliability =
-      reliabilityDenom > 0
-        ? reliability.agent_reveals / reliabilityDenom
-        : null;
     // D25: marketplace eligibility — stricter than tier=main.
     const marketplace_eligible =
       score.resolved_calls >= MIN_RESOLVED_CALLS_FOR_MARKETPLACE_TIER &&
@@ -166,9 +146,9 @@ export function getLeaderboard(
       win_rate,
       pending_calls: a.pending,
       last_resolved_at: a.last_resolved_at,
-      reveal_reliability,
-      agent_reveals: reliability.agent_reveals,
-      daemon_fallback_reveals: reliability.daemon_reveals,
+      reveal_reliability: reveal.total > 0 ? reveal.revealed / reveal.total : null,
+      agent_reveals: reveal.revealed,
+      daemon_fallback_reveals: 0,
       marketplace_eligible,
       // D26 axes 2 + 3 — populated in v0.3 once operator_trust + stake
       // schemas land. Today they're explicitly null so consumers can
@@ -198,6 +178,37 @@ export function getLeaderboard(
     return row;
   });
   return ordered;
+}
+
+function getRevealReliability(
+  db: Database.Database,
+): Map<string, { total: number; revealed: number; failed: number }> {
+  const rows = db
+    .prepare(
+      `SELECT s.agent_id,
+              SUM(CASE WHEN f.reveal_status = 'revealed' THEN 1 ELSE 0 END) AS revealed,
+              SUM(CASE WHEN f.reveal_status IN ('invalid','missed') THEN 1 ELSE 0 END) AS failed,
+              SUM(CASE WHEN f.reveal_status IN ('revealed','invalid','missed') THEN 1 ELSE 0 END) AS total
+       FROM fhenix_sealed_calls f
+       JOIN submissions s ON s.call_id = f.call_id
+       GROUP BY s.agent_id`,
+    )
+    .all() as Array<{
+      agent_id: string;
+      revealed: number | null;
+      failed: number | null;
+      total: number | null;
+    }>;
+  return new Map(
+    rows.map((row) => [
+      row.agent_id,
+      {
+        total: row.total ?? 0,
+        revealed: row.revealed ?? 0,
+        failed: row.failed ?? 0,
+      },
+    ]),
+  );
 }
 
 // ─── P3 Phase 3a — per-market leaderboard ────────────────────────────────────
@@ -467,6 +478,11 @@ export function getAgentMarketGrid(
       last_resolved_at: a.last_resolved_at,
       market_main_tier:
         score.resolved_calls >= MIN_RESOLVED_CALLS_FOR_MAIN_TIER,
+      // Surface 3 Wave 2 — expose the chronological per-call score series so
+      // the dashboard's per-market trend sparkline can render real data.
+      // Null entries are void/oracle_unavailable resolutions; the client
+      // sparkline renders them as gaps, not zeros.
+      call_scores: a.call_scores,
     };
   });
 }

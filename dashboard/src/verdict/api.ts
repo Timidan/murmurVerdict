@@ -28,6 +28,7 @@ export interface LeaderboardRow {
   tier: "main" | "provisional";
   rank: number | null;
   verdict_score: number | null;
+  verdict_score_lb?: number | null;
   resolved_calls: number;
   win_rate: number | null;
   pending_calls: number;
@@ -301,6 +302,9 @@ export interface AgentMarketRow {
   last_resolved_at: string | null;
   /** resolved_calls >= 20 */
   market_main_tier: boolean;
+  /** Chronological per-call score series for this market. Nulls = void /
+   * oracle_unavailable resolutions; render as gaps in the sparkline. */
+  call_scores: (number | null)[];
 }
 
 export interface AgentGridSummary {

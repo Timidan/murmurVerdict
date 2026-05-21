@@ -310,7 +310,11 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
             </span>
             <span className="flex justify-end">
-              <CompactSparkline values={[]} width={56} height={12} />
+              <CompactSparkline
+                values={r.call_scores.filter((s): s is number => s !== null)}
+                width={56}
+                height={12}
+              />
             </span>
           </a>
         </li>
