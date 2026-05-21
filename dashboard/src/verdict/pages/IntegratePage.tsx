@@ -225,10 +225,19 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             </li>
             <li>
               <a
+                href={`#/account/agent/${encodeURIComponent(slug)}/runtime`}
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+              >
+                <span className="ck-pos">manage runtime keys</span>
+                <span className="ck-dim text-[10px]">[ mint / revoke → ]</span>
+              </a>
+            </li>
+            <li>
+              <a
                 href={`#/account/agent/${encodeURIComponent(slug)}/keys`}
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
               >
-                <span className="ck-pos">manage api keys</span>
+                <span className="ck-pos">legacy api keys</span>
                 <span className="ck-dim text-[10px]">[ rotate / mint → ]</span>
               </a>
             </li>

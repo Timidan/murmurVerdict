@@ -90,7 +90,13 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
         provider: "privy",
       });
       setBusy("signing");
-      const { signature } = await signMessage({ message: challenge.message });
+      // Pin the signer to the wallet we're binding — without this, Privy's
+      // useSignMessage defaults to embedded HD index 0, which would silently
+      // sign with the wrong key if the user has multiple embedded wallets.
+      const { signature } = await signMessage(
+        { message: challenge.message },
+        { address: wallet.address },
+      );
       setBusy("submitting");
       await verdictApi.patchAgentWallet(token, slug, {
         wallet_address: wallet.address,
@@ -111,6 +117,12 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
   async function reattest() {
     setError(null);
     if (!ready || !authenticated || !cw) return;
+    if (cw.wallet_kind !== "embedded") {
+      setError(
+        "× external-wallet re-attestation is not wired in this slice yet — connect the bound wallet via its own provider to re-sign",
+      );
+      return;
+    }
     const token = await getAccessToken();
     if (!token) {
       setError("could not get Privy access token");
@@ -120,7 +132,12 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
       setBusy("challenging");
       const challenge = await verdictApi.postControllerWalletReattestationChallenge(token, slug);
       setBusy("signing");
-      const { signature } = await signMessage({ message: challenge.message });
+      // Pin signer to the previously-bound controller wallet — daemon
+      // validates the signature recovers to cw.wallet_address.
+      const { signature } = await signMessage(
+        { message: challenge.message },
+        { address: cw.wallet_address },
+      );
       setBusy("submitting");
       await verdictApi.postControllerWalletReattestation(token, slug, {
         attestation_nonce: challenge.attestation_nonce,

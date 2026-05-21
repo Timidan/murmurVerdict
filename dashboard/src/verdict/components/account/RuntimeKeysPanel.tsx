@@ -76,11 +76,17 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
   async function mint() {
     setError(null);
-    if (!canMint) {
+    if (!canMint || !cw) {
       setError(
         cw?.reattestation_overdue
           ? "× controller wallet re-attestation is overdue — re-attest first"
           : "× bind a controller wallet first (wallet tab)",
+      );
+      return;
+    }
+    if (cw.wallet_kind !== "embedded") {
+      setError(
+        "× external-wallet mint is not wired in this slice yet — connect the bound wallet via its own provider to sign the authorization",
       );
       return;
     }
@@ -93,7 +99,12 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       setBusy("challenging");
       const challenge = await verdictApi.postRuntimeKeyChallenge(token, slug, {});
       setBusy("signing");
-      const { signature } = await signMessage({ message: challenge.message });
+      // Pin signer to the bound controller wallet — daemon validates
+      // the signature recovers to controller_wallet_address.
+      const { signature } = await signMessage(
+        { message: challenge.message },
+        { address: cw.wallet_address },
+      );
       setBusy("submitting");
       const result = await verdictApi.postRuntimeKey(token, slug, {
         authorization_nonce: challenge.authorization_nonce,
