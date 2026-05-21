@@ -31,20 +31,26 @@ export function LandingPageCompact() {
     <div className="compact-shell min-h-dvh flex flex-col">
       <CompactTopbar crumb="home / overview" />
 
-      {/* STATS RIBBON ─────────────────────────────────────────── */}
-      <section className="grid grid-cols-5 border-b border-[var(--color-border)]">
-        <Stat label="acc·24h" value={stats?.accepted_24h ?? "—"} />
-        <Stat label="res·24h" value={stats?.resolved_24h ?? "—"} />
-        <Stat label="win·24h" value={stats?.wins_24h ?? "—"} tone="pos" />
-        <Stat label="loss·24h" value={stats?.losses_24h ?? "—"} tone="neg" />
-        <Stat label="void·24h" value={stats?.void_24h ?? "—"} tone="dim" />
-      </section>
+      {/* LIVE COUNTER ─────────────────────────────────────────────
+          V14 decision #2 — `/` is an instrument-cluster animated landing
+          with a Doto live counter as the hero. Counts resolved verdicts
+          in the last 24h; SSE `stats.tick` pushes a fresh value every
+          ~10s without rerouting the page. */}
+      <LiveCounter
+        value={stats?.resolved_24h ?? null}
+        label="verdicts · 24h"
+        sublabel={
+          stats
+            ? `acc ${stats.accepted_24h} · win ${stats.wins_24h} · loss ${stats.losses_24h} · void ${stats.void_24h}`
+            : "awaiting first tick"
+        }
+      />
 
       {/* MAIN GRID ────────────────────────────────────────────── */}
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1.2fr)] min-h-0">
         <Panel
           title="leaderboard · 30d"
-          meta="top 12"
+          meta="top 5"
           actions={
             <a href="#/leaderboard" className="ck-btn">
               full
@@ -52,7 +58,7 @@ export function LandingPageCompact() {
           }
           className="lg:border-r-0"
         >
-          <CompactMiniLB limit={12} />
+          <CompactMiniLB limit={5} />
         </Panel>
         <Panel
           title="live tape"
@@ -134,23 +140,38 @@ export function LandingPageCompact() {
   );
 }
 
-function Stat({
-  label,
+/**
+ * Doto live counter — V14 #2's instrument-cluster hero. Renders the value
+ * in Doto at a hero size (≥ 36px per the type system) and a sub-line of
+ * fine-grain stats in mono. SSE-driven via `stats.tick`; the number swaps
+ * in place when the tick lands. Reduced-motion preference is honored via
+ * the parent layout's CSS — no JS-driven animation needed here.
+ */
+function LiveCounter({
   value,
-  tone = "default",
+  label,
+  sublabel,
 }: {
+  value: number | null;
   label: string;
-  value: number | string;
-  tone?: "pos" | "neg" | "dim" | "default";
+  sublabel: string;
 }) {
-  const toneClass =
-    tone === "pos" ? "ck-pos" : tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
   return (
-    <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5">
-      <span className="ck-label">{label}</span>
-      <span className={"ck-mono " + toneClass} style={{ fontSize: 14, fontWeight: 700 }}>
-        {value}
-      </span>
-    </div>
+    <section className="border-b border-[var(--color-border)] flex items-end justify-between px-4 py-3 gap-4">
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <span className="ck-label">{label}</span>
+        <span className="ck-mono ck-dim text-[10px] truncate" title={sublabel}>
+          {sublabel}
+        </span>
+      </div>
+      <div
+        className="t-display-md tabular-nums"
+        aria-live="polite"
+        aria-label={`${label}: ${value ?? "loading"}`}
+        style={{ fontSize: "clamp(48px, 8vw, 96px)" }}
+      >
+        {value === null ? "—" : value.toLocaleString("en-US")}
+      </div>
+    </section>
   );
 }
