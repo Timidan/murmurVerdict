@@ -18,11 +18,12 @@ import { useEffect, useMemo } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { DestinationAddressForm } from "../components/account/DestinationAddressForm.js";
 import { ApiKeysPanel } from "../components/account/ApiKeysPanel.js";
+import { ControllerWalletPanel } from "../components/account/ControllerWalletPanel.js";
 import { TierBadge } from "../components/TierBadge.js";
 import { useAccount } from "../hooks/useAccount.js";
 import type { AgentKind, AccountAgent } from "../api.js";
 
-export type AgentSettingsTab = "payout" | "keys";
+export type AgentSettingsTab = "payout" | "wallet" | "keys";
 
 export interface AgentSettingsPageProps {
   slug: string;
@@ -102,11 +103,14 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           className="w-full max-w-[720px] flex items-stretch border border-[var(--color-border-vis)]"
           aria-label="agent settings tabs"
         >
-          <TabLink slug={slug} tab="payout" active={tab === "payout"}>
-            payout
+          <TabLink slug={slug} tab="wallet" active={tab === "wallet"}>
+            wallet
           </TabLink>
           <TabLink slug={slug} tab="keys" active={tab === "keys"}>
             keys
+          </TabLink>
+          <TabLink slug={slug} tab="payout" active={tab === "payout"}>
+            payout
           </TabLink>
         </nav>
 
@@ -127,6 +131,8 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             updatedAt={agent?.destination_address_updated_at ?? null}
             onSaved={() => void account.refreshAgents()}
           />
+        ) : tab === "wallet" ? (
+          <ControllerWalletPanel key={slug} slug={slug} agent={agent} />
         ) : (
           <ApiKeysPanel key={slug} slug={slug} />
         )}
