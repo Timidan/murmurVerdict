@@ -19,11 +19,12 @@ import { CompactTopbar } from "../components/compact/Topbar.js";
 import { DestinationAddressForm } from "../components/account/DestinationAddressForm.js";
 import { ApiKeysPanel } from "../components/account/ApiKeysPanel.js";
 import { ControllerWalletPanel } from "../components/account/ControllerWalletPanel.js";
+import { RuntimeKeysPanel } from "../components/account/RuntimeKeysPanel.js";
 import { TierBadge } from "../components/TierBadge.js";
 import { useAccount } from "../hooks/useAccount.js";
 import type { AgentKind, AccountAgent } from "../api.js";
 
-export type AgentSettingsTab = "payout" | "wallet" | "keys";
+export type AgentSettingsTab = "payout" | "wallet" | "runtime" | "keys";
 
 export interface AgentSettingsPageProps {
   slug: string;
@@ -106,8 +107,11 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           <TabLink slug={slug} tab="wallet" active={tab === "wallet"}>
             wallet
           </TabLink>
+          <TabLink slug={slug} tab="runtime" active={tab === "runtime"}>
+            runtime keys
+          </TabLink>
           <TabLink slug={slug} tab="keys" active={tab === "keys"}>
-            keys
+            api keys
           </TabLink>
           <TabLink slug={slug} tab="payout" active={tab === "payout"}>
             payout
@@ -133,6 +137,8 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           />
         ) : tab === "wallet" ? (
           <ControllerWalletPanel key={slug} slug={slug} agent={agent} />
+        ) : tab === "runtime" ? (
+          <RuntimeKeysPanel key={slug} slug={slug} agent={agent} />
         ) : (
           <ApiKeysPanel key={slug} slug={slug} />
         )}

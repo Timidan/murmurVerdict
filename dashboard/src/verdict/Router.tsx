@@ -195,7 +195,7 @@ function parseHash(hash: string): ParsedRoute {
   // An agent whose slug happens to be "new" reaches its settings via
   // /account/agent/new/payout or /account/agent/new/keys with no
   // collision against the creation page.
-  const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|wallet|keys))?$/.exec(path);
+  const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|wallet|runtime|keys))?$/.exec(path);
   if (agentSettingsMatch) {
     return {
       name: "account_agent_settings",
@@ -313,7 +313,7 @@ export function VerdictRouter() {
           {route.name === "account_agent_settings" && (
             <AgentSettingsPage
               slug={route.params!.slug}
-              tab={(route.params!.tab as "payout" | "wallet" | "keys") ?? "payout"}
+              tab={(route.params!.tab as "payout" | "wallet" | "runtime" | "keys") ?? "payout"}
             />
           )}
           {route.name === "account_agent_integrate" && (
