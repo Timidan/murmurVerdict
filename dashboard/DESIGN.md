@@ -2,7 +2,7 @@
 
 > **Status**: living working spec for branch `nothing-preview`. This is what's in the tree right now plus what's still missing. Update on landing structural UI changes — don't let this rot.
 >
-> **Source of truth for visuals**: `dashboard/src/styles.css` + `dashboard/src/verdict/styles/{compact,bold,calm}.css`. If this doc disagrees with CSS, CSS wins.
+> **Source of truth for visuals**: `dashboard/src/styles.css` + `dashboard/src/verdict/styles/compact.css`. If this doc disagrees with CSS, CSS wins.
 
 ---
 
@@ -16,7 +16,7 @@ Five principles. If a screen breaks one, the screen is wrong.
 4. **Type does the heavy lifting.** Scale + weight + spacing build hierarchy. Not color, not icons, not shadows.
 5. **Industrial warmth.** Technical and precise. A human hand should still be felt — never sterile.
 
-Compact-first. Bold and calm are A/B siblings gated by `?variant=bold|calm` for marketing experiments. Compact is what the user sees by default.
+Compact is the only variant. Bold and calm were A/B siblings — removed in 13885f9 once the closeout plan landed compact-only.
 
 ---
 
@@ -58,7 +58,7 @@ Dark uses pure `#000` (OLED canvas — intentional brand override of "no pure bl
 
 **Hierarchy rule:** max 4 text levels per screen, drawn from `disabled / secondary / primary / display`. Red is not part of the hierarchy — if nothing is urgent, no red on screen.
 
-**Brand red migration (2026-05-16):** the accent was previously `#D71921` (Nothing red). It moved to `#FD3C3C` (brand red, sampled from the approved Murmur Verdict asset pack). The bold variant's `--bold-accent` in `dashboard/src/verdict/styles/bold.css` deliberately retains `#D71921` because bold is out of scope for the rebrand and lives behind `?variant=bold`.
+**Brand red migration (2026-05-16):** the accent was previously `#D71921` (Nothing red). It moved to `#FD3C3C` (brand red, sampled from the approved Murmur Verdict asset pack). Bold/calm variants used to carry their own accent overrides but the variants are gone — the rebrand is now the only accent path.
 
 ### 2.3 Spacing
 
@@ -72,7 +72,7 @@ Subtle ease-out only. `--ease-out: cubic-bezier(0.25, 0.1, 0.25, 1)`. No spring,
 
 The only animation primitive on the compact shell is `nothing-breathe` — a 1.6s subtle fade for the live status dot (`compact.css:94-98`).
 
-### 2.5 Compact variant overrides
+### 2.5 Compact shell styles
 
 When the page sits inside `.compact-shell`, overrides at `dashboard/src/verdict/styles/compact.css`:
 
@@ -89,29 +89,29 @@ When the page sits inside `.compact-shell`, overrides at `dashboard/src/verdict/
 | `.ck-row` | grid row with hover `rgba(255,255,255,0.03)` lift |
 | `.ck-dot[-live\|-ok\|-stale]` | 5px square LED, breathe animation only when reduced-motion is OK |
 
-Compact = Bloomberg-terminal density. Generic dashboard tokens (32px display, 16px body) are reserved for the bold/calm variants.
+Compact = Bloomberg-terminal density. Generic dashboard tokens (32px display, 16px body) live in `styles.css` for any future hero/landing reuse outside the compact shell.
 
 ---
 
 ## 3. Routing
 
-Hash-based router at `dashboard/src/verdict/Router.tsx`. Variants are gated by `?variant=bold|calm` after the hash; the no-query default is **compact** for the five covered routes.
+Hash-based router at `dashboard/src/verdict/Router.tsx`. Every route renders the single compact page; `?variant=` routing was removed alongside the bold/calm files.
 
-| Route | Page (compact default) | Variants? | Public/Auth |
-|---|---|---|---|
-| `#/` | `LandingPage.compact` | bold, calm | public |
-| `#/leaderboard` | `LeaderboardPage.compact` | bold, calm | public |
-| `#/launch` | `LaunchPage.compact` | bold, calm | public |
-| `#/markets/:market_id` | `MarketDetailPage.compact` | bold, calm | public |
-| `#/agents/:slug` | `AgentPage.compact` | bold, calm | public |
-| `#/agents/:slug/calls` | `AgentPage.compact` (alias) | bold, calm | public |
-| `#/calls/:call_id` | `CallPage` (compact-only) | — | public |
-| `#/today` | `TodayPage` (compact-only) | — | public |
-| `#/share/:slug` | `SharePage` | — | public (also has daemon-rendered OG variant at `/share/:slug` outside the SPA) |
-| `#/recruiters` | `RecruitersPage` | — | public |
-| `#/admin/refs` | `AdminRefsPage` | — | token-gated |
-| `#/admin/gateway` | `AdminGatewayPage` | — | token-gated |
-| `#/spec` | inline `SpecPage` | — | public |
+| Route | Page | Public/Auth |
+|---|---|---|
+| `#/` | `LandingPage` | public |
+| `#/leaderboard` | `LeaderboardPage` | public |
+| `#/launch` | `LaunchPage` | public |
+| `#/markets/:market_id` | `MarketDetailPage` | public |
+| `#/agents/:slug` | `AgentPage` | public |
+| `#/agents/:slug/calls` | `AgentPage` (alias) | public |
+| `#/calls/:call_id` | `CallPage` | public |
+| `#/today` | `TodayPage` | public |
+| `#/share/:slug` | `SharePage` | public (also has daemon-rendered OG variant at `/share/:slug` outside the SPA) |
+| `#/recruiters` | `RecruitersPage` | public |
+| `#/admin/refs` | `AdminRefsPage` | token-gated |
+| `#/admin/gateway` | `AdminGatewayPage` | token-gated |
+| `#/spec` | inline `SpecPage` | public |
 
 Malformed `%`-escapes in `:market_id` and `:call_id` fall through to landing (Codex audit fix at `Router.tsx:131-141`).
 
@@ -133,7 +133,7 @@ Lives at `dashboard/src/verdict/components/compact/`.
 | `MetricCell` | Single stat cell (label + value) for ribbon strips | many |
 | `Sparkline` | 30-day score trend SVG, no axes, hairline | leaderboard rows |
 
-### 4.2 Generic (variant-agnostic, used outside compact-shell)
+### 4.2 Generic (used outside compact-shell utility pages)
 
 Lives at `dashboard/src/verdict/components/`.
 
@@ -141,12 +141,12 @@ Lives at `dashboard/src/verdict/components/`.
 |---|---|
 | `OutcomeChip` | win/loss/void/oracle_unavailable status pill |
 | `PillButton` | Rounded CTA used by share and account flows |
-| `Topbar` | Generic dashboard topbar used by utility pages outside the compact/calm/bold shells |
-| `LiveCounter` | Big animated counter (calm + bold variants) |
+| `Topbar` | Generic dashboard topbar used by utility pages outside the compact shell |
+| `LiveCounter` | Big animated counter |
 | `LiveTape` | Generic SSE tape component |
 | `AgentTicker` | Side-rail vertical agent ticker |
 | `MarketHeatGrid` | Heat grid of an agent's per-market score |
-| `MissionControl` | All-in-one ops grid (used by some bold variants) |
+| `MissionControl` | All-in-one ops grid |
 | `Score` | Verdict-score display block |
 | `StatsGrid` | 4-cell stat block (resolved/win-rate/median-conf/etc) |
 | `BenchBars` | Bench-vs-actual delta bar |
@@ -167,7 +167,7 @@ Lives at `dashboard/src/verdict/components/`.
 
 ## 5. Page specs
 
-### 5.1 Landing (`#/`) — `LandingPage.compact.tsx`
+### 5.1 Landing (`#/`) — `LandingPage.tsx`
 
 ```
 ┌─ STATS RIBBON ────────────────────────────────────────────────────┐
@@ -182,7 +182,7 @@ Lives at `dashboard/src/verdict/components/`.
 
 **Interactions**: row click → `#/agents/:slug`. "FULL" → `#/leaderboard`. "INSTL" → `#/launch`.
 
-### 5.2 Leaderboard (`#/leaderboard`) — `LeaderboardPage.compact.tsx`
+### 5.2 Leaderboard (`#/leaderboard`) — `LeaderboardPage.tsx`
 
 Tier filter (ALL / MAIN / PROVISIONAL), sortable columns (rank, slug, score, lb, resolved, win-rate, last-resolved, trend). Each row is a `ck-row` with `Sparkline`. SSE `leaderboard.update` event folds back into the visible state without scroll-jump (preserves scroll position via `scrollY` snapshot).
 
@@ -190,19 +190,19 @@ Tier filter (ALL / MAIN / PROVISIONAL), sortable columns (rank, slug, score, lb,
 
 ### 5.3 Today (`#/today`) — `TodayPage.tsx`
 
-3-column live tape: PENDING / RESOLVED 24H / ACCEPTED 24H. Stats ribbon header. Each row links to `#/calls/:call_id`. Compact-only, no variant siblings.
+3-column live tape: PENDING / RESOLVED 24H / ACCEPTED 24H. Stats ribbon header. Each row links to `#/calls/:call_id`.
 
-### 5.4 Launch (`#/launch`) — `LaunchPage.compact.tsx`
+### 5.4 Launch (`#/launch`) — `LaunchPage.tsx`
 
 Install/onboarding tracks for new agents. A/B/C/D paths covering sealed Fhenix submission, public HTTP reads, webhooks, and the OpenServ Launchpad discovery agent. Pulls onboarding copy from `/v1/skill.md`.
 
-### 5.5 Market detail (`#/markets/:market_id`) — `MarketDetailPage.compact.tsx`
+### 5.5 Market detail (`#/markets/:market_id`) — `MarketDetailPage.tsx`
 
 Header: `eth.1h · ETH · 1h · LISTED`. Ribbon includes Murmur-native market taxonomy (`price_direction`, `event_binary`, `sports_match`, etc.), support status, payoff model, settlement model, oracle metadata, and config version. Agent ladder for this market via `/v1/markets/:id/leaderboard`.
 
 **Missing today**: oracle health for the specific feed. Today the Chainlink ETH/USD oracle is broken (decimals() read fail) and the page doesn't surface that. **Gap.**
 
-### 5.6 Agent profile (`#/agents/:slug`) — `AgentPage.compact.tsx`
+### 5.6 Agent profile (`#/agents/:slug`) — `AgentPage.tsx`
 
 Hero score + sparkline + recent calls. `MarketHeatGrid` for per-market score breakdown. `CallLog` for the agent's resolved + pending calls. `DiscoveredBy` attribution if a `?ref=` cookie sticks.
 
@@ -263,14 +263,14 @@ instead of old launchpad scratch docs. **Gap.**
 
 ---
 
-## 6. Variants — bold + calm
+## 6. Variants — removed
 
-`?variant=bold` and `?variant=calm` swap the JSX shell on the 5 covered routes (Landing, Leaderboard, Launch, MarketDetail, Agent). Same data fetches, different visual language.
-
-- **Bold** (`dashboard/src/verdict/components/bold/`, styles in `bold.css`): Doto dot-matrix giant numerals, marching marquee, side rail, red ▲ pills. Marketing/launch hero feel.
-- **Calm** (`dashboard/src/verdict/components/calm/`, styles in `calm.css`): gallery whitespace, lowercase wordmark, oversized outline numerals, prose paragraphs, pill CTA.
-
-Kept gated as A/B fodder. Not the production default. Drop them when we either pick a permanent secondary variant or decide compact is sufficient alone.
+Bold and calm A/B variants were dropped in 13885f9 (10 page files + 10
+variant components + 2 stylesheets removed). `?variant=` routing is gone
+from Router.tsx. The closeout decision: compact is canonical, the
+fragmentation cost of carrying experiments without active users wasn't
+worth it. If we want a marketing-hero variant in the future, build it
+as a new top-level route, not a sibling JSX swap.
 
 ---
 
@@ -353,7 +353,7 @@ readiness for Fhenix reveal automation.
 
 | # | Question | Default if no input | Whose call |
 |---|---|---|---|
-| 1 | Drop bold + calm variants entirely, or keep gated? | Keep gated, dead code rots — drop in a follow-up | product |
+| 1 | ~~Drop bold + calm variants entirely?~~ | **Resolved 2026-05-22:** dropped in 13885f9. | product |
 | 2 | Per-row `[V]` verify on leaderboard — wire it now? | Hold until Gateway evidence exists so `[V]` actually means something | product |
 | 3 | Should `AgentPage` show Controller Wallet publicly before rotation exists? | Show truncated address with "owner-authorized"; do not call it onchain registration | product |
 | 4 | Mobile hamburger drawer for nav (V14 decision 4) — build now or punt? | Build with the next claim/call iteration; current nav is desktop-only | product |
