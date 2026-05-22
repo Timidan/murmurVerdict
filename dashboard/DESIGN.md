@@ -169,6 +169,8 @@ Lives at `dashboard/src/verdict/components/`.
 | `ThemeToggle` | Dark ↔ paper theme switch in topbar |
 | `Splash` | Cold-load mark splash (gated by a single rAF) |
 | `MMark`, `Wordmark` | Brand glyph + wordmark SVG primitives |
+| `PrivacyTierBadge` | Sealed-Fhenix tier indicator mounted on `CallPage` |
+| `FormulaTip` (compact) | Stat-cell formula tooltip on leaderboard + agent pages |
 
 ### 4.3 Hooks
 

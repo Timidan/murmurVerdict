@@ -145,15 +145,18 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
     }
     setBusy("idle");
     // Bind succeeded — invalidate the parent's account hook so sibling
-    // panels (RuntimeKeysPanel) see the new binding. The child-instance
-    // refresh is intentionally dropped: this panel reads `cw` from the
-    // parent's `agent` prop, so only the parent fetch matters. Errors
-    // from the notifier are surfaced but don't mislabel as "bind failed".
+    // panels (RuntimeKeysPanel) see the new binding. Child-instance
+    // refresh dropped (the panel reads `cw` from the parent `agent`
+    // prop, so only the parent fetch matters). useAccount.refreshAgents
+    // catches internally today, so the defensive try below is unlikely
+    // to fire — kept so a future change to the hook's error posture
+    // surfaces here instead of as an unhandled rejection. Banner
+    // renderer adds the `× ` prefix, so the message stays plain.
     try {
       await onAgentChanged?.();
     } catch (e) {
       setError(
-        "× bind succeeded but agent refresh failed: " +
+        "bind succeeded but agent refresh failed — reload the page to see the latest state: " +
           ((e as Error)?.message ?? "unknown"),
       );
     }
@@ -195,14 +198,13 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       return;
     }
     setBusy("idle");
-    // Re-attest succeeded — see bind() comment. Parent's account hook is
-    // the only refresh target; errors from the notifier are surfaced but
-    // don't get mislabeled as "re-attest failed".
+    // Re-attest succeeded — see bind() comment for the defensive catch
+    // rationale. Banner renderer adds the `× ` prefix.
     try {
       await onAgentChanged?.();
     } catch (e) {
       setError(
-        "× re-attest succeeded but agent refresh failed: " +
+        "re-attest succeeded but agent refresh failed — reload the page to see the latest state: " +
           ((e as Error)?.message ?? "unknown"),
       );
     }

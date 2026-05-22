@@ -140,7 +140,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             key={slug}
             slug={slug}
             agent={agent}
-            onAgentChanged={() => void account.refreshAgents()}
+            onAgentChanged={account.refreshAgents}
           />
         ) : tab === "runtime" ? (
           <RuntimeKeysPanel key={slug} slug={slug} agent={agent} />
