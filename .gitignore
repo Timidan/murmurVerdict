@@ -135,5 +135,15 @@ data/*.db-shm
 # Claude Code session-local state
 /.claude/
 
+# Agent scaffolding directories — local-only working state, never committed.
+# These hold session-local artifacts from various coding-agent tools.
+/.claire/
+/.agents/
+/.codex/
+
+# Raster asset pack — large binaries; brand-mark sources live under
+# dashboard/public/brand/ in tracked form. Keep the source bundle local.
+/murmur-verdict__full-asset-pack__final/
+
 # Brand-mark geometry build artifacts (regeneratable from asset PNGs)
 dashboard/docs/specs/*-geometry.json
