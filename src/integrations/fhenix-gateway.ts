@@ -230,6 +230,15 @@ export interface FhenixGatewayConfig {
   retryMaxMs?: number;
   maxAttempts?: number;
   stuckAfterMs?: number;
+  /**
+   * Hard deadline for a single writeContract round-trip. The contract
+   * dedups by client_nonce, so a timeout that fires while a tx actually
+   * lands on-chain only costs wasted gas on the next retry (the second
+   * broadcast will revert). The default sits well below stuckAfterMs
+   * so a hung broadcast surfaces as a retryable failure long before
+   * sweepStuckClaims kicks in. 0 disables.
+   */
+  broadcastTimeoutMs?: number;
   now?: () => Date;
 }
 
@@ -422,6 +431,7 @@ export class FhenixGatewayBroadcaster {
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
   private readonly maxAttempts: number;
+  private readonly broadcastTimeoutMs: number;
   private readonly stuckAfterMs: number;
   private readonly now: () => Date;
 
@@ -437,6 +447,11 @@ export class FhenixGatewayBroadcaster {
     this.retryMaxMs = Math.max(this.retryBaseMs, Math.floor(config.retryMaxMs ?? 120_000));
     this.maxAttempts = Math.max(1, Math.floor(config.maxAttempts ?? 5));
     this.stuckAfterMs = Math.max(60_000, Math.floor(config.stuckAfterMs ?? 10 * 60_000));
+    // 0 = disabled; otherwise clamp to at least 1s so a misconfiguration
+    // doesn't silently broadcast and immediately time out.
+    this.broadcastTimeoutMs = config.broadcastTimeoutMs === 0
+      ? 0
+      : Math.max(1_000, Math.floor(config.broadcastTimeoutMs ?? 90_000));
     this.now = config.now ?? (() => new Date());
   }
 
@@ -1046,18 +1061,24 @@ export class FhenixGatewayBroadcaster {
     });
     if (!claimed) return;
     try {
-      const { value: txHash, latencyMs } = await measure(() => this.client.writeContract({
-        address: this.contractAddress as Address,
-        abi: MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
-        functionName: "submitSealedFor",
-        args: [
-          attempt.agent_wallet_address as Address,
-          attempt.market_id_hash as Hex,
-          contractInput(JSON.parse(attempt.binary_index_input_json) as CofheInput),
-          contractInput(JSON.parse(attempt.confidence_input_json) as CofheInput),
-          attempt.client_nonce as Hex,
-        ],
-      }));
+      const { value: txHash, latencyMs } = await measure(() =>
+        withTimeout(
+          this.client.writeContract({
+            address: this.contractAddress as Address,
+            abi: MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
+            functionName: "submitSealedFor",
+            args: [
+              attempt.agent_wallet_address as Address,
+              attempt.market_id_hash as Hex,
+              contractInput(JSON.parse(attempt.binary_index_input_json) as CofheInput),
+              contractInput(JSON.parse(attempt.confidence_input_json) as CofheInput),
+              attempt.client_nonce as Hex,
+            ],
+          }),
+          this.broadcastTimeoutMs,
+          "submitSealedFor",
+        ),
+      );
       fhenixGatewayTxRepo.markSubmitted(this.db, {
         attempt_id: attempt.attempt_id,
         tx_hash: txHash.toLowerCase(),
@@ -1114,20 +1135,26 @@ export class FhenixGatewayBroadcaster {
     });
     if (!claimed) return;
     try {
-      const { value: txHash, latencyMs } = await measure(() => this.client.writeContract({
-        address: this.contractAddress as Address,
-        abi: MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
-        functionName: "submitFeedPacketFor",
-        args: [
-          attempt.agent_wallet_address as Address,
-          attempt.feed_id_hash as Hex,
-          attempt.market_id_hash as Hex,
-          BigInt(Math.floor(Date.parse(attempt.reveal_after) / 1000)),
-          contractInput(JSON.parse(attempt.action_input_json) as CofheInput),
-          contractInput(JSON.parse(attempt.signal_input_json) as CofheInput),
-          attempt.client_nonce as Hex,
-        ],
-      }));
+      const { value: txHash, latencyMs } = await measure(() =>
+        withTimeout(
+          this.client.writeContract({
+            address: this.contractAddress as Address,
+            abi: MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
+            functionName: "submitFeedPacketFor",
+            args: [
+              attempt.agent_wallet_address as Address,
+              attempt.feed_id_hash as Hex,
+              attempt.market_id_hash as Hex,
+              BigInt(Math.floor(Date.parse(attempt.reveal_after) / 1000)),
+              contractInput(JSON.parse(attempt.action_input_json) as CofheInput),
+              contractInput(JSON.parse(attempt.signal_input_json) as CofheInput),
+              attempt.client_nonce as Hex,
+            ],
+          }),
+          this.broadcastTimeoutMs,
+          "submitFeedPacketFor",
+        ),
+      );
       fhenixGatewayFeedPacketTxRepo.markSubmitted(this.db, {
         attempt_id: attempt.attempt_id,
         tx_hash: txHash.toLowerCase(),
@@ -1643,6 +1670,7 @@ export function createFhenixGatewayFromEnv(
     retryMaxMs: numberEnv("FHENIX_GATEWAY_RETRY_MAX_MS", 120_000),
     maxAttempts: numberEnv("FHENIX_GATEWAY_MAX_ATTEMPTS", 5),
     stuckAfterMs: numberEnv("FHENIX_GATEWAY_STUCK_SEC", 600) * 1_000,
+    broadcastTimeoutMs: numberEnv("FHENIX_GATEWAY_BROADCAST_TIMEOUT_MS", 90_000),
   });
 }
 
@@ -1902,6 +1930,39 @@ async function measure<T>(fn: () => Promise<T>): Promise<Measured<T>> {
     value,
     latencyMs: Math.max(0, Date.now() - started),
   };
+}
+
+/**
+ * Race the promise against a setTimeout. On timeout, the underlying
+ * network call is NOT canceled — Node + viem don't expose an abort
+ * surface here. We just stop waiting and surface a clear error; the
+ * contract's client_nonce dedup means a tx that lands after we timed
+ * out won't corrupt state (the next retry will revert at the contract,
+ * which markRetryableFailure handles as just another failed broadcast).
+ * Used by broadcast{Attempt,FeedPacketAttempt} to bound the maximum
+ * time we wait on writeContract before treating it as a retryable
+ * failure, well in advance of sweepStuckClaims kicking in.
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  if (timeoutMs <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function receiptTelemetry(input: {
