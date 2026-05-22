@@ -171,8 +171,15 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
           className="ck-mono text-[11px]"
           style={{ color: "var(--color-accent)" }}
         >
-          × re-attestation overdue — re-attest on the wallet tab before
-          minting new keys.
+          × controller wallet re-attestation overdue — the daemon will
+          reject mint with 409 until you sign a fresh attestation.{" "}
+          <a
+            href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
+            className="no-underline underline-offset-2 hover:underline"
+            style={{ color: "var(--color-accent)" }}
+          >
+            re-attest now →
+          </a>
         </p>
       )}
 
