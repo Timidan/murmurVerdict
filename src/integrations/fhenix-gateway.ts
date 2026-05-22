@@ -797,6 +797,21 @@ export class FhenixGatewayBroadcaster {
     let confirmed = 0;
     let accepted = 0;
     let failed = 0;
+    // Release any claims held by crashed/killed broadcast processes BEFORE
+    // listing due attempts. Without this, an attempt whose claimant died
+    // mid-broadcast would stay claimed forever and never re-broadcast.
+    const stuckBeforeIso = isoFromMs(this.now().getTime() - this.stuckAfterMs);
+    const sweepUpdatedAt = nowIso(this.now());
+    fhenixGatewayTxRepo.sweepStuckClaims(this.db, {
+      stuckBeforeIso,
+      updated_at: sweepUpdatedAt,
+      errorMessage: "broadcast claim stuck; reset by tick sweep",
+    });
+    fhenixGatewayFeedPacketTxRepo.sweepStuckClaims(this.db, {
+      stuckBeforeIso,
+      updated_at: sweepUpdatedAt,
+      errorMessage: "broadcast claim stuck; reset by tick sweep",
+    });
     for (const attempt of fhenixGatewayTxRepo.listDueForBroadcast(
       this.db,
       nowIso(this.now()),
@@ -998,6 +1013,16 @@ export class FhenixGatewayBroadcaster {
       return;
     }
     const broadcastStartedAt = nowIso(this.now());
+    // Claim the row atomically. If another writer (e.g. the relayer tick
+    // racing the synchronous submit path) already claimed it, abort —
+    // the winner will broadcast and mark.
+    const claimed = fhenixGatewayTxRepo.claimForBroadcast(this.db, {
+      attempt_id: attempt.attempt_id,
+      broadcast_started_at: broadcastStartedAt,
+      updated_at: broadcastStartedAt,
+      token: randomUUID(),
+    });
+    if (!claimed) return;
     try {
       const { value: txHash, latencyMs } = await measure(() => this.client.writeContract({
         address: this.contractAddress as Address,
@@ -1054,6 +1079,14 @@ export class FhenixGatewayBroadcaster {
       return;
     }
     const broadcastStartedAt = nowIso(this.now());
+    // Claim the row atomically — see broadcastAttempt comment.
+    const claimed = fhenixGatewayFeedPacketTxRepo.claimForBroadcast(this.db, {
+      attempt_id: attempt.attempt_id,
+      broadcast_started_at: broadcastStartedAt,
+      updated_at: broadcastStartedAt,
+      token: randomUUID(),
+    });
+    if (!claimed) return;
     try {
       const { value: txHash, latencyMs } = await measure(() => this.client.writeContract({
         address: this.contractAddress as Address,

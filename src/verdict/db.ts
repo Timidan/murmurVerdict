@@ -901,6 +901,28 @@ function applyMigrations(db: Database.Database): void {
     v = 49;
     set.run("schema_version", String(v));
   }
+
+  if (v < 50) {
+    // Idempotent ADD COLUMN for both gateway tx tables. The claim token
+    // serializes "I'm about to broadcast this attempt" across writers so
+    // the relayer-tick + the synchronous submit path can't double-broadcast
+    // the same row. Stuck claims are recovered by a sweep before each
+    // tick — see fhenixGatewayTxRepo.sweepStuckClaims.
+    applyAlterTableAddColumn(
+      db,
+      "fhenix_gateway_tx_attempts",
+      "broadcast_claim_token",
+      "ALTER TABLE fhenix_gateway_tx_attempts ADD COLUMN broadcast_claim_token TEXT",
+    );
+    applyAlterTableAddColumn(
+      db,
+      "fhenix_gateway_feed_packet_tx_attempts",
+      "broadcast_claim_token",
+      "ALTER TABLE fhenix_gateway_feed_packet_tx_attempts ADD COLUMN broadcast_claim_token TEXT",
+    );
+    v = 50;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -4254,6 +4276,10 @@ export interface FhenixGatewayTxAttemptRow extends FhenixGatewayTxAttemptInsert 
   gas_used: string | null;
   effective_gas_price_wei: string | null;
   last_rpc_error: string | null;
+  /** Non-null when a process has claimed this row for broadcast and has
+   *  not yet recorded the result. Claims are released by markSubmitted /
+   *  markRetryableFailure, or recovered by sweepStuckClaims. */
+  broadcast_claim_token: string | null;
 }
 
 export interface FhenixGatewayTxStatusCount {
@@ -4355,6 +4381,7 @@ export const fhenixGatewayTxRepo = {
            next_attempt_at = @next_attempt_at,
            last_error = NULL,
            last_rpc_error = NULL,
+           broadcast_claim_token = NULL,
            updated_at = @updated_at
        WHERE attempt_id = @attempt_id`,
     ).run(input);
@@ -4381,9 +4408,60 @@ export const fhenixGatewayTxRepo = {
            next_attempt_at = @next_attempt_at,
            last_error = @last_error,
            last_rpc_error = @last_error,
+           broadcast_claim_token = NULL,
            updated_at = @updated_at
        WHERE attempt_id = @attempt_id`,
     ).run(input);
+  },
+
+  /**
+   * Atomic claim for broadcast. Returns the freshly-generated claim token
+   * if this caller won the race, or null if the row was already claimed
+   * by another writer (or moved out of broadcastable status). The token
+   * is later cleared by markSubmitted / markRetryableFailure / a stuck-
+   * claim sweep.
+   */
+  claimForBroadcast(
+    db: Database.Database,
+    input: { attempt_id: string; broadcast_started_at: string; updated_at: string; token: string },
+  ): boolean {
+    const info = prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET broadcast_claim_token = @token,
+           broadcast_started_at = @broadcast_started_at,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id
+         AND status IN ('queued','failed_retryable')
+         AND broadcast_claim_token IS NULL`,
+    ).run(input);
+    return info.changes === 1;
+  },
+
+  /**
+   * Release stale claims whose holding process never recorded a result.
+   * A claim is considered stuck if broadcast_started_at is older than
+   * stuckBeforeIso and the row is still in a pre-broadcast status.
+   * Released rows fall back to failed_retryable so the next tick picks
+   * them up. Returns the count of released rows for tick telemetry.
+   */
+  sweepStuckClaims(
+    db: Database.Database,
+    input: { stuckBeforeIso: string; updated_at: string; errorMessage: string },
+  ): number {
+    const info = prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET broadcast_claim_token = NULL,
+           status = 'failed_retryable',
+           last_error = @errorMessage,
+           updated_at = @updated_at
+       WHERE broadcast_claim_token IS NOT NULL
+         AND broadcast_started_at IS NOT NULL
+         AND broadcast_started_at < @stuckBeforeIso
+         AND status IN ('queued','failed_retryable')`,
+    ).run(input);
+    return info.changes;
   },
 
   recordReceiptTelemetry(
@@ -4752,6 +4830,8 @@ export interface FhenixGatewayFeedPacketTxAttemptRow extends FhenixGatewayFeedPa
   gas_used: string | null;
   effective_gas_price_wei: string | null;
   last_rpc_error: string | null;
+  /** See FhenixGatewayTxAttemptRow.broadcast_claim_token. */
+  broadcast_claim_token: string | null;
 }
 
 export const fhenixGatewayFeedPacketTxRepo = {
@@ -4835,6 +4915,7 @@ export const fhenixGatewayFeedPacketTxRepo = {
            next_attempt_at = @next_attempt_at,
            last_error = NULL,
            last_rpc_error = NULL,
+           broadcast_claim_token = NULL,
            updated_at = @updated_at
        WHERE attempt_id = @attempt_id`,
     ).run(input);
@@ -4861,9 +4942,48 @@ export const fhenixGatewayFeedPacketTxRepo = {
            next_attempt_at = @next_attempt_at,
            last_error = @last_error,
            last_rpc_error = @last_error,
+           broadcast_claim_token = NULL,
            updated_at = @updated_at
        WHERE attempt_id = @attempt_id`,
     ).run(input);
+  },
+
+  /** See fhenixGatewayTxRepo.claimForBroadcast. */
+  claimForBroadcast(
+    db: Database.Database,
+    input: { attempt_id: string; broadcast_started_at: string; updated_at: string; token: string },
+  ): boolean {
+    const info = prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET broadcast_claim_token = @token,
+           broadcast_started_at = @broadcast_started_at,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id
+         AND status IN ('queued','failed_retryable')
+         AND broadcast_claim_token IS NULL`,
+    ).run(input);
+    return info.changes === 1;
+  },
+
+  /** See fhenixGatewayTxRepo.sweepStuckClaims. */
+  sweepStuckClaims(
+    db: Database.Database,
+    input: { stuckBeforeIso: string; updated_at: string; errorMessage: string },
+  ): number {
+    const info = prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET broadcast_claim_token = NULL,
+           status = 'failed_retryable',
+           last_error = @errorMessage,
+           updated_at = @updated_at
+       WHERE broadcast_claim_token IS NOT NULL
+         AND broadcast_started_at IS NOT NULL
+         AND broadcast_started_at < @stuckBeforeIso
+         AND status IN ('queued','failed_retryable')`,
+    ).run(input);
+    return info.changes;
   },
 
   recordReceiptTelemetry(
