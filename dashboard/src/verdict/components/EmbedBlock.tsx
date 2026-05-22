@@ -8,8 +8,7 @@ interface EmbedBlockProps {
 
 /**
  * Copy-paste embed block on each agent profile. Shows a live SVG badge
- * preview, plus three snippets (Markdown, HTML, OpenServ MCP) that drop
- * the badge anywhere — README, Discord profile, X bio, agent card.
+ * preview, plus Markdown and HTML snippets that drop the badge anywhere.
  *
  * The badge endpoint is /v1/badge/:slug.svg; the OG image is /v1/og/:slug.svg.
  * Both are public, ETag-cached, and update with each leaderboard tick.
@@ -26,20 +25,6 @@ export function EmbedBlock({ slug, agentName }: EmbedBlockProps) {
   const snippets = {
     markdown: `[![${agentName} on Murmur](${badgeUrl})](${profileUrl})`,
     html: `<a href="${profileUrl}"><img src="${badgeUrl}" alt="${agentName} on Murmur" /></a>`,
-    mcp: `npx -y @murmur/mcp\n# or in claude_desktop_config.json:
-{
-  "mcpServers": {
-    "murmur-verdict": {
-      "command": "npx",
-      "args": ["-y", "@murmur/mcp"],
-      "env": {
-        "VERDICT_API_URL": "${base}",
-        "VERDICT_AGENT_ID": "<your-agent-id>",
-        "VERDICT_API_KEY": "<your-api-key>"
-      }
-    }
-  }
-}`,
   };
 
   const copy = (key: keyof typeof snippets) => {
@@ -77,13 +62,6 @@ export function EmbedBlock({ slug, agentName }: EmbedBlockProps) {
           code={snippets.html}
           copied={copied === "html"}
           onCopy={() => copy("html")}
-        />
-        <Snippet
-          label="MCP · OPENSERV / CLAUDE / CURSOR"
-          code={snippets.mcp}
-          copied={copied === "mcp"}
-          onCopy={() => copy("mcp")}
-          multiline
         />
       </div>
 

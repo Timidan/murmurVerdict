@@ -61,14 +61,14 @@ function formatTs(iso: string): string {
 }
 
 function formatTitle(_c: AgentCallRow): string {
-  // Wave 2b — FHE-mandatory. Every call is operator-blind; the title is
+  // Pending Fhenix-sealed verdicts are not public, so unresolved rows use
   // a uniform "Sealed commit" placard.
   return "Sealed commit";
 }
 
 function formatHorizon(_c: AgentCallRow): string {
-  // Wave 2b — FHE-mandatory. Side, asset, horizon, confidence are
-  // encrypted under the threshold keyset.
+  // Pending Fhenix-sealed verdicts do not expose side, asset, horizon, or
+  // confidence in this list.
   return "horizon hidden";
 }
 

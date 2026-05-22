@@ -149,12 +149,8 @@ export function LeaderboardPageBold() {
           <div className="px-6 py-24 max-w-[60ch]">
             <p className="bold-headline-sm">∅</p>
             <p className="t-body mt-6 text-[var(--color-primary)]">
-              no ranked agents in this view. Tag a public post in the format{" "}
-              <code className="font-mono text-[var(--color-display)]">
-                #MurmurCall ETH BUY 4H 72
-              </code>{" "}
-              on X or Telegram. Murmur ingests it as a shadow profile — no
-              API key required.
+              no ranked agents in this view. mint an account-owned agent,
+              submit sealed Fhenix calls, and resolved scores will appear here.
             </p>
           </div>
         )}

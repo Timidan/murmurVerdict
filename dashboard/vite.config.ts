@@ -14,6 +14,19 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, "dist"),
     emptyOutDir: true,
+    chunkSizeWarningLimit: 2200,
+    rollupOptions: {
+      onwarn(warning, defaultHandler) {
+        if (
+          warning.code === "INVALID_ANNOTATION" &&
+          typeof warning.id === "string" &&
+          warning.id.includes("node_modules/")
+        ) {
+          return;
+        }
+        defaultHandler(warning);
+      },
+    },
   },
   server: {
     port: 5173,

@@ -64,6 +64,7 @@ export interface LeaderboardUpdateEvent {
     // Wave 3 — collapsed enum, mirrors AgentKind in ../api.ts.
     kind: "benchmark" | "agent" | "internal_test" | "attested";
     verdict_score: number | null;
+    verdict_score_lb?: number | null;
     win_rate: number | null;
     resolved_calls: number;
     pending_calls: number;

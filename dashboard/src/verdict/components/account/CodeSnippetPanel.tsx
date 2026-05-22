@@ -1,31 +1,25 @@
 // ─── CodeSnippetPanel — tabbed multi-language snippet renderer (Phase 7d) ──
 //
 // Three use sites planned (V2 §7 onboarding research):
-//   1. `IntegratePage` — Step f of the new-agent flow. Receives the freshly
-//      minted api key inline via sessionStorage handoff from
-//      ApiKeyMintModal, so the TS/Python snippets show a complete copy-
-//      pasteable curl. The env-var fallback kicks in after the session
-//      handoff clears (5 min later, or on page refresh).
+//   1. `IntegratePage` — Step f of the new-agent flow. Shows the canonical
+//      Runtime Key Gateway path. Runtime Key plaintext is only shown by the
+//      runtime-key mint flow; snippets use env-var placeholders here.
 //   2. `LaunchPage.compact` — public install track. The user is NOT
 //      authenticated, so the panel always renders the env-var fallback
-//      (no apiKey prop). Phase 7d refactor swaps the bespoke TrackBrief
-//      snippet block for this component without changing the surrounding
-//      layout. Bold + calm variants stay on the old pattern until the
-//      Phase 12 variant sweep.
+//      for MURMUR_RUNTIME_KEY.
 //   3. `AgentProfilePage` (Phase 12+) — public profile shows env-var-only
 //      snippets keyed to the agent's id so visitors who own that agent
 //      know exactly what to wire up.
 //
 // Design idiom:
 //   · Top strip = three bracketed tab buttons + a [ COPY ] button. Brackets
-//     are the Nothing-design convention (see ApiKeyMintModal, ApiKeysPanel).
+//     are the Nothing-design convention used across account panels.
 //   · Body = monospace <pre> with no line numbers. Line numbers in a
 //     three-language tab strip make the visual diff between languages
 //     louder than the content — judgement-call dropped per spec.
-//   · Copy uses the same clipboard-fallback as ApiKeyMintModal: we only
+//   · Copy uses the account-panel clipboard fallback: we only
 //     show "copied" after writeText resolves, otherwise surface a manual-
-//     copy hint. Critical for the IntegratePage path — a false-positive
-//     copy on the key snippet wastes the user's only chance.
+//     copy hint.
 //
 // API base URL: read from import.meta.env.VITE_VERDICT_API_URL, default to
 // the placeholder "https://murmur.verdict". Substituted consistently across
@@ -36,14 +30,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export type SnippetLanguage = "typescript" | "python" | "curl";
 
 export interface CodeSnippetPanelProps {
-  /** Substituted as X-Murmur-Agent-Id header value. */
-  agentId?: string;
-  /**
-   * When present (e.g. just-minted on /integrate), included in TS/Python
-   * snippets verbatim. When undefined, snippets show MURMUR_API_KEY env-var
-   * references instead.
-   */
-  apiKey?: string;
   /**
    * Optional pass-through — IntegratePage uses this to display the agent
    * crumb. Not used inside the panel itself today, exposed for callers
@@ -89,165 +75,86 @@ function getApiBase(): string {
 }
 
 /**
- * Substitute the `{{agentId}}` / `{{base}}` placeholders in a template.
- *
- * Codex P2 fix — `{{apiKey}}` is NOT substituted here. Earlier versions
- * replaced `"{{apiKey}}"` (already-quoted in templates) with the env-var
- * reference, which produced `"${process.env.MURMUR_API_KEY}"` (literal
- * string in TS) or `"os.environ["MURMUR_API_KEY"]"` (invalid Python).
- * Now we pick the template by apiKey presence — see `pickTemplate` —
- * and the chosen template embeds the right form natively.
+ * Substitute the `{{base}}` placeholder in a template.
  */
-function renderSnippet(
-  template: string,
-  agentId: string,
-  apiKey: string | undefined,
-  base: string,
-): string {
-  let out = template.replaceAll("{{base}}", base).replaceAll("{{agentId}}", agentId);
-  if (apiKey !== undefined) out = out.replaceAll("{{apiKey}}", apiKey);
-  return out;
+function renderSnippet(template: string, base: string): string {
+  return template.replaceAll("{{base}}", base);
 }
 
 // ─── Templates ──────────────────────────────────────────────────────────────
-// Codex P1 fix — every snippet matches the v0.2 SubmittedCallSchema:
-//   schema_version, agent_id, client_order_id, asset_id, side,
-//   horizon_hours, confidence, submitted_at, rationale|strategy_tag.
-// Response is unwrapped: { call: { call_id }, status, idempotent_hit }.
 
-const TS_WITH_KEY = `// Submit a Murmur call (BUY ETH, 4h horizon, 0.72 confidence)
-const res = await fetch("{{base}}/v1/calls", {
+const TS_TEMPLATE = `// Create CoFHE inputs client-side, then let Murmur relay submitSealedFor.
+const runtimeKey = process.env.MURMUR_RUNTIME_KEY ?? "";
+const encrypted = await createCofheVerdictInputs({
+  binaryIndex: 0,
+  confidenceBps: 7200,
+});
+const res = await fetch("{{base}}/v2/gateway/calls", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    "X-Murmur-Agent-Id": "{{agentId}}",
-    "X-Murmur-Api-Key": "{{apiKey}}",
+    "X-Murmur-Runtime-Key": runtimeKey,
   },
   body: JSON.stringify({
-    schema_version: 1,
-    agent_id: "{{agentId}}",
+    marketRef: { protocol: "polymarket-gamma", sourceId: "<condition-id>", configVersion: 1 },
     client_order_id: crypto.randomUUID(),
-    asset_id: "base:ETH:USD",
-    side: "BUY",
-    horizon_hours: 4,
-    confidence: 0.72,
-    submitted_at: new Date().toISOString(),
-    rationale: "demo: paste into your agent",
+    client_nonce: encrypted.client_nonce,
+    privacy_mode: "sealed_fhenix",
+    binary_index_input: encrypted.binary_index_input,
+    confidence_input: encrypted.confidence_input,
+    strategy_tag: "momentum",
   }),
 });
 const result = await res.json();
-console.log(result.call.call_id, result.status);`;
+console.log(result.call_id, result.status);`;
 
-const TS_ENV_REF = `// Submit a Murmur call (BUY ETH, 4h horizon, 0.72 confidence)
-const apiKey = process.env.MURMUR_API_KEY ?? "";
-const res = await fetch("{{base}}/v1/calls", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "X-Murmur-Agent-Id": "{{agentId}}",
-    "X-Murmur-Api-Key": apiKey,
-  },
-  body: JSON.stringify({
-    schema_version: 1,
-    agent_id: "{{agentId}}",
-    client_order_id: crypto.randomUUID(),
-    asset_id: "base:ETH:USD",
-    side: "BUY",
-    horizon_hours: 4,
-    confidence: 0.72,
-    submitted_at: new Date().toISOString(),
-    rationale: "demo: paste into your agent",
-  }),
-});
-const result = await res.json();
-console.log(result.call.call_id, result.status);`;
-
-const PY_WITH_KEY = `import datetime
-import json
-import urllib.request
-import uuid
-
-req = urllib.request.Request(
-    "{{base}}/v1/calls",
-    method="POST",
-    headers={
-        "Content-Type": "application/json",
-        "X-Murmur-Agent-Id": "{{agentId}}",
-        "X-Murmur-Api-Key": "{{apiKey}}",
-    },
-    data=json.dumps({
-        "schema_version": 1,
-        "agent_id": "{{agentId}}",
-        "client_order_id": str(uuid.uuid4()),
-        "asset_id": "base:ETH:USD",
-        "side": "BUY",
-        "horizon_hours": 4,
-        "confidence": 0.72,
-        "submitted_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-        "rationale": "demo: paste into your agent",
-    }).encode(),
-)
-with urllib.request.urlopen(req) as resp:
-    body = json.load(resp)
-    print(body["call"]["call_id"], body["status"])`;
-
-const PY_ENV_REF = `import datetime
-import json
+const PY_TEMPLATE = `import json
 import os
 import urllib.request
 import uuid
 
+encrypted = create_cofhe_verdict_inputs(binary_index=0, confidence_bps=7200)
 req = urllib.request.Request(
-    "{{base}}/v1/calls",
+    "{{base}}/v2/gateway/calls",
     method="POST",
     headers={
         "Content-Type": "application/json",
-        "X-Murmur-Agent-Id": "{{agentId}}",
-        "X-Murmur-Api-Key": os.environ["MURMUR_API_KEY"],
+        "X-Murmur-Runtime-Key": os.environ["MURMUR_RUNTIME_KEY"],
     },
     data=json.dumps({
-        "schema_version": 1,
-        "agent_id": "{{agentId}}",
+        "marketRef": {"protocol": "polymarket-gamma", "sourceId": "<condition-id>", "configVersion": 1},
         "client_order_id": str(uuid.uuid4()),
-        "asset_id": "base:ETH:USD",
-        "side": "BUY",
-        "horizon_hours": 4,
-        "confidence": 0.72,
-        "submitted_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-        "rationale": "demo: paste into your agent",
+        "client_nonce": encrypted["client_nonce"],
+        "privacy_mode": "sealed_fhenix",
+        "binary_index_input": encrypted["binary_index_input"],
+        "confidence_input": encrypted["confidence_input"],
+        "strategy_tag": "momentum",
     }).encode(),
 )
 with urllib.request.urlopen(req) as resp:
     body = json.load(resp)
-    print(body["call"]["call_id"], body["status"])`;
+    print(body["call_id"], body["status"])`;
 
-// curl: `$MURMUR_API_KEY` expands inside double quotes, so one template
-// suffices — substitute either the literal key or the env-var name.
-const CURL_TEMPLATE = `curl -X POST {{base}}/v1/calls \\
+const CURL_TEMPLATE = `curl -X POST {{base}}/v2/gateway/calls \\
   -H "Content-Type: application/json" \\
-  -H "X-Murmur-Agent-Id: {{agentId}}" \\
-  -H "X-Murmur-Api-Key: {{apiKey}}" \\
+  -H "X-Murmur-Runtime-Key: $MURMUR_RUNTIME_KEY" \\
   -d '{
-    "schema_version": 1,
-    "agent_id": "{{agentId}}",
+    "marketRef": { "protocol": "polymarket-gamma", "sourceId": "<condition-id>", "configVersion": 1 },
     "client_order_id": "'"$(uuidgen)"'",
-    "asset_id": "base:ETH:USD",
-    "side": "BUY",
-    "horizon_hours": 4,
-    "confidence": 0.72,
-    "submitted_at": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
-    "rationale": "demo: paste into your agent"
+    "client_nonce": "0x<32 bytes>",
+    "privacy_mode": "sealed_fhenix",
+    "binary_index_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<bytes>" },
+    "confidence_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<bytes>" },
+    "strategy_tag": "momentum"
   }'`;
 
-function pickTemplate(language: SnippetLanguage, hasKey: boolean): string {
-  if (language === "typescript") return hasKey ? TS_WITH_KEY : TS_ENV_REF;
-  if (language === "python") return hasKey ? PY_WITH_KEY : PY_ENV_REF;
+function pickTemplate(language: SnippetLanguage): string {
+  if (language === "typescript") return TS_TEMPLATE;
+  if (language === "python") return PY_TEMPLATE;
   return CURL_TEMPLATE;
 }
 
 export function CodeSnippetPanel({
-  agentId,
-  apiKey,
   languages,
   initialLanguage = "typescript",
   showHeader = true,
@@ -290,20 +197,10 @@ export function CodeSnippetPanel({
   }, []);
 
   const base = getApiBase();
-  // The renderer ignores agentId when not provided — show a hint
-  // placeholder that the user replaces. Surfacing "<agent-id>" in the
-  // snippet beats showing "undefined" if a caller forgot the prop.
-  const effectiveAgentId = agentId ?? "<agent-id>";
-
   const body = useMemo(() => {
-    const hasKey = apiKey !== undefined;
-    const tpl = pickTemplate(active, hasKey);
-    // curl substitutes apiKey from either the literal key or the env-var
-    // string `$MURMUR_API_KEY` (which bash expands inside double quotes).
-    const curlKey = hasKey ? apiKey : "$MURMUR_API_KEY";
-    const renderKey = active === "curl" ? curlKey : apiKey;
-    return renderSnippet(tpl, effectiveAgentId, renderKey, base);
-  }, [active, effectiveAgentId, apiKey, base]);
+    const tpl = pickTemplate(active);
+    return renderSnippet(tpl, base);
+  }, [active, base]);
 
   const doCopy = useCallback(async () => {
     if (!navigator.clipboard?.writeText) {

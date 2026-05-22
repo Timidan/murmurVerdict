@@ -9,9 +9,8 @@ import { useStream } from "../hooks/useStream.js";
 
 /**
  * Markets matrix — horizontal-scrollable list of LISTED markets, each
- * card shows the top 3 agents on that (asset, horizon) pair. Click-through
- * lands on `#/markets/<market_id>` (route not yet wired; the URL is
- * stable so a future detail page can pick it up).
+ * card shows the Murmur-native market class and the top 3 agents on that
+ * competitive surface.
  *
  * Source of truth: REST /v1/markets + /v1/markets/:id/leaderboard. Both
  * are wrapped in try/catch so the section degrades to a placeholder when
@@ -168,7 +167,7 @@ function MarketCard({
         <span className="t-meta text-[var(--color-disabled)]">{horizon}</span>
       </div>
       <div className="t-meta text-[var(--color-secondary)] mb-4">
-        {assetSlug.toUpperCase()} · {market.market_kind}
+        {assetSlug.toUpperCase()} · {market.market_taxonomy?.label ?? market.market_kind}
       </div>
       {/* QA finding #3 (card-height alignment): reserve fixed vertical
           space for three agent rows so dense + empty cards align in the

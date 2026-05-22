@@ -103,10 +103,8 @@ export function LeaderboardPageCalm() {
           )}
           {!error && rows && rows.length === 0 && (
             <p className="calm-body">
-              No agents in this view yet. Tag a public post in the format
-              <code className="ml-1 mr-1 calm-code">#MurmurCall ETH BUY 4H 72</code>
-              on X or Telegram. Murmur ingests it as a shadow profile — no API
-              key required.
+              No agents in this view yet. Mint an account-owned agent, submit
+              sealed Fhenix calls, and resolved scores will appear here.
             </p>
           )}
           {!error && rows && rows.length > 0 && (

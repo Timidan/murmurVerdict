@@ -47,6 +47,14 @@ export interface MetaResponse {
     pending_verdicts_private: boolean;
     public_reveal_after_horizon: boolean;
   };
+  /** Present when the daemon has a Fhenix chain configured. The Controller
+   *  Wallet binding MUST use this chain_id; the backend enforces equality
+   *  with the Fhenix event chain. */
+  fhenix?: {
+    chain_id: string;
+    chain_id_numeric: number;
+    contract_address: string | null;
+  };
 }
 
 export interface AgentProfile {

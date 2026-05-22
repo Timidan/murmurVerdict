@@ -18,6 +18,12 @@ import { verdictApi, type AccountAgent } from "../../api.js";
 import { useAccount } from "../../hooks/useAccount.js";
 import { getAccessToken } from "@privy-io/react-auth";
 
+// The daemon enforces that the Controller Wallet binding's chain_id equals
+// the Fhenix event chain (src/verdict/fhenix-common.ts:73-99). The previous
+// hard-pin to Base mainnet would silently break any local or Base-Sepolia
+// stack. We read the chain from /v1/meta so the dashboard tracks whatever
+// chain the daemon is actually running on.
+
 interface ControllerWalletPanelProps {
   slug: string;
   agent: AccountAgent | null;
@@ -34,6 +40,7 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
 
   const [busy, setBusy] = useState<BusyState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [daemonChainId, setDaemonChainId] = useState<string | null>(null);
 
   // Pick an embedded wallet if one exists; otherwise we'll provision below.
   const embeddedWallet = wallets.find((w) => w.walletClientType === "privy") ?? null;
@@ -43,6 +50,24 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
     setError(null);
   }, [agent?.controller_wallet?.last_attested_at]);
 
+  // Fetch the daemon's Fhenix chain once; the bind/reattest signatures must
+  // use this exact chain or the backend will reject the binding.
+  useEffect(() => {
+    let cancelled = false;
+    verdictApi
+      .meta()
+      .then((meta) => {
+        if (cancelled) return;
+        if (meta.fhenix?.chain_id) setDaemonChainId(meta.fhenix.chain_id);
+      })
+      .catch(() => {
+        // Surface the failure when the user actually tries to bind.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const cw = agent?.controller_wallet ?? null;
   const state: "unbound" | "bound" | "overdue" = !cw
     ? "unbound"
@@ -50,18 +75,19 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
       ? "overdue"
       : "bound";
 
-  // Privy embedded wallets are chain-agnostic by design; the binding
-  // `chain_id` is identity metadata only. Pin to Base mainnet — Murmur's
-  // canonical deploy target — so the binding message is deterministic.
-  const DEFAULT_CONTROLLER_CHAIN_ID = "eip155:8453";
-
   async function ensureEmbeddedWallet(): Promise<{ address: string; chainId: string } | null> {
+    if (!daemonChainId) {
+      setError(
+        "daemon has not reported its Fhenix chain yet; reload after the daemon is configured",
+      );
+      return null;
+    }
     if (embeddedWallet) {
-      return { address: embeddedWallet.address, chainId: DEFAULT_CONTROLLER_CHAIN_ID };
+      return { address: embeddedWallet.address, chainId: daemonChainId };
     }
     try {
       const created = await createWallet();
-      return { address: created.address, chainId: DEFAULT_CONTROLLER_CHAIN_ID };
+      return { address: created.address, chainId: daemonChainId };
     } catch (e) {
       setError((e as Error)?.message ?? "could not provision embedded wallet");
       return null;
