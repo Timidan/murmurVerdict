@@ -1,5 +1,5 @@
 /**
- * Slugs that wallet-only self-mint must NOT be allowed to take. Three groups:
+ * Slugs that account-owned agent minting must NOT be allowed to take. Three groups:
  *
  *   1. Reserved internal namespaces (admin, api, www, root, system, …)
  *   2. Well-known Murmur prefixes (murmur, verdict, oracle, chainlink, pyth, …)

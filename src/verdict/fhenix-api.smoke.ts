@@ -1,0 +1,411 @@
+import { strict as assert } from "node:assert";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import express from "express";
+
+import {
+  FhenixEventVerificationError,
+  fhenixMarketIdForMurmurMarket,
+  type FhenixEventVerifier,
+  type VerifiedSealedCallSubmitted,
+  type VerifiedVerdictRevealInvalid,
+  type VerifiedVerdictRevealed,
+  type VerifyVerdictRevealInvalidInput,
+  type VerifySealedCallSubmittedInput,
+  type VerifyVerdictRevealedInput,
+} from "../integrations/fhenix-events.js";
+import {
+  agentsRepo,
+  marketsRepo,
+  openDb,
+  resolutionsRepo,
+  submissionsRepo,
+} from "./db.js";
+import { createVerdictRouter } from "./api.js";
+import {
+  bindControllerWallet,
+  getOrCreateAccount,
+  linkAgentToAccount,
+} from "./auth/accounts.js";
+import { Resolver } from "./resolver.js";
+import type { OracleClient } from "../integrations/oracle.js";
+import {
+  PolymarketGammaClient,
+  setDefaultPolymarketClient,
+} from "../markets/polymarket-gamma/index.js";
+
+let failures = 0;
+
+async function check(name: string, fn: () => void | Promise<void>): Promise<void> {
+  try {
+    await fn();
+    process.stdout.write(`  ok ${name}\n`);
+  } catch (err) {
+    failures += 1;
+    process.stdout.write(`  fail ${name}\n`);
+    process.stdout.write(`      ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+class SmokeFhenixVerifier implements FhenixEventVerifier {
+  mode: "ok" | "agent_mismatch" = "ok";
+
+  async verifySealedCallSubmitted(
+    input: VerifySealedCallSubmittedInput,
+  ): Promise<VerifiedSealedCallSubmitted> {
+    if (this.mode === "agent_mismatch") {
+      throw new FhenixEventVerificationError(
+        "Fhenix event agent mismatch",
+        "event_mismatch",
+        {
+          expected: input.expected_agent_wallet,
+          actual: "0x9999999999999999999999999999999999999999",
+        },
+      );
+    }
+    return {
+      chain_id: input.chain_id,
+      contract_address: input.contract_address.toLowerCase(),
+      onchain_call_id: input.onchain_call_id.toLowerCase(),
+      submit_tx_hash: input.submit_tx_hash.toLowerCase(),
+      submit_log_index: input.submit_log_index,
+      binary_index_ct_hash: input.binary_index_ct_hash.toLowerCase(),
+      confidence_ct_hash: input.confidence_ct_hash.toLowerCase(),
+      accepted_at: input.accepted_at,
+      reveal_open_at: input.reveal_open_at,
+      agent_wallet: input.expected_agent_wallet,
+      market_id_hash: fhenixMarketIdForMurmurMarket(input.expected_market_id),
+      client_nonce: "0x" + "09".repeat(32),
+    };
+  }
+
+  async verifyVerdictRevealed(
+    input: VerifyVerdictRevealedInput,
+  ): Promise<VerifiedVerdictRevealed> {
+    return {
+      reveal_tx_hash: input.reveal_tx_hash.toLowerCase(),
+      reveal_log_index: input.reveal_log_index,
+      binary_index: input.binary_index,
+      confidence_bps: input.confidence_bps,
+      revealed_at: input.revealed_at,
+      agent_wallet: input.expected_agent_wallet,
+      market_id_hash: fhenixMarketIdForMurmurMarket(input.expected_market_id),
+      onchain_call_id: input.onchain_call_id.toLowerCase(),
+    };
+  }
+
+  async verifyVerdictRevealInvalid(
+    input: VerifyVerdictRevealInvalidInput,
+  ): Promise<VerifiedVerdictRevealInvalid> {
+    return {
+      reveal_tx_hash: input.reveal_tx_hash.toLowerCase(),
+      reveal_log_index: input.reveal_log_index,
+      binary_index: input.binary_index,
+      confidence_bps: input.confidence_bps,
+      invalid_reason: input.invalid_reason,
+      revealed_at: input.revealed_at,
+      agent_wallet: input.expected_agent_wallet,
+      market_id_hash: fhenixMarketIdForMurmurMarket(input.expected_market_id),
+      onchain_call_id: input.onchain_call_id.toLowerCase(),
+    };
+  }
+}
+
+const tmp = mkdtempSync(join(tmpdir(), "murmur-fhenix-api-smoke-"));
+const dbPath = join(tmp, "test.db");
+let server: Server | null = null;
+
+try {
+  process.stdout.write("murmur fhenix api smoke\n");
+  const db = openDb({ path: dbPath });
+  const verifier = new SmokeFhenixVerifier();
+  const adminToken = "admin-smoke-token";
+  const acceptedAt = "2026-05-14T12:00:00Z";
+  const revealOpenAt = "2026-05-14T13:00:00Z";
+  const marketId = "0x" + "ab".repeat(32);
+  const wallet = "0x1111111111111111111111111111111111111111";
+  const agentId = randomUUID();
+
+  agentsRepo.insert(db, {
+    agent_id: agentId,
+    display_slug: "fhenix-api-smoke",
+    kind: "agent",
+    display_name: "Fhenix API Smoke",
+    created_at: acceptedAt,
+    wallet_address: wallet,
+    chain_id: "eip155:84532",
+  });
+  const account = getOrCreateAccount(db, {
+    privy_user_id: "did:privy:fhenix-api-smoke",
+    session_id: "smoke-session",
+    expires_at: "2026-05-14T18:00:00Z",
+  });
+  linkAgentToAccount(db, account.account_id, agentId);
+  bindControllerWallet(db, {
+    account_id: account.account_id,
+    agent_id: agentId,
+    wallet_address: wallet,
+    chain_id: "eip155:84532",
+    wallet_kind: "embedded",
+    provider: "smoke",
+    binding_message: "smoke controller wallet binding",
+    binding_signature: "0x" + "11".repeat(65),
+    created_at: acceptedAt,
+  });
+
+  marketsRepo.upsertExternalMarket(db, {
+    market_id: marketId,
+    asset_id: "polymarket:event",
+    market_kind: "event_binary",
+    horizon_seconds: 3600,
+    primary_oracle_id: "polymarket-gamma-oracle",
+    adapter_id: "polymarket-gamma",
+    market_family: "prediction-market-binary",
+    scoring_kind: "multinomial_brier",
+    config_json: JSON.stringify({
+      conditionId: marketId,
+      slug: "fhenix-api-smoke-market",
+      outcomes: ["Yes", "No"],
+      endDate: revealOpenAt,
+      gamma_url: "https://polymarket.com/event/fhenix-api-smoke-market",
+    }),
+    void_band: "0",
+    status: "listed",
+    created_at: acceptedAt,
+  });
+
+  const app = express();
+  app.use(
+    createVerdictRouter({
+      db,
+      adminToken,
+      fhenixVerifier: verifier,
+      now: () => new Date("2026-05-14T12:50:00Z"),
+    }),
+  );
+  server = await new Promise<Server>((resolve) => {
+    const s = createServer(app);
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const adminBackfill = (body: unknown) =>
+    fetch(`${baseUrl}/v1/admin/fhenix/backfill/calls`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Token": adminToken,
+        "X-Murmur-Agent-Slug": "fhenix-api-smoke",
+      },
+      body: JSON.stringify(body),
+    });
+
+  const submitBody = {
+    marketRef: {
+      protocol: "polymarket-gamma",
+      sourceId: marketId,
+      configVersion: 1,
+    },
+    client_order_id: "fhenix-api-order-001",
+    privacy_mode: "sealed_fhenix",
+    fhenix: {
+      chain_id: 84532,
+      contract_address: "0x" + "22".repeat(20),
+      onchain_call_id: "0x" + "33".repeat(32),
+      submit_tx_hash: "0x" + "44".repeat(32),
+      submit_log_index: 0,
+      binary_index_ct_hash: "0x" + "55".repeat(32),
+      confidence_ct_hash: "0x" + "66".repeat(32),
+      accepted_at: acceptedAt,
+      reveal_open_at: revealOpenAt,
+    },
+    strategy_tag: "momentum",
+  };
+
+  let callId = "";
+  let invalidCallId = "";
+
+  await check("public sealed metadata backfill route is retired", async () => {
+    const res = await fetch(`${baseUrl}/v2/calls`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(submitBody),
+    });
+    assert.equal(res.status, 410);
+    const body = await res.json() as { code: string; replacement: string };
+    assert.equal(body.code, "endpoint_removed");
+    assert.equal(body.replacement, "/v2/gateway/calls");
+  });
+
+  await check("submit rejects Fhenix event agent mismatch", async () => {
+    verifier.mode = "agent_mismatch";
+    const res = await adminBackfill(submitBody);
+    assert.equal(res.status, 400);
+    const body = await res.json() as { code: string; context?: { fhenix_error?: string } };
+    assert.equal(body.code, "schema_invalid");
+    assert.equal(body.context?.fhenix_error, "event_mismatch");
+  });
+
+  await check("submit accepts only verified Fhenix event metadata", async () => {
+    verifier.mode = "ok";
+    const res = await adminBackfill(submitBody);
+    assert.equal(res.status, 201);
+    const body = await res.json() as {
+      call_id: string;
+      privacy_mode: string;
+      commit_hash: string;
+    };
+    callId = body.call_id;
+    assert.equal(body.privacy_mode, "sealed_fhenix");
+    assert.match(body.commit_hash, /^[0-9a-f]{64}$/);
+    const ctx = submissionsRepo.loadResolverContext(db, callId);
+    assert.equal(ctx?.commitment_json, null);
+    const sealed = db.prepare(
+      "SELECT binary_index_ct_hash FROM fhenix_sealed_calls WHERE call_id = ?",
+    ).get(callId) as { binary_index_ct_hash: string } | undefined;
+    assert.equal(sealed?.binary_index_ct_hash, submitBody.fhenix.binary_index_ct_hash);
+  });
+
+  await check("verified invalid reveal terminates without scoring commitment", async () => {
+    const invalidSubmitBody = {
+      ...submitBody,
+      client_order_id: "fhenix-api-order-invalid-001",
+      fhenix: {
+        ...submitBody.fhenix,
+        onchain_call_id: "0x" + "88".repeat(32),
+        submit_tx_hash: "0x" + "89".repeat(32),
+        binary_index_ct_hash: "0x" + "8a".repeat(32),
+        confidence_ct_hash: "0x" + "8b".repeat(32),
+        accepted_at: "2026-05-14T12:32:00Z",
+      },
+    };
+    const submitRes = await adminBackfill(invalidSubmitBody);
+    assert.equal(submitRes.status, 201);
+    invalidCallId = ((await submitRes.json()) as { call_id: string }).call_id;
+
+    const revealRes = await fetch(`${baseUrl}/v1/admin/fhenix/invalid-reveals`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        call_id: invalidCallId,
+        binary_index: 2,
+        confidence_bps: 7200,
+        invalid_reason: "binary_index",
+        revealed_at: revealOpenAt,
+        reveal_tx_hash: "0x" + "8c".repeat(32),
+        reveal_log_index: 2,
+      }),
+    });
+    assert.equal(revealRes.status, 200);
+    const ctx = submissionsRepo.loadResolverContext(db, invalidCallId);
+    assert.equal(ctx?.status, "invalid_reveal");
+    assert.equal(ctx?.commitment_json, null);
+    const sealed = db.prepare(
+      "SELECT reveal_status, invalid_reason FROM fhenix_sealed_calls WHERE call_id = ?",
+    ).get(invalidCallId) as { reveal_status: string; invalid_reason: string } | undefined;
+    assert.equal(sealed?.reveal_status, "invalid");
+    assert.equal(sealed?.invalid_reason, "binary_index");
+  });
+
+  await check("verified reveal attaches public commitment and resolver score", async () => {
+    const revealRes = await fetch(`${baseUrl}/v1/admin/fhenix/reveals`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        call_id: callId,
+        binary_index: 0,
+        confidence_bps: 7200,
+        revealed_at: revealOpenAt,
+        reveal_tx_hash: "0x" + "77".repeat(32),
+        reveal_log_index: 1,
+      }),
+    });
+    assert.equal(revealRes.status, 200);
+    const revealBody = await revealRes.json() as {
+      revealed_verdict: { binary_index: number; confidence_bps: number };
+    };
+    assert.equal(revealBody.revealed_verdict.binary_index, 0);
+    assert.equal(revealBody.revealed_verdict.confidence_bps, 7200);
+    assert.ok(submissionsRepo.loadResolverContext(db, callId)?.commitment_json);
+
+    const fetchFn = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (_name: string) => "application/json" },
+      text: async () =>
+        JSON.stringify([
+          {
+            conditionId: marketId,
+            slug: "fhenix-api-smoke-market",
+            outcomes: JSON.stringify(["Yes", "No"]),
+            outcomePrices: JSON.stringify(["1", "0"]),
+            umaResolutionStatus: "resolved",
+            umaResolutionStatuses: JSON.stringify(["proposed", "resolved"]),
+            closed: true,
+            active: false,
+            archived: false,
+            endDate: revealOpenAt,
+            closedTime: revealOpenAt,
+          },
+        ]),
+    });
+    const client = new PolymarketGammaClient({
+      fetchFn,
+      maxRetries: 1,
+      sleepMs: async () => undefined,
+      nowMs: () => Date.parse("2026-05-14T14:00:00Z"),
+    });
+    setDefaultPolymarketClient(client);
+    try {
+      const logs: unknown[] = [];
+      const resolver = new Resolver({
+        db,
+        oracle: {
+          getLatestPrice: async () => {
+            throw new Error("native-price oracle should not be used for polymarket smoke");
+          },
+        } as unknown as OracleClient,
+        now: () => new Date("2026-05-14T14:00:00Z"),
+        log: (line) => logs.push(line),
+      });
+      const result = await resolver.tick();
+      assert.equal(result.resolved, 1, JSON.stringify(logs));
+      const full = resolutionsRepo.loadFullCall(db, callId);
+      assert.equal(full?.submission.status, "resolved");
+      assert.equal(full?.resolution?.outcome, "win");
+      assert.equal(full?.resolution?.call_score, 1);
+      assert.equal(full?.resolution?.t1_feed, "polymarket-gamma");
+    } finally {
+      setDefaultPolymarketClient(null);
+    }
+  });
+
+  db.close();
+} finally {
+  if (server) {
+    await new Promise<void>((resolve, reject) => {
+      server!.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+if (failures > 0) {
+  process.stdout.write(`fhenix api smoke failed: ${failures} failure(s)\n`);
+  process.exit(1);
+}
+
+process.stdout.write("fhenix api smoke ok\n");

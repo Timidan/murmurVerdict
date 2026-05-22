@@ -1,7 +1,7 @@
 /**
  * Public projections for verdict calls.
  *
- * Wave 2b — under FHE-mandatory every submission is operator-blind:
+ * Under sealed Fhenix, every pending submission is operator-blind:
  * plaintext (side / asset_id / horizon_hours / confidence / rationale /
  * strategy_tag) is never surfaced. Resolved-side fields (outcome,
  * call_score, signed_return, resolved_at) come from t1_resolutions and
@@ -9,8 +9,8 @@
  * returns only the operator-blind core.
  *
  * Single helper used from every leak surface (feed.ts, api.ts,
- * events.ts, mcp/, calls.xml RSS) so we don't have N implementations
- * drifting apart.
+ * events.ts, calls.xml RSS) so we don't have N implementations drifting
+ * apart.
  */
 
 export interface CallRowFields {
@@ -22,7 +22,7 @@ export interface CallRowFields {
   /** Wave 4b — receipts subsystem dropped. Field accepted for back-compat
    *  with callers that still pass it; the projection ignores any value. */
   acceptance_receipt_hash?: string | null;
-  // Legacy plaintext columns on `submissions`. Under FHE-mandatory these
+  // Historical plaintext columns. Under sealed Fhenix these
   // are NULL on every row; the projection no longer surfaces them, but the
   // shape is kept so SQL callers can still forward arbitrary row payloads
   // without rewriting their type cast at every call site.
@@ -50,7 +50,7 @@ export interface PublicCallProjection {
    *  the public projection for one release so already-deployed dashboards
    *  don't crash on missing keys; safe to drop after Wave 5. */
   acceptance_receipt_hash: string | null;
-  // Wave 2b — under FHE-mandatory the projection never populates these.
+  // Under sealed Fhenix the projection never populates these while pending.
   // Fields kept on the interface so already-deployed consumers that
   // read `projected.side` etc. compile cleanly (the read is undefined).
   side?: string;
@@ -67,7 +67,7 @@ export interface PublicCallProjection {
 }
 
 /**
- * Wave 2b — under FHE-mandatory, every submission is operator-blind and
+ * Under sealed Fhenix, every pending submission is operator-blind and
  * plaintext is never surfaced through public projections. This helper is
  * retained as a stub for back-compat with consumers that still call it,
  * but the answer is always `false`.
@@ -89,14 +89,15 @@ export function projectCallRow(
   row: CallRowFields,
   agent_slug?: string,
 ): PublicCallProjection {
-  const privacy_mode = row.privacy_mode ?? "fhe_direct";
-  // Wave 2b — under FHE-mandatory the projection is always operator-blind.
+  const privacy_mode = row.privacy_mode ?? "sealed_fhenix";
+  // Under sealed Fhenix the projection is operator-blind until the public
+  // reveal/resolution path decides what to expose.
   // Plaintext (side / asset_id / horizon_hours / confidence / rationale /
   // strategy_tag) is never surfaced.
   //
   // Codex bundle-review MAJOR fix — resolved-side fields (outcome /
   // call_score / signed_return / resolved_at) are PUBLIC: every public
-  // surface (verify endpoint, agent calls list, RSS, MCP) wants them.
+  // surface (agent calls list, RSS, API views) wants them.
   // The pre-fix projection dropped them, so the agent-calls list rendered
   // "pending" for every resolved row. Forward them through when the
   // input row carries them; they stay undefined for surfaces that only

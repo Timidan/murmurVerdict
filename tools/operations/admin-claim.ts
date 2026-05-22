@@ -152,9 +152,8 @@ async function main(): Promise<void> {
           display_name: displayName,
           ...(args.bio !== undefined ? { bio: args.bio } : {}),
           created_at: nowIso(),
-          verified_identities: [],
         });
-        agentsRepo.insert(db, profile, null);
+        agentsRepo.insert(db, profile);
         created_agent = true;
       }
       linkAgentToAccount(db, account_id, agent_id!);

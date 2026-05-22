@@ -159,7 +159,7 @@ async function main(): Promise<void> {
     { name: "daemon /v1/meta", url: `${args.api}/v1/meta`, expectContentType: /json/, expectBodyContains: /schema_version/ },
     { name: "daemon /v1/leaderboard", url: `${args.api}/v1/leaderboard`, expectContentType: /json/, expectBodyContains: /rows/ },
     { name: "daemon /v1/feed/today", url: `${args.api}/v1/feed/today`, expectContentType: /json/, expectBodyContains: /accepted_recent/ },
-    { name: "daemon /v1/agents?kind=shadow", url: `${args.api}/v1/agents?kind=shadow`, expectContentType: /json/, expectBodyContains: /count/ },
+    { name: "daemon /v1/agents?kind=agent", url: `${args.api}/v1/agents?kind=agent`, expectContentType: /json/, expectBodyContains: /count/ },
     { name: "daemon /v1/agents/:slug", url: `${args.api}/v1/agents/${args.slug}`, expectContentType: /json/, expectBodyContains: /agent_id/ },
     { name: "daemon /v1/agents/:slug/calls", url: `${args.api}/v1/agents/${args.slug}/calls`, expectContentType: /json/, expectBodyContains: /calls/ },
     { name: "daemon /v1/agents/:slug/calls.xml", url: `${args.api}/v1/agents/${args.slug}/calls.xml`, expectContentType: /xml/, expectBodyContains: /<rss/ },
@@ -193,7 +193,7 @@ async function main(): Promise<void> {
       expectBodyMatches: (body) => {
         if (!/"type"\s*:\s*"ERC-8004:AgentCard"/.test(body)) return "wrong card type";
         if (!/"services"\s*:/.test(body)) return "missing services array";
-        if (!/"x402Support"\s*:\s*true/.test(body)) return "x402Support not declared true";
+        if (!/"x402Support"\s*:\s*false/.test(body)) return "x402Support should stay false until payment rails are wired";
         return null;
       },
     },
@@ -204,8 +204,8 @@ async function main(): Promise<void> {
       expectBodyMatches: (body) => {
         if (!/^---\nname:\s*murmur-verdict-register/m.test(body))
           return "missing claude-skill frontmatter";
-        if (!/claim\/wallet-only\/init/.test(body)) return "missing wallet-only init reference";
-        if (!/X-Murmur-Api-Key/i.test(body)) return "skill should describe Bearer auth";
+        if (!/Controller Wallet/i.test(body)) return "skill should describe Controller Wallet onboarding";
+        if (!/Runtime Key/i.test(body)) return "skill should describe Runtime Key onboarding";
         return null;
       },
     },

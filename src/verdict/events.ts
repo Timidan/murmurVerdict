@@ -1,5 +1,5 @@
 // In-process event bus for the verdict service. The /v1/stream SSE
-// endpoint subscribes here; submitCall and the resolver publish here.
+// endpoint subscribes here; sealed submission routes and the resolver publish here.
 //
 // Single instance per daemon process. Not durable, not multi-node — a
 // fan-out aid only. If we ever add a second replica, replace with Redis
@@ -30,12 +30,11 @@ export interface CallAcceptedEvent {
   call_id: string;
   agent_id: string;
   agent_slug: string;
-  /** "committed" | "legacy_plaintext" | "fhe_direct". Committed-mode and
-   *  fhe_direct calls scrub side/asset_id/horizon_hours/confidence below. */
+  /** Canonical value is "sealed_fhenix". */
   privacy_mode: string;
-  /** Present for committed mode + fhe_direct; null for legacy. */
+  /** Public binding over the Fhenix submit-event metadata. */
   commit_hash?: string;
-  /** Present for committed mode; null for legacy. */
+  /** Retained for older clients; always null. */
   acceptance_receipt_hash?: string;
   accepted_at: string;
   // Phase 10 / Z4-extra discriminators — Polymarket and other
@@ -51,9 +50,9 @@ export interface CallAcceptedEvent {
   adapter_id?: string;
   market_family?: string;
   market_id?: string;
-  // Plaintext envelope fields — populated only when privacy_mode is
-  // legacy_plaintext. Committed-mode + fhe_direct events scrub these so
-  // SSE subscribers + webhook bridges can't front-run a pending call.
+  // Kept optional for older clients. Sealed Fhenix call.accepted events
+  // omit these so SSE subscribers + webhook bridges cannot front-run a
+  // pending call.
   side?: "BUY" | "SELL";
   asset_id?: string;
   horizon_hours?: number;

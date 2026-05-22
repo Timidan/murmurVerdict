@@ -21,7 +21,7 @@ import {
   markMissedFhenixReveals,
 } from "../verdict/fhenix-reveal-ingestion.js";
 import { nowIso } from "../verdict/time.js";
-import { loadDeployment } from "./deployments.js";
+import { resolveFhenixContractAddress } from "./deployments.js";
 
 type WatchClient = {
   getBlockNumber: () => Promise<bigint>;
@@ -259,11 +259,7 @@ export function createFhenixEventIngestorFromEnv(
   if (!rpcUrl || !rawChainId) return null;
   const chainId = Number(rawChainId);
   if (!Number.isInteger(chainId) || chainId <= 0) return null;
-  const envAddress =
-    process.env.FHENIX_SEALED_VERDICTS_ADDRESS?.trim() ||
-    process.env.FHENIX_CONTRACT_ADDRESS?.trim() ||
-    null;
-  const contractAddress = envAddress ?? loadDeployment(chainId, "MurmurSealedVerdicts")?.address ?? null;
+  const contractAddress = resolveFhenixContractAddress(chainId);
   if (!contractAddress) return null;
   return new FhenixEventIngestor({
     db,

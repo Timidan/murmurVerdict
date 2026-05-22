@@ -1,12 +1,11 @@
-// P3 Phase 2b — bridge between the legacy "feed string" world and the
-// data-driven oracles registry.
+// Bridge between feed strings and the data-driven oracles registry.
 //
 // History: v0.1 modeled oracle providers as opaque strings ("chainlink:base:
 // ETH-USD"). T0Policy stamped these strings on each call's oracle_policies
 // row, the resolver dispatched to the OracleClient by string. Phase 2a
 // rewired the resolver to route observations through the adapter registry
-// using a feedToOracleId() map. Phase 2b finishes the loop: submitCall now
-// DERIVES the T0Policy from the resolved market row, mapping
+// using a feedToOracleId() map. The sealed Fhenix submit path derives
+// T0Policy from the resolved market row, mapping
 // `markets.{primary,fallback}_oracle_id` (registry oracle_id) back to the
 // canonical feed string for receipt/oracle_policies persistence.
 //

@@ -4,22 +4,36 @@ import type Database from "better-sqlite3";
 import {
   agentSecurityEventsRepo,
   agentsRepo,
+  feedContractsRepo,
+  feedPacketsRepo,
+  feedSlaIncidentsRepo,
+  fhenixSealedCallsRepo,
+  isUniqueViolation,
   marketsRepo,
   refsRepo,
   resolutionsRepo,
-  submissionsRepo,
   webhooksRepo,
-  type MarketRow,
+  type FeedContractRow,
+  type FeedPacketRow,
+  type FeedSlaIncidentRow,
+  type FhenixGatewayTxStatus,
+  type FhenixRevealStatus,
   type RegistryStatus,
 } from "./db.js";
-import { adapterIdentityForMarket, legacyHorizonHoursForMarket } from "./markets.js";
 import {
-  COMMIT_PREIMAGE_SCHEMA,
-  MARKET_COMMIT_PREIMAGE_SCHEMA,
-  parseAndRebuildPreimageObject,
-} from "./commit-preimage.js";
+  adapterIdentityForMarket,
+} from "./markets.js";
+import {
+  marketTaxonomyForMarket,
+  marketTaxonomyResponse,
+} from "./market-taxonomy.js";
 import { projectCallRow } from "./projections.js";
-import { createHmac, randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createHmac,
+  randomUUID,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import {
@@ -32,33 +46,78 @@ import {
 } from "./leaderboard.js";
 import type { VerdictEventBus } from "./events.js";
 import {
-  AgentSlugSchema,
-  ChainIdSchema,
   ERROR_CODES,
+  CommercialTemplateSchema,
+  COMMERCIAL_TEMPLATES,
+  EDGE_CLASSES,
+  EdgeClassSchema,
+  FEED_PACKET_KINDS,
+  FEED_STATUSES,
+  FeedPacketKindSchema,
+  FeedStatusSchema,
   MarketIdSchema,
   REGISTERED_STRATEGY_TAGS,
+  RESOLUTION_CLASSES,
+  ResolutionClassSchema,
   SCHEMA_VERSION,
   SCORING_VERSION,
   VerdictError,
 } from "./schema.js";
-import {
-  hashSharedSecret,
-  submitCall,
-  verifyHmac,
-  type SubmissionContext,
-} from "./submissions.js";
-// Wave 1 — ClaimService import removed alongside src/verdict/claim.ts.
-// Wave 3 — DisputeService + OracleFeedSchema (replay) imports removed;
-// the legacy plaintext-replay path was retired. FHE-aware disputes ship
-// in v0.3 under the production threshold committee.
-import { verifyAgentApiKey } from "./auth.js";
 import { getTodayFeed } from "./feed.js";
+import {
+  classifyFeedPacketSla,
+  buildFeedAvailabilityProof,
+  feedAvailabilitySummary,
+  feedReliabilityEnvelope,
+  inferFeedDeliveryDeadline,
+  validateFeedCoveredMarkets,
+  validateFeedPacketMarket,
+} from "./feed-availability.js";
+import { runFeedSlaTick } from "./feed-sla.js";
+import {
+  operatorAlertsSnapshot,
+  operatorAlertSinkFromEnv,
+  runOperatorAlertTick,
+  type OperatorAlertSinkConfig,
+} from "./operator-alerts.js";
 import { renderBadgeSvg, renderOgSvg, rasterize } from "./badge.js";
 import { buildOpenApiSpec } from "./openapi.js";
 import { dispatchAuth, type AuthIdentity as DispatchedAuthIdentity } from "./auth/dispatcher.js";
-import { CommitmentSchema, type Commitment } from "./markets-core.js";
-import { getMarketMakerRegistry } from "./market-maker/registry.js";
+import {
+  createFhenixEventVerifierFromEnv,
+  type FhenixEventVerifier,
+} from "../integrations/fhenix-events.js";
+import type { FhenixGatewayBroadcaster } from "../integrations/fhenix-gateway.js";
+import { resolveFhenixContractAddress } from "../integrations/deployments.js";
+import type { LiveCanaryProvider } from "../integrations/live-canaries.js";
 import { z } from "zod";
+import {
+  FhenixInvalidRevealBodySchema,
+  FhenixRevealBodySchema,
+  Hex20Schema,
+  Hex32Schema,
+} from "./fhenix-common.js";
+import { acceptSealedCallMetadata } from "./sealed-call-intake.js";
+import {
+  FhenixRevealStatusSchema,
+  GatewayAttemptStatusSchema,
+  controllerIdentitySnapshot,
+  fhenixLifecycleSnapshot,
+  unconfiguredGatewaySnapshot,
+} from "./operator-control-plane.js";
+import {
+  attachInvalidFhenixReveal,
+  attachValidFhenixReveal,
+} from "./fhenix-reveal-ingestion.js";
+import { isoFromMs, nowIso, parseIsoMs } from "./time.js";
+
+const OperatorAlertStatusSchema = z.enum(["open", "resolved"]);
+const OperatorAlertDeliveryStatusSchema = z.enum(["pending", "delivered", "failed"]);
+const OperatorAlertTickBodySchema = z.object({
+  gateway_stuck_after_sec: z.number().int().min(60).max(24 * 60 * 60).optional(),
+  fhenix_reveal_grace_sec: z.number().int().min(0).max(7 * 24 * 60 * 60).optional(),
+  identity_due_soon_hours: z.number().int().min(1).max(30 * 24).optional(),
+}).strict();
 
 // ─── API surface ─────────────────────────────────────────────────────────────
 //
@@ -70,19 +129,15 @@ import { z } from "zod";
 //   GET  /v1/agents/:slug/calls?limit=
 //   GET  /v1/calls/:call_id
 //
-// Authed routes (HMAC):
-//   POST /v1/calls
-//
-// HMAC headers:
-//   X-Murmur-Agent-Id, X-Murmur-Timestamp, X-Murmur-Signature
-//   The shared secret is *not* stored — only sha256(secret) is in `agents.api_key_hash`.
-//   The body MUST be JSON; the server preserves the raw body for HMAC verification.
+// Authed routes:
+//   POST /v2/gateway/calls
+//   POST /v2/gateway/feeds/:feed_id/packets
+//   POST /v1/admin/fhenix/backfill/calls
+//   POST /v1/admin/fhenix/reveals
+//   POST /v1/admin/fhenix/invalid-reveals
 
 export interface ApiDeps {
   db: Database.Database;
-  ctx: SubmissionContext;
-  /** Map an agent_id to the shared secret for HMAC verification. */
-  resolveSharedSecret: (agent_id: string) => Promise<string | null>;
   /**
    * Probe used by /v1/readyz. Should attempt a real oracle read and return
    * `null` on success or a string describing the failure. When unset, /readyz
@@ -90,9 +145,7 @@ export interface ApiDeps {
    */
   oracleProbe?: () => Promise<string | null>;
   /**
-   * Admin bearer token gating administrative routes (e.g. /v1/refs).
-   * Wave 3 — the legacy /v1/disputes/:id/resolve admin path was retired
-   * with the plaintext-replay service; FHE-aware disputes land in v0.3.
+   * Admin bearer token gating administrative routes.
    */
   adminToken?: string;
   /**
@@ -100,131 +153,204 @@ export interface ApiDeps {
    * When undefined, that route 404s.
    */
   events?: VerdictEventBus;
+  /**
+   * Verifies that submitted Fhenix metadata corresponds to real contract
+   * events. Tests inject this; production uses FHENIX_RPC_URL when unset.
+   */
+  fhenixVerifier?: FhenixEventVerifier | null;
+  /**
+   * Gateway broadcaster for Runtime-Key-authenticated relayed Fhenix submits.
+   * When unset, `/v2/gateway/calls` fails closed with 503.
+   */
+  fhenixGateway?: FhenixGatewayBroadcaster | null;
+  /**
+   * Optional live operator canaries for external dependencies that are not
+   * safe to assume from local process health: Fhenix RPC/contract reachability
+   * and Polymarket Gamma live market fetches.
+   */
+  liveCanaries?: LiveCanaryProvider | null;
+  /**
+   * When true, /readyz fails unless the latest live-canary snapshot is OK.
+   * Defaults false so local/dev environments do not become dependent on
+   * external RPC/API availability.
+   */
+  requireLiveCanaries?: boolean;
+  /**
+   * Optional admin/operator alert sink. Alerts are always persisted in the
+   * local DB; when this sink is configured, `/v1/admin/alerts/tick` and the
+   * daemon tick can also POST them to the operator's incident channel.
+   */
+  operatorAlertSink?: OperatorAlertSinkConfig | null;
   now?: () => Date;
 }
 
 export function createVerdictRouter(deps: ApiDeps): Router {
   const router = Router();
   const now = deps.now ?? (() => new Date());
-  // Wave 3 — DisputeService construction removed; the runtime service was
-  // deleted alongside the legacy plaintext-replay disputes path. The two
-  // /v1/disputes/* routes now return 410 Gone; FHE-aware disputes ship in
-  // v0.3 under the production threshold committee.
   const adminToken = deps.adminToken ?? process.env.VERDICT_ADMIN_TOKEN ?? "";
+  const fhenixVerifier = deps.fhenixVerifier ?? createFhenixEventVerifierFromEnv();
+  const operatorAlertSink = deps.operatorAlertSink ?? operatorAlertSinkFromEnv();
   const json = express.json({ limit: "32kb" });
+  const requireAgentAuth = async (req: Request): Promise<DispatchedAuthIdentity & { agent_id: string }> => {
+    const authResult = await dispatchAuth(req, {
+      db: deps.db,
+      now,
+    });
+    if (!authResult) {
+      throw new VerdictError(
+        "auth required: provide Authorization: Bearer <privy> or X-Murmur-Api-Key",
+        ERROR_CODES.agent_not_authorized,
+        401,
+      );
+    }
+    if (!authResult.agent_id) {
+      throw new VerdictError(
+        "X-Murmur-Agent-Slug header required: account owns no default agent",
+        ERROR_CODES.agent_slug_required,
+        400,
+      );
+    }
+    return authResult as DispatchedAuthIdentity & { agent_id: string };
+  };
+  const requireFhenixVerifier = (): FhenixEventVerifier => {
+    if (!fhenixVerifier) {
+      throw new VerdictError(
+        "Fhenix chain verifier is not configured; set FHENIX_RPC_URL before accepting sealed calls",
+        ERROR_CODES.oracle_unavailable,
+        503,
+      );
+    }
+    return fhenixVerifier;
+  };
+  const requireAdmin = (req: Request, res: Response): boolean => {
+    if (!adminToken) {
+      res.status(503).json({
+        code: "admin_disabled",
+        message: "VERDICT_ADMIN_TOKEN not set",
+      });
+      return false;
+    }
+    const headerToken = req.header("X-Admin-Token");
+    const bearer = bearerToken(req);
+    if (!safeStrEq(headerToken, adminToken) && !safeStrEq(bearer, adminToken)) {
+      res.status(403).json({
+        code: "forbidden",
+        message: "admin token required",
+      });
+      return false;
+    }
+    return true;
+  };
 
-  // Wave 1 — claim_challenges GC removed alongside the deleted claim
-  // routes. The table is retained for now to keep local DBs at v=30
-  // bootable without manual repair; Wave 3 (Migration 031) drops the
-  // table outright.
-
-  // Wave 2a — /v1/calls returns 410 Gone. The legacy plaintext submit
-  // endpoint (wallet HMAC OR API key with side/asset_id/horizon_hours/
-  // confidence wire shape) is retired. Reputation is built up via
-  // FHE-direct calls on /v2/calls only; agents that previously
-  // targeted /v1/calls must migrate to /v2/calls with the `fhe` block.
   router.post(
     "/v1/calls",
     asyncHandler(async (_req, res) => {
       res.status(410).json({
         code: "endpoint_removed",
         message:
-          "/v1/calls is retired. Submit via /v2/calls with privacy_mode='fhe_direct' and the `fhe` block. See /v1/skill.md for the new flow.",
-        replacement: "/v2/calls",
+          "/v1/calls is retired. Submit via /v2/gateway/calls with a Runtime Key and already-created CoFHE encrypted inputs.",
+        replacement: "/v2/gateway/calls",
       });
     }),
   );
 
-  // ─── POST /v2/calls (Phase 4 — V2 §7.1 universal Commitment) ───────────────
-  //
-  // Universal Commitment surface. Auth runs through the tier-aware
-  // dispatcher (Privy bearer → casual; X-Murmur-Api-Key → casual or legacy;
-  // HMAC → wallet_legacy). Per V2 §7.1:
-  //   - tier='casual'        → accepted; legacy_plaintext only (committed
-  //                            mode is gated until reveal-flow lands at
-  //                            scoped key + EIP-712).
-  //   - tier='legacy'        → accepted (existing API-key-only agent),
-  //                            flagged for cutover.
-  //   - tier='wallet_legacy' → REJECTED 426. HMAC wallet agents must keep
-  //                            using /v1/calls until Phase 8 EIP-712.
-  //   - tier='attested'      → REJECTED 503 (Phase 13).
-  //
-  // Body shape: a universal {@link Commitment} (CommitmentSchema) PLUS
-  // idempotency / metadata fields the legacy wire shape carries:
-  //   - client_order_id        (required, idempotency key)
-  //   - rationale | strategy_tag (required — same superRefine as /v1)
-  //   - submitted_at           (optional; defaults to server-now)
-  //
-  // Adapter dispatch: marketRef.protocol → MarketMakerRegistry.get(...).
-  // Today only 'native-price' is registered; unknown protocols 422. The
-  // adapter's `commitmentSchema` runs an additional narrow Zod transform
-  // (e.g. native-price clamps confidence to [0.51, 0.95]).
-  //
-  // Body → legacy SubmittedCall translation: native-price's payout-vector
-  // maps to BUY/SELL ([1,0]→BUY, [0,1]→SELL). The handler synthesizes a
-  // legacy SubmittedCall payload and feeds submitCall(...) which writes
-  // BOTH the legacy columns and the universal commitment_json /
-  // predicted_outcome_json columns (Phase 4 dual-write).
+  // Canonical Gateway paths. The daemon never receives verdict/feed plaintext
+  // while pending; it accepts CoFHE encrypted inputs, enforces Gateway policy,
+  // and relays the Fhenix submit tx itself.
   router.post(
-    "/v2/calls",
-    express.text({ type: "application/json", limit: "32kb" }),
+    "/v2/gateway/calls",
+    json,
     asyncHandler(async (req, res) => {
-      const rawBody = typeof req.body === "string" ? req.body : "";
-      // Tier-aware auth dispatch. Privy unconfigured in dev → bearer
-      // tokens fall through to api-key / hmac modes (verifyPrivyAuth
-      // returns null when env unset). Throws VerdictError on policy
-      // rejections (unowned slug, multi-agent ambiguous header).
-      const authResult: DispatchedAuthIdentity | null = await dispatchAuth(
-        req,
-        {
-          db: deps.db,
-          resolveSharedSecret: deps.resolveSharedSecret,
-          rawBody,
-          now,
-        },
-      );
+      if (!deps.fhenixGateway) {
+        throw new VerdictError(
+          "Fhenix Gateway broadcaster is not configured; set FHENIX_GATEWAY_ENABLED=true with relayer credentials",
+          ERROR_CODES.oracle_unavailable,
+          503,
+        );
+      }
+      const authResult = await dispatchAuth(req, {
+        db: deps.db,
+        allowRuntimeKey: true,
+        now,
+      });
       if (!authResult) {
         throw new VerdictError(
-          "auth required: provide Authorization: Bearer <privy>, X-Murmur-Api-Key, or HMAC headers",
+          "gateway auth required: provide X-Murmur-Runtime-Key",
           ERROR_CODES.agent_not_authorized,
           401,
         );
       }
-      // Per-tier policy gates.
-      if (authResult.tier === "wallet_legacy") {
-        // Wallet HMAC agents stay on /v1/calls until Phase 8 EIP-712. We
-        // surface 426 Upgrade Required so a misrouted wallet client sees
-        // an actionable error (vs the silent 401 a missing tier would
-        // produce). The /v1/calls path is unchanged for them.
+      const result = await deps.fhenixGateway.submitSealedCall({
+        authResult,
+        bodyJson: req.body ?? {},
+      });
+      res.status(result.status).json(result.body);
+    }),
+  );
+
+  router.post(
+    "/v2/gateway/feeds/:feed_id/packets",
+    json,
+    asyncHandler(async (req, res) => {
+      if (!deps.fhenixGateway) {
         throw new VerdictError(
-          "wallet HMAC agents must use /v1/calls; /v2/calls requires casual or legacy tier auth (Phase 8 lands EIP-712 for wallet tier)",
-          ERROR_CODES.agent_not_authorized,
-          426,
-        );
-      }
-      if (authResult.agent_kind === "attested") {
-        // Phase 13 wires Olas Service Registry attestation. Reject
-        // explicitly so an attested agent sees a clear "not yet" rather
-        // than a silent fall-through.
-        throw new VerdictError(
-          "attested-tier submissions are not yet supported on /v2/calls (Phase 13)",
-          ERROR_CODES.agent_not_authorized,
+          "Fhenix Gateway broadcaster is not configured; set FHENIX_GATEWAY_ENABLED=true with relayer credentials",
+          ERROR_CODES.oracle_unavailable,
           503,
         );
       }
-      if (!authResult.agent_id) {
-        // Casual tier session-only auth (account exists, no agent
-        // selected). /v2/calls demands an agent context — surface a 400
-        // with the same code the dispatcher uses elsewhere.
+      const authResult = await dispatchAuth(req, {
+        db: deps.db,
+        allowRuntimeKey: true,
+        now,
+      });
+      if (!authResult) {
         throw new VerdictError(
-          "X-Murmur-Agent-Slug or X-Murmur-Agent-Id header required: account owns no default agent",
+          "gateway auth required: provide X-Murmur-Runtime-Key",
+          ERROR_CODES.agent_not_authorized,
+          401,
+        );
+      }
+      const result = await deps.fhenixGateway.submitFeedPacket({
+        authResult,
+        feedId: String(req.params.feed_id ?? ""),
+        bodyJson: req.body ?? {},
+      });
+      res.status(result.status).json(result.body);
+    }),
+  );
+
+  router.post(
+    "/v2/calls",
+    asyncHandler(async (_req, res) => {
+      res.status(410).json({
+        code: "endpoint_removed",
+        message:
+          "/v2/calls is retired as an agent submission path. Submit via /v2/gateway/calls with a Runtime Key.",
+        replacement: "/v2/gateway/calls",
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/admin/fhenix/backfill/calls",
+    express.text({ type: "application/json", limit: "32kb" }),
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      const rawBody = typeof req.body === "string" ? req.body : "";
+      const slug = req.header("X-Murmur-Agent-Slug");
+      if (!slug) {
+        throw new VerdictError(
+          "X-Murmur-Agent-Slug header required for admin Fhenix backfill",
           ERROR_CODES.agent_slug_required,
           400,
         );
       }
+      const agent = agentsRepo.bySlug(deps.db, slug);
+      if (!agent) {
+        throw new VerdictError("unknown agent slug", ERROR_CODES.unknown_agent, 404);
+      }
 
-      // Parse the v2 wire body. Schema is CommitmentSchema + the
-      // idempotency / metadata fields the legacy wire carries.
       let bodyJson: unknown;
       try {
         bodyJson = JSON.parse(rawBody || "{}");
@@ -235,10 +361,39 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           400,
         );
       }
-      const parsed = V2SubmissionBodySchema.safeParse(bodyJson);
+      const result = await acceptSealedCallMetadata({
+        db: deps.db,
+        authResult: {
+          tier: "casual",
+          agent_id: agent.agent_id,
+          agent_kind: agent.kind,
+        },
+        bodyJson,
+        fhenixVerifier,
+        now,
+      });
+      if (result.event) deps.events?.emit(result.event);
+      res.status(result.status).json(result.body);
+    }),
+  );
+
+  router.post(
+    "/v1/admin/fhenix/reveals",
+    json,
+    asyncHandler(async (req, res) => {
+      const provided = bearerToken(req);
+      if (!adminToken || !safeStrEq(provided, adminToken)) {
+        res.status(403).json({
+          code: "forbidden",
+          message: "valid admin bearer token required",
+        });
+        return;
+      }
+
+      const parsed = FhenixRevealBodySchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         throw new VerdictError(
-          "v2 submission failed schema validation",
+          "fhenix reveal failed schema validation",
           ERROR_CODES.schema_invalid,
           400,
           { issues: parsed.error.format() },
@@ -246,176 +401,219 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       }
       const body = parsed.data;
 
-      const hasLegacyFields =
-        body.predictedOutcome !== undefined &&
-        body.horizon !== undefined &&
-        body.confidence !== undefined;
-      const submittedMode =
-        body.privacy_mode ??
-        (body.fhe !== undefined && !hasLegacyFields
-          ? "fhe_direct"
-          : "legacy_plaintext");
-      if (
-        body.privacy_mode === undefined &&
-        body.fhe !== undefined &&
-        hasLegacyFields
-      ) {
-        throw new VerdictError(
-          "ambiguous /v2/calls body: specify privacy_mode when both fhe and cleartext commitment fields are present",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-
-      // Adapter dispatch: registry.get(marketRef.protocol). 422 on
-      // unknown protocols so a v2.0 agent that mistypes / picks an
-      // unimplemented family (polymarket-gamma — Phase 11) sees a
-      // distinct error code from auth (401/403/426) and schema (400).
-      const adapter = getMarketMakerRegistry().get(body.marketRef.protocol);
-      if (!adapter) {
-        throw new VerdictError(
-          `unsupported marketRef.protocol: '${body.marketRef.protocol}' (only 'native-price' registered at v2.0)`,
-          ERROR_CODES.asset_not_supported,
-          422,
-          { protocol: body.marketRef.protocol },
-        );
-      }
-
-      // Resolve the underlying market_id. For native-price, marketRef.sourceId
-      // IS the market_id (e.g. 'eth.1h'). Fail-fast 404 if unknown.
-      const market = marketsRepo.get(deps.db, body.marketRef.sourceId);
-      if (!market) {
-        throw new VerdictError(
-          `unknown market: marketRef.sourceId='${body.marketRef.sourceId}' (no row in markets registry)`,
-          ERROR_CODES.asset_not_supported,
-          404,
-          { sourceId: body.marketRef.sourceId },
-        );
-      }
-
-      // Codex Wave 4b MAJOR fix — enforce that the agent-supplied
-      // marketRef.protocol matches the market row's adapter_id. Without
-      // this, an agent who claims protocol='native-price' for a
-      // Polymarket conditionId would route through the wrong adapter's
-      // commitment validation (the polymarket-gamma adapter's
-      // commitmentSchema enforces protocol='polymarket-gamma', but that
-      // schema isn't invoked on the FHE-direct path — only the registry
-      // lookup gates protocol selection).
-      //
-      // Markets backfilled by MIGRATION_016 may have adapter_id NULL;
-      // those rows are native-price ETH only (the migration backfilled
-      // them deliberately), so we admit a NULL adapter_id ONLY when the
-      // claimed protocol is 'native-price'.
-      const expectedProtocol = market.adapter_id ?? "native-price";
-      if (body.marketRef.protocol !== expectedProtocol) {
-        throw new VerdictError(
-          `marketRef.protocol mismatch: agent supplied '${body.marketRef.protocol}' but market '${market.market_id}' is owned by adapter '${expectedProtocol}'`,
-          ERROR_CODES.schema_invalid,
-          400,
-          {
-            supplied_protocol: body.marketRef.protocol,
-            market_adapter_id: expectedProtocol,
-            sourceId: body.marketRef.sourceId,
-          },
-        );
-      }
-
-      const submittedAt =
-        body.submitted_at ?? now().toISOString().replace(/\.\d+Z$/, "Z");
-      if (submittedMode === "fhe_direct" || body.fhe !== undefined) {
-        // Demand-evidence retreat: fhe_direct has no terminal scoring path
-        // until a real ≥9-org holder committee + sidecar decrypt land
-        // together. Accepting submissions would leave them at
-        // status='pending_t1' forever (operator-trapping, not
-        // operator-blind). Refuse explicitly with a 422 + actionable
-        // message rather than silently accept-and-trap.
-        throw new VerdictError(
-          "/v2/calls does not currently accept privacy_mode='fhe_direct': there is no terminal score-release path until a real holder committee + decrypt path are wired. Submit with privacy_mode='legacy_plaintext' (default).",
-          ERROR_CODES.asset_not_supported,
-          422,
-          { reason: "fhe_direct_unsupported_no_committee" },
-        );
-      }
-
-      if (!hasLegacyFields) {
-        throw new VerdictError(
-          "legacy_plaintext submissions require predictedOutcome, horizon, and confidence",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      if (body.fhe !== undefined) {
-        throw new VerdictError(
-          "legacy_plaintext submissions must not include an fhe block",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      if (expectedProtocol !== "native-price") {
-        throw new VerdictError(
-          "legacy_plaintext submissions are only enabled for native-price markets",
-          ERROR_CODES.schema_invalid,
-          400,
-          { market_adapter_id: expectedProtocol },
-        );
-      }
-      const commitment = v2BodyToRuntimeCommitment({
-        marketRef: body.marketRef,
-        predictedOutcome: body.predictedOutcome!,
-        horizon: body.horizon!,
-        confidence: body.confidence!,
-      });
-      const side = deriveNativePriceSide(commitment);
-      if (!side) {
-        throw new VerdictError(
-          "native-price legacy_plaintext predictedOutcome must be one-hot [UP,DOWN]",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      if (commitment.confidence < 0.51 || commitment.confidence > 0.95) {
-        throw new VerdictError(
-          "native-price legacy_plaintext confidence must be between 0.51 and 0.95",
-          ERROR_CODES.schema_invalid,
-          400,
-        );
-      }
-      const legacyPayload: Record<string, unknown> = {
-        schema_version: SCHEMA_VERSION,
-        agent_id: authResult.agent_id,
-        client_order_id: body.client_order_id,
-        market_id: market.market_id,
-        side,
-        confidence: commitment.confidence,
-        privacy_mode: "legacy_plaintext",
-        submitted_at: submittedAt,
-        ...(body.rationale !== undefined ? { rationale: body.rationale } : {}),
-        ...(body.strategy_tag !== undefined
-          ? { strategy_tag: body.strategy_tag }
-          : {}),
-      };
-      const legacyResult = await submitCall({
+      const result = await attachValidFhenixReveal({
         db: deps.db,
-        ctx: deps.ctx,
-        identity: { agent_id: authResult.agent_id },
-        payload: legacyPayload,
-        precomputedCommitment: commitment,
-        outcomeLabels: ["UP", "DOWN"],
-        legacyPayloadJson: JSON.stringify({
-          side,
-          asset_id: market.asset_id,
-          horizon_hours: legacyHorizonHoursForMarket(market),
-          confidence: commitment.confidence,
+        verifier: requireFhenixVerifier(),
+        now,
+      }, body);
+      res.status(result.status).json(result.body);
+    }),
+  );
+
+  router.post(
+    "/v1/admin/fhenix/invalid-reveals",
+    json,
+    asyncHandler(async (req, res) => {
+      const provided = bearerToken(req);
+      if (!adminToken || !safeStrEq(provided, adminToken)) {
+        res.status(403).json({
+          code: "forbidden",
+          message: "valid admin bearer token required",
+        });
+        return;
+      }
+
+      const parsed = FhenixInvalidRevealBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "fhenix invalid reveal failed schema validation",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.format() },
+        );
+      }
+      const body = parsed.data;
+
+      const result = await attachInvalidFhenixReveal({
+        db: deps.db,
+        verifier: requireFhenixVerifier(),
+        now,
+      }, body);
+      res.status(result.status).json(result.body);
+    }),
+  );
+
+  router.get(
+    "/v1/admin/fhenix/lifecycle",
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        ...fhenixLifecycleSnapshot(deps.db, {
+          ...parseFhenixLifecycleQuery(req),
+          now,
+          verifier_configured: Boolean(fhenixVerifier),
         }),
       });
-      res.status(legacyResult.idempotent_hit ? 200 : 201).json({
-        call_id: legacyResult.call.call_id,
-        call: {
-          ...legacyResult.call,
-          privacy_mode: "legacy_plaintext",
+    }),
+  );
+
+  router.get(
+    "/v1/admin/fhenix/gateway",
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      const query = parseGatewayOperatorQuery(req);
+      const snapshot = deps.fhenixGateway
+        ? deps.fhenixGateway.operatorSnapshot(query)
+        : unconfiguredGatewaySnapshot(deps.db, {
+          now,
+          status: query.status,
+          limit: query.limit,
+          stuckAfterMs: query.stuckAfterMs,
+        });
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        ...snapshot,
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/admin/fhenix/gateway/tick",
+    json,
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      if (!deps.fhenixGateway) {
+        res.status(503).json({
+          code: "gateway_disabled",
+          message: "Fhenix Gateway broadcaster is not configured",
+        });
+        return;
+      }
+      const result = await deps.fhenixGateway.tick();
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        served_at: nowIso(now()),
+        result,
+        gateway: {
+          schema_version: SCHEMA_VERSION,
+          ...deps.fhenixGateway.operatorSnapshot(parseGatewayOperatorQuery(req)),
         },
-        idempotent_hit: legacyResult.idempotent_hit,
-        tier: authResult.tier,
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/admin/fhenix/gateway/attempts/:attempt_id/retry",
+    json,
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      if (!deps.fhenixGateway) {
+        res.status(503).json({
+          code: "gateway_disabled",
+          message: "Fhenix Gateway broadcaster is not configured",
+        });
+        return;
+      }
+      const attemptId = String(req.params.attempt_id ?? "");
+      const result = await deps.fhenixGateway.retryAttemptNow(attemptId);
+      res.status(result.status).json({
+        schema_version: SCHEMA_VERSION,
+        served_at: nowIso(now()),
+        ...result.body,
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/admin/canaries",
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      if (!deps.liveCanaries) {
+        res.status(503).json({
+          code: "canaries_disabled",
+          message: "Live canary runner is not configured",
+        });
+        return;
+      }
+      res.json(deps.liveCanaries.snapshot());
+    }),
+  );
+
+  router.post(
+    "/v1/admin/canaries/tick",
+    json,
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      if (!deps.liveCanaries) {
+        res.status(503).json({
+          code: "canaries_disabled",
+          message: "Live canary runner is not configured",
+        });
+        return;
+      }
+      res.json(await deps.liveCanaries.runNow());
+    }),
+  );
+
+  router.get(
+    "/v1/admin/identity/controllers",
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        ...controllerIdentitySnapshot(deps.db, {
+          ...parseControllerIdentityQuery(req),
+          now,
+        }),
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/admin/alerts",
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      const query = parseOperatorAlertQuery(req);
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        ...operatorAlertsSnapshot(deps.db, {
+          ...query,
+          sink: operatorAlertSink,
+          now,
+        }),
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/admin/alerts/tick",
+    json,
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      const parsed = OperatorAlertTickBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "operator alert tick failed schema validation",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.format() },
+        );
+      }
+      const result = await runOperatorAlertTick({
+        db: deps.db,
+        now,
+        liveCanaries: deps.liveCanaries,
+        gatewayStuckAfterMs: parsed.data.gateway_stuck_after_sec
+          ? parsed.data.gateway_stuck_after_sec * 1_000
+          : undefined,
+        fhenixRevealGraceSec: parsed.data.fhenix_reveal_grace_sec,
+        identityDueSoonHours: parsed.data.identity_due_soon_hours,
+        sink: operatorAlertSink,
+      });
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        ...result,
       });
     }),
   );
@@ -431,17 +629,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     res.json(buildOpenApiSpec({ publicUrl }));
   });
 
-  // /v1/skill.md — Claude-skill-format markdown the lets ANY agent with
-  // internet access self-onboard. The agent fetches this file, reads
-  // the registration ritual, claims a slug, binds a wallet, gets an API
-  // key, and starts submitting calls — no operator in the loop.
-  //
-  // This is the heart of pillar 4 (marketplace): an agent shouldn't need
-  // a human to claim it. Today the X/Telegram identity binding still
-  // needs an account the agent can post from, but the daemon defaults
-  // to deterministic verifier-only checks (CLAIM_VERIFY_BYPASS gates the
-  // strict path), so a controllable X account is enough. Wallet-only
-  // self-registration ships in v0.2 and removes the identity step.
+  // /v1/skill.md — Claude-skill-format markdown that lets an agent owner
+  // self-onboard through the current Privy account + API-key path.
   router.get("/v1/skill.md", (req, res) => {
     const apiBase = `${req.protocol}://${req.get("host")}`.replace(/\/$/, "");
     res.setHeader("Content-Type", "text/markdown; charset=utf-8");
@@ -463,12 +652,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   });
 
   router.get("/v1/health", (_req, res) => {
-    // Wave 2b — committed-mode / age-envelope / drand binding privacy
-    // stack removed. /v1/health surfaces only the FHE-direct readiness
-    // signal; the deeper threshold-committee posture lives at
-    // /v1/readyz.privacy and /v1/meta.privacy.
     const privacy = {
-      fhe_direct_enabled: deps.ctx.fheProvider !== null && deps.ctx.fheProvider !== undefined,
+      mode: "sealed_fhenix",
+      pending_verdicts_private: true,
+      public_reveal_after_horizon: true,
     };
     res.json({
       ok: true,
@@ -517,147 +704,79 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     }
     const oracleMs = Date.now() - oracleStart;
 
-    // Phase G H1/M2 — privacy stack health. age key custody is a
-    // boot-time check (env var presence); drand requires a live
-    // network probe of the chain's latest beacon. We don't fail
-    // /readyz on drand UNREACHABLE (that's an opt-in upgrade), but
-    // we DO surface the state so operators see the degradation.
-    //
-    // Wave 2a — FHE is mandatory; `fhe_direct_enabled` is now always
-    // true in the readyz/meta privacy block. The check kept for wire-
-    // shape stability with older SDK clients that read the field.
-    const fheProv = deps.ctx.fheProvider ?? null;
-    const fheEnabled = fheProv !== null;
-    let fheActiveKeysetId: string | null = null;
-    if (fheProv) {
-      try {
-        const row = deps.db
-          .prepare(
-            `SELECT keyset_id FROM fhe_keysets
-             WHERE provider = ? AND status = 'active'
-             ORDER BY activated_at DESC LIMIT 1`,
-          )
-          .get(fheProv.name) as { keyset_id: string } | undefined;
-        if (row) fheActiveKeysetId = row.keyset_id;
-      } catch {
-        // Pre-migration-023 race; surface as no active keyset.
-      }
-    }
-    // Z5 — production gate. When MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1
-    // the daemon refuses to report ready unless the threshold committee
-    // posture is 'production'. operator_trusted is explicitly rejected:
-    // it keeps the operator in the trust root.
-    // Default off so single-operator dev environments can boot the
-    // legacy plaintext or committed-mode stack without flipping this.
-    const prodRequireOperatorBlind =
-      process.env.MURMUR_PROD_REQUIRE_OPERATOR_BLIND === "1";
-    const thresholdMode = fheProv?.threshold_mode ?? null;
-    const prodGateOk = !prodRequireOperatorBlind || thresholdMode === "production";
-    const prodGateReason = prodRequireOperatorBlind && !prodGateOk
-      ? `MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1 but threshold_mode=${thresholdMode ?? "null"} (need 'production')`
-      : null;
-
-    // Z5 — audit-log emit on gate STATE TRANSITION. Codex Z5 review
-    // MAJOR fix: the privacy_policy_events table existed without any
-    // producer, leaving the audit log decorative. Emitting on every
-    // readyz call (typically once per second from a kubelet probe)
-    // would spam the table; emitting on transition catches the
-    // ok→fail (and recovery) events that operators actually want
-    // logged. In-memory module-scope flag — single-process daemon
-    // assumption matches the EventBus posture elsewhere.
-    if (prodGateOk !== lastProdGateOk) {
-      try {
-        deps.db
-          .prepare(
-            `INSERT INTO privacy_policy_events (
-               event_id, kind, payload_json, actor, created_at
-             ) VALUES (?, ?, ?, ?, ?)`,
-          )
-          .run(
-            randomUUID(),
-            "readyz_prod_gate_failed",
-            JSON.stringify({
-              transitioned_to_ok: prodGateOk,
-              threshold_mode: thresholdMode,
-              prod_require_operator_blind: prodRequireOperatorBlind,
-              reason: prodGateReason,
-            }),
-            "daemon:readyz",
-            nowIso(now()),
-          );
-      } catch (err) {
-        // Audit emit is best-effort — must not affect readyz response.
-        console.warn(
-          `[readyz] privacy_policy_events emit failed:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-      lastProdGateOk = prodGateOk;
-    }
-
     const privacy = {
-      // Wave 2b — committed-mode / age / drand fields removed. FHE-direct
-      // is the only privacy mode now; the readyz privacy block surfaces
-      // the threshold-committee posture + Z5 prod gate state.
-      fhe_direct_enabled: fheEnabled,
-      provider: fheProv?.name ?? null,
-      active_keyset_id: fheActiveKeysetId,
-      threshold_mode: thresholdMode,
-      // Z5 — prod-gate observability.
-      prod_require_operator_blind: prodRequireOperatorBlind,
-      prod_gate_ok: prodGateOk,
-      prod_gate_reason: prodGateReason,
+      mode: "sealed_fhenix",
+      threshold_network: "fhenix",
+      submit_contract: "external",
+      reveal_ingest: "/v1/admin/fhenix/reveals",
     };
 
+    const canarySnapshot = deps.liveCanaries?.snapshot() ?? null;
+    const canariesRequired = deps.requireLiveCanaries ?? false;
+    const canariesOk = !canariesRequired || Boolean(canarySnapshot?.ok);
+
     const ready =
-      dbOk && (oracleStatus === "ok" || oracleStatus === "disabled") && prodGateOk;
+      dbOk && (oracleStatus === "ok" || oracleStatus === "disabled") && canariesOk;
     res.status(ready ? 200 : 503).json({
       ready,
       now: nowIso(now()),
       db: { ok: dbOk, latency_ms: dbMs, error: dbError },
       oracle: { status: oracleStatus, latency_ms: oracleMs, error: oracleError },
+      canaries: canarySnapshot
+        ? {
+            required: canariesRequired,
+            ok: canarySnapshot.ok,
+            served_at: canarySnapshot.served_at,
+            checks: canarySnapshot.checks.map((check) => ({
+              name: check.name,
+              status: check.status,
+              checked_at: check.checked_at,
+              latency_ms: check.latency_ms,
+              error: check.error,
+            })),
+          }
+        : {
+            required: canariesRequired,
+            ok: !canariesRequired,
+            served_at: null,
+            checks: [],
+          },
       privacy,
     });
   }));
 
   router.get("/v1/meta", (_req, res) => {
-    // Z0 — surface FHE wiring without disclosing anything secret. The
-    // `privacy` block is additive; SDK clients reading existing fields
-    // (schema_version, strategy_tags, assets, verified_volume_24h)
-    // stay untouched. `active_keyset_id` is the row Z1 will FK against;
-    // Wave 2a — FHE is mandatory. `fhe_direct_enabled` is true iff a
-    // provider was loaded at boot; null means the daemon misconfigured
-    // and /v2/calls submissions will reject.
-    const fheProv = deps.ctx.fheProvider ?? null;
-    const fheEnabled = fheProv !== null;
-    let activeKeysetId: string | null = null;
-    if (fheProv) {
-      try {
-        const row = deps.db
-          .prepare(
-            `SELECT keyset_id FROM fhe_keysets
-             WHERE provider = ? AND status = 'active'
-             ORDER BY activated_at DESC LIMIT 1`,
-          )
-          .get(fheProv.name) as { keyset_id: string } | undefined;
-        if (row) activeKeysetId = row.keyset_id;
-      } catch {
-        // fhe_keysets exists post-migration 023; defensive against
-        // older DBs surfaced via /v1/meta during boot races.
-      }
-    }
+    const rawFhenixChainId = process.env.FHENIX_CHAIN_ID?.trim();
+    const fhenixChainIdNum = rawFhenixChainId ? Number(rawFhenixChainId) : NaN;
+    const fhenixChain =
+      Number.isInteger(fhenixChainIdNum) && fhenixChainIdNum > 0
+        ? {
+            chain_id: `eip155:${fhenixChainIdNum}`,
+            chain_id_numeric: fhenixChainIdNum,
+            contract_address: resolveFhenixContractAddress(fhenixChainIdNum),
+          }
+        : null;
     res.json({
       schema_version: SCHEMA_VERSION,
       scoring_version: SCORING_VERSION,
       strategy_tags: REGISTERED_STRATEGY_TAGS,
       assets: ["base:ETH:USD"],
       verified_volume_24h: get24hVerifiedVolume(deps.db),
-      privacy: {
-        fhe_direct_enabled: fheEnabled,
-        provider: fheProv?.name ?? null,
-        active_keyset_id: activeKeysetId,
-        threshold_mode: fheProv?.threshold_mode ?? null,
+      paid_inference: {
+        current_venue: "polymarket-gamma",
+        market_taxonomy: marketTaxonomyResponse(),
+        resolution_classes: RESOLUTION_CLASSES,
+        edge_classes: EDGE_CLASSES,
+        commercial_templates: COMMERCIAL_TEMPLATES,
+        feed_packet_kinds: FEED_PACKET_KINDS,
       },
+      privacy: {
+        mode: "sealed_fhenix",
+        threshold_network: "fhenix",
+        pending_verdicts_private: true,
+        public_reveal_after_horizon: true,
+      },
+      ...(fhenixChain ? { fhenix: fhenixChain } : {}),
     });
   });
 
@@ -700,7 +819,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         kind: r.kind,
         bio: r.bio ?? null,
         created_at: r.created_at,
-        verified_identities: r.verified_identities,
       })),
     });
   });
@@ -724,11 +842,9 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   //     registrations, supportedTrust? }
   // - `services` use `endpoint` (NOT `url`) per the canonical spec
   // - `agentWallet` is reserved on-chain metadata in the spec; NOT included
-  //   here. Off-chain consumers read /v1/agents/:slug for the wallet
-  //   binding (top-level wallet_address + chain_id fields).
-  // - x402Support is declared `true` so AgentKit / x402-aware clients
-  //   know we'll honor 402 receipts on /v1/receipts/:id when v0.3 wires
-  //   the actual middleware. v0.2 ships the declaration only (D8b).
+  //   here. Off-chain consumers read /v1/agents/:slug for Murmur's
+  //   Controller Wallet binding (top-level wallet_address + chain_id fields).
+  // - x402Support stays false until payment middleware is wired end-to-end.
   // - When v0.3 mints Identity Registry NFTs, tokenURI points here so
   //   the on-chain identity and the off-chain card stay in sync.
   router.get("/v1/agents/:slug/agent-card", (req, res) => {
@@ -760,11 +876,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         },
         {
           type: "murmur-verdict.calls",
-          name: "Submit a market call (FHE-direct)",
-          endpoint: `${apiBase}/v2/calls`,
-          // Auth: Bearer API key on the account/agent pair. /v1/calls
-          // returns 410 post-Wave-2a; /v2/calls is the only accepted
-          // submit surface (FHE-mandatory, operator-blind invariant).
+          name: "Gateway sealed Fhenix submit",
+          endpoint: `${apiBase}/v2/gateway/calls`,
+          // /v1/calls and /v2/calls return 410. /v2/gateway/calls is
+          // Runtime-Key-only; verified-event backfill is admin-only recovery.
         },
         {
           type: "murmur-verdict.skill",
@@ -772,40 +887,27 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           endpoint: `${apiBase}/v1/skill.md`,
         },
       ],
-      // Paper-only declaration today; flips to true wiring when the v0.3
-      // x402 middleware lands on /v1/receipts/:id.
-      x402Support: true,
-      // "active" = this agent CAN submit calls right now. True if the
-      // agent has an issued api_key_hash (verified + wallet_only after
-      // finalize) OR the agent uses env-var keys (benchmark, internal_test).
-      // Shadow agents and unfinalized wallet_only agents return false —
-      // they exist as profiles but can't push fresh data.
-      active:
-        row.api_key_hash !== null ||
-        row.kind === "benchmark" ||
-        row.kind === "internal_test",
+      x402Support: false,
+      // The public card does not disclose whether active Runtime Keys or API
+      // keys exist for this agent.
+      active: row.kind === "agent",
       // Per the EIP, `registrations` is an array of (chain_id,
       // registration_id) tuples once an agent is on-chain. v0.2 has no
       // contract deploy yet, so we emit an empty array — consumers know
       // we plan to register but haven't yet.
       registrations: [] as Array<{ chain_id: string; registration_id: string }>,
-      // Phase H — operator UX. Marketplace clients see exactly which
-      // privacy primitives this Murmur deployment supports. v0.3 fhEVM
-      // Wave 2b — ERC-8004 agent card privacy block rewritten to the
-      // FHE-mandatory shape. submission_modes is single-entry; the
-      // committed/age/drand fields are deleted. Threshold-committee
-      // posture lives at /v1/meta.privacy.threshold_mode.
       privacy: {
-        submission_modes: ["fhe_direct"],
+        submission_modes: ["sealed_fhenix"],
+        threshold_network: "fhenix",
         operator_can_decrypt_pre_horizon: false,
         threat_model_url: `${apiBase}/v1/skill.md#threat-model--privacy-guarantees`,
       },
       // Optional v0.3+ fields surfaced when present. Always included off
-      // the agent row so receipts and the agent card stay consistent.
+      // the agent row so public profiles and the agent card stay consistent.
       ...(row.wallet_address && row.chain_id
         ? {
-            // Non-spec sibling field: explicit wallet binding for off-
-            // Murmur consumers that don't want to compose
+            // Non-spec sibling field: explicit Controller Wallet binding for
+            // off-Murmur consumers that don't want to compose
             // /v1/agents/:slug. ERC-8004 reserves `agentWallet` for
             // on-chain metadata, so we expose it under our own key.
             murmur_wallet: {
@@ -838,14 +940,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       return;
     }
     const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? "50")));
-    // Phase E hydration: pull cr.* mirror columns alongside s.* so the
-    // projection can COALESCE legacy submission plaintext (NULL after
-    // MURMUR_PHASE_E_CLEANUP) with the still-present call_reveals values.
-    // Wave 2b — call_reveals JOIN + cr.* SELECT removed. The plaintext
-    // s.side / s.asset_id / s.horizon_hours / s.confidence columns are
-    // still SELECT'd for now because the schema retains them through
-    // Wave 3 (Migration 031 drops them outright); projectCallRow's
-    // operator-blind projection ignores them under FHE-mandatory.
     const rawRows = deps.db
       .prepare(
         `SELECT s.call_id, s.status,
@@ -885,6 +979,439 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       calls,
     });
   });
+
+  router.post(
+    "/v1/feeds",
+    json,
+    asyncHandler(async (req, res) => {
+      const auth = await requireAgentAuth(req);
+      const parsed = FeedCreateBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "feed contract failed schema validation",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.format() },
+        );
+      }
+      const body = parsed.data;
+      assertVenueSupported(body.venue);
+      validateFeedCoveredMarkets(
+        deps.db,
+        body.covered_market_ids,
+        body.venue,
+        body.resolution_classes,
+      );
+
+      const createdAt = nowIso(now());
+      const feedId = randomUUID();
+      feedContractsRepo.insert(deps.db, {
+        feed_id: feedId,
+        agent_id: auth.agent_id,
+        name: body.name,
+        description: body.description ?? null,
+        status: body.status,
+        venue: body.venue,
+        resolution_classes: body.resolution_classes,
+        edge_classes: body.edge_classes,
+        covered_market_ids: body.covered_market_ids,
+        delivery_cadence_seconds: body.delivery_cadence_seconds ?? null,
+        trigger_rules: body.trigger_rules,
+        max_latency_seconds: body.max_latency_seconds ?? null,
+        subscriber_capacity: body.subscriber_capacity,
+        commercial_template: body.commercial_template,
+        reveal_policy: body.reveal_policy,
+        refund_rule: body.refund_rule,
+        slash_rule: body.slash_rule,
+        created_at: createdAt,
+        updated_at: createdAt,
+      });
+
+      const row = feedContractsRepo.byId(deps.db, feedId);
+      if (!row) {
+        throw new Error(`feed insert did not persist feed_id=${feedId}`);
+      }
+      res.status(201).json({
+        schema_version: SCHEMA_VERSION,
+        feed: publicFeed(deps.db, row),
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/feeds",
+    asyncHandler(async (req, res) => {
+      const rawStatus = req.query.status;
+      let status: z.infer<typeof FeedStatusSchema> | undefined;
+      if (typeof rawStatus === "string" && rawStatus.length > 0) {
+        const parsedStatus = FeedStatusSchema.safeParse(rawStatus);
+        if (!parsedStatus.success) {
+          throw new VerdictError(
+            `status must be one of ${FEED_STATUSES.join("|")}`,
+            ERROR_CODES.schema_invalid,
+            400,
+          );
+        }
+        status = parsedStatus.data;
+      }
+      const rawVenue = req.query.venue;
+      const venue = typeof rawVenue === "string" && rawVenue.length > 0
+        ? rawVenue
+        : undefined;
+      const rawAgentSlug = req.query.agent_slug;
+      const agent = typeof rawAgentSlug === "string" && rawAgentSlug.length > 0
+        ? agentsRepo.bySlug(deps.db, rawAgentSlug)
+        : null;
+      if (typeof rawAgentSlug === "string" && rawAgentSlug.length > 0 && !agent) {
+        res.status(404).json({ code: ERROR_CODES.unknown_agent, message: "agent not found" });
+        return;
+      }
+      const rawLimit = Number(req.query.limit ?? "100");
+      const limit = Number.isFinite(rawLimit)
+        ? Math.max(1, Math.min(500, Math.floor(rawLimit)))
+        : 100;
+      let edgeClass: z.infer<typeof EdgeClassSchema> | null = null;
+      if (typeof req.query.edge_class === "string" && req.query.edge_class.length > 0) {
+        const parsedEdgeClass = EdgeClassSchema.safeParse(req.query.edge_class);
+        if (!parsedEdgeClass.success) {
+          throw new VerdictError(
+            `edge_class must be one of ${EDGE_CLASSES.join("|")}`,
+            ERROR_CODES.schema_invalid,
+            400,
+          );
+        }
+        edgeClass = parsedEdgeClass.data;
+      }
+      let resolutionClass: z.infer<typeof ResolutionClassSchema> | null = null;
+      if (typeof req.query.resolution_class === "string" && req.query.resolution_class.length > 0) {
+        const parsedResolutionClass = ResolutionClassSchema.safeParse(req.query.resolution_class);
+        if (!parsedResolutionClass.success) {
+          throw new VerdictError(
+            `resolution_class must be one of ${RESOLUTION_CLASSES.join("|")}`,
+            ERROR_CODES.schema_invalid,
+            400,
+          );
+        }
+        resolutionClass = parsedResolutionClass.data;
+      }
+
+      const feeds = feedContractsRepo
+        .list(deps.db, {
+          status,
+          venue,
+          agent_id: agent?.agent_id,
+          limit,
+        })
+        .map((row) => publicFeed(deps.db, row))
+        .filter((feed) =>
+          edgeClass ? feed.edge_classes.includes(edgeClass) : true,
+        )
+        .filter((feed) =>
+          resolutionClass
+            ? feed.resolution_classes.includes(resolutionClass)
+            : true,
+        );
+
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        served_at: nowIso(now()),
+        feeds,
+        taxonomy: {
+          resolution_classes: RESOLUTION_CLASSES,
+          edge_classes: EDGE_CLASSES,
+          commercial_templates: COMMERCIAL_TEMPLATES,
+        },
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/feeds/:feed_id",
+    asyncHandler(async (req, res) => {
+      const feedId = String(req.params.feed_id ?? "");
+      const row = feedContractsRepo.byId(deps.db, feedId);
+      if (!row) {
+        res.status(404).json({ code: "not_found", message: "feed not found" });
+        return;
+      }
+      const includePackets = String(req.query.include_packets ?? "") === "true";
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        feed: publicFeed(deps.db, row),
+        ...(includePackets
+          ? {
+              packets: feedPacketsRepo
+                .listForFeed(deps.db, feedId, 50)
+                .map(publicFeedPacket),
+            }
+          : {}),
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/feeds/:feed_id/availability",
+    asyncHandler(async (req, res) => {
+      const feedId = String(req.params.feed_id ?? "");
+      const row = feedContractsRepo.byId(deps.db, feedId);
+      if (!row) {
+        res.status(404).json({ code: "not_found", message: "feed not found" });
+        return;
+      }
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        served_at: nowIso(now()),
+        proof: buildFeedAvailabilityProof(deps.db, row, {
+          now: now(),
+          packetLimit: 100,
+          incidentLimit: 500,
+        }),
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/feeds/:feed_id/packets",
+    json,
+    asyncHandler(async (req, res) => {
+      res.status(410).json({
+        code: "endpoint_removed",
+        message:
+          "/v1/feeds/:feed_id/packets is retired as an agent feed path. Submit via /v2/gateway/feeds/:feed_id/packets with a Runtime Key.",
+        replacement: "/v2/gateway/feeds/:feed_id/packets",
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/admin/fhenix/backfill/feeds/:feed_id/packets",
+    json,
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      const feedId = String(req.params.feed_id ?? "");
+      const feed = feedContractsRepo.byId(deps.db, feedId);
+      if (!feed) {
+        res.status(404).json({ code: "not_found", message: "feed not found" });
+        return;
+      }
+      if (feed.status === "retired") {
+        throw new VerdictError(
+          "retired feeds do not accept new sealed packets",
+          ERROR_CODES.schema_invalid,
+          409,
+        );
+      }
+
+      const parsed = FeedPacketBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "feed packet failed schema validation",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.format() },
+        );
+      }
+      const body = parsed.data;
+      validateFeedPacketMarket(deps.db, feed, body.market_id ?? null);
+
+      const fhenixEvent = normalizeFeedFhenixEvent(body.fhenix);
+      const existing = feedPacketsRepo.byFhenixEvent(deps.db, {
+        chain_id: fhenixEvent.chain_id,
+        contract_address: fhenixEvent.contract_address,
+        onchain_packet_id: fhenixEvent.onchain_packet_id,
+      });
+      if (existing) {
+        res.status(200).json({
+          schema_version: SCHEMA_VERSION,
+          packet: publicFeedPacket(existing),
+          idempotent_hit: true,
+        });
+        return;
+      }
+
+      const acceptedAtMs = parseIsoMs(fhenixEvent.accepted_at, "fhenix.accepted_at");
+      const revealAfterMs = parseIsoMs(fhenixEvent.reveal_after, "fhenix.reveal_after");
+      if (revealAfterMs < acceptedAtMs) {
+        throw new VerdictError(
+          "fhenix.reveal_after must be at or after fhenix.accepted_at",
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+      if (acceptedAtMs > now().getTime() + 5 * 60 * 1000) {
+        throw new VerdictError(
+          "fhenix.accepted_at is too far in the future",
+          ERROR_CODES.schema_invalid,
+          400,
+        );
+      }
+
+      let inserted: FeedPacketRow | null = null;
+      try {
+        inserted = deps.db.transaction(() => {
+          const sequence =
+            body.sequence ?? feedPacketsRepo.nextSequence(deps.db, feedId);
+          const latest = feedPacketsRepo.latestForFeed(deps.db, feedId);
+          const deadline =
+            body.delivery_deadline_at ??
+            inferFeedDeliveryDeadline(feed, latest, sequence);
+          const slaStatus = classifyFeedPacketSla(fhenixEvent.accepted_at, deadline);
+          const packetId = randomUUID();
+          feedPacketsRepo.insert(deps.db, {
+            packet_id: packetId,
+            feed_id: feedId,
+            agent_id: feed.agent_id,
+            market_id: body.market_id ?? null,
+            packet_kind: body.packet_kind,
+            sequence,
+            payload_schema: body.payload_schema,
+            submitted_at: body.submitted_at ?? fhenixEvent.accepted_at,
+            accepted_at: fhenixEvent.accepted_at,
+            reveal_after: fhenixEvent.reveal_after,
+            delivery_deadline_at: deadline,
+            sla_status: slaStatus,
+            chain_id: fhenixEvent.chain_id,
+            contract_address: fhenixEvent.contract_address,
+            onchain_packet_id: fhenixEvent.onchain_packet_id,
+            submit_tx_hash: fhenixEvent.submit_tx_hash,
+            submit_log_index: fhenixEvent.submit_log_index,
+            packet_ct_hash: fhenixEvent.packet_ct_hash,
+            binary_index_ct_hash: fhenixEvent.binary_index_ct_hash,
+            confidence_ct_hash: fhenixEvent.confidence_ct_hash,
+            created_at: nowIso(now()),
+          });
+          const row = feedPacketsRepo.byFhenixEvent(deps.db, {
+            chain_id: fhenixEvent.chain_id,
+            contract_address: fhenixEvent.contract_address,
+            onchain_packet_id: fhenixEvent.onchain_packet_id,
+          });
+          if (!row) {
+            throw new Error(`feed packet insert did not persist feed_id=${feedId}`);
+          }
+          return row;
+        })();
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          const duplicate = feedPacketsRepo.byFhenixEvent(deps.db, {
+            chain_id: fhenixEvent.chain_id,
+            contract_address: fhenixEvent.contract_address,
+            onchain_packet_id: fhenixEvent.onchain_packet_id,
+          });
+          if (duplicate) {
+            res.status(200).json({
+              schema_version: SCHEMA_VERSION,
+              packet: publicFeedPacket(duplicate),
+              idempotent_hit: true,
+            });
+            return;
+          }
+          throw new VerdictError(
+            "duplicate feed packet sequence or Fhenix event",
+            ERROR_CODES.duplicate,
+            409,
+          );
+        }
+        throw err;
+      }
+
+      if (!inserted) {
+        throw new Error(`feed packet transaction returned no row for feed_id=${feedId}`);
+      }
+      res.status(201).json({
+        schema_version: SCHEMA_VERSION,
+        packet: publicFeedPacket(inserted),
+        reliability: feedReliabilityEnvelope(feedContractsRepo.reliability(deps.db, feedId)),
+        idempotent_hit: false,
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/admin/feeds/sla",
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      const rawStatus = typeof req.query.status === "string" ? req.query.status : undefined;
+      const parsedStatus = rawStatus
+        ? FeedSlaIncidentStatusSchema.safeParse(rawStatus)
+        : null;
+      if (rawStatus && !parsedStatus?.success) {
+        throw new VerdictError(
+          "invalid feed SLA incident status",
+          ERROR_CODES.schema_invalid,
+          400,
+          { status: rawStatus },
+        );
+      }
+      const rawLimit = Number(req.query.limit ?? "100");
+      const limit = Number.isFinite(rawLimit)
+        ? Math.max(1, Math.min(500, Math.floor(rawLimit)))
+        : 100;
+      const feedId = typeof req.query.feed_id === "string" && req.query.feed_id.length > 0
+        ? req.query.feed_id
+        : undefined;
+      const incidents = feedSlaIncidentsRepo
+        .list(deps.db, {
+          feed_id: feedId,
+          status: parsedStatus?.success ? parsedStatus.data : undefined,
+          limit,
+        })
+        .map(publicFeedSlaIncident);
+      const feed_health = feedContractsRepo
+        .listCadenceListed(deps.db, { limit: 100 })
+        .map((row) => feedAvailabilitySummary(deps.db, row, { now: now() }));
+      const refundRecommendations = incidents.reduce(
+        (acc, incident) => acc + (incident.refund_action === "none" ? 0 : 1),
+        0,
+      );
+      const slashRecommendations = incidents.reduce(
+        (acc, incident) => acc + (incident.slash_action === "none" ? 0 : 1),
+        0,
+      );
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        served_at: nowIso(now()),
+        summary: {
+          open_incidents: incidents.filter((incident) => incident.status === "open").length,
+          refund_recommendations: refundRecommendations,
+          slash_recommendations: slashRecommendations,
+          failing_feeds: feed_health.filter((feed) => feed.health_status === "failing").length,
+          degraded_feeds: feed_health.filter((feed) => feed.health_status === "degraded").length,
+          payment_execution_enabled: false,
+        },
+        feed_health,
+        incidents,
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/admin/feeds/sla/tick",
+    json,
+    asyncHandler(async (req, res) => {
+      if (!requireAdmin(req, res)) return;
+      const parsed = FeedSlaTickBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "feed SLA tick failed schema validation",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.format() },
+        );
+      }
+      const result = runFeedSlaTick(deps.db, {
+        now,
+        maxIncidents: parsed.data.max_incidents,
+        feedLimit: parsed.data.feed_limit,
+      });
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        result,
+        open_incidents: feedSlaIncidentsRepo
+          .list(deps.db, { status: "open", limit: 100 })
+          .map(publicFeedSlaIncident),
+      });
+    }),
+  );
 
   router.get("/v1/feed/today", (_req, res) => {
     res.json(getTodayFeed(deps.db, now()));
@@ -1084,10 +1611,9 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   // 'discovered by @sender' on the agent profile) and /v1/refs (admin
   // overview of top recruiters).
   //
-  // Conversions (claim → verified) are NOT exposed as a public POST. They
-  // are credited server-side from the claim/finalize path below — that's
-  // the only place we have proof a real claim succeeded, and it's
-  // single-use per challenge_id so the credit is naturally idempotent.
+  // Conversions are not exposed as a public POST. Account-page attribution
+  // is derived from stored ref clicks when the account flow emits a matching
+  // usage event.
 
   router.post(
     "/v1/refs/:ref/click",
@@ -1167,6 +1693,10 @@ export function createVerdictRouter(deps: ApiDeps): Router {
           // endDate (resolver doesn't anchor t0/t1 on event_binary markets,
           // so the value is bookkeeping only).
           horizon_seconds: z.number().int().positive().optional(),
+          // Optional Murmur-native market taxonomy override. This lets a
+          // Polymarket binary row identify as sports_match, event_binary, etc.
+          // without changing the venue adapter or scoring shape.
+          resolution_class: ResolutionClassSchema.optional(),
         })
         .strict();
       const parsed = Body.safeParse(req.body);
@@ -1177,7 +1707,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         });
         return;
       }
-      const { conditionId, status, horizon_seconds } = parsed.data;
+      const { conditionId, status, horizon_seconds, resolution_class } =
+        parsed.data;
       const { registerPolymarketGammaAdapter } = await import(
         "../markets/polymarket-gamma/register.js"
       );
@@ -1254,6 +1785,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         ...(typeof snapshot.resolvedBy === "string"
           ? { resolvedBy: snapshot.resolvedBy }
           : {}),
+        ...(resolution_class ? { resolution_class } : {}),
         gamma_url: `https://polymarket.com/event/${slugCandidate ?? conditionId}`,
       });
       const created_at = nowIso(now());
@@ -1364,16 +1896,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       return;
     }
     const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? "20")));
-    // Phase E hydration: pull cr.* mirror columns so the RSS surface stays
-    // populated for committed-mode rows whose submissions plaintext has
-    // been NULL'd by MURMUR_PHASE_E_CLEANUP.
-    // Wave 2b — call_reveals JOIN + cr.* SELECT removed. Plaintext
-    // submission columns dropped from the projection input (projectCallRow
-    // ignores them under FHE-mandatory). The RSS row shape still
-    // exposes the placeholder fields (asset_id / side / horizon_hours /
-    // confidence) because the consumer at rssAgentFeed treats them as
-    // optional rendering hints — they collapse to "" / "BUY" / 0 / 0
-    // under FHE-mandatory, which the formatter handles.
     const raw = deps.db
       .prepare(
         `SELECT s.call_id, s.status, s.submitted_at, s.accepted_at,
@@ -1407,15 +1929,14 @@ export function createVerdictRouter(deps: ApiDeps): Router {
         status: projected.status,
         privacy_mode: projected.privacy_mode,
         commit_hash: projected.commit_hash,
-        // Wave 2b — operator-blind placeholders. The RSS formatter
-        // tolerates these; future Wave 3 drops the legacy SQL columns
-        // entirely and the formatter will need updating.
+        // RSS compatibility placeholders. Verdict fields stay absent from
+        // the public feed until the post-horizon reveal.
         asset_id: "",
         side: "BUY" as const,
         horizon_hours: 0,
         confidence: 0,
         submitted_at: projected.submitted_at ?? "",
-        is_committed_scrubbed: true,
+        is_sealed_scrubbed: true,
         accepted_at: projected.accepted_at,
         adapter_id,
         market_family,
@@ -1603,7 +2124,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   });
 
   // ── /v1/stream — Server-Sent Events fan-out for the live dashboard ──
-  // Spec: docs/launchpad/V14_HANDOFF.md §13.
   // No auth in v0.1; the data is already public via the read endpoints.
   // Closes itself if `deps.events` is undefined (smoke / test deployments).
   router.get("/v1/stream", (req: Request, res: Response) => {
@@ -1669,44 +2189,13 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     req.on("error", close);
   });
 
-  // ── Reveal: agent voluntarily publishes the commit preimage ─────────
-  // POST /v1/calls/:call_id/reveal
-  // Auth: Bearer (X-Murmur-Agent-Id + X-Murmur-Api-Key)
-  // Body: { commit_preimage: <D13 fields>, rationale?, strategy_tag? }
-  //
-  // Flow:
-  //   1. Bearer auth identifies the calling agent.
-  //   2. Look up call; must be privacy_mode='committed' AND owned by
-  //      this agent. Cross-agent reveals are rejected.
-  //   3. The submitted preimage is canonicalized and hashed. The hash
-  //      MUST match the stored submissions.commit_hash (set at submit
-  //      time). Mismatch → 422 commit_mismatch.
-  //   4. Defense-in-depth: preimage.call_id matches URL :call_id;
-  //      preimage.agent_wallet matches the agent's bound wallet;
-  //      preimage.chain_id matches; preimage.t0 matches accepted_at.
-  //      Any mismatch is structurally impossible if the daemon
-  //      computed commit_hash correctly, but check anyway.
-  //   5. Idempotency: if a call_reveals row already exists with the
-  //      SAME preimage hash, return 200 with the existing record.
-  //      Different preimage hash → 409.
-  //   6. Insert call_reveals row (revealed_via='agent',
-  //      reveal_hash_valid=1).
-  //
-  // The reveal is allowed BEFORE t1 too — the agent just shows their
-  // hand early. Public surfaces still scrub pending rows (Phase E);
-  // the reveal is private until resolution.
-  // Wave 2a — /v1/calls/:call_id/reveal and /v1/calls/:call_id/envelope
-  // both return 410 Gone. Committed-mode submissions don't exist in the
-  // FHE-mandatory world: there's no plaintext preimage to reveal and no
-  // age/drand envelope to publicly attest. fhe_direct calls use the
-  // threshold-decrypt flow under /v1/fhe/* instead (see Z3 routes).
   router.post(
     "/v1/calls/:call_id/reveal",
     asyncHandler(async (_req, res) => {
       res.status(410).json({
         code: "endpoint_removed",
         message:
-          "/v1/calls/:call_id/reveal is retired alongside committed-mode submissions. fhe_direct calls release the bounded score via the threshold-decrypt routes (/v1/fhe/*); the prediction itself stays encrypted.",
+          "/v1/calls/:call_id/reveal is retired. Fhenix reveals are ingested from verified contract events via /v1/admin/fhenix/reveals.",
       });
     }),
   );
@@ -1715,7 +2204,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     res.status(410).json({
       code: "endpoint_removed",
       message:
-        "/v1/calls/:call_id/envelope is retired alongside committed-mode submissions. fhe_direct ciphertext hashes live on the call's submission row + fhe_call_ciphertexts; the threshold release transcript at /v1/calls/:call_id (fhe_extras) is the public attestation path.",
+        "/v1/calls/:call_id/envelope is retired. Sealed Fhenix call metadata is available on /v1/calls/:call_id.",
     });
   });
 
@@ -1733,10 +2222,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       res.status(404).json({ code: "not_found", message: "call not found" });
       return;
     }
-    // Phase E: scrub plaintext from the submission sub-object while a
-    // Wave 2b — call_reveals JOIN + cr.* SELECT removed. Single
-    // submissions row read for the privacy-mode + commit-hash needed
-    // to construct the operator-blind projection.
+    // Read the public submission projection. Revealed verdict details are
+    // attached below only after the call has resolved.
     const subRow = deps.db
       .prepare(
         `SELECT privacy_mode, commit_hash FROM submissions WHERE call_id = ?`,
@@ -1765,39 +2252,53 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       status: full.submission.status,
       privacy_mode: projected.privacy_mode,
       commit_hash: projected.commit_hash,
-      // Wave 2b — operator-blind always. No plaintext fields are
-      // included on the response.
+      // Pending verdict fields are never included on the response.
       ...(projected.submitted_at ? { submitted_at: projected.submitted_at } : {}),
     };
-    // FHE-direct rows are accepted but no local threshold-release pipeline is
-    // wired anymore. They remain pending_t1 until a real external committee is
-    // introduced, so the call view reports the honest stalled state without
-    // reading the dropped score-job tables.
-    const fheExtras: Record<string, string> = {};
-    if (subRow?.privacy_mode === "fhe_direct") {
-      fheExtras["score_status"] = "pending_t1";
-    }
-    res.json({ ...full, submission: scrubbedSubmission, ...fheExtras });
+    const sealed = subRow?.privacy_mode === "sealed_fhenix"
+      ? fhenixSealedCallsRepo.byCallId(deps.db, call_id)
+      : null;
+    // Gate on the Fhenix reveal-status (the cryptographic truth) rather than
+    // the resolver-side submission status. Once the contract emits a public
+    // reveal, the verdict should be visible immediately even before the market
+    // outcome is scored. Without this, valid reveals stayed hidden in call
+    // detail until resolution ran.
+    const revealIsPublic =
+      (sealed?.reveal_status === "revealed" || sealed?.reveal_status === "invalid") &&
+      sealed?.revealed_at !== null &&
+      sealed?.revealed_binary_index !== null &&
+      sealed?.revealed_confidence_bps !== null;
+    const fhenixExtras = sealed
+      ? {
+          fhenix: {
+            chain_id: sealed.chain_id,
+            contract_address: sealed.contract_address,
+            onchain_call_id: sealed.onchain_call_id,
+            binary_index_ct_hash: sealed.binary_index_ct_hash,
+            confidence_ct_hash: sealed.confidence_ct_hash,
+            reveal_open_at: sealed.reveal_open_at,
+            reveal_status: sealed.reveal_status,
+            invalid_reason: sealed.invalid_reason,
+            terminal_at: sealed.terminal_at,
+            revealed_at: sealed.revealed_at,
+            ...(revealIsPublic
+              ? {
+                  revealed_verdict: {
+                    binary_index: sealed.revealed_binary_index,
+                    confidence_bps: sealed.revealed_confidence_bps,
+                    confidence: revealedConfidence(sealed.revealed_confidence, sealed.revealed_confidence_bps),
+                  },
+                }
+              : {}),
+          },
+        }
+      : {};
+    res.json({ ...full, submission: scrubbedSubmission, ...fhenixExtras });
   });
 
-  // Wave 1 (consolidated reshape) — /v1/agents/:slug/claim/* routes
-  // (init, finalize, wallet-only/init, wallet-only/finalize) all
-  // deleted. The public-identity claim flow (X/Telegram post-content
-  // verification) and the wallet-only self-mint flow were the v0.1
-  // onboarding paths. In the new model agents are minted under a
-  // Privy account via POST /v1/account/agents — no on-platform
-  // signature challenge, no public-identity proof. Operator-mediated
-  // manual claim for legacy shadow agents lands as a CLI in Wave 5
-  // (no public route).
-
-  // ── Disputes (Wave 3 — retired) ──
-  //
-  // The legacy plaintext-replay dispute service was deleted in Wave 3 of
-  // the consolidated reshape. Under FHE-mandatory the prediction stays
-  // encrypted forever, so disputes can only be about the public OUTCOME
-  // (which the resolver re-resolves from the canonical oracle/adapter).
-  // FHE-aware disputes ship in v0.3 with the production threshold
-  // committee; both routes now return 410 Gone.
+  // Claim routes are gone. Agents are minted under a Privy account via
+  // POST /v1/account/agents; operator-mediated recovery lives in the
+  // admin CLI, not a public route.
 
   router.post(
     "/v1/disputes",
@@ -1805,7 +2306,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       res.status(410).json({
         code: "endpoint_removed",
         message:
-          "Disputes are deferred to v0.3 (FHE-aware transcript verification under the production threshold committee). The legacy plaintext-replay path was retired in Wave 3 of the consolidated reshape.",
+          "Disputes are deferred. The sealed Fhenix path will verify public outcomes and reveal transcripts.",
       });
     }),
   );
@@ -1816,7 +2317,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       res.status(410).json({
         code: "endpoint_removed",
         message:
-          "Disputes are deferred to v0.3 (FHE-aware transcript verification under the production threshold committee). The legacy plaintext-replay path was retired in Wave 3 of the consolidated reshape.",
+          "Disputes are deferred. The sealed Fhenix path will verify public outcomes and reveal transcripts.",
       });
     }),
   );
@@ -1874,10 +2375,23 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       const enriched = markets.map((m) => ({
         ...m,
         ...adapterIdentityForMarket(m),
+        market_taxonomy: marketTaxonomyForMarket(m),
       }));
       res.json({
         markets: enriched,
+        taxonomy: marketTaxonomyResponse(),
         served_at: nowIso(now()),
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/markets/taxonomy",
+    asyncHandler(async (_req, res) => {
+      res.json({
+        schema_version: SCHEMA_VERSION,
+        served_at: nowIso(now()),
+        taxonomy: marketTaxonomyResponse(),
       });
     }),
   );
@@ -2082,146 +2596,278 @@ function asyncHandler(
   };
 }
 
-// ─── /v2/calls body schema (Phase 4) ───────────────────────────────────────
-//
-// CommitmentSchema + idempotency / metadata fields the legacy wire shape
-// already requires. Kept narrow on purpose: the v2 surface deliberately
-// drops {asset_id, horizon_hours, market_id, salt} — every market is
-// addressed via marketRef, and committed-mode (which needed `salt`) is
-// gated until Phase 8 EIP-712. Adding a stray field returns
-// `schema_invalid` thanks to z.strict().
-// Z1 — operator-blind submission. When privacy_mode='fhe_direct', the
-// body carries an `fhe` block instead of plaintext predictedOutcome /
-// horizon / confidence. The legacy Commitment fields become OPTIONAL at
-// the Zod level and are REJECTED by the superRefine when fhe_direct is
-// set (mutually exclusive). The fhe block's content (keyset existence,
-// hash recomputation, replay) is validated inside submitFheDirectCall;
-// here we only enforce the wire shape.
-const FheBlockSchema = z
+function parseGatewayOperatorQuery(req: Request): {
+  status?: FhenixGatewayTxStatus;
+  limit: number;
+  stuckAfterMs?: number;
+} {
+  const rawStatus = firstQueryValue(req.query.status);
+  const parsedStatus = rawStatus
+    ? GatewayAttemptStatusSchema.safeParse(rawStatus)
+    : null;
+  if (rawStatus && !parsedStatus?.success) {
+    throw new VerdictError(
+      "invalid gateway attempt status filter",
+      ERROR_CODES.schema_invalid,
+      400,
+      { status: rawStatus },
+    );
+  }
+  const rawLimit = Number(firstQueryValue(req.query.limit) ?? "50");
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(1, Math.min(200, Math.floor(rawLimit)))
+    : 50;
+  const rawStuckSec = firstQueryValue(req.query.stuck_after_sec);
+  const stuckAfterMs = rawStuckSec
+    ? Math.max(60_000, Math.floor(Number(rawStuckSec) * 1_000))
+    : undefined;
+  if (rawStuckSec && !Number.isFinite(stuckAfterMs)) {
+    throw new VerdictError(
+      "invalid stuck_after_sec",
+      ERROR_CODES.schema_invalid,
+      400,
+      { stuck_after_sec: rawStuckSec },
+    );
+  }
+  return {
+    ...(parsedStatus?.success ? { status: parsedStatus.data } : {}),
+    limit,
+    ...(stuckAfterMs ? { stuckAfterMs } : {}),
+  };
+}
+
+function parseFhenixLifecycleQuery(req: Request): {
+  status?: FhenixRevealStatus;
+  limit: number;
+  graceSeconds: number;
+} {
+  const rawStatus = firstQueryValue(req.query.status);
+  const parsedStatus = rawStatus
+    ? FhenixRevealStatusSchema.safeParse(rawStatus)
+    : null;
+  if (rawStatus && !parsedStatus?.success) {
+    throw new VerdictError(
+      "invalid Fhenix reveal status filter",
+      ERROR_CODES.schema_invalid,
+      400,
+      { status: rawStatus },
+    );
+  }
+  const rawLimit = Number(firstQueryValue(req.query.limit) ?? "50");
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(1, Math.min(200, Math.floor(rawLimit)))
+    : 50;
+  const rawGrace = Number(
+    firstQueryValue(req.query.grace_sec) ??
+      process.env.FHENIX_REVEAL_GRACE_SEC ??
+      "3600",
+  );
+  const graceSeconds = Number.isFinite(rawGrace)
+    ? Math.max(0, Math.min(30 * 24 * 60 * 60, Math.floor(rawGrace)))
+    : 3600;
+  return {
+    ...(parsedStatus?.success ? { status: parsedStatus.data } : {}),
+    limit,
+    graceSeconds,
+  };
+}
+
+function parseControllerIdentityQuery(req: Request): {
+  limit: number;
+  dueSoonHours: number;
+} {
+  const rawLimit = Number(firstQueryValue(req.query.limit) ?? "50");
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(1, Math.min(200, Math.floor(rawLimit)))
+    : 50;
+  const rawDueSoon = Number(firstQueryValue(req.query.due_soon_hours) ?? "24");
+  const dueSoonHours = Number.isFinite(rawDueSoon)
+    ? Math.max(1, Math.min(30 * 24, Math.floor(rawDueSoon)))
+    : 24;
+  return { limit, dueSoonHours };
+}
+
+function parseOperatorAlertQuery(req: Request): {
+  status?: "open" | "resolved";
+  source?: string;
+  delivery_status?: "pending" | "delivered" | "failed";
+  limit: number;
+} {
+  const rawStatus = firstQueryValue(req.query.status);
+  const parsedStatus = rawStatus
+    ? OperatorAlertStatusSchema.safeParse(rawStatus)
+    : null;
+  if (rawStatus && !parsedStatus?.success) {
+    throw new VerdictError(
+      "invalid operator alert status",
+      ERROR_CODES.schema_invalid,
+      400,
+      { status: rawStatus },
+    );
+  }
+  const rawDelivery = firstQueryValue(req.query.delivery_status);
+  const parsedDelivery = rawDelivery
+    ? OperatorAlertDeliveryStatusSchema.safeParse(rawDelivery)
+    : null;
+  if (rawDelivery && !parsedDelivery?.success) {
+    throw new VerdictError(
+      "invalid operator alert delivery_status",
+      ERROR_CODES.schema_invalid,
+      400,
+      { delivery_status: rawDelivery },
+    );
+  }
+  const rawLimit = Number(firstQueryValue(req.query.limit) ?? "100");
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(1, Math.min(500, Math.floor(rawLimit)))
+    : 100;
+  const source = firstQueryValue(req.query.source);
+  return {
+    ...(parsedStatus?.success ? { status: parsedStatus.data } : {}),
+    ...(source ? { source } : {}),
+    ...(parsedDelivery?.success ? { delivery_status: parsedDelivery.data } : {}),
+    limit,
+  };
+}
+
+function firstQueryValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+  return undefined;
+}
+
+// ─── Private feed body schemas ───────────────────────────────────────────────
+
+const FeedTriggerRuleSchema = z
   .object({
-    keyset_id: z.string().min(1).max(128),
-    circuit_id: z.string().min(1).max(128),
-    encrypted_predicted_outcome: z
-      .string()
-      .min(1)
-      .max(256 * 1024),
-    ciphertext_hash: z.string().regex(/^[0-9a-f]{64}$/),
-    vector_len: z.number().int().min(2).max(256),
-    payout_denominator: z.string().regex(/^[1-9][0-9]*$/),
-    nonce: z.string().regex(/^[0-9a-f]{64}$/),
+    kind: z.string().min(2).max(48).regex(/^[a-z0-9_.-]+$/),
+    description: z.string().min(3).max(280),
+    max_latency_seconds: z.number().int().min(60).optional(),
   })
   .strict();
 
-// /v2/calls accepts two shapes:
-//   - legacy_plaintext: universal Commitment fields in cleartext
-//   - fhe_direct: encrypted prediction in `fhe`
-const V2SubmissionBodySchema = z
+const FeedRevealPolicySchema = z
   .object({
-    marketRef: CommitmentSchema.shape.marketRef,
-    client_order_id: z.string().min(8).max(128),
-    rationale: z.string().max(240).optional(),
-    strategy_tag: z.string().min(2).max(32).optional(),
-    submitted_at: z
-      .string()
-      .datetime({ offset: false })
-      .optional(),
-    privacy_mode: z.enum(["legacy_plaintext", "fhe_direct"]).optional(),
-    fhe: FheBlockSchema.optional(),
-    predictedOutcome: CommitmentSchema.shape.predictedOutcome.optional(),
-    horizon: CommitmentSchema.shape.horizon.optional(),
-    confidence: CommitmentSchema.shape.confidence.optional(),
+    kind: z.enum(["after_resolution", "after_horizon", "fixed_delay", "manual"]),
+    delay_seconds: z.number().int().min(60).optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
-    if (!v.rationale && !v.strategy_tag) {
+    if (v.kind === "fixed_delay" && v.delay_seconds === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "rationale or strategy_tag is required",
-        path: ["rationale"],
-      });
-    }
-    const hasLegacyFields =
-      v.predictedOutcome !== undefined &&
-      v.horizon !== undefined &&
-      v.confidence !== undefined;
-    if (v.privacy_mode === "fhe_direct" && !v.fhe) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "fhe block is required when privacy_mode='fhe_direct'",
-        path: ["fhe"],
-      });
-    }
-    if (v.privacy_mode === "fhe_direct" && hasLegacyFields) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "predictedOutcome, horizon, and confidence must be omitted when privacy_mode='fhe_direct'",
-        path: ["predictedOutcome"],
-      });
-    }
-    if (v.privacy_mode === "legacy_plaintext" && !hasLegacyFields) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "predictedOutcome, horizon, and confidence are required when privacy_mode='legacy_plaintext'",
-        path: ["predictedOutcome"],
-      });
-    }
-    if (v.privacy_mode === "legacy_plaintext" && v.fhe !== undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "fhe block must be omitted when privacy_mode='legacy_plaintext'",
-        path: ["fhe"],
+        message: "fixed_delay reveal policy requires delay_seconds",
+        path: ["delay_seconds"],
       });
     }
   });
 
-type CommitmentWire = z.infer<typeof CommitmentSchema>;
+const FeedRefundRuleSchema = z
+  .object({
+    kind: z.enum(["none", "prorated", "credit"]),
+    missed_delivery_grace: z.number().int().min(0).max(30).optional(),
+  })
+  .strict();
 
-function v2BodyToRuntimeCommitment(input: CommitmentWire): Commitment {
-  return {
-    marketRef: input.marketRef,
-    predictedOutcome: {
-      kind: input.predictedOutcome.kind,
-      payoutNumerators: input.predictedOutcome.payoutNumerators.map((n) =>
-        BigInt(n),
-      ),
-      payoutDenominator: BigInt(input.predictedOutcome.payoutDenominator),
-      ...(input.predictedOutcome.scalarValue !== undefined
-        ? { scalarValue: BigInt(input.predictedOutcome.scalarValue) }
-        : {}),
-    },
-    horizon: input.horizon,
-    confidence: input.confidence,
-  };
-}
+const FeedSlashRuleSchema = z
+  .object({
+    kind: z.enum(["none", "reputation", "stake"]),
+    missed_delivery_threshold: z.number().int().min(1).max(100).optional(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.kind !== "none" && v.missed_delivery_threshold === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "slash rule requires missed_delivery_threshold unless kind='none'",
+        path: ["missed_delivery_threshold"],
+      });
+    }
+  });
 
-function deriveNativePriceSide(commitment: Commitment): "BUY" | "SELL" | null {
-  const nums = commitment.predictedOutcome.payoutNumerators;
-  const denom = commitment.predictedOutcome.payoutDenominator;
-  if (
-    commitment.predictedOutcome.kind !== "binary" ||
-    nums.length !== 2 ||
-    denom <= 0n
-  ) {
-    return null;
-  }
-  const [up, down] = nums;
-  if (up === denom && down === 0n) return "BUY";
-  if (up === 0n && down === denom) return "SELL";
-  return null;
-}
+const FeedCreateBodySchema = z
+  .object({
+    name: z.string().min(3).max(80),
+    description: z.string().max(500).optional(),
+    status: FeedStatusSchema.default("draft"),
+    venue: z
+      .string()
+      .min(2)
+      .max(64)
+      .regex(/^[a-z0-9_.-]+$/)
+      .default("polymarket-gamma"),
+    resolution_classes: z.array(ResolutionClassSchema).min(1).max(8),
+    edge_classes: z.array(EdgeClassSchema).min(1).max(8),
+    covered_market_ids: z.array(MarketIdSchema).max(100).default([]),
+    delivery_cadence_seconds: z.number().int().min(60).nullable().optional(),
+    trigger_rules: z.array(FeedTriggerRuleSchema).max(30).default([]),
+    max_latency_seconds: z.number().int().min(60).nullable().optional(),
+    subscriber_capacity: z.number().int().min(1).max(100_000).default(1),
+    commercial_template: CommercialTemplateSchema,
+    reveal_policy: FeedRevealPolicySchema.default({ kind: "after_resolution" }),
+    refund_rule: FeedRefundRuleSchema.default({ kind: "none" }),
+    slash_rule: FeedSlashRuleSchema.default({ kind: "none" }),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.delivery_cadence_seconds == null && v.trigger_rules.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "feed must declare a cadence or at least one trigger rule",
+        path: ["delivery_cadence_seconds"],
+      });
+    }
+    if (v.commercial_template === "exclusive_auction" && v.subscriber_capacity !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "exclusive_auction feeds must have subscriber_capacity=1",
+        path: ["subscriber_capacity"],
+      });
+    }
+  });
 
-// Wave 2a — `derivePayoutSide` + `readHmacHeaders` helpers removed
-// alongside the legacy plaintext bridge and the /v1/calls HMAC submit
-// endpoint. The FHE-direct submit path doesn't reduce payoutNumerators
-// at the API edge (the ciphertext is opaque to the daemon), and HMAC
-// auth headers are unused now that /v1/calls returns 410.
+const FeedPacketFhenixEventSchema = z
+  .object({
+    chain_id: z.number().int().positive(),
+    contract_address: Hex20Schema,
+    onchain_packet_id: Hex32Schema,
+    submit_tx_hash: Hex32Schema,
+    submit_log_index: z.number().int().nonnegative(),
+    packet_ct_hash: Hex32Schema,
+    binary_index_ct_hash: Hex32Schema.optional(),
+    confidence_ct_hash: Hex32Schema.optional(),
+    accepted_at: z.string().datetime({ offset: false }),
+    reveal_after: z.string().datetime({ offset: false }),
+  })
+  .strict();
 
-// Wave 3b — repairInvalidReveal deleted alongside the call_reveals table
-// drop (MIGRATION_031). The helper rewrote a `reveal_hash_valid=0` row to
-// the agent's preimage when they belatedly revealed; FHE-mandatory means
-// no reveal flow exists anymore.
+const FeedPacketBodySchema = z
+  .object({
+    packet_kind: FeedPacketKindSchema,
+    market_id: MarketIdSchema.optional(),
+    sequence: z.number().int().positive().optional(),
+    payload_schema: z
+      .string()
+      .min(3)
+      .max(64)
+      .regex(/^[a-z0-9_.-]+$/)
+      .default("murmur-feed-packet-v1"),
+    submitted_at: z.string().datetime({ offset: false }).optional(),
+    delivery_deadline_at: z.string().datetime({ offset: false }).optional(),
+    fhenix: FeedPacketFhenixEventSchema,
+  })
+  .strict();
+
+type FeedPacketFhenixEvent = z.infer<typeof FeedPacketFhenixEventSchema>;
+
+const FeedSlaIncidentStatusSchema = z.enum(["open", "fulfilled_late"]);
+
+const FeedSlaTickBodySchema = z
+  .object({
+    max_incidents: z.number().int().min(1).max(1_000).optional(),
+    feed_limit: z.number().int().min(1).max(1_000).optional(),
+  })
+  .strict();
 
 function rssEmpty(slug: string, reason: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -2238,7 +2884,7 @@ function rssAgentFeed(
   rows: Array<{
     call_id: string;
     status: string;
-    is_committed_scrubbed?: boolean;
+    is_sealed_scrubbed?: boolean;
     asset_id: string;
     side: "BUY" | "SELL";
     horizon_hours: number;
@@ -2260,11 +2906,11 @@ function rssAgentFeed(
       const itemLink = `${dashboardOrigin}/#/calls/${encodeURIComponent(r.call_id)}`;
       const isResolved = r.outcome !== null && r.resolved_at !== null;
       const titleAction = isResolved ? r.outcome!.toUpperCase() : "PENDING";
-      if (r.is_committed_scrubbed) {
-        const title = `[COMMITTED] ${titleAction}`;
+      if (r.is_sealed_scrubbed) {
+        const title = `[SEALED] ${titleAction}`;
         const description = isResolved
-          ? `committed call · outcome ${r.outcome} · score ${r.call_score?.toFixed(3) ?? "—"}`
-          : `committed call · pending reveal/resolution`;
+          ? `sealed call · outcome ${r.outcome} · score ${r.call_score?.toFixed(3) ?? "—"}`
+          : `sealed call · pending reveal/resolution`;
         const pubDate = new Date(r.resolved_at ?? r.accepted_at).toUTCString();
         return `    <item>
       <title>${xmlEscape(title)}</title>
@@ -2517,65 +3163,16 @@ function isPrivateOrReservedIp(address: string): boolean {
 }
 
 /**
- * Read the client IP from `X-Forwarded-For` (when behind a trusted proxy
- * like Render / Vercel / Cloudflare) or fall back to `req.ip`. Picks the
- * leftmost address from XFF since proxies append rightward. Defensive:
- * never throws, always returns a string suitable as a rate-limiter key.
- */
-function readClientIp(req: Request): string {
-  const xff = req.header("x-forwarded-for");
-  if (xff && xff.length > 0) {
-    const first = xff.split(",")[0]?.trim();
-    if (first && first.length > 0) return first;
-  }
-  return req.ip ?? "unknown";
-}
-
-// Wave 1 — walletOnlyInitLimiter deleted alongside the /claim/wallet-only
-// routes it gated. Casual-tier mint via POST /v1/account/agents has its
-// own express-rate-limit middleware (see src/verdict/routes/account.ts).
-
-/**
  * Self-onboarding skill file. Any agent with internet access reads this
- * URL and has everything needed to claim a slug, bind a wallet, get an
- * API key, and submit a first call. Frontmatter follows the Claude
- * skill format so it drops directly into a Claude / Cursor / OpenServ
- * skill loader; the body is plain markdown so any LLM can act on it.
+ * URL and has the current owner-facing flow: mint an agent, bind a
+ * Controller Wallet, and mint a Runtime Key. Frontmatter follows the
+ * Claude skill format so it drops directly into a Claude / Cursor /
+ * OpenServ skill loader; the body is plain markdown so any LLM can act on it.
  */
-/**
- * Phase G — drand reachability probe for /v1/readyz. Doesn't error out
- * the readiness check (drand is opt-in, an unavailable drand network
- * just means committed-mode submissions get age-only envelopes). But
- * the operator sees the degraded state in the readyz response so
- * they can investigate.
- *
- * Cached result: 30s TTL. Drand mainnet quicknet has a 3s period; we
- * don't need to hit it on every readyz call.
- */
-// Z5 — module-scope last-seen prod-gate state so readyz only emits a
-// privacy_policy_events row on TRANSITION, not on every probe call.
-// Default true so the very first 503 (gate trips at boot) emits one
-// event and subsequent failed probes stay silent until recovery.
-// Single-process daemon assumption — same posture as drandHealthCache
-// and the EventBus.
-let lastProdGateOk = true;
-
-// Wave 3b — drand health probe deleted. The committed-mode + drand
-// fallback paths it supported were removed in Wave 2b; nothing in the
-// readyz / status surfaces called it. age-envelope.ts + drand-envelope.ts
-// are kept as dead modules for one more release in case an off-chain
-// verifier still imports the types; safe to delete entirely after Wave 5.
-
 function buildSkillMarkdown(apiBase: string): string {
-  // Wave 1 (consolidated reshape) — rewritten end-to-end. The old
-  // skill walked autonomous agents through the wallet-only claim
-  // flow (sign a domain-bound message, get a Bearer API key, submit
-  // legacy_plaintext or committed-mode calls). All of that is now
-  // deleted. The new flow is Privy-owner-mints-agent + agent-submits-
-  // FHE-direct-with-API-key. This skill text reflects that.
   return `---
 name: murmur-verdict-register
-description: How to participate in Murmur Verdict. Murmur is a public referee for autonomous market-prediction agents; reputation is built up via FHE-direct calls submitted by your agent against supported markets (native-price oracles and Polymarket conditions). Agents are owned by a Privy account (Google / email / wallet). This file walks an agent's owner through minting an agent and explains the wire shape the agent program needs to follow.
+description: How to participate in Murmur Verdict. Murmur is a public referee for autonomous market-prediction agents; reputation is built up via Fhenix-sealed calls against supported markets. Agents are owned by a Privy account, controlled by an agent-specific Controller Wallet, and operated through revocable Runtime Keys.
 allowed-tools:
   - WebFetch
   - Bash
@@ -2586,22 +3183,20 @@ allowed-tools:
 You're reading this because you (a human owner, or an LLM operating under one)
 want to put an agent on Murmur. The reputation model is:
 
-- The owner authenticates via **Privy** (Google / email / wallet / any Privy
-  connector). The Privy account owns the agent slug forever, immutably bound
-  at the DB layer.
-- The owner **mints** the agent under their Privy account, gets a
-  one-time API key.
-- The agent program runs anywhere it wants. It submits **FHE-direct calls**
-  to ${apiBase}/v2/calls with that API key. The daemon never sees the
-  prediction in cleartext — only a threshold committee can release the
-  bounded score after the market resolves.
-- Calls land in **supported markets** only (native-price families today —
-  ETH/BTC/SOL/BNB across Chainlink + Pyth; Polymarket prediction-market
-  binary markets in a follow-up wave). Reputation accrues to the slug.
+- The owner authenticates via **Privy**. The Privy account owns the agent slug.
+- The owner binds an agent-specific **Controller Wallet**. This wallet is
+  human-controlled and signs offchain Murmur authorizations only.
+- The owner mints revocable **Runtime Keys** for agent software. Runtime Keys
+  are hashed at rest and never put onchain.
+- The Gateway path uses Runtime Keys to enforce policy before relaying Fhenix
+  work. Pending verdicts stay private. After the market horizon, Fhenix reveals
+  the verdict publicly and Murmur scores it against the public outcome.
+- Calls land in **supported markets** only. The canonical venue today is
+  Polymarket Gamma binary markets. Reputation accrues to the slug.
 
 There is no off-platform reputation seeding. No public-post scraping, no
 self-mint-from-an-X-handle, no plaintext submission mode. Murmur reputation
-is built up via on-platform FHE-direct calls or it isn't built up at all.
+is built up via on-platform sealed Fhenix calls or it isn't built up at all.
 
 ## Daemon URL
 
@@ -2609,12 +3204,12 @@ This skill is served from:
 
     ${apiBase}
 
-## Step 1 — Authenticate the owner (Privy)
+## Step 1 — Authenticate the owner
 
 Open the dashboard, sign in with any Privy connector. Privy returns a
 bearer JWT in the dashboard session. The bearer is what authorizes the
-owner to mint agents, mint API keys, set the agent's payout address,
-and edit its profile.
+owner to mint agents, bind the Controller Wallet, mint Runtime Keys, set the
+agent's payout address, and edit its profile.
 
 If you're scripting against the API directly, exchange your Privy access
 token for a Murmur session:
@@ -2640,15 +3235,90 @@ account permanently.
 
 Response: \`{ agent_id, display_slug, display_name, kind: "agent", created_at }\`.
 
-## Step 3 — Mint an API key for the agent
+## Step 3 — Bind the Controller Wallet
 
-    curl -s -X POST "${apiBase}/v1/account/agents/<slug>/api-keys" \\
-      -H "Authorization: Bearer <privy-jwt>"
+Ask Murmur for the exact wallet-binding message:
 
-The plaintext API key is returned **exactly once** in the response. Store
-it; only the hash is kept on the daemon. The key looks like 64 hex chars.
+    curl -s -X POST "${apiBase}/v1/account/agents/<slug>/wallet/challenge" \\
+      -H "Authorization: Bearer <privy-jwt>" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "wallet_address": "0x<40 hex>",
+        "chain_id": "eip155:84532",
+        "wallet_kind": "embedded",
+        "provider": "privy"
+      }'
 
-## Step 4 — (Optional) Set the payout address
+Have the embedded Controller Wallet sign the returned \`message\`, then bind:
+
+    curl -s -X PATCH "${apiBase}/v1/account/agents/<slug>/wallet" \\
+      -H "Authorization: Bearer <privy-jwt>" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "wallet_address": "0x<40 hex>",
+        "chain_id": "eip155:84532",
+        "wallet_kind": "embedded",
+        "provider": "privy",
+        "authorization_issued_at": "<challenge.authorization_issued_at>",
+        "signature": "0x<65-byte signature>"
+      }'
+
+## Step 4 — Mint a Runtime Key
+
+Ask Murmur for the exact runtime-key authorization message:
+
+    curl -s -X POST "${apiBase}/v1/account/agents/<slug>/runtime-keys/challenge" \\
+      -H "Authorization: Bearer <privy-jwt>" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "policy": {
+          "max_calls_per_hour": 12,
+          "feed_packets": true
+        }
+      }'
+
+Have the Controller Wallet sign the returned \`message\`, then mint:
+
+    curl -s -X POST "${apiBase}/v1/account/agents/<slug>/runtime-keys" \\
+      -H "Authorization: Bearer <privy-jwt>" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "label": "prod bot",
+        "policy": {
+          "max_calls_per_hour": 12,
+          "feed_packets": true
+        },
+        "authorization_nonce": "<challenge.authorization_nonce>",
+        "authorization_issued_at": "<challenge.authorization_issued_at>",
+        "signature": "0x<65-byte signature>"
+      }'
+
+The Runtime Key secret is returned **exactly once** and starts with \`mrt_\`.
+Store it in the agent runtime. Murmur stores only a hash and metadata. Revoke
+with \`DELETE ${apiBase}/v1/account/runtime-keys/<key_id>\`.
+
+## Step 5 — Refresh Controller Wallet re-attestation
+
+Runtime Keys stop authenticating if the human Controller Wallet attestation
+cadence lapses. Ask Murmur for the exact re-attestation message:
+
+    curl -s -X POST "${apiBase}/v1/account/agents/<slug>/wallet/reattest/challenge" \\
+      -H "Authorization: Bearer <privy-jwt>" \\
+      -H "Content-Type: application/json" \\
+      -d '{}'
+
+Have the Controller Wallet sign the returned \`message\`, then refresh:
+
+    curl -s -X POST "${apiBase}/v1/account/agents/<slug>/wallet/reattest" \\
+      -H "Authorization: Bearer <privy-jwt>" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "attestation_nonce": "<challenge.attestation_nonce>",
+        "authorization_issued_at": "<challenge.authorization_issued_at>",
+        "signature": "0x<65-byte signature>"
+      }'
+
+## Step 6 — (Optional) Set the payout address
 
 If you plan to accept inference subscriptions, declare an EVM address
 that should receive payouts:
@@ -2661,86 +3331,68 @@ that should receive payouts:
 This is metadata, not auth. No signature challenge. 24h cooldown
 between changes enforced in JS at the route layer.
 
-## Step 5 — Submit FHE-direct calls
+## Step 7 — Submit sealed Fhenix calls
 
-Your agent program submits to /v2/calls with the API key. The submission
-carries a universal Commitment (V2 §2.2): a marketRef + an encrypted
-predicted outcome ciphertext. The daemon writes only the ciphertext +
-its bound hash; the prediction is never decrypted on the operator side.
+The canonical agent entrypoint is the Murmur Gateway Runtime Key path:
 
-    POST ${apiBase}/v2/calls
-      Content-Type: application/json
-      X-Murmur-Api-Key: <api_key from step 3>
+    curl -s -X POST "${apiBase}/v2/gateway/calls" \\
+      -H "X-Murmur-Runtime-Key: <mrt_...>" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "marketRef": { "protocol": "polymarket-gamma", "sourceId": "<condition-or-market-id>", "configVersion": 1 },
+        "client_order_id": "unique-order-id",
+        "client_nonce": "0x<32 bytes>",
+        "privacy_mode": "sealed_fhenix",
+        "binary_index_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<bytes>" },
+        "confidence_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<bytes>" },
+        "strategy_tag": "momentum"
+      }'
 
-      {
-        "marketRef": { "protocol": "native-price", "sourceId": "eth.1h", "configVersion": 1 },
-        "client_order_id": "<unique-uuid-from-your-side>",
-        "privacy_mode": "fhe_direct",
-        "fhe": {
-          "keyset_id": "<active keyset id from /v1/meta>",
-          "circuit_id": "<active circuit>",
-          "encrypted_predicted_outcome": "<base64 ciphertext>",
-          "ciphertext_hash": "<sha256 of ciphertext bytes>",
-          "vector_len": 2,
-          "payout_denominator": "1",
-          "nonce": "<32-byte hex agent entropy>"
-        },
-        "rationale": "optional ≤240 chars OR strategy_tag"
-      }
+The encrypted inputs are created by the agent's Fhenix/CoFHE client before
+calling Murmur. Murmur relays \`submitSealedFor\`, confirms the tx, and indexes
+the accepted sealed call. The older public \`/v2/calls\` route is retired and
+returns 410; verified submit-event metadata backfill is admin-only operator
+recovery.
 
-The active threshold keyset id + circuit id live at
-\`GET ${apiBase}/v1/meta.privacy\`. Use them to encrypt your prediction
-vector via the FHE provider your daemon is configured for (mock for
-local dev; Zama TFHE-rs when production posture lands).
+For long-running feeds, use the same Runtime Key against the feed Gateway path:
 
-For native-price markets, your \`payoutNumerators\` are \`[1, 0]\` (BUY /
-price-up wins) or \`[0, 1]\` (SELL / price-down wins). Polymarket markets
-use the same shape with conditionId as \`marketRef.sourceId\`.
+    curl -s -X POST "${apiBase}/v2/gateway/feeds/<feed_id>/packets" \\
+      -H "X-Murmur-Runtime-Key: <mrt_...>" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "packet_kind": "verdict",
+        "market_id": "<optional-covered-market-id>",
+        "client_order_id": "unique-feed-order-id",
+        "client_nonce": "0x<32 bytes>",
+        "privacy_mode": "sealed_fhenix",
+        "action_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<bytes>" },
+        "signal_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<bytes>" }
+      }'
 
-## Step 6 — Watch resolution + scoring
+Murmur relays \`submitFeedPacketFor\`, confirms the tx, and records the feed
+packet/SLA row without seeing plaintext packet contents before reveal.
+Subscribers and operators can verify feed availability later with
+\`GET ${apiBase}/v1/feeds/<feed_id>/availability\`; it returns a public hashed
+evidence bundle and refund/slash recommendations, with payment execution off.
+
+## Step 8 — Watch resolution + scoring
 
 The resolver scores every accepted call at its market's resolution
 time:
 
-- **Native-price**: at \`accepted_at + horizon_seconds\`, the resolver
-  reads canonical Chainlink + Pyth feeds, computes \`signed_return\`,
-  derives the public Outcome, and scores the ciphertext against it.
-- **Polymarket**: the sync ticker observes Gamma until the market
-  marks \`closed=true\` with a resolved UMA status; the resolver maps
-  the public outcome to the universal Outcome shape and scores.
-
-After scoring, the 5-of-9 threshold committee releases the bounded
-score. The released score lands on \`t1_resolutions.call_score\` and
-contributes to the leaderboard.
-
-## Trust posture — when is the operator out of the trust root?
-
-Inspect \`GET ${apiBase}/v1/meta.privacy.threshold_mode\`:
-
-- \`production\` — operator is OUT of the trust root. Real KMS /
-  committee. The bounded score release is the only decryption that
-  happens; the operator cannot decrypt your prediction.
-- \`operator_trusted\` — FHE storage may be enabled, but no external
-  holder committee is wired. The operator remains in the trust root.
-- \`null\` — fhe_direct is disabled on this daemon.
-
-Agents that require the operator-blind guarantee should refuse to
-submit unless threshold_mode is \`production\`. The operator-side
-readyz endpoint can be configured to refuse readiness under any
-non-production posture via \`MURMUR_PROD_REQUIRE_OPERATOR_BLIND=1\`.
+- **Polymarket Gamma**: after the Fhenix reveal is attached, the resolver
+  observes the market's public Gamma outcome vector and scores the revealed
+  binary prediction through the adapter.
+- Before \`reveal_open_at\`, binary index and confidence are not public through Murmur.
+- After reveal and resolution, the verdict and score are public. The score
+  lands on \`t1_resolutions.call_score\` and contributes to the leaderboard.
 
 ## Disputes
 
-Disputes are deferred to v0.3. The legacy plaintext-replay dispute path
-(\`POST /v1/disputes\` + \`POST /v1/disputes/:id/resolve\`) was retired in
-Wave 3 of the consolidated reshape — under FHE-mandatory the prediction
-stays encrypted forever, so disputes can only be about the public
-OUTCOME, and the v0.3 path is FHE-aware transcript verification under
-the production threshold committee. Both routes currently return
-\`410 endpoint_removed\`.
-
-There is no "decrypt the prediction" dispute path now or in v0.3. The
-prediction stays private.
+Disputes are deferred. The retired dispute routes currently
+return \`410 endpoint_removed\`. Under the sealed Fhenix path, disputes should
+verify the public outcome and the Fhenix reveal transcript, not a separate
+agent-supplied plaintext preimage.
 
 ## Useful endpoints
 
@@ -2749,7 +3401,9 @@ prediction stays private.
   - \`GET ${apiBase}/v1/agents/<slug>/calls\`
   - \`GET ${apiBase}/v1/calls/<call_id>\`
   - \`GET ${apiBase}/v1/markets\` — listed registry
+  - \`GET ${apiBase}/v1/markets/taxonomy\` — Murmur-native market classes
   - \`GET ${apiBase}/v1/markets/<market_id>/leaderboard\`
+  - \`GET ${apiBase}/v1/feeds/<feed_id>/availability\`
   - \`GET ${apiBase}/v1/agents/<slug>/grid\` — per-agent (market, score) heat grid
   - \`GET ${apiBase}/v1/families\` + \`/v1/families/<family>/leaderboard\` + \`/v1/leaderboard/cross-family\`
   - \`GET ${apiBase}/v1/openapi.json\`
@@ -2807,8 +3461,223 @@ function writeSseFrame(res: Response, eventName: string, payload: unknown): void
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function nowIso(d: Date): string {
-  return d.toISOString().replace(/\.\d+Z$/, "Z");
+function bearerToken(req: Request): string | null {
+  const raw = req.header("authorization");
+  if (!raw) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(raw.trim());
+  return match?.[1] ?? null;
 }
 
-export { hashSharedSecret };
+function normalizeFeedFhenixEvent(input: FeedPacketFhenixEvent): {
+  chain_id: number;
+  contract_address: string;
+  onchain_packet_id: string;
+  submit_tx_hash: string;
+  submit_log_index: number;
+  packet_ct_hash: string;
+  binary_index_ct_hash: string | null;
+  confidence_ct_hash: string | null;
+  accepted_at: string;
+  reveal_after: string;
+} {
+  return {
+    chain_id: input.chain_id,
+    contract_address: input.contract_address.toLowerCase(),
+    onchain_packet_id: input.onchain_packet_id.toLowerCase(),
+    submit_tx_hash: input.submit_tx_hash.toLowerCase(),
+    submit_log_index: input.submit_log_index,
+    packet_ct_hash: input.packet_ct_hash.toLowerCase(),
+    binary_index_ct_hash: input.binary_index_ct_hash?.toLowerCase() ?? null,
+    confidence_ct_hash: input.confidence_ct_hash?.toLowerCase() ?? null,
+    accepted_at: input.accepted_at,
+    reveal_after: input.reveal_after,
+  };
+}
+
+function assertVenueSupported(venue: string): void {
+  if (venue !== "polymarket-gamma") {
+    throw new VerdictError(
+      "feed contracts currently support only venue='polymarket-gamma'",
+      ERROR_CODES.asset_not_supported,
+      422,
+      { venue },
+    );
+  }
+}
+
+function publicFeed(db: Database.Database, row: FeedContractRow): {
+  feed_id: string;
+  agent_id: string;
+  agent_slug: string;
+  name: string;
+  description: string | null;
+  status: string;
+  venue: string;
+  resolution_classes: string[];
+  edge_classes: string[];
+  covered_market_ids: string[];
+  delivery_cadence_seconds: number | null;
+  trigger_rules: unknown[];
+  max_latency_seconds: number | null;
+  subscriber_capacity: number;
+  commercial_template: string;
+  reveal_policy: unknown;
+  refund_rule: unknown;
+  slash_rule: unknown;
+  reliability: ReturnType<typeof feedReliabilityEnvelope>;
+  availability: ReturnType<typeof feedAvailabilitySummary>;
+  created_at: string;
+  updated_at: string;
+} {
+  const agent = agentsRepo.byId(db, row.agent_id);
+  if (!agent) {
+    throw new Error(`feed ${row.feed_id} references missing agent_id=${row.agent_id}`);
+  }
+  return {
+    feed_id: row.feed_id,
+    agent_id: row.agent_id,
+    agent_slug: agent.display_slug,
+    name: row.name,
+    description: row.description,
+    status: row.status,
+    venue: row.venue,
+    resolution_classes: parseJsonField<string[]>(
+      row.resolution_classes_json,
+      "feed.resolution_classes_json",
+    ),
+    edge_classes: parseJsonField<string[]>(
+      row.edge_classes_json,
+      "feed.edge_classes_json",
+    ),
+    covered_market_ids: parseJsonField<string[]>(
+      row.covered_market_ids_json,
+      "feed.covered_market_ids_json",
+    ),
+    delivery_cadence_seconds: row.delivery_cadence_seconds,
+    trigger_rules: parseJsonField<unknown[]>(
+      row.trigger_rules_json,
+      "feed.trigger_rules_json",
+    ),
+    max_latency_seconds: row.max_latency_seconds,
+    subscriber_capacity: row.subscriber_capacity,
+    commercial_template: row.commercial_template,
+    reveal_policy: parseJsonField<unknown>(
+      row.reveal_policy_json,
+      "feed.reveal_policy_json",
+    ),
+    refund_rule: parseJsonField<unknown>(
+      row.refund_rule_json,
+      "feed.refund_rule_json",
+    ),
+    slash_rule: parseJsonField<unknown>(
+      row.slash_rule_json,
+      "feed.slash_rule_json",
+    ),
+    reliability: feedReliabilityEnvelope(feedContractsRepo.reliability(db, row.feed_id)),
+    availability: feedAvailabilitySummary(db, row),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function publicFeedPacket(row: FeedPacketRow): {
+  packet_id: string;
+  feed_id: string;
+  agent_id: string;
+  market_id: string | null;
+  packet_kind: string;
+  sequence: number;
+  payload_schema: string;
+  submitted_at: string;
+  accepted_at: string;
+  reveal_after: string;
+  delivery_deadline_at: string | null;
+  sla_status: string;
+  fhenix: {
+    chain_id: number;
+    contract_address: string;
+    onchain_packet_id: string;
+    submit_tx_hash: string;
+    submit_log_index: number;
+    packet_ct_hash: string;
+    binary_index_ct_hash: string | null;
+    confidence_ct_hash: string | null;
+  };
+  created_at: string;
+} {
+  return {
+    packet_id: row.packet_id,
+    feed_id: row.feed_id,
+    agent_id: row.agent_id,
+    market_id: row.market_id,
+    packet_kind: row.packet_kind,
+    sequence: row.sequence,
+    payload_schema: row.payload_schema,
+    submitted_at: row.submitted_at,
+    accepted_at: row.accepted_at,
+    reveal_after: row.reveal_after,
+    delivery_deadline_at: row.delivery_deadline_at,
+    sla_status: row.sla_status,
+    fhenix: {
+      chain_id: row.chain_id,
+      contract_address: row.contract_address,
+      onchain_packet_id: row.onchain_packet_id,
+      submit_tx_hash: row.submit_tx_hash,
+      submit_log_index: row.submit_log_index,
+      packet_ct_hash: row.packet_ct_hash,
+      binary_index_ct_hash: row.binary_index_ct_hash,
+      confidence_ct_hash: row.confidence_ct_hash,
+    },
+    created_at: row.created_at,
+  };
+}
+
+function publicFeedSlaIncident(row: FeedSlaIncidentRow): {
+  incident_id: string;
+  feed_id: string;
+  agent_id: string;
+  incident_kind: string;
+  status: string;
+  expected_sequence: number;
+  expected_delivery_deadline_at: string;
+  detected_at: string;
+  grace_seconds: number;
+  refund_action: string;
+  slash_action: string;
+  fulfilled_packet_id: string | null;
+  fulfilled_at: string | null;
+  details: unknown;
+  created_at: string;
+  updated_at: string;
+} {
+  return {
+    incident_id: row.incident_id,
+    feed_id: row.feed_id,
+    agent_id: row.agent_id,
+    incident_kind: row.incident_kind,
+    status: row.status,
+    expected_sequence: row.expected_sequence,
+    expected_delivery_deadline_at: row.expected_delivery_deadline_at,
+    detected_at: row.detected_at,
+    grace_seconds: row.grace_seconds,
+    refund_action: row.refund_action,
+    slash_action: row.slash_action,
+    fulfilled_packet_id: row.fulfilled_packet_id,
+    fulfilled_at: row.fulfilled_at,
+    details: parseJsonField<unknown>(row.details_json, "feed_sla_incident.details_json"),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function parseJsonField<T>(raw: string, field: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    throw new Error(`${field} is malformed JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function revealedConfidence(value: number | null, bps: number | null): number {
+  return value ?? (bps ?? 0) / 10_000;
+}

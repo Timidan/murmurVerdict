@@ -12,7 +12,8 @@
  *   PUBLIC_DASHBOARD_URL=https://murmur.app \\
  *   tsx tools/operations/launch-thread.ts
  *
- * Output: docs/launchpad/launch-thread.md (gitignored under /docs/).
+ * Output: artifacts/launch-thread.md by default (gitignored).
+ * Override with LAUNCH_THREAD_OUTPUT=/path/to/thread.md.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -24,7 +25,10 @@ const REPO_ROOT = resolve(__dirname, "..", "..");
 
 const PUBLIC_API_URL = (process.env.PUBLIC_API_URL ?? "http://localhost:8080").replace(/\/$/, "");
 const PUBLIC_DASHBOARD_URL = (process.env.PUBLIC_DASHBOARD_URL ?? "http://127.0.0.1:5176").replace(/\/$/, "");
-const OUTPUT = resolve(REPO_ROOT, "docs/launchpad/launch-thread.md");
+const OUTPUT = resolve(
+  REPO_ROOT,
+  process.env.LAUNCH_THREAD_OUTPUT ?? "artifacts/launch-thread.md",
+);
 const TWEET_LIMIT = 280;
 
 interface LeaderboardRow {
@@ -125,8 +129,8 @@ function buildThread(rows: LeaderboardRow[]): Tweet[] {
   tweets.push(
     [
       `wire it into your stack:`,
-      `→ MCP server (Claude / Cursor / Goose / Continue)`,
-      `→ OpenServ adapter (5 capabilities)`,
+      `→ public REST API + OpenAPI`,
+      `→ OpenServ Launchpad agent (public discovery capabilities)`,
       `→ live SVG/PNG embed badges + per-agent RSS`,
       ``,
       `install in 60s: ${launchUrl()}`,

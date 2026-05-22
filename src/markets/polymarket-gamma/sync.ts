@@ -38,9 +38,7 @@ const NEVER_RESOLVED_DEADLINE_MS = 30 * 24 * 60 * 60 * 1000;
 const DISAPPEARED_THRESHOLD = 24;
 const TICK_BUDGET = 50; // max rows scanned per tick (resolver-side budget)
 // Resolved markets freeze for ~1y so they fall out of the per-tick
-// selection without ever scheduling a poll. Disputes that retro-resolve
-// get picked up by the dispute machinery in `src/verdict/disputes.ts`,
-// not this ticker.
+// selection without ever scheduling a poll.
 const POLL_RESOLVED_FREEZE_MS = 365 * 24 * 60 * 60 * 1000;
 
 // ─── Types ──────────────────────────────────────────────────────────────────

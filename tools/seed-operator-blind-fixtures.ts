@@ -26,7 +26,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
-import { loadDeployment } from "../src/integrations/deployments.js";
+import { resolveFhenixContractAddress } from "../src/integrations/deployments.js";
 import { canonicalHash, canonicalize } from "../src/receipts/canonical.js";
 import { agentsRepo, marketsRepo, openDb } from "../src/verdict/db.js";
 import {
@@ -94,11 +94,7 @@ function requiredAddress(name: string): string {
 }
 
 function contractAddress(): Address {
-  const envAddress =
-    process.env.FHENIX_SEALED_VERDICTS_ADDRESS?.trim() ||
-    process.env.FHENIX_CONTRACT_ADDRESS?.trim() ||
-    null;
-  const address = envAddress ?? loadDeployment(CHAIN_ID, "MurmurSealedVerdicts")?.address;
+  const address = resolveFhenixContractAddress(CHAIN_ID);
   if (!address) {
     throw new Error(
       `MurmurSealedVerdicts address missing; set FHENIX_SEALED_VERDICTS_ADDRESS, FHENIX_CONTRACT_ADDRESS, or sync deployments for chain ${CHAIN_ID}`,

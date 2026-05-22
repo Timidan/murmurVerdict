@@ -101,6 +101,35 @@ export interface MarketMakerAdapter {
     ctx: ObservationContext,
   ): Promise<Outcome | "pending" | "disputed">;
   /**
+   * Adapter-owned interpretation of `markets.config_json` for the reveal
+   * window. Native-price returns accepted_at + horizon; fixed-end markets
+   * like Polymarket return their public market end time.
+   */
+  expectedRevealOpenAt?(input: {
+    marketRef: MarketRef;
+    config: Record<string, unknown>;
+    acceptedAtMs: number;
+    horizonSeconds: number;
+  }): number | null;
+  /**
+   * Adapter-owned labels for binary reveals. Keeps `config_json.outcomes`
+   * parsing behind the adapter seam instead of leaking it into API/watchers.
+   */
+  outcomeLabels?(input: {
+    marketRef: MarketRef;
+    config: Record<string, unknown>;
+  }): string[] | null;
+  /**
+   * Adapter-owned resolution context built from `markets.config_json`.
+   * Resolver code should not need to know adapter-private keys like
+   * Polymarket's `conditionId`.
+   */
+  buildObservationContext?(input: {
+    marketRef: MarketRef;
+    config: Record<string, unknown>;
+    market_id: string;
+  }): ObservationContext;
+  /**
    * Score a commitment against its resolution. `call_score ∈ [0, 1]`.
    * `components` is adapter-private (e.g. confidence-weighted breakdown,
    * native-price T0/T1 reconstruction); the resolver stamps it on the

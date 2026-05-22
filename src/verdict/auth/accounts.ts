@@ -1,10 +1,9 @@
-// ─── Account & API-key repositories (V2 §7.1 casual tier scaffold) ─────────
+// ─── Account & API-key repositories (V2 §7.1 casual tier) ──────────────────
 //
-// Sibling to agentsRepo / verifiedIdentitiesRepo in db.ts — but lives in a
-// separate module because the auth tier is a higher-level concept than
-// the agent table (an account can own N agents; an agent has at most one
-// owning account in v2.0). Keeping these repos here also keeps db.ts from
-// growing unbounded.
+// Sibling to agentsRepo in db.ts, but lives in a separate module because
+// the auth tier is a higher-level concept than the agent table (an account
+// can own N agents; an agent has at most one owning account in v2.0).
+// Keeping these repos here also keeps db.ts from growing unbounded.
 //
 // All functions take a Database.Database and run synchronously against
 // better-sqlite3 prepared statements. The async surface in privy.ts is
@@ -12,12 +11,12 @@
 // sync so the dispatcher (auth/dispatcher.ts) can compose them inside an
 // async wrapper without juggling two async layers.
 //
-// SCAFFOLD ONLY — Phase 4 wires these into the submit dispatcher and the
-// accountRouter. Today nothing imports these symbols from the daemon
-// path; the test harness in __account_smoke__.ts is the only consumer.
-
 import type Database from "better-sqlite3";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  DEFAULT_CONTROLLER_REATTESTATION_INTERVAL_SECONDS,
+  type ControllerWalletKind,
+} from "../controller-wallet.js";
 import type { PrivyClaims } from "./privy.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -54,6 +53,75 @@ export interface MintApiKeyResult {
   created_at: string;
 }
 
+export interface ControllerWalletRow {
+  agent_id: string;
+  account_id: string;
+  wallet_address: string;
+  chain_id: string;
+  wallet_kind: ControllerWalletKind;
+  provider: string | null;
+  binding_message: string;
+  binding_signature: string;
+  created_at: string;
+  last_attested_at: string | null;
+  reattestation_due_at: string | null;
+  last_reattestation_nonce: string | null;
+  last_reattestation_message: string | null;
+  last_reattestation_signature: string | null;
+}
+
+export interface RuntimeKeyRow {
+  runtime_key_id: string;
+  account_id: string;
+  agent_id: string;
+  runtime_key_prefix: string;
+  label: string | null;
+  policy_json: string;
+  policy_hash: string;
+  controller_wallet_address: string;
+  controller_chain_id: string;
+  authorization_nonce: string;
+  authorization_message: string;
+  authorization_signature: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  revoke_reason: string | null;
+}
+
+export interface MintRuntimeKeyResult {
+  runtime_key_id: string;
+  /** Plaintext runtime key. Returned ONCE — caller MUST hand to the user and not persist. */
+  secret: string;
+  runtime_key_prefix: string;
+  created_at: string;
+}
+
+export interface RuntimeKeyVerification {
+  runtime_key_id: string;
+  account_id: string;
+  agent_id: string;
+  runtime_key_prefix: string;
+  policy_json: string;
+  policy_hash: string;
+  controller_wallet_address: string;
+  controller_chain_id: string;
+  expires_at: string | null;
+}
+
+export interface ControllerWalletReattestationRow {
+  attestation_id: string;
+  account_id: string;
+  agent_id: string;
+  wallet_address: string;
+  chain_id: string;
+  attestation_nonce: string;
+  attestation_message: string;
+  attestation_signature: string;
+  attested_at: string;
+  next_due_at: string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function nowIso(): string {
@@ -61,13 +129,45 @@ function nowIso(): string {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
+function stripIso(date: Date): string {
+  return date.toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+function addSecondsIso(iso: string, seconds: number): string {
+  const baseMs = Date.parse(iso);
+  const safeBaseMs = Number.isFinite(baseMs) ? baseMs : Date.now();
+  return stripIso(new Date(safeBaseMs + seconds * 1000));
+}
+
+function controllerReattestationDueAt(
+  wallet: Pick<ControllerWalletRow, "created_at" | "last_attested_at" | "reattestation_due_at">,
+): string {
+  if (wallet.reattestation_due_at) return wallet.reattestation_due_at;
+  return addSecondsIso(
+    wallet.last_attested_at ?? wallet.created_at,
+    DEFAULT_CONTROLLER_REATTESTATION_INTERVAL_SECONDS,
+  );
+}
+
+export function isControllerWalletAttestationCurrent(
+  db: Database.Database,
+  agent_id: string,
+  opts: { now?: () => Date } = {},
+): boolean {
+  const controller = getControllerWalletForAgent(db, agent_id);
+  if (!controller) return false;
+  const dueMs = Date.parse(controllerReattestationDueAt(controller));
+  return Number.isFinite(dueMs) && dueMs > (opts.now ?? (() => new Date()))().getTime();
+}
+
 /**
- * Compute the canonical hash for an API-key secret. Identical to
- * submissions.hashSharedSecret() but duplicated locally so the auth
- * scaffold has no inbound dep on the legacy submissions module — keeps
- * the v2 cutover surface narrow.
+ * Compute the canonical hash for an API-key secret.
  */
 function hashApiKeySecret(secret: string): string {
+  return createHash("sha256").update(secret).digest("hex");
+}
+
+function hashRuntimeKeySecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
 }
 
@@ -248,8 +348,8 @@ export function listAccountAgents(
  *
  * v2.0 enforces a single-owner-per-agent invariant in code: minting a
  * casual-tier agent runs linkAgentToAccount() exactly once; existing
- * wallet-only / benchmark agents have NO account row and return null
- * here — those tiers stay on the legacy auth path.
+ * benchmark/internal agents have no account row unless an operator links
+ * one explicitly.
  *
  * If the schema ever permits multi-owner (e.g. team accounts), this
  * function would need to either return an array or be split into
@@ -268,6 +368,443 @@ export function getAccountForAgent(
   return row?.account_id ?? null;
 }
 
+// ─── Controller Wallets + Runtime Keys ────────────────────────────────────
+
+export class ControllerWalletBindingError extends Error {
+  readonly code = "controller_wallet_binding_conflict" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "ControllerWalletBindingError";
+  }
+}
+
+export class RuntimeKeyAuthorizationReplayError extends Error {
+  readonly code = "runtime_key_authorization_replay" as const;
+  constructor(agent_id: string) {
+    super(`runtime key authorization already used for agent ${agent_id}`);
+    this.name = "RuntimeKeyAuthorizationReplayError";
+  }
+}
+
+export function getControllerWalletForAgent(
+  db: Database.Database,
+  agent_id: string,
+): ControllerWalletRow | null {
+  const row = db
+    .prepare(
+      `SELECT agent_id, account_id, wallet_address, chain_id, wallet_kind,
+              provider, binding_message, binding_signature, created_at,
+              last_attested_at, reattestation_due_at, last_reattestation_nonce,
+              last_reattestation_message, last_reattestation_signature
+       FROM agent_controller_wallets
+       WHERE agent_id = ?`,
+    )
+    .get(agent_id) as ControllerWalletRow | undefined;
+  return row ?? null;
+}
+
+export function bindControllerWallet(
+  db: Database.Database,
+  input: {
+    account_id: string;
+    agent_id: string;
+    wallet_address: string;
+    chain_id: string;
+    wallet_kind: ControllerWalletKind;
+    provider?: string | null;
+    binding_message: string;
+    binding_signature: string;
+    created_at?: string;
+  },
+): ControllerWalletRow & { idempotent_hit: boolean } {
+  const txn = db.transaction(() => {
+    const existing = getControllerWalletForAgent(db, input.agent_id);
+    if (existing) {
+      if (
+        existing.account_id === input.account_id &&
+        existing.wallet_address === input.wallet_address &&
+        existing.chain_id === input.chain_id &&
+        existing.wallet_kind === input.wallet_kind
+      ) {
+        return { ...existing, idempotent_hit: true };
+      }
+      throw new ControllerWalletBindingError(
+        "agent controller wallet is already bound and cannot be transferred",
+      );
+    }
+
+    const agent = db
+      .prepare("SELECT wallet_address, chain_id FROM agents WHERE agent_id = ?")
+      .get(input.agent_id) as
+      | { wallet_address: string | null; chain_id: string | null }
+      | undefined;
+    if (!agent) {
+      throw new ControllerWalletBindingError("agent not found");
+    }
+    if (
+      (agent.wallet_address || agent.chain_id) &&
+      (agent.wallet_address !== input.wallet_address ||
+        agent.chain_id !== input.chain_id)
+    ) {
+      throw new ControllerWalletBindingError(
+        "agent already has a different wallet binding",
+      );
+    }
+
+    const walletOwner = db
+      .prepare(
+        `SELECT agent_id FROM agent_controller_wallets
+         WHERE wallet_address = ? AND chain_id = ? AND agent_id != ?
+         LIMIT 1`,
+      )
+      .get(input.wallet_address, input.chain_id, input.agent_id) as
+      | { agent_id: string }
+      | undefined;
+    if (walletOwner) {
+      throw new ControllerWalletBindingError(
+        "controller wallet is already bound to another agent",
+      );
+    }
+
+    const created_at = input.created_at ?? nowIso();
+    const nextDueAt = addSecondsIso(
+      created_at,
+      DEFAULT_CONTROLLER_REATTESTATION_INTERVAL_SECONDS,
+    );
+    db.prepare(
+      `INSERT INTO agent_controller_wallets (
+         agent_id, account_id, wallet_address, chain_id, wallet_kind,
+         provider, binding_message, binding_signature, created_at,
+         last_attested_at, reattestation_due_at, last_reattestation_nonce,
+         last_reattestation_message, last_reattestation_signature
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+    ).run(
+      input.agent_id,
+      input.account_id,
+      input.wallet_address,
+      input.chain_id,
+      input.wallet_kind,
+      input.provider ?? null,
+      input.binding_message,
+      input.binding_signature,
+      created_at,
+      created_at,
+      nextDueAt,
+    );
+    db.prepare(
+      "UPDATE agents SET wallet_address = ?, chain_id = ? WHERE agent_id = ?",
+    ).run(input.wallet_address, input.chain_id, input.agent_id);
+    return {
+      agent_id: input.agent_id,
+      account_id: input.account_id,
+      wallet_address: input.wallet_address,
+      chain_id: input.chain_id,
+      wallet_kind: input.wallet_kind,
+      provider: input.provider ?? null,
+      binding_message: input.binding_message,
+      binding_signature: input.binding_signature,
+      created_at,
+      last_attested_at: created_at,
+      reattestation_due_at: nextDueAt,
+      last_reattestation_nonce: null,
+      last_reattestation_message: null,
+      last_reattestation_signature: null,
+      idempotent_hit: false,
+    };
+  });
+  return txn();
+}
+
+export function controllerWalletAttestationStatus(
+  wallet: ControllerWalletRow,
+  opts: { now?: () => Date } = {},
+): {
+  last_attested_at: string;
+  reattestation_due_at: string;
+  reattestation_overdue: boolean;
+  reattestation_interval_seconds: number;
+} {
+  const lastAttestedAt = wallet.last_attested_at ?? wallet.created_at;
+  const dueAt = controllerReattestationDueAt(wallet);
+  const dueMs = Date.parse(dueAt);
+  const nowMs = (opts.now ?? (() => new Date()))().getTime();
+  return {
+    last_attested_at: lastAttestedAt,
+    reattestation_due_at: dueAt,
+    reattestation_overdue: !Number.isFinite(dueMs) || dueMs <= nowMs,
+    reattestation_interval_seconds: DEFAULT_CONTROLLER_REATTESTATION_INTERVAL_SECONDS,
+  };
+}
+
+export function recordControllerWalletReattestation(
+  db: Database.Database,
+  input: {
+    account_id: string;
+    agent_id: string;
+    wallet_address: string;
+    chain_id: string;
+    attestation_nonce: string;
+    attestation_message: string;
+    attestation_signature: string;
+    attested_at?: string;
+  },
+): ControllerWalletReattestationRow {
+  const txn = db.transaction(() => {
+    const controller = getControllerWalletForAgent(db, input.agent_id);
+    if (
+      !controller ||
+      controller.account_id !== input.account_id ||
+      controller.wallet_address !== input.wallet_address ||
+      controller.chain_id !== input.chain_id
+    ) {
+      throw new ControllerWalletBindingError(
+        "controller wallet binding does not match attestation request",
+      );
+    }
+    const attestedAt = input.attested_at ?? nowIso();
+    const nextDueAt = addSecondsIso(
+      attestedAt,
+      DEFAULT_CONTROLLER_REATTESTATION_INTERVAL_SECONDS,
+    );
+    const attestationId = randomUUID();
+    db.prepare(
+      `INSERT INTO agent_controller_wallet_reattestations (
+         attestation_id, account_id, agent_id, wallet_address, chain_id,
+         attestation_nonce, attestation_message, attestation_signature,
+         attested_at, next_due_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      attestationId,
+      input.account_id,
+      input.agent_id,
+      input.wallet_address,
+      input.chain_id,
+      input.attestation_nonce,
+      input.attestation_message,
+      input.attestation_signature,
+      attestedAt,
+      nextDueAt,
+    );
+    db.prepare(
+      `UPDATE agent_controller_wallets
+       SET last_attested_at = ?,
+           reattestation_due_at = ?,
+           last_reattestation_nonce = ?,
+           last_reattestation_message = ?,
+           last_reattestation_signature = ?
+       WHERE agent_id = ?`,
+    ).run(
+      attestedAt,
+      nextDueAt,
+      input.attestation_nonce,
+      input.attestation_message,
+      input.attestation_signature,
+      input.agent_id,
+    );
+    return {
+      attestation_id: attestationId,
+      account_id: input.account_id,
+      agent_id: input.agent_id,
+      wallet_address: input.wallet_address,
+      chain_id: input.chain_id,
+      attestation_nonce: input.attestation_nonce,
+      attestation_message: input.attestation_message,
+      attestation_signature: input.attestation_signature,
+      attested_at: attestedAt,
+      next_due_at: nextDueAt,
+    };
+  });
+  return txn();
+}
+
+export function mintRuntimeKey(
+  db: Database.Database,
+  input: {
+    account_id: string;
+    agent_id: string;
+    label?: string | null;
+    policy_json: string;
+    policy_hash: string;
+    controller_wallet_address: string;
+    controller_chain_id: string;
+    authorization_nonce: string;
+    authorization_message: string;
+    authorization_signature: string;
+    expires_at?: string | null;
+    created_at?: string;
+  },
+): MintRuntimeKeyResult {
+  const secret = `mrt_${randomBytes(32).toString("hex")}`;
+  const runtime_key_id = randomUUID();
+  const runtime_key_prefix = secret.slice(0, 12);
+  const created_at = input.created_at ?? nowIso();
+  try {
+    db.prepare(
+      `INSERT INTO agent_runtime_keys (
+         runtime_key_id, account_id, agent_id, runtime_key_hash,
+         runtime_key_prefix, label, policy_json, policy_hash,
+         controller_wallet_address, controller_chain_id,
+         authorization_nonce, authorization_message, authorization_signature,
+         created_at, expires_at, revoked_at, revoke_reason
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    ).run(
+      runtime_key_id,
+      input.account_id,
+      input.agent_id,
+      hashRuntimeKeySecret(secret),
+      runtime_key_prefix,
+      input.label ?? null,
+      input.policy_json,
+      input.policy_hash,
+      input.controller_wallet_address,
+      input.controller_chain_id,
+      input.authorization_nonce,
+      input.authorization_message,
+      input.authorization_signature,
+      created_at,
+      input.expires_at ?? null,
+    );
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      "code" in err &&
+      (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE" &&
+      /agent_runtime_keys.+authorization_message/i.test(err.message)
+    ) {
+      throw new RuntimeKeyAuthorizationReplayError(input.agent_id);
+    }
+    throw err;
+  }
+  return { runtime_key_id, secret, runtime_key_prefix, created_at };
+}
+
+export function listRuntimeKeysForAccountAgent(
+  db: Database.Database,
+  account_id: string,
+  agent_id: string,
+  includeRevoked = true,
+): RuntimeKeyRow[] {
+  const sql = includeRevoked
+    ? `SELECT runtime_key_id, account_id, agent_id, runtime_key_prefix, label,
+              policy_json, policy_hash, controller_wallet_address,
+              controller_chain_id, authorization_nonce, authorization_message,
+              authorization_signature, created_at, expires_at, revoked_at,
+              revoke_reason
+       FROM agent_runtime_keys
+       WHERE account_id = ? AND agent_id = ?
+       ORDER BY created_at DESC`
+    : `SELECT runtime_key_id, account_id, agent_id, runtime_key_prefix, label,
+              policy_json, policy_hash, controller_wallet_address,
+              controller_chain_id, authorization_nonce, authorization_message,
+              authorization_signature, created_at, expires_at, revoked_at,
+              revoke_reason
+       FROM agent_runtime_keys
+       WHERE account_id = ? AND agent_id = ? AND revoked_at IS NULL
+       ORDER BY created_at DESC`;
+  return db.prepare(sql).all(account_id, agent_id) as RuntimeKeyRow[];
+}
+
+export function revokeRuntimeKey(
+  db: Database.Database,
+  account_id: string,
+  runtime_key_id: string,
+  reason?: string | null,
+): boolean {
+  const result = db
+    .prepare(
+      `UPDATE agent_runtime_keys
+       SET revoked_at = ?, revoke_reason = ?
+       WHERE account_id = ? AND runtime_key_id = ? AND revoked_at IS NULL`,
+    )
+    .run(nowIso(), reason ?? null, account_id, runtime_key_id);
+  return result.changes > 0;
+}
+
+export function verifyRuntimeKey(
+  db: Database.Database,
+  secret: string,
+  opts: { now?: () => Date } = {},
+): RuntimeKeyVerification | null {
+  if (typeof secret !== "string" || !/^mrt_[0-9a-f]{64}$/.test(secret)) {
+    return null;
+  }
+  const hash = hashRuntimeKeySecret(secret);
+  const row = db
+    .prepare(
+      `SELECT runtime_key_id, account_id, agent_id, runtime_key_hash,
+              runtime_key_prefix, policy_json, policy_hash,
+              controller_wallet_address, controller_chain_id,
+              expires_at, revoked_at
+       FROM agent_runtime_keys
+       WHERE runtime_key_hash = ?`,
+    )
+    .get(hash) as
+    | (RuntimeKeyVerification & {
+        runtime_key_hash: string;
+        revoked_at: string | null;
+      })
+    | undefined;
+  if (!row) {
+    return null;
+  }
+  const a = Buffer.from(row.runtime_key_hash, "hex");
+  const b = Buffer.from(hash, "hex");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    return null;
+  }
+  if (row.revoked_at) {
+    return null;
+  }
+  if (row.expires_at) {
+    const expiresMs = Date.parse(row.expires_at);
+    if (!Number.isFinite(expiresMs) || expiresMs <= (opts.now ?? (() => new Date()))().getTime()) {
+      return null;
+    }
+  }
+  if (!isControllerWalletAttestationCurrent(db, row.agent_id, opts)) {
+    return null;
+  }
+  return {
+    runtime_key_id: row.runtime_key_id,
+    account_id: row.account_id,
+    agent_id: row.agent_id,
+    runtime_key_prefix: row.runtime_key_prefix,
+    policy_json: row.policy_json,
+    policy_hash: row.policy_hash,
+    controller_wallet_address: row.controller_wallet_address,
+    controller_chain_id: row.controller_chain_id,
+    expires_at: row.expires_at,
+  };
+}
+
+export function isRuntimeKeyActive(
+  db: Database.Database,
+  runtime_key_id: string,
+  opts: { now?: () => Date } = {},
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT agent_id, expires_at, revoked_at
+       FROM agent_runtime_keys
+       WHERE runtime_key_id = ?`,
+    )
+    .get(runtime_key_id) as
+    | {
+        agent_id: string;
+        expires_at: string | null;
+        revoked_at: string | null;
+      }
+    | undefined;
+  if (!row || row.revoked_at) return false;
+  if (!isControllerWalletAttestationCurrent(db, row.agent_id, opts)) return false;
+  if (!row.expires_at) return true;
+  const expiresMs = Date.parse(row.expires_at);
+  return (
+    Number.isFinite(expiresMs) &&
+    expiresMs > (opts.now ?? (() => new Date()))().getTime()
+  );
+}
+
 // ─── api_keys ─────────────────────────────────────────────────────────────
 
 /**
@@ -277,9 +814,7 @@ export function getAccountForAgent(
  * to the user and never persisting it.
  *
  * NOTE: the secret is returned as the hex form, not as base64 or as the
- * raw bytes, to match the existing agents.api_key_hash discipline (see
- * submissions.hashSharedSecret) so verification semantics line up if a
- * client is migrated between auth modes.
+ * raw bytes; the plaintext is returned once and never persisted.
  */
 export function mintApiKey(
   db: Database.Database,

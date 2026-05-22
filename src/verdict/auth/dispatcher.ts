@@ -1,62 +1,40 @@
-// ─── Tier-aware auth dispatcher (V2 §7.5) — SCAFFOLD ONLY ──────────────────
+// ─── Tier-aware auth dispatcher (V2 §7.5) ──────────────────────────────────
 //
 // One async entry point that maps an inbound HTTP request to a tier-tagged
 // identity, falling through three auth modes in order:
 //
-//   1. Authorization: Bearer <privy-token>   → Privy session  → tier='casual'
-//   2. X-Murmur-Api-Key                      → DB-stored hash → tier='casual'
-//                                                                or 'legacy'
-//   3. X-Murmur-Agent-Id + X-Murmur-Signature → HMAC v0.1     → tier='wallet_legacy'
+//   1. Authorization: Bearer <privy-token>   → Privy session
+//   2. X-Murmur-Runtime-Key                  → Gateway runtime key (explicit opt-in)
+//   3. X-Murmur-Api-Key                      → account-scoped DB hash
 //
-// Returns null when none of the three auth modes succeed. The caller (the
-// route handler in api.ts after Phase 4 wires this in) is responsible for
-// translating null → 403 with an appropriate ErrorCode.
-//
-// This module DOES NOT touch the existing auth at api.ts:136-178. It will
-// be wired in by Phase 4. The shape below is the contract Phase 4 will
-// integrate against — keep it stable.
+// Returns null when neither auth mode succeeds. The caller is responsible
+// for translating null into the route-specific auth response.
 //
 // Why async at the dispatcher level:
 //   verifyPrivyAuth is async (jose's jwtVerify uses Web Crypto under
-//   the hood). The legacy paths (verifyAgentApiKey, verifyHmac) are
-//   sync. We keep the dispatcher async so it composes both styles
-//   without forcing the legacy callers to also become async — they
-//   stay reusable as-is.
-//
-// Why HMAC verification needs the raw body:
-//   verifyHmac signs `${timestamp}\n${rawBody}`. Express buffers the
-//   parsed JSON; the raw text is only available inside a route that
-//   uses express.text() middleware. The dispatcher takes the raw body
-//   as an explicit parameter — Phase 4's route handler hands it in.
+//   the hood). The API-key path is sync. We keep the dispatcher async so
+//   route handlers can compose both without special casing Privy.
 
 import type Database from "better-sqlite3";
 import type { Request } from "express";
 import type { AgentKind } from "../schema.js";
 import { ERROR_CODES, VerdictError } from "../schema.js";
-import { verifyAgentApiKey } from "../auth.js";
-import { verifyHmac } from "../submissions.js";
 import { agentsRepo } from "../db.js";
 import {
   getAccountByPrivyUserId,
   getAccountForAgent,
   listAccountAgents,
   verifyApiKey as verifyAccountApiKey,
+  verifyRuntimeKey,
+  type RuntimeKeyVerification,
 } from "./accounts.js";
 import { verifyPrivyAuth, type PrivyClaims } from "./privy.js";
 
-export type AuthTier =
-  // Privy-backed account or scoped account API key.
-  | "casual"
-  // Agent has an api_key_hash on the agent row but no account binding —
-  // pre-Phase-4 keys, will phase out.
-  | "legacy"
-  // HMAC-per-call against the resolveSharedSecret callback. Used by
-  // benchmark/internal_test agents whose secrets live in env vars.
-  // Phase 8 replaces this for actual wallet-tier agents with EIP-712.
-  | "wallet_legacy";
+export type AuthTier = "casual";
 
 export interface AuthIdentity {
   tier: AuthTier;
+  auth_mode?: "privy" | "api_key" | "runtime_key";
   /**
    * The agent the request is acting AS. May be undefined for the very
    * narrow case of /v1/account/session where the user hasn't created
@@ -69,31 +47,25 @@ export interface AuthIdentity {
   privy?: PrivyClaims;
   /** Mirror of the agent's kind, for dispatch in submit handlers. */
   agent_kind?: AgentKind;
+  /** Runtime-key metadata, present only when auth_mode='runtime_key'. */
+  runtime_key?: RuntimeKeyVerification;
 }
 
 export interface DispatchAuthDeps {
   db: Database.Database;
-  /**
-   * Required for the legacy HMAC path. Phase 4 passes the same callback
-   * api.ts currently uses (`deps.resolveSharedSecret`).
-   */
-  resolveSharedSecret?: (agent_id: string) => Promise<string | null>;
-  /**
-   * Required for HMAC. Express's body-parser strips this; routes that
-   * want HMAC support must use express.text() and forward req.body.
-   */
-  rawBody?: string;
   /** Clock injection for tests. */
   now?: () => Date;
+  /** Runtime Keys are powerful bot credentials; routes must opt in. */
+  allowRuntimeKey?: boolean;
 }
 
 /**
  * Dispatch a request to the highest-priority matching auth tier.
  *
- * Three return shapes:
+ * Two return shapes:
  *   - AuthIdentity  — a verified identity (the request is good).
  *   - null          — no auth mode produced a verified identity. The
- *                     caller (Phase 4 route handler) translates to 401.
+ *                     caller translates to 401.
  *   - throws VerdictError — the Bearer token verified, but the agent
  *                     selection is policy-illegal (unowned slug, missing
  *                     slug when account owns >1 agent, ...). The caller
@@ -101,10 +73,9 @@ export interface DispatchAuthDeps {
  *
  * Why throw instead of return null on the unowned-slug path:
  *   If we returned null, the dispatcher would silently fall through to
- *   the API-key and HMAC modes, giving an attacker who held a valid
- *   Privy token a free shot at also brute-forcing those. Throwing
- *   short-circuits the dispatcher — once you authenticated as Account A
- *   and asked to act as agent B, you don't get a second auth chance.
+ *   API-key auth, giving an attacker who held a valid Privy token a second
+ *   auth chance. Throwing short-circuits the dispatcher once you
+ *   authenticated as Account A and asked to act as agent B.
  */
 /**
  * Internal: resolve a verified Privy bearer to an AuthIdentity, applying
@@ -157,6 +128,7 @@ export function __resolveCasualIdentity(
     }
     return {
       tier: "casual",
+      auth_mode: "privy",
       privy: claims,
       agent_id: agent.agent_id,
       agent_kind: agent.kind,
@@ -170,12 +142,12 @@ export function __resolveCasualIdentity(
     // tier='casual' with no agent binding; the route layer gates which
     // routes accept this shape (POST /session, POST /agents create the
     // first agent, GET /agents list).
-    return { tier: "casual", privy: claims };
+    return { tier: "casual", auth_mode: "privy", privy: claims };
   }
   const owned = listAccountAgents(db, account_id);
   if (owned.length === 0) {
     // Account exists but has no agents yet — same shape as above.
-    return { tier: "casual", privy: claims, account_id };
+    return { tier: "casual", auth_mode: "privy", privy: claims, account_id };
   }
   if (owned.length === 1 && owned[0]) {
     // Smart default: single-agent accounts don't need to set the
@@ -183,6 +155,7 @@ export function __resolveCasualIdentity(
     const agent = agentsRepo.byId(db, owned[0].agent_id);
     const out: AuthIdentity = {
       tier: "casual",
+      auth_mode: "privy",
       privy: claims,
       account_id,
       agent_id: owned[0].agent_id,
@@ -222,7 +195,35 @@ export async function dispatchAuth(
     // policy call.)
   }
 
-  // ─── Mode 2: X-Murmur-Api-Key ────────────────────────────────────────
+  // ─── Mode 2: X-Murmur-Runtime-Key ────────────────────────────────────
+  const runtimeKey = req.header("X-Murmur-Runtime-Key");
+  if (deps.allowRuntimeKey && runtimeKey) {
+    const verified = verifyRuntimeKey(deps.db, runtimeKey, { now: deps.now });
+    if (verified) {
+      const agent = agentsRepo.byId(deps.db, verified.agent_id);
+      const slug = req.header("X-Murmur-Agent-Slug");
+      if (slug && agent && slug !== agent.display_slug) {
+        throw new VerdictError(
+          "X-Murmur-Agent-Slug does not match Runtime Key agent",
+          ERROR_CODES.agent_not_owned_by_account,
+          403,
+        );
+      }
+      const out: AuthIdentity = {
+        tier: "casual",
+        auth_mode: "runtime_key",
+        agent_id: verified.agent_id,
+        account_id: verified.account_id,
+        runtime_key: verified,
+      };
+      if (agent) {
+        out.agent_kind = agent.kind;
+      }
+      return out;
+    }
+  }
+
+  // ─── Mode 3: X-Murmur-Api-Key ────────────────────────────────────────
   const apiKey = req.header("X-Murmur-Api-Key");
   if (apiKey) {
     // First try the new account-scoped api_keys table.
@@ -231,6 +232,7 @@ export async function dispatchAuth(
       const agent = agentsRepo.byId(deps.db, accountKey.agent_id);
       const out: AuthIdentity = {
         tier: "casual",
+        auth_mode: "api_key",
         agent_id: accountKey.agent_id,
         account_id: accountKey.account_id,
       };
@@ -238,60 +240,6 @@ export async function dispatchAuth(
         out.agent_kind = agent.kind;
       }
       return out;
-    }
-    // Fall back to the legacy single-key-per-agent path. This requires
-    // X-Murmur-Agent-Id alongside the key (matches api.ts:149).
-    const headerAgentId = req.header("X-Murmur-Agent-Id");
-    if (headerAgentId) {
-      try {
-        const id = verifyAgentApiKey(deps.db, headerAgentId, apiKey);
-        const agent = agentsRepo.byId(deps.db, id.agent_id);
-        const account_id = getAccountForAgent(deps.db, id.agent_id);
-        const tier: AuthTier = account_id ? "casual" : "legacy";
-        const out: AuthIdentity = { tier, agent_id: id.agent_id };
-        if (account_id) {
-          out.account_id = account_id;
-        }
-        if (agent) {
-          out.agent_kind = agent.kind;
-        }
-        return out;
-      } catch {
-        // Wrong key for that agent — fall through to HMAC mode.
-      }
-    }
-  }
-
-  // ─── Mode 3: X-Murmur-Agent-Id + X-Murmur-Signature (HMAC) ──────────
-  const hmacAgentId = req.header("X-Murmur-Agent-Id");
-  const hmacTimestamp = req.header("X-Murmur-Timestamp");
-  const hmacSignature = req.header("X-Murmur-Signature");
-  if (hmacAgentId && hmacTimestamp && hmacSignature && deps.resolveSharedSecret) {
-    const secret = await deps.resolveSharedSecret(hmacAgentId);
-    if (secret) {
-      try {
-        verifyHmac({
-          rawBody: deps.rawBody ?? "",
-          headers: {
-            agent_id: hmacAgentId,
-            timestamp: hmacTimestamp,
-            signature: hmacSignature,
-          },
-          shared_secret: secret,
-          ...(deps.now ? { now: deps.now } : {}),
-        });
-        const agent = agentsRepo.byId(deps.db, hmacAgentId);
-        const out: AuthIdentity = {
-          tier: "wallet_legacy",
-          agent_id: hmacAgentId,
-        };
-        if (agent) {
-          out.agent_kind = agent.kind;
-        }
-        return out;
-      } catch {
-        // Invalid signature / timestamp — drop through to null.
-      }
     }
   }
 

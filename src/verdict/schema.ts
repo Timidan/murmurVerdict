@@ -83,8 +83,8 @@ export type OracleFeed = z.infer<typeof OracleFeedSchema>;
 // ─── Market registry (multi-asset / multi-horizon / multi-kind) ─────────────
 //
 // Migration 008 introduced data-driven assets/oracles/markets tables. These
-// schemas validate that the rows on the wire (admin upserts, MCP responses,
-// public registry endpoints) match the table shapes. Runtime hot path still
+// schemas validate that the rows on the wire (admin upserts and public
+// registry endpoints) match the table shapes. Runtime hot path still
 // uses the `db.ts` repo types directly to avoid a parse on every read.
 //
 // `market_kind` is a string, not an enum at the wire layer, so future kinds
@@ -275,26 +275,11 @@ export type MarketRecord = z.infer<typeof MarketRecordSchema>;
 
 // ─── Identity ────────────────────────────────────────────────────────────────
 
-export const VerifiedIdentityKindSchema = z.enum([
-  "x",
-  "telegram",
-  "wallet",
-  "openserv",
-]);
-export type VerifiedIdentityKind = z.infer<typeof VerifiedIdentityKindSchema>;
-
-export const VerifiedIdentitySchema = z.object({
-  kind: VerifiedIdentityKindSchema,
-  value: z.string().min(1).max(256),
-  verified_at: z.string().datetime({ offset: false }),
-});
-export type VerifiedIdentity = z.infer<typeof VerifiedIdentitySchema>;
-
 // Wave 3 collapse — the agent.kind taxonomy compresses to four values now
 // that the off-platform reputation pipes (verified/wallet_only via X/
 // Telegram/wallet claim) and the shadow scraping pipeline are gone. Murmur
 // reputation only accrues from on-platform FHE calls, so a single 'agent'
-// kind covers everyone who submits via /v2/calls; the other three are
+// kind covers everyone who submits via the Runtime Key Gateway; the other three are
 // system-internal markers.
 //
 // Mapping handled in MIGRATION_031: legacy 'casual'/'shadow'/'verified'/
@@ -351,7 +336,6 @@ export const AgentProfileSchema = z.object({
   kind: AgentKindSchema,
   display_name: z.string().min(1).max(64),
   bio: z.string().max(280).optional(),
-  verified_identities: z.array(VerifiedIdentitySchema).default([]),
   created_at: z.string().datetime({ offset: false }),
   // Pillar-4 marketplace portability: a wallet-bound agent's receipts
   // can be verified off-Murmur. Both fields are optional in v0.2 to keep
@@ -367,6 +351,7 @@ export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 //             → pending_t1 → resolved
 //             → disputed → re_resolved
 //   rejected (terminal at any point before accepted)
+//   invalid_reveal / missed_reveal (terminal sealed-Fhenix reveal failures)
 
 export const CallStatusSchema = z.enum([
   "submitted",
@@ -378,137 +363,16 @@ export const CallStatusSchema = z.enum([
   "disputed",
   "re_resolved",
   "rejected",
+  "invalid_reveal",
+  "missed_reveal",
 ]);
 export type CallStatus = z.infer<typeof CallStatusSchema>;
 
 export const SideSchema = z.enum(["BUY", "SELL"]);
 export type Side = z.infer<typeof SideSchema>;
 
-// Phase 2c relaxed the runtime CHECK on submissions.horizon_hours from
-// IN (1,4,24,168) to >= 0. Phase 2d adds 0 here as a sentinel meaning
-// "sub-hour market, canonical horizon is in horizon_seconds." The four
-// hour-aligned values stay valid; sub-hour callers stamp 0 so v1 receipt
-// subjects (which embed SubmittedCallSchema) parse without conditional
-// schema selection.
-//
-// Note: scoring (see scoring.ts::scoreCall) still uses horizon_hours for
-// the Brier formula. For 0-stamped sub-hour calls the score falls back
-// to the smallest available bucket (1h vol → 0.006). Phase 2e will route
-// scoring through horizon_seconds; until then, sub-hour markets are
-// best treated as unranked.
 export const HORIZONS_HOURS = [0, 1, 4, 24, 168] as const;
-export const HorizonHoursSchema = z.union([
-  z.literal(0),
-  z.literal(1),
-  z.literal(4),
-  z.literal(24),
-  z.literal(168),
-]);
 export type HorizonHours = (typeof HORIZONS_HOURS)[number];
-
-// ─── SubmittedCall (agent-supplied) ──────────────────────────────────────────
-// Either `rationale` (≤ 240 chars) OR `strategy_tag` MUST be present. This is
-// enforced via .superRefine so spam-empty submissions are rejected at the edge.
-//
-// P3 — markets registry wiring (Codex D1):
-// Two wire shapes are accepted, exactly one per submission:
-//   (legacy)  { asset_id, horizon_hours, ... }    — pre-P3 agents, benchmarks
-//   (market)  { market_id,                ... }   — new agents, multi-asset
-// Both shapes hash deterministically into the request body for v2 receipts;
-// the daemon must NOT mutate the wire payload before computing request_hash.
-// Schema-version stays 1 — no schema_version bump needed (Codex P3 D1).
-
-export const SubmittedCallSchema = z
-  .object({
-    schema_version: z.literal(SCHEMA_VERSION),
-    agent_id: z.string().uuid(),
-    client_order_id: z.string().min(8).max(128),
-    // Legacy tuple — optional in v0.2.5+ wire shape; required only when
-    // market_id is absent. Wave 4a opened AssetIdSchema from a closed
-    // native-price enum to an open '<chain>:<asset>:<quote>' /
-    // '<protocol>:<kind>' regex; the markets registry remains the
-    // authoritative "is this asset listable?" gate.
-    asset_id: AssetIdSchema.optional(),
-    horizon_hours: HorizonHoursSchema.optional(),
-    // New shape — registry-driven market identity. Wave 4a opened
-    // MarketIdSchema to also accept '0x[hex64]' Polymarket conditionIds.
-    // The daemon still rejects market_id values that don't resolve to a
-    // listed `markets` row, regardless of which legal shape was supplied.
-    market_id: MarketIdSchema.optional(),
-    side: SideSchema,
-    confidence: z.number().min(0.51).max(0.95),
-    submitted_at: z.string().datetime({ offset: false }),
-    rationale: z.string().max(240).optional(),
-    strategy_tag: StrategyTagSchema.optional(),
-    // P2 commit-reveal opt-in. Defaults to undefined → daemon picks
-    // legacy_plaintext for backwards compat. When the agent submits
-    // privacy_mode='committed', the daemon computes commit_hash from
-    // the canonical preimage (D13) using THIS submission's plaintext
-    // plus the agent-supplied salt + daemon-canonical t0, encrypts the
-    // body to its age recipient + drand round, and stores ONLY the
-    // commit_hash + envelope. Public surfaces never see the plaintext.
-    // String, NOT enum, so v0.3 can introduce 'fhevm' without a schema
-    // bump (Codex compat note).
-    privacy_mode: z.string().optional(),
-    // Agent-supplied entropy for the commit preimage. 32 random bytes
-    // hex (64 chars). REQUIRED when privacy_mode='committed'; daemon
-    // rejects with schema_invalid if missing in that mode. Without it
-    // the commit_hash leaks (side, asset, horizon, confidence) via a
-    // ~80k-entry dictionary attack.
-    salt: z
-      .string()
-      .regex(/^[0-9a-fA-F]{64}$/, "32-byte hex (64 chars, lowercase preferred)")
-      .optional(),
-  })
-  .strict()
-  .superRefine((v, ctx) => {
-    if (!v.rationale && !v.strategy_tag) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "rationale or strategy_tag is required",
-        path: ["rationale"],
-      });
-    }
-    if (v.privacy_mode === "committed" && !v.salt) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "salt is required when privacy_mode is 'committed'",
-        path: ["salt"],
-      });
-    }
-    // P3 D1: exactly one of {market_id} XOR {asset_id + horizon_hours}.
-    const hasMarket = typeof v.market_id === "string";
-    const hasLegacy =
-      typeof v.asset_id === "string" && typeof v.horizon_hours === "number";
-    if (hasMarket && hasLegacy) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "supply EITHER market_id OR (asset_id + horizon_hours), never both",
-        path: ["market_id"],
-      });
-    }
-    if (!hasMarket && !hasLegacy) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "must supply market_id OR (asset_id + horizon_hours)",
-        path: ["market_id"],
-      });
-    }
-    if (
-      !hasMarket &&
-      typeof v.asset_id === "string" &&
-      typeof v.horizon_hours !== "number"
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "horizon_hours required when asset_id is present (legacy shape)",
-        path: ["horizon_hours"],
-      });
-    }
-  });
-export type SubmittedCall = z.infer<typeof SubmittedCallSchema>;
 
 // Wave 4b-2 — VerdictPreflight + MarketRegime were Santiment-derived
 // decoration stamped onto every accepted call. Resolver never consulted
@@ -519,21 +383,9 @@ export type SubmittedCall = z.infer<typeof SubmittedCallSchema>;
 
 // ─── T0 / oracle anchoring policy ────────────────────────────────────────────
 
-// P3 Phase 2b: feeds widened from ETH literals to the full OracleFeedSchema
-// enum. submitCall now derives T0Policy from the resolved market row via
-// derivePolicyFromMarket() — receipts for non-ETH markets carry their own
-// feeds, not synthesized ETH. Existing v1 receipts already issued only
-// referenced ETH feeds, which still pass the wider enum.
-//
-// P3 Phase 2d: fallback_feed + fallback_max_staleness_sec are optional.
-// Codex's audit recommended sub-hour markets be Pyth-only (Chainlink Base
-// heartbeat is too coarse for 5m/15m horizons). For markets without a
-// fallback configured (eth.5m, eth.15m, BNB at every horizon), receipts
-// omit those fields entirely. Verifiers reading existing v1 receipts with
-// both fields keep parsing — the .strict() schema accepts the additional
-// fields when they were stamped, and accepts their absence for new
-// sub-hour calls. The pair is enforced together via superRefine: either
-// BOTH fallback fields are present or NEITHER is.
+// Native-price markets derive this from the market registry at submit and
+// resolver time. Fallback fields travel as a pair: either both are present or
+// both are absent.
 export const T0PolicySchema = z
   .object({
     primary_feed: OracleFeedSchema,
@@ -576,47 +428,6 @@ export const DEFAULT_T0_POLICY: T0Policy = {
   t0_grace_seconds: 120,
   t0_extended_grace_seconds: 300,
 };
-
-// ─── AcceptedCall (post-acceptance, public-shape projection) ────────────────
-//
-// Wave 3 made the four plaintext market-signal fields optional (operator-
-// blind invariant under FHE-direct submit). Wave 4a additionally makes
-// `oracle_policy` optional so external-adapter markets (Polymarket Gamma,
-// future Kalshi/Drift/event-feed adapters) can mint without forcing a
-// Chainlink/Pyth-shaped policy struct: those markets resolve through
-// `adapter.observeResolution(...)` and never anchor against a price feed.
-//
-// Native-price markets continue to stamp the T0Policy because the
-// resolver's tick-time `policyFromCtx` walks the registry separately —
-// the policy on the wire is essentially cosmetic / for receipt echoing.
-//
-// market_id remains the canonical handle the resolver/dispatch/
-// leaderboard chain on; absence of oracle_policy is the signal that the
-// market is adapter-resolved, not feed-anchored.
-export const AcceptedCallSchema = z
-  .object({
-    schema_version: z.literal(SCHEMA_VERSION),
-    scoring_version: z.literal(SCORING_VERSION),
-    call_id: z.string().uuid(),
-    agent_id: z.string().uuid(),
-    client_order_id: z.string().min(8).max(128),
-    asset_id: AssetIdSchema.optional(),
-    side: SideSchema.optional(),
-    horizon_hours: HorizonHoursSchema.optional(),
-    confidence: z.number().min(0.51).max(0.95).optional(),
-    submitted_at: z.string().datetime({ offset: false }),
-    rationale: z.string().max(240).optional(),
-    strategy_tag: StrategyTagSchema.optional(),
-    accepted_at: z.string().datetime({ offset: false }),
-    status: z.literal("accepted"),
-    oracle_policy: T0PolicySchema.optional(),
-    // Wave 4b — receipts subsystem dropped. acceptance_receipt_hash and
-    // acceptance_receipt_cid no longer exist on AcceptedCall; the call_id
-    // itself is the canonical identifier downstream consumers chain on.
-    // Wave 4b-2 — preflight (Santiment-derived) dropped from the wire shape.
-  })
-  .strict();
-export type AcceptedCall = z.infer<typeof AcceptedCallSchema>;
 
 // ─── Resolution outcomes ──────────────────────────────────────────────────────
 
@@ -696,15 +507,7 @@ export const LeaderboardRowSchema = z
     win_rate: z.number().min(0).max(1).nullable(),
     pending_calls: z.number().int().nonnegative(),
     last_resolved_at: z.string().datetime({ offset: false }).nullable(),
-    /**
-     * Reveal reliability for committed-mode agents (D26 axis 1).
-     *   = agent_reveals / (agent_reveals + fallback_reveals)
-     * Null when the agent has no committed-mode resolved calls yet.
-     * Excludes legacy_plaintext + fhevm_compute so the metric reflects
-     * the v0.2 commit-reveal contract. The compatibility field named
-     * daemon_fallback_reveals includes both daemon_fallback and
-     * drand_fallback rows.
-     */
+    /** Reserved compatibility fields; sealed Fhenix does not use fallbacks. */
     reveal_reliability: z.number().min(0).max(1).nullable(),
     agent_reveals: z.number().int().nonnegative(),
     daemon_fallback_reveals: z.number().int().nonnegative(),
@@ -825,29 +628,6 @@ export const AgentSecurityEventSchema = z
   .strict();
 export type AgentSecurityEvent = z.infer<typeof AgentSecurityEventSchema>;
 
-// ─── Claim challenge (Challenge-Link flow) ───────────────────────────────────
-
-export const ClaimChallengeSchema = z
-  .object({
-    challenge_id: z.string().uuid(),
-    agent_id: z.string().uuid(),
-    target_identity: VerifiedIdentitySchema.pick({ kind: true, value: true }),
-    nonce: z.string().min(16).max(64),
-    challenge_text: z.string(),
-    wallet_to_bind: z
-      .string()
-      .regex(/^0x[a-fA-F0-9]{40}$/, "EIP-55 address"),
-    expires_at: z.string().datetime({ offset: false }),
-    status: z.enum(["pending", "verified", "expired", "rejected"]),
-    // Storage created_at — set when the challenge row is inserted. Earlier
-    // releases stuffed `expires_at` into the `created_at` column by mistake;
-    // migration 005 leaves legacy rows alone (they expire-and-GC anyway) and
-    // every new row gets the correct creation timestamp.
-    created_at: z.string().datetime({ offset: false }),
-  })
-  .strict();
-export type ClaimChallenge = z.infer<typeof ClaimChallengeSchema>;
-
 // ─── Dispute ─────────────────────────────────────────────────────────────────
 
 export const DisputeGroundsSchema = z.enum([
@@ -955,3 +735,66 @@ export const MIN_RESOLVED_CALLS_FOR_MAIN_TIER = 20;
 export const MIN_RESOLVED_CALLS_FOR_MARKETPLACE_TIER = 50;
 export const SHADOW_CLAIM_LOOKBACK_DAYS = 30;
 export const RATIONALE_MAX_CHARS = 240;
+
+// ─── Paid inference feed taxonomy ───────────────────────────────────────────
+//
+// These are Murmur-native product classes, not venue-specific labels. A
+// Polymarket YES/NO contract can be `event_binary`, `sports_match`, or
+// `price_threshold` from a buyer's point of view even though the first
+// adapter resolves every leg as a binary payout vector.
+
+export const RESOLUTION_CLASSES = [
+  "event_binary",
+  "event_basket",
+  "price_threshold",
+  "price_direction",
+  "range_prediction",
+  "sports_match",
+  "ranking_outcome",
+  "yield_or_savings",
+  "risk_avoidance",
+] as const;
+export const ResolutionClassSchema = z.enum(RESOLUTION_CLASSES);
+export type ResolutionClass = z.infer<typeof ResolutionClassSchema>;
+
+export const EDGE_CLASSES = [
+  "latency",
+  "domain",
+  "tail-risk",
+  "portfolio",
+  "automation",
+  "cross-market",
+  "avoidance",
+  "microstructure",
+] as const;
+export const EdgeClassSchema = z.enum(EDGE_CLASSES);
+export type EdgeClass = z.infer<typeof EdgeClassSchema>;
+
+export const COMMERCIAL_TEMPLATES = [
+  "per_alert",
+  "capacity_capped_subscription",
+  "exclusive_auction",
+  "basket_subscription",
+  "streaming_escrow_subscription",
+  "verifiable_profit_share",
+] as const;
+export const CommercialTemplateSchema = z.enum(COMMERCIAL_TEMPLATES);
+export type CommercialTemplate = z.infer<typeof CommercialTemplateSchema>;
+
+export const FEED_STATUSES = ["draft", "listed", "paused", "retired"] as const;
+export const FeedStatusSchema = z.enum(FEED_STATUSES);
+export type FeedStatus = z.infer<typeof FeedStatusSchema>;
+
+export const FEED_PACKET_KINDS = [
+  "verdict",
+  "revision",
+  "heartbeat",
+  "abstain",
+  "risk_warning",
+] as const;
+export const FeedPacketKindSchema = z.enum(FEED_PACKET_KINDS);
+export type FeedPacketKind = z.infer<typeof FeedPacketKindSchema>;
+
+export const FEED_SLA_STATUSES = ["on_time", "late", "unscheduled"] as const;
+export const FeedSlaStatusSchema = z.enum(FEED_SLA_STATUSES);
+export type FeedSlaStatus = z.infer<typeof FeedSlaStatusSchema>;

@@ -1,14 +1,16 @@
-// ─── /v1/account/* router (V2 §7.1 casual tier) — SCAFFOLD ONLY ───────────
-//
-// NOT YET MOUNTED on the main app. Phase 4 imports `accountRouter` from
-// here and wires it into createVerdictRouter / daemon/index.ts. Until
-// then this file is dead code from the runtime's perspective; only the
-// type-check and the smoke test exercise it.
+// ─── /v1/account/* router (V2 §7.1 casual tier) ────────────────────────────
 //
 // Routes:
 //   POST   /v1/account/session                          — Privy → account upsert
 //   POST   /v1/account/agents                           — create casual agent
 //   GET    /v1/account/agents                           — list owned agents
+//   POST   /v1/account/agents/:slug/wallet/challenge    — build controller-wallet signature text
+//   PATCH  /v1/account/agents/:slug/wallet              — bind Controller Wallet once
+//   POST   /v1/account/agents/:slug/wallet/reattest/challenge — build periodic human re-attestation text
+//   POST   /v1/account/agents/:slug/wallet/reattest      — refresh Controller Wallet human attestation
+//   GET    /v1/account/agents/:slug/runtime-keys        — list runtime-key metadata
+//   POST   /v1/account/agents/:slug/runtime-keys        — mint a Gateway runtime key
+//   DELETE /v1/account/runtime-keys/:key_id             — revoke runtime key
 //   POST   /v1/account/agents/:slug/api-keys            — mint scoped key
 //   DELETE /v1/account/api-keys/:key_id                 — rotate (soft delete)
 //   PATCH  /v1/account/agents/:slug/destination-address — set/update payout addr
@@ -26,28 +28,51 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import express from "express";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, createHash, randomBytes } from "node:crypto";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
+import type { Hex } from "viem";
 import {
   AgentSlugSchema,
+  ChainIdSchema,
   ERROR_CODES,
+  MarketIdSchema,
   WalletAddressSchema,
   VerdictError,
 } from "../schema.js";
 import { agentsRepo, usageRepo } from "../db.js";
 import {
+  buildControllerWalletBindingMessage,
+  buildControllerWalletReattestationMessage,
+  buildRuntimeKeyAuthorizationMessage,
+  DEFAULT_CONTROLLER_REATTESTATION_INTERVAL_SECONDS,
+  isFreshAuthorization,
+  normalizeEvmAddress,
+  verifySignedMessageAddress,
+  type ControllerWalletKind,
+} from "../controller-wallet.js";
+import {
+  bindControllerWallet,
+  ControllerWalletBindingError,
+  controllerWalletAttestationStatus,
+  getControllerWalletForAgent,
   getOrCreateAccount,
   linkAgentToAccount,
   listAccountAgents,
   getAccountForAgent,
+  listRuntimeKeysForAccountAgent,
   mintApiKey,
+  mintRuntimeKey,
+  recordControllerWalletReattestation,
   rotateApiKey,
+  revokeRuntimeKey,
   setDestinationAddress,
   listApiKeysForAccount,
   AgentAlreadyOwnedError,
+  RuntimeKeyAuthorizationReplayError,
   type SetDestinationResult,
 } from "../auth/accounts.js";
 import { verifyPrivyAuth, type PrivyClaims } from "../auth/privy.js";
+import { canonicalHash, canonicalize } from "../../receipts/canonical.js";
 
 export interface AccountRouterDeps {
   db: Database.Database;
@@ -104,6 +129,99 @@ function assertAgentOwnedBy(
   }
 }
 
+function normalizeWalletAddress(raw: string): string {
+  let normalized: string;
+  try {
+    normalized = normalizeEvmAddress(raw);
+  } catch (err) {
+    throw new VerdictError(
+      "invalid wallet_address",
+      ERROR_CODES.schema_invalid,
+      400,
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+  }
+  const parsed = WalletAddressSchema.safeParse(normalized);
+  if (!parsed.success) {
+    throw new VerdictError(
+      "invalid wallet_address",
+      ERROR_CODES.schema_invalid,
+      400,
+      { issues: parsed.error.issues },
+    );
+  }
+  return parsed.data;
+}
+
+function nowIso(clock?: () => Date): string {
+  return (clock ?? (() => new Date()))().toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+function assertFreshAuthorization(issuedAt: string, clock?: () => Date): void {
+  if (!isFreshAuthorization(issuedAt, (clock ?? (() => new Date()))())) {
+    throw new VerdictError(
+      "authorization signature is stale or issued too far in the future",
+      ERROR_CODES.agent_not_authorized,
+      403,
+    );
+  }
+}
+
+function ensureExpiresInFuture(expiresAt: string | undefined, clock?: () => Date): void {
+  if (!expiresAt) return;
+  if (Date.parse(expiresAt) <= (clock ?? (() => new Date()))().getTime()) {
+    throw new VerdictError(
+      "expires_at must be in the future",
+      ERROR_CODES.schema_invalid,
+      400,
+    );
+  }
+}
+
+function policyDigest(policy: z.infer<typeof RuntimeKeyPolicySchema>): {
+  policy_json: string;
+  policy_hash: `0x${string}`;
+} {
+  return {
+    policy_json: canonicalize(policy),
+    policy_hash: canonicalHash(policy),
+  };
+}
+
+function publicRuntimeKeyRow(row: ReturnType<typeof listRuntimeKeysForAccountAgent>[number]) {
+  return {
+    runtime_key_id: row.runtime_key_id,
+    runtime_key_prefix: row.runtime_key_prefix,
+    label: row.label,
+    policy: JSON.parse(row.policy_json) as unknown,
+    policy_hash: row.policy_hash,
+    controller_wallet_address: row.controller_wallet_address,
+    controller_chain_id: row.controller_chain_id,
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+    revoked_at: row.revoked_at,
+    revoke_reason: row.revoke_reason,
+  };
+}
+
+function publicControllerWalletRow(
+  controller: NonNullable<ReturnType<typeof getControllerWalletForAgent>>,
+  clock?: () => Date,
+) {
+  const status = controllerWalletAttestationStatus(controller, { now: clock });
+  return {
+    wallet_address: controller.wallet_address,
+    chain_id: controller.chain_id,
+    wallet_kind: controller.wallet_kind,
+    provider: controller.provider,
+    created_at: controller.created_at,
+    last_attested_at: status.last_attested_at,
+    reattestation_due_at: status.reattestation_due_at,
+    reattestation_overdue: status.reattestation_overdue,
+    reattestation_interval_seconds: status.reattestation_interval_seconds,
+  };
+}
+
 // ─── Route handlers ───────────────────────────────────────────────────────
 
 const CreateAgentSchema = z.object({
@@ -118,6 +236,64 @@ const MintKeySchema = z.object({
 
 const SetDestinationSchema = z.object({
   destination_address: WalletAddressSchema,
+});
+
+const SignatureSchema = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{130}$/, "65-byte ECDSA signature");
+
+const ControllerWalletKindSchema = z.enum(["embedded", "external"]);
+
+const BindWalletSchema = z.object({
+  wallet_address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  chain_id: ChainIdSchema,
+  wallet_kind: ControllerWalletKindSchema.default("embedded"),
+  provider: z.string().min(1).max(64).optional(),
+  authorization_issued_at: z.string().datetime({ offset: false }),
+  signature: SignatureSchema,
+});
+
+const BindWalletChallengeSchema = z.object({
+  wallet_address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  chain_id: ChainIdSchema,
+  wallet_kind: ControllerWalletKindSchema.default("embedded"),
+  provider: z.string().min(1).max(64).optional(),
+});
+
+const ReattestWalletSchema = z.object({
+  attestation_nonce: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{16,80}$/, "16-80 chars of base64url-ish entropy"),
+  authorization_issued_at: z.string().datetime({ offset: false }),
+  signature: SignatureSchema,
+});
+
+const RuntimeKeyPolicySchema = z
+  .object({
+    allowed_market_ids: z.array(MarketIdSchema).max(64).optional(),
+    max_calls_per_hour: z.number().int().min(1).max(1000).optional(),
+    max_calls_per_day: z.number().int().min(1).max(10000).optional(),
+    feed_packets: z.boolean().optional(),
+    notes: z.string().max(240).optional(),
+  })
+  .strict();
+
+const RuntimeKeyChallengeSchema = z.object({
+  policy: RuntimeKeyPolicySchema.default({}),
+  expires_at: z.string().datetime({ offset: false }).optional(),
+});
+
+const RuntimeKeyMintSchema = RuntimeKeyChallengeSchema.extend({
+  label: z.string().max(80).optional(),
+  authorization_nonce: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{16,80}$/, "16-80 chars of base64url-ish entropy"),
+  authorization_issued_at: z.string().datetime({ offset: false }),
+  signature: SignatureSchema,
+});
+
+const RuntimeKeyRevokeSchema = z.object({
+  reason: z.string().max(160).optional(),
 });
 
 // Phase 7d — funnel event emit. Body is fixed-shape, kind is strictly
@@ -287,7 +463,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
           { issues: parsed.error.issues },
         );
       }
-      const ts = (now ?? (() => new Date()))().toISOString().replace(/\.\d+Z$/, "Z");
+      const ts = nowIso(now);
       const agent_id = randomUUID();
       // FIX 6 — wrap agent insert + ownership link in a single
       // transaction so a crash between insert and link cannot leave
@@ -305,9 +481,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
               display_name: parsed.data.display_name,
               bio: parsed.data.bio,
               created_at: ts,
-              verified_identities: [],
             },
-            null,
           );
           linkAgentToAccount(db, resolved.account_id, agent_id);
         })();
@@ -367,6 +541,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
       );
       const hydrated = rows.map((row) => {
         const a = agentsRepo.byId(db, row.agent_id);
+        const controller = getControllerWalletForAgent(db, row.agent_id);
         const dest = destRowStmt.get(row.agent_id) as
           | {
               destination_address: string | null;
@@ -379,12 +554,507 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
           display_slug: a?.display_slug ?? null,
           display_name: a?.display_name ?? null,
           kind: a?.kind ?? null,
+          wallet_address: a?.wallet_address ?? null,
+          chain_id: a?.chain_id ?? null,
+          controller_wallet: controller
+            ? publicControllerWalletRow(controller, now)
+            : null,
           destination_address: dest?.destination_address ?? null,
           destination_address_updated_at:
             dest?.destination_address_updated_at ?? null,
         };
       });
       res.status(200).json({ agents: hydrated });
+    }),
+  );
+
+  // POST /v1/account/agents/:slug/wallet/challenge — build the exact message
+  // a human-controlled Controller Wallet must sign. The server stays stateless:
+  // PATCH recomputes this same message from the submitted body and verifies
+  // the signature freshness window.
+  router.post(
+    "/v1/account/agents/:slug/wallet/challenge",
+    destAddrLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(db, slug);
+      if (!agent) {
+        throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
+      }
+      assertAgentOwnedBy(db, resolved.account_id, agent.agent_id);
+      const parsed = BindWalletChallengeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid request",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.issues },
+        );
+      }
+      const walletAddress = normalizeWalletAddress(parsed.data.wallet_address);
+      const authorization_issued_at = nowIso(now);
+      const message = buildControllerWalletBindingMessage({
+        agentSlug: agent.display_slug,
+        walletAddress,
+        chainId: parsed.data.chain_id,
+        walletKind: parsed.data.wallet_kind,
+        provider: parsed.data.provider,
+        issuedAt: authorization_issued_at,
+      });
+      res.status(200).json({
+        agent_id: agent.agent_id,
+        display_slug: agent.display_slug,
+        wallet_address: walletAddress,
+        chain_id: parsed.data.chain_id,
+        wallet_kind: parsed.data.wallet_kind,
+        provider: parsed.data.provider ?? null,
+        authorization_issued_at,
+        message,
+      });
+    }),
+  );
+
+  // PATCH /v1/account/agents/:slug/wallet — one-time Controller Wallet bind.
+  //
+  // The Controller Wallet is the human owner's offchain authority root. Bots
+  // do not use it for automated Murmur/Fhenix calls; they receive revocable
+  // runtime keys after the Controller Wallet signs a bounded authorization.
+  router.patch(
+    "/v1/account/agents/:slug/wallet",
+    destAddrLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(db, slug);
+      if (!agent) {
+        throw new VerdictError(
+          "unknown agent",
+          ERROR_CODES.unknown_agent,
+          404,
+        );
+      }
+      assertAgentOwnedBy(db, resolved.account_id, agent.agent_id);
+      const parsed = BindWalletSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid request",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.issues },
+        );
+      }
+      const walletAddress = normalizeWalletAddress(parsed.data.wallet_address);
+      assertFreshAuthorization(parsed.data.authorization_issued_at, now);
+      const bindingMessage = buildControllerWalletBindingMessage({
+        agentSlug: agent.display_slug,
+        walletAddress,
+        chainId: parsed.data.chain_id,
+        walletKind: parsed.data.wallet_kind,
+        provider: parsed.data.provider,
+        issuedAt: parsed.data.authorization_issued_at,
+      });
+      const signatureOk = await verifySignedMessageAddress(
+        walletAddress,
+        bindingMessage,
+        parsed.data.signature as Hex,
+      );
+      if (!signatureOk) {
+        throw new VerdictError(
+          "controller wallet signature does not match wallet_address",
+          ERROR_CODES.agent_not_authorized,
+          403,
+        );
+      }
+      let bound: ReturnType<typeof bindControllerWallet>;
+      try {
+        bound = bindControllerWallet(db, {
+          account_id: resolved.account_id,
+          agent_id: agent.agent_id,
+          wallet_address: walletAddress,
+          chain_id: parsed.data.chain_id,
+          wallet_kind: parsed.data.wallet_kind as ControllerWalletKind,
+          provider: parsed.data.provider,
+          binding_message: bindingMessage,
+          binding_signature: parsed.data.signature,
+          created_at: nowIso(now),
+        });
+      } catch (err) {
+        if (err instanceof ControllerWalletBindingError) {
+          throw new VerdictError(err.message, ERROR_CODES.duplicate, 409, {
+            agent_id: agent.agent_id,
+          });
+        }
+        throw err;
+      }
+      res.status(200).json({
+        agent_id: agent.agent_id,
+        display_slug: agent.display_slug,
+        ...publicControllerWalletRow(bound, now),
+        idempotent_hit: bound.idempotent_hit,
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/account/agents/:slug/wallet/reattest/challenge",
+    destAddrLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(db, slug);
+      if (!agent) {
+        throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
+      }
+      assertAgentOwnedBy(db, resolved.account_id, agent.agent_id);
+      const controller = getControllerWalletForAgent(db, agent.agent_id);
+      if (!controller) {
+        throw new VerdictError(
+          "bind a controller wallet before re-attesting",
+          ERROR_CODES.agent_not_authorized,
+          409,
+        );
+      }
+      const parsed = z.object({}).strict().safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid request",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.issues },
+        );
+      }
+      const attestation_nonce = randomBytes(18).toString("base64url");
+      const authorization_issued_at = nowIso(now);
+      const message = buildControllerWalletReattestationMessage({
+        agentSlug: agent.display_slug,
+        controllerWalletAddress: controller.wallet_address,
+        controllerChainId: controller.chain_id,
+        attestationNonce: attestation_nonce,
+        issuedAt: authorization_issued_at,
+      });
+      const status = controllerWalletAttestationStatus(controller, { now });
+      res.status(200).json({
+        agent_id: agent.agent_id,
+        display_slug: agent.display_slug,
+        controller_wallet_address: controller.wallet_address,
+        controller_chain_id: controller.chain_id,
+        attestation_nonce,
+        authorization_issued_at,
+        previous_last_attested_at: status.last_attested_at,
+        previous_reattestation_due_at: status.reattestation_due_at,
+        reattestation_interval_seconds: DEFAULT_CONTROLLER_REATTESTATION_INTERVAL_SECONDS,
+        message,
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/account/agents/:slug/wallet/reattest",
+    destAddrLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(db, slug);
+      if (!agent) {
+        throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
+      }
+      assertAgentOwnedBy(db, resolved.account_id, agent.agent_id);
+      const controller = getControllerWalletForAgent(db, agent.agent_id);
+      if (!controller) {
+        throw new VerdictError(
+          "bind a controller wallet before re-attesting",
+          ERROR_CODES.agent_not_authorized,
+          409,
+        );
+      }
+      const parsed = ReattestWalletSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid request",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.issues },
+        );
+      }
+      assertFreshAuthorization(parsed.data.authorization_issued_at, now);
+      const message = buildControllerWalletReattestationMessage({
+        agentSlug: agent.display_slug,
+        controllerWalletAddress: controller.wallet_address,
+        controllerChainId: controller.chain_id,
+        attestationNonce: parsed.data.attestation_nonce,
+        issuedAt: parsed.data.authorization_issued_at,
+      });
+      const signatureOk = await verifySignedMessageAddress(
+        controller.wallet_address,
+        message,
+        parsed.data.signature as Hex,
+      );
+      if (!signatureOk) {
+        throw new VerdictError(
+          "controller wallet re-attestation signature does not match wallet",
+          ERROR_CODES.agent_not_authorized,
+          403,
+        );
+      }
+      let attestation: ReturnType<typeof recordControllerWalletReattestation>;
+      try {
+        attestation = recordControllerWalletReattestation(db, {
+          account_id: resolved.account_id,
+          agent_id: agent.agent_id,
+          wallet_address: controller.wallet_address,
+          chain_id: controller.chain_id,
+          attestation_nonce: parsed.data.attestation_nonce,
+          attestation_message: message,
+          attestation_signature: parsed.data.signature,
+          attested_at: nowIso(now),
+        });
+      } catch (err) {
+        if (err instanceof ControllerWalletBindingError) {
+          throw new VerdictError(err.message, ERROR_CODES.agent_not_authorized, 409);
+        }
+        if (
+          err instanceof Error &&
+          "code" in err &&
+          (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
+        ) {
+          throw new VerdictError(
+            "controller wallet re-attestation nonce already used",
+            ERROR_CODES.duplicate,
+            409,
+          );
+        }
+        throw err;
+      }
+      const refreshed = getControllerWalletForAgent(db, agent.agent_id);
+      res.status(200).json({
+        agent_id: agent.agent_id,
+        display_slug: agent.display_slug,
+        attestation_id: attestation.attestation_id,
+        controller_wallet: refreshed
+          ? publicControllerWalletRow(refreshed, now)
+          : null,
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/account/agents/:slug/runtime-keys",
+    listAgentsLimiter,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(db, slug);
+      if (!agent) {
+        throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
+      }
+      assertAgentOwnedBy(db, resolved.account_id, agent.agent_id);
+      const keys = listRuntimeKeysForAccountAgent(
+        db,
+        resolved.account_id,
+        agent.agent_id,
+        true,
+      ).map(publicRuntimeKeyRow);
+      res.status(200).json({ keys });
+    }),
+  );
+
+  router.post(
+    "/v1/account/agents/:slug/runtime-keys/challenge",
+    mintKeyLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(db, slug);
+      if (!agent) {
+        throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
+      }
+      assertAgentOwnedBy(db, resolved.account_id, agent.agent_id);
+      const controller = getControllerWalletForAgent(db, agent.agent_id);
+      if (!controller) {
+        throw new VerdictError(
+          "bind a controller wallet before minting runtime keys",
+          ERROR_CODES.agent_not_authorized,
+          409,
+        );
+      }
+      const parsed = RuntimeKeyChallengeSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid request",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.issues },
+        );
+      }
+      ensureExpiresInFuture(parsed.data.expires_at, now);
+      const { policy_hash } = policyDigest(parsed.data.policy);
+      const authorization_nonce = randomBytes(18).toString("base64url");
+      const authorization_issued_at = nowIso(now);
+      const message = buildRuntimeKeyAuthorizationMessage({
+        agentSlug: agent.display_slug,
+        controllerWalletAddress: controller.wallet_address,
+        controllerChainId: controller.chain_id,
+        policyHash: policy_hash,
+        authorizationNonce: authorization_nonce,
+        expiresAt: parsed.data.expires_at,
+        issuedAt: authorization_issued_at,
+      });
+      res.status(200).json({
+        agent_id: agent.agent_id,
+        display_slug: agent.display_slug,
+        controller_wallet_address: controller.wallet_address,
+        controller_chain_id: controller.chain_id,
+        policy_hash,
+        authorization_nonce,
+        authorization_issued_at,
+        expires_at: parsed.data.expires_at ?? null,
+        message,
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/account/agents/:slug/runtime-keys",
+    mintKeyLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const slug = String(req.params.slug ?? "");
+      const agent = agentsRepo.bySlug(db, slug);
+      if (!agent) {
+        throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
+      }
+      assertAgentOwnedBy(db, resolved.account_id, agent.agent_id);
+      const controller = getControllerWalletForAgent(db, agent.agent_id);
+      if (!controller) {
+        throw new VerdictError(
+          "bind a controller wallet before minting runtime keys",
+          ERROR_CODES.agent_not_authorized,
+          409,
+        );
+      }
+      const parsed = RuntimeKeyMintSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid request",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.issues },
+        );
+      }
+      ensureExpiresInFuture(parsed.data.expires_at, now);
+      assertFreshAuthorization(parsed.data.authorization_issued_at, now);
+      const { policy_json, policy_hash } = policyDigest(parsed.data.policy);
+      const authorizationMessage = buildRuntimeKeyAuthorizationMessage({
+        agentSlug: agent.display_slug,
+        controllerWalletAddress: controller.wallet_address,
+        controllerChainId: controller.chain_id,
+        policyHash: policy_hash,
+        authorizationNonce: parsed.data.authorization_nonce,
+        expiresAt: parsed.data.expires_at,
+        issuedAt: parsed.data.authorization_issued_at,
+      });
+      const signatureOk = await verifySignedMessageAddress(
+        controller.wallet_address,
+        authorizationMessage,
+        parsed.data.signature as Hex,
+      );
+      if (!signatureOk) {
+        throw new VerdictError(
+          "runtime-key authorization signature does not match controller wallet",
+          ERROR_CODES.agent_not_authorized,
+          403,
+        );
+      }
+      let minted: ReturnType<typeof mintRuntimeKey>;
+      try {
+        minted = mintRuntimeKey(db, {
+          account_id: resolved.account_id,
+          agent_id: agent.agent_id,
+          label: parsed.data.label,
+          policy_json,
+          policy_hash,
+          controller_wallet_address: controller.wallet_address,
+          controller_chain_id: controller.chain_id,
+          authorization_nonce: parsed.data.authorization_nonce,
+          authorization_message: authorizationMessage,
+          authorization_signature: parsed.data.signature,
+          expires_at: parsed.data.expires_at,
+          created_at: nowIso(now),
+        });
+      } catch (err) {
+        if (err instanceof RuntimeKeyAuthorizationReplayError) {
+          throw new VerdictError(err.message, ERROR_CODES.duplicate, 409, {
+            agent_id: agent.agent_id,
+          });
+        }
+        throw err;
+      }
+      res.status(201).json({
+        runtime_key_id: minted.runtime_key_id,
+        secret: minted.secret,
+        runtime_key_prefix: minted.runtime_key_prefix,
+        label: parsed.data.label ?? null,
+        policy_hash,
+        created_at: minted.created_at,
+        expires_at: parsed.data.expires_at ?? null,
+        warning: "store this runtime key now — it is not retrievable later",
+      });
+    }),
+  );
+
+  router.delete(
+    "/v1/account/runtime-keys/:key_id",
+    rotateKeyLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await resolveAccount(req, db);
+      if (!resolved) {
+        throw new VerdictError("auth required", ERROR_CODES.agent_not_authorized, 401);
+      }
+      const parsed = RuntimeKeyRevokeSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new VerdictError(
+          "invalid request",
+          ERROR_CODES.schema_invalid,
+          400,
+          { issues: parsed.error.issues },
+        );
+      }
+      const revoked = revokeRuntimeKey(
+        db,
+        resolved.account_id,
+        String(req.params.key_id ?? ""),
+        parsed.data.reason,
+      );
+      res.status(200).json({ revoked });
     }),
   );
 

@@ -9,9 +9,7 @@
 //
 // Read-only — no writes. Mutating a market goes through `marketsRepo.bumpConfig`.
 
-import type Database from "better-sqlite3";
 import {
-  marketsRepo,
   type MarketRow,
 } from "./db.js";
 import { getMarketMakerRegistry } from "./market-maker/registry.js";
@@ -89,30 +87,10 @@ export function adapterIdentityForMarket(marketRow: MarketRow): {
 }
 
 /**
- * Resolve a submission's market — either by explicit market_id (new code path)
- * or by legacy (asset_id, horizon_hours) lookup. Returns null if no row matches.
- */
-export function resolveMarket(
-  db: Database.Database,
-  args:
-    | { market_id: string }
-    | { asset_id: string; horizon_hours: number },
-): MarketRow | null {
-  if ("market_id" in args) {
-    return marketsRepo.get(db, args.market_id);
-  }
-  const synthesized = marketsRepo.legacyIdFor(args.asset_id, args.horizon_hours);
-  if (!synthesized) return null;
-  return marketsRepo.get(db, synthesized);
-}
-
-/**
  * Compute the t1 deadline (`resolve_after`) for a submission. The resolver's
  * tick loop walks calls whose `resolve_after <= now()`. Returns ISO8601 UTC.
  *
- * t0 is the canonical anchor — for direction_binary calls accepted with
- * grace, t0 = anchored_at; for committed-mode calls, t0 = the daemon's
- * deterministic anchor at acceptance. This function only adds horizon_seconds.
+ * t0 is the canonical anchor. This function only adds horizon_seconds.
  */
 export function computeResolveAfter(
   market: MarketRow,
@@ -183,18 +161,8 @@ export function resolverShouldTick(market: MarketRow): boolean {
 }
 
 /**
- * Codex follow-up F2: replaces the Math.round(horizon_seconds/3600) trap
- * scattered across submitCall / /reveal / fallback materialization. For
- * seeded markets the rounding accidentally produced legal values (5m→0,
- * 15m→0, 1h→1, 4h→4, 24h→24, 7d→168). For any future arbitrary horizon
- * (e.g. 7m → 0 same as 5m, 90m → 2 not a legal HorizonHours) it would
- * silently mint receipts with wrong-shape horizon_hours.
- *
- * This helper fails closed on horizons that don't map cleanly into the
- * legacy back-compat surface. Operators introducing a new horizon must
- * either (a) align with the seeded set, (b) extend HorizonHoursSchema
- * + add a sentinel mapping here, or (c) accept the call won't carry
- * a meaningful horizon_hours legacy value.
+ * Resolver scoring still uses the legacy volatility buckets, so native-price
+ * markets map horizon_seconds into that finite bucket set here.
  */
 export function legacyHorizonHoursForMarket(
   market: { market_id: string; horizon_seconds: number },
@@ -206,40 +174,8 @@ export function legacyHorizonHoursForMarket(
   if (seconds === 86400) return 24;
   if (seconds === 604800) return 168;
   throw new Error(
-    `market ${market.market_id} horizon_seconds=${seconds} does not map to HorizonHoursSchema {0,1,4,24,168}; legacy horizon_hours stamping requires alignment with the schema enum or a new sentinel`,
+    `market ${market.market_id} horizon_seconds=${seconds} does not map to scoring horizon buckets {0,1,4,24,168}`,
   );
-}
-
-// ─── P3 — submit-time market resolution + dedup ─────────────────────────────
-
-/** Either of the two wire shapes a SubmittedCall can carry per Codex P3 D1. */
-export type MarketSelector =
-  | { market_id: string; asset_id?: string; horizon_hours?: number }
-  | { market_id?: undefined; asset_id: string; horizon_hours: number };
-
-/**
- * Resolve a SubmittedCall payload to its MarketRow. Honors both wire shapes:
- *   - `market_id` present → direct registry lookup
- *   - legacy `(asset_id, horizon_hours)` only → synthesize via legacyIdFor
- * Returns null when no market matches. Caller decides on the error shape
- * (404 unknown market, 4xx draft market, etc.).
- */
-export function resolveMarketFromPayload(
-  db: Database.Database,
-  payload: MarketSelector,
-): MarketRow | null {
-  if (payload.market_id) {
-    return marketsRepo.get(db, payload.market_id);
-  }
-  if (payload.asset_id && typeof payload.horizon_hours === "number") {
-    const synthesized = marketsRepo.legacyIdFor(
-      payload.asset_id,
-      payload.horizon_hours,
-    );
-    if (!synthesized) return null;
-    return marketsRepo.get(db, synthesized);
-  }
-  return null;
 }
 
 /**
@@ -268,13 +204,11 @@ export function computeDedupBucketSeconds(horizon_seconds: number): number {
 
 /**
  * Dedup key for a single submission. Keyed on (agent_id, market_id,
- * accepted_at-bucket). Wave 3 dropped the `side` factor — FHE-direct
- * submissions never reveal side at acceptance time, so two opposite-
- * direction calls on the same market within the same bucket should
- * collapse to one dedup_key (the agent can't claim "I had BUY AND SELL
- * conviction" without a price-leaking timing oracle). The horizon
- * factor is implicit in market_id (each market is single-horizon by
- * registry contract).
+ * accepted_at-bucket). Sealed Fhenix submissions never reveal side at
+ * acceptance time, so two opposite-direction calls on the same market
+ * within the same bucket collapse to one dedup_key. The horizon factor is
+ * implicit in market_id (each market is single-horizon by registry
+ * contract).
  */
 export function buildMarketDedupKey(args: {
   agent_id: string;

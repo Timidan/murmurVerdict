@@ -17,10 +17,9 @@
  * The resolver picks this adapter by reading `markets.adapter_id ===
  * 'polymarket-gamma'` from the row, then calls `observeResolution` with
  * an {@link ObservationContext} that the sync ticker has populated with
- * the conditionId. Privacy-mode branching happens in the resolver
- * BEFORE adapter selection — Polymarket-resolved fhe_direct calls
- * automatically inherit the encrypted-score + threshold-release path
- * (Z0-Z3).
+ * the conditionId. Submission privacy is handled before scoring: calls
+ * remain sealed until the Fhenix reveal is published and attached as the
+ * public commitment.
  *
  * Cite: RESEARCH_polymarket_gamma_adapter.md §1-§10, V2_DECISION_RECORD §2.4.
  */
@@ -38,7 +37,7 @@ import type {
 } from "../types.js";
 import { CommitmentSchema } from "../../verdict/markets-core.js";
 import { PolymarketGammaClient } from "./client.js";
-import { gammaMarketToOutcome, type GammaMarketSnapshot } from "./transform.js";
+import { gammaMarketToOutcome } from "./transform.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -242,6 +241,41 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
       );
       return "pending";
     }
+  }
+
+  expectedRevealOpenAt(input: { config: Record<string, unknown> }): number | null {
+    const endDate = input.config.endDate;
+    if (typeof endDate !== "string") return null;
+    const ms = Date.parse(endDate);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  outcomeLabels(input: { config: Record<string, unknown> }): string[] | null {
+    const labels = input.config.outcomes;
+    if (
+      Array.isArray(labels) &&
+      labels.length === 2 &&
+      labels.every((label) => typeof label === "string" && label.length > 0)
+    ) {
+      return labels as string[];
+    }
+    return null;
+  }
+
+  buildObservationContext(input: {
+    marketRef: MarketRef;
+    config: Record<string, unknown>;
+    market_id: string;
+  }): ObservationContext {
+    const conditionId =
+      typeof input.config.conditionId === "string"
+        ? input.config.conditionId
+        : input.marketRef.sourceId;
+    return {
+      ...input.config,
+      conditionId,
+      market_id: input.market_id,
+    };
   }
 
   /**

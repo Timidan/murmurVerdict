@@ -1,18 +1,21 @@
 import Database from "better-sqlite3";
 import {
-  AcceptedCall,
   AgentKind,
   AgentProfile,
   AgentSecurityEvent,
   AgentSecurityEventSchema,
   CallStatus,
+  CommercialTemplate,
+  EdgeClass,
+  FeedPacketKind,
+  FeedSlaStatus,
+  FeedStatus,
   Outcome,
-  SubmittedCall,
+  ResolutionClass,
   SCHEMA_VERSION,
   SCORING_VERSION,
   UsageEvent,
   UsageEventKind,
-  VerifiedIdentity,
 } from "./schema.js";
 
 // ─── DB bootstrap ────────────────────────────────────────────────────────────
@@ -239,8 +242,8 @@ function applyMigrations(db: Database.Database): void {
     //   - api_keys: scoped per (account_id, agent_id) pair. Replaces the
     //     legacy single-key-per-agent model in agents.api_key_hash. The
     //     legacy column is left intact (we don't rebuild agents here) so
-    //     existing wallet-only and benchmark agents keep authenticating
-    //     until Phase 4 cuts the dispatcher over.
+    //     existing benchmark agents keep authenticating until Phase 4 cuts
+    //     the dispatcher over.
     //
     // Hash discipline: api_keys.api_key_hash stores sha256(secret) — same
     // primitive as agents.api_key_hash. Plaintext is returned exactly once
@@ -385,152 +388,37 @@ function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 23) {
-    // Z0 — operator-blind privacy foundation.
-    //
-    // Two additive tables wire the FHE provider boundary without
-    // touching any existing privacy path:
-    //   - fhe_keysets:  public-key metadata per provider/keyset, with
-    //                   lifecycle status. The submission path (Z1) FKs
-    //                   into `keyset_id`. The committee/operator never
-    //                   stores plaintext private keys here.
-    //   - fhe_circuits: compiled circuit handles per (provider, name,
-    //                   vector_max_len) so the resolver (Z2) knows
-    //                   which artifact to call when scoring.
-    //
-    // Pure additive: no backfill, no rebuild, no FK impact on
-    // submissions/agents/markets. Legacy_plaintext and committed
-    // agents are unaffected.
-    db.exec(MIGRATION_023);
+    // Reserved. The local FHE provider/keyset schema that used this slot
+    // was retired before the Fhenix-sealed path became canonical.
     v = 23;
     set.run("schema_version", String(v));
   }
 
   if (v < 24) {
-    // Z1 — operator-blind submission storage.
-    //
-    // fhe_call_ciphertexts stores ONLY the encrypted payout vector,
-    // its hash, and the binding metadata the resolver (Z2) needs to
-    // pick the right circuit. The daemon never decrypts the blob —
-    // ciphertext_blob is opaque bytes whose only daemon-side property
-    // is `sha256(blob) === ciphertext_hash`.
-    //
-    // UNIQUE(ciphertext_hash) defends against cross-agent replay of a
-    // captured ciphertext. UNIQUE(keyset_id, nonce) defends against
-    // same-agent nonce reuse (the preimage binds nonce, so reusing it
-    // would otherwise produce a stale-but-valid commit hash).
-    //
-    // Pure additive — no rebuild, no FK impact on existing tables.
-    // Legacy_plaintext and committed agents are unaffected.
-    db.exec(MIGRATION_024);
+    // Reserved with 023. Existing DBs that already created the old
+    // ciphertext table are cleaned up by migrations 034 and 036.
     v = 24;
     set.run("schema_version", String(v));
   }
 
   if (v < 25) {
-    // Z2 — homomorphic scoring jobs + score-ciphertext pointers on
-    // t1_resolutions.
-    //
-    // fhe_score_jobs is the per-call queue/state machine the resolver
-    // writes to when it computes (or fails to compute) an encrypted
-    // score for an fhe_direct row. The job row is the only operator-
-    // visible state for the encrypted score until Z3's threshold
-    // committee decrypts it. It carries the encrypted_score blob,
-    // its hash, the transcript hash binding (circuit_id, ciphertext
-    // hash, resolved outcome), retry bookkeeping, and the last error
-    // string for diagnosis. There is no plaintext score column here
-    // by construction — Z3 owns the decrypted bounded score and that
-    // lands on `t1_resolutions.call_score` after quorum release.
-    //
-    // The two additive columns on t1_resolutions point the legacy
-    // resolution row at the new encrypted artifact:
-    //   - score_ciphertext_hash: same value as fhe_score_jobs.
-    //     score_ciphertext_hash; duplicated on t1_resolutions so the
-    //     /v1/calls/:id read can serve both rows with one query.
-    //   - fhe_circuit_id: FK into fhe_circuits, lets disputes replay
-    //     the exact compiled circuit the score was computed against.
-    //
-    // Pure additive — legacy_plaintext and committed paths read the
-    // unchanged t1_resolutions columns and never touch fhe_score_jobs.
-    // Codex Z2 fix — table create + index are idempotent (`IF NOT EXISTS`),
-    // but ALTER TABLE ADD COLUMN is NOT in SQLite. Apply the two ALTERs
-    // through the existence-guarded helper so a partial-completion rerun
-    // doesn't abort with "duplicate column name".
-    db.exec(MIGRATION_025_TABLES);
-    for (const { table, column, sql } of MIGRATION_025_ALTERS) {
-      applyAlterTableAddColumn(db, table, column, sql);
-    }
+    // Reserved with 023. The old local scoring job queue is gone; Fhenix
+    // reveals public verdicts post-horizon and ordinary scoring writes the
+    // public reputation score.
     v = 25;
     set.run("schema_version", String(v));
   }
 
   if (v < 26) {
-    // Z3 — threshold score release.
-    //
-    // Four additive tables that wire the 5-of-9 threshold-key ceremony
-    // described in docs/operator-blind-privacy-plan.md §3. The committee
-    // decrypts ONLY the bounded score ciphertext (never the prediction)
-    // and the row layout is intentionally narrow so the prediction
-    // ciphertext / plaintext score never have a home here:
-    //
-    //   - fhe_key_holders: the 9-seat registry. `category` enforces the
-    //     plan's seat composition (1 Murmur + 3 attesters + 3 agents +
-    //     2 partners). `public_identity` is the ed25519 pubkey hex used
-    //     to verify partial-decrypt signatures. `enabled`/`retired_at`
-    //     drive holder rotation without breaking historical share rows.
-    //   - fhe_decrypt_requests: one row per call's decrypt ceremony.
-    //     `transcript_hash` binds the same canonical bytes the resolver
-    //     hashed at score time (see canonicalTranscriptBytes() in
-    //     fhe/provider.ts), so a holder can independently verify the
-    //     request matches DB state before signing.  Status machine:
-    //     `pending_shares` → `quorum_reached` → `released`, with
-    //     `expired`/`frozen` as terminal failure states for ops.
-    //   - fhe_decrypt_shares: one row per holder per request. The
-    //     partial_decrypt blob is provider-specific opaque bytes; the
-    //     share_signature is ed25519(request_hash || partial) so the
-    //     transcript on /v1/calls/:id/fhe-transcript is third-party
-    //     auditable.
-    //   - fhe_score_releases: terminal record of a successful quorum
-    //     release. `released_score` is the ONLY plaintext bounded score
-    //     in v0 (also copied to t1_resolutions.call_score on release).
-    //     `quorum_signatures` carries the JSON array of holder_id +
-    //     pubkey + signature so anyone can replay the verification.
-    //
-    // Migration 026 is CREATE-only — no ALTER TABLE, so it's
-    // unconditionally idempotent via `IF NOT EXISTS` and doesn't need
-    // the applyAlterTableAddColumn helper (codex Z2 review fix #4 only
-    // applied to the migration-025 ALTERs).
-    db.exec(MIGRATION_026);
+    // Reserved with 023. No daemon-local decrypt committee exists in the
+    // canonical design.
     v = 26;
     set.run("schema_version", String(v));
   }
 
   if (v < 27) {
-    // Z5 — production-gate cleanup. Two additive parts:
-    //
-    //   1. Ciphertext retention columns on fhe_call_ciphertexts:
-    //      `purge_after` (TEXT, NULL until the resolver writes the
-    //      retention deadline), `purged_at` (TEXT, NULL until a
-    //      purge job runs), `purge_reason` (TEXT, NULL or one of
-    //      'dispute_window_passed' | 'committee_rotation' |
-    //      'manual_ops'). Driven by Z5's retention sweep; the
-    //      ciphertext blob itself stays in place until purged so
-    //      dispute replay can verify hashes for the entire window.
-    //
-    //   2. `privacy_policy_events` audit log — one row per privacy-
-    //      policy state transition (e.g. fhe_direct toggled off,
-    //      threshold committee rotation completed, retention sweep
-    //      ran). Used by the readyz prod gate to surface "what
-    //      happened" without operators having to grep logs. Optional
-    //      per the plan §4 Z5 row but cheap enough to land now.
-    //
-    // Idempotency: ALTER TABLE ADD COLUMN goes through
-    // applyAlterTableAddColumn so a crash between the ALTER and the
-    // schema_version bump is safe (codex Z2 review FAIL #4 fix
-    // pattern). The new table uses CREATE TABLE IF NOT EXISTS.
-    for (const { table, column, sql } of MIGRATION_027_ALTERS) {
-      applyAlterTableAddColumn(db, table, column, sql);
-    }
-    db.exec(MIGRATION_027_TABLES);
+    // Reserved with 023. Old FHE retention/audit tables are dropped in
+    // the cleanup migrations below if an existing DB already has them.
     v = 27;
     set.run("schema_version", String(v));
   }
@@ -616,21 +504,8 @@ function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 30) {
-    // Z5 — repair migration for operators who upgraded from the
-    // previously-released schema_version=28 (the slot the prior Z5
-    // reservation note mentioned). Those operators never saw the
-    // `if (v < 27)` Z5 block fire — that conditional gate is permanently
-    // skipped at v=28+. Codex Z5 review BLOCKER fix: re-run the same
-    // idempotent statements at v<30 so existing 28/29 DBs catch up.
-    //
-    // Fresh installs already ran the Z5 work at v<27 (the canonical
-    // bootstrap path) and reach this block with the columns + table
-    // already in place. applyAlterTableAddColumn + CREATE TABLE IF NOT
-    // EXISTS make the re-run a no-op for those.
-    for (const { table, column, sql } of MIGRATION_027_ALTERS) {
-      applyAlterTableAddColumn(db, table, column, sql);
-    }
-    db.exec(MIGRATION_027_TABLES);
+    // Reserved old-FHE repair slot. The canonical cleanup now happens
+    // in 034/036 instead.
     v = 30;
     set.run("schema_version", String(v));
   }
@@ -642,9 +517,8 @@ function applyMigrations(db: Database.Database): void {
     //   1. Drop six dead tables emptied by Wave 1/3a:
     //        verified_identities, claim_challenges, oracle_policies,
     //        call_reveals, call_private_envelopes, disputes.
-    //      Wave 1 deleted the X/Telegram/wallet claim flows + shadow
-    //      scraping + Phase E cleanup; Wave 3a deleted the disputes
-    //      runtime. No app code touches them anymore.
+    //      The old public-identity onboarding tables, shadow scraping,
+    //      and disputes runtime are gone. No app code touches them anymore.
     //   2. Drop four plaintext market-signal columns from submissions:
     //        side, asset_id, horizon_hours, confidence.
     //      These were the only DB-level leakage paths the operator could
@@ -764,24 +638,268 @@ function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 34) {
-    // Demand-evidence retreat — remove the in-process threshold-release
-    // theater while preserving audit/security tables and FHE submission
-    // primitives. FHE-direct rows can still be accepted when configured,
-    // but there is no mock 5-of-9 release pipeline in-process anymore.
-    // The legacy_payload_json column gives the relaxed native-price path
-    // somewhere explicit to store its cleartext legacy wire body without
-    // reintroducing the plaintext submissions columns dropped in 031.
+    // Remove the retired daemon-local FHE stack. The only live privacy
+    // integration after this point is the Fhenix-sealed contract path.
     db.transaction(() => {
       db.exec(MIGRATION_034_RETREAT);
-      applyAlterTableAddColumn(
-        db,
-        "submissions",
-        "legacy_payload_json",
-        "ALTER TABLE submissions ADD COLUMN legacy_payload_json TEXT",
-      );
       set.run("schema_version", "34");
     })();
     v = 34;
+  }
+
+  if (v < 35) {
+    db.exec(MIGRATION_035_FHENIX_SEALED);
+    v = 35;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 36) {
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_036_T1_RESOLUTIONS_REBUILD,
+      () => {
+        /* schema_version bump rides after both rebuilds and table drops. */
+      },
+      ["t1_resolutions", "t1_resolutions_v036"],
+    );
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_036_SUBMISSIONS_REBUILD,
+      () => {
+        /* schema_version bump rides after both rebuilds and table drops. */
+      },
+      ["submissions", "submissions_v036"],
+    );
+    db.exec(MIGRATION_036_DROP_RETIRED_FHE_ARTIFACTS);
+    v = 36;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 37) {
+    db.exec(MIGRATION_037_FEED_CONTRACTS);
+    v = 37;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 38) {
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_038_FHENIX_BINARY_REVEALS,
+      () => {
+        /* schema_version bump rides after the rebuild. */
+      },
+      ["fhenix_sealed_calls", "fhenix_sealed_calls_v038"],
+    );
+    v = 38;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 39) {
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_039_FHENIX_BINARY_INDEX_NAMING,
+      () => {
+        /* schema_version bump rides after the rebuild. */
+      },
+      ["fhenix_sealed_calls", "fhenix_sealed_calls_v039"],
+    );
+    v = 39;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 40) {
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_040_FEED_BINARY_INDEX_NAMING,
+      () => {
+        /* schema_version bump rides after the rebuild. */
+      },
+      ["feed_packets", "feed_packets_v040"],
+    );
+    v = 40;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 41) {
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_041_SUBMISSIONS_REVEAL_TERMINALS,
+      () => {
+        /* schema_version bump happens after additive Fhenix columns below. */
+      },
+      ["submissions", "submissions_v041"],
+    );
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_041_FHENIX_SEALED_REVEAL_TERMINALS,
+      () => {
+        /* schema_version bump follows event-index tables below. */
+      },
+      ["fhenix_sealed_calls", "fhenix_sealed_calls_v041"],
+    );
+    db.exec(MIGRATION_041_FHENIX_EVENT_INDEXER);
+    v = 41;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 42) {
+    db.exec(MIGRATION_042_CONTROLLER_WALLETS);
+    v = 42;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 43) {
+    applyAlterTableAddColumn(
+      db,
+      "submissions",
+      "runtime_key_id",
+      "ALTER TABLE submissions ADD COLUMN runtime_key_id TEXT REFERENCES agent_runtime_keys(runtime_key_id) ON DELETE SET NULL",
+    );
+    db.exec(MIGRATION_043_SUBMISSION_RUNTIME_KEYS);
+    v = 43;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 44) {
+    db.exec(MIGRATION_044_FHENIX_GATEWAY_TX_ATTEMPTS);
+    v = 44;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 45) {
+    db.exec(MIGRATION_045_FHENIX_GATEWAY_FEED_PACKET_TX_ATTEMPTS);
+    v = 45;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 46) {
+    applyAlterTableAddColumn(
+      db,
+      "agent_controller_wallets",
+      "last_attested_at",
+      "ALTER TABLE agent_controller_wallets ADD COLUMN last_attested_at TEXT",
+    );
+    applyAlterTableAddColumn(
+      db,
+      "agent_controller_wallets",
+      "reattestation_due_at",
+      "ALTER TABLE agent_controller_wallets ADD COLUMN reattestation_due_at TEXT",
+    );
+    applyAlterTableAddColumn(
+      db,
+      "agent_controller_wallets",
+      "last_reattestation_nonce",
+      "ALTER TABLE agent_controller_wallets ADD COLUMN last_reattestation_nonce TEXT",
+    );
+    applyAlterTableAddColumn(
+      db,
+      "agent_controller_wallets",
+      "last_reattestation_message",
+      "ALTER TABLE agent_controller_wallets ADD COLUMN last_reattestation_message TEXT",
+    );
+    applyAlterTableAddColumn(
+      db,
+      "agent_controller_wallets",
+      "last_reattestation_signature",
+      "ALTER TABLE agent_controller_wallets ADD COLUMN last_reattestation_signature TEXT",
+    );
+    db.exec(MIGRATION_046_CONTROLLER_REATTESTATIONS);
+    v = 46;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 47) {
+    db.exec(MIGRATION_047_FEED_SLA_INCIDENTS);
+    v = 47;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 48) {
+    for (const table of [
+      "fhenix_gateway_tx_attempts",
+      "fhenix_gateway_feed_packet_tx_attempts",
+    ]) {
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "broadcast_started_at",
+        `ALTER TABLE ${table} ADD COLUMN broadcast_started_at TEXT`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "broadcast_latency_ms",
+        `ALTER TABLE ${table} ADD COLUMN broadcast_latency_ms INTEGER CHECK (broadcast_latency_ms IS NULL OR broadcast_latency_ms >= 0)`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "receipt_observed_at",
+        `ALTER TABLE ${table} ADD COLUMN receipt_observed_at TEXT`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "receipt_latency_ms",
+        `ALTER TABLE ${table} ADD COLUMN receipt_latency_ms INTEGER CHECK (receipt_latency_ms IS NULL OR receipt_latency_ms >= 0)`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "latest_block_latency_ms",
+        `ALTER TABLE ${table} ADD COLUMN latest_block_latency_ms INTEGER CHECK (latest_block_latency_ms IS NULL OR latest_block_latency_ms >= 0)`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "receipt_status",
+        `ALTER TABLE ${table} ADD COLUMN receipt_status TEXT CHECK (receipt_status IS NULL OR receipt_status IN ('success','reverted'))`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "receipt_block_number",
+        `ALTER TABLE ${table} ADD COLUMN receipt_block_number INTEGER`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "latest_block_number",
+        `ALTER TABLE ${table} ADD COLUMN latest_block_number INTEGER`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "confirmations_observed",
+        `ALTER TABLE ${table} ADD COLUMN confirmations_observed INTEGER CHECK (confirmations_observed IS NULL OR confirmations_observed >= 0)`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "gas_used",
+        `ALTER TABLE ${table} ADD COLUMN gas_used TEXT`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "effective_gas_price_wei",
+        `ALTER TABLE ${table} ADD COLUMN effective_gas_price_wei TEXT`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        table,
+        "last_rpc_error",
+        `ALTER TABLE ${table} ADD COLUMN last_rpc_error TEXT`,
+      );
+    }
+    v = 48;
+    set.run("schema_version", String(v));
+  }
+
+  if (v < 49) {
+    db.exec(MIGRATION_049_OPERATOR_ALERTS);
+    v = 49;
+    set.run("schema_version", String(v));
   }
 }
 
@@ -1082,12 +1200,12 @@ const MIGRATION_004 = `
 // What this migration does:
 //   1. Adds three privacy columns to `submissions`:
 //        - privacy_mode TEXT — discriminator for the call envelope
-//          ("legacy_plaintext" | "committed" | future modes)
+//          (historical cleartext/commit modes and future modes)
 //        - commit_hash TEXT — keccak256 of the canonical commit preimage,
 //          NULL for legacy rows
 //        - commit_scheme TEXT — version tag of the commit preimage
 //          schema, e.g. "murmur-verdict-v0.2-commit@1"
-//   2. Backfills existing rows to privacy_mode='legacy_plaintext'.
+//   2. Backfills existing rows to the historical cleartext privacy mode.
 //   3. CREATEs `call_private_envelopes` (encrypted-to-daemon body, empty
 //      until Phase B writes to it).
 //   4. CREATEs `call_reveals` (plaintext after agent-or-fallback reveal,
@@ -1744,7 +1862,7 @@ const MIGRATION_014 = `
 //   - keeps horizon_seconds NOT NULL (we don't NULL it; it's the
 //     canonical horizon field per migration 010 and is used by the
 //     resolver post-acceptance to compute T1)
-// Existing legacy_plaintext rows still satisfy the relaxed constraints
+// Existing historical cleartext rows still satisfy the relaxed constraints
 // because they had real values before, so the INSERT-from-original
 // step copies them through unchanged.
 //
@@ -1950,9 +2068,9 @@ const MIGRATION_016 = `
 //   - account_agents: many-to-many bridge for future co-ownership; v2.0
 //     enforces one-account-per-agent at the code layer.
 //   - api_keys: per (account, agent) pair, replaces the legacy single
-//     agents.api_key_hash column for casual-tier agents. The legacy column
-//     stays in place so wallet-only and benchmark agents keep working
-//     until Phase 4 cuts the dispatcher over.
+//     agents.api_key_hash column for account-owned agents. The legacy column
+//     stays in place so benchmark agents keep working until Phase 4 cuts the
+//     dispatcher over.
 //
 // Hash discipline: api_key_hash stores sha256(secret); plaintext returned
 // once by mintApiKey() and never persisted. Soft rotation via rotated_at.
@@ -2120,205 +2238,17 @@ const MIGRATION_020 = `
   DROP TABLE IF EXISTS receipts;
 `;
 
-// ─── Migration 023 — Z0 FHE foundation (additive) ───────────────────────────
-//
-// Two tables, no backfill. Both are independent of submissions/agents
-// so legacy_plaintext + committed paths are unaffected.
-//
-// fhe_keysets
-//   - keyset_id: opaque PK; the submission path FKs against this in Z1.
-//   - provider: provider that owns the secret share (today: mock,
-//     zama_local; future: zama_kms, fhenix_cofhe). CHECK constraint
-//     stays in step with `FheProviderName` in fhe/provider.ts.
-//   - public_key_blob: provider-specific public-key serialization.
-//     SQLite BLOB; size is provider-defined.
-//   - public_key_hash: hex sha256(public_key_blob). Bound into the
-//     commit preimage so an agent's submission pins which keyset it
-//     was encrypted to (rotation safety).
-//   - status: pending → active → suspended → revoked. Only `active`
-//     keysets accept new submissions; older statuses are honored for
-//     pending/in-flight calls.
-//   - vector_max_len: max payout-vector length the keyset's compiled
-//     circuits support. Z1's submission validator rejects vectors
-//     longer than this.
-//
-// fhe_circuits
-//   - circuit_id: opaque PK.
-//   - name: 'half_l1_distance_binary' (length 2) or 'half_l1_distance_n'
-//     (variable length up to vector_max_len). CHECK constraint matches
-//     `FheCircuit["name"]` in fhe/provider.ts.
-//   - (provider, name, vector_max_len) is a UNIQUE tuple — the resolver
-//     uses it as the lookup key when dispatching to scoreEncrypted.
-//   - handle: provider-specific compiled-artifact identifier (e.g.
-//     circuit hash, file path on the sidecar).
-//
-// Indexes: status + provider on keysets for the active-keyset lookup;
-// name on circuits for the resolver's dispatch.
-const MIGRATION_023 = `
-  CREATE TABLE IF NOT EXISTS fhe_keysets (
-    keyset_id           TEXT PRIMARY KEY,
-    provider            TEXT NOT NULL CHECK (provider IN ('mock','zama_local','zama_kms','fhenix_cofhe')),
-    public_key_blob     BLOB NOT NULL,
-    public_key_hash     TEXT NOT NULL,
-    status              TEXT NOT NULL CHECK (status IN ('pending','active','suspended','revoked')),
-    vector_max_len      INTEGER NOT NULL,
-    created_at          TEXT NOT NULL,
-    activated_at        TEXT,
-    suspended_at        TEXT,
-    notes               TEXT
-  );
-  CREATE INDEX IF NOT EXISTS idx_fhe_keysets_status ON fhe_keysets(status);
-  CREATE INDEX IF NOT EXISTS idx_fhe_keysets_provider ON fhe_keysets(provider);
-
-  CREATE TABLE IF NOT EXISTS fhe_circuits (
-    circuit_id          TEXT PRIMARY KEY,
-    name                TEXT NOT NULL CHECK (name IN ('half_l1_distance_binary','half_l1_distance_n')),
-    description         TEXT,
-    vector_max_len      INTEGER NOT NULL,
-    compiled_at         TEXT NOT NULL,
-    provider            TEXT NOT NULL CHECK (provider IN ('mock','zama_local','zama_kms','fhenix_cofhe')),
-    handle              TEXT NOT NULL,
-    UNIQUE (provider, name, vector_max_len)
-  );
-  CREATE INDEX IF NOT EXISTS idx_fhe_circuits_name ON fhe_circuits(name);
-`;
-
-// ─── Migration 024 — fhe_call_ciphertexts (Z1) ──────────────────────────────
-//
-// Stores per-call encrypted payout vectors for fhe_direct submissions.
-// One row per accepted fhe_direct call; FK cascades on submissions
-// delete so a developer's local rollback / dev wipe of submissions
-// doesn't leave orphan ciphertext rows.
-//
-// `ciphertext_blob` is BLOB (binary) not TEXT — base64 is the wire
-// shape, the database stores raw decoded bytes so byte-for-byte
-// dispute replay reproduces the same sha256 without re-decoding.
-//
-// `payout_denominator` is TEXT (decimal-stringified bigint) because
-// SQLite INTEGER caps at 2^63-1 and the universal Commitment shape
-// allows arbitrary-precision denominators. Same convention as
-// `submissions.commitment_json`'s payoutDenominator field.
-const MIGRATION_024 = `
-  CREATE TABLE IF NOT EXISTS fhe_call_ciphertexts (
-    call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
-    keyset_id            TEXT NOT NULL REFERENCES fhe_keysets(keyset_id),
-    circuit_id           TEXT NOT NULL REFERENCES fhe_circuits(circuit_id),
-    ciphertext_format    TEXT NOT NULL,
-    ciphertext_blob      BLOB NOT NULL,
-    ciphertext_hash      TEXT NOT NULL,
-    vector_len           INTEGER NOT NULL,
-    payout_denominator   TEXT NOT NULL,
-    nonce                TEXT NOT NULL,
-    created_at           TEXT NOT NULL,
-    UNIQUE (ciphertext_hash),
-    UNIQUE (keyset_id, nonce)
-  );
-  CREATE INDEX IF NOT EXISTS idx_fhe_ct_keyset ON fhe_call_ciphertexts(keyset_id);
-  CREATE INDEX IF NOT EXISTS idx_fhe_ct_format ON fhe_call_ciphertexts(ciphertext_format);
-`;
-
-// ─── Migration 025 — fhe_score_jobs + t1_resolutions FHE pointers (Z2) ──────
-//
-// One row per fhe_direct call once the resolver has tried to score it.
-// Status machine:
-//   - queued                  — resolver pushed a job, sidecar not yet called
-//   - running                 — score attempt in flight (set/cleared by caller)
-//   - scored_pending_decrypt  — sidecar returned an encrypted score; awaiting Z3
-//   - failed                  — terminal-ish; attempts column + last_error tell
-//                               the operator what to do
-//
-// `attempts` increments on every retry so a stuck call surfaces quickly in
-// /v1/readyz; the resolver decides when to give up based on this count, not
-// on a hardcoded clock. Cold-start posture (plan §5): if the sidecar is
-// unavailable, the JOB row records the failure but the CALL stays
-// pending_t1, never downgrades to plaintext.
-//
-// score_ciphertext is BLOB (raw bytes from the provider). score_ciphertext_hash
-// is sha256 hex; transcript_hash is the provider-attested binding hash.
-//
-// Codex Z2 review FAIL #4 — `ALTER TABLE ... ADD COLUMN` is NOT idempotent in
-// SQLite: a rerun (e.g. after a crash between the ALTER and the schema_version
-// bump, or a manual fix) hits "duplicate column name" and aborts the
-// migration. Splitting MIGRATION_025 into the idempotent CREATE TABLE block
-// (still safe to re-run) and the two ALTERs which apply applyAlterTable() —
-// a helper that no-ops when the target column already exists.
-const MIGRATION_025_TABLES = `
-  CREATE TABLE IF NOT EXISTS fhe_score_jobs (
-    call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
-    status               TEXT NOT NULL CHECK (status IN ('queued','running','scored_pending_decrypt','failed')),
-    provider             TEXT NOT NULL,
-    circuit_id           TEXT NOT NULL REFERENCES fhe_circuits(circuit_id),
-    score_ciphertext     BLOB,
-    score_ciphertext_hash TEXT,
-    transcript_hash      TEXT,
-    attempts             INTEGER NOT NULL DEFAULT 0,
-    last_attempt_at      TEXT,
-    last_error           TEXT,
-    computed_at          TEXT,
-    created_at           TEXT NOT NULL,
-    UNIQUE (call_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_fhe_score_jobs_status ON fhe_score_jobs(status);
-`;
-
-// ─── Migration 026 — Z3 threshold-key ceremony tables ──────────────────────
-//
-// Pure CREATE-only block (no ALTER TABLE), so it is safe to re-run on a
-// half-applied state. The schema is locked-in by docs/operator-blind-
-// privacy-plan.md §3 — see the prose in applyMigrations() above for why
-// each table looks the way it does.
-const MIGRATION_026 = `
-  CREATE TABLE IF NOT EXISTS fhe_key_holders (
-    holder_id           TEXT PRIMARY KEY,
-    category            TEXT NOT NULL CHECK (category IN ('murmur','attester','agent','partner')),
-    display_name        TEXT NOT NULL,
-    public_identity     TEXT NOT NULL,
-    enabled             INTEGER NOT NULL DEFAULT 1,
-    registered_at       TEXT NOT NULL,
-    retired_at          TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS fhe_decrypt_requests (
-    request_id            TEXT PRIMARY KEY,
-    call_id               TEXT NOT NULL REFERENCES submissions(call_id) ON DELETE CASCADE,
-    score_ciphertext_hash TEXT NOT NULL,
-    transcript_hash       TEXT NOT NULL,
-    resolved_outcome_hash TEXT NOT NULL,
-    keyset_id             TEXT NOT NULL,
-    status                TEXT NOT NULL CHECK (status IN ('pending_shares','quorum_reached','released','expired','frozen')),
-    created_at            TEXT NOT NULL,
-    released_at           TEXT,
-    expires_at            TEXT,
-    UNIQUE (call_id, score_ciphertext_hash)
-  );
-  CREATE INDEX IF NOT EXISTS idx_fhe_decrypt_requests_status ON fhe_decrypt_requests(status);
-
-  CREATE TABLE IF NOT EXISTS fhe_decrypt_shares (
-    share_id            TEXT PRIMARY KEY,
-    request_id          TEXT NOT NULL REFERENCES fhe_decrypt_requests(request_id) ON DELETE CASCADE,
-    holder_id           TEXT NOT NULL REFERENCES fhe_key_holders(holder_id),
-    partial_decrypt     BLOB NOT NULL,
-    share_signature     TEXT NOT NULL,
-    submitted_at        TEXT NOT NULL,
-    UNIQUE (request_id, holder_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS fhe_score_releases (
-    request_id          TEXT PRIMARY KEY REFERENCES fhe_decrypt_requests(request_id) ON DELETE CASCADE,
-    call_id             TEXT NOT NULL,
-    released_score      REAL NOT NULL CHECK (released_score >= 0 AND released_score <= 1),
-    quorum_signatures   TEXT NOT NULL,
-    released_at         TEXT NOT NULL
-  );
-`;
+// Migration slots 023-027 are reserved. They previously created the
+// daemon-local FHE provider, ciphertext, and decrypt-committee tables.
+// Fhenix-sealed verdicts are now canonical, so fresh DBs skip those tables
+// and existing DBs shed them in migrations 034 and 036.
 
 // ─── Migration 028 — Polymarket sync state (Phase 11) ──────────────────────
 //
 // Per-conditionId scratch pad for the Polymarket Gamma sync ticker. Every
 // row is owned by exactly one markets entry (FK ON DELETE CASCADE) and
 // keyed back to the adapter via `adapter_id` for fast per-adapter sweeps.
-// CREATE-only — idempotent under `IF NOT EXISTS`, same posture as
-// MIGRATION_026.
+// CREATE-only — idempotent under `IF NOT EXISTS`.
 const MIGRATION_028 = `
   CREATE TABLE IF NOT EXISTS external_market_sync_state (
     market_id                 TEXT PRIMARY KEY REFERENCES markets(market_id) ON DELETE CASCADE,
@@ -2607,93 +2537,953 @@ const MIGRATION_032 = `
   END;
 `;
 
-// ─── Migration 034 — demand-evidence retreat ───────────────────────────────
+// ─── Migration 034 — local-FHE retreat ──────────────────────────────────────
 //
-// Removes the in-process FHE threshold-release pipeline:
-//   - fhe_score_jobs
-//   - fhe_decrypt_requests
-//   - fhe_decrypt_shares
-//   - fhe_key_holders
-//   - fhe_score_releases
-//
-// Retains FHE keysets/circuits/ciphertexts so optional fhe_direct submission
-// storage remains available, but no daemon-local mock quorum can release
-// scores. Adds submissions.legacy_payload_json separately through the
-// idempotent ALTER helper in applyMigrations().
+// Drops the retired daemon-local FHE pipeline. Existing deployments that had
+// already crossed the old slots are cleaned up here; fresh deployments skipped
+// those slots entirely.
 const MIGRATION_034_RETREAT = `
   DROP TABLE IF EXISTS fhe_decrypt_shares;
   DROP TABLE IF EXISTS fhe_score_releases;
   DROP TABLE IF EXISTS fhe_decrypt_requests;
   DROP TABLE IF EXISTS fhe_key_holders;
   DROP TABLE IF EXISTS fhe_score_jobs;
+  DROP TABLE IF EXISTS fhe_call_ciphertexts;
+  DROP TABLE IF EXISTS privacy_policy_events;
 `;
 
-const MIGRATION_025_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
-  {
-    table: "t1_resolutions",
-    column: "score_ciphertext_hash",
-    sql: "ALTER TABLE t1_resolutions ADD COLUMN score_ciphertext_hash TEXT",
-  },
-  {
-    table: "t1_resolutions",
-    column: "fhe_circuit_id",
-    sql: "ALTER TABLE t1_resolutions ADD COLUMN fhe_circuit_id TEXT REFERENCES fhe_circuits(circuit_id)",
-  },
-];
-
-// ─── Migration 027 — Z5 production-gate cleanup ─────────────────────────────
+// ─── Migration 035 — canonical Fhenix sealed verdicts ────────────────────────
 //
-// Two additive parts: retention columns on fhe_call_ciphertexts (the
-// Z5 retention sweep stamps purge_after at score release, then a
-// follow-up job sets purged_at + zeroes the blob), and an audit log
-// table for privacy-policy state transitions.
-//
-// ALTERs are idempotent via applyAlterTableAddColumn (codex Z2 review
-// FAIL #4 pattern). The new table uses CREATE TABLE IF NOT EXISTS.
-const MIGRATION_027_ALTERS: ReadonlyArray<{ table: string; column: string; sql: string }> = [
-  {
-    table: "fhe_call_ciphertexts",
-    column: "purge_after",
-    sql: "ALTER TABLE fhe_call_ciphertexts ADD COLUMN purge_after TEXT",
-  },
-  {
-    table: "fhe_call_ciphertexts",
-    column: "purged_at",
-    sql: "ALTER TABLE fhe_call_ciphertexts ADD COLUMN purged_at TEXT",
-  },
-  {
-    table: "fhe_call_ciphertexts",
-    column: "purge_reason",
-    sql: "ALTER TABLE fhe_call_ciphertexts ADD COLUMN purge_reason TEXT",
-  },
-];
-
-const MIGRATION_027_TABLES = `
-  CREATE TABLE IF NOT EXISTS privacy_policy_events (
-    event_id    TEXT PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN (
-      'fhe_direct_enabled',
-      'fhe_direct_disabled',
-      'threshold_mode_changed',
-      'committee_rotation_completed',
-      'retention_sweep_completed',
-      'readyz_prod_gate_failed'
-    )),
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    actor        TEXT,
-    created_at   TEXT NOT NULL
+// Fhenix-sealed calls replace plaintext submission as Murmur's canonical
+// prediction path. The submissions row carries public metadata only until the
+// Fhenix contract releases a verified post-horizon reveal; at that point the
+// daemon writes the universal commitment_json and the ordinary resolver/scorer
+// can finish the call.
+const MIGRATION_035_FHENIX_SEALED = `
+  CREATE TABLE IF NOT EXISTS fhenix_sealed_calls (
+    call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    chain_id             INTEGER NOT NULL,
+    contract_address     TEXT NOT NULL,
+    onchain_call_id      TEXT NOT NULL,
+    submit_tx_hash       TEXT NOT NULL,
+    submit_log_index     INTEGER NOT NULL CHECK (submit_log_index >= 0),
+    side_ct_hash         TEXT NOT NULL,
+    confidence_ct_hash   TEXT NOT NULL,
+    reveal_open_at       TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    opened_at            TEXT,
+    revealed_at          TEXT,
+    reveal_tx_hash       TEXT,
+    reveal_log_index     INTEGER CHECK (reveal_log_index IS NULL OR reveal_log_index >= 0),
+    revealed_side        TEXT CHECK (revealed_side IS NULL OR revealed_side IN ('BUY','SELL')),
+    revealed_confidence  REAL CHECK (
+      revealed_confidence IS NULL OR
+      (revealed_confidence >= 0.51 AND revealed_confidence <= 0.95)
+    ),
+    revealed_confidence_bps INTEGER CHECK (
+      revealed_confidence_bps IS NULL OR
+      (revealed_confidence_bps >= 5100 AND revealed_confidence_bps <= 9500)
+    ),
+    side_signature       TEXT,
+    confidence_signature TEXT,
+    UNIQUE (chain_id, contract_address, onchain_call_id),
+    UNIQUE (chain_id, submit_tx_hash, submit_log_index)
   );
-  CREATE INDEX IF NOT EXISTS idx_privacy_policy_events_kind
-    ON privacy_policy_events(kind);
-  CREATE INDEX IF NOT EXISTS idx_privacy_policy_events_created
-    ON privacy_policy_events(created_at DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_fhenix_reveal_event
+    ON fhenix_sealed_calls(chain_id, reveal_tx_hash, reveal_log_index)
+    WHERE reveal_tx_hash IS NOT NULL AND reveal_log_index IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fhenix_sealed_open
+    ON fhenix_sealed_calls(reveal_open_at)
+    WHERE revealed_at IS NULL;
+`;
+
+// ─── Migration 036 — remove retired local-FHE columns ───────────────────────
+//
+// Older local DBs may already have pre-Fhenix cleartext-payload or encrypted-
+// score columns. Rebuild the two affected tables to the canonical shape.
+const MIGRATION_036_T1_RESOLUTIONS_REBUILD = `
+  DROP TABLE IF EXISTS t1_resolutions_v036;
+
+  CREATE TABLE t1_resolutions_v036 (
+    call_id               TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    t1                    TEXT NOT NULL,
+    p1                    TEXT NOT NULL,
+    t1_feed               TEXT NOT NULL,
+    signed_return         TEXT NOT NULL,
+    outcome               TEXT NOT NULL CHECK (outcome IN ('win','loss','void','oracle_unavailable')),
+    call_score            REAL,
+    resolved_at           TEXT NOT NULL,
+    resolved_outcome_json TEXT,
+    payout_vector_json    TEXT
+  );
+
+  INSERT INTO t1_resolutions_v036 (
+    call_id, t1, p1, t1_feed, signed_return, outcome, call_score, resolved_at,
+    resolved_outcome_json, payout_vector_json
+  )
+  SELECT
+    call_id, t1, p1, t1_feed, signed_return, outcome, call_score, resolved_at,
+    resolved_outcome_json, payout_vector_json
+  FROM t1_resolutions;
+
+  DROP TABLE t1_resolutions;
+  ALTER TABLE t1_resolutions_v036 RENAME TO t1_resolutions;
+`;
+
+const MIGRATION_036_SUBMISSIONS_REBUILD = `
+  DROP TABLE IF EXISTS submissions_v036;
+
+  CREATE TABLE submissions_v036 (
+    call_id                TEXT PRIMARY KEY,
+    agent_id               TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    client_order_id        TEXT NOT NULL,
+    horizon_seconds        INTEGER NOT NULL CHECK (horizon_seconds > 0),
+    submitted_at           TEXT NOT NULL,
+    accepted_at            TEXT NOT NULL,
+    status                 TEXT NOT NULL CHECK (status IN ('accepted','pending_t0','pending_t1','resolved','disputed','re_resolved','rejected')),
+    rationale              TEXT,
+    strategy_tag           TEXT,
+    schema_version         INTEGER NOT NULL,
+    scoring_version        INTEGER NOT NULL,
+    dedup_key              TEXT NOT NULL,
+    privacy_mode           TEXT,
+    commit_hash            TEXT,
+    commit_scheme          TEXT,
+    market_id              TEXT,
+    market_config_version  INTEGER,
+    prediction_value       TEXT,
+    prediction_low         TEXT,
+    prediction_high        TEXT,
+    round_id               TEXT,
+    commitment_json        TEXT,
+    predicted_outcome_json TEXT,
+    outcome_labels_json    TEXT,
+    adapter_id             TEXT,
+    market_family          TEXT,
+    program_version        INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(agent_id, client_order_id),
+    UNIQUE(dedup_key)
+  );
+
+  INSERT INTO submissions_v036 (
+    call_id, agent_id, client_order_id, horizon_seconds,
+    submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id,
+    commitment_json, predicted_outcome_json, outcome_labels_json,
+    adapter_id, market_family, program_version
+  )
+  SELECT
+    call_id, agent_id, client_order_id, horizon_seconds,
+    submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id,
+    commitment_json, predicted_outcome_json, outcome_labels_json,
+    adapter_id, market_family, program_version
+  FROM submissions;
+
+  DROP TABLE submissions;
+  ALTER TABLE submissions_v036 RENAME TO submissions;
+
+  CREATE INDEX idx_submissions_agent ON submissions(agent_id);
+  CREATE INDEX idx_submissions_status ON submissions(status);
+  CREATE INDEX idx_submissions_commit_hash ON submissions(commit_hash) WHERE commit_hash IS NOT NULL;
+  CREATE INDEX idx_submissions_privacy_mode ON submissions(privacy_mode);
+  CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
+  CREATE INDEX idx_submissions_round ON submissions(round_id) WHERE round_id IS NOT NULL;
+  CREATE INDEX idx_submissions_market_family
+    ON submissions(market_family) WHERE market_family IS NOT NULL;
+  CREATE INDEX idx_submissions_adapter
+    ON submissions(adapter_id) WHERE adapter_id IS NOT NULL;
+`;
+
+const MIGRATION_036_DROP_RETIRED_FHE_ARTIFACTS = `
+  DROP TABLE IF EXISTS fhe_decrypt_shares;
+  DROP TABLE IF EXISTS fhe_score_releases;
+  DROP TABLE IF EXISTS fhe_decrypt_requests;
+  DROP TABLE IF EXISTS fhe_key_holders;
+  DROP TABLE IF EXISTS fhe_score_jobs;
+  DROP TABLE IF EXISTS fhe_call_ciphertexts;
+  DROP TABLE IF EXISTS privacy_policy_events;
+  DROP TABLE IF EXISTS fhe_circuits;
+  DROP TABLE IF EXISTS fhe_keysets;
+`;
+
+// ─── Migration 037 — paid inference feed contracts ──────────────────────────
+//
+// Feed contracts are the marketplace promise layer. They do not change the
+// call scorer; they record what an agent promised subscribers and timestamp
+// sealed feed-packet deliveries so Murmur can score reliability separately
+// from predictive accuracy.
+const MIGRATION_037_FEED_CONTRACTS = `
+  CREATE TABLE IF NOT EXISTS feed_contracts (
+    feed_id                   TEXT PRIMARY KEY,
+    agent_id                  TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    name                      TEXT NOT NULL CHECK (length(name) >= 3 AND length(name) <= 80),
+    description               TEXT CHECK (description IS NULL OR length(description) <= 500),
+    status                    TEXT NOT NULL CHECK (status IN ('draft','listed','paused','retired')),
+    venue                     TEXT NOT NULL CHECK (length(venue) >= 2 AND length(venue) <= 64),
+    resolution_classes_json   TEXT NOT NULL,
+    edge_classes_json         TEXT NOT NULL,
+    covered_market_ids_json   TEXT NOT NULL,
+    delivery_cadence_seconds  INTEGER CHECK (
+      delivery_cadence_seconds IS NULL OR delivery_cadence_seconds >= 60
+    ),
+    trigger_rules_json        TEXT NOT NULL,
+    max_latency_seconds       INTEGER CHECK (
+      max_latency_seconds IS NULL OR max_latency_seconds >= 60
+    ),
+    subscriber_capacity       INTEGER NOT NULL CHECK (subscriber_capacity > 0),
+    commercial_template       TEXT NOT NULL CHECK (
+      commercial_template IN (
+        'per_alert',
+        'capacity_capped_subscription',
+        'exclusive_auction',
+        'basket_subscription',
+        'streaming_escrow_subscription',
+        'verifiable_profit_share'
+      )
+    ),
+    reveal_policy_json        TEXT NOT NULL,
+    refund_rule_json          TEXT NOT NULL,
+    slash_rule_json           TEXT NOT NULL,
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_feed_contracts_agent
+    ON feed_contracts(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_feed_contracts_status
+    ON feed_contracts(status);
+  CREATE INDEX IF NOT EXISTS idx_feed_contracts_venue
+    ON feed_contracts(venue);
+
+  CREATE TABLE IF NOT EXISTS feed_packets (
+    packet_id            TEXT PRIMARY KEY,
+    feed_id              TEXT NOT NULL REFERENCES feed_contracts(feed_id) ON DELETE CASCADE,
+    agent_id             TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    market_id            TEXT,
+    packet_kind          TEXT NOT NULL CHECK (
+      packet_kind IN ('verdict','revision','heartbeat','abstain','risk_warning')
+    ),
+    sequence             INTEGER NOT NULL CHECK (sequence > 0),
+    payload_schema       TEXT NOT NULL,
+    submitted_at         TEXT NOT NULL,
+    accepted_at          TEXT NOT NULL,
+    reveal_after         TEXT NOT NULL,
+    delivery_deadline_at TEXT,
+    sla_status           TEXT NOT NULL CHECK (sla_status IN ('on_time','late','unscheduled')),
+    chain_id             INTEGER NOT NULL,
+    contract_address     TEXT NOT NULL,
+    onchain_packet_id    TEXT NOT NULL,
+    submit_tx_hash       TEXT NOT NULL,
+    submit_log_index     INTEGER NOT NULL CHECK (submit_log_index >= 0),
+    packet_ct_hash       TEXT NOT NULL,
+    side_ct_hash         TEXT,
+    confidence_ct_hash   TEXT,
+    created_at           TEXT NOT NULL,
+    UNIQUE(feed_id, sequence),
+    UNIQUE(chain_id, contract_address, onchain_packet_id),
+    UNIQUE(chain_id, submit_tx_hash, submit_log_index)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_feed
+    ON feed_packets(feed_id, sequence);
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_agent
+    ON feed_packets(agent_id, accepted_at);
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_market
+    ON feed_packets(market_id) WHERE market_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_sla
+    ON feed_packets(feed_id, sla_status);
+`;
+
+// ─── Migration 038 — generic binary Fhenix reveals ──────────────────────────
+//
+// The encrypted euint8 carried by the Fhenix call contract is a binary
+// outcome index, not a native-price-only BUY/SELL side. Rebuild the reveal
+// columns to store that generic index so the same sealed path can score
+// Polymarket and future binary market venues.
+const MIGRATION_038_FHENIX_BINARY_REVEALS = `
+  DROP TABLE IF EXISTS fhenix_sealed_calls_v038;
+
+  CREATE TABLE fhenix_sealed_calls_v038 (
+    call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    chain_id             INTEGER NOT NULL,
+    contract_address     TEXT NOT NULL,
+    onchain_call_id      TEXT NOT NULL,
+    submit_tx_hash       TEXT NOT NULL,
+    submit_log_index     INTEGER NOT NULL CHECK (submit_log_index >= 0),
+    side_ct_hash         TEXT NOT NULL,
+    confidence_ct_hash   TEXT NOT NULL,
+    reveal_open_at       TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    opened_at            TEXT,
+    revealed_at          TEXT,
+    reveal_tx_hash       TEXT,
+    reveal_log_index     INTEGER CHECK (reveal_log_index IS NULL OR reveal_log_index >= 0),
+    revealed_binary_index INTEGER CHECK (
+      revealed_binary_index IS NULL OR revealed_binary_index IN (0, 1)
+    ),
+    revealed_confidence  REAL CHECK (
+      revealed_confidence IS NULL OR
+      (revealed_confidence >= 0.51 AND revealed_confidence <= 0.95)
+    ),
+    revealed_confidence_bps INTEGER CHECK (
+      revealed_confidence_bps IS NULL OR
+      (revealed_confidence_bps >= 5100 AND revealed_confidence_bps <= 9500)
+    ),
+    binary_index_signature TEXT,
+    confidence_signature   TEXT,
+    UNIQUE (chain_id, contract_address, onchain_call_id),
+    UNIQUE (chain_id, submit_tx_hash, submit_log_index)
+  );
+
+  INSERT INTO fhenix_sealed_calls_v038 (
+    call_id, chain_id, contract_address, onchain_call_id,
+    submit_tx_hash, submit_log_index, side_ct_hash, confidence_ct_hash,
+    reveal_open_at, created_at, opened_at, revealed_at,
+    reveal_tx_hash, reveal_log_index, revealed_binary_index,
+    revealed_confidence, revealed_confidence_bps,
+    binary_index_signature, confidence_signature
+  )
+  SELECT
+    call_id, chain_id, contract_address, onchain_call_id,
+    submit_tx_hash, submit_log_index, side_ct_hash, confidence_ct_hash,
+    reveal_open_at, created_at, opened_at, revealed_at,
+    reveal_tx_hash, reveal_log_index,
+    CASE revealed_side
+      WHEN 'BUY' THEN 0
+      WHEN 'SELL' THEN 1
+      ELSE NULL
+    END,
+    revealed_confidence, revealed_confidence_bps,
+    side_signature, confidence_signature
+  FROM fhenix_sealed_calls;
+
+  DROP TABLE fhenix_sealed_calls;
+  ALTER TABLE fhenix_sealed_calls_v038 RENAME TO fhenix_sealed_calls;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_fhenix_reveal_event
+    ON fhenix_sealed_calls(chain_id, reveal_tx_hash, reveal_log_index)
+    WHERE reveal_tx_hash IS NOT NULL AND reveal_log_index IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fhenix_sealed_open
+    ON fhenix_sealed_calls(reveal_open_at)
+    WHERE revealed_at IS NULL;
+`;
+
+// ─── Migration 039 — Fhenix binary-index naming cleanup ────────────────────
+//
+// The encrypted euint8 in MurmurSealedVerdicts is a binary outcome index
+// for every supported binary market, not a native-price BUY/SELL side.
+// Rebuild the sealed-call table to expose that in the column name and drop
+// daemon-stored decrypt signatures: the verified Fhenix reveal event is now
+// the trust root, so signatures in HTTP JSON would be unverified duplicate
+// state.
+const MIGRATION_039_FHENIX_BINARY_INDEX_NAMING = `
+  DROP TABLE IF EXISTS fhenix_sealed_calls_v039;
+
+  CREATE TABLE fhenix_sealed_calls_v039 (
+    call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    chain_id             INTEGER NOT NULL,
+    contract_address     TEXT NOT NULL,
+    onchain_call_id      TEXT NOT NULL,
+    submit_tx_hash       TEXT NOT NULL,
+    submit_log_index     INTEGER NOT NULL CHECK (submit_log_index >= 0),
+    binary_index_ct_hash TEXT NOT NULL,
+    confidence_ct_hash   TEXT NOT NULL,
+    reveal_open_at       TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    opened_at            TEXT,
+    revealed_at          TEXT,
+    reveal_tx_hash       TEXT,
+    reveal_log_index     INTEGER CHECK (reveal_log_index IS NULL OR reveal_log_index >= 0),
+    revealed_binary_index INTEGER CHECK (
+      revealed_binary_index IS NULL OR revealed_binary_index IN (0, 1)
+    ),
+    revealed_confidence  REAL CHECK (
+      revealed_confidence IS NULL OR
+      (revealed_confidence >= 0.51 AND revealed_confidence <= 0.95)
+    ),
+    revealed_confidence_bps INTEGER CHECK (
+      revealed_confidence_bps IS NULL OR
+      (revealed_confidence_bps >= 5100 AND revealed_confidence_bps <= 9500)
+    ),
+    UNIQUE (chain_id, contract_address, onchain_call_id),
+    UNIQUE (chain_id, submit_tx_hash, submit_log_index)
+  );
+
+  INSERT INTO fhenix_sealed_calls_v039 (
+    call_id, chain_id, contract_address, onchain_call_id,
+    submit_tx_hash, submit_log_index, binary_index_ct_hash, confidence_ct_hash,
+    reveal_open_at, created_at, opened_at, revealed_at,
+    reveal_tx_hash, reveal_log_index, revealed_binary_index,
+    revealed_confidence, revealed_confidence_bps
+  )
+  SELECT
+    call_id, chain_id, contract_address, onchain_call_id,
+    submit_tx_hash, submit_log_index, side_ct_hash, confidence_ct_hash,
+    reveal_open_at, created_at, opened_at, revealed_at,
+    reveal_tx_hash, reveal_log_index, revealed_binary_index,
+    revealed_confidence, revealed_confidence_bps
+  FROM fhenix_sealed_calls;
+
+  DROP TABLE fhenix_sealed_calls;
+  ALTER TABLE fhenix_sealed_calls_v039 RENAME TO fhenix_sealed_calls;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_fhenix_reveal_event
+    ON fhenix_sealed_calls(chain_id, reveal_tx_hash, reveal_log_index)
+    WHERE reveal_tx_hash IS NOT NULL AND reveal_log_index IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fhenix_sealed_open
+    ON fhenix_sealed_calls(reveal_open_at)
+    WHERE revealed_at IS NULL;
+`;
+
+// ─── Migration 040 — feed packet binary-index naming cleanup ─────────────────
+//
+// Feed packet metadata follows the same Fhenix vocabulary as sealed calls:
+// an optional encrypted binary outcome index, not a BUY/SELL side.
+const MIGRATION_040_FEED_BINARY_INDEX_NAMING = `
+  DROP TABLE IF EXISTS feed_packets_v040;
+
+  CREATE TABLE feed_packets_v040 (
+    packet_id            TEXT PRIMARY KEY,
+    feed_id              TEXT NOT NULL REFERENCES feed_contracts(feed_id) ON DELETE CASCADE,
+    agent_id             TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    market_id            TEXT,
+    packet_kind          TEXT NOT NULL CHECK (
+      packet_kind IN ('verdict','revision','heartbeat','abstain','risk_warning')
+    ),
+    sequence             INTEGER NOT NULL CHECK (sequence > 0),
+    payload_schema       TEXT NOT NULL,
+    submitted_at         TEXT NOT NULL,
+    accepted_at          TEXT NOT NULL,
+    reveal_after         TEXT NOT NULL,
+    delivery_deadline_at TEXT,
+    sla_status           TEXT NOT NULL CHECK (sla_status IN ('on_time','late','unscheduled')),
+    chain_id             INTEGER NOT NULL,
+    contract_address     TEXT NOT NULL,
+    onchain_packet_id    TEXT NOT NULL,
+    submit_tx_hash       TEXT NOT NULL,
+    submit_log_index     INTEGER NOT NULL CHECK (submit_log_index >= 0),
+    packet_ct_hash       TEXT NOT NULL,
+    binary_index_ct_hash TEXT,
+    confidence_ct_hash   TEXT,
+    created_at           TEXT NOT NULL,
+    UNIQUE(feed_id, sequence),
+    UNIQUE(chain_id, contract_address, onchain_packet_id),
+    UNIQUE(chain_id, submit_tx_hash, submit_log_index)
+  );
+
+  INSERT INTO feed_packets_v040 (
+    packet_id, feed_id, agent_id, market_id, packet_kind, sequence,
+    payload_schema, submitted_at, accepted_at, reveal_after,
+    delivery_deadline_at, sla_status, chain_id, contract_address,
+    onchain_packet_id, submit_tx_hash, submit_log_index, packet_ct_hash,
+    binary_index_ct_hash, confidence_ct_hash, created_at
+  )
+  SELECT
+    packet_id, feed_id, agent_id, market_id, packet_kind, sequence,
+    payload_schema, submitted_at, accepted_at, reveal_after,
+    delivery_deadline_at, sla_status, chain_id, contract_address,
+    onchain_packet_id, submit_tx_hash, submit_log_index, packet_ct_hash,
+    side_ct_hash, confidence_ct_hash, created_at
+  FROM feed_packets;
+
+  DROP TABLE feed_packets;
+  ALTER TABLE feed_packets_v040 RENAME TO feed_packets;
+
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_feed
+    ON feed_packets(feed_id, sequence);
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_agent
+    ON feed_packets(agent_id, accepted_at);
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_market
+    ON feed_packets(market_id) WHERE market_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_sla
+    ON feed_packets(feed_id, sla_status);
+`;
+
+// ─── Migration 041 — Fhenix event indexer + reveal terminal states ──────────
+//
+// The sealed path now has three terminal reveal outcomes:
+//   - revealed: valid public verdict can be scored against market outcome
+//   - invalid: Fhenix proved a decrypt result, but it violated Murmur's
+//              verdict domain (e.g. binary index > 1 or confidence out of
+//              bounds)
+//   - missed: reveal window + grace elapsed without a verified reveal
+//
+// Invalid/missed are call lifecycle terminal states, not market scores. They
+// keep public reputation honest without forging a fake market outcome row.
+const MIGRATION_041_SUBMISSIONS_REVEAL_TERMINALS = `
+  DROP TABLE IF EXISTS submissions_v041;
+
+  CREATE TABLE submissions_v041 (
+    call_id                TEXT PRIMARY KEY,
+    agent_id               TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    client_order_id        TEXT NOT NULL,
+    horizon_seconds        INTEGER NOT NULL CHECK (horizon_seconds > 0),
+    submitted_at           TEXT NOT NULL,
+    accepted_at            TEXT NOT NULL,
+    status                 TEXT NOT NULL CHECK (
+      status IN (
+        'accepted',
+        'pending_t0',
+        'pending_t1',
+        'resolved',
+        'disputed',
+        're_resolved',
+        'rejected',
+        'invalid_reveal',
+        'missed_reveal'
+      )
+    ),
+    rationale              TEXT,
+    strategy_tag           TEXT,
+    schema_version         INTEGER NOT NULL,
+    scoring_version        INTEGER NOT NULL,
+    dedup_key              TEXT NOT NULL,
+    privacy_mode           TEXT,
+    commit_hash            TEXT,
+    commit_scheme          TEXT,
+    market_id              TEXT,
+    market_config_version  INTEGER,
+    prediction_value       TEXT,
+    prediction_low         TEXT,
+    prediction_high        TEXT,
+    round_id               TEXT,
+    commitment_json        TEXT,
+    predicted_outcome_json TEXT,
+    outcome_labels_json    TEXT,
+    adapter_id             TEXT,
+    market_family          TEXT,
+    program_version        INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(agent_id, client_order_id),
+    UNIQUE(dedup_key)
+  );
+
+  INSERT INTO submissions_v041 (
+    call_id, agent_id, client_order_id, horizon_seconds,
+    submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id,
+    commitment_json, predicted_outcome_json, outcome_labels_json,
+    adapter_id, market_family, program_version
+  )
+  SELECT
+    call_id, agent_id, client_order_id, horizon_seconds,
+    submitted_at, accepted_at, status,
+    rationale, strategy_tag, schema_version, scoring_version, dedup_key,
+    privacy_mode, commit_hash, commit_scheme,
+    market_id, market_config_version,
+    prediction_value, prediction_low, prediction_high, round_id,
+    commitment_json, predicted_outcome_json, outcome_labels_json,
+    adapter_id, market_family, program_version
+  FROM submissions;
+
+  DROP TABLE submissions;
+  ALTER TABLE submissions_v041 RENAME TO submissions;
+
+  CREATE INDEX idx_submissions_agent ON submissions(agent_id);
+  CREATE INDEX idx_submissions_status ON submissions(status);
+  CREATE INDEX idx_submissions_commit_hash ON submissions(commit_hash) WHERE commit_hash IS NOT NULL;
+  CREATE INDEX idx_submissions_privacy_mode ON submissions(privacy_mode);
+  CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
+  CREATE INDEX idx_submissions_round ON submissions(round_id) WHERE round_id IS NOT NULL;
+  CREATE INDEX idx_submissions_market_family
+    ON submissions(market_family) WHERE market_family IS NOT NULL;
+  CREATE INDEX idx_submissions_adapter
+    ON submissions(adapter_id) WHERE adapter_id IS NOT NULL;
+`;
+
+const MIGRATION_041_FHENIX_SEALED_REVEAL_TERMINALS = `
+  DROP TABLE IF EXISTS fhenix_sealed_calls_v041;
+
+  CREATE TABLE fhenix_sealed_calls_v041 (
+    call_id              TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    chain_id             INTEGER NOT NULL,
+    contract_address     TEXT NOT NULL,
+    onchain_call_id      TEXT NOT NULL,
+    submit_tx_hash       TEXT NOT NULL,
+    submit_log_index     INTEGER NOT NULL CHECK (submit_log_index >= 0),
+    binary_index_ct_hash TEXT NOT NULL,
+    confidence_ct_hash   TEXT NOT NULL,
+    reveal_open_at       TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    opened_at            TEXT,
+    revealed_at          TEXT,
+    reveal_tx_hash       TEXT,
+    reveal_log_index     INTEGER CHECK (reveal_log_index IS NULL OR reveal_log_index >= 0),
+    revealed_binary_index INTEGER CHECK (
+      revealed_binary_index IS NULL OR (revealed_binary_index >= 0 AND revealed_binary_index <= 255)
+    ),
+    revealed_confidence  REAL CHECK (
+      revealed_confidence IS NULL OR
+      (revealed_confidence >= 0.51 AND revealed_confidence <= 0.95)
+    ),
+    revealed_confidence_bps INTEGER CHECK (
+      revealed_confidence_bps IS NULL OR
+      (revealed_confidence_bps >= 0 AND revealed_confidence_bps <= 65535)
+    ),
+    reveal_status        TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (reveal_status IN ('pending','revealed','invalid','missed')),
+    invalid_reason       TEXT,
+    terminal_at          TEXT,
+    submit_block_number  INTEGER,
+    reveal_block_number  INTEGER,
+    UNIQUE (chain_id, contract_address, onchain_call_id),
+    UNIQUE (chain_id, submit_tx_hash, submit_log_index)
+  );
+
+  INSERT INTO fhenix_sealed_calls_v041 (
+    call_id, chain_id, contract_address, onchain_call_id,
+    submit_tx_hash, submit_log_index, binary_index_ct_hash, confidence_ct_hash,
+    reveal_open_at, created_at, opened_at, revealed_at,
+    reveal_tx_hash, reveal_log_index, revealed_binary_index,
+    revealed_confidence, revealed_confidence_bps,
+    reveal_status, invalid_reason, terminal_at,
+    submit_block_number, reveal_block_number
+  )
+  SELECT
+    call_id, chain_id, contract_address, onchain_call_id,
+    submit_tx_hash, submit_log_index, binary_index_ct_hash, confidence_ct_hash,
+    reveal_open_at, created_at, opened_at, revealed_at,
+    reveal_tx_hash, reveal_log_index, revealed_binary_index,
+    revealed_confidence, revealed_confidence_bps,
+    CASE WHEN revealed_at IS NOT NULL THEN 'revealed' ELSE 'pending' END,
+    NULL,
+    revealed_at,
+    NULL,
+    NULL
+  FROM fhenix_sealed_calls;
+
+  DROP TABLE fhenix_sealed_calls;
+  ALTER TABLE fhenix_sealed_calls_v041 RENAME TO fhenix_sealed_calls;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_fhenix_reveal_event
+    ON fhenix_sealed_calls(chain_id, reveal_tx_hash, reveal_log_index)
+    WHERE reveal_tx_hash IS NOT NULL AND reveal_log_index IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fhenix_sealed_open
+    ON fhenix_sealed_calls(reveal_open_at)
+    WHERE revealed_at IS NULL;
+`;
+
+const MIGRATION_041_FHENIX_EVENT_INDEXER = `
+  UPDATE fhenix_sealed_calls
+  SET reveal_status = CASE
+      WHEN revealed_at IS NOT NULL THEN 'revealed'
+      ELSE reveal_status
+    END,
+    terminal_at = CASE
+      WHEN revealed_at IS NOT NULL THEN COALESCE(terminal_at, revealed_at)
+      ELSE terminal_at
+    END;
+
+  CREATE TABLE IF NOT EXISTS fhenix_event_cursors (
+    chain_id          INTEGER NOT NULL,
+    contract_address  TEXT NOT NULL,
+    event_name        TEXT NOT NULL,
+    last_block_number INTEGER NOT NULL CHECK (last_block_number >= 0),
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (chain_id, contract_address, event_name)
+  );
+
+  CREATE TABLE IF NOT EXISTS fhenix_events (
+    chain_id         INTEGER NOT NULL,
+    contract_address TEXT NOT NULL,
+    event_name       TEXT NOT NULL,
+    tx_hash          TEXT NOT NULL,
+    log_index        INTEGER NOT NULL CHECK (log_index >= 0),
+    block_number     INTEGER NOT NULL CHECK (block_number >= 0),
+    block_hash       TEXT,
+    payload_json     TEXT NOT NULL,
+    observed_at      TEXT NOT NULL,
+    PRIMARY KEY (chain_id, tx_hash, log_index)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_fhenix_events_contract_block
+    ON fhenix_events(chain_id, contract_address, block_number);
+  CREATE INDEX IF NOT EXISTS idx_fhenix_events_name
+    ON fhenix_events(event_name, observed_at);
+  CREATE INDEX IF NOT EXISTS idx_fhenix_sealed_reveal_status
+    ON fhenix_sealed_calls(reveal_status, reveal_open_at);
+`;
+
+// ─── Migration 042 — Controller Wallets + Runtime Keys ─────────────────────
+//
+// The human owner controls an agent-specific Controller Wallet, but bots never
+// need to automate that wallet. Owners sign offchain authorizations; Murmur
+// stores the binding and hashes short-lived Runtime Keys that the Gateway will
+// enforce before relaying Fhenix calls.
+const MIGRATION_042_CONTROLLER_WALLETS = `
+  CREATE TABLE IF NOT EXISTS agent_controller_wallets (
+    agent_id           TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
+    account_id         TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    wallet_address     TEXT NOT NULL,
+    chain_id           TEXT NOT NULL,
+    wallet_kind        TEXT NOT NULL CHECK (wallet_kind IN ('embedded','external')),
+    provider           TEXT CHECK (provider IS NULL OR length(provider) <= 64),
+    binding_message    TEXT NOT NULL,
+    binding_signature  TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    last_attested_at   TEXT,
+    reattestation_due_at TEXT,
+    last_reattestation_nonce TEXT,
+    last_reattestation_message TEXT,
+    last_reattestation_signature TEXT,
+    UNIQUE(wallet_address, chain_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_controller_wallets_account
+    ON agent_controller_wallets(account_id);
+  CREATE INDEX IF NOT EXISTS idx_agent_controller_wallets_wallet
+    ON agent_controller_wallets(wallet_address, chain_id);
+
+  CREATE TABLE IF NOT EXISTS agent_runtime_keys (
+    runtime_key_id             TEXT PRIMARY KEY,
+    account_id                 TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    agent_id                   TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    runtime_key_hash           TEXT NOT NULL UNIQUE,
+    runtime_key_prefix         TEXT NOT NULL,
+    label                      TEXT CHECK (label IS NULL OR length(label) <= 80),
+    policy_json                TEXT NOT NULL,
+    policy_hash                TEXT NOT NULL,
+    controller_wallet_address  TEXT NOT NULL,
+    controller_chain_id        TEXT NOT NULL,
+    authorization_nonce        TEXT NOT NULL,
+    authorization_message      TEXT NOT NULL,
+    authorization_signature    TEXT NOT NULL,
+    created_at                 TEXT NOT NULL,
+    expires_at                 TEXT,
+    revoked_at                 TEXT,
+    revoke_reason              TEXT CHECK (revoke_reason IS NULL OR length(revoke_reason) <= 160),
+    UNIQUE(agent_id, authorization_message)
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_runtime_keys_account_agent
+    ON agent_runtime_keys(account_id, agent_id);
+  CREATE INDEX IF NOT EXISTS idx_agent_runtime_keys_active
+    ON agent_runtime_keys(agent_id, expires_at)
+    WHERE revoked_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_agent_runtime_keys_policy
+    ON agent_runtime_keys(policy_hash);
+`;
+
+const MIGRATION_046_CONTROLLER_REATTESTATIONS = `
+  CREATE TABLE IF NOT EXISTS agent_controller_wallet_reattestations (
+    attestation_id       TEXT PRIMARY KEY,
+    account_id           TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    agent_id             TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    wallet_address       TEXT NOT NULL,
+    chain_id             TEXT NOT NULL,
+    attestation_nonce    TEXT NOT NULL,
+    attestation_message  TEXT NOT NULL,
+    attestation_signature TEXT NOT NULL,
+    attested_at          TEXT NOT NULL,
+    next_due_at          TEXT NOT NULL,
+    UNIQUE(agent_id, attestation_nonce)
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_controller_reattestations_agent
+    ON agent_controller_wallet_reattestations(agent_id, attested_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_agent_controller_wallets_reattestation_due
+    ON agent_controller_wallets(reattestation_due_at);
+  UPDATE agent_controller_wallets
+     SET last_attested_at = COALESCE(last_attested_at, created_at),
+         reattestation_due_at = COALESCE(
+           reattestation_due_at,
+           strftime('%Y-%m-%dT%H:%M:%SZ', datetime(created_at, '+14 days'))
+         )
+   WHERE last_attested_at IS NULL
+      OR reattestation_due_at IS NULL;
+`;
+
+const MIGRATION_043_SUBMISSION_RUNTIME_KEYS = `
+  CREATE INDEX IF NOT EXISTS idx_submissions_runtime_key
+    ON submissions(runtime_key_id)
+    WHERE runtime_key_id IS NOT NULL;
+`;
+
+const MIGRATION_044_FHENIX_GATEWAY_TX_ATTEMPTS = `
+  CREATE TABLE IF NOT EXISTS fhenix_gateway_tx_attempts (
+    attempt_id                 TEXT PRIMARY KEY,
+    status                     TEXT NOT NULL CHECK (
+      status IN ('queued','submitted','confirmed','accepted','failed_retryable','failed_terminal')
+    ),
+    runtime_key_id             TEXT REFERENCES agent_runtime_keys(runtime_key_id) ON DELETE SET NULL,
+    runtime_key_policy_hash    TEXT NOT NULL,
+    runtime_key_policy_json    TEXT NOT NULL,
+    account_id                 TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    agent_id                   TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    chain_id                   INTEGER NOT NULL,
+    contract_address           TEXT NOT NULL,
+    relayer_address            TEXT NOT NULL,
+    agent_wallet_address       TEXT NOT NULL,
+    market_id                  TEXT NOT NULL,
+    market_id_hash             TEXT NOT NULL,
+    market_ref_protocol        TEXT NOT NULL,
+    market_config_version      INTEGER NOT NULL,
+    client_order_id            TEXT NOT NULL,
+    client_nonce               TEXT NOT NULL,
+    submitted_at               TEXT NOT NULL,
+    rationale                  TEXT,
+    strategy_tag               TEXT,
+    binary_index_input_json    TEXT NOT NULL,
+    confidence_input_json      TEXT NOT NULL,
+    tx_hash                    TEXT,
+    submit_log_index           INTEGER CHECK (submit_log_index IS NULL OR submit_log_index >= 0),
+    submit_block_number        INTEGER,
+    onchain_call_id            TEXT,
+    binary_index_ct_hash       TEXT,
+    confidence_ct_hash         TEXT,
+    accepted_at                TEXT,
+    reveal_open_at             TEXT,
+    call_id                    TEXT REFERENCES submissions(call_id) ON DELETE SET NULL,
+    attempt_count              INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    next_attempt_at            TEXT NOT NULL,
+    last_error                 TEXT,
+    created_at                 TEXT NOT NULL,
+    updated_at                 TEXT NOT NULL,
+    UNIQUE(agent_id, client_order_id),
+    UNIQUE(chain_id, contract_address, agent_wallet_address, market_id_hash, client_nonce)
+  );
+  CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_status_next
+    ON fhenix_gateway_tx_attempts(status, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_tx_hash
+    ON fhenix_gateway_tx_attempts(chain_id, tx_hash)
+    WHERE tx_hash IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_call_id
+    ON fhenix_gateway_tx_attempts(call_id)
+    WHERE call_id IS NOT NULL;
+`;
+
+const MIGRATION_045_FHENIX_GATEWAY_FEED_PACKET_TX_ATTEMPTS = `
+  CREATE TABLE IF NOT EXISTS fhenix_gateway_feed_packet_tx_attempts (
+    attempt_id                 TEXT PRIMARY KEY,
+    status                     TEXT NOT NULL CHECK (
+      status IN ('queued','submitted','confirmed','accepted','failed_retryable','failed_terminal')
+    ),
+    runtime_key_id             TEXT REFERENCES agent_runtime_keys(runtime_key_id) ON DELETE SET NULL,
+    runtime_key_policy_hash    TEXT NOT NULL,
+    runtime_key_policy_json    TEXT NOT NULL,
+    account_id                 TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    agent_id                   TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    chain_id                   INTEGER NOT NULL,
+    contract_address           TEXT NOT NULL,
+    relayer_address            TEXT NOT NULL,
+    agent_wallet_address       TEXT NOT NULL,
+    feed_id                    TEXT NOT NULL REFERENCES feed_contracts(feed_id) ON DELETE CASCADE,
+    feed_id_hash               TEXT NOT NULL,
+    market_id                  TEXT,
+    market_id_hash             TEXT NOT NULL,
+    packet_kind                TEXT NOT NULL CHECK (
+      packet_kind IN ('verdict','revision','heartbeat','abstain','risk_warning')
+    ),
+    sequence                   INTEGER NOT NULL CHECK (sequence > 0),
+    payload_schema             TEXT NOT NULL,
+    client_order_id            TEXT NOT NULL,
+    client_nonce               TEXT NOT NULL,
+    submitted_at               TEXT NOT NULL,
+    delivery_deadline_at       TEXT,
+    reveal_after               TEXT NOT NULL,
+    action_input_json          TEXT NOT NULL,
+    signal_input_json          TEXT NOT NULL,
+    tx_hash                    TEXT,
+    submit_log_index           INTEGER CHECK (submit_log_index IS NULL OR submit_log_index >= 0),
+    submit_block_number        INTEGER,
+    onchain_packet_id          TEXT,
+    action_ct_hash             TEXT,
+    signal_ct_hash             TEXT,
+    accepted_at                TEXT,
+    packet_id                  TEXT REFERENCES feed_packets(packet_id) ON DELETE SET NULL,
+    attempt_count              INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    next_attempt_at            TEXT NOT NULL,
+    last_error                 TEXT,
+    created_at                 TEXT NOT NULL,
+    updated_at                 TEXT NOT NULL,
+    UNIQUE(agent_id, feed_id, client_order_id),
+    UNIQUE(chain_id, contract_address, agent_wallet_address, feed_id_hash, market_id_hash, client_nonce)
+  );
+  CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_feed_status_next
+    ON fhenix_gateway_feed_packet_tx_attempts(status, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_feed_tx_hash
+    ON fhenix_gateway_feed_packet_tx_attempts(chain_id, tx_hash)
+    WHERE tx_hash IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_feed_packet_id
+    ON fhenix_gateway_feed_packet_tx_attempts(packet_id)
+    WHERE packet_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_feed_sequence
+    ON fhenix_gateway_feed_packet_tx_attempts(feed_id, sequence);
+`;
+
+const MIGRATION_047_FEED_SLA_INCIDENTS = `
+  CREATE TABLE IF NOT EXISTS feed_sla_incidents (
+    incident_id                   TEXT PRIMARY KEY,
+    feed_id                       TEXT NOT NULL REFERENCES feed_contracts(feed_id) ON DELETE CASCADE,
+    agent_id                      TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    incident_kind                 TEXT NOT NULL CHECK (incident_kind IN ('missed_packet')),
+    status                        TEXT NOT NULL CHECK (status IN ('open','fulfilled_late')),
+    expected_sequence             INTEGER NOT NULL CHECK (expected_sequence > 0),
+    expected_delivery_deadline_at TEXT NOT NULL,
+    detected_at                   TEXT NOT NULL,
+    grace_seconds                 INTEGER NOT NULL CHECK (grace_seconds >= 0),
+    refund_action                 TEXT NOT NULL CHECK (refund_action IN ('none','credit','prorated')),
+    slash_action                  TEXT NOT NULL CHECK (slash_action IN ('none','reputation','stake')),
+    fulfilled_packet_id           TEXT REFERENCES feed_packets(packet_id) ON DELETE SET NULL,
+    fulfilled_at                  TEXT,
+    details_json                  TEXT NOT NULL,
+    created_at                    TEXT NOT NULL,
+    updated_at                    TEXT NOT NULL,
+    UNIQUE(feed_id, expected_sequence)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_feed_sla_incidents_feed_status
+    ON feed_sla_incidents(feed_id, status);
+  CREATE INDEX IF NOT EXISTS idx_feed_sla_incidents_status_detected
+    ON feed_sla_incidents(status, detected_at);
+  CREATE INDEX IF NOT EXISTS idx_feed_sla_incidents_agent
+    ON feed_sla_incidents(agent_id, detected_at);
+`;
+
+const MIGRATION_049_OPERATOR_ALERTS = `
+  CREATE TABLE IF NOT EXISTS operator_alerts (
+    alert_id                    TEXT PRIMARY KEY,
+    alert_key                   TEXT NOT NULL UNIQUE,
+    source                      TEXT NOT NULL,
+    kind                        TEXT NOT NULL,
+    severity                    TEXT NOT NULL CHECK (severity IN ('info','warning','critical')),
+    status                      TEXT NOT NULL CHECK (status IN ('open','resolved')),
+    title                       TEXT NOT NULL,
+    description                 TEXT NOT NULL,
+    payload_json                TEXT NOT NULL,
+    first_seen_at               TEXT NOT NULL,
+    last_seen_at                TEXT NOT NULL,
+    occurrence_count            INTEGER NOT NULL DEFAULT 1 CHECK (occurrence_count > 0),
+    resolved_at                 TEXT,
+    delivery_status             TEXT NOT NULL DEFAULT 'pending'
+                                CHECK (delivery_status IN ('pending','delivered','failed')),
+    delivery_attempts           INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts >= 0),
+    next_delivery_at            TEXT,
+    last_delivery_at            TEXT,
+    last_delivery_status        INTEGER,
+    last_delivery_error         TEXT,
+    created_at                  TEXT NOT NULL,
+    updated_at                  TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_operator_alerts_status_source
+    ON operator_alerts(status, source, severity);
+  CREATE INDEX IF NOT EXISTS idx_operator_alerts_delivery
+    ON operator_alerts(delivery_status, next_delivery_at)
+    WHERE status = 'open';
+  CREATE INDEX IF NOT EXISTS idx_operator_alerts_last_seen
+    ON operator_alerts(last_seen_at);
 `;
 
 /**
  * Apply an ALTER TABLE ADD COLUMN only if the column doesn't already exist.
- * SQLite's PRAGMA table_info() is the canonical existence check. Used by
- * Migration 025 (codex Z2 review FAIL #4) so rerunning the migration after a
- * crash between the ALTER and the schema_version bump is safe.
+ * SQLite's PRAGMA table_info() is the canonical existence check.
  */
 function applyAlterTableAddColumn(
   db: Database.Database,
@@ -2710,13 +3500,10 @@ function applyAlterTableAddColumn(
 //
 // Three things at once:
 //   1. agents gains `wallet_address` + `chain_id` as top-level columns so
-//      receipt subjects can canonicalize wallet-bound, off-Murmur-verifiable
-//      reputation (pillar 4) without a verified_identities join on every
-//      receipt build.
-//   2. agents.kind enum extended to include `wallet_only` — agents that
-//      self-registered via /claim/wallet-only and proved control of a wallet
-//      but have no public X/Telegram identity. SQLite CHECK constraints
-//      can't be ALTERed in place, so we rebuild the agents table.
+//      reputation without a verified_identities join on every profile read.
+//   2. agents.kind enum originally extended to include wallet-owned agents.
+//      SQLite CHECK constraints can't be ALTERed in place, so this migration
+//      rebuilt the agents table.
 //   3. claim_challenges gains supporting indexes for (status, expires_at)
 //      GC and (target_kind, target_value, status) lookups; abuse forensics
 //      now has the right shape.
@@ -2787,7 +3574,6 @@ export const agentsRepo = {
   insert(
     db: Database.Database,
     profile: AgentProfile,
-    api_key_hash: string | null = null,
   ): void {
     prep(
       db,
@@ -2800,13 +3586,10 @@ export const agentsRepo = {
       display_name: profile.display_name,
       bio: profile.bio ?? null,
       created_at: profile.created_at,
-      api_key_hash,
+      api_key_hash: null,
       wallet_address: profile.wallet_address ?? null,
       chain_id: profile.chain_id ?? null,
     });
-    for (const id of profile.verified_identities) {
-      verifiedIdentitiesRepo.insert(db, profile.agent_id, id);
-    }
   },
 
   byId(db: Database.Database, agent_id: string): AgentRow | null {
@@ -2823,71 +3606,6 @@ export const agentsRepo = {
       "SELECT * FROM agents WHERE display_slug = ? COLLATE NOCASE",
     ).get(slug) as RawAgentRow | undefined;
     return row ? hydrateAgent(db, row) : null;
-  },
-
-  /**
-   * Mutate an agent's `kind` post-registration.
-   *
-   * V2 §7.1 + §7.7 risk-2 invariant: tier is immutable per agent. Switching
-   * tiers requires registering a NEW agent (new agent_id, fresh reputation).
-   * The plan's stated motivation is anti-downgrade — an `attested` agent
-   * forfeiting their Olas bond by silently flipping to `casual`.
-   *
-   * Two legitimate exceptions live today:
-   *   1. `claim` flow: `shadow` → `verified` when an operator proves
-   *      control of the X/Telegram identity that produced the shadow
-   *      ingested posts. The shadow agent is a NON-OPERATOR-MINTED row
-   *      (auto-created by the post ingester); the operator's claim
-   *      converts it into their canonical identity. This is upgrade-only
-   *      and explicitly sanctioned by the claim flow.
-   *   2. `wallet-only claim` flow: pre-registered `shadow` self-claimed
-   *      as `wallet_only` by an operator who proves wallet control. Same
-   *      upgrade-only constraint.
-   *
-   * Wave 4d guard:
-   *   - Callers MUST pass an explicit `{ reason }` marker so accidental
-   *     in-place mutations elsewhere in the codebase grep / fail-loud.
-   *   - Generic admin overrides require `MURMUR_ADMIN_TIER_OVERRIDE=1`.
-   *   - The mutation is recorded via `usage_events` (caller responsibility)
-   *     so the §7.7 audit trail picks up every transition.
-   *
-   * Throws when the caller is neither a sanctioned claim flow nor an
-   * env-gated admin override.
-   */
-  setKind(
-    db: Database.Database,
-    agent_id: string,
-    kind: AgentKind,
-    opts: {
-      reason:
-        | "claim_completed_verified"
-        | "claim_completed_wallet_only"
-        | "admin_override";
-    },
-  ): void {
-    if (
-      opts.reason === "admin_override" &&
-      process.env.MURMUR_ADMIN_TIER_OVERRIDE !== "1"
-    ) {
-      throw new Error(
-        "agentsRepo.setKind: admin_override requires MURMUR_ADMIN_TIER_OVERRIDE=1",
-      );
-    }
-    prep(
-      db,
-      "UPDATE agents SET kind = ? WHERE agent_id = ?",
-    ).run(kind, agent_id);
-  },
-
-  setApiKeyHash(
-    db: Database.Database,
-    agent_id: string,
-    api_key_hash: string,
-  ): void {
-    prep(
-      db,
-      "UPDATE agents SET api_key_hash = ? WHERE agent_id = ?",
-    ).run(api_key_hash, agent_id);
   },
 
   /**
@@ -2909,9 +3627,7 @@ export const agentsRepo = {
   },
 
   /**
-   * Lookup by wallet (lowercase + chain_id) — useful for the upgrade path
-   * where a wallet-only agent later wants to verify a public X identity
-   * and we need to find the existing agent_id.
+   * Lookup by wallet (lowercase + chain_id).
    */
   byWallet(
     db: Database.Database,
@@ -2938,7 +3654,7 @@ export const agentsRepo = {
     db: Database.Database,
     kind: AgentKind,
     limit = 100,
-  ): Array<Pick<AgentRow, "agent_id" | "display_slug" | "display_name" | "kind" | "bio" | "created_at" | "verified_identities">> {
+  ): Array<Pick<AgentRow, "agent_id" | "display_slug" | "display_name" | "kind" | "bio" | "created_at">> {
     const rows = prep(
       db,
       `SELECT agent_id, display_slug, display_name, kind, bio, created_at
@@ -2948,15 +3664,13 @@ export const agentsRepo = {
        LIMIT ?`,
     ).all(kind, limit) as Array<RawAgentRow>;
     return rows.map((r) => {
-      const hyd = hydrateAgent(db, r);
       return {
-        agent_id: hyd.agent_id,
-        display_slug: hyd.display_slug,
-        display_name: hyd.display_name,
-        kind: hyd.kind,
-        bio: hyd.bio,
-        created_at: hyd.created_at,
-        verified_identities: hyd.verified_identities,
+        agent_id: r.agent_id,
+        display_slug: r.display_slug,
+        display_name: r.display_name,
+        kind: r.kind,
+        bio: r.bio ?? undefined,
+        created_at: r.created_at,
       };
     });
   },
@@ -2974,8 +3688,7 @@ interface RawAgentRow {
   chain_id: string | null;
 }
 
-function hydrateAgent(db: Database.Database, row: RawAgentRow): AgentRow {
-  const ids = verifiedIdentitiesRepo.listForAgent(db, row.agent_id);
+function hydrateAgent(_db: Database.Database, row: RawAgentRow): AgentRow {
   return {
     agent_id: row.agent_id,
     display_slug: row.display_slug,
@@ -2983,169 +3696,90 @@ function hydrateAgent(db: Database.Database, row: RawAgentRow): AgentRow {
     display_name: row.display_name,
     bio: row.bio ?? undefined,
     created_at: row.created_at,
-    verified_identities: ids,
     api_key_hash: row.api_key_hash,
     ...(row.wallet_address ? { wallet_address: row.wallet_address } : {}),
     ...(row.chain_id ? { chain_id: row.chain_id } : {}),
   };
 }
 
-// ─── Verified identities ─────────────────────────────────────────────────────
-//
-// Wave 3 — the verified_identities table was dropped by MIGRATION_031.
-// Wave 1 deleted the X/Telegram/wallet claim flows that populated it; the
-// repo persists here as a no-op so call sites that still hand the daemon
-// a (now always-empty) `verified_identities` array on agent inserts keep
-// compiling. listForAgent / findByExternal return empty results — there
-// is no source of truth for off-platform identity in v0.2 anymore.
-//
-// Removing the call sites is a separate cleanup; they're inert here.
-
-export const verifiedIdentitiesRepo = {
-  insert(
-    _db: Database.Database,
-    _agent_id: string,
-    _identity: VerifiedIdentity,
-  ): void {
-    /* no-op — verified_identities table dropped in Wave 3. */
-  },
-
-  listForAgent(_db: Database.Database, _agent_id: string): VerifiedIdentity[] {
-    return [];
-  },
-
-  findByExternal(
-    _db: Database.Database,
-    _kind: VerifiedIdentity["kind"],
-    _value: string,
-  ): { agent_id: string } | null {
-    return null;
-  },
-};
-
 // ─── Submissions / Acceptances ───────────────────────────────────────────────
 
-export interface AcceptanceWriteInput {
-  submission: SubmittedCall;
-  accepted: AcceptedCall;
-  dedup_key: string;
-  /** Wave 3 — the only privacy_mode that produces a row is 'fhe_direct';
-   *  legacy_plaintext / committed paths were excised in Waves 2a/2b. The
-   *  field stays nullable on the wire shape so test harnesses that mint
-   *  rows without a mode can keep their explicit-null call sites. */
-  privacy_mode?: string;
-  commit_hash?: string;
-  commit_scheme?: string;
-  /** P3 — market registry stamps. Both nullable for back-compat with any
-   *  callers that bypass the registry; submitCall always populates them. */
-  market_id?: string;
-  market_config_version?: number;
-  /** P3 Phase 2c — canonical horizon. REQUIRED post-Wave-3 because the
-   *  horizon_hours column the legacy fallback derived from is gone. */
+export interface SealedFhenixAcceptanceInput {
+  call_id: string;
+  agent_id: string;
+  runtime_key_id?: string | null;
+  client_order_id: string;
   horizon_seconds: number;
-  /** FIX 5 / migration 016 — adapter dispatch stamps. Migration 016 backfills
-   *  these on EXISTING rows; new rows must populate at insert time so the
-   *  family / adapter columns aren't NULL after the deploy. Both nullable
-   *  here for resilience: if the caller resolves a market that doesn't
-   *  carry adapter_id (e.g. a forward-compat market row pre-adapter), we
-   *  fall back to ('native-price', 'financial-direction') at the call site
-   *  the same way migration 016 does. */
-  adapter_id?: string | null;
-  market_family?: string | null;
-  /** Phase 4 — universal-commitment storage stamps (V2 §2.2). Render-only
-   *  `outcome_labels_json` carries the adapter's labels for the payout
-   *  vector positions (e.g. ['UP','DOWN'] for native-price). */
-  commitment_json?: string | null;
-  predicted_outcome_json?: string | null;
-  outcome_labels_json?: string | null;
-  legacy_payload_json?: string | null;
+  submitted_at: string;
+  accepted_at: string;
+  rationale?: string | null;
+  strategy_tag?: string | null;
+  schema_version: number;
+  scoring_version: number;
+  dedup_key: string;
+  commit_hash: string;
+  commit_scheme: string;
+  market_id: string;
+  market_config_version: number;
+  adapter_id: string | null;
+  market_family: string | null;
 }
 
 export const submissionsRepo = {
-  /**
-   * Insert a submissions row. Wave 3 collapsed this from a multi-table
-   * transaction to a single table write:
-   *   - The four plaintext market-signal columns (side / asset_id /
-   *     horizon_hours / confidence) are GONE from the submissions schema;
-   *     MIGRATION_031 dropped them. The Commitment ciphertext on
-   *     fhe_call_ciphertexts is the only durable record of the prediction.
-   *   - oracle_policies, call_private_envelopes, and call_reveals were
-   *     dropped by MIGRATION_031 too. T0 policy is re-derived on the
-   *     resolver read path via derivePolicyFromMarket(); committed-mode
-   *     envelopes are gone with the legacy submit path.
-   *
-   * Caller (submitCall on /v2/calls) supplies the universal Commitment
-   * JSON + the predicted Outcome JSON + the market metadata via the
-   * Wave-4-introduced columns; the FHE ciphertext is persisted by the
-   * /v2 fhe-direct path inside its own transaction wrapping this insert.
-   */
-  acceptCall(db: Database.Database, input: AcceptanceWriteInput): void {
-    const tx = db.transaction((i: AcceptanceWriteInput) => {
-      prep(
-        db,
-        `INSERT INTO submissions
-         (call_id, agent_id, client_order_id,
-          horizon_seconds,
-          submitted_at, accepted_at, status, rationale, strategy_tag,
-          schema_version, scoring_version, dedup_key,
-          privacy_mode, commit_hash, commit_scheme,
-          market_id, market_config_version,
-          adapter_id, market_family,
-          commitment_json, predicted_outcome_json, outcome_labels_json,
-          legacy_payload_json)
-         VALUES (@call_id, @agent_id, @client_order_id,
-          @horizon_seconds,
-          @submitted_at, @accepted_at, @status, @rationale, @strategy_tag,
-          @schema_version, @scoring_version, @dedup_key,
-          @privacy_mode, @commit_hash, @commit_scheme,
-          @market_id, @market_config_version,
-          @adapter_id, @market_family,
-          @commitment_json, @predicted_outcome_json, @outcome_labels_json,
-          @legacy_payload_json)`,
-      ).run({
-        call_id: i.accepted.call_id,
-        agent_id: i.accepted.agent_id,
-        client_order_id: i.accepted.client_order_id,
-        // P3 Phase 2c: horizon_seconds is the canonical horizon. Caller
-        // (submitCall) passes it from market.horizon_seconds at
-        // acceptance. The legacy fallback to `horizon_hours * 3600`
-        // disappeared with the column drop — i.horizon_seconds is now
-        // mandatory.
-        horizon_seconds: i.horizon_seconds,
-        submitted_at: i.accepted.submitted_at,
-        accepted_at: i.accepted.accepted_at,
-        status: "accepted" satisfies CallStatus,
-        rationale: i.accepted.rationale ?? null,
-        strategy_tag: i.accepted.strategy_tag ?? null,
-        schema_version: i.accepted.schema_version,
-        scoring_version: i.accepted.scoring_version,
-        dedup_key: i.dedup_key,
-        privacy_mode: i.privacy_mode ?? "fhe_direct",
-        commit_hash: i.commit_hash ?? null,
-        commit_scheme: i.commit_scheme ?? null,
-        market_id: i.market_id ?? null,
-        market_config_version: i.market_config_version ?? null,
-        // BUG FIX (codex review v3 P2 #2): stamp adapter_id + market_family
-        // at insert time. Migration 016 backfills legacy rows to
-        // ('native-price', 'financial-direction'); new submissions accepted
-        // after the deploy must populate the same defaults so family
-        // filters and adapter dispatch don't see NULL columns. Caller
-        // (submitCall) passes the values it looked up off the market row
-        // — same fallback as the migration when a market predates adapters.
-        adapter_id: i.adapter_id ?? null,
-        market_family: i.market_family ?? null,
-        // Phase 4 — universal commitment columns. /v2/calls passes the
-        // body-supplied Commitment (validated by adapter.commitmentSchema).
-        // The resolver's universal hot path reads these as the source of
-        // truth for the prediction shape; native-price runs through them
-        // too now that the legacy submit path is excised.
-        commitment_json: i.commitment_json ?? null,
-        predicted_outcome_json: i.predicted_outcome_json ?? null,
-        outcome_labels_json: i.outcome_labels_json ?? null,
-        legacy_payload_json: i.legacy_payload_json ?? null,
-      });
+  acceptSealedFhenixCall(
+    db: Database.Database,
+    input: SealedFhenixAcceptanceInput,
+  ): void {
+    prep(
+      db,
+      `INSERT INTO submissions
+       (call_id, agent_id, runtime_key_id, client_order_id,
+        horizon_seconds,
+        submitted_at, accepted_at, status, rationale, strategy_tag,
+       schema_version, scoring_version, dedup_key,
+       privacy_mode, commit_hash, commit_scheme,
+       market_id, market_config_version,
+       adapter_id, market_family,
+        commitment_json, predicted_outcome_json, outcome_labels_json)
+       VALUES (@call_id, @agent_id, @runtime_key_id, @client_order_id,
+        @horizon_seconds,
+        @submitted_at, @accepted_at, 'accepted', @rationale, @strategy_tag,
+        @schema_version, @scoring_version, @dedup_key,
+        'sealed_fhenix', @commit_hash, @commit_scheme,
+        @market_id, @market_config_version,
+        @adapter_id, @market_family,
+        NULL, NULL, NULL)`,
+    ).run({
+      ...input,
+      runtime_key_id: input.runtime_key_id ?? null,
+      rationale: input.rationale ?? null,
+      strategy_tag: input.strategy_tag ?? null,
+      adapter_id: input.adapter_id ?? null,
+      market_family: input.market_family ?? null,
     });
-    tx(input);
+  },
+
+  attachRevealedCommitment(
+    db: Database.Database,
+    input: {
+      call_id: string;
+      commitment_json: string;
+      predicted_outcome_json: string;
+      outcome_labels_json: string;
+    },
+  ): void {
+    const result = prep(
+      db,
+      `UPDATE submissions
+       SET commitment_json = @commitment_json,
+           predicted_outcome_json = @predicted_outcome_json,
+           outcome_labels_json = @outcome_labels_json
+       WHERE call_id = @call_id
+         AND privacy_mode = 'sealed_fhenix'`,
+    ).run(input);
+    if (result.changes !== 1) {
+      throw new Error(`sealed_fhenix commitment attach failed for call_id=${input.call_id}`);
+    }
   },
 
   findByClientOrderId(
@@ -3198,6 +3832,19 @@ export const submissionsRepo = {
     return row?.n ?? 0;
   },
 
+  countCallsForRuntimeKeyWindow(
+    db: Database.Database,
+    runtime_key_id: string,
+    sinceIso: string,
+  ): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS n FROM submissions
+       WHERE runtime_key_id = ? AND accepted_at >= ?`,
+    ).get(runtime_key_id, sinceIso) as { n: number } | undefined;
+    return row?.n ?? 0;
+  },
+
   setStatus(
     db: Database.Database,
     call_id: string,
@@ -3243,9 +3890,8 @@ export const submissionsRepo = {
    * Hydrated row used by the resolver when working a call. Wave 3 reshape:
    *   - The four plaintext market-signal columns (side / asset_id /
    *     horizon_hours / confidence) are gone with MIGRATION_031. The
-   *     prediction lives in the Commitment ciphertext (fhe_call_ciphertexts)
-   *     and the universal Outcome JSON the resolver scores against; the
-   *     resolver no longer reads any of them off submissions.
+   *     sealed Fhenix rows do not get a revealed commitment_json until the
+   *     post-horizon contract reveal is verified.
    *   - The oracle_policies table is gone too. T0Policy is derived on the
    *     fly from the market_id via derivePolicyFromMarket() inside the
    *     resolver — keeping it OUT of the repo lets the repo stay a thin
@@ -3299,6 +3945,1930 @@ export const submissionsRepo = {
           }
         | undefined) ?? null
     );
+  },
+};
+
+export interface FhenixSealedCallInsert {
+  call_id: string;
+  chain_id: number;
+  contract_address: string;
+  onchain_call_id: string;
+  submit_tx_hash: string;
+  submit_log_index: number;
+  binary_index_ct_hash: string;
+  confidence_ct_hash: string;
+  reveal_open_at: string;
+  created_at: string;
+}
+
+export interface FhenixRevealInput {
+  call_id: string;
+  revealed_binary_index: 0 | 1;
+  revealed_confidence: number;
+  revealed_confidence_bps: number;
+  revealed_at: string;
+  reveal_tx_hash: string;
+  reveal_log_index: number;
+  reveal_block_number?: number | null;
+}
+
+export type FhenixRevealStatus = "pending" | "revealed" | "invalid" | "missed";
+
+export interface FhenixInvalidRevealInput {
+  call_id: string;
+  revealed_binary_index: number;
+  revealed_confidence_bps: number;
+  invalid_reason: string;
+  revealed_at: string;
+  reveal_tx_hash: string;
+  reveal_log_index: number;
+  reveal_block_number?: number | null;
+}
+
+export const fhenixSealedCallsRepo = {
+  insert(db: Database.Database, input: FhenixSealedCallInsert): void {
+    prep(
+      db,
+      `INSERT INTO fhenix_sealed_calls
+       (call_id, chain_id, contract_address, onchain_call_id,
+        submit_tx_hash, submit_log_index, binary_index_ct_hash, confidence_ct_hash,
+        reveal_open_at, created_at)
+       VALUES
+       (@call_id, @chain_id, @contract_address, @onchain_call_id,
+        @submit_tx_hash, @submit_log_index, @binary_index_ct_hash, @confidence_ct_hash,
+        @reveal_open_at, @created_at)`,
+    ).run(input);
+  },
+
+  byCallId(
+    db: Database.Database,
+    call_id: string,
+  ): (FhenixSealedCallInsert & {
+    opened_at: string | null;
+    reveal_status: FhenixRevealStatus;
+    invalid_reason: string | null;
+    terminal_at: string | null;
+    submit_block_number: number | null;
+    reveal_block_number: number | null;
+    revealed_at: string | null;
+    reveal_tx_hash: string | null;
+    reveal_log_index: number | null;
+    revealed_binary_index: number | null;
+    revealed_confidence: number | null;
+    revealed_confidence_bps: number | null;
+  }) | null {
+    return (
+      (prep(
+        db,
+        `SELECT call_id, chain_id, contract_address, onchain_call_id,
+                submit_tx_hash, submit_log_index, binary_index_ct_hash, confidence_ct_hash,
+                reveal_open_at, created_at, opened_at, revealed_at,
+                reveal_tx_hash, reveal_log_index, revealed_binary_index,
+                revealed_confidence, revealed_confidence_bps,
+                reveal_status, invalid_reason, terminal_at,
+                submit_block_number, reveal_block_number
+         FROM fhenix_sealed_calls
+         WHERE call_id = ?`,
+      ).get(call_id) as
+        | (FhenixSealedCallInsert & {
+            opened_at: string | null;
+            reveal_status: FhenixRevealStatus;
+            invalid_reason: string | null;
+            terminal_at: string | null;
+            submit_block_number: number | null;
+            reveal_block_number: number | null;
+            revealed_at: string | null;
+            reveal_tx_hash: string | null;
+            reveal_log_index: number | null;
+            revealed_binary_index: number | null;
+            revealed_confidence: number | null;
+            revealed_confidence_bps: number | null;
+          })
+        | undefined) ?? null
+    );
+  },
+
+  byOnchainCall(
+    db: Database.Database,
+    input: {
+      chain_id: number;
+      contract_address: string;
+      onchain_call_id: string;
+    },
+  ): (FhenixSealedCallInsert & {
+    opened_at: string | null;
+    reveal_status: FhenixRevealStatus;
+    invalid_reason: string | null;
+    terminal_at: string | null;
+    submit_block_number: number | null;
+    reveal_block_number: number | null;
+    revealed_at: string | null;
+    reveal_tx_hash: string | null;
+    reveal_log_index: number | null;
+    revealed_binary_index: number | null;
+    revealed_confidence: number | null;
+    revealed_confidence_bps: number | null;
+  }) | null {
+    return (
+      (prep(
+        db,
+        `SELECT call_id, chain_id, contract_address, onchain_call_id,
+                submit_tx_hash, submit_log_index, binary_index_ct_hash, confidence_ct_hash,
+                reveal_open_at, created_at, opened_at, revealed_at,
+                reveal_tx_hash, reveal_log_index, revealed_binary_index,
+                revealed_confidence, revealed_confidence_bps,
+                reveal_status, invalid_reason, terminal_at,
+                submit_block_number, reveal_block_number
+         FROM fhenix_sealed_calls
+         WHERE chain_id = @chain_id
+           AND contract_address = @contract_address
+           AND onchain_call_id = @onchain_call_id
+         LIMIT 1`,
+      ).get(input) as
+        | (FhenixSealedCallInsert & {
+            opened_at: string | null;
+            reveal_status: FhenixRevealStatus;
+            invalid_reason: string | null;
+            terminal_at: string | null;
+            submit_block_number: number | null;
+            reveal_block_number: number | null;
+            revealed_at: string | null;
+            reveal_tx_hash: string | null;
+            reveal_log_index: number | null;
+            revealed_binary_index: number | null;
+            revealed_confidence: number | null;
+            revealed_confidence_bps: number | null;
+          })
+        | undefined) ?? null
+    );
+  },
+
+  attachReveal(
+    db: Database.Database,
+    input: FhenixRevealInput,
+  ): void {
+    const result = prep(
+      db,
+      `UPDATE fhenix_sealed_calls
+       SET opened_at = COALESCE(opened_at, @revealed_at),
+           revealed_at = @revealed_at,
+           reveal_tx_hash = @reveal_tx_hash,
+           reveal_log_index = @reveal_log_index,
+           revealed_binary_index = @revealed_binary_index,
+           revealed_confidence = @revealed_confidence,
+           revealed_confidence_bps = @revealed_confidence_bps,
+           reveal_status = 'revealed',
+           invalid_reason = NULL,
+           terminal_at = @revealed_at,
+           reveal_block_number = @reveal_block_number
+       WHERE call_id = @call_id
+         AND revealed_at IS NULL
+         AND reveal_status = 'pending'`,
+    ).run({ ...input, reveal_block_number: input.reveal_block_number ?? null });
+    if (result.changes !== 1) {
+      throw new Error(`fhenix reveal attach failed for call_id=${input.call_id}`);
+    }
+  },
+
+  attachInvalidReveal(
+    db: Database.Database,
+    input: FhenixInvalidRevealInput,
+  ): void {
+    const result = prep(
+      db,
+      `UPDATE fhenix_sealed_calls
+       SET opened_at = COALESCE(opened_at, @revealed_at),
+           revealed_at = @revealed_at,
+           reveal_tx_hash = @reveal_tx_hash,
+           reveal_log_index = @reveal_log_index,
+           revealed_binary_index = @revealed_binary_index,
+           revealed_confidence = NULL,
+           revealed_confidence_bps = @revealed_confidence_bps,
+           reveal_status = 'invalid',
+           invalid_reason = @invalid_reason,
+           terminal_at = @revealed_at,
+           reveal_block_number = @reveal_block_number
+       WHERE call_id = @call_id
+         AND revealed_at IS NULL
+         AND reveal_status = 'pending'`,
+    ).run({ ...input, reveal_block_number: input.reveal_block_number ?? null });
+    if (result.changes !== 1) {
+      throw new Error(`fhenix invalid reveal attach failed for call_id=${input.call_id}`);
+    }
+  },
+
+  markMissedReveal(
+    db: Database.Database,
+    input: { call_id: string; terminal_at: string; invalid_reason: string },
+  ): boolean {
+    const result = prep(
+      db,
+      `UPDATE fhenix_sealed_calls
+       SET reveal_status = 'missed',
+           invalid_reason = @invalid_reason,
+           terminal_at = @terminal_at
+       WHERE call_id = @call_id
+         AND reveal_status = 'pending'
+         AND revealed_at IS NULL`,
+    ).run(input);
+    return result.changes === 1;
+  },
+
+  listMissable(
+    db: Database.Database,
+    cutoffIso: string,
+    limit = 500,
+  ): Array<{ call_id: string; agent_id: string; reveal_open_at: string }> {
+    return prep(
+      db,
+      `SELECT f.call_id, s.agent_id, f.reveal_open_at
+       FROM fhenix_sealed_calls f
+       JOIN submissions s ON s.call_id = f.call_id
+       WHERE f.reveal_status = 'pending'
+         AND f.revealed_at IS NULL
+         AND f.reveal_open_at <= ?
+         AND s.status IN ('accepted','pending_t0','pending_t1')
+       ORDER BY f.reveal_open_at
+       LIMIT ?`,
+    ).all(cutoffIso, limit) as Array<{ call_id: string; agent_id: string; reveal_open_at: string }>;
+  },
+};
+
+export type FhenixGatewayTxStatus =
+  | "queued"
+  | "submitted"
+  | "confirmed"
+  | "accepted"
+  | "failed_retryable"
+  | "failed_terminal";
+
+export interface FhenixGatewayTxAttemptInsert {
+  attempt_id: string;
+  status: FhenixGatewayTxStatus;
+  runtime_key_id: string | null;
+  runtime_key_policy_hash: string;
+  runtime_key_policy_json: string;
+  account_id: string;
+  agent_id: string;
+  chain_id: number;
+  contract_address: string;
+  relayer_address: string;
+  agent_wallet_address: string;
+  market_id: string;
+  market_id_hash: string;
+  market_ref_protocol: string;
+  market_config_version: number;
+  client_order_id: string;
+  client_nonce: string;
+  submitted_at: string;
+  rationale: string | null;
+  strategy_tag: string | null;
+  binary_index_input_json: string;
+  confidence_input_json: string;
+  next_attempt_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FhenixGatewayTxAttemptRow extends FhenixGatewayTxAttemptInsert {
+  tx_hash: string | null;
+  submit_log_index: number | null;
+  submit_block_number: number | null;
+  onchain_call_id: string | null;
+  binary_index_ct_hash: string | null;
+  confidence_ct_hash: string | null;
+  accepted_at: string | null;
+  reveal_open_at: string | null;
+  call_id: string | null;
+  attempt_count: number;
+  last_error: string | null;
+  broadcast_started_at: string | null;
+  broadcast_latency_ms: number | null;
+  receipt_observed_at: string | null;
+  receipt_latency_ms: number | null;
+  latest_block_latency_ms: number | null;
+  receipt_status: "success" | "reverted" | null;
+  receipt_block_number: number | null;
+  latest_block_number: number | null;
+  confirmations_observed: number | null;
+  gas_used: string | null;
+  effective_gas_price_wei: string | null;
+  last_rpc_error: string | null;
+}
+
+export interface FhenixGatewayTxStatusCount {
+  status: FhenixGatewayTxStatus;
+  count: number;
+  oldest_updated_at: string | null;
+  newest_updated_at: string | null;
+}
+
+export interface FhenixGatewayReceiptTelemetry {
+  attempt_id: string;
+  receipt_observed_at: string;
+  receipt_latency_ms: number;
+  latest_block_latency_ms: number | null;
+  receipt_status: "success" | "reverted" | null;
+  receipt_block_number: number | null;
+  latest_block_number: number | null;
+  confirmations_observed: number | null;
+  gas_used: string | null;
+  effective_gas_price_wei: string | null;
+  last_rpc_error: string | null;
+}
+
+export interface FhenixGatewayTelemetrySummary {
+  avg_broadcast_latency_ms: number | null;
+  avg_receipt_latency_ms: number | null;
+  avg_latest_block_latency_ms: number | null;
+  max_confirmations_observed: number | null;
+  rpc_errors: number;
+  last_receipt_observed_at: string | null;
+}
+
+export const fhenixGatewayTxRepo = {
+  insert(db: Database.Database, input: FhenixGatewayTxAttemptInsert): void {
+    prep(
+      db,
+      `INSERT INTO fhenix_gateway_tx_attempts
+       (attempt_id, status, runtime_key_id, account_id, agent_id,
+        runtime_key_policy_hash, runtime_key_policy_json,
+        chain_id, contract_address, relayer_address, agent_wallet_address,
+        market_id, market_id_hash, market_ref_protocol, market_config_version,
+        client_order_id, client_nonce, submitted_at, rationale, strategy_tag,
+        binary_index_input_json, confidence_input_json,
+        next_attempt_at, created_at, updated_at)
+       VALUES
+       (@attempt_id, @status, @runtime_key_id, @account_id, @agent_id,
+        @runtime_key_policy_hash, @runtime_key_policy_json,
+        @chain_id, @contract_address, @relayer_address, @agent_wallet_address,
+        @market_id, @market_id_hash, @market_ref_protocol, @market_config_version,
+        @client_order_id, @client_nonce, @submitted_at, @rationale, @strategy_tag,
+        @binary_index_input_json, @confidence_input_json,
+        @next_attempt_at, @created_at, @updated_at)`,
+    ).run(input);
+  },
+
+  byId(db: Database.Database, attempt_id: string): FhenixGatewayTxAttemptRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM fhenix_gateway_tx_attempts WHERE attempt_id = ?`,
+      ).get(attempt_id) as FhenixGatewayTxAttemptRow | undefined) ?? null
+    );
+  },
+
+  byClientOrder(
+    db: Database.Database,
+    agent_id: string,
+    client_order_id: string,
+  ): FhenixGatewayTxAttemptRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM fhenix_gateway_tx_attempts
+         WHERE agent_id = ? AND client_order_id = ?
+         LIMIT 1`,
+      ).get(agent_id, client_order_id) as FhenixGatewayTxAttemptRow | undefined) ?? null
+    );
+  },
+
+  markSubmitted(
+    db: Database.Database,
+    input: {
+      attempt_id: string;
+      tx_hash: string;
+      next_attempt_at: string;
+      updated_at: string;
+      broadcast_started_at: string;
+      broadcast_latency_ms: number;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET status = 'submitted',
+           tx_hash = @tx_hash,
+           broadcast_started_at = @broadcast_started_at,
+           broadcast_latency_ms = @broadcast_latency_ms,
+           attempt_count = attempt_count + 1,
+           next_attempt_at = @next_attempt_at,
+           last_error = NULL,
+           last_rpc_error = NULL,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markRetryableFailure(
+    db: Database.Database,
+    input: {
+      attempt_id: string;
+      last_error: string;
+      next_attempt_at: string;
+      updated_at: string;
+      broadcast_started_at: string | null;
+      broadcast_latency_ms: number | null;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET status = 'failed_retryable',
+           broadcast_started_at = COALESCE(@broadcast_started_at, broadcast_started_at),
+           broadcast_latency_ms = COALESCE(@broadcast_latency_ms, broadcast_latency_ms),
+           attempt_count = attempt_count + 1,
+           next_attempt_at = @next_attempt_at,
+           last_error = @last_error,
+           last_rpc_error = @last_error,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  recordReceiptTelemetry(
+    db: Database.Database,
+    input: FhenixGatewayReceiptTelemetry,
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET receipt_observed_at = @receipt_observed_at,
+           receipt_latency_ms = @receipt_latency_ms,
+           latest_block_latency_ms = @latest_block_latency_ms,
+           receipt_status = @receipt_status,
+           receipt_block_number = @receipt_block_number,
+           latest_block_number = @latest_block_number,
+           confirmations_observed = @confirmations_observed,
+           gas_used = @gas_used,
+           effective_gas_price_wei = @effective_gas_price_wei,
+           last_rpc_error = @last_rpc_error
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  recordRpcError(
+    db: Database.Database,
+    input: {
+      attempt_id: string;
+      receipt_observed_at: string;
+      receipt_latency_ms: number | null;
+      last_rpc_error: string;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET receipt_observed_at = @receipt_observed_at,
+           receipt_latency_ms = COALESCE(@receipt_latency_ms, receipt_latency_ms),
+           last_rpc_error = @last_rpc_error
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markTerminalFailure(
+    db: Database.Database,
+    input: { attempt_id: string; last_error: string; updated_at: string },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET status = 'failed_terminal',
+           last_error = @last_error,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markConfirmed(
+    db: Database.Database,
+    input: {
+      attempt_id: string;
+      submit_log_index: number;
+      submit_block_number: number | null;
+      onchain_call_id: string;
+      binary_index_ct_hash: string;
+      confidence_ct_hash: string;
+      accepted_at: string;
+      reveal_open_at: string;
+      updated_at: string;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET status = 'confirmed',
+           submit_log_index = @submit_log_index,
+           submit_block_number = @submit_block_number,
+           onchain_call_id = @onchain_call_id,
+           binary_index_ct_hash = @binary_index_ct_hash,
+           confidence_ct_hash = @confidence_ct_hash,
+           accepted_at = @accepted_at,
+           reveal_open_at = @reveal_open_at,
+           last_error = NULL,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markAccepted(
+    db: Database.Database,
+    input: { attempt_id: string; call_id: string; updated_at: string },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET status = 'accepted',
+           call_id = @call_id,
+           last_error = NULL,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markRetryNow(
+    db: Database.Database,
+    input: { attempt_id: string; next_attempt_at: string; updated_at: string },
+  ): boolean {
+    const info = prep(
+      db,
+      `UPDATE fhenix_gateway_tx_attempts
+       SET status = 'queued',
+           next_attempt_at = @next_attempt_at,
+           last_error = NULL,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id
+         AND status IN ('queued','failed_retryable')`,
+    ).run(input);
+    return info.changes > 0;
+  },
+
+  listDueForBroadcast(
+    db: Database.Database,
+    nowIso: string,
+    limit = 25,
+  ): FhenixGatewayTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_tx_attempts
+       WHERE status IN ('queued','failed_retryable')
+         AND next_attempt_at <= ?
+       ORDER BY next_attempt_at, created_at
+       LIMIT ?`,
+    ).all(nowIso, safeLimit) as FhenixGatewayTxAttemptRow[];
+  },
+
+  countDueForBroadcast(
+    db: Database.Database,
+    nowIso: string,
+  ): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM fhenix_gateway_tx_attempts
+       WHERE status IN ('queued','failed_retryable')
+         AND next_attempt_at <= ?`,
+    ).get(nowIso) as { count: number } | undefined;
+    return row?.count ?? 0;
+  },
+
+  // In-flight attempts (queued/submitted/confirmed/failed_retryable) still
+  // hold quota: each one either burned relayer gas or will, and each can
+  // still produce an `accepted` submission. Counting them alongside the
+  // submissions table prevents wasted gas when acceptance later fails.
+  countInflightByAgent(db: Database.Database, agent_id: string): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS n FROM fhenix_gateway_tx_attempts
+       WHERE agent_id = ?
+         AND status IN ('queued','submitted','confirmed','failed_retryable')`,
+    ).get(agent_id) as { n: number } | undefined;
+    return row?.n ?? 0;
+  },
+
+  countInflightByAgentMarketWindow(
+    db: Database.Database,
+    agent_id: string,
+    market_id: string,
+    sinceIso: string,
+  ): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS n FROM fhenix_gateway_tx_attempts
+       WHERE agent_id = ? AND market_id = ? AND created_at >= ?
+         AND status IN ('queued','submitted','confirmed','failed_retryable')`,
+    ).get(agent_id, market_id, sinceIso) as { n: number } | undefined;
+    return row?.n ?? 0;
+  },
+
+  countInflightByRuntimeKeyWindow(
+    db: Database.Database,
+    runtime_key_id: string,
+    sinceIso: string,
+  ): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS n FROM fhenix_gateway_tx_attempts
+       WHERE runtime_key_id = ? AND created_at >= ?
+         AND status IN ('queued','submitted','confirmed','failed_retryable')`,
+    ).get(runtime_key_id, sinceIso) as { n: number } | undefined;
+    return row?.n ?? 0;
+  },
+
+  listSubmittedForConfirmation(
+    db: Database.Database,
+    limit = 50,
+  ): FhenixGatewayTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_tx_attempts
+       WHERE status = 'submitted' AND tx_hash IS NOT NULL
+       ORDER BY updated_at
+       LIMIT ?`,
+    ).all(safeLimit) as FhenixGatewayTxAttemptRow[];
+  },
+
+  countSubmittedForConfirmation(db: Database.Database): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM fhenix_gateway_tx_attempts
+       WHERE status = 'submitted' AND tx_hash IS NOT NULL`,
+    ).get() as { count: number } | undefined;
+    return row?.count ?? 0;
+  },
+
+  listConfirmedForAcceptance(
+    db: Database.Database,
+    limit = 50,
+  ): FhenixGatewayTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_tx_attempts
+       WHERE status = 'confirmed'
+       ORDER BY updated_at
+       LIMIT ?`,
+    ).all(safeLimit) as FhenixGatewayTxAttemptRow[];
+  },
+
+  countConfirmedForAcceptance(db: Database.Database): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM fhenix_gateway_tx_attempts
+       WHERE status = 'confirmed'`,
+    ).get() as { count: number } | undefined;
+    return row?.count ?? 0;
+  },
+
+	  statusCounts(db: Database.Database): FhenixGatewayTxStatusCount[] {
+    return prep(
+      db,
+      `SELECT status,
+              COUNT(*) AS count,
+              MIN(updated_at) AS oldest_updated_at,
+              MAX(updated_at) AS newest_updated_at
+       FROM fhenix_gateway_tx_attempts
+       GROUP BY status
+       ORDER BY status`,
+    ).all() as FhenixGatewayTxStatusCount[];
+	  },
+
+	  telemetrySummary(db: Database.Database): FhenixGatewayTelemetrySummary {
+	    const row = prep(
+	      db,
+	      `SELECT AVG(broadcast_latency_ms) AS avg_broadcast_latency_ms,
+	              AVG(receipt_latency_ms) AS avg_receipt_latency_ms,
+	              AVG(latest_block_latency_ms) AS avg_latest_block_latency_ms,
+	              MAX(confirmations_observed) AS max_confirmations_observed,
+	              SUM(CASE WHEN last_rpc_error IS NOT NULL THEN 1 ELSE 0 END) AS rpc_errors,
+	              MAX(receipt_observed_at) AS last_receipt_observed_at
+	       FROM fhenix_gateway_tx_attempts`,
+	    ).get() as Partial<FhenixGatewayTelemetrySummary> | undefined;
+	    return {
+	      avg_broadcast_latency_ms: row?.avg_broadcast_latency_ms ?? null,
+	      avg_receipt_latency_ms: row?.avg_receipt_latency_ms ?? null,
+	      avg_latest_block_latency_ms: row?.avg_latest_block_latency_ms ?? null,
+	      max_confirmations_observed: row?.max_confirmations_observed ?? null,
+	      rpc_errors: row?.rpc_errors ?? 0,
+	      last_receipt_observed_at: row?.last_receipt_observed_at ?? null,
+	    };
+	  },
+
+  listRecent(
+    db: Database.Database,
+    opts: { status?: FhenixGatewayTxStatus; limit?: number } = {},
+  ): FhenixGatewayTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
+    if (opts.status) {
+      return prep(
+        db,
+        `SELECT * FROM fhenix_gateway_tx_attempts
+         WHERE status = ?
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT ?`,
+      ).all(opts.status, safeLimit) as FhenixGatewayTxAttemptRow[];
+    }
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_tx_attempts
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT ?`,
+    ).all(safeLimit) as FhenixGatewayTxAttemptRow[];
+  },
+
+  listStuck(
+    db: Database.Database,
+    input: { stale_before: string; limit?: number },
+  ): FhenixGatewayTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(input.limit ?? 50)));
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_tx_attempts
+       WHERE status IN ('submitted','confirmed')
+         AND updated_at <= @stale_before
+       ORDER BY updated_at ASC
+       LIMIT @limit`,
+    ).all({ stale_before: input.stale_before, limit: safeLimit }) as FhenixGatewayTxAttemptRow[];
+  },
+};
+
+export type FhenixGatewayFeedPacketTxStatus = FhenixGatewayTxStatus;
+
+export interface FhenixGatewayFeedPacketTxAttemptInsert {
+  attempt_id: string;
+  status: FhenixGatewayFeedPacketTxStatus;
+  runtime_key_id: string | null;
+  runtime_key_policy_hash: string;
+  runtime_key_policy_json: string;
+  account_id: string;
+  agent_id: string;
+  chain_id: number;
+  contract_address: string;
+  relayer_address: string;
+  agent_wallet_address: string;
+  feed_id: string;
+  feed_id_hash: string;
+  market_id: string | null;
+  market_id_hash: string;
+  packet_kind: FeedPacketKind;
+  sequence: number;
+  payload_schema: string;
+  client_order_id: string;
+  client_nonce: string;
+  submitted_at: string;
+  delivery_deadline_at: string | null;
+  reveal_after: string;
+  action_input_json: string;
+  signal_input_json: string;
+  next_attempt_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FhenixGatewayFeedPacketTxAttemptRow extends FhenixGatewayFeedPacketTxAttemptInsert {
+  tx_hash: string | null;
+  submit_log_index: number | null;
+  submit_block_number: number | null;
+  onchain_packet_id: string | null;
+  action_ct_hash: string | null;
+  signal_ct_hash: string | null;
+  accepted_at: string | null;
+  packet_id: string | null;
+  attempt_count: number;
+  last_error: string | null;
+  broadcast_started_at: string | null;
+  broadcast_latency_ms: number | null;
+  receipt_observed_at: string | null;
+  receipt_latency_ms: number | null;
+  latest_block_latency_ms: number | null;
+  receipt_status: "success" | "reverted" | null;
+  receipt_block_number: number | null;
+  latest_block_number: number | null;
+  confirmations_observed: number | null;
+  gas_used: string | null;
+  effective_gas_price_wei: string | null;
+  last_rpc_error: string | null;
+}
+
+export const fhenixGatewayFeedPacketTxRepo = {
+  insert(db: Database.Database, input: FhenixGatewayFeedPacketTxAttemptInsert): void {
+    prep(
+      db,
+      `INSERT INTO fhenix_gateway_feed_packet_tx_attempts
+       (attempt_id, status, runtime_key_id, runtime_key_policy_hash,
+        runtime_key_policy_json, account_id, agent_id, chain_id,
+        contract_address, relayer_address, agent_wallet_address, feed_id,
+        feed_id_hash, market_id, market_id_hash, packet_kind, sequence,
+        payload_schema, client_order_id, client_nonce, submitted_at,
+        delivery_deadline_at, reveal_after, action_input_json,
+        signal_input_json, next_attempt_at, created_at, updated_at)
+       VALUES
+       (@attempt_id, @status, @runtime_key_id, @runtime_key_policy_hash,
+        @runtime_key_policy_json, @account_id, @agent_id, @chain_id,
+        @contract_address, @relayer_address, @agent_wallet_address, @feed_id,
+        @feed_id_hash, @market_id, @market_id_hash, @packet_kind, @sequence,
+        @payload_schema, @client_order_id, @client_nonce, @submitted_at,
+        @delivery_deadline_at, @reveal_after, @action_input_json,
+        @signal_input_json, @next_attempt_at, @created_at, @updated_at)`,
+    ).run(input);
+  },
+
+  byId(db: Database.Database, attempt_id: string): FhenixGatewayFeedPacketTxAttemptRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM fhenix_gateway_feed_packet_tx_attempts WHERE attempt_id = ?`,
+      ).get(attempt_id) as FhenixGatewayFeedPacketTxAttemptRow | undefined) ?? null
+    );
+  },
+
+  byClientOrder(
+    db: Database.Database,
+    agent_id: string,
+    feed_id: string,
+    client_order_id: string,
+  ): FhenixGatewayFeedPacketTxAttemptRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM fhenix_gateway_feed_packet_tx_attempts
+         WHERE agent_id = ? AND feed_id = ? AND client_order_id = ?
+         LIMIT 1`,
+      ).get(agent_id, feed_id, client_order_id) as FhenixGatewayFeedPacketTxAttemptRow | undefined) ?? null
+    );
+  },
+
+  nextSequence(db: Database.Database, feed_id: string): number {
+    const row = prep(
+      db,
+      `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+       FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE feed_id = ?
+         AND status != 'failed_terminal'`,
+    ).get(feed_id) as { next_sequence: number } | undefined;
+    return row?.next_sequence ?? 1;
+  },
+
+  markSubmitted(
+    db: Database.Database,
+    input: {
+      attempt_id: string;
+      tx_hash: string;
+      next_attempt_at: string;
+      updated_at: string;
+      broadcast_started_at: string;
+      broadcast_latency_ms: number;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET status = 'submitted',
+           tx_hash = @tx_hash,
+           broadcast_started_at = @broadcast_started_at,
+           broadcast_latency_ms = @broadcast_latency_ms,
+           attempt_count = attempt_count + 1,
+           next_attempt_at = @next_attempt_at,
+           last_error = NULL,
+           last_rpc_error = NULL,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markRetryableFailure(
+    db: Database.Database,
+    input: {
+      attempt_id: string;
+      last_error: string;
+      next_attempt_at: string;
+      updated_at: string;
+      broadcast_started_at: string | null;
+      broadcast_latency_ms: number | null;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET status = 'failed_retryable',
+           broadcast_started_at = COALESCE(@broadcast_started_at, broadcast_started_at),
+           broadcast_latency_ms = COALESCE(@broadcast_latency_ms, broadcast_latency_ms),
+           attempt_count = attempt_count + 1,
+           next_attempt_at = @next_attempt_at,
+           last_error = @last_error,
+           last_rpc_error = @last_error,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  recordReceiptTelemetry(
+    db: Database.Database,
+    input: FhenixGatewayReceiptTelemetry,
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET receipt_observed_at = @receipt_observed_at,
+           receipt_latency_ms = @receipt_latency_ms,
+           latest_block_latency_ms = @latest_block_latency_ms,
+           receipt_status = @receipt_status,
+           receipt_block_number = @receipt_block_number,
+           latest_block_number = @latest_block_number,
+           confirmations_observed = @confirmations_observed,
+           gas_used = @gas_used,
+           effective_gas_price_wei = @effective_gas_price_wei,
+           last_rpc_error = @last_rpc_error
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  recordRpcError(
+    db: Database.Database,
+    input: {
+      attempt_id: string;
+      receipt_observed_at: string;
+      receipt_latency_ms: number | null;
+      last_rpc_error: string;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET receipt_observed_at = @receipt_observed_at,
+           receipt_latency_ms = COALESCE(@receipt_latency_ms, receipt_latency_ms),
+           last_rpc_error = @last_rpc_error
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markTerminalFailure(
+    db: Database.Database,
+    input: { attempt_id: string; last_error: string; updated_at: string },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET status = 'failed_terminal',
+           last_error = @last_error,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markConfirmed(
+    db: Database.Database,
+    input: {
+      attempt_id: string;
+      submit_log_index: number;
+      submit_block_number: number | null;
+      onchain_packet_id: string;
+      action_ct_hash: string;
+      signal_ct_hash: string;
+      accepted_at: string;
+      updated_at: string;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET status = 'confirmed',
+           submit_log_index = @submit_log_index,
+           submit_block_number = @submit_block_number,
+           onchain_packet_id = @onchain_packet_id,
+           action_ct_hash = @action_ct_hash,
+           signal_ct_hash = @signal_ct_hash,
+           accepted_at = @accepted_at,
+           last_error = NULL,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markAccepted(
+    db: Database.Database,
+    input: { attempt_id: string; packet_id: string; updated_at: string },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET status = 'accepted',
+           packet_id = @packet_id,
+           last_error = NULL,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id`,
+    ).run(input);
+  },
+
+  markRetryNow(
+    db: Database.Database,
+    input: { attempt_id: string; next_attempt_at: string; updated_at: string },
+  ): boolean {
+    const info = prep(
+      db,
+      `UPDATE fhenix_gateway_feed_packet_tx_attempts
+       SET status = 'queued',
+           next_attempt_at = @next_attempt_at,
+           last_error = NULL,
+           updated_at = @updated_at
+       WHERE attempt_id = @attempt_id
+         AND status IN ('queued','failed_retryable')`,
+    ).run(input);
+    return info.changes > 0;
+  },
+
+  listDueForBroadcast(
+    db: Database.Database,
+    nowIso: string,
+    limit = 25,
+  ): FhenixGatewayFeedPacketTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE status IN ('queued','failed_retryable')
+         AND next_attempt_at <= ?
+       ORDER BY next_attempt_at, created_at
+       LIMIT ?`,
+    ).all(nowIso, safeLimit) as FhenixGatewayFeedPacketTxAttemptRow[];
+  },
+
+  countDueForBroadcast(
+    db: Database.Database,
+    nowIso: string,
+  ): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE status IN ('queued','failed_retryable')
+         AND next_attempt_at <= ?`,
+    ).get(nowIso) as { count: number } | undefined;
+    return row?.count ?? 0;
+  },
+
+  listSubmittedForConfirmation(
+    db: Database.Database,
+    limit = 50,
+  ): FhenixGatewayFeedPacketTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE status = 'submitted' AND tx_hash IS NOT NULL
+       ORDER BY updated_at
+       LIMIT ?`,
+    ).all(safeLimit) as FhenixGatewayFeedPacketTxAttemptRow[];
+  },
+
+  countSubmittedForConfirmation(db: Database.Database): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE status = 'submitted' AND tx_hash IS NOT NULL`,
+    ).get() as { count: number } | undefined;
+    return row?.count ?? 0;
+  },
+
+  listConfirmedForAcceptance(
+    db: Database.Database,
+    limit = 50,
+  ): FhenixGatewayFeedPacketTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE status = 'confirmed'
+       ORDER BY updated_at
+       LIMIT ?`,
+    ).all(safeLimit) as FhenixGatewayFeedPacketTxAttemptRow[];
+  },
+
+  countConfirmedForAcceptance(db: Database.Database): number {
+    const row = prep(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE status = 'confirmed'`,
+    ).get() as { count: number } | undefined;
+    return row?.count ?? 0;
+  },
+
+  statusCounts(db: Database.Database): FhenixGatewayTxStatusCount[] {
+    return prep(
+      db,
+      `SELECT status,
+              COUNT(*) AS count,
+              MIN(updated_at) AS oldest_updated_at,
+              MAX(updated_at) AS newest_updated_at
+       FROM fhenix_gateway_feed_packet_tx_attempts
+       GROUP BY status
+       ORDER BY status`,
+    ).all() as FhenixGatewayTxStatusCount[];
+  },
+
+  telemetrySummary(db: Database.Database): FhenixGatewayTelemetrySummary {
+    const row = prep(
+      db,
+      `SELECT AVG(broadcast_latency_ms) AS avg_broadcast_latency_ms,
+              AVG(receipt_latency_ms) AS avg_receipt_latency_ms,
+              AVG(latest_block_latency_ms) AS avg_latest_block_latency_ms,
+              MAX(confirmations_observed) AS max_confirmations_observed,
+              SUM(CASE WHEN last_rpc_error IS NOT NULL THEN 1 ELSE 0 END) AS rpc_errors,
+              MAX(receipt_observed_at) AS last_receipt_observed_at
+       FROM fhenix_gateway_feed_packet_tx_attempts`,
+    ).get() as Partial<FhenixGatewayTelemetrySummary> | undefined;
+    return {
+      avg_broadcast_latency_ms: row?.avg_broadcast_latency_ms ?? null,
+      avg_receipt_latency_ms: row?.avg_receipt_latency_ms ?? null,
+      avg_latest_block_latency_ms: row?.avg_latest_block_latency_ms ?? null,
+      max_confirmations_observed: row?.max_confirmations_observed ?? null,
+      rpc_errors: row?.rpc_errors ?? 0,
+      last_receipt_observed_at: row?.last_receipt_observed_at ?? null,
+    };
+  },
+
+  listRecent(
+    db: Database.Database,
+    opts: { status?: FhenixGatewayFeedPacketTxStatus; limit?: number } = {},
+  ): FhenixGatewayFeedPacketTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
+    if (opts.status) {
+      return prep(
+        db,
+        `SELECT * FROM fhenix_gateway_feed_packet_tx_attempts
+         WHERE status = ?
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT ?`,
+      ).all(opts.status, safeLimit) as FhenixGatewayFeedPacketTxAttemptRow[];
+    }
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_feed_packet_tx_attempts
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT ?`,
+    ).all(safeLimit) as FhenixGatewayFeedPacketTxAttemptRow[];
+  },
+
+  listStuck(
+    db: Database.Database,
+    input: { stale_before: string; limit?: number },
+  ): FhenixGatewayFeedPacketTxAttemptRow[] {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(input.limit ?? 50)));
+    return prep(
+      db,
+      `SELECT * FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE status IN ('submitted','confirmed')
+         AND updated_at <= @stale_before
+       ORDER BY updated_at ASC
+       LIMIT @limit`,
+    ).all({ stale_before: input.stale_before, limit: safeLimit }) as FhenixGatewayFeedPacketTxAttemptRow[];
+  },
+};
+
+export interface FhenixIndexedEventInput {
+  chain_id: number;
+  contract_address: string;
+  event_name: string;
+  tx_hash: string;
+  log_index: number;
+  block_number: number;
+  block_hash: string | null;
+  payload_json: string;
+  observed_at: string;
+}
+
+export const fhenixEventsRepo = {
+  upsertEvent(db: Database.Database, input: FhenixIndexedEventInput): void {
+    prep(
+      db,
+      `INSERT INTO fhenix_events
+       (chain_id, contract_address, event_name, tx_hash, log_index,
+        block_number, block_hash, payload_json, observed_at)
+       VALUES
+       (@chain_id, @contract_address, @event_name, @tx_hash, @log_index,
+        @block_number, @block_hash, @payload_json, @observed_at)
+       ON CONFLICT(chain_id, tx_hash, log_index) DO UPDATE SET
+        contract_address = excluded.contract_address,
+        event_name = excluded.event_name,
+        block_number = excluded.block_number,
+        block_hash = excluded.block_hash,
+        payload_json = excluded.payload_json,
+        observed_at = excluded.observed_at`,
+    ).run(input);
+  },
+
+  getCursor(
+    db: Database.Database,
+    input: { chain_id: number; contract_address: string; event_name: string },
+  ): number | null {
+    const row = prep(
+      db,
+      `SELECT last_block_number
+       FROM fhenix_event_cursors
+       WHERE chain_id = @chain_id
+         AND contract_address = @contract_address
+         AND event_name = @event_name`,
+    ).get(input) as { last_block_number: number } | undefined;
+    return row?.last_block_number ?? null;
+  },
+
+  setCursor(
+    db: Database.Database,
+    input: {
+      chain_id: number;
+      contract_address: string;
+      event_name: string;
+      last_block_number: number;
+      updated_at: string;
+    },
+  ): void {
+    prep(
+      db,
+      `INSERT INTO fhenix_event_cursors
+       (chain_id, contract_address, event_name, last_block_number, updated_at)
+       VALUES
+       (@chain_id, @contract_address, @event_name, @last_block_number, @updated_at)
+       ON CONFLICT(chain_id, contract_address, event_name) DO UPDATE SET
+        last_block_number = excluded.last_block_number,
+        updated_at = excluded.updated_at`,
+    ).run(input);
+  },
+};
+
+// ─── Paid inference feeds ───────────────────────────────────────────────────
+
+export interface FeedContractInsert {
+  feed_id: string;
+  agent_id: string;
+  name: string;
+  description: string | null;
+  status: FeedStatus;
+  venue: string;
+  resolution_classes: ResolutionClass[];
+  edge_classes: EdgeClass[];
+  covered_market_ids: string[];
+  delivery_cadence_seconds: number | null;
+  trigger_rules: unknown[];
+  max_latency_seconds: number | null;
+  subscriber_capacity: number;
+  commercial_template: CommercialTemplate;
+  reveal_policy: Record<string, unknown>;
+  refund_rule: Record<string, unknown>;
+  slash_rule: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FeedContractRow {
+  feed_id: string;
+  agent_id: string;
+  name: string;
+  description: string | null;
+  status: FeedStatus;
+  venue: string;
+  resolution_classes_json: string;
+  edge_classes_json: string;
+  covered_market_ids_json: string;
+  delivery_cadence_seconds: number | null;
+  trigger_rules_json: string;
+  max_latency_seconds: number | null;
+  subscriber_capacity: number;
+  commercial_template: CommercialTemplate;
+  reveal_policy_json: string;
+  refund_rule_json: string;
+  slash_rule_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FeedReliabilityRow {
+  packets_total: number;
+  on_time_packets: number;
+  late_packets: number;
+  unscheduled_packets: number;
+  missed_packets: number;
+  open_missed_packets: number;
+  fulfilled_missed_packets: number;
+  last_packet_at: string | null;
+  last_missed_at: string | null;
+}
+
+export const feedContractsRepo = {
+  insert(db: Database.Database, input: FeedContractInsert): void {
+    prep(
+      db,
+      `INSERT INTO feed_contracts
+       (feed_id, agent_id, name, description, status, venue,
+        resolution_classes_json, edge_classes_json, covered_market_ids_json,
+        delivery_cadence_seconds, trigger_rules_json, max_latency_seconds,
+        subscriber_capacity, commercial_template, reveal_policy_json,
+        refund_rule_json, slash_rule_json, created_at, updated_at)
+       VALUES
+       (@feed_id, @agent_id, @name, @description, @status, @venue,
+        @resolution_classes_json, @edge_classes_json, @covered_market_ids_json,
+        @delivery_cadence_seconds, @trigger_rules_json, @max_latency_seconds,
+        @subscriber_capacity, @commercial_template, @reveal_policy_json,
+        @refund_rule_json, @slash_rule_json, @created_at, @updated_at)`,
+    ).run({
+      feed_id: input.feed_id,
+      agent_id: input.agent_id,
+      name: input.name,
+      description: input.description,
+      status: input.status,
+      venue: input.venue,
+      resolution_classes_json: JSON.stringify(input.resolution_classes),
+      edge_classes_json: JSON.stringify(input.edge_classes),
+      covered_market_ids_json: JSON.stringify(input.covered_market_ids),
+      delivery_cadence_seconds: input.delivery_cadence_seconds,
+      trigger_rules_json: JSON.stringify(input.trigger_rules),
+      max_latency_seconds: input.max_latency_seconds,
+      subscriber_capacity: input.subscriber_capacity,
+      commercial_template: input.commercial_template,
+      reveal_policy_json: JSON.stringify(input.reveal_policy),
+      refund_rule_json: JSON.stringify(input.refund_rule),
+      slash_rule_json: JSON.stringify(input.slash_rule),
+      created_at: input.created_at,
+      updated_at: input.updated_at,
+    });
+  },
+
+  byId(db: Database.Database, feed_id: string): FeedContractRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM feed_contracts WHERE feed_id = ? LIMIT 1`,
+      ).get(feed_id) as FeedContractRow | undefined) ?? null
+    );
+  },
+
+  list(
+    db: Database.Database,
+    opts: {
+      status?: FeedStatus;
+      agent_id?: string;
+      venue?: string;
+      limit?: number;
+    } = {},
+  ): FeedContractRow[] {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (opts.status) {
+      clauses.push("status = ?");
+      params.push(opts.status);
+    }
+    if (opts.agent_id) {
+      clauses.push("agent_id = ?");
+      params.push(opts.agent_id);
+    }
+    if (opts.venue) {
+      clauses.push("venue = ?");
+      params.push(opts.venue);
+    }
+    const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 100)));
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    return prep(
+      db,
+      `SELECT * FROM feed_contracts
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    ).all(...params, limit) as FeedContractRow[];
+  },
+
+  reliability(db: Database.Database, feed_id: string): FeedReliabilityRow {
+    const row = prep(
+      db,
+      `SELECT
+         COUNT(*) AS packets_total,
+         SUM(CASE WHEN sla_status = 'on_time' THEN 1 ELSE 0 END) AS on_time_packets,
+         SUM(CASE WHEN sla_status = 'late' THEN 1 ELSE 0 END) AS late_packets,
+         SUM(CASE WHEN sla_status = 'unscheduled' THEN 1 ELSE 0 END) AS unscheduled_packets,
+         MAX(accepted_at) AS last_packet_at,
+         (
+           SELECT COUNT(*)
+           FROM feed_sla_incidents i
+           WHERE i.feed_id = @feed_id
+             AND i.incident_kind = 'missed_packet'
+         ) AS missed_packets,
+         (
+           SELECT COUNT(*)
+           FROM feed_sla_incidents i
+           WHERE i.feed_id = @feed_id
+             AND i.incident_kind = 'missed_packet'
+             AND i.status = 'open'
+         ) AS open_missed_packets,
+         (
+           SELECT COUNT(*)
+           FROM feed_sla_incidents i
+           WHERE i.feed_id = @feed_id
+             AND i.incident_kind = 'missed_packet'
+             AND i.status = 'fulfilled_late'
+         ) AS fulfilled_missed_packets,
+         (
+           SELECT MAX(detected_at)
+           FROM feed_sla_incidents i
+           WHERE i.feed_id = @feed_id
+             AND i.incident_kind = 'missed_packet'
+         ) AS last_missed_at
+       FROM feed_packets
+       WHERE feed_id = @feed_id`,
+    ).get({ feed_id }) as
+      | {
+          packets_total: number | null;
+          on_time_packets: number | null;
+          late_packets: number | null;
+          unscheduled_packets: number | null;
+          missed_packets: number | null;
+          open_missed_packets: number | null;
+          fulfilled_missed_packets: number | null;
+          last_packet_at: string | null;
+          last_missed_at: string | null;
+        }
+      | undefined;
+    return {
+      packets_total: row?.packets_total ?? 0,
+      on_time_packets: row?.on_time_packets ?? 0,
+      late_packets: row?.late_packets ?? 0,
+      unscheduled_packets: row?.unscheduled_packets ?? 0,
+      missed_packets: row?.missed_packets ?? 0,
+      open_missed_packets: row?.open_missed_packets ?? 0,
+      fulfilled_missed_packets: row?.fulfilled_missed_packets ?? 0,
+      last_packet_at: row?.last_packet_at ?? null,
+      last_missed_at: row?.last_missed_at ?? null,
+    };
+  },
+
+  listCadenceListed(
+    db: Database.Database,
+    opts: { limit?: number } = {},
+  ): FeedContractRow[] {
+    const limit = Math.max(1, Math.min(1_000, Math.floor(opts.limit ?? 500)));
+    return prep(
+      db,
+      `SELECT * FROM feed_contracts
+       WHERE status = 'listed'
+         AND delivery_cadence_seconds IS NOT NULL
+       ORDER BY created_at ASC
+       LIMIT ?`,
+    ).all(limit) as FeedContractRow[];
+  },
+};
+
+export type FeedSlaIncidentStatus = "open" | "fulfilled_late";
+export type FeedSlaIncidentKind = "missed_packet";
+
+export interface FeedSlaIncidentInsert {
+  incident_id: string;
+  feed_id: string;
+  agent_id: string;
+  incident_kind: FeedSlaIncidentKind;
+  status: FeedSlaIncidentStatus;
+  expected_sequence: number;
+  expected_delivery_deadline_at: string;
+  detected_at: string;
+  grace_seconds: number;
+  refund_action: "none" | "credit" | "prorated";
+  slash_action: "none" | "reputation" | "stake";
+  details_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FeedSlaIncidentRow extends FeedSlaIncidentInsert {
+  fulfilled_packet_id: string | null;
+  fulfilled_at: string | null;
+}
+
+export const feedSlaIncidentsRepo = {
+  insertMissed(db: Database.Database, input: FeedSlaIncidentInsert): boolean {
+    const info = prep(
+      db,
+      `INSERT OR IGNORE INTO feed_sla_incidents
+       (incident_id, feed_id, agent_id, incident_kind, status,
+        expected_sequence, expected_delivery_deadline_at, detected_at,
+        grace_seconds, refund_action, slash_action, fulfilled_packet_id,
+        fulfilled_at, details_json, created_at, updated_at)
+       VALUES
+       (@incident_id, @feed_id, @agent_id, @incident_kind, @status,
+        @expected_sequence, @expected_delivery_deadline_at, @detected_at,
+        @grace_seconds, @refund_action, @slash_action, NULL,
+        NULL, @details_json, @created_at, @updated_at)`,
+    ).run(input);
+    return info.changes > 0;
+  },
+
+  byFeedSequence(
+    db: Database.Database,
+    feed_id: string,
+    expected_sequence: number,
+  ): FeedSlaIncidentRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM feed_sla_incidents
+         WHERE feed_id = ? AND expected_sequence = ?
+         LIMIT 1`,
+      ).get(feed_id, expected_sequence) as FeedSlaIncidentRow | undefined) ?? null
+    );
+  },
+
+  markFulfilledByPacket(
+    db: Database.Database,
+    input: {
+      feed_id: string;
+      expected_sequence: number;
+      packet_id: string;
+      fulfilled_at: string;
+      updated_at: string;
+    },
+  ): boolean {
+    const info = prep(
+      db,
+      `UPDATE feed_sla_incidents
+       SET status = 'fulfilled_late',
+           fulfilled_packet_id = @packet_id,
+           fulfilled_at = @fulfilled_at,
+           updated_at = @updated_at
+       WHERE feed_id = @feed_id
+         AND expected_sequence = @expected_sequence
+         AND status = 'open'`,
+    ).run(input);
+    return info.changes > 0;
+  },
+
+  list(
+    db: Database.Database,
+    opts: {
+      feed_id?: string;
+      status?: FeedSlaIncidentStatus;
+      limit?: number;
+    } = {},
+  ): FeedSlaIncidentRow[] {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (opts.feed_id) {
+      clauses.push("feed_id = ?");
+      params.push(opts.feed_id);
+    }
+    if (opts.status) {
+      clauses.push("status = ?");
+      params.push(opts.status);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 100)));
+    return prep(
+      db,
+      `SELECT * FROM feed_sla_incidents
+       ${where}
+       ORDER BY detected_at DESC, expected_sequence DESC
+       LIMIT ?`,
+    ).all(...params, limit) as FeedSlaIncidentRow[];
+  },
+};
+
+export type OperatorAlertSeverity = "info" | "warning" | "critical";
+export type OperatorAlertStatus = "open" | "resolved";
+export type OperatorAlertDeliveryStatus = "pending" | "delivered" | "failed";
+
+export interface OperatorAlertRow {
+  alert_id: string;
+  alert_key: string;
+  source: string;
+  kind: string;
+  severity: OperatorAlertSeverity;
+  status: OperatorAlertStatus;
+  title: string;
+  description: string;
+  payload_json: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  occurrence_count: number;
+  resolved_at: string | null;
+  delivery_status: OperatorAlertDeliveryStatus;
+  delivery_attempts: number;
+  next_delivery_at: string | null;
+  last_delivery_at: string | null;
+  last_delivery_status: number | null;
+  last_delivery_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperatorAlertInput {
+  alert_id: string;
+  alert_key: string;
+  source: string;
+  kind: string;
+  severity: OperatorAlertSeverity;
+  title: string;
+  description: string;
+  payload_json: string;
+  seen_at: string;
+}
+
+export const operatorAlertsRepo = {
+  upsertOpen(db: Database.Database, input: OperatorAlertInput): OperatorAlertRow {
+    const existing = this.byKey(db, input.alert_key);
+    if (!existing) {
+      prep(
+        db,
+        `INSERT INTO operator_alerts
+         (alert_id, alert_key, source, kind, severity, status, title, description,
+          payload_json, first_seen_at, last_seen_at, occurrence_count, resolved_at,
+          delivery_status, delivery_attempts, next_delivery_at, last_delivery_at,
+          last_delivery_status, last_delivery_error, created_at, updated_at)
+         VALUES
+         (@alert_id, @alert_key, @source, @kind, @severity, 'open', @title, @description,
+          @payload_json, @seen_at, @seen_at, 1, NULL,
+          'pending', 0, @seen_at, NULL, NULL, NULL, @seen_at, @seen_at)`,
+      ).run(input);
+      return this.byKeyOrThrow(db, input.alert_key);
+    }
+
+    prep(
+      db,
+      `UPDATE operator_alerts
+       SET source = @source,
+           kind = @kind,
+           severity = @severity,
+           status = 'open',
+           title = @title,
+           description = @description,
+           payload_json = @payload_json,
+           last_seen_at = @seen_at,
+           occurrence_count = occurrence_count + 1,
+           resolved_at = NULL,
+           delivery_status = CASE
+             WHEN status = 'resolved' THEN 'pending'
+             ELSE delivery_status
+           END,
+           next_delivery_at = CASE
+             WHEN status = 'resolved' THEN @seen_at
+             ELSE next_delivery_at
+           END,
+           updated_at = @seen_at
+       WHERE alert_key = @alert_key`,
+    ).run(input);
+    return this.byKeyOrThrow(db, input.alert_key);
+  },
+
+  byKey(db: Database.Database, alert_key: string): OperatorAlertRow | null {
+    return (
+      prep(
+        db,
+        "SELECT * FROM operator_alerts WHERE alert_key = ? LIMIT 1",
+      ).get(alert_key) as OperatorAlertRow | undefined
+    ) ?? null;
+  },
+
+  byKeyOrThrow(db: Database.Database, alert_key: string): OperatorAlertRow {
+    const row = this.byKey(db, alert_key);
+    if (!row) throw new Error(`operator alert missing after upsert: ${alert_key}`);
+    return row;
+  },
+
+  resolveSourceExcept(
+    db: Database.Database,
+    source: string,
+    activeKeys: string[],
+    resolved_at: string,
+  ): number {
+    let sql = `UPDATE operator_alerts
+       SET status = 'resolved',
+           resolved_at = ?,
+           updated_at = ?
+       WHERE source = ?
+         AND status = 'open'`;
+    const params: unknown[] = [resolved_at, resolved_at, source];
+    if (activeKeys.length > 0) {
+      sql += ` AND alert_key NOT IN (${activeKeys.map(() => "?").join(",")})`;
+      params.push(...activeKeys);
+    }
+    const info = prep(db, sql).run(...params);
+    return info.changes;
+  },
+
+  list(
+    db: Database.Database,
+    opts: {
+      status?: OperatorAlertStatus;
+      source?: string;
+      delivery_status?: OperatorAlertDeliveryStatus;
+      limit?: number;
+    } = {},
+  ): OperatorAlertRow[] {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (opts.status) {
+      clauses.push("status = ?");
+      params.push(opts.status);
+    }
+    if (opts.source) {
+      clauses.push("source = ?");
+      params.push(opts.source);
+    }
+    if (opts.delivery_status) {
+      clauses.push("delivery_status = ?");
+      params.push(opts.delivery_status);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 100)));
+    return prep(
+      db,
+      `SELECT * FROM operator_alerts
+       ${where}
+       ORDER BY
+         CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+         last_seen_at DESC
+       LIMIT ?`,
+    ).all(...params, limit) as OperatorAlertRow[];
+  },
+
+  pendingDelivery(
+    db: Database.Database,
+    now_iso: string,
+    limit = 50,
+  ): OperatorAlertRow[] {
+    return prep(
+      db,
+      `SELECT * FROM operator_alerts
+       WHERE status = 'open'
+         AND delivery_status IN ('pending','failed')
+         AND (next_delivery_at IS NULL OR next_delivery_at <= ?)
+       ORDER BY first_seen_at ASC
+       LIMIT ?`,
+    ).all(now_iso, Math.max(1, Math.min(100, Math.floor(limit)))) as OperatorAlertRow[];
+  },
+
+  markDelivered(
+    db: Database.Database,
+    input: {
+      alert_id: string;
+      delivered_at: string;
+      status_code: number;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE operator_alerts
+       SET delivery_status = 'delivered',
+           delivery_attempts = delivery_attempts + 1,
+           next_delivery_at = NULL,
+           last_delivery_at = @delivered_at,
+           last_delivery_status = @status_code,
+           last_delivery_error = NULL,
+           updated_at = @delivered_at
+       WHERE alert_id = @alert_id`,
+    ).run(input);
+  },
+
+  markDeliveryFailed(
+    db: Database.Database,
+    input: {
+      alert_id: string;
+      failed_at: string;
+      status_code: number | null;
+      error: string;
+      next_delivery_at: string;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE operator_alerts
+       SET delivery_status = 'failed',
+           delivery_attempts = delivery_attempts + 1,
+           next_delivery_at = @next_delivery_at,
+           last_delivery_at = @failed_at,
+           last_delivery_status = @status_code,
+           last_delivery_error = @error,
+           updated_at = @failed_at
+       WHERE alert_id = @alert_id`,
+    ).run(input);
+  },
+
+  counts(db: Database.Database): Array<{ status: OperatorAlertStatus; severity: OperatorAlertSeverity; count: number }> {
+    return prep(
+      db,
+      `SELECT status, severity, COUNT(*) AS count
+       FROM operator_alerts
+       GROUP BY status, severity`,
+    ).all() as Array<{ status: OperatorAlertStatus; severity: OperatorAlertSeverity; count: number }>;
+  },
+};
+
+export interface FeedPacketInsert {
+  packet_id: string;
+  feed_id: string;
+  agent_id: string;
+  market_id: string | null;
+  packet_kind: FeedPacketKind;
+  sequence: number;
+  payload_schema: string;
+  submitted_at: string;
+  accepted_at: string;
+  reveal_after: string;
+  delivery_deadline_at: string | null;
+  sla_status: FeedSlaStatus;
+  chain_id: number;
+  contract_address: string;
+  onchain_packet_id: string;
+  submit_tx_hash: string;
+  submit_log_index: number;
+  packet_ct_hash: string;
+  binary_index_ct_hash: string | null;
+  confidence_ct_hash: string | null;
+  created_at: string;
+}
+
+export interface FeedPacketRow extends FeedPacketInsert {}
+
+export const feedPacketsRepo = {
+  insert(db: Database.Database, input: FeedPacketInsert): void {
+    prep(
+      db,
+      `INSERT INTO feed_packets
+       (packet_id, feed_id, agent_id, market_id, packet_kind, sequence,
+        payload_schema, submitted_at, accepted_at, reveal_after,
+        delivery_deadline_at, sla_status, chain_id, contract_address,
+        onchain_packet_id, submit_tx_hash, submit_log_index, packet_ct_hash,
+        binary_index_ct_hash, confidence_ct_hash, created_at)
+       VALUES
+       (@packet_id, @feed_id, @agent_id, @market_id, @packet_kind, @sequence,
+        @payload_schema, @submitted_at, @accepted_at, @reveal_after,
+        @delivery_deadline_at, @sla_status, @chain_id, @contract_address,
+        @onchain_packet_id, @submit_tx_hash, @submit_log_index, @packet_ct_hash,
+        @binary_index_ct_hash, @confidence_ct_hash, @created_at)`,
+    ).run(input);
+    feedSlaIncidentsRepo.markFulfilledByPacket(db, {
+      feed_id: input.feed_id,
+      expected_sequence: input.sequence,
+      packet_id: input.packet_id,
+      fulfilled_at: input.accepted_at,
+      updated_at: input.created_at,
+    });
+  },
+
+  nextSequence(db: Database.Database, feed_id: string): number {
+    const row = prep(
+      db,
+      `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+       FROM feed_packets
+       WHERE feed_id = ?`,
+    ).get(feed_id) as { next_sequence: number } | undefined;
+    return row?.next_sequence ?? 1;
+  },
+
+  latestForFeed(db: Database.Database, feed_id: string): FeedPacketRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM feed_packets
+         WHERE feed_id = ?
+         ORDER BY sequence DESC
+         LIMIT 1`,
+      ).get(feed_id) as FeedPacketRow | undefined) ?? null
+    );
+  },
+
+  byFhenixEvent(
+    db: Database.Database,
+    input: {
+      chain_id: number;
+      contract_address: string;
+      onchain_packet_id: string;
+    },
+  ): FeedPacketRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM feed_packets
+         WHERE chain_id = @chain_id
+           AND contract_address = @contract_address
+           AND onchain_packet_id = @onchain_packet_id
+         LIMIT 1`,
+      ).get(input) as FeedPacketRow | undefined) ?? null
+    );
+  },
+
+  listForFeed(
+    db: Database.Database,
+    feed_id: string,
+    limit = 50,
+  ): FeedPacketRow[] {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    return prep(
+      db,
+      `SELECT * FROM feed_packets
+       WHERE feed_id = ?
+       ORDER BY sequence DESC
+       LIMIT ?`,
+    ).all(feed_id, safeLimit) as FeedPacketRow[];
   },
 };
 
@@ -3374,37 +5944,25 @@ export const resolutionsRepo = {
       // mapping (see scoreOutcomeVector void-mapping rule).
       resolved_outcome_json?: string | null;
       payout_vector_json?: string | null;
-      // Z2 — encrypted-score pointers (MIGRATION_025). Populated only for
-      // fhe_direct rows; legacy_plaintext/committed rows keep these NULL.
-      // The plaintext call_score column stays NULL for fhe_direct until
-      // Z3's threshold release decrypts the score ciphertext.
-      score_ciphertext_hash?: string | null;
-      fhe_circuit_id?: string | null;
     },
   ): void {
     prep(
       db,
       `INSERT INTO t1_resolutions
        (call_id, t1, p1, t1_feed, signed_return, outcome, call_score, resolved_at,
-        resolved_outcome_json, payout_vector_json,
-        score_ciphertext_hash, fhe_circuit_id)
+        resolved_outcome_json, payout_vector_json)
        VALUES (@call_id, @t1, @p1, @t1_feed, @signed_return, @outcome, @call_score, @resolved_at,
-               @resolved_outcome_json, @payout_vector_json,
-               @score_ciphertext_hash, @fhe_circuit_id)
+               @resolved_outcome_json, @payout_vector_json)
        ON CONFLICT(call_id) DO UPDATE SET
          t1 = excluded.t1, p1 = excluded.p1, t1_feed = excluded.t1_feed,
          signed_return = excluded.signed_return, outcome = excluded.outcome,
          call_score = excluded.call_score, resolved_at = excluded.resolved_at,
          resolved_outcome_json = excluded.resolved_outcome_json,
-         payout_vector_json = excluded.payout_vector_json,
-         score_ciphertext_hash = excluded.score_ciphertext_hash,
-         fhe_circuit_id = excluded.fhe_circuit_id`,
+         payout_vector_json = excluded.payout_vector_json`,
     ).run({
       ...input,
       resolved_outcome_json: input.resolved_outcome_json ?? null,
       payout_vector_json: input.payout_vector_json ?? null,
-      score_ciphertext_hash: input.score_ciphertext_hash ?? null,
-      fhe_circuit_id: input.fhe_circuit_id ?? null,
     });
   },
 
@@ -3452,11 +6010,6 @@ export const resolutionsRepo = {
           // round-trip through deserializeOutcome / parseStoredCommitment.
           resolved_outcome_json: string | null;
           payout_vector_json: string | null;
-          // Z2 — encrypted-score pointers. Populated only for fhe_direct
-          // rows whose resolver tick computed an encrypted score; NULL
-          // for oracle_unavailable rows.
-          score_ciphertext_hash: string | null;
-          fhe_circuit_id: string | null;
         }
       | null;
   } | null {
@@ -3489,16 +6042,13 @@ export const resolutionsRepo = {
       db,
       "SELECT t0, p0, feed FROM t0_anchors WHERE call_id = ?",
     ).get(call_id) as { t0: string; p0: string; feed: string } | undefined;
-    // Same explicit-column treatment for t1_resolutions. The Z2 + Phase 5
-    // additive columns (resolved_outcome_json, payout_vector_json,
-    // score_ciphertext_hash, fhe_circuit_id) are pulled by name so adding
-    // a future column (e.g. a raw plaintext score) does NOT auto-surface
-    // here.
+    // Same explicit-column treatment for t1_resolutions. Resolution JSON
+    // columns are pulled by name so adding a future column does not
+    // automatically surface it here.
     const resRow = prep(
       db,
       `SELECT t1, p1, t1_feed, signed_return, outcome, call_score,
-              resolved_at, resolved_outcome_json, payout_vector_json,
-              score_ciphertext_hash, fhe_circuit_id
+              resolved_at, resolved_outcome_json, payout_vector_json
        FROM t1_resolutions
        WHERE call_id = ?`,
     ).get(call_id) as
@@ -3512,8 +6062,6 @@ export const resolutionsRepo = {
           resolved_at: string;
           resolved_outcome_json: string | null;
           payout_vector_json: string | null;
-          score_ciphertext_hash: string | null;
-          fhe_circuit_id: string | null;
         }
       | undefined;
     return {
@@ -3545,133 +6093,16 @@ export const resolutionsRepo = {
             // populating the additive event fields.
             resolved_outcome_json: resRow.resolved_outcome_json,
             payout_vector_json: resRow.payout_vector_json,
-            // Z2 additions — see resolutionsRepo.setResolution input shape.
-            score_ciphertext_hash: resRow.score_ciphertext_hash,
-            fhe_circuit_id: resRow.fhe_circuit_id,
           }
         : null,
     };
   },
 
 };
-
-// ─── Privacy: encrypted call envelopes ──────────────────────────────────────
-//
-// Wave 3 — the call_private_envelopes table was dropped by MIGRATION_031.
-// Committed-mode submissions (the only path that wrote to it) were excised
-// in Wave 2b. The repo persists here as no-op stubs so any straggler call
-// sites (resolution-subject.ts fallback paths, etc.) keep compiling and
-// return empty results.
-
-export interface CallPrivateEnvelopeRow {
-  call_id: string;
-  encrypted_body: string;
-  encrypted_body_alg: string;
-  encrypted_body_hash: string;
-  daemon_key_id: string;
-  commit_preimage_schema: string;
-  fallback_after: string | null;
-  received_at: string;
-  drand_chain_hash?: string | null;
-  drand_round?: number | null;
-  drand_ciphertext?: string | null;
-  drand_ciphertext_hash?: string | null;
-}
-
-export const callPrivateEnvelopesRepo = {
-  insert(_db: Database.Database, _row: CallPrivateEnvelopeRow): void {
-    /* no-op — call_private_envelopes table dropped in Wave 3. */
-  },
-
-  byCallId(
-    _db: Database.Database,
-    _call_id: string,
-  ): CallPrivateEnvelopeRow | null {
-    return null;
-  },
-
-  listOverdueForFallback(
-    _db: Database.Database,
-    _nowIso: string,
-  ): CallPrivateEnvelopeRow[] {
-    return [];
-  },
-};
-
-// ─── Privacy: revealed call subjects ────────────────────────────────────────
-//
-// One row per call once the plaintext is known — either the agent revealed
-// voluntarily (`revealed_via='agent'`), the daemon decrypted the fallback
-// envelope past grace (`'daemon_fallback'`), the call was a v0.1
-// pre-privacy submission whose plaintext is in `submissions` and was
-// migrated here (`'legacy_plaintext'`), or v0.3 fhEVM compute produced
-// a non-plaintext attestation (`'fhevm_compute'`).
-//
-// `revealed_via` and `reveal_hash_valid` are surfaced on the resolution
-// receipt's `reveal` block so off-Murmur verifiers can attest the
-// commit→reveal binding without trusting the daemon.
-
-// Wave 3 — the call_reveals table was dropped by MIGRATION_031.
-// Committed-mode submissions (which produced reveals) were excised in
-// Wave 2b; FHE-direct calls never produce a reveal, they release a score
-// via the threshold-committee path instead. CallRevealRow stays as a type
-// stub so any leftover callers in resolution-subject.ts that read the
-// (now always-null) reveal row keep typechecking.
-
-export interface CallRevealRow {
-  call_id: string;
-  side: "BUY" | "SELL";
-  asset_id: string;
-  horizon_hours: number;
-  confidence: number;
-  rationale: string | null;
-  strategy_tag: string | null;
-  salt: string | null;
-  t0: string | null;
-  agent_wallet: string | null;
-  chain_id: string | null;
-  commit_preimage_json: string | null;
-  commit_preimage_hash: string | null;
-  revealed_at: string;
-  revealed_via:
-    | "agent"
-    | "daemon_fallback"
-    | "drand_fallback"
-    | "legacy_plaintext"
-    | "fhevm_compute";
-  reveal_hash_valid: 0 | 1;
-}
-
-export const callRevealsRepo = {
-  insert(_db: Database.Database, _row: CallRevealRow): void {
-    /* no-op — call_reveals table dropped in Wave 3. */
-  },
-
-  byCallId(_db: Database.Database, _call_id: string): CallRevealRow | null {
-    return null;
-  },
-
-  reliabilityByAgent(
-    _db: Database.Database,
-  ): Array<{
-    agent_id: string;
-    agent_reveals: number;
-    daemon_reveals: number;
-  }> {
-    return [];
-  },
-};
-
 // ─── Disputes ────────────────────────────────────────────────────────────────
 //
 // Wave 3a deleted the disputes runtime; MIGRATION_031 dropped the table.
 // The repo + types are gone — re-add only when a v0.3 dispute path lands.
-
-// ─── Claim challenges ────────────────────────────────────────────────────────
-//
-// Wave 1 deleted the X/Telegram/wallet claim runtime; MIGRATION_031 dropped
-// the table. The repo + types are gone — Privy + admin-claim CLI (Wave 5)
-// replace the on-platform claim flow.
 
 // ─── Usage events (rail; no fees in v0.1) ────────────────────────────────────
 
@@ -3963,13 +6394,11 @@ export const webhooksRepo = {
 
 // ─── Convenience: dedup_key builder ──────────────────────────────────────────
 //
-// Wave 3 — the legacy buildDedupKey(agent_id, asset_id, side, horizon_hours)
-// was removed alongside the four plaintext column drops. The canonical
-// dedup key is the market-aware variant in markets.ts::buildMarketDedupKey
-// (agent_id, market_id, accepted_at) — `side` is gone from the key because
-// FHE-direct calls don't reveal side at submission time, so collapsing
-// BUY+SELL on the same market into a single bucket is the correct
-// privacy-preserving behavior.
+// The old buildDedupKey(agent_id, asset_id, side, horizon_hours) was
+// removed alongside the plaintext submission columns. The canonical dedup
+// key is the market-aware variant in markets.ts::buildMarketDedupKey
+// (agent_id, market_id, accepted_at). The binary outcome index is not part of
+// the key because sealed Fhenix calls do not reveal it at submission time.
 
 // ─── Asset / Oracle / Market repos (registry-driven matrix) ─────────────────
 //
@@ -4013,13 +6442,15 @@ export type MarketKind =
   | "direction_binary"
   | "price_point"
   | "price_bracket"
-  | "depeg_threshold";
+  | "depeg_threshold"
+  | "event_binary";
 
 export type ScoringKind =
   | "brier_direction"
   | "rank_proximity_l1"
   | "bracket_hit"
-  | "threshold_hit";
+  | "threshold_hit"
+  | "multinomial_brier";
 
 export interface MarketRow {
   market_id: string;

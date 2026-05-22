@@ -19,16 +19,18 @@
  */
 
 import { MarketMakerRegistry, type MarketMakerAdapter } from "../../markets/types.js";
+import { polymarketGammaAdapter } from "../../markets/polymarket-gamma/index.js";
 import { nativePriceAdapter } from "./native-price.js";
 
 // ─── Module-singleton registry ──────────────────────────────────────────────
 
 const registry = new MarketMakerRegistry();
 
-// Bootstrap the legacy native-price adapter at module load. Adapters that
-// land in later phases (Polymarket Gamma, UMA OOv3, Reality.eth, ...) call
-// `registerMarketMaker(adapter)` from their own module.
+// Bootstrap the adapters that ship in this daemon. Registration is local and
+// does not start any external poller; Polymarket network I/O happens only when
+// an operator syncs/upserts a market or the resolver observes a listed row.
 registry.register(nativePriceAdapter);
+registry.register(polymarketGammaAdapter);
 
 /**
  * Returns the process-wide {@link MarketMakerRegistry} singleton. Callers MUST

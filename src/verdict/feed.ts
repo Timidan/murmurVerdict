@@ -10,11 +10,10 @@ import { projectCallRow } from "./projections.js";
 //   - resolved_recent: last N resolutions (the outcome tape)
 // All three return enough fields to render a card without a second fetch.
 //
-// Wave 2b — under FHE-mandatory every submission is operator-blind: side /
-// asset_id / horizon_hours / confidence / rationale / strategy_tag /
-// t1_estimate are NEVER surfaced. Only commit_hash + privacy_mode +
-// discriminators (adapter_id, market_family, market_id) ride along with
-// the public submission timestamps and the resolved-side outcome fields.
+// Under sealed Fhenix, pending submissions never expose side / asset_id /
+// horizon_hours / confidence / rationale / strategy_tag. The feed carries
+// public identifiers, timing, privacy metadata, and market discriminators;
+// resolved rows add the public scoring result.
 
 export interface TodayFeedRow {
   call_id: string;
@@ -24,15 +23,13 @@ export interface TodayFeedRow {
   privacy_mode: string;
   commit_hash?: string | null;
   acceptance_receipt_hash?: string | null;
-  // Phase 10 / Z4-extra discriminators. Always present (defaults to
-  // native-price / financial-direction for pre-MIGRATION_016 legacy
-  // rows where the columns are null on the submissions row).
+  // Market discriminators. Always present for current rows; defaults keep
+  // old local DB rows readable after historical migrations.
   adapter_id?: string;
   market_family?: string;
   market_id?: string;
-  // Wave 2b — under FHE-mandatory plaintext (side / asset_id /
-  // horizon_hours / confidence) is never surfaced. Submission timestamps
-  // and identifiers remain public.
+  // Pending verdict fields stay private; submission timestamps and
+  // identifiers remain public.
   submitted_at?: string;
   accepted_at: string;
   status: string;
@@ -81,10 +78,9 @@ const MOVERS_LIMIT = 5;
 export function getTodayFeed(db: Database.Database, now: Date = new Date()): TodayFeed {
   const nowIso = now.toISOString().replace(/\.\d+Z$/, "Z");
 
-  // Wave 2b — under FHE-mandatory the projection is always operator-blind,
-  // so we no longer SELECT plaintext columns from submissions or hydrate
-  // from call_reveals. The feed surfaces commit_hash + privacy_mode +
-  // discriminators only.
+  // The feed reads only the public submission projection. Revealed verdict
+  // fields reach scoring through the post-horizon commitment attachment,
+  // not through pending feed rows.
   const rawAccepted = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
@@ -112,15 +108,12 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
        LIMIT ?`,
     )
     .all(PENDING_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
-  // Wave 2b — under FHE-mandatory the pending row has no plaintext horizon
-  // to derive a t1_estimate from. The field is permanently null on the
-  // pending list; the dashboard renders "resolves on…" without a clock.
+  // Pending rows do not expose the sealed horizon details needed to derive
+  // a t1 estimate; the dashboard renders them without a countdown.
   const pendingRows: TodayFeedRow[] = rawPending.map(toFeedRow);
 
-  // Codex bundle-review MAJOR fix — include adapter_id / market_family /
-  // market_id on the resolved tape. Without these, `toFeedRow` defaults
-  // every resolved row to ('native-price', 'financial-direction'),
-  // mislabeling Polymarket Gamma rows on the Today feed.
+  // Include adapter_id / market_family / market_id on the resolved tape so
+  // non-native rows render with the right labels.
   const rawResolved = db
     .prepare(
       `SELECT s.call_id, s.agent_id, a.display_slug AS agent_slug, a.kind AS agent_kind,
@@ -201,12 +194,9 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
 }
 
 /**
- * Map a raw SQL row to a TodayFeedRow. Wave 2b — under FHE-mandatory the
- * projection is always operator-blind, so plaintext (side / asset_id /
- * horizon_hours / confidence) is never populated. agent_id + agent_slug +
- * agent_kind + discriminators + resolved-side fields (outcome,
- * signed_return, call_score, resolved_at) are public and pass through
- * from the SQL row.
+ * Map a raw SQL row to a TodayFeedRow. Pending verdict fields are never
+ * populated. Public identifiers, discriminators, and resolved-side fields
+ * pass through from the SQL row.
  */
 function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
   const projected = projectCallRow(

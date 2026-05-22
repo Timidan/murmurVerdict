@@ -40,3 +40,16 @@ export function loadDeployment(
     .sort((a, b) => Date.parse(b.deployedAt) - Date.parse(a.deployedAt));
   return entries[0] ?? null;
 }
+
+// Single source of truth for resolving the MurmurSealedVerdicts address from
+// env or the deployment manifest. Watcher, gateway, verifier, daemon, canary,
+// and seed tools all share this so the allowlist they enforce can never drift.
+export function resolveFhenixContractAddress(chainId?: number): string | null {
+  const envAddress =
+    process.env.FHENIX_SEALED_VERDICTS_ADDRESS?.trim() ||
+    process.env.FHENIX_CONTRACT_ADDRESS?.trim() ||
+    null;
+  if (envAddress) return envAddress;
+  if (chainId === undefined) return null;
+  return loadDeployment(chainId, "MurmurSealedVerdicts")?.address ?? null;
+}

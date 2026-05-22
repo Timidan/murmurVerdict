@@ -1,25 +1,15 @@
-import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
-  AssetId,
   HORIZONS_HOURS,
-  HorizonHours,
   OracleFeed,
   Outcome,
-  Side,
   T0Policy,
-  UsageEvent,
 } from "./schema.js";
 import {
   anchorsRepo,
   marketsRepo,
-  resolutionsRepo,
   submissionsRepo,
-  usageRepo,
 } from "./db.js";
-// Wave 3b — loadResolutionSubject import dropped. The legacy plaintext +
-// committed-mode resolver branch that called it was deleted; FHE-direct
-// rows never went through that path (they have no plaintext to load).
 import {
   OracleClient,
   OracleError,
@@ -32,31 +22,10 @@ import {
 } from "../integrations/oracles/types.js";
 import { derivePolicyFromMarket, feedToOracleId } from "./oracle-routing.js";
 import {
-  computeSignedReturn,
-  outcomeFromSignedReturn,
-  scoreCall,
-} from "./scoring.js";
-import {
-  getAdapterForMarket,
-  legacyHorizonHoursForMarket,
-  voidBandFloat,
-} from "./markets.js";
-import { parseStoredCommitment } from "./submission-normalizers.js";
-import {
-  serializeOutcome,
-  type Commitment,
-  type Outcome as UniversalOutcome,
-} from "./markets-core.js";
-
-// ─── Env knobs ──────────────────────────────────────────────────────────────
-//
-// MURMUR_V2_RESOLVER_DISABLED — kill switch for the additive v2 dual-write
-// path (computeV2OutcomePath). When set to "1", the resolver skips the v2
-// computation entirely and writes only the legacy resolution receipt /
-// columns. Intended for emergency rollback if production data exposes a
-// bad adapter / commitment shape AFTER deploy. Default: v2 path runs but
-// is wrapped in try/catch — a throw in v2 is logged and the legacy
-// transaction still proceeds (BLOCKER #1 isolation guarantee).
+  markOracleUnavailable,
+  resolveRevealedAdapter,
+  resolveRevealedNativePrice,
+} from "./resolution-lifecycle.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -68,14 +37,12 @@ export interface ResolverDeps {
   log?: (line: ResolverLogEvent) => void;
   /** Called for every call that becomes terminal (resolved, oracle_unavailable). */
   onResolved?: (call_id: string) => void | Promise<void>;
-  // Wave 2b — ageContext + drandContext removed alongside the
-  // committed-mode envelope decrypt path. FHE-direct rows never
-  // needed them; legacy plaintext rows have nothing to decrypt.
 }
 
 export type ResolverLogEvent =
   | { kind: "anchored_t0"; call_id: string; feed: OracleFeed; p0: string }
   | { kind: "anchored_t1"; call_id: string; feed: OracleFeed; p1: string; outcome: Outcome }
+  | { kind: "adapter_resolved"; call_id: string; adapter: string; outcome: Outcome; call_score: number | null }
   | { kind: "oracle_unavailable"; call_id: string; phase: "t0" | "t1" }
   | { kind: "still_pending"; call_id: string; phase: "t0" | "t1"; reason: string }
   | { kind: "tick_summary"; anchored: number; resolved: number; oracle_unavailable: number };
@@ -94,15 +61,12 @@ export class Resolver {
   private readonly now: () => Date;
   private readonly log: (line: ResolverLogEvent) => void;
   private readonly onResolved: NonNullable<ResolverDeps["onResolved"]>;
-  // Wave 2b — ageContext + drandContext fields removed.
-
   constructor(deps: ResolverDeps) {
     this.db = deps.db;
     this.oracle = deps.oracle;
     this.now = deps.now ?? (() => new Date());
     this.log = deps.log ?? (() => undefined);
     this.onResolved = deps.onResolved ?? (() => undefined);
-    // Wave 2b — ageContext + drandContext init removed.
   }
 
   async tick(): Promise<ResolverTickResult> {
@@ -149,7 +113,13 @@ export class Resolver {
             err instanceof Error ? err.message : String(err)
           }`,
         });
-        if (await this.markOracleUnavailable(ctx, "t0")) {
+        if (await markOracleUnavailable({
+          db: this.db,
+          ctx,
+          phase: "t0",
+          now: this.now,
+          log: this.log,
+        })) {
           oracleUnavailable++;
         }
         continue;
@@ -161,7 +131,7 @@ export class Resolver {
       // and move the call straight into pending_t1 so the t1 loop picks it
       // up next tick.
       if (policy === null) {
-        if (ctx.status === "accepted") {
+        if (ctx.status === "accepted" || ctx.status === "pending_t0") {
           submissionsRepo.setStatus(this.db, ctx.call_id, "pending_t1");
         }
         this.log({
@@ -197,7 +167,13 @@ export class Resolver {
           p0: outcome.observation.price,
         });
       } else if (outcome.kind === "oracle_unavailable") {
-        if (await this.markOracleUnavailable(ctx, "t0")) {
+        if (await markOracleUnavailable({
+          db: this.db,
+          ctx,
+          phase: "t0",
+          now: this.now,
+          log: this.log,
+        })) {
           oracleUnavailable++;
         }
       } else {
@@ -228,14 +204,6 @@ export class Resolver {
       const ctx = submissionsRepo.loadResolverContext(this.db, c.call_id);
       if (!ctx) continue;
 
-      // Wave 4a — adapter-resolved markets (Polymarket Gamma + future
-      // event-feed adapters) never anchored at t0; runT0Phase moved them
-      // to pending_t1 without a t0_anchors row. Here we route them
-      // straight to the FHE-direct adapter-dispatch path, bypassing the
-      // price-feed-anchored t1 observation. The Polymarket/Kalshi
-      // adapter's `observeResolution` returns the final outcome
-      // (or "pending"/"disputed") whenever it's available; the
-      // resolver re-checks each tick until it lands.
       const t0row = anchorsRepo.getT0(this.db, ctx.call_id);
       let policy: T0Policy | null;
       try {
@@ -249,22 +217,79 @@ export class Resolver {
             err instanceof Error ? err.message : String(err)
           }`,
         });
-        if (await this.markOracleUnavailable(ctx, "t1")) {
+        if (await markOracleUnavailable({
+          db: this.db,
+          ctx,
+          phase: "t1",
+          now: this.now,
+          log: this.log,
+        })) {
           oracleUnavailable++;
         }
         continue;
       }
 
       if (policy === null) {
-        // Adapter-resolved branch remains registered, but the in-process
-        // FHE threshold scoring/release pipeline has been removed. Until a
-        // real external committee/provider is wired, these rows stay pending.
-        this.log({
-          kind: "still_pending",
-          call_id: ctx.call_id,
-          phase: "t1",
-          reason: "adapter_resolved_scoring_deferred",
+        if (ctx.privacy_mode !== "sealed_fhenix") {
+          this.log({
+            kind: "still_pending",
+            call_id: ctx.call_id,
+            phase: "t1",
+            reason: `unsupported_privacy_mode:${ctx.privacy_mode ?? "null"}`,
+          });
+          if (await markOracleUnavailable({
+            db: this.db,
+            ctx,
+            phase: "t1",
+            now: this.now,
+            log: this.log,
+          })) {
+            oracleUnavailable++;
+            try {
+              await this.onResolved(ctx.call_id);
+            } catch {
+              // terminal state already persisted
+            }
+          }
+          continue;
+        }
+        if (ctx.commitment_json === null) {
+          this.log({
+            kind: "still_pending",
+            call_id: ctx.call_id,
+            phase: "t1",
+            reason: "sealed_fhenix:awaiting_public_reveal",
+          });
+          continue;
+        }
+        const adapterResult = await resolveRevealedAdapter({
+          db: this.db,
+          ctx,
+          now: this.now,
+          log: this.log,
         });
+        if (adapterResult.kind === "resolved") {
+          resolved++;
+          this.log({
+            kind: "adapter_resolved",
+            call_id: ctx.call_id,
+            adapter: adapterResult.adapter,
+            outcome: adapterResult.outcome,
+            call_score: adapterResult.call_score,
+          });
+          try {
+            await this.onResolved(ctx.call_id);
+          } catch {
+            // terminal state already persisted
+          }
+        } else if (adapterResult.kind === "oracle_unavailable") {
+          oracleUnavailable++;
+          try {
+            await this.onResolved(ctx.call_id);
+          } catch {
+            // terminal state already persisted
+          }
+        }
         continue;
       }
 
@@ -290,47 +315,39 @@ export class Resolver {
       if (outcome.kind === "anchored") {
         const obs = outcome.observation;
 
-        // ── fhe_direct branch ───────────────────────────────────────────
-        //
-        // The in-process score/decrypt pipeline has been removed. There is
-        // no honest local threshold release without external holder orgs, so
-        // FHE-direct rows stay pending_t1 instead of pretending the operator
-        // can release a score through a daemon-local mock committee.
-        if (ctx.privacy_mode === "fhe_direct") {
-          // FHE-direct remains accepted only when configured, but the mock
-          // threshold score/release pipeline was removed. There is no honest
-          // local release path, so keep the row pending_t1.
-          this.log({
-            kind: "still_pending",
-            call_id: ctx.call_id,
-            phase: "t1",
-            reason: "fhe_direct:scoring_deferred_operator_trusted",
-          });
-          continue;
-        }
-        // ── end fhe_direct branch ───────────────────────────────────────
-
-        if (ctx.privacy_mode === "legacy_plaintext") {
-          const legacyResult = await this.runLegacyPlaintextScoring({
+        if (ctx.privacy_mode === "sealed_fhenix") {
+          if (ctx.commitment_json === null) {
+            this.log({
+              kind: "still_pending",
+              call_id: ctx.call_id,
+              phase: "t1",
+              reason: "sealed_fhenix:awaiting_public_reveal",
+            });
+            continue;
+          }
+          const revealedResult = await resolveRevealedNativePrice({
+            db: this.db,
             ctx,
             t0row,
             obs,
+            now: this.now,
+            log: this.log,
           });
-          if (legacyResult.kind === "resolved") {
+          if (revealedResult.kind === "resolved") {
             resolved++;
             this.log({
               kind: "anchored_t1",
               call_id: ctx.call_id,
               feed: obs.feed,
               p1: obs.price,
-              outcome: legacyResult.outcome,
+              outcome: revealedResult.outcome,
             });
             try {
               await this.onResolved(ctx.call_id);
             } catch {
               // terminal state already persisted
             }
-          } else if (legacyResult.kind === "oracle_unavailable") {
+          } else if (revealedResult.kind === "oracle_unavailable") {
             oracleUnavailable++;
             try {
               await this.onResolved(ctx.call_id);
@@ -341,23 +358,19 @@ export class Resolver {
           continue;
         }
 
-        // Wave 3b — the legacy plaintext + committed-mode resolution path
-        // was deleted. Waves 2a/2b made FHE-direct the only accepted
-        // submit mode, and MIGRATION_031 dropped the 4 plaintext columns
-        // (side / asset_id / horizon_hours / confidence) the legacy
-        // resolver relied on. Any pending row reaching this branch is
-        // either a stale dev-DB record from before Wave 2b or a row
-        // whose privacy_mode somehow drifted; either way we don't
-        // attempt to resolve it. Mark terminal so it doesn't pin the
-        // resolver tick forever, and log the reason for forensic
-        // visibility.
         this.log({
           kind: "still_pending",
           call_id: ctx.call_id,
           phase: "t1",
-          reason: `legacy_non_fhe_row_skipped:privacy_mode=${ctx.privacy_mode ?? "null"}`,
+          reason: `unsupported_privacy_mode:${ctx.privacy_mode ?? "null"}`,
         });
-        if (await this.markOracleUnavailable(ctx, "t1")) {
+        if (await markOracleUnavailable({
+          db: this.db,
+          ctx,
+          phase: "t1",
+          now: this.now,
+          log: this.log,
+        })) {
           oracleUnavailable++;
           try {
             await this.onResolved(ctx.call_id);
@@ -366,7 +379,13 @@ export class Resolver {
           }
         }
       } else if (outcome.kind === "oracle_unavailable") {
-        if (await this.markOracleUnavailable(ctx, "t1")) {
+        if (await markOracleUnavailable({
+          db: this.db,
+          ctx,
+          phase: "t1",
+          now: this.now,
+          log: this.log,
+        })) {
           oracleUnavailable++;
           try {
             await this.onResolved(ctx.call_id);
@@ -384,181 +403,6 @@ export class Resolver {
       }
     }
     return { resolved, oracle_unavailable: oracleUnavailable };
-  }
-
-  // ── Phase 5 — adapter-dispatched universal payout-vector path ──
-  //
-  // Lifts the legacy resolver-scoped values (t0 anchor, t1 obs, void_band,
-  // side, market_id) into a NativePriceObservationContext, dispatches to the
-  // market's adapter, builds the universal Commitment, and reconciles the
-  // void buckets via scoreOutcomeVector.
-  //
-  // Returns null when the v2 path can't be computed:
-  //   - market row not found (legacy submission predates MIGRATION_009 and
-  //     market_id is null)
-  //   - subject is committed-mode without legacy plaintext fields and no
-  //     parsed commitment_json
-  // In null cases the resolver falls back to legacy-only behavior (no
-  // resolved_outcome_json, no v2 receipt). Today every active call has a
-  // market_id post-MIGRATION_009 backfill, so this null path is exercised
-  // only in regression scenarios.
-  // Wave 3b — computeV2OutcomePath + computeExpectedResolvesAt were the
-  // legacy plaintext path's dual-write into the universal payout shape.
-  // Wave 2b deleted legacy submit + Wave 3b deleted the legacy resolver
-  // branch, so both helpers are now unreachable. The FHE-direct
-  // resolution path (runFheDirectScoring) does its own adapter dispatch
-  // against the encrypted prediction.
-
-  private async runLegacyPlaintextScoring(args: {
-    ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>;
-    t0row: { p0: string };
-    obs: OracleObservation;
-  }): Promise<
-    | { kind: "resolved"; outcome: Outcome }
-    | { kind: "oracle_unavailable" }
-    | { kind: "pending" }
-  > {
-    const marketId = args.ctx.market_id;
-    if (!marketId) {
-      this.log({
-        kind: "still_pending",
-        call_id: args.ctx.call_id,
-        phase: "t1",
-        reason: "legacy_plaintext:missing_market_id",
-      });
-      await this.markOracleUnavailable(args.ctx, "t1");
-      return { kind: "oracle_unavailable" };
-    }
-    const marketRow = marketsRepo.get(this.db, marketId);
-    if (!marketRow) {
-      this.log({
-        kind: "still_pending",
-        call_id: args.ctx.call_id,
-        phase: "t1",
-        reason: `legacy_plaintext:unknown_market:${marketId}`,
-      });
-      await this.markOracleUnavailable(args.ctx, "t1");
-      return { kind: "oracle_unavailable" };
-    }
-    const commitment = parseStoredCommitment(args.ctx.commitment_json);
-    if (!commitment) {
-      this.log({
-        kind: "still_pending",
-        call_id: args.ctx.call_id,
-        phase: "t1",
-        reason: "legacy_plaintext:missing_commitment_json",
-      });
-      await this.markOracleUnavailable(args.ctx, "t1");
-      return { kind: "oracle_unavailable" };
-    }
-    const side = sideFromNativePriceCommitment(commitment);
-    if (!side) {
-      this.log({
-        kind: "still_pending",
-        call_id: args.ctx.call_id,
-        phase: "t1",
-        reason: "legacy_plaintext:commitment_not_native_price_one_hot",
-      });
-      await this.markOracleUnavailable(args.ctx, "t1");
-      return { kind: "oracle_unavailable" };
-    }
-
-    let adapter;
-    try {
-      adapter = getAdapterForMarket(marketRow);
-    } catch (err) {
-      this.log({
-        kind: "still_pending",
-        call_id: args.ctx.call_id,
-        phase: "t1",
-        reason: `legacy_plaintext:adapter_missing:${err instanceof Error ? err.message : String(err)}`,
-      });
-      return { kind: "pending" };
-    }
-    if (adapter.name !== "native-price") {
-      this.log({
-        kind: "still_pending",
-        call_id: args.ctx.call_id,
-        phase: "t1",
-        reason: `legacy_plaintext:unsupported_adapter:${adapter.name}`,
-      });
-      await this.markOracleUnavailable(args.ctx, "t1");
-      return { kind: "oracle_unavailable" };
-    }
-
-    const voidBand = voidBandFloat(marketRow);
-    const marketRef = {
-      protocol: adapter.name,
-      sourceId: marketId,
-      configVersion: marketRow.market_config_version ?? 1,
-    };
-    let observed: UniversalOutcome | "pending" | "disputed";
-    try {
-      observed = await adapter.observeResolution(marketRef, {
-        ...parseMarketConfigJson(marketRow.config_json),
-        t0_p0: args.t0row.p0,
-        t1_p1: args.obs.price,
-        t1_iso: args.obs.feed_timestamp,
-        t1_feed: args.obs.feed,
-        t1_source_id: args.obs.source_id,
-        void_band: voidBand,
-        side,
-        market_id: marketId,
-      });
-    } catch (err) {
-      this.log({
-        kind: "still_pending",
-        call_id: args.ctx.call_id,
-        phase: "t1",
-        reason: `legacy_plaintext:adapter_observe_failed:${err instanceof Error ? err.message : String(err)}`,
-      });
-      return { kind: "pending" };
-    }
-    if (observed === "pending" || observed === "disputed") {
-      return { kind: "pending" };
-    }
-
-    const signedReturn = computeSignedReturn(side, args.t0row.p0, args.obs.price);
-    const outcome = outcomeFromSignedReturn(signedReturn, voidBand);
-    const horizonHours = legacyHorizonHoursForMarket(marketRow) as HorizonHours;
-    const score = scoreCall({
-      asset_id: marketRow.asset_id as AssetId,
-      horizon_hours: horizonHours,
-      horizon_seconds: marketRow.horizon_seconds,
-      confidence: commitment.confidence,
-      signed_return: signedReturn,
-      outcome,
-    });
-    const resolvedOutcomeJson = JSON.stringify(serializeOutcome(observed));
-    const payoutVectorJson = JSON.stringify(
-      observed.payoutNumerators.map((n) => n.toString()),
-    );
-    const nowIso = this.nowIso();
-    const tx = this.db.transaction(() => {
-      resolutionsRepo.setResolution(this.db, {
-        call_id: args.ctx.call_id,
-        t1: args.obs.feed_timestamp,
-        p1: args.obs.price,
-        t1_feed: args.obs.feed,
-        signed_return: String(signedReturn),
-        outcome,
-        call_score: score.call_score,
-        resolved_at: nowIso,
-        resolved_outcome_json: resolvedOutcomeJson,
-        payout_vector_json: payoutVectorJson,
-      });
-      submissionsRepo.setStatus(this.db, args.ctx.call_id, "resolved");
-      usageRepo.emit(
-        this.db,
-        this.makeUsage(args.ctx.agent_id, "resolution_completed", {
-          call_id: args.ctx.call_id,
-          outcome,
-          call_score: score.call_score,
-        }),
-      );
-    });
-    tx();
-    return { kind: "resolved", outcome };
   }
 
   // ── core anchoring step (used for both t0 and t1) ──
@@ -614,57 +458,6 @@ export class Resolver {
       };
     }
     return { kind: "anchored", observation: obs };
-  }
-
-  // ── terminal oracle_unavailable ──
-
-  private async markOracleUnavailable(
-    ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>,
-    phase: "t0" | "t1",
-  ): Promise<boolean> {
-    const resolved_at = this.nowIso();
-    const t0row = anchorsRepo.getT0(this.db, ctx.call_id);
-    // Wave 2b — committed-mode subject load + reveal-binding check
-    // removed. FHE-direct rows never had this branch; legacy plaintext
-    // rows can mark terminal without a reveal proof.
-    // Wave 4b — receipt building is gone; the resolution row alone now
-    // carries the terminal oracle_unavailable state. For t0-phase failures
-    // we still stamp placeholder t0/p0/t0_feed values so downstream view
-    // queries get non-null columns (the row's `outcome` is the semantic
-    // truth).
-    const placeholderTime = ctx.accepted_at;
-    const placeholderPrice = "0";
-    const placeholderFeed: OracleFeed = "chainlink:base:ETH-USD";
-    const t0Iso = t0row?.t0 ?? placeholderTime;
-    const p0 = t0row?.p0 ?? placeholderPrice;
-    const t0Feed = (t0row?.feed ?? placeholderFeed) as OracleFeed;
-    void t0Iso;
-    void p0;
-
-    const tx = this.db.transaction(() => {
-      resolutionsRepo.setResolution(this.db, {
-        call_id: ctx.call_id,
-        t1: resolved_at,
-        p1: placeholderPrice,
-        t1_feed: t0Feed,
-        signed_return: "0",
-        outcome: "oracle_unavailable",
-        call_score: null,
-        resolved_at,
-      });
-      submissionsRepo.setStatus(this.db, ctx.call_id, "resolved");
-      usageRepo.emit(
-        this.db,
-        this.makeUsage(ctx.agent_id, "resolution_completed", {
-          call_id: ctx.call_id,
-          outcome: "oracle_unavailable",
-          phase,
-        }),
-      );
-    });
-    tx();
-    this.log({ kind: "oracle_unavailable", call_id: ctx.call_id, phase });
-    return true;
   }
 
   // ── oracle observation routing (P3 Phase 2) ──
@@ -745,63 +538,10 @@ export class Resolver {
     return derivePolicyFromMarket(this.db, market);
   }
 
-  private makeUsage(
-    agent_id: string,
-    kind: UsageEvent["kind"],
-    attributes: Record<string, unknown>,
-  ): UsageEvent {
-    return {
-      event_id: randomUUID(),
-      agent_id,
-      kind,
-      ts: this.nowIso(),
-      attributes,
-    };
-  }
 }
 
 function isoFromUnixMs(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
-}
-
-function sideFromNativePriceCommitment(commitment: Commitment): Side | null {
-  const predicted = commitment.predictedOutcome;
-  if (
-    predicted.kind !== "binary" ||
-    predicted.payoutNumerators.length !== 2 ||
-    predicted.payoutDenominator <= 0n
-  ) {
-    return null;
-  }
-  const [up, down] = predicted.payoutNumerators;
-  if (up === predicted.payoutDenominator && down === 0n) return "BUY";
-  if (up === 0n && down === predicted.payoutDenominator) return "SELL";
-  return null;
-}
-
-/**
- * Parse `markets.config_json` to a plain object that the resolver can
- * spread into the adapter's ObservationContext. Codex P11 review
- * Critical B — adapter-private fields (e.g. Polymarket's `conditionId`)
- * live on `markets.config_json` and never reached `observeResolution`
- * before this helper threaded them through. Native-price markets ship
- * empty config_json so the spread is a no-op for them.
- *
- * Fail-soft: malformed JSON, non-object payloads, or DB-side TEXT/NULL
- * all collapse to `{}` rather than throwing. The resolver tick MUST
- * NOT abort because one market's config_json was malformed.
- */
-function parseMarketConfigJson(raw: unknown): Record<string, unknown> {
-  if (typeof raw !== "string" || raw.length === 0) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // intentional swallow — see header comment
-  }
-  return {};
 }
 
 // (feedToOracleId is imported at the top of the file from oracle-routing.js

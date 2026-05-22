@@ -89,10 +89,7 @@ const SOURCE_PROTOCOL = "native-price" as const;
 //   SELL → [0n, 1n]   (price-down)
 //
 // The schema is a Zod transform — `parse()` returns a Commitment shape so the
-// adapter's downstream code never has to know the legacy fields exist. Phase
-// 4's `/v2/calls` endpoint will accept the universal Commitment shape directly
-// and bypass this schema entirely; this transform is the back-compat seam for
-// `/v1/calls`.
+// adapter's downstream code never has to know the directional fields exist.
 
 const LegacyDirectionInputSchema = z
   .object({
@@ -272,6 +269,17 @@ class NativePriceAdapter implements MarketMakerAdapter {
     return observeResolutionForCall(narrowed);
   }
 
+  expectedRevealOpenAt(input: {
+    acceptedAtMs: number;
+    horizonSeconds: number;
+  }): number {
+    return input.acceptedAtMs + input.horizonSeconds * 1000;
+  }
+
+  outcomeLabels(): string[] {
+    return ["UP", "DOWN"];
+  }
+
   /**
    * Score a commitment against its resolution. Reduces to today's binary
    * Brier-direction proxy on the 2-element payout vector — `callScore` is
@@ -331,9 +339,8 @@ function narrowNativePriceContext(
   if (typeof ctx.t1_source_id !== "string") return null;
   if (typeof ctx.void_band !== "number") return null;
   if (typeof ctx.market_id !== "string") return null;
-  // Wave 3 — `side` is now optional. Accept BUY/SELL when provided (legacy
-  // debug callers, verifier harness), otherwise omit it. The resolved
-  // Outcome is computed side-independently regardless.
+  // Accept BUY/SELL only after a reveal or from internal debug callers.
+  // The resolved Outcome is computed side-independently regardless.
   const sideField: { side?: "BUY" | "SELL" } =
     ctx.side === "BUY" || ctx.side === "SELL"
       ? { side: ctx.side as "BUY" | "SELL" }
@@ -403,11 +410,10 @@ export interface NativePriceObservationContext {
   /** From `markets.void_band` parsed via `voidBandFloat()`. */
   void_band: number;
   /**
-   * OPTIONAL. Wave 3 made the adapter's resolved Outcome side-independent
+   * OPTIONAL. The adapter's resolved Outcome is side-independent
    * (the payout vector is keyed on the actual price direction [UP, DOWN],
-   * not the agent's prediction). FHE-direct rows omit this entirely —
-   * the agent's prediction is encrypted in fhe_call_ciphertexts and the
-   * FHE scoring step compares ciphertext to the public resolved Outcome.
+   * not the agent's prediction). Sealed Fhenix rows omit this while pending
+   * and supply it only after the post-horizon reveal.
    *
    * When supplied (legacy / debug callers), it's used purely to compute
    * the SIDE-ADJUSTED signed_return on evidence.raw (a display-only
@@ -463,10 +469,9 @@ export function observeResolutionForCall(
     buyPerspectiveReturn,
     ctx.void_band,
   );
-  // Wave 3 — when `side` is absent (FHE-direct rows, post-Wave-3 default)
-  // evidence.raw.signed_return is the canonical BUY-perspective return.
-  // When `side` is present (legacy callers), retain the side-adjusted
-  // semantic for parity with v1 t1_resolutions.signed_return.
+  // When `side` is absent, evidence.raw.signed_return is the canonical
+  // BUY-perspective return. When `side` is present, retain the
+  // side-adjusted semantic for internal/debug parity.
   const sideAdjustedReturn =
     ctx.side === "SELL" ? -buyPerspectiveReturn : buyPerspectiveReturn;
   const resolvedAt = Math.floor(Date.parse(ctx.t1_iso) / 1000);

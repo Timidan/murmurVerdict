@@ -28,11 +28,10 @@
 //      trivial when we add it.
 //
 // Why we don't throw on invalid tokens:
-//   The dispatcher (auth/dispatcher.ts) needs to FALL THROUGH to legacy
-//   API-key and HMAC paths when a Privy token isn't present or doesn't
-//   verify. Throwing here would force every existing client to route
-//   around an exception. `null` lets the dispatcher try the next auth
-//   mode cleanly.
+//   The dispatcher (auth/dispatcher.ts) needs to fall through to API-key
+//   auth when a Privy token isn't present or doesn't verify. Throwing here
+//   would force every existing client to route around an exception. `null`
+//   lets the dispatcher try the next auth mode cleanly.
 //
 // Env contract:
 //   PRIVY_APP_ID            — required: the Privy application ID.

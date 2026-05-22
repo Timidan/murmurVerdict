@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server } from "node:http";
 import { createFhenixEventVerifierFromEnv } from "../integrations/fhenix-events.js";
-import { loadDeployment } from "../integrations/deployments.js";
+import { loadDeployment, resolveFhenixContractAddress } from "../integrations/deployments.js";
 import { createLiveCanaryRunnerFromEnv } from "../integrations/live-canaries.js";
 import { SCHEMA_VERSION } from "../verdict/schema.js";
 
@@ -90,10 +90,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   }
   const fhenixChainId = Number(process.env.FHENIX_CHAIN_ID ?? "0") || null;
   const fhenixSealedVerdictsAddress =
-    process.env.FHENIX_SEALED_VERDICTS_ADDRESS?.trim() ||
-    process.env.FHENIX_CONTRACT_ADDRESS?.trim() ||
-    (fhenixChainId ? loadDeployment(fhenixChainId, "MurmurSealedVerdicts")?.address : null) ||
-    null;
+    resolveFhenixContractAddress(fhenixChainId ?? undefined);
   const fhenixEscrowAddress =
     process.env.FHENIX_ESCROW_ADDRESS?.trim() ||
     (fhenixChainId ? loadDeployment(fhenixChainId, "MurmurEscrow")?.address : null) ||

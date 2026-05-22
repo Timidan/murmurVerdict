@@ -15,7 +15,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { z } from "zod";
-import { loadDeployment } from "./deployments.js";
+import { resolveFhenixContractAddress } from "./deployments.js";
 import {
   FEED_PACKET_SUBMITTED_EVENT,
   SEALED_CALL_SUBMITTED_EVENT,
@@ -1470,12 +1470,7 @@ export function createFhenixGatewayFromEnv(
   if (!Number.isInteger(chainId) || chainId <= 0) {
     throw new Error("FHENIX_CHAIN_ID must be a positive integer");
   }
-  const envAddress =
-    process.env.FHENIX_SEALED_VERDICTS_ADDRESS?.trim() ||
-    process.env.FHENIX_CONTRACT_ADDRESS?.trim() ||
-    null;
-  const manifestAddress = loadDeployment(chainId, "MurmurSealedVerdicts")?.address ?? null;
-  const contractAddress = envAddress ?? manifestAddress;
+  const contractAddress = resolveFhenixContractAddress(chainId);
   if (!contractAddress) {
     throw new Error(
       `FHENIX_GATEWAY_ENABLED=true but no contract address found: set FHENIX_SEALED_VERDICTS_ADDRESS, FHENIX_CONTRACT_ADDRESS, or run sync-deployments to populate data/deployments.json for chainId ${chainId}`,
@@ -1551,7 +1546,9 @@ function preflightMarketAndRateLimits(
     }
     throw err;
   }
-  const activeCount = agentsRepo.countActiveCallsForAgent(db, agentId);
+  const activeCount =
+    agentsRepo.countActiveCallsForAgent(db, agentId) +
+    fhenixGatewayTxRepo.countInflightByAgent(db, agentId);
   if (activeCount >= SUBMISSION_LIMITS.max_active_calls_per_agent) {
     throw new VerdictError(
       `max ${SUBMISSION_LIMITS.max_active_calls_per_agent} active calls per agent`,
@@ -1561,12 +1558,9 @@ function preflightMarketAndRateLimits(
   }
   const since = isoFromMs(now().getTime() - 24 * 60 * 60 * 1000);
   const cap = perMarketDailyCap(market.market_id);
-  const count = submissionsRepo.countCallsForAgentMarketWindow(
-    db,
-    agentId,
-    market.market_id,
-    since,
-  );
+  const count =
+    submissionsRepo.countCallsForAgentMarketWindow(db, agentId, market.market_id, since) +
+    fhenixGatewayTxRepo.countInflightByAgentMarketWindow(db, agentId, market.market_id, since);
   if (count >= cap) {
     throw new VerdictError(
       `max ${cap} calls/market/24h on ${market.market_id}`,
