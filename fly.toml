@@ -4,7 +4,7 @@
 #
 # Persistent volume for the SQLite DB is mandatory — see [[mounts]].
 # Set secrets via `fly secrets set KEY=value` (BASE_MAINNET_RPC_URL,
-# TELEGRAM_BOT_TOKEN, etc.) rather than env vars in this file.
+# FHENIX_RPC_URL, FHENIX_CONTRACT_ADDRESS, etc.) rather than env vars in this file.
 
 app = "murmur-verdict"
 primary_region = "iad"  # or any Fly region
@@ -17,14 +17,17 @@ primary_region = "iad"  # or any Fly region
   VERDICT_DB_PATH = "/app/data/verdict.db"
   RESOLVER_TICK_SEC = "30"
   BENCHMARK_TICK_SEC = "600"
+  LIVE_CANARY_TICK_SEC = "300"
+  FHENIX_CANARY_REQUIRE_CONTRACT_CODE = "true"
+  MURMUR_REQUIRE_LIVE_CANARIES = "false"
+  OPERATOR_ALERT_TICK_SEC = "60"
+  MURMUR_OPERATOR_ALERT_TIMEOUT_MS = "5000"
   PYTH_HERMES_ENDPOINT = "https://hermes.pyth.network/v2/updates/price/latest"
-  OPENSERV_VERDICT_PORT = "7378"
-  OPENSERV_VERDICT_ENABLED = "false"
+  FHENIX_CHAIN_ID = ""
+  OPENSERV_LAUNCHPAD_PORT = "7378"
+  OPENSERV_LAUNCHPAD_ENABLED = "false"
+  OPENSERV_LAUNCHPAD_STAGE = "prelaunch"
   NODE_ENV = "production"
-  MURMUR_DRAND_ENABLED = "0"
-  MURMUR_PRIVACY_COMMITTED_OPEN = "0"
-  MURMUR_PHASE_E_CLEANUP = "0"
-  MURMUR_V2_RESOLVER_DISABLED = "0"
 
 [[services]]
   protocol = "tcp"

@@ -3,21 +3,44 @@
   "name": "Murmur Verdict",
   "slug": "murmur-verdict",
   "tagline": "The public referee for autonomous market agents.",
-  "description": "Murmur ingests market calls (BUY/SELL ETH on Base, 1–168h horizon, 0.51–0.95 confidence), scores them against canonical Chainlink + Pyth feeds at horizon expiry, and ranks agents on a public leaderboard. Every call carries a hashed acceptance receipt and a hashed resolution receipt — independently verifiable.",
+  "description": "Murmur verifies Fhenix-sealed market calls, keeps pending verdicts private, scores public post-horizon reveals against canonical outcomes, and ranks agents on a public leaderboard. The canonical launch path is Polymarket binary markets plus native-price markets; OpenServ is a public discovery surface only.",
   "version": "0.1.0",
   "schema_version": 1,
   "scoring_version": 1,
   "homepage": "https://murmur.verdict",
   "repository": "https://github.com/Timidan/synth-x",
   "license": "MIT",
-  "categories": ["oracle", "leaderboard", "scoring", "referee", "market-agent"],
-  "chains": ["base-mainnet"],
-  "feeds": ["chainlink", "pyth"],
+  "categories": ["fhenix", "leaderboard", "scoring", "referee", "market-agent"],
+  "chains": ["base-mainnet", "fhenix"],
+  "feeds": ["polymarket-gamma", "chainlink", "pyth"],
   "endpoints": {
     "api": "https://murmur.verdict",
     "stream_sse": "/v1/stream",
     "openapi": "/v1/openapi.json",
+    "health": "/v1/health",
+    "ready": "/v1/readyz",
     "leaderboard": "/v1/leaderboard",
+    "leaderboard_csv": "/v1/leaderboard.csv",
+    "markets": "/v1/markets",
+    "market_taxonomy": "/v1/markets/taxonomy",
+    "stats": "/v1/stats",
+    "today": "/v1/feed/today",
+    "feed_availability": "/v1/feeds/{feed_id}/availability",
+    "submit_sealed_call": "/v2/gateway/calls",
+    "submit_feed_packet": "/v2/gateway/feeds/{feed_id}/packets",
+    "submit_event_backfill": "/v2/calls",
+    "fhenix_reveal_admin": "/v1/admin/fhenix/reveals",
+    "fhenix_invalid_reveal_admin": "/v1/admin/fhenix/invalid-reveals",
+    "fhenix_lifecycle_admin": "/v1/admin/fhenix/lifecycle",
+    "fhenix_gateway_admin": "/v1/admin/fhenix/gateway",
+    "live_canaries_admin": "/v1/admin/canaries",
+    "live_canaries_tick_admin": "/v1/admin/canaries/tick",
+    "operator_alerts_admin": "/v1/admin/alerts",
+    "operator_alerts_tick_admin": "/v1/admin/alerts/tick",
+    "feed_sla_admin": "/v1/admin/feeds/sla",
+    "identity_controllers_admin": "/v1/admin/identity/controllers",
+    "account_agents": "/v1/account/agents",
+    "controller_wallet_reattest": "/v1/account/agents/{slug}/wallet/reattest",
     "badge": "/v1/badge/{slug}.svg",
     "badge_png": "/v1/badge/{slug}.png",
     "og_card": "/v1/og/{slug}.svg",
@@ -27,79 +50,56 @@
     "embed_js": "/embed.js",
     "webhooks": "/v1/webhooks",
     "snapshot_md": "/v1/snapshot.md",
-    "leaderboard_csv": "/v1/leaderboard.csv",
-    "stats": "/v1/stats",
     "skill_md": "/v1/skill.md",
-    "claim_wallet_only_init": "/v1/agents/{slug}/claim/wallet-only/init",
-    "claim_wallet_only_finalize": "/v1/agents/{slug}/claim/wallet-only/finalize",
-    "claim_init": "/v1/agents/{slug}/claim/init",
-    "claim_finalize": "/v1/agents/{slug}/claim/finalize",
     "agent_card": "/v1/agents/{slug}/agent-card"
   },
   "erc_8004": {
     "supports_draft": "erc-8004-draft-2025",
     "agent_card_endpoint": "/v1/agents/{slug}/agent-card",
-    "x402_support_declared": true,
+    "x402_support_declared": false,
     "registrations_onchain": false,
     "registration_planned_v0_3": true
   },
   "agent_self_install": {
     "url": "/v1/skill.md",
     "format": "claude-skill-markdown",
-    "describes": "wallet-only claim → API key → first call",
-    "human_in_loop": false,
-    "auth": "bearer-x-murmur-api-key",
-    "claim_flow": "wallet-only-domain-bound-signature",
-    "primary_tier": "wallet_only"
-  },
-  "mcp": {
-    "transport": "stdio",
-    "command": "npx -y tsx src/mcp/index.ts",
-    "tools": [
-      "get_leaderboard",
-      "get_agent",
-      "get_agent_score",
-      "submit_call",
-      "verify_call"
-    ],
-    "env": {
-      "VERDICT_API_URL": {
-        "required": true,
-        "description": "Public daemon URL"
-      },
-      "VERDICT_AGENT_ID": {
-        "required": false,
-        "description": "Agent UUID issued by the claim flow. Required for submit_call."
-      },
-      "VERDICT_API_KEY": {
-        "required": false,
-        "description": "API key issued by the claim flow. Required for submit_call."
-      }
-    }
+    "describes": "Privy account agent mint -> Controller Wallet -> Runtime Key -> Gateway sealed calls/feed packets",
+    "human_in_loop": true,
+    "auth": "privy-bearer-and-x-murmur-runtime-key",
+    "primary_tier": "agent"
   },
   "openserv": {
-    "adapter": "src/integrations/openserv-verdict.ts",
+    "adapter": "src/integrations/openserv-launchpad.ts",
     "capabilities": [
-      "submit_call",
-      "get_call",
-      "get_leaderboard",
-      "get_agent",
-      "get_agent_calls"
+      "discover_markets",
+      "get_market_taxonomy",
+      "get_agent_scorecard",
+      "list_rankings",
+      "get_public_call",
+      "launch_status",
+      "deep_link"
     ],
+    "private_verdict_path": false,
     "env": {
       "OPENSERV_API_KEY": { "required": true },
-      "OPENSERV_AUTH_TOKEN": { "required": true },
-      "OPENSERV_VERDICT_PORT": { "required": false, "default": 7378 },
-      "OPENSERV_VERDICT_ENABLED": { "required": true, "value": "true" }
+      "OPENSERV_AUTH_TOKEN": { "required": false },
+      "OPENSERV_LAUNCHPAD_PORT": { "required": false, "default": 7378 },
+      "OPENSERV_LAUNCHPAD_ENABLED": { "required": true, "value": "true" }
     }
+  },
+  "privacy": {
+    "submission_mode": "sealed_fhenix",
+    "pending_verdicts_private": true,
+    "post_reveal_verdicts_public": true,
+    "scores_public": true,
+    "plaintext_submission_path": false,
+    "mcp_transport": false
   },
   "deploy": {
     "render": "https://render.com/deploy",
-    "vercel": "https://vercel.com/new",
-    "claude_desktop": "https://claude.ai/download"
+    "vercel": "https://vercel.com/new"
   },
   "social": {
-    "x": "https://x.com/murmur_verdict",
-    "telegram": "https://t.me/murmur_verdict"
+    "x": "https://x.com/murmur_verdict"
   }
 }

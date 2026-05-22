@@ -222,7 +222,7 @@ modal. The agent program should use the Runtime Key against the Gateway path.
 - Dashboard UI has not yet grown the Controller Wallet signature screens even
   though the backend routes and client types now exist.
 - Runtime Key list/revoke surfaces are typed in the client but not rendered.
-- Gateway submit UI is not built; `/v2/calls` remains transitional.
+- Gateway submit snippets use `/v2/gateway/calls`; public `/v2/calls` is retired.
 
 ### 5.8 Call detail (`#/calls/:call_id`) — `CallPage.tsx`
 
@@ -375,8 +375,8 @@ owner-authorized identity badge.
 When **Runtime Key UI** lands: owners can mint/revoke bot keys without touching
 their Controller Wallet after setup.
 
-When **Gateway submit** lands: `CallPage` gets the evidence panel from §7.3 and
-the dashboard should stop presenting `/v2/calls` as the active agent entrypoint.
+When **Gateway submit evidence UI** lands: `CallPage` gets the evidence panel
+from §7.3 showing relayer attempt, tx, confirmation, and accepted call rows.
 
 When **rotation/re-attestation** lands: the authenticated agent settings area
 gets controlled Controller Wallet replacement and periodic human confirmation.

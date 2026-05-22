@@ -37,68 +37,62 @@ services:
         sync: false
       - key: PYTH_HERMES_ENDPOINT
         value: https://hermes.pyth.network/v2/updates/price/latest
-
-      # ─── Distribution ─────────────────────────────────────────────────
-      - key: TELEGRAM_BOT_TOKEN
+      - key: FHENIX_RPC_URL
         sync: false
-      - key: TELEGRAM_PUBLIC_CHAT_ID
+      - key: FHENIX_CHAIN_ID
         sync: false
+      - key: FHENIX_CONTRACT_ADDRESS
+        sync: false
+      - key: FHENIX_EVENT_TICK_SEC
+        value: "30"
+      - key: FHENIX_EVENT_START_BLOCK
+        value: "0"
+      - key: FHENIX_EVENT_CONFIRMATIONS
+        value: "2"
+      - key: FHENIX_EVENT_BATCH_SIZE
+        value: "1000"
+      - key: FHENIX_REVEAL_GRACE_SEC
+        sync: false
+      - key: LIVE_CANARY_TICK_SEC
+        value: "300"
+      - key: FHENIX_CANARY_ENABLED
+        sync: false
+      - key: FHENIX_CANARY_REQUIRE_CONTRACT_CODE
+        value: "true"
+      - key: POLYMARKET_CANARY_ENABLED
+        sync: false
+      - key: POLYMARKET_CANARY_CONDITION_ID
+        sync: false
+      - key: MURMUR_REQUIRE_LIVE_CANARIES
+        value: "false"
+      - key: OPERATOR_ALERT_TICK_SEC
+        value: "60"
+      - key: MURMUR_OPERATOR_ALERT_WEBHOOK_URL
+        sync: false
+      - key: MURMUR_OPERATOR_ALERT_SECRET
+        sync: false
+      - key: MURMUR_OPERATOR_ALERT_TIMEOUT_MS
+        value: "5000"
 
-      # ─── OpenServ launchpad-side adapter (optional) ───────────────────
+      # ─── OpenServ Launchpad discovery agent (optional) ────────────────
       - key: OPENSERV_API_KEY
         sync: false
       - key: OPENSERV_AUTH_TOKEN
         sync: false
-      - key: OPENSERV_VERDICT_PORT
+      - key: OPENSERV_LAUNCHPAD_PORT
         value: "7378"
-      # Set to "true" once the OpenServ caller-identity / API key flow is
-      # validated end-to-end against a launchpad demo agent.
-      - key: OPENSERV_VERDICT_ENABLED
+      # Set to "true" once the OpenServ Launchpad project card is ready.
+      # This registers only public discovery capabilities, never verdict
+      # submission, Fhenix reveal, scoring, or private feeds.
+      - key: OPENSERV_LAUNCHPAD_ENABLED
+        sync: false
+      - key: OPENSERV_LAUNCHPAD_PROJECT_ID
+        sync: false
+      - key: OPENSERV_LAUNCHPAD_PROJECT_URL
+        sync: false
+      - key: OPENSERV_LAUNCHPAD_STAGE
         sync: false
       - key: NODE_ENV
         value: production
       - key: VERDICT_ADMIN_TOKEN
         sync: false
-
-      # ─── Privacy + V2 ─────────────────────────────────────────────────
-      # Daemon's age recipient (X25519 public key) for committed-mode
-      # encryption. When unset, committed-mode submissions return 503 and
-      # only legacy_plaintext is accepted.
-      - key: MURMUR_DAEMON_AGE_RECIPIENT
-        sync: false
-      # Optional fallback identity (X25519 private key) so the daemon
-      # can decrypt committed envelopes after fallback_after for resolver
-      # use. Without it, only the agent's voluntary reveal can resolve.
-      - key: MURMUR_DAEMON_AGE_IDENTITY
-        sync: false
-      # Parallel drand/tlock envelope (D21). 1 = enabled. Operator
-      # overridable per environment.
-      - key: MURMUR_DRAND_ENABLED
-        value: "0"
-      # drand chain endpoint; required when MURMUR_DRAND_ENABLED=1.
-      - key: MURMUR_DRAND_CHAIN_URL
-        value: ""
-      # Whether committed-mode reveals show plaintext on the public feed
-      # post-resolution. 0 = stay sealed (default); 1 = open for audit.
-      - key: MURMUR_PRIVACY_COMMITTED_OPEN
-        value: "0"
-      # Phase-E cleanup gate. Set to "1" to scrub plaintext columns from
-      # committed-mode rows past pending_t0 (see V2_DECISION_RECORD §7.5).
-      # Idempotent — safe to leave on. Operator should backup first.
-      # Decoupled from MIGRATION_015 schema-version gate; runs at every
-      # boot when env is set, NULLs only rows that still have plaintext.
-      - key: MURMUR_PHASE_E_CLEANUP
-        value: "0"
-      # Phase-E dry-run mode. When MURMUR_PHASE_E_CLEANUP=1 AND this is
-      # also set to "1", the boot hook prints the count of rows that
-      # WOULD be scrubbed and exits without writing. Use this to verify
-      # blast radius before the real run.
-      - key: MURMUR_PHASE_E_DRY_RUN
-        value: "0"
-      # V2 resolver kill switch (BLOCKER #1). Set to "1" to disable the
-      # additive v2 dual-write path. Legacy resolution receipts are still
-      # written; v2 receipts and t1_resolutions.resolved_outcome_json are
-      # skipped. Use as an emergency rollback if a bad adapter or
-      # commitment shape lands in production.
-      - key: MURMUR_V2_RESOLVER_DISABLED
-        value: "0"
