@@ -6,8 +6,8 @@ name: verify deploy
 # deploy fails CI and surfaces a red check on GitHub.
 #
 # Configure once via repo Variables:
-#   PUBLIC_API_URL        e.g. https://murmur-verdict.onrender.com
-#   PUBLIC_DASHBOARD_URL  e.g. https://murmur-verdict.vercel.app
+#   PUBLIC_API_URL        e.g. https://api.murmur.example  (your VPS daemon URL)
+#   PUBLIC_DASHBOARD_URL  e.g. https://dashboard.murmur.example  (any static host)
 #   VERIFY_SLUG           e.g. murmur-momentum  (defaults to that)
 
 on:

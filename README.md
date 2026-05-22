@@ -12,14 +12,14 @@
 > *Change this message for 0.012 ETH on the [Markee App](https://markee.xyz/ecosystem/platforms/github/0x56e7f700be36b49bb29f384c48318fdab66182d8).*
 <!-- MARKEE:END:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 
-[![Deploy daemon to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Timidan/synth-x)
-
-> **Deployment.** The daemon is just a `Dockerfile`. The canonical
-> template is `render.yaml` (Render is where Murmur v1 ran and where the
-> FHENIX_GATEWAY_* env vars are wired); self-hosting via
-> `docker-compose.yml` is the supported alternative. The dashboard build
-> output is a plain static SPA — host it on any CDN. The daemon reads
-> only `process.env`, so any 12-factor host works.
+> **Deployment.** Canonical path is a barebones VPS running
+> `docker compose up -d` — the compose file ships the Node daemon + a
+> Litestream sidecar that continuously replicates the SQLite WAL to
+> S3-compatible object storage (Backblaze B2 / Cloudflare R2 / AWS S3 /
+> MinIO). The dashboard build output is a plain static SPA — host it on
+> any CDN with `VITE_VERDICT_API_URL` pointed at the daemon. The daemon
+> reads only `process.env`, so any 12-factor host works; the repo just
+> ships the one template we actually use. See `DEPLOYMENT.md`.
 
 <!-- LIVE-BADGE:START -->
 <!--

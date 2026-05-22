@@ -1,10 +1,20 @@
-# Self-hosting template for the Murmur Verdict daemon.
-# Usage: copy `.env.example` to `.env`, fill in secrets, then `docker compose up -d`.
+# Murmur Verdict canonical self-hosted deploy.
+# Target: a barebones VPS. Usage: copy `.env.example` to `.env`, fill in
+# secrets, then `docker compose up -d`.
 #
-# This is the cloud-vendor-neutral deployment surface — works on any
-# Docker host (a VPS, a homelab, a Kubernetes node via `kompose`, etc.).
-# The repo also has render.yaml for that specific PaaS, which composes
-# the same Dockerfile.
+# Two services:
+#   - `daemon`: the Node 22 backend + SQLite (better-sqlite3 in WAL mode).
+#   - `litestream`: continuous WAL replication of /app/data/verdict.db to
+#     S3-compatible object storage. Required for any off-host backup.
+#     Operators who skip the LITESTREAM_* env vars get a daemon that runs
+#     but is data-loss-exposed; we log a warning at boot to make that
+#     state obvious.
+#
+# The Dashboard SPA is intentionally NOT in this compose file. Build it
+# (`npm run dashboard:build`) and host the dist on a static CDN
+# (Cloudflare Pages, Vercel, your own Nginx) with VITE_VERDICT_API_URL
+# pointed at the daemon's public URL. See DEPLOYMENT.md for the
+# split-deploy rationale.
 
 services:
   daemon:
@@ -83,6 +93,31 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # Continuous SQLite WAL replication to S3-compatible object storage.
+  # Reads the same /app/data volume as the daemon; the daemon does NOT
+  # depend_on it so a misconfigured backup does not block the daemon
+  # from starting (the operator sees the litestream container failing
+  # in `docker compose ps` instead).
+  #
+  # Restore (one-shot): stop daemon, then on a fresh box run
+  #   litestream restore -o /app/data/verdict.db s3://<bucket>/verdict.db
+  # and start the daemon. See DEPLOYMENT.md for the full recipe.
+  litestream:
+    image: litestream/litestream:0.3
+    restart: unless-stopped
+    command: ["replicate"]
+    environment:
+      # Required: S3-compatible endpoint + credentials. Backblaze B2,
+      # Cloudflare R2, AWS S3, MinIO all work — Litestream uses the s3
+      # protocol against any of them.
+      LITESTREAM_ACCESS_KEY_ID: "${LITESTREAM_ACCESS_KEY_ID:-}"
+      LITESTREAM_SECRET_ACCESS_KEY: "${LITESTREAM_SECRET_ACCESS_KEY:-}"
+    volumes:
+      - verdict_data:/app/data
+      # Mount the operator's litestream.yml from the host. Start with
+      # litestream.yml.example and adjust the bucket/endpoint/region.
+      - ./litestream.yml:/etc/litestream.yml:ro
 
 volumes:
   verdict_data:

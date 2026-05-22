@@ -55,9 +55,9 @@ export function LaunchPage() {
       <section className="grid grid-cols-2 border-b border-[var(--color-border)]">
         <DeployCell
           label="daemon"
-          stack="render · docker"
-          href="https://render.com/deploy"
-          note="render.yaml ships with the repo. 1-click → public daemon URL."
+          stack="vps · docker compose"
+          href="https://github.com/Timidan/synth-x/blob/nothing-preview/DEPLOYMENT.md"
+          note="docker-compose.yml + Litestream sidecar. SQLite WAL replicates to S3-compatible backup."
         />
         <DeployCell
           label="dashboard"

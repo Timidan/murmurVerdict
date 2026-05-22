@@ -1,0 +1,57 @@
+# Litestream config for Murmur Verdict's SQLite data dir.
+#
+# Operator setup:
+#   1. cp litestream.yml.example litestream.yml
+#   2. Edit the s3 block: bucket, endpoint, region per your provider.
+#   3. Set LITESTREAM_ACCESS_KEY_ID + LITESTREAM_SECRET_ACCESS_KEY in .env.
+#   4. `docker compose up -d` — the litestream container picks this up via
+#      the bind mount declared in docker-compose.yml.
+#
+# Replication is continuous (WAL-tail level). RPO is near-zero on a
+# happy network; the daemon does NOT depend_on litestream so a backup
+# misconfiguration cannot block the daemon from booting.
+#
+# Restore (one-shot, on a fresh VPS):
+#   docker run --rm \
+#     -e LITESTREAM_ACCESS_KEY_ID=... -e LITESTREAM_SECRET_ACCESS_KEY=... \
+#     -v "$(pwd)/litestream.yml:/etc/litestream.yml:ro" \
+#     -v verdict_data:/app/data \
+#     litestream/litestream:0.3 restore -o /app/data/verdict.db \
+#       s3://<bucket>/verdict.db
+#   docker compose up -d daemon
+#
+# Provider notes:
+#   - Backblaze B2: endpoint `https://s3.<region>.backblazeb2.com`. Cheap,
+#     S3-compatible, no egress to Cloudflare.
+#   - Cloudflare R2: endpoint `https://<account>.r2.cloudflarestorage.com`,
+#     region `auto`. Zero egress fee, S3-compatible.
+#   - AWS S3: standard endpoint. Region matters.
+#   - MinIO (self-hosted): `http://minio:9000` if you run a sibling.
+
+dbs:
+  - path: /app/data/verdict.db
+    replicas:
+      - type: s3
+        bucket: REPLACE_WITH_BUCKET_NAME
+        path: verdict.db
+        # Set the endpoint AND region to match your provider. The
+        # combination of region + endpoint resolves which S3 dialect
+        # litestream uses.
+        endpoint: https://s3.us-west-002.backblazeb2.com   # B2 example
+        region: us-west-002
+        # access key id + secret come from the LITESTREAM_* env vars
+        # the container passes through. Do NOT inline credentials here.
+
+        # Snapshot cadence — periodic full snapshots in addition to the
+        # continuous WAL tail. Daily is fine; tighten for higher-RPO
+        # operators.
+        snapshot-interval: 24h
+
+        # Retention — keep 30 days of snapshots + WAL.
+        retention: 720h
+        retention-check-interval: 1h
+
+        # Validation — verify replica integrity hourly. Adds a small
+        # read on each interval; turn off only if you've moved this
+        # check out-of-band.
+        validation-interval: 1h

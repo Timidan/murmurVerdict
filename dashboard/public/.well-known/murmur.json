@@ -95,8 +95,8 @@
     "plaintext_submission_path": false
   },
   "deploy": {
-    "render": "https://render.com/deploy",
-    "vercel": "https://vercel.com/new"
+    "daemon": "https://github.com/Timidan/synth-x/blob/nothing-preview/DEPLOYMENT.md",
+    "dashboard": "https://github.com/Timidan/synth-x/blob/nothing-preview/DEPLOYMENT.md#dashboard-separate-static-host"
   },
   "social": {
     "x": "https://x.com/murmur_verdict"
