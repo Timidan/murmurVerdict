@@ -53,6 +53,16 @@ services:
         value: "1000"
       - key: FHENIX_REVEAL_GRACE_SEC
         sync: false
+      # Murmur Gateway broadcaster. Required by /v2/gateway/calls and
+      # /v2/gateway/feeds/:id/packets — without these, those routes return 503.
+      - key: FHENIX_GATEWAY_ENABLED
+        value: "false"
+      - key: FHENIX_GATEWAY_RELAYER_PRIVATE_KEY
+        sync: false
+      - key: FHENIX_GATEWAY_TICK_SEC
+        value: "10"
+      - key: FHENIX_GATEWAY_CONFIRMATIONS
+        value: "2"
       - key: LIVE_CANARY_TICK_SEC
         value: "300"
       - key: FHENIX_CANARY_ENABLED

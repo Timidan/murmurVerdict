@@ -28,7 +28,7 @@
     "feed_availability": "/v1/feeds/{feed_id}/availability",
     "submit_sealed_call": "/v2/gateway/calls",
     "submit_feed_packet": "/v2/gateway/feeds/{feed_id}/packets",
-    "submit_event_backfill": "/v2/calls",
+    "submit_event_backfill": "/v1/admin/fhenix/backfill/calls",
     "fhenix_reveal_admin": "/v1/admin/fhenix/reveals",
     "fhenix_invalid_reveal_admin": "/v1/admin/fhenix/invalid-reveals",
     "fhenix_lifecycle_admin": "/v1/admin/fhenix/lifecycle",
@@ -92,8 +92,7 @@
     "pending_verdicts_private": true,
     "post_reveal_verdicts_public": true,
     "scores_public": true,
-    "plaintext_submission_path": false,
-    "mcp_transport": false
+    "plaintext_submission_path": false
   },
   "deploy": {
     "render": "https://render.com/deploy",
