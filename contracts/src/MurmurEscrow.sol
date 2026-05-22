@@ -38,12 +38,17 @@ contract MurmurEscrow {
     error CommitMismatch();
     error MerkleRootEmpty();
     error BatchAlreadySubmitted();
+    error ZeroAddress();
 
     // ─── Constants ─────────────────────────────────────────────────────────
 
     uint16 public constant MAX_PROTOCOL_FEE_BPS = 1000; // 10% hard cap
     uint16 public constant DEFAULT_PROTOCOL_FEE_BPS = 500; // 5%
     uint64 public constant CANCEL_WINDOW_SECONDS = 60;
+    // Audit M-1: how long after the finalize window opens before the owner
+    // can force-refund a Committed request whose agent never produced a
+    // valid reveal. 7 days is enough for "agent forgot" to be exhausted.
+    uint64 public constant COMMITTED_REFUND_GRACE_HOURS = 168;
 
     // ─── Inference request lifecycle ───────────────────────────────────────
 
@@ -83,6 +88,9 @@ contract MurmurEscrow {
         bytes32 marketDataCutoff; // operator-declared input freshness anchor
         uint64 committedAt;
         RequestState state;
+        // Audit M-2: snapshotted at request time; finalize uses this value
+        // so owner cannot change fee bps mid-flight.
+        uint16 protocolFeeBps;
     }
 
     /// pipelineId => Pipeline
@@ -167,16 +175,23 @@ contract MurmurEscrow {
     /// @notice Create a pipeline. Off-chain daemon enforces rank-gate; this
     ///         contract just records the on-chain pipeline definition and
     ///         payout target.
+    /// @dev Audit H-1: must be onlyOwner. Without this gate, anyone could
+    ///      squat a pipelineId before the legit operator created it and
+    ///      redirect every buyer's payout via the stored agentOwner field.
     function createPipeline(
         bytes32 pipelineId,
         address agentOwner,
         uint96 priceUsdc,
         uint32 slaSeconds,
         uint32 horizonHours
-    ) external whenNotPaused {
+    ) external onlyOwner whenNotPaused {
+        if (agentOwner == address(0)) revert ZeroAddress();
         if (priceUsdc == 0) revert PriceMustBePositive();
         if (slaSeconds == 0) revert SlaMustBePositive();
         if (horizonHours == 0) revert HorizonMustBePositive();
+        // Audit L-2: SLA must exceed the cancel window so an agent can't be
+        // lured into committing only to be cancelled.
+        if (slaSeconds <= CANCEL_WINDOW_SECONDS) revert SlaMustBePositive();
         Pipeline storage p = pipelines[pipelineId];
         if (p.agentOwner != address(0)) revert PipelineNotActive(); // already exists
         p.agentOwner = agentOwner;
@@ -187,10 +202,12 @@ contract MurmurEscrow {
         emit PipelineCreated(pipelineId, agentOwner, priceUsdc, slaSeconds, horizonHours);
     }
 
-    function setPipelineActive(bytes32 pipelineId, bool active_) external {
+    /// @dev Audit H-1: was previously callable by the pipeline's agentOwner,
+    ///      which let a squatting agent re-activate a pipeline the owner had
+    ///      disabled. Now strictly onlyOwner.
+    function setPipelineActive(bytes32 pipelineId, bool active_) external onlyOwner {
         Pipeline storage p = pipelines[pipelineId];
         if (p.agentOwner == address(0)) revert PipelineNotFound();
-        if (msg.sender != p.agentOwner && msg.sender != owner) revert NotPipelineOwner();
         p.active = active_;
         emit PipelineUpdated(pipelineId, active_);
     }
@@ -233,7 +250,10 @@ contract MurmurEscrow {
             commitHash: bytes32(0),
             marketDataCutoff: bytes32(0),
             committedAt: 0,
-            state: RequestState.Pending
+            state: RequestState.Pending,
+            // Audit M-2: snapshot fee bps; subsequent setProtocolFeeBps
+            // calls do not affect this request.
+            protocolFeeBps: protocolFeeBps
         });
 
         emit InferenceRequested(
@@ -284,7 +304,8 @@ contract MurmurEscrow {
             revert CommitMismatch();
         }
 
-        uint96 fee = uint96((uint256(r.paidAmount) * protocolFeeBps) / 10_000);
+        // Audit M-2: use the snapshotted fee, NOT live storage.
+        uint96 fee = uint96((uint256(r.paidAmount) * r.protocolFeeBps) / 10_000);
         uint96 agentPayout = r.paidAmount - fee;
         r.state = RequestState.Finalized;
 
@@ -301,6 +322,28 @@ contract MurmurEscrow {
         InferenceRequest storage r = requests[requestId];
         if (r.state != RequestState.Pending) revert WrongState();
         if (block.timestamp <= r.slaDeadline) revert BeforeFinalizeWindow();
+        r.state = RequestState.Refunded;
+        if (!USDC.transfer(r.buyer, r.paidAmount)) revert UsdcReturnFailed();
+        emit InferenceRefunded(requestId, r.buyer, r.paidAmount);
+    }
+
+    /// @notice Owner-gated recovery for Committed requests whose agent never
+    ///         produced a valid reveal. Pre-fix, buyer funds for such
+    ///         requests were stuck forever — refund/cancel require Pending,
+    ///         finalize requires a matching reveal. After
+    ///         COMMITTED_REFUND_GRACE_HOURS beyond the finalize-open time,
+    ///         the owner can refund the buyer; the agent's commit is dropped.
+    /// @dev    Audit M-1. Owner-gated (not permissionless) so a third party
+    ///         cannot race a slow but legitimate finalize. Grace = horizon +
+    ///         7 days; comfortably outside any reasonable reveal tail.
+    function forceRefundCommitted(bytes32 requestId) external onlyOwner nonReentrant {
+        InferenceRequest storage r = requests[requestId];
+        if (r.state != RequestState.Committed) revert WrongState();
+        Pipeline storage p = pipelines[r.pipelineId];
+        uint64 graceOpenAt = r.committedAt
+            + uint64(p.horizonHours) * 3600
+            + COMMITTED_REFUND_GRACE_HOURS * 3600;
+        if (block.timestamp < graceOpenAt) revert BeforeFinalizeWindow();
         r.state = RequestState.Refunded;
         if (!USDC.transfer(r.buyer, r.paidAmount)) revert UsdcReturnFailed();
         emit InferenceRefunded(requestId, r.buyer, r.paidAmount);
@@ -328,7 +371,9 @@ contract MurmurEscrow {
 
     // ─── Admin ─────────────────────────────────────────────────────────────
 
+    /// @dev Audit L-5: zero-address checked.
     function transferOwnership(address newOwner) external onlyOwner {
+        if (newOwner == address(0)) revert ZeroAddress();
         emit OwnerTransferred(owner, newOwner);
         owner = newOwner;
     }
@@ -339,7 +384,11 @@ contract MurmurEscrow {
         protocolFeeBps = newBps;
     }
 
+    /// @dev Audit L-5: reject zero sink (fee burned) and `address(this)`
+    ///      (breaks E1's address-separation precondition).
     function setProtocolFeeSink(address newSink) external onlyOwner {
+        if (newSink == address(0)) revert ZeroAddress();
+        if (newSink == address(this)) revert ZeroAddress();
         emit ProtocolFeeSinkUpdated(protocolFeeSink, newSink);
         protocolFeeSink = newSink;
     }
