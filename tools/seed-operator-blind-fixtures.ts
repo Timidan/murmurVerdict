@@ -6,6 +6,12 @@
  * daemon SQLite DB so the production Runtime-Key + Gateway validation path can
  * be exercised by tools/operator-blind-roundtrip.ts. It also registers the
  * deterministic test market on-chain through the real RPC.
+ *
+ * GUARDED: refuses to run unless MURMUR_ALLOW_FIXTURE_SEED=true. The
+ * develop-as-prod posture forbids fixture-backed runtime state by default;
+ * this seeder is the explicit carve-out for the operator-blind release-gate
+ * Playwright check (tools/operator-blind-roundtrip.ts). NEVER invoke this
+ * against a production database.
  */
 
 import "dotenv/config";
@@ -129,6 +135,14 @@ async function registerOnchainMarket(): Promise<Hex> {
 }
 
 async function main(): Promise<void> {
+  if (process.env.MURMUR_ALLOW_FIXTURE_SEED !== "true") {
+    throw new Error(
+      "seed-operator-blind-fixtures refuses to run without MURMUR_ALLOW_FIXTURE_SEED=true. " +
+        "This tool writes fixture-backed runtime rows directly to the daemon DB; the " +
+        "develop-as-prod posture forbids that by default. Set the env var only when " +
+        "you are intentionally seeding the operator-blind round-trip release-gate harness.",
+    );
+  }
   const args = parseArgv(process.argv);
   const dbPath = args.dbPath ?? process.env.VERDICT_DB_PATH ?? resolve(REPO_ROOT, "data/verdict.db");
   const agentWallet = requiredAddress("AGENT_ADDRESS");

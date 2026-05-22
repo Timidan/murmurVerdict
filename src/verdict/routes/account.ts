@@ -960,6 +960,18 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
           409,
         );
       }
+      const attestation = controllerWalletAttestationStatus(controller, { now });
+      if (attestation.reattestation_overdue) {
+        throw new VerdictError(
+          "controller wallet re-attestation is overdue; sign a fresh re-attestation before minting runtime keys",
+          ERROR_CODES.agent_not_authorized,
+          409,
+          {
+            reattestation_due_at: attestation.reattestation_due_at,
+            reattestation_overdue: true,
+          },
+        );
+      }
       const parsed = RuntimeKeyMintSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         throw new VerdictError(
