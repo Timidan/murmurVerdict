@@ -1,6 +1,0 @@
-target/
-**/*.log
-.git
-.gitignore
-*.swp
-*.tmp

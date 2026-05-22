@@ -1,8 +1,0 @@
-# Pinned to match docker/fhe-sidecar/Dockerfile's `FROM rust:1.81-slim`.
-# Bump this and the Dockerfile base image together; do not let them
-# drift, or the Docker layer cache will compile against one toolchain
-# while local `cargo check` uses another.
-[toolchain]
-channel = "1.81"
-components = ["rustfmt", "clippy"]
-profile = "minimal"
