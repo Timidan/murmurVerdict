@@ -12,13 +12,19 @@
 # misconfiguration cannot block the daemon from booting.
 #
 # Restore (one-shot, on a fresh VPS):
-#   docker run --rm \
-#     -e LITESTREAM_ACCESS_KEY_ID=... -e LITESTREAM_SECRET_ACCESS_KEY=... \
-#     -v "$(pwd)/litestream.yml:/etc/litestream.yml:ro" \
-#     -v verdict_data:/app/data \
-#     litestream/litestream:0.3 restore -o /app/data/verdict.db \
-#       s3://<bucket>/verdict.db
+#   docker compose run --rm --no-deps litestream \
+#     restore -o /app/data/verdict.db /app/data/verdict.db
 #   docker compose up -d daemon
+#
+# The path-based form ("restore -o <local-path> <configured-db-path>")
+# tells Litestream to resolve the replica from THIS config file —
+# endpoint, region, credentials all come from here + .env. The raw
+# REPLICA_URL form (s3://<bucket>/<key>) drops the configured endpoint
+# and breaks non-AWS providers (B2 / R2 / MinIO).
+#
+# `docker compose run --rm --no-deps litestream ...` reuses the
+# service's env (LITESTREAM_* from .env) and the project-scoped named
+# volume so the restore lands exactly where the daemon expects.
 #
 # Provider notes:
 #   - Backblaze B2: endpoint `https://s3.<region>.backblazeb2.com`. Cheap,

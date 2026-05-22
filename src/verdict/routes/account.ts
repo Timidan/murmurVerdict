@@ -348,9 +348,9 @@ const FunnelEventSchema = z.object({
 // can't drain key-mint capacity for everyone behind the same IP (corporate
 // NAT, mobile carriers).
 //
-// State is in-process MemoryStore. Single Render instance today; if Phase 4
-// scales out we need a Redis-backed store (express-rate-limit provides one
-// via @express-rate-limit/redis). Until then, scaling horizontally would
+// State is in-process MemoryStore. Single-VPS deploy today; if we scale
+// out we need a Redis-backed store (express-rate-limit provides one via
+// @express-rate-limit/redis). Until then, scaling horizontally would
 // reset counters per-instance — flag this concern in the operator runbook
 // before promoting the daemon to multi-replica.
 const ONE_MINUTE_MS = 60 * 1000;

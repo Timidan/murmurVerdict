@@ -7,8 +7,9 @@
 #   - `litestream`: continuous WAL replication of /app/data/verdict.db to
 #     S3-compatible object storage. Required for any off-host backup.
 #     Operators who skip the LITESTREAM_* env vars get a daemon that runs
-#     but is data-loss-exposed; we log a warning at boot to make that
-#     state obvious.
+#     normally (the sidecar fails to start, the daemon does not). Watch
+#     for `docker compose ps` showing the litestream container in a
+#     restarting state — that's the visible cue that backup isn't wired.
 #
 # The Dashboard SPA is intentionally NOT in this compose file. Build it
 # (`npm run dashboard:build`) and host the dist on a static CDN
@@ -101,10 +102,17 @@ services:
   # in `docker compose ps` instead).
   #
   # Restore (one-shot): stop daemon, then on a fresh box run
-  #   litestream restore -o /app/data/verdict.db s3://<bucket>/verdict.db
-  # and start the daemon. See DEPLOYMENT.md for the full recipe.
+  #   docker compose run --rm --no-deps litestream \
+  #     restore -o /app/data/verdict.db /app/data/verdict.db
+  # and start the daemon. The path-based restore reads the configured
+  # endpoint/region from the bind-mounted litestream.yml; the raw
+  # `s3://<bucket>/...` REPLICA_URL form would drop the endpoint and
+  # break non-AWS providers. See DEPLOYMENT.md for the full recipe.
   litestream:
-    image: litestream/litestream:0.3
+    # Pinned to a specific 0.3 patch — `0.3` is a moving tag that Docker
+    # Hub maps to the latest 0.3.x release. Bump explicitly when you've
+    # verified a new patch.
+    image: litestream/litestream:0.3.14
     restart: unless-stopped
     command: ["replicate"]
     environment:

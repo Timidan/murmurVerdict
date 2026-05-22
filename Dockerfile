@@ -14,7 +14,9 @@ RUN npm ci --legacy-peer-deps && npm cache clean --force
 
 COPY --chown=node:node . .
 
-# Persistent SQLite mount target — render.yaml mounts a 1 GB disk here.
+# Persistent SQLite mount target — docker-compose.yml mounts the
+# `verdict_data` named volume here. Litestream replicates the WAL from
+# this directory off-host.
 RUN mkdir -p /app/data && chown -R node:node /app/data
 
 USER node
