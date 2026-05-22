@@ -118,6 +118,14 @@ contract MurmurEscrowTest is Test {
         escrow.createPipeline(PIPELINE_ID, address(0), 1 * 1e6, 120, 4);
     }
 
+    function test_createPipeline_rejectsEscrowSelfAgent() public {
+        // Re-audit Low: E1 invariant requires agentOwner != escrow. Otherwise
+        // finalize() would route the agent payout back into this contract.
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
+        escrow.createPipeline(PIPELINE_ID, address(escrow), 1 * 1e6, 120, 4);
+    }
+
     function test_createPipeline_rejectsShortSla() public {
         vm.prank(owner);
         vm.expectRevert(MurmurEscrow.SlaMustBePositive.selector);
@@ -415,6 +423,34 @@ contract MurmurEscrowTest is Test {
         assertEq(usdc.balanceOf(agent), 95 * 1e6);
     }
 
+    /// Re-audit gap: explicit zero-fee snapshot path. Confirms the boundary
+    /// where the snapshot is 0 → agent gets paidAmount in full, fee transfer
+    /// is skipped entirely, no dust stuck.
+    function test_finalize_zeroFeeSnapshot_fullPayoutToAgent() public {
+        vm.prank(owner);
+        escrow.setProtocolFeeBps(0);
+        _createPipeline(100 * 1e6, 600, 4);
+        vm.prank(buyer);
+        bytes32 requestId = escrow.requestInference(PIPELINE_ID, bytes32(uint256(31)));
+
+        // Owner re-enables a fee after the request is in flight; snapshot
+        // must still treat this request as 0-fee.
+        vm.prank(owner);
+        escrow.setProtocolFeeBps(500);
+
+        bytes memory sig = bytes("z");
+        bytes32 nonce = bytes32(uint256(77));
+        bytes32 commitHash = keccak256(abi.encodePacked(sig, nonce));
+        vm.prank(agent);
+        escrow.commitSignal(requestId, commitHash, bytes32(0));
+        vm.warp(block.timestamp + 4 hours + 1);
+        escrow.finalize(requestId, sig, nonce);
+
+        assertEq(usdc.balanceOf(feeSink), 0);
+        assertEq(usdc.balanceOf(agent), 100 * 1e6);
+        assertEq(usdc.balanceOf(address(escrow)), 0);
+    }
+
     // ─── Audit M-1 — forceRefundCommitted recovery path ───────────────────
 
     function _setupCommittedRequest() internal returns (bytes32 requestId, uint64 committedAt) {
@@ -449,6 +485,24 @@ contract MurmurEscrowTest is Test {
         escrow.forceRefundCommitted(requestId);
     }
 
+    /// Re-audit gap: tight boundary check. At graceOpenAt-1 it MUST revert;
+    /// at graceOpenAt it MUST succeed. Pins the off-by-one to the second.
+    function test_forceRefundCommitted_atGraceBoundary() public {
+        (bytes32 requestId, uint64 committedAt) = _setupCommittedRequest();
+        uint256 graceOpenAt = uint256(committedAt) + 4 hours + 168 hours;
+
+        vm.warp(graceOpenAt - 1);
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.BeforeFinalizeWindow.selector);
+        escrow.forceRefundCommitted(requestId);
+
+        vm.warp(graceOpenAt);
+        vm.prank(owner);
+        escrow.forceRefundCommitted(requestId);
+        MurmurEscrow.InferenceRequest memory r = escrow.getRequest(requestId);
+        assertEq(uint8(r.state), uint8(MurmurEscrow.RequestState.Refunded));
+    }
+
     function test_forceRefundCommitted_rejectsNonOwner() public {
         (bytes32 requestId, uint64 committedAt) = _setupCommittedRequest();
         vm.warp(uint256(committedAt) + 4 hours + 168 hours + 1);
@@ -474,6 +528,14 @@ contract MurmurEscrowTest is Test {
         vm.prank(owner);
         vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
         escrow.transferOwnership(address(0));
+    }
+
+    function test_transferOwnership_rejectsSelf() public {
+        // Re-audit Low: contract has no self-call admin path, so transferring
+        // ownership to itself would brick every onlyOwner function.
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
+        escrow.transferOwnership(address(escrow));
     }
 
     function test_setProtocolFeeSink_rejectsZero() public {

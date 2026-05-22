@@ -186,6 +186,10 @@ contract MurmurEscrow {
         uint32 horizonHours
     ) external onlyOwner whenNotPaused {
         if (agentOwner == address(0)) revert ZeroAddress();
+        // Re-audit Low: E1 invariant requires agentOwner != escrow. Otherwise
+        // a finalize() would route the agent payout back into this contract,
+        // leaving escrow balance > sum(active paidAmount).
+        if (agentOwner == address(this)) revert ZeroAddress();
         if (priceUsdc == 0) revert PriceMustBePositive();
         if (slaSeconds == 0) revert SlaMustBePositive();
         if (horizonHours == 0) revert HorizonMustBePositive();
@@ -371,9 +375,13 @@ contract MurmurEscrow {
 
     // ─── Admin ─────────────────────────────────────────────────────────────
 
-    /// @dev Audit L-5: zero-address checked.
+    /// @dev Audit L-5: zero-address checked. Re-audit Low: also reject
+    ///      `address(this)` because the contract has no self-call admin
+    ///      surface, so transferring to itself would brick every onlyOwner
+    ///      path permanently.
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
+        if (newOwner == address(this)) revert ZeroAddress();
         emit OwnerTransferred(owner, newOwner);
         owner = newOwner;
     }
