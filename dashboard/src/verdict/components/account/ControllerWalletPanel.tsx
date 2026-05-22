@@ -207,7 +207,11 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
           <KV k="address" v={shortAddr(cw.wallet_address)} title={cw.wallet_address} />
           <KV k="kind" v={cw.wallet_kind} />
           <KV k="provider" v={cw.provider ?? "—"} />
-          <KV k="chain" v={cw.chain_id} />
+          <KV
+            k="chain"
+            v={cw.chain_id}
+            tone={daemonChainId && cw.chain_id !== daemonChainId ? "neg" : undefined}
+          />
           <KV k="bound" v={cw.created_at.slice(0, 19).replace("T", " ")} />
           <KV
             k="last attested"
@@ -218,6 +222,22 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
             v={cw.reattestation_due_at.slice(0, 19).replace("T", " ")}
             tone={state === "overdue" ? "neg" : "dim"}
           />
+          {daemonChainId && cw.chain_id !== daemonChainId && (
+            <>
+              <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent)" }}>
+                × wrong chain. this controller is bound to {cw.chain_id} but the
+                daemon is on {daemonChainId}. runtime-key submissions will be
+                rejected by the gateway. re-bind on the daemon chain to recover.
+              </p>
+              <button
+                className="ck-btn self-start"
+                onClick={bind}
+                disabled={busy !== "idle" || !ready}
+              >
+                {busy === "idle" ? "[ rebind on " + daemonChainId + " ]" : busyLabel(busy)}
+              </button>
+            </>
+          )}
           {state === "overdue" && (
             <>
               <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent)" }}>

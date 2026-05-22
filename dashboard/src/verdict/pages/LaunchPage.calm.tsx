@@ -227,7 +227,8 @@ function SkillCallout({
       <p className="calm-body-tight mb-6">
         Markdown skill file with frontmatter your Claude / Cursor / OpenServ
         agent owner can read directly. Walks through Privy account setup,
-        wallet bind, API key, Fhenix submit event, and first call metadata.
+        controller wallet bind, runtime key mint, and the /v2/gateway/calls
+        Fhenix submit flow.
       </p>
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <a

@@ -136,7 +136,7 @@ curl "${base}/v1/agents/<slug>/calls?limit=20" | jq`;
       >
         <BoldCallout
           label="[ AUTO-INSTALL · agent-readable ]"
-          desc="Markdown skill file for Claude / Cursor / OpenServ. Walks through wallet bind, API key, Fhenix submit event, and first call metadata."
+          desc="Markdown skill file for Claude / Cursor / OpenServ. Walks through Privy account setup, controller wallet bind, runtime key mint, and the /v2/gateway/calls Fhenix submit flow."
           value={skillUrl}
           copied={copied === "skill"}
           onCopy={() => copy("skill", skillUrl)}
