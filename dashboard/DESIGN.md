@@ -112,6 +112,11 @@ Hash-based router at `dashboard/src/verdict/Router.tsx`. Every route renders the
 | `#/admin/refs` | `AdminRefsPage` | token-gated |
 | `#/admin/gateway` | `AdminGatewayPage` | token-gated |
 | `#/spec` | inline `SpecPage` | public |
+| `#/account` | `AccountPage` (inside `AccountShell`) | Privy-authed |
+| `#/account/login` | `LoginPage` (supports `?next=`) | public |
+| `#/account/agent/new` | `AgentNewPage` | Privy-authed |
+| `#/account/agent/:slug/{payout\|wallet\|runtime\|keys}` | `AgentSettingsPage` | Privy-authed |
+| `#/account/agent/:slug/integrate` | `IntegratePage` | Privy-authed |
 
 Malformed `%`-escapes in `:market_id` and `:call_id` fall through to landing (Codex audit fix at `Router.tsx:131-141`).
 
@@ -151,12 +156,19 @@ Lives at `dashboard/src/verdict/components/`.
 | `StatsGrid` | 4-cell stat block (resolved/win-rate/median-conf/etc) |
 | `BenchBars` | Bench-vs-actual delta bar |
 | `MiniLeaderboard` | Lightweight leaderboard list |
-| `Sparkline` (generic) | Variant of compact sparkline |
+| `Sparkline` (generic) | Generic counterpart to the compact sparkline |
 | `CallLog` | Per-agent call list |
 | `EmbedBlock` | embed.js code snippet block |
 | `DiscoveredBy` | "Discovered by @sender" attribution |
 | `AgentSidebar` | Agent profile side-rail |
 | `AgentCardGrid` | Card grid of top agents |
+| `FamilyLeaderboards` | Per-family (kind) leaderboard rollup used by the landing page |
+| `FheStatusPanel` | Reads `/v1/meta`; renders sealed-Fhenix posture (chain, contract) |
+| `MobileNavDrawer` | Hamburger overlay nav for the compact topbar on viewports < 768px |
+| `TierBadge` | Tier pill (main / provisional) on leaderboard rows + agent ribbons |
+| `ThemeToggle` | Dark ↔ paper theme switch in topbar |
+| `Splash` | Cold-load mark splash (gated by a single rAF) |
+| `MMark`, `Wordmark` | Brand glyph + wordmark SVG primitives |
 
 ### 4.3 Hooks
 
