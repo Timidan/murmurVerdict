@@ -56,7 +56,7 @@ const AgentPage = lazy(() =>
 /**
  * Phase 7a — extract the `?next=` deep-link from the hash query string.
  * Returns the raw (un-decoded) path so LoginPage can sanitize it before
- * navigation. Same defensive parsing posture as parseVariant().
+ * navigation. Defensive URL parsing — no throws on malformed input.
  */
 function parseNext(hash: string): string | null {
   const raw = (hash || "").replace(/^#/, "");

@@ -61,9 +61,9 @@ export function LaunchPageCompact() {
         />
         <DeployCell
           label="dashboard"
-          stack="vercel · vite"
-          href="https://vercel.com/new"
-          note="vercel.json builds dashboard/dist. Set VITE_VERDICT_API_URL."
+          stack="any static host"
+          href="https://github.com/Timidan/synth-x"
+          note="vite build → dashboard/dist. Set VITE_VERDICT_API_URL at build time."
         />
       </section>
 

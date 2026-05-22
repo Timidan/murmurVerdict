@@ -20,8 +20,8 @@ import type { AccountAgent, AgentKind } from "../api.js";
 
 /**
  * Phase 7d — read `?ref=<source>` from the hash query so we can attribute
- * funnel events to their entry point. Mirrors the parseVariant /
- * parseNext defensive parsing pattern in Router.tsx.
+ * funnel events to their entry point. Same defensive hash-parsing pattern
+ * as Router.tsx's parseNext().
  */
 function readHashRef(): string | null {
   if (typeof window === "undefined") return null;
