@@ -33,24 +33,20 @@ const IntegratePage = lazy(() =>
 // auth state survives navigation between login → list → new-agent.
 const AccountShell = lazy(() => import("./auth/AccountShell.js").then((m) => ({ default: m.AccountShell })));
 
-/* Compact is the canonical (and only) variant. Bold + calm were A/B
-   experiment routes that have been removed; the dashboard ships compact
-   exclusively. See dashboard/DESIGN.md §19. */
-
 const LandingPage = lazy(() =>
-  import("./pages/LandingPage.compact.js").then((m) => ({ default: m.LandingPageCompact })),
+  import("./pages/LandingPage.js").then((m) => ({ default: m.LandingPage })),
 );
 const LeaderboardPage = lazy(() =>
-  import("./pages/LeaderboardPage.compact.js").then((m) => ({ default: m.LeaderboardPageCompact })),
+  import("./pages/LeaderboardPage.js").then((m) => ({ default: m.LeaderboardPage })),
 );
 const LaunchPage = lazy(() =>
-  import("./pages/LaunchPage.compact.js").then((m) => ({ default: m.LaunchPageCompact })),
+  import("./pages/LaunchPage.js").then((m) => ({ default: m.LaunchPage })),
 );
 const MarketDetailPage = lazy(() =>
-  import("./pages/MarketDetailPage.compact.js").then((m) => ({ default: m.MarketDetailPageCompact })),
+  import("./pages/MarketDetailPage.js").then((m) => ({ default: m.MarketDetailPage })),
 );
 const AgentPage = lazy(() =>
-  import("./pages/AgentPage.compact.js").then((m) => ({ default: m.AgentPageCompact })),
+  import("./pages/AgentPage.js").then((m) => ({ default: m.AgentPage })),
 );
 
 /**

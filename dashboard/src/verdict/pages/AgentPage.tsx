@@ -18,7 +18,7 @@ import { FormulaTip } from "../components/compact/FormulaTip.js";
  *   3-col main → call log · market heat · sticky sidecar (stats + actions)
  * No hero number, no oversized Doto. The large readout is mono.
  */
-export function AgentPageCompact({ slug }: { slug: string }) {
+export function AgentPage({ slug }: { slug: string }) {
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [calls, setCalls] = useState<AgentCallRow[] | null>(null);
   const [grid, setGrid] = useState<AgentMarketRow[] | null>(null);

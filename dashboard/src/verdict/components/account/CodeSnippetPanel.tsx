@@ -4,7 +4,7 @@
 //   1. `IntegratePage` — Step f of the new-agent flow. Shows the canonical
 //      Runtime Key Gateway path. Runtime Key plaintext is only shown by the
 //      runtime-key mint flow; snippets use env-var placeholders here.
-//   2. `LaunchPage.compact` — public install track. The user is NOT
+//   2. `LaunchPage` — public install track. The user is NOT
 //      authenticated, so the panel always renders the env-var fallback
 //      for MURMUR_RUNTIME_KEY.
 //   3. `AgentProfilePage` (Phase 12+) — public profile shows env-var-only

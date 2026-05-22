@@ -17,7 +17,7 @@ import { useStream } from "../hooks/useStream.js";
  * and a metrics ribbon. All numbers mono, no card chrome, sub-row shows
  * verdict_lb under the headline verdict score.
  */
-export function MarketDetailPageCompact({ marketId }: { marketId: string }) {
+export function MarketDetailPage({ marketId }: { marketId: string }) {
   const [market, setMarket] = useState<MarketRow | null>(null);
   const [agents, setAgents] = useState<AgentMarketRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);

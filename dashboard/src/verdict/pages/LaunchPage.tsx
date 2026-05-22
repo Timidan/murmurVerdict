@@ -11,7 +11,7 @@ type TrackKey = "A" | "B" | "C";
  * Sticky track-tabs on the left, dense code panel on the right. No
  * marketing copy, every word ALL CAPS Space Mono.
  */
-export function LaunchPageCompact() {
+export function LaunchPage() {
   const base = verdictApi.apiUrl.replace(/\/$/, "");
   const [track, setTrack] = useState<TrackKey>("A");
   const [snippet, setSnippet] = useState<string>("curl");

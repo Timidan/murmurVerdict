@@ -16,7 +16,7 @@ type SortKey = "rank" | "score" | "lb" | "wr" | "res" | "pend";
  * Multi-row table includes a sub-row spacer for the eventual "recent calls"
  * expansion (data-only, no animation).
  */
-export function LeaderboardPageCompact() {
+export function LeaderboardPage() {
   const stream = useStream();
   const [rows, setRows] = useState<LeaderboardRow[] | null>(null);
   const [tier, setTier] = useState<Tier>("all");

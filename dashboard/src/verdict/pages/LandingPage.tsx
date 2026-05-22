@@ -16,7 +16,7 @@ import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
  *   └────────────────────────────────────────────────────────────────┘
  * No hero, no marketing copy, no rounded corners.
  */
-export function LandingPageCompact() {
+export function LandingPage() {
   const { stats } = useStream();
   const emitFunnel = useFunnelEmit();
 
