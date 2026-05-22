@@ -1248,7 +1248,13 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
       let inserted: FeedPacketRow | null = null;
       try {
-        inserted = deps.db.transaction(() => {
+        // IMMEDIATE-locked: two admin backfill requests for the same
+        // feed could otherwise both read the same nextSequence and only
+        // collide at the UNIQUE(feed_id, sequence) constraint after both
+        // had done the work to construct the insert. With an IMMEDIATE
+        // lock the second writer waits for the first commit and reads
+        // the now-updated nextSequence.
+        const txn = deps.db.transaction(() => {
           const sequence =
             body.sequence ?? feedPacketsRepo.nextSequence(deps.db, feedId);
           const latest = feedPacketsRepo.latestForFeed(deps.db, feedId);
@@ -1289,7 +1295,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
             throw new Error(`feed packet insert did not persist feed_id=${feedId}`);
           }
           return row;
-        })();
+        });
+        inserted = txn.immediate();
       } catch (err) {
         if (isUniqueViolation(err)) {
           const duplicate = feedPacketsRepo.byFhenixEvent(deps.db, {

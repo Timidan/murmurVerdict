@@ -4912,6 +4912,30 @@ export const fhenixGatewayFeedPacketTxRepo = {
     return row?.next_sequence ?? 1;
   },
 
+  /**
+   * Returns true iff a non-terminal gateway attempt already holds
+   * (feed_id, sequence). Used to reject explicit-body.sequence submits
+   * that would collide before the accepted-packet UNIQUE constraint
+   * catches them, saving the relayer a wasted broadcast. The lookup
+   * is by an index on (feed_id, sequence) per Migration 045.
+   */
+  hasNonTerminalSequence(
+    db: Database.Database,
+    feed_id: string,
+    sequence: number,
+  ): boolean {
+    const row = prep(
+      db,
+      `SELECT 1 AS hit
+       FROM fhenix_gateway_feed_packet_tx_attempts
+       WHERE feed_id = ?
+         AND sequence = ?
+         AND status != 'failed_terminal'
+       LIMIT 1`,
+    ).get(feed_id, sequence) as { hit: number } | undefined;
+    return row !== undefined;
+  },
+
   /** See fhenixGatewayTxRepo.markSubmitted for the claim-token rationale. */
   markSubmitted(
     db: Database.Database,

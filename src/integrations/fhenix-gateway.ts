@@ -735,6 +735,23 @@ export class FhenixGatewayBroadcaster {
           feedPacketsRepo.nextSequence(this.db, feed.feed_id),
           fhenixGatewayFeedPacketTxRepo.nextSequence(this.db, feed.feed_id),
         );
+        // Explicit body.sequence bypasses the nextSequence allocator,
+        // and the gateway-attempt table doesn't carry a UNIQUE on
+        // (feed_id, sequence) — only the accepted_packet table does,
+        // and that fires much later (post-broadcast, post-confirmation).
+        // Catch the collision here, inside the IMMEDIATE-locked txn,
+        // so the relayer never wastes gas on a duplicate sequence.
+        if (
+          body.sequence !== undefined &&
+          fhenixGatewayFeedPacketTxRepo.hasNonTerminalSequence(this.db, feed.feed_id, sequence)
+        ) {
+          throw new VerdictError(
+            `feed packet sequence ${sequence} for feed ${feed.feed_id} is already held by a non-terminal gateway attempt`,
+            ERROR_CODES.duplicate,
+            409,
+            { feed_id: feed.feed_id, sequence },
+          );
+        }
         const latest = feedPacketsRepo.latestForFeed(this.db, feed.feed_id);
         const deadline = body.delivery_deadline_at ??
           inferFeedDeliveryDeadline(feed, latest, sequence);
