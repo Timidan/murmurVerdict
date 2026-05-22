@@ -113,6 +113,13 @@ services:
     # Hub maps to the latest 0.3.x release. Bump explicitly when you've
     # verified a new patch.
     image: litestream/litestream:0.3.14
+    # Run as the same UID/GID the daemon container uses (the `node` user
+    # in node:22-slim is uid=1000, gid=1000). Without this, files
+    # Litestream writes during a `restore` would be root-owned, and the
+    # subsequent daemon boot (running as `node`) couldn't write the
+    # SQLite WAL. SQLite would fail on first commit. Override via
+    # LITESTREAM_USER if your daemon image uses a different uid.
+    user: "${LITESTREAM_USER:-1000:1000}"
     restart: unless-stopped
     command: ["replicate"]
     environment:

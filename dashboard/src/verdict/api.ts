@@ -2,11 +2,14 @@
 // Read endpoints are public. Dashboard writes use Privy bearer auth or
 // account-scoped API keys depending on the route.
 
-// Codex audit follow-up (post-9ae92a4): default to RELATIVE URLs when
-// VITE_VERDICT_API_URL is unset. The Vite dev proxy + Vercel prod
-// rewrites carry /v1/*, /share, /embed.js to the daemon. Setting
-// VITE_VERDICT_API_URL to an absolute URL is still the escape hatch
-// for split-deploy setups (different origin for dashboard vs daemon).
+// When VITE_VERDICT_API_URL is unset the client defaults to RELATIVE
+// URLs. In `npm run dashboard` (vite dev proxy) those resolve to the
+// daemon via the vite.config.ts proxy block. In production hosts that
+// serve dashboard/dist statically — Cloudflare Pages, Vercel, your
+// own Nginx — relative URLs hit the static-host's own origin and the
+// SPA silently fails every API call. ALWAYS set this explicitly for
+// any non-local build. Pointing at the deployed daemon's URL is the
+// split-deploy contract.
 const API_URL = (import.meta.env.VITE_VERDICT_API_URL?.trim() || "") as string;
 
 // Current agent taxonomy after removing scraping and public identity
