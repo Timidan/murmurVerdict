@@ -6,11 +6,27 @@
 //   3) /v1/account/session + /v1/account/agents — exchanged on first authed
 //      render so the dashboard has an `account_id` and an agent list.
 //
-// Downstream Phase 7b/c/d pages consume this single hook rather than wiring
-// `usePrivy` + the API client themselves. Keeps the auth surface area in
-// exactly one place — easier to swap out (or stub for dev) later.
+// Architecture (2026-05-22 lift): the state engine lives in a single React
+// Context provided by <AccountProvider> (mounted in AccountShell). Every
+// consumer calling `useAccount()` reads from that one provider, so a
+// `refreshAgents()` call in one panel updates every panel — no callback
+// prop drilling required.
+//
+// Before the lift, each `useAccount()` call instantiated its OWN useState
+// engine. ControllerWalletPanel's refresh wouldn't propagate to its
+// sibling RuntimeKeysPanel (codex MAJOR on Wave B). The interim fix was
+// to pass `onAgentChanged` callbacks; the provider supersedes that.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { usePrivy, getAccessToken } from "@privy-io/react-auth";
 import { verdictApi, type AccountAgent, type AccountSession } from "../api.js";
 import { isPrivyConfigured } from "../auth/PrivyProvider.js";
@@ -43,14 +59,14 @@ export interface UseAccountResult {
   refreshAgents: () => Promise<void>;
 }
 
+const AccountContext = createContext<UseAccountResult | null>(null);
+
 /**
- * Single source of truth for "who am I?" in the dashboard.
- *
- * Mounted-once-per-route pattern: every account-area page calls
- * `useAccount()` and gets the same memoized state machine. Privy's own
- * hooks cache the user object internally, so this is cheap to call.
+ * Internal state engine — used only inside <AccountProvider>. Do not export.
+ * The shape of the returned object is the public surface for consumers via
+ * `useAccount()`.
  */
-export function useAccount(): UseAccountResult {
+function useAccountState(): UseAccountResult {
   const configured = isPrivyConfigured();
 
   // Privy hook is safe to call even when the provider isn't mounted —
@@ -119,14 +135,12 @@ export function useAccount(): UseAccountResult {
         setSession(s);
         // Phase 7d — fire privy.signed_in once per authenticated edge.
         //
-        // Codex P2 fix — bootstrappedRef is per-hook-instance, so the
-        // login → account → new-agent → integrate flow remounted
-        // useAccount five times and emitted privy.signed_in once per
-        // mount, inflating the funnel. Gate the emit on a localStorage
-        // ratchet keyed by privy_user_id + the session.created flag, so
-        // each unique signed-in edge fires exactly one emit per browser.
-        // bootstrappedRef still prevents the in-mount StrictMode
-        // double-run.
+        // Now that AccountProvider mounts a single useAccountState per
+        // AccountShell, the per-mount inflation Codex P2 originally
+        // fixed is no longer possible: there is exactly one instance
+        // for the whole /account/* tree. We keep the localStorage
+        // latch as a defense-in-depth measure in case AccountShell is
+        // remounted by a future route change.
         const signedInLatchKey = `murmur_funnel_signed_in:${s.privy_user_id}:${s.created ? "new" : "ret"}`;
         let alreadyEmitted = false;
         try {
@@ -207,4 +221,29 @@ export function useAccount(): UseAccountResult {
     signOut,
     refreshAgents: fetchAgents,
   };
+}
+
+/**
+ * Mounts the single account-state engine for the /account/* subtree.
+ * AccountShell renders this; consumers read via `useAccount()`.
+ */
+export function AccountProvider({ children }: { children: ReactNode }) {
+  const value = useAccountState();
+  return <AccountContext.Provider value={value}>{children}</AccountContext.Provider>;
+}
+
+/**
+ * Single source of truth for "who am I?" in the dashboard. Returns the
+ * shared account state provided by <AccountProvider>. Throws if called
+ * outside the provider — that's a programming error, not a runtime
+ * surface to handle gracefully.
+ */
+export function useAccount(): UseAccountResult {
+  const ctx = useContext(AccountContext);
+  if (!ctx) {
+    throw new Error(
+      "useAccount() must be called inside <AccountProvider>. AccountShell mounts the provider for every /account/* route.",
+    );
+  }
+  return ctx;
 }
