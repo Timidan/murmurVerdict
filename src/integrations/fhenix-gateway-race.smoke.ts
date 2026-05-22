@@ -219,7 +219,82 @@ async function main(): Promise<void> {
       assert.equal(after?.last_error, "test sweep");
     });
 
-    // ── 4. sweepStuckClaims leaves fresh claims alone ───────────────
+    // ── 4. markSubmitted refuses to write after claim was swept ─────
+    // Closes the scenario codex flagged: a slow writeContract outlives
+    // stuckAfterMs, the sweep reclaims, another writer takes the row,
+    // then the original writer's markSubmitted returns LATE. Without
+    // the claim-token guard the late mark would clobber the new
+    // winner's submission state.
+    await check("markSubmitted is a no-op after claim is swept + reclaimed", () => {
+      const attempt = makeAttempt("swept-then-reclaimed");
+      fhenixGatewayTxRepo.insert(dbA, attempt);
+      const startedAt = isoMinus(600 * 2); // stale enough to be swept
+      const tokenA = randomUUID();
+      // Process A claims (with a deliberately stale broadcast_started_at).
+      dbA
+        .prepare(
+          `UPDATE fhenix_gateway_tx_attempts
+           SET broadcast_claim_token = ?,
+               broadcast_started_at = ?,
+               updated_at = ?
+           WHERE attempt_id = ?`,
+        )
+        .run(tokenA, startedAt, nowIso(), attempt.attempt_id);
+
+      // Tick sweeps A's stuck claim.
+      fhenixGatewayTxRepo.sweepStuckClaims(dbB, {
+        stuckBeforeIso: isoMinus(600),
+        updated_at: nowIso(),
+        errorMessage: "sweep",
+      });
+
+      // Process B reclaims successfully.
+      const tokenB = randomUUID();
+      const ok = fhenixGatewayTxRepo.claimForBroadcast(dbB, {
+        attempt_id: attempt.attempt_id,
+        broadcast_started_at: nowIso(),
+        updated_at: nowIso(),
+        token: tokenB,
+      });
+      assert.equal(ok, true, "B should reclaim after sweep");
+
+      // Process A's slow writeContract finally returns and tries to
+      // markSubmitted. The claim_token guard rejects it: rows = 0, no
+      // state change. Process B's claim survives intact.
+      const stoleByA = fhenixGatewayTxRepo.markSubmitted(dbA, {
+        attempt_id: attempt.attempt_id,
+        tx_hash: "0x" + "cc".repeat(32),
+        next_attempt_at: nowIso(),
+        updated_at: nowIso(),
+        broadcast_started_at: startedAt,
+        broadcast_latency_ms: 999,
+        claim_token: tokenA,
+      });
+      assert.equal(stoleByA, false, "A's late mark must not write");
+      const after = fhenixGatewayTxRepo.byId(dbB, attempt.attempt_id);
+      // sweep transitioned to failed_retryable; claim doesn't reset status
+      assert.equal(after?.status, "failed_retryable");
+      assert.equal(after?.broadcast_claim_token, tokenB);
+      assert.equal(after?.tx_hash, null);
+
+      // Process B then submits successfully with its own token.
+      const okB = fhenixGatewayTxRepo.markSubmitted(dbB, {
+        attempt_id: attempt.attempt_id,
+        tx_hash: "0x" + "dd".repeat(32),
+        next_attempt_at: nowIso(),
+        updated_at: nowIso(),
+        broadcast_started_at: nowIso(),
+        broadcast_latency_ms: 12,
+        claim_token: tokenB,
+      });
+      assert.equal(okB, true, "B's mark with its own token should land");
+      const final = fhenixGatewayTxRepo.byId(dbA, attempt.attempt_id);
+      assert.equal(final?.status, "submitted");
+      assert.equal(final?.broadcast_claim_token, null);
+      assert.equal(final?.tx_hash, "0x" + "dd".repeat(32));
+    });
+
+    // ── 5. sweepStuckClaims leaves fresh claims alone ───────────────
     await check("sweepStuckClaims ignores claims newer than stuck threshold", () => {
       const attempt = makeAttempt("fresh");
       fhenixGatewayTxRepo.insert(dbA, attempt);

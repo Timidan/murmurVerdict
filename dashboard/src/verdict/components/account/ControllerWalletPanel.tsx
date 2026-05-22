@@ -27,11 +27,12 @@ interface ControllerWalletPanelProps {
   slug: string;
   agent: AccountAgent | null;
   /**
-   * Optional callback fired after a successful bind or re-attest so the
-   * PARENT page can refresh its own useAccount() state. Each useAccount()
-   * call instantiates independent state — without this, sibling panels
-   * (e.g. RuntimeKeysPanel reading the same `agent` prop) keep seeing
-   * the stale overdue flag until full route remount.
+   * Optional callback fired after a successful bind or re-attest. Since
+   * 3f41ee1 lifted useAccount into a shared React Context (mounted by
+   * AccountShell), this prop is no longer load-bearing — a refresh in
+   * any panel inside the provider already propagates to its siblings.
+   * The prop is kept for backward compatibility and to support callers
+   * that mount this panel outside an AccountProvider.
    */
   onAgentChanged?: () => Promise<void> | void;
 }

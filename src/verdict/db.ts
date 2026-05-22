@@ -4359,6 +4359,13 @@ export const fhenixGatewayTxRepo = {
     );
   },
 
+  /**
+   * Record a successful broadcast. If `claim_token` is non-null the UPDATE
+   * is conditional on the row still carrying that token — protects against
+   * the case where a slow writeContract returns AFTER sweepStuckClaims has
+   * reclaimed the row and another writer has already submitted it. Returns
+   * true iff the row actually transitioned to 'submitted'.
+   */
   markSubmitted(
     db: Database.Database,
     input: {
@@ -4368,9 +4375,11 @@ export const fhenixGatewayTxRepo = {
       updated_at: string;
       broadcast_started_at: string;
       broadcast_latency_ms: number;
+      claim_token?: string | null;
     },
-  ): void {
-    prep(
+  ): boolean {
+    const claimToken = input.claim_token ?? null;
+    const info = prep(
       db,
       `UPDATE fhenix_gateway_tx_attempts
        SET status = 'submitted',
@@ -4383,10 +4392,16 @@ export const fhenixGatewayTxRepo = {
            last_rpc_error = NULL,
            broadcast_claim_token = NULL,
            updated_at = @updated_at
-       WHERE attempt_id = @attempt_id`,
-    ).run(input);
+       WHERE attempt_id = @attempt_id
+         AND (@claim_token IS NULL OR broadcast_claim_token = @claim_token)`,
+    ).run({ ...input, claim_token: claimToken });
+    return info.changes === 1;
   },
 
+  /**
+   * Record a retryable broadcast failure. Same token-ownership protection
+   * as markSubmitted. Returns true iff the row transitioned.
+   */
   markRetryableFailure(
     db: Database.Database,
     input: {
@@ -4396,9 +4411,11 @@ export const fhenixGatewayTxRepo = {
       updated_at: string;
       broadcast_started_at: string | null;
       broadcast_latency_ms: number | null;
+      claim_token?: string | null;
     },
-  ): void {
-    prep(
+  ): boolean {
+    const claimToken = input.claim_token ?? null;
+    const info = prep(
       db,
       `UPDATE fhenix_gateway_tx_attempts
        SET status = 'failed_retryable',
@@ -4410,8 +4427,10 @@ export const fhenixGatewayTxRepo = {
            last_rpc_error = @last_error,
            broadcast_claim_token = NULL,
            updated_at = @updated_at
-       WHERE attempt_id = @attempt_id`,
-    ).run(input);
+       WHERE attempt_id = @attempt_id
+         AND (@claim_token IS NULL OR broadcast_claim_token = @claim_token)`,
+    ).run({ ...input, claim_token: claimToken });
+    return info.changes === 1;
   },
 
   /**
@@ -4893,6 +4912,7 @@ export const fhenixGatewayFeedPacketTxRepo = {
     return row?.next_sequence ?? 1;
   },
 
+  /** See fhenixGatewayTxRepo.markSubmitted for the claim-token rationale. */
   markSubmitted(
     db: Database.Database,
     input: {
@@ -4902,9 +4922,11 @@ export const fhenixGatewayFeedPacketTxRepo = {
       updated_at: string;
       broadcast_started_at: string;
       broadcast_latency_ms: number;
+      claim_token?: string | null;
     },
-  ): void {
-    prep(
+  ): boolean {
+    const claimToken = input.claim_token ?? null;
+    const info = prep(
       db,
       `UPDATE fhenix_gateway_feed_packet_tx_attempts
        SET status = 'submitted',
@@ -4917,10 +4939,13 @@ export const fhenixGatewayFeedPacketTxRepo = {
            last_rpc_error = NULL,
            broadcast_claim_token = NULL,
            updated_at = @updated_at
-       WHERE attempt_id = @attempt_id`,
-    ).run(input);
+       WHERE attempt_id = @attempt_id
+         AND (@claim_token IS NULL OR broadcast_claim_token = @claim_token)`,
+    ).run({ ...input, claim_token: claimToken });
+    return info.changes === 1;
   },
 
+  /** See fhenixGatewayTxRepo.markRetryableFailure for the claim-token rationale. */
   markRetryableFailure(
     db: Database.Database,
     input: {
@@ -4930,9 +4955,11 @@ export const fhenixGatewayFeedPacketTxRepo = {
       updated_at: string;
       broadcast_started_at: string | null;
       broadcast_latency_ms: number | null;
+      claim_token?: string | null;
     },
-  ): void {
-    prep(
+  ): boolean {
+    const claimToken = input.claim_token ?? null;
+    const info = prep(
       db,
       `UPDATE fhenix_gateway_feed_packet_tx_attempts
        SET status = 'failed_retryable',
@@ -4944,8 +4971,10 @@ export const fhenixGatewayFeedPacketTxRepo = {
            last_rpc_error = @last_error,
            broadcast_claim_token = NULL,
            updated_at = @updated_at
-       WHERE attempt_id = @attempt_id`,
-    ).run(input);
+       WHERE attempt_id = @attempt_id
+         AND (@claim_token IS NULL OR broadcast_claim_token = @claim_token)`,
+    ).run({ ...input, claim_token: claimToken });
+    return info.changes === 1;
   },
 
   /** See fhenixGatewayTxRepo.claimForBroadcast. */

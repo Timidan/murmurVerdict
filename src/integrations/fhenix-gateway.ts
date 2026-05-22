@@ -1015,12 +1015,17 @@ export class FhenixGatewayBroadcaster {
     const broadcastStartedAt = nowIso(this.now());
     // Claim the row atomically. If another writer (e.g. the relayer tick
     // racing the synchronous submit path) already claimed it, abort —
-    // the winner will broadcast and mark.
+    // the winner will broadcast and mark. We RETAIN the token locally so
+    // the post-broadcast mark is conditional on the row still carrying
+    // OUR claim. Without this, a slow writeContract that outlives
+    // stuckAfterMs could be reclaimed by another writer; our late mark
+    // would then overwrite the new winner's result.
+    const claimToken = randomUUID();
     const claimed = fhenixGatewayTxRepo.claimForBroadcast(this.db, {
       attempt_id: attempt.attempt_id,
       broadcast_started_at: broadcastStartedAt,
       updated_at: broadcastStartedAt,
-      token: randomUUID(),
+      token: claimToken,
     });
     if (!claimed) return;
     try {
@@ -1043,6 +1048,7 @@ export class FhenixGatewayBroadcaster {
         updated_at: nowIso(this.now()),
         broadcast_started_at: broadcastStartedAt,
         broadcast_latency_ms: latencyMs,
+        claim_token: claimToken,
       });
     } catch (err) {
       fhenixGatewayTxRepo.markRetryableFailure(this.db, {
@@ -1052,6 +1058,7 @@ export class FhenixGatewayBroadcaster {
         updated_at: nowIso(this.now()),
         broadcast_started_at: broadcastStartedAt,
         broadcast_latency_ms: null,
+        claim_token: claimToken,
       });
     }
   }
@@ -1079,12 +1086,14 @@ export class FhenixGatewayBroadcaster {
       return;
     }
     const broadcastStartedAt = nowIso(this.now());
-    // Claim the row atomically — see broadcastAttempt comment.
+    // Claim the row atomically — see broadcastAttempt comment for the
+    // token-retention rationale.
+    const claimToken = randomUUID();
     const claimed = fhenixGatewayFeedPacketTxRepo.claimForBroadcast(this.db, {
       attempt_id: attempt.attempt_id,
       broadcast_started_at: broadcastStartedAt,
       updated_at: broadcastStartedAt,
-      token: randomUUID(),
+      token: claimToken,
     });
     if (!claimed) return;
     try {
@@ -1109,6 +1118,7 @@ export class FhenixGatewayBroadcaster {
         updated_at: nowIso(this.now()),
         broadcast_started_at: broadcastStartedAt,
         broadcast_latency_ms: latencyMs,
+        claim_token: claimToken,
       });
     } catch (err) {
       fhenixGatewayFeedPacketTxRepo.markRetryableFailure(this.db, {
@@ -1118,6 +1128,7 @@ export class FhenixGatewayBroadcaster {
         updated_at: nowIso(this.now()),
         broadcast_started_at: broadcastStartedAt,
         broadcast_latency_ms: null,
+        claim_token: claimToken,
       });
     }
   }
