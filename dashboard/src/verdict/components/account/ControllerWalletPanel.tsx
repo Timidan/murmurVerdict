@@ -27,11 +27,19 @@ import { getAccessToken } from "@privy-io/react-auth";
 interface ControllerWalletPanelProps {
   slug: string;
   agent: AccountAgent | null;
+  /**
+   * Optional callback fired after a successful bind or re-attest so the
+   * PARENT page can refresh its own useAccount() state. Each useAccount()
+   * call instantiates independent state — without this, sibling panels
+   * (e.g. RuntimeKeysPanel reading the same `agent` prop) keep seeing
+   * the stale overdue flag until full route remount.
+   */
+  onAgentChanged?: () => Promise<void> | void;
 }
 
 type BusyState = "idle" | "challenging" | "signing" | "submitting";
 
-export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProps) {
+export function ControllerWalletPanel({ slug, agent, onAgentChanged }: ControllerWalletPanelProps) {
   const account = useAccount();
   const { ready, authenticated } = usePrivy();
   const { wallets } = useWallets();
@@ -133,6 +141,7 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
         signature,
       });
       await account.refreshAgents();
+      await onAgentChanged?.();
     } catch (e) {
       setError((e as Error)?.message ?? "bind failed");
     } finally {
@@ -171,6 +180,7 @@ export function ControllerWalletPanel({ slug, agent }: ControllerWalletPanelProp
         signature,
       });
       await account.refreshAgents();
+      await onAgentChanged?.();
     } catch (e) {
       setError((e as Error)?.message ?? "re-attest failed");
     } finally {

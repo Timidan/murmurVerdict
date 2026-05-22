@@ -136,7 +136,12 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             onSaved={() => void account.refreshAgents()}
           />
         ) : tab === "wallet" ? (
-          <ControllerWalletPanel key={slug} slug={slug} agent={agent} />
+          <ControllerWalletPanel
+            key={slug}
+            slug={slug}
+            agent={agent}
+            onAgentChanged={() => void account.refreshAgents()}
+          />
         ) : tab === "runtime" ? (
           <RuntimeKeysPanel key={slug} slug={slug} agent={agent} />
         ) : (

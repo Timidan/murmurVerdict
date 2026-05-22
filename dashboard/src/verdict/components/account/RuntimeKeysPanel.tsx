@@ -175,7 +175,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
           reject mint with 409 until you sign a fresh attestation.{" "}
           <a
             href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
-            className="no-underline underline-offset-2 hover:underline"
+            className="underline underline-offset-2"
             style={{ color: "var(--color-accent)" }}
           >
             re-attest now →
