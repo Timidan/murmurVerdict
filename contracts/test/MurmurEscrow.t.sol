@@ -538,6 +538,42 @@ contract MurmurEscrowTest is Test {
         escrow.transferOwnership(address(escrow));
     }
 
+    // ─── Re-audit Low — constructor guards ────────────────────────────────
+
+    function test_constructor_rejectsZeroUsdc() public {
+        vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
+        new MurmurEscrow(address(0), feeSink);
+    }
+
+    function test_constructor_rejectsZeroSink() public {
+        vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
+        new MurmurEscrow(address(usdc), address(0));
+    }
+
+    /// Constructor must reject `protocolFeeSink_ == address(this)` for the
+    /// same E1-precondition reason as setProtocolFeeSink. We can't reference
+    /// `address(this)` of the not-yet-deployed escrow, but we can simulate
+    /// the danger by computing the CREATE address and passing it in.
+    function test_constructor_rejectsSelfSink() public {
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
+        new MurmurEscrow(address(usdc), predicted);
+    }
+
+    // ─── Re-audit Info — distinct force-refund event ──────────────────────
+
+    /// forceRefundCommitted must emit InferenceForceRefunded, not the
+    /// generic InferenceRefunded, so off-chain indexers can tell operator
+    /// recovery apart from a normal SLA-miss refund.
+    function test_forceRefundCommitted_emitsDistinctEvent() public {
+        (bytes32 requestId, uint64 committedAt) = _setupCommittedRequest();
+        vm.warp(uint256(committedAt) + 4 hours + 168 hours);
+        vm.expectEmit(true, true, false, true, address(escrow));
+        emit MurmurEscrow.InferenceForceRefunded(requestId, buyer, uint96(10 * 1e6));
+        vm.prank(owner);
+        escrow.forceRefundCommitted(requestId);
+    }
+
     function test_setProtocolFeeSink_rejectsZero() public {
         vm.prank(owner);
         vm.expectRevert(MurmurEscrow.ZeroAddress.selector);

@@ -134,6 +134,10 @@ contract MurmurEscrow {
     );
     event InferenceRefunded(bytes32 indexed requestId, address indexed buyer, uint96 amount);
     event InferenceCanceled(bytes32 indexed requestId, address indexed buyer, uint96 amount);
+    /// Distinct from InferenceRefunded so off-chain indexers can flag
+    /// operator-driven recovery of stuck Committed requests separately from
+    /// the normal SLA-miss refund path.
+    event InferenceForceRefunded(bytes32 indexed requestId, address indexed buyer, uint96 amount);
     event MerkleRootSubmitted(uint256 indexed batchId, bytes32 root);
     event ProtocolFeeUpdated(uint16 oldBps, uint16 newBps);
     event ProtocolFeeSinkUpdated(address oldSink, address newSink);
@@ -161,6 +165,13 @@ contract MurmurEscrow {
     // ─── Construction ──────────────────────────────────────────────────────
 
     constructor(address usdc_, address protocolFeeSink_) {
+        // Re-audit Low: enforce E1's `protocolFeeSink != escrow` precondition
+        // at deploy time too, not just on setProtocolFeeSink. Without this a
+        // misconfigured deploy could route fees back into escrow and silently
+        // break funds conservation.
+        if (usdc_ == address(0)) revert ZeroAddress();
+        if (protocolFeeSink_ == address(0)) revert ZeroAddress();
+        if (protocolFeeSink_ == address(this)) revert ZeroAddress();
         USDC = IERC20(usdc_);
         owner = msg.sender;
         protocolFeeSink = protocolFeeSink_;
@@ -350,7 +361,7 @@ contract MurmurEscrow {
         if (block.timestamp < graceOpenAt) revert BeforeFinalizeWindow();
         r.state = RequestState.Refunded;
         if (!USDC.transfer(r.buyer, r.paidAmount)) revert UsdcReturnFailed();
-        emit InferenceRefunded(requestId, r.buyer, r.paidAmount);
+        emit InferenceForceRefunded(requestId, r.buyer, r.paidAmount);
     }
 
     /// @notice Buyer cancels within first CANCEL_WINDOW_SECONDS of request.
