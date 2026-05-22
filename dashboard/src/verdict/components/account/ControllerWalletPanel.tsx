@@ -15,7 +15,6 @@
 import { useEffect, useState } from "react";
 import { usePrivy, useSignMessage, useWallets, useCreateWallet } from "@privy-io/react-auth";
 import { verdictApi, type AccountAgent } from "../../api.js";
-import { useAccount } from "../../hooks/useAccount.js";
 import { getAccessToken } from "@privy-io/react-auth";
 
 // The daemon enforces that the Controller Wallet binding's chain_id equals
@@ -40,7 +39,6 @@ interface ControllerWalletPanelProps {
 type BusyState = "idle" | "challenging" | "signing" | "submitting";
 
 export function ControllerWalletPanel({ slug, agent, onAgentChanged }: ControllerWalletPanelProps) {
-  const account = useAccount();
   const { ready, authenticated } = usePrivy();
   const { wallets } = useWallets();
   const { createWallet } = useCreateWallet();
@@ -140,12 +138,24 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
         authorization_issued_at: challenge.authorization_issued_at,
         signature,
       });
-      await account.refreshAgents();
-      await onAgentChanged?.();
     } catch (e) {
       setError((e as Error)?.message ?? "bind failed");
-    } finally {
       setBusy("idle");
+      return;
+    }
+    setBusy("idle");
+    // Bind succeeded — invalidate the parent's account hook so sibling
+    // panels (RuntimeKeysPanel) see the new binding. The child-instance
+    // refresh is intentionally dropped: this panel reads `cw` from the
+    // parent's `agent` prop, so only the parent fetch matters. Errors
+    // from the notifier are surfaced but don't mislabel as "bind failed".
+    try {
+      await onAgentChanged?.();
+    } catch (e) {
+      setError(
+        "× bind succeeded but agent refresh failed: " +
+          ((e as Error)?.message ?? "unknown"),
+      );
     }
   }
 
@@ -179,12 +189,22 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
         authorization_issued_at: challenge.authorization_issued_at,
         signature,
       });
-      await account.refreshAgents();
-      await onAgentChanged?.();
     } catch (e) {
       setError((e as Error)?.message ?? "re-attest failed");
-    } finally {
       setBusy("idle");
+      return;
+    }
+    setBusy("idle");
+    // Re-attest succeeded — see bind() comment. Parent's account hook is
+    // the only refresh target; errors from the notifier are surfaced but
+    // don't get mislabeled as "re-attest failed".
+    try {
+      await onAgentChanged?.();
+    } catch (e) {
+      setError(
+        "× re-attest succeeded but agent refresh failed: " +
+          ((e as Error)?.message ?? "unknown"),
+      );
     }
   }
 
