@@ -294,7 +294,60 @@ async function main(): Promise<void> {
       assert.equal(final?.tx_hash, "0x" + "dd".repeat(32));
     });
 
-    // ── 5. sweepStuckClaims leaves fresh claims alone ───────────────
+    // ── 5. markRetryableFailure refuses to write after sweep+reclaim ─
+    // Symmetric to test #4 but for the catch-path mark. A late writer
+    // whose writeContract threw AFTER its claim was swept must not
+    // overwrite the new winner's state with a "retryable" status flip.
+    await check("markRetryableFailure is a no-op after claim is swept + reclaimed", () => {
+      const attempt = makeAttempt("retryable-swept");
+      fhenixGatewayTxRepo.insert(dbA, attempt);
+      const staleStart = isoMinus(600 * 2);
+      const tokenA = randomUUID();
+      dbA
+        .prepare(
+          `UPDATE fhenix_gateway_tx_attempts
+           SET broadcast_claim_token = ?,
+               broadcast_started_at = ?,
+               updated_at = ?
+           WHERE attempt_id = ?`,
+        )
+        .run(tokenA, staleStart, nowIso(), attempt.attempt_id);
+
+      fhenixGatewayTxRepo.sweepStuckClaims(dbB, {
+        stuckBeforeIso: isoMinus(600),
+        updated_at: nowIso(),
+        errorMessage: "sweep",
+      });
+
+      const tokenB = randomUUID();
+      assert.equal(
+        fhenixGatewayTxRepo.claimForBroadcast(dbB, {
+          attempt_id: attempt.attempt_id,
+          broadcast_started_at: nowIso(),
+          updated_at: nowIso(),
+          token: tokenB,
+        }),
+        true,
+      );
+
+      // A's writeContract eventually threw; A tries markRetryableFailure
+      // with its stale token. The token check rejects.
+      const stoleByA = fhenixGatewayTxRepo.markRetryableFailure(dbA, {
+        attempt_id: attempt.attempt_id,
+        last_error: "A's stale retry error",
+        next_attempt_at: nowIso(),
+        updated_at: nowIso(),
+        broadcast_started_at: staleStart,
+        broadcast_latency_ms: null,
+        claim_token: tokenA,
+      });
+      assert.equal(stoleByA, false, "A's late retry-mark must not write");
+      const after = fhenixGatewayTxRepo.byId(dbB, attempt.attempt_id);
+      assert.equal(after?.broadcast_claim_token, tokenB);
+      assert.notEqual(after?.last_error, "A's stale retry error");
+    });
+
+    // ── 6. sweepStuckClaims leaves fresh claims alone ───────────────
     await check("sweepStuckClaims ignores claims newer than stuck threshold", () => {
       const attempt = makeAttempt("fresh");
       fhenixGatewayTxRepo.insert(dbA, attempt);
