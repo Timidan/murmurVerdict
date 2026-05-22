@@ -513,18 +513,12 @@ export class FhenixGatewayBroadcaster {
         },
       );
     }
-    authorizeRuntimeKeyGatewayIntent(
-      this.db,
-      runtimeIdentity,
-      {
-        kind: "sealed_call",
-        chain_id: this.chainId,
-        market_id: market.market_id,
-      },
-      { now: this.now },
-    );
-    preflightMarketAndRateLimits(this.db, agentId, market, this.now);
-
+    // Rate-limit check + queued-attempt insert must be atomic. Without the
+    // IMMEDIATE transaction below, two concurrent submissions can both pass
+    // the count check before either inserts — the relayer then burns gas
+    // on attempts that violate the policy. The IMMEDIATE lock serializes
+    // count-then-insert across writers; the broadcast (async) stays outside
+    // because better-sqlite3 transactions are sync-only.
     const ts = nowIso(this.now());
     const attempt = {
       attempt_id: randomUUID(),
@@ -553,18 +547,53 @@ export class FhenixGatewayBroadcaster {
       created_at: ts,
       updated_at: ts,
     };
-    try {
-      fhenixGatewayTxRepo.insert(this.db, attempt);
-    } catch (err) {
-      if (isUniqueViolation(err)) {
-        const row = fhenixGatewayTxRepo.byClientOrder(
-          this.db,
-          agentId,
-          body.client_order_id,
-        );
-        if (row) return resultFromAttempt(row, true);
+
+    let idempotentReturn: FhenixGatewayTxAttemptRow | null = null;
+    const reserveAndInsert = this.db.transaction(() => {
+      // Re-check inside the lock: a competing process may have inserted
+      // the same (agent_id, client_order_id) attempt between our earlier
+      // pre-lock idempotency check and this point.
+      const competing = fhenixGatewayTxRepo.byClientOrder(
+        this.db,
+        agentId,
+        body.client_order_id,
+      );
+      if (competing) {
+        idempotentReturn = competing;
+        return;
       }
-      throw err;
+      authorizeRuntimeKeyGatewayIntent(
+        this.db,
+        runtimeIdentity,
+        {
+          kind: "sealed_call",
+          chain_id: this.chainId,
+          market_id: market.market_id,
+        },
+        { now: this.now },
+      );
+      preflightMarketAndRateLimits(this.db, agentId, market, this.now);
+      try {
+        fhenixGatewayTxRepo.insert(this.db, attempt);
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          const row = fhenixGatewayTxRepo.byClientOrder(
+            this.db,
+            agentId,
+            body.client_order_id,
+          );
+          if (row) {
+            idempotentReturn = row;
+            return;
+          }
+        }
+        throw err;
+      }
+    });
+    reserveAndInsert.immediate();
+
+    if (idempotentReturn) {
+      return resultFromAttempt(idempotentReturn, true);
     }
 
     await this.broadcastAttempt(attempt.attempt_id);
