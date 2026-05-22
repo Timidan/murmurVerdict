@@ -549,10 +549,12 @@ export class FhenixGatewayBroadcaster {
     };
 
     let idempotentReturn: FhenixGatewayTxAttemptRow | null = null;
+    let idempotentSubmissionCallId: string | null = null;
     const reserveAndInsert = this.db.transaction(() => {
       // Re-check inside the lock: a competing process may have inserted
-      // the same (agent_id, client_order_id) attempt between our earlier
-      // pre-lock idempotency check and this point.
+      // the same (agent_id, client_order_id) attempt OR already promoted
+      // it to an accepted submission between our earlier pre-lock
+      // idempotency check and this point.
       const competing = fhenixGatewayTxRepo.byClientOrder(
         this.db,
         agentId,
@@ -560,6 +562,15 @@ export class FhenixGatewayBroadcaster {
       );
       if (competing) {
         idempotentReturn = competing;
+        return;
+      }
+      const competingSubmission = submissionsRepo.findByClientOrderId(
+        this.db,
+        agentId,
+        body.client_order_id,
+      );
+      if (competingSubmission) {
+        idempotentSubmissionCallId = competingSubmission.call_id;
         return;
       }
       authorizeRuntimeKeyGatewayIntent(
@@ -594,6 +605,20 @@ export class FhenixGatewayBroadcaster {
 
     if (idempotentReturn) {
       return resultFromAttempt(idempotentReturn, true);
+    }
+    if (idempotentSubmissionCallId !== null) {
+      const callId: string = idempotentSubmissionCallId;
+      return {
+        status: 200,
+        body: {
+          attempt_id: "",
+          status: "accepted",
+          tx_hash: null,
+          call_id: callId,
+          next_attempt_at: nowIso(this.now()),
+          idempotent_hit: true,
+        },
+      };
     }
 
     await this.broadcastAttempt(attempt.attempt_id);
@@ -688,8 +713,24 @@ export class FhenixGatewayBroadcaster {
     }
 
     const attemptId = randomUUID();
+    // Mirrors the sealed-call path: sequence-allocation + insert must be
+    // atomic under an IMMEDIATE lock so two concurrent submitFeedPacket
+    // calls don't both pick the same sequence number for a feed. The
+    // accepted-packet UNIQUE(feed_id, sequence) constraint would still
+    // reject one, but only after the relayer has already broadcast.
+    let idempotentFeedReturn: ReturnType<typeof fhenixGatewayFeedPacketTxRepo.byClientOrder> | null = null;
     try {
-      this.db.transaction(() => {
+      const reserveFeedAttempt = this.db.transaction(() => {
+        const competing = fhenixGatewayFeedPacketTxRepo.byClientOrder(
+          this.db,
+          agentId,
+          feed.feed_id,
+          body.client_order_id,
+        );
+        if (competing) {
+          idempotentFeedReturn = competing;
+          return;
+        }
         const sequence = body.sequence ?? Math.max(
           feedPacketsRepo.nextSequence(this.db, feed.feed_id),
           fhenixGatewayFeedPacketTxRepo.nextSequence(this.db, feed.feed_id),
@@ -727,7 +768,8 @@ export class FhenixGatewayBroadcaster {
           created_at: ts,
           updated_at: ts,
         });
-      })();
+      });
+      reserveFeedAttempt.immediate();
     } catch (err) {
       if (isUniqueViolation(err)) {
         const row = fhenixGatewayFeedPacketTxRepo.byClientOrder(
@@ -739,6 +781,9 @@ export class FhenixGatewayBroadcaster {
         if (row) return feedResultFromAttempt(row, true, this.db);
       }
       throw err;
+    }
+    if (idempotentFeedReturn) {
+      return feedResultFromAttempt(idempotentFeedReturn, true, this.db);
     }
 
     await this.broadcastFeedPacketAttempt(attemptId);
