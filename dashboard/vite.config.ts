@@ -37,11 +37,11 @@ export default defineConfig({
     // env var is unset — those relative requests land here and get
     // forwarded to the daemon at MURMUR_DAEMON_URL || localhost:8080.
     //
-    // Production (Vercel preview / prod) does NOT have a proxy. There
-    // are no /v1/* rewrites in vercel.json. Operators MUST set
-    // VITE_VERDICT_API_URL=https://<daemon-host> at build time so the
-    // dashboard issues absolute URLs to the deployed daemon (with CORS
-    // on the daemon allowing the dashboard origin).
+    // Production (any static host serving dashboard/dist) does NOT have
+    // this proxy. The static host should not rewrite /v1/* — operators
+    // MUST set VITE_VERDICT_API_URL=https://<daemon-host> at build time
+    // so the dashboard issues absolute URLs to the deployed daemon
+    // (with CORS on the daemon allowing the dashboard origin).
     proxy: {
       "/v1": {
         target: process.env.MURMUR_DAEMON_URL ?? "http://localhost:8080",

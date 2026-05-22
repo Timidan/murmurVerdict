@@ -13,9 +13,13 @@
 <!-- MARKEE:END:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 
 [![Deploy daemon to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Timidan/synth-x)
-[![Deploy dashboard to Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FTimidan%2Fsynth-x&project-name=murmur-verdict-dashboard&repository-name=murmur-verdict)
 
-> **Cloud-portable deployment.** The daemon is just a `Dockerfile` — pick whichever PaaS/host you prefer. The repo ships templates for Render (`render.yaml`), Fly.io (`fly.toml`), Railway (`railway.json`), Heroku/Procfile-style hosts (`Procfile`), and self-hosting via Docker Compose (`docker-compose.yml`). All compose the same image; the daemon itself reads only `process.env`, no platform-specific assumptions.
+> **Deployment.** The daemon is just a `Dockerfile`. The canonical
+> template is `render.yaml` (Render is where Murmur v1 ran and where the
+> FHENIX_GATEWAY_* env vars are wired); self-hosting via
+> `docker-compose.yml` is the supported alternative. The dashboard build
+> output is a plain static SPA — host it on any CDN. The daemon reads
+> only `process.env`, so any 12-factor host works.
 
 <!-- LIVE-BADGE:START -->
 <!--

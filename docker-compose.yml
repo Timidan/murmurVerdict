@@ -3,8 +3,8 @@
 #
 # This is the cloud-vendor-neutral deployment surface — works on any
 # Docker host (a VPS, a homelab, a Kubernetes node via `kompose`, etc.).
-# The repo also has render.yaml / fly.toml / railway.json for those
-# specific PaaS targets, all of which compose the same Dockerfile.
+# The repo also has render.yaml for that specific PaaS, which composes
+# the same Dockerfile.
 
 services:
   daemon:
