@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /// @title MurmurEscrow — paid-inference escrow for Murmur Pipelines v0.2
 /// @notice Sits between x402 USDC settlement and agent payouts so we can
@@ -39,6 +40,22 @@ contract MurmurEscrow {
     error MerkleRootEmpty();
     error BatchAlreadySubmitted();
     error ZeroAddress();
+    // ─── Wave L.B errors ───
+    error SignatureExpired();
+    error SignatureAlreadyUsed();
+    error SignatureMismatch();
+    error UnauthorizedCaller();
+    error HookPaused();
+    error CodehashMismatch();
+    error CapsNotMonotonic();
+    error CapExceededPerCall();
+    error CapExceededPerBlock();
+    error CapExceededPerDay();
+    error ProposalNotPresent();
+    error ProposalNotReady();
+    error WrongProposalKind();
+    error HookNotPaused();
+    error HookHasNoCode();
 
     // ─── Constants ─────────────────────────────────────────────────────────
 
@@ -49,6 +66,30 @@ contract MurmurEscrow {
     // can force-refund a Committed request whose agent never produced a
     // valid reveal. 7 days is enough for "agent forgot" to be exhausted.
     uint64 public constant COMMITTED_REFUND_GRACE_HOURS = 168;
+
+    // ─── Wave L.B constants ───
+    /// 7-day timelock between propose and commit for allowlist add/remove.
+    uint64 public constant ALLOWLIST_TIMELOCK_SECONDS = 7 days;
+    /// Shorter 24h timelock for unpause (faster recovery than full add).
+    uint64 public constant ALLOWLIST_UNPAUSE_TIMELOCK_SECONDS = 1 days;
+    /// Per EIP-1052: an account with no code yields keccak256("").
+    bytes32 public constant EMPTY_CODE_HASH =
+        0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+
+    // EIP-712 (Wave L.B)
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant BUYER_AUTH_TYPEHASH =
+        keccak256("BuyerAuthorization(address buyer,bytes32 pipelineId,bytes32 nonce,uint256 deadline)");
+    bytes32 private constant DOMAIN_NAME_HASH = keccak256("MurmurEscrow");
+    bytes32 private constant DOMAIN_VERSION_HASH = keccak256("1");
+
+    /// Proposal kinds — match against `AllowlistProposal.kind` to ensure
+    /// `commitAllowlistAdd` can't commit a remove proposal etc.
+    uint8 private constant PROPOSAL_KIND_NONE = 0;
+    uint8 private constant PROPOSAL_KIND_ADD = 1;
+    uint8 private constant PROPOSAL_KIND_REMOVE = 2;
+    uint8 private constant PROPOSAL_KIND_UNPAUSE = 3;
 
     // ─── Inference request lifecycle ───────────────────────────────────────
 
@@ -102,6 +143,43 @@ contract MurmurEscrow {
     /// per-pipeline counter for deterministic requestId derivation
     mapping(bytes32 => uint256) public requestCount;
 
+    // ─── Wave L.B storage ──────────────────────────────────────────────────
+
+    /// EIP-712 digest of the BuyerAuthorization struct. `true` once a sig
+    /// has been redeemed via `requestInferenceFor`. Prevents replay of the
+    /// same buyer signature for a fresh requestId (the per-pipeline
+    /// counter in `requestCount` advances every call, so request-id
+    /// uniqueness alone is NOT sufficient — codex audit 2026-05-23).
+    mapping(bytes32 => bool) public usedAuthDigest;
+
+    /// Per-integrator allowlist state for the hook-trust path. An entry
+    /// with `committedAt == 0` is treated as "not on the allowlist."
+    struct AllowlistedIntegration {
+        bytes32 codehashPin;
+        uint96 perCallCapUsdc;
+        uint96 perBlockCapUsdc;
+        uint96 perDayCapUsdc;
+        uint96 spentThisBlock;
+        uint96 spentToday;
+        uint64 spentBlockNumber;
+        uint64 spentTodayDayUtc;
+        bool paused;
+        uint64 committedAt;
+    }
+    mapping(address => AllowlistedIntegration) public allowlist;
+
+    /// Pending allowlist change. `effectiveAt == 0` means no pending
+    /// proposal. `kind` matches `PROPOSAL_KIND_*` constants.
+    struct AllowlistProposal {
+        bytes32 codehashPin;
+        uint96 perCallCapUsdc;
+        uint96 perBlockCapUsdc;
+        uint96 perDayCapUsdc;
+        uint64 effectiveAt;
+        uint8 kind;
+    }
+    mapping(address => AllowlistProposal) public allowlistProposed;
+
     // ─── Events ────────────────────────────────────────────────────────────
 
     event OwnerTransferred(address indexed previousOwner, address indexed newOwner);
@@ -142,6 +220,28 @@ contract MurmurEscrow {
     event ProtocolFeeUpdated(uint16 oldBps, uint16 newBps);
     event ProtocolFeeSinkUpdated(address oldSink, address newSink);
     event PausedSet(bool paused);
+
+    // ─── Wave L.B events ───
+    event AllowlistAddProposed(
+        address indexed integrator,
+        bytes32 codehashPin,
+        uint96 perCallCapUsdc,
+        uint96 perBlockCapUsdc,
+        uint96 perDayCapUsdc,
+        uint64 effectiveAt
+    );
+    event AllowlistAddCommitted(address indexed integrator);
+    event AllowlistRemoveProposed(address indexed integrator, uint64 effectiveAt);
+    event AllowlistRemoveCommitted(address indexed integrator);
+    event AllowlistEntryPaused(address indexed integrator);
+    event AllowlistUnpauseProposed(address indexed integrator, uint64 effectiveAt);
+    event AllowlistUnpauseCommitted(address indexed integrator);
+    event AllowlistCallGated(
+        address indexed integrator,
+        uint96 amountUsdc,
+        uint96 spentThisBlock,
+        uint96 spentToday
+    );
 
     // ─── Modifiers ─────────────────────────────────────────────────────────
 
@@ -375,6 +475,325 @@ contract MurmurEscrow {
         emit InferenceCanceled(requestId, r.buyer, r.paidAmount);
     }
 
+    // ─── Wave L.B: requestInferenceFor + allowlist governance ──────────────
+
+    /// @notice Buyer authorization carried in the EIP-712 sig path.
+    struct BuyerAuthorization {
+        uint256 deadline;
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+    }
+
+    /// @notice Submit an inference request on behalf of an attested
+    ///         `buyer`. Two trust modes (mutually exclusive — chosen by
+    ///         the value of `buyerSig.deadline`):
+    ///
+    ///         1. EIP-712 path (`buyerSig.deadline != 0`): caller may be
+    ///            any address; we verify a buyer-signed BuyerAuthorization.
+    ///            USDC is pulled from `buyer` (must have pre-approved).
+    ///
+    ///         2. Allowlist path (`buyerSig.deadline == 0`):
+    ///            `msg.sender` must be on the strict allowlist with
+    ///            matching codehash, within per-call/per-block/per-day
+    ///            caps. USDC is pulled from `msg.sender` (e.g. a
+    ///            Murmur-controlled CCTP hook that holds the bridged
+    ///            funds). The hook is responsible for source-side
+    ///            enforcement of `buyer == messageSender` per the
+    ///            design's CCTP buyer-binding requirements.
+    ///
+    ///         In both modes the request's stored `buyer` is the attested
+    ///         buyer address, NOT msg.sender. Refunds, cancels, and
+    ///         force-refunds route to that attested buyer.
+    ///
+    /// @dev    Wave L.B. The existing `requestInference()` is unchanged
+    ///         (buyer == msg.sender).
+    function requestInferenceFor(
+        address buyer,
+        bytes32 pipelineId,
+        bytes32 clientNonce,
+        BuyerAuthorization calldata buyerSig
+    ) external whenNotPaused nonReentrant returns (bytes32 requestId) {
+        if (buyer == address(0)) revert ZeroAddress();
+        if (buyer == address(this)) revert ZeroAddress();
+
+        Pipeline storage p = pipelines[pipelineId];
+        if (p.agentOwner == address(0)) revert PipelineNotFound();
+        if (!p.active) revert PipelineNotActive();
+
+        // Trust-mode selection.
+        address payer;
+        if (buyerSig.deadline != 0) {
+            // EIP-712 path: verify buyer's signature; pull USDC from buyer.
+            _verifyBuyerAuthorization(buyer, pipelineId, clientNonce, buyerSig);
+            payer = buyer;
+        } else {
+            // Allowlist path: msg.sender must be an allowlisted hook with
+            // matching codehash and within caps. USDC is pulled from hook.
+            _enforceAllowlistCall(msg.sender, p.priceUsdc);
+            payer = msg.sender;
+        }
+
+        if (!USDC.transferFrom(payer, address(this), p.priceUsdc)) {
+            revert UsdcTransferFailed();
+        }
+
+        uint256 ctr = requestCount[pipelineId]++;
+        requestId = keccak256(abi.encodePacked(pipelineId, buyer, clientNonce, ctr));
+        if (requests[requestId].state != RequestState.None) revert WrongState();
+
+        uint64 nowTs = uint64(block.timestamp);
+        requests[requestId] = InferenceRequest({
+            pipelineId: pipelineId,
+            buyer: buyer,
+            paidAmount: p.priceUsdc,
+            paidAt: nowTs,
+            slaDeadline: nowTs + p.slaSeconds,
+            commitHash: bytes32(0),
+            marketDataCutoff: bytes32(0),
+            committedAt: 0,
+            state: RequestState.Pending,
+            protocolFeeBps: protocolFeeBps
+        });
+
+        emit InferenceRequested(requestId, pipelineId, buyer, p.priceUsdc, nowTs + p.slaSeconds);
+    }
+
+    /// @notice EIP-712 domain separator for buyer-authorization sigs.
+    ///         Recomputed on every call so a chainid change (fork) is
+    ///         immediately reflected; gas cost is small relative to the
+    ///         tx-level work this does.
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return _domainSeparator();
+    }
+
+    /// @notice EIP-712 typed-data hash for a BuyerAuthorization. Off-chain
+    ///         signing libraries (viem, ethers, web3.js) all reproduce
+    ///         this digest given the typed-data schema. Reviewers can
+    ///         double-check via `cast keccak <preimage>` using the
+    ///         BUYER_AUTH_TYPEHASH constant.
+    function hashBuyerAuth(
+        address buyer,
+        bytes32 pipelineId,
+        bytes32 nonce,
+        uint256 deadline
+    ) external view returns (bytes32) {
+        return _hashBuyerAuth(buyer, pipelineId, nonce, deadline);
+    }
+
+    function _domainSeparator() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                DOMAIN_NAME_HASH,
+                DOMAIN_VERSION_HASH,
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    function _hashBuyerAuth(
+        address buyer,
+        bytes32 pipelineId,
+        bytes32 nonce,
+        uint256 deadline
+    ) internal view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(BUYER_AUTH_TYPEHASH, buyer, pipelineId, nonce, deadline)
+        );
+        return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+    }
+
+    function _verifyBuyerAuthorization(
+        address buyer,
+        bytes32 pipelineId,
+        bytes32 clientNonce,
+        BuyerAuthorization calldata buyerSig
+    ) internal {
+        if (block.timestamp > buyerSig.deadline) revert SignatureExpired();
+        bytes32 digest = _hashBuyerAuth(buyer, pipelineId, clientNonce, buyerSig.deadline);
+        if (usedAuthDigest[digest]) revert SignatureAlreadyUsed();
+        // Use OZ ECDSA.recover (NOT raw ecrecover) — rejects malleable
+        // upper-half s-values per EIP-2 and reverts on bad sigs instead
+        // of returning address(0).
+        address signer = ECDSA.recover(digest, buyerSig.v, buyerSig.r, buyerSig.s);
+        if (signer != buyer) revert SignatureMismatch();
+        // Mark used ONLY after signer validated; an invalid sig must NOT
+        // consume the digest (codex audit 2026-05-23).
+        usedAuthDigest[digest] = true;
+    }
+
+    function _enforceAllowlistCall(address integrator, uint96 amount) internal {
+        AllowlistedIntegration storage entry = allowlist[integrator];
+        if (entry.committedAt == 0) revert UnauthorizedCaller();
+        if (entry.paused) revert HookPaused();
+        // Call-time codehash check. Catches SELFDESTRUCT+redeploy attacks
+        // on pre-EIP-6780 chains AND any registration-time/call-time
+        // codehash drift that an upgradeable-proxy hook could introduce.
+        if (entry.codehashPin != integrator.codehash) revert CodehashMismatch();
+        if (amount > entry.perCallCapUsdc) revert CapExceededPerCall();
+
+        // Per-block counter — reset on new block.number (canonical chain
+        // semantics; reorgs are bounded by L2 finality).
+        if (entry.spentBlockNumber != block.number) {
+            entry.spentBlockNumber = uint64(block.number);
+            entry.spentThisBlock = 0;
+        }
+        // Codex audit 2026-05-23: compare in uint256 to avoid uint96
+        // overflow Panic before reaching the named CapExceededPerBlock
+        // revert (matters at extreme cap configurations).
+        uint256 newBlockSpent = uint256(entry.spentThisBlock) + uint256(amount);
+        if (newBlockSpent > uint256(entry.perBlockCapUsdc)) revert CapExceededPerBlock();
+        entry.spentThisBlock = uint96(newBlockSpent);
+
+        // Per-day counter — reset on new UTC day (block.timestamp / 86400).
+        uint64 todayUtc = uint64(block.timestamp / 86_400);
+        if (entry.spentTodayDayUtc != todayUtc) {
+            entry.spentTodayDayUtc = todayUtc;
+            entry.spentToday = 0;
+        }
+        uint256 newDaySpent = uint256(entry.spentToday) + uint256(amount);
+        if (newDaySpent > uint256(entry.perDayCapUsdc)) revert CapExceededPerDay();
+        entry.spentToday = uint96(newDaySpent);
+
+        emit AllowlistCallGated(integrator, amount, entry.spentThisBlock, entry.spentToday);
+    }
+
+    // ─── Wave L.B: allowlist admin (7 functions) ──────────────────────────
+
+    /// @notice Propose adding `integrator` to the allowlist. Takes effect
+    ///         only after a 7-day timelock AND `commitAllowlistAdd` is
+    ///         called. The codehash is pinned at PROPOSE time AND
+    ///         re-verified at commit time to catch any churn during the
+    ///         window (SELFDESTRUCT+redeploy, etc.).
+    ///
+    /// @dev    Proxy-rejection (per user lock 2026-05-23): on-chain
+    ///         enforces nonzero code + codehash pin. Operator/CI must
+    ///         verify off-chain that the bytecode contains no
+    ///         DELEGATECALL or SELFDESTRUCT before calling this.
+    function proposeAllowlistAdd(
+        address integrator,
+        bytes32 codehashPin,
+        uint96 perCallCapUsdc,
+        uint96 perBlockCapUsdc,
+        uint96 perDayCapUsdc
+    ) external onlyOwner {
+        if (integrator == address(0) || integrator == address(this)) revert ZeroAddress();
+        if (integrator.code.length == 0) revert HookHasNoCode();
+        bytes32 onchainCodehash = integrator.codehash;
+        if (onchainCodehash == bytes32(0) || onchainCodehash == EMPTY_CODE_HASH) revert HookHasNoCode();
+        if (codehashPin == bytes32(0)) revert HookHasNoCode();
+        // Codex audit 2026-05-23: enforce pin == on-chain codehash at
+        // propose time. Without this, an operator could pin an incorrect
+        // codehash and the commit-time re-check would never reach a
+        // pre-validated baseline.
+        if (codehashPin != onchainCodehash) revert CodehashMismatch();
+        // Cap monotonic: per-call ≤ per-block ≤ per-day. Catches config
+        // errors that would silently degrade cap semantics.
+        if (perCallCapUsdc == 0) revert CapsNotMonotonic();
+        if (perCallCapUsdc > perBlockCapUsdc) revert CapsNotMonotonic();
+        if (perBlockCapUsdc > perDayCapUsdc) revert CapsNotMonotonic();
+
+        uint64 effectiveAt = uint64(block.timestamp + ALLOWLIST_TIMELOCK_SECONDS);
+        allowlistProposed[integrator] = AllowlistProposal({
+            codehashPin: codehashPin,
+            perCallCapUsdc: perCallCapUsdc,
+            perBlockCapUsdc: perBlockCapUsdc,
+            perDayCapUsdc: perDayCapUsdc,
+            effectiveAt: effectiveAt,
+            kind: PROPOSAL_KIND_ADD
+        });
+        emit AllowlistAddProposed(
+            integrator, codehashPin, perCallCapUsdc, perBlockCapUsdc, perDayCapUsdc, effectiveAt
+        );
+    }
+
+    function commitAllowlistAdd(address integrator) external onlyOwner {
+        AllowlistProposal storage prop = allowlistProposed[integrator];
+        if (prop.kind != PROPOSAL_KIND_ADD) revert WrongProposalKind();
+        if (block.timestamp < prop.effectiveAt) revert ProposalNotReady();
+        // Re-verify codehash hasn't drifted since propose. Catches
+        // SELFDESTRUCT+redeploy windows on pre-EIP-6780 chains.
+        if (integrator.codehash != prop.codehashPin) revert CodehashMismatch();
+        if (integrator.code.length == 0) revert HookHasNoCode();
+
+        allowlist[integrator] = AllowlistedIntegration({
+            codehashPin: prop.codehashPin,
+            perCallCapUsdc: prop.perCallCapUsdc,
+            perBlockCapUsdc: prop.perBlockCapUsdc,
+            perDayCapUsdc: prop.perDayCapUsdc,
+            spentThisBlock: 0,
+            spentToday: 0,
+            spentBlockNumber: 0,
+            spentTodayDayUtc: 0,
+            paused: false,
+            committedAt: uint64(block.timestamp)
+        });
+        delete allowlistProposed[integrator];
+        emit AllowlistAddCommitted(integrator);
+    }
+
+    function proposeAllowlistRemove(address integrator) external onlyOwner {
+        if (allowlist[integrator].committedAt == 0) revert UnauthorizedCaller();
+        uint64 effectiveAt = uint64(block.timestamp + ALLOWLIST_TIMELOCK_SECONDS);
+        allowlistProposed[integrator] = AllowlistProposal({
+            codehashPin: bytes32(0),
+            perCallCapUsdc: 0,
+            perBlockCapUsdc: 0,
+            perDayCapUsdc: 0,
+            effectiveAt: effectiveAt,
+            kind: PROPOSAL_KIND_REMOVE
+        });
+        emit AllowlistRemoveProposed(integrator, effectiveAt);
+    }
+
+    function commitAllowlistRemove(address integrator) external onlyOwner {
+        AllowlistProposal storage prop = allowlistProposed[integrator];
+        if (prop.kind != PROPOSAL_KIND_REMOVE) revert WrongProposalKind();
+        if (block.timestamp < prop.effectiveAt) revert ProposalNotReady();
+        delete allowlist[integrator];
+        delete allowlistProposed[integrator];
+        emit AllowlistRemoveCommitted(integrator);
+    }
+
+    /// @notice Immediate pause — no timelock — emergency stop for a hook
+    ///         observed to be misbehaving. Asymmetric with unpause
+    ///         (which IS timelocked) per codex audit 2026-05-23.
+    function pauseAllowlistEntry(address integrator) external onlyOwner {
+        AllowlistedIntegration storage entry = allowlist[integrator];
+        if (entry.committedAt == 0) revert UnauthorizedCaller();
+        entry.paused = true;
+        emit AllowlistEntryPaused(integrator);
+    }
+
+    function proposeAllowlistUnpause(address integrator) external onlyOwner {
+        AllowlistedIntegration storage entry = allowlist[integrator];
+        if (entry.committedAt == 0) revert UnauthorizedCaller();
+        if (!entry.paused) revert HookNotPaused();
+        uint64 effectiveAt = uint64(block.timestamp + ALLOWLIST_UNPAUSE_TIMELOCK_SECONDS);
+        allowlistProposed[integrator] = AllowlistProposal({
+            codehashPin: bytes32(0),
+            perCallCapUsdc: 0,
+            perBlockCapUsdc: 0,
+            perDayCapUsdc: 0,
+            effectiveAt: effectiveAt,
+            kind: PROPOSAL_KIND_UNPAUSE
+        });
+        emit AllowlistUnpauseProposed(integrator, effectiveAt);
+    }
+
+    function commitAllowlistUnpause(address integrator) external onlyOwner {
+        AllowlistProposal storage prop = allowlistProposed[integrator];
+        if (prop.kind != PROPOSAL_KIND_UNPAUSE) revert WrongProposalKind();
+        if (block.timestamp < prop.effectiveAt) revert ProposalNotReady();
+        AllowlistedIntegration storage entry = allowlist[integrator];
+        if (entry.committedAt == 0) revert UnauthorizedCaller();
+        entry.paused = false;
+        delete allowlistProposed[integrator];
+        emit AllowlistUnpauseCommitted(integrator);
+    }
+
     // ─── Merkle anchoring (hourly receipt batch) ───────────────────────────
 
     function submitMerkleRoot(uint256 batchId, bytes32 root) external onlyOwner {
@@ -430,12 +849,18 @@ contract MurmurEscrow {
     /// @notice Convenience helper used by off-chain backend to compute the same
     ///         requestId the contract derived. Keeps the canonical formula in
     ///         one place.
+    /// @dev    `addrInId` is the address folded into the request-id derivation.
+    ///         For `requestInference()` it equals `msg.sender` (the buyer).
+    ///         For `requestInferenceFor()` (Wave L.B) it equals the attested
+    ///         `buyer` argument — the relayer / hook caller is NOT folded in.
+    ///         Off-chain callers must mirror this distinction; otherwise the
+    ///         computed id will not match the on-chain `requestId`.
     function computeRequestId(
         bytes32 pipelineId,
-        address sender,
+        address addrInId,
         bytes32 clientNonce,
         uint256 counter
     ) external pure returns (bytes32) {
-        return keccak256(abi.encodePacked(pipelineId, sender, clientNonce, counter));
+        return keccak256(abi.encodePacked(pipelineId, addrInId, clientNonce, counter));
     }
 }

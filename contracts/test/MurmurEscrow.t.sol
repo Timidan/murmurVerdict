@@ -1,8 +1,31 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test, Vm, console} from "forge-std/Test.sol";
 import {MurmurEscrow} from "../src/MurmurEscrow.sol";
+
+/// Minimal mock x402 hook used to test the allowlist path of
+/// `requestInferenceFor`. The hook holds USDC (after a CCTP mint, etc.)
+/// and pays escrow on behalf of an attested buyer.
+contract MockHook {
+    function callRequestInferenceFor(
+        address escrowAddr,
+        address buyer,
+        bytes32 pipelineId,
+        bytes32 clientNonce
+    ) external returns (bytes32) {
+        MurmurEscrow.BuyerAuthorization memory emptySig = MurmurEscrow.BuyerAuthorization({
+            deadline: 0,
+            v: 0,
+            r: bytes32(0),
+            s: bytes32(0)
+        });
+        return MurmurEscrow(escrowAddr).requestInferenceFor(buyer, pipelineId, clientNonce, emptySig);
+    }
+    function approveUsdc(address usdcAddr, address spender, uint256 amount) external {
+        MockUSDC(usdcAddr).approve(spender, amount);
+    }
+}
 
 /// Minimal mock USDC: 6 decimals, mintable, no transfer hooks.
 contract MockUSDC {
@@ -584,5 +607,611 @@ contract MurmurEscrowTest is Test {
         vm.prank(owner);
         vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
         escrow.setProtocolFeeSink(address(escrow));
+    }
+
+    // ─── Wave L.B — requestInferenceFor (EIP-712 path) ─────────────────────
+
+    /// Use a known PK so we can sign typed data deterministically.
+    /// Mints USDC + approves escrow for this wallet on demand.
+    function _makeBuyer(uint256 pk) internal returns (Vm.Wallet memory) {
+        Vm.Wallet memory w = vm.createWallet(pk);
+        usdc.mint(w.addr, 1_000 * 1e6);
+        vm.prank(w.addr);
+        usdc.approve(address(escrow), type(uint256).max);
+        return w;
+    }
+
+    function _hashBuyerAuth(
+        address buyerAddr,
+        bytes32 pipelineId,
+        bytes32 nonce,
+        uint256 deadline
+    ) internal view returns (bytes32) {
+        return escrow.hashBuyerAuth(buyerAddr, pipelineId, nonce, deadline);
+    }
+
+    function _signBuyerAuth(
+        Vm.Wallet memory w,
+        bytes32 pipelineId,
+        bytes32 nonce,
+        uint256 deadline
+    ) internal returns (MurmurEscrow.BuyerAuthorization memory) {
+        bytes32 digest = _hashBuyerAuth(w.addr, pipelineId, nonce, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(w, digest);
+        return MurmurEscrow.BuyerAuthorization({deadline: deadline, v: v, r: r, s: s});
+    }
+
+    function test_requestInferenceFor_eip712_happyPath() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB001);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(1001));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+
+        // Relayer (NOT the buyer) submits.
+        vm.prank(randomCaller);
+        bytes32 reqId = escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, sig);
+
+        MurmurEscrow.InferenceRequest memory r = escrow.getRequest(reqId);
+        assertEq(r.buyer, w.addr, "attested buyer recorded");
+        assertEq(uint8(r.state), uint8(MurmurEscrow.RequestState.Pending));
+    }
+
+    function test_requestInferenceFor_eip712_rejectsExpiredSig() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB002);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(1002));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+        // Warp past deadline.
+        vm.warp(deadline + 1);
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.SignatureExpired.selector);
+        escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, sig);
+    }
+
+    function test_requestInferenceFor_eip712_rejectsWrongSigner() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory imposter = _makeBuyer(0xB17EB003);
+        Vm.Wallet memory victim = _makeBuyer(0xB17EB004);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(1003));
+        // Imposter signs for victim's address — should revert.
+        bytes32 digest = _hashBuyerAuth(victim.addr, PIPELINE_ID, nonce, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(imposter, digest);
+        MurmurEscrow.BuyerAuthorization memory sig =
+            MurmurEscrow.BuyerAuthorization({deadline: deadline, v: v, r: r, s: s});
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.SignatureMismatch.selector);
+        escrow.requestInferenceFor(victim.addr, PIPELINE_ID, nonce, sig);
+    }
+
+    function test_requestInferenceFor_eip712_rejectsReusedDigest() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB005);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(1005));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+        vm.prank(randomCaller);
+        escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, sig);
+        // Second redemption of identical sig → revert.
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.SignatureAlreadyUsed.selector);
+        escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, sig);
+    }
+
+    function test_requestInferenceFor_rejectsZeroBuyer() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB006);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(1006));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
+        escrow.requestInferenceFor(address(0), PIPELINE_ID, nonce, sig);
+    }
+
+    function test_requestInferenceFor_rejectsBuyerEqualsEscrow() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB007);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(1007));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
+        escrow.requestInferenceFor(address(escrow), PIPELINE_ID, nonce, sig);
+    }
+
+    function test_requestInferenceFor_invalidSig_doesNotConsumeDigest() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB008);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(1008));
+        // First attempt: tampered s value → revert SignatureMismatch
+        MurmurEscrow.BuyerAuthorization memory good =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+        // Construct `bad` as a FRESH struct (memory copy, not reference)
+        // so mutating its s doesn't also mutate `good.s`.
+        MurmurEscrow.BuyerAuthorization memory bad = MurmurEscrow.BuyerAuthorization({
+            deadline: good.deadline,
+            v: good.v,
+            r: good.r,
+            s: bytes32(uint256(good.s) ^ 0xdeadbeef)
+        });
+        vm.prank(randomCaller);
+        vm.expectRevert();
+        escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, bad);
+        // Now the GOOD sig should still work — the digest was NOT consumed.
+        vm.prank(randomCaller);
+        escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, good);
+    }
+
+    // ─── Wave L.B — requestInferenceFor (allowlist path) ──────────────────
+
+    function _allowlistHook(MockHook hook, uint96 perCall, uint96 perBlock, uint96 perDay)
+        internal
+    {
+        bytes32 ch = address(hook).codehash;
+        vm.prank(owner);
+        escrow.proposeAllowlistAdd(address(hook), ch, perCall, perBlock, perDay);
+        vm.warp(block.timestamp + escrow.ALLOWLIST_TIMELOCK_SECONDS() + 1);
+        vm.prank(owner);
+        escrow.commitAllowlistAdd(address(hook));
+    }
+
+    function _fundHook(MockHook hook, uint256 amount) internal {
+        usdc.mint(address(hook), amount);
+        hook.approveUsdc(address(usdc), address(escrow), type(uint256).max);
+    }
+
+    function _emptyAuth() internal pure returns (MurmurEscrow.BuyerAuthorization memory) {
+        return MurmurEscrow.BuyerAuthorization({deadline: 0, v: 0, r: bytes32(0), s: bytes32(0)});
+    }
+
+    function test_requestInferenceFor_allowlist_happyPath() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 100 * 1e6);
+
+        bytes32 reqId = hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2001)));
+        MurmurEscrow.InferenceRequest memory r = escrow.getRequest(reqId);
+        assertEq(r.buyer, buyer, "attested buyer recorded from allowlist path");
+    }
+
+    function test_requestInferenceFor_allowlist_rejectsNonAllowlistedCaller() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        // No allowlisting.
+        _fundHook(hook, 10 * 1e6);
+        vm.expectRevert(MurmurEscrow.UnauthorizedCaller.selector);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2002)));
+    }
+
+    function test_requestInferenceFor_allowlist_rejectsPausedEntry() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 10 * 1e6);
+        vm.prank(owner);
+        escrow.pauseAllowlistEntry(address(hook));
+        vm.expectRevert(MurmurEscrow.HookPaused.selector);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2003)));
+    }
+
+    function test_requestInferenceFor_allowlist_perCallCapExceeded() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 1 * 1e6, 100 * 1e6, 100 * 1e6); // perCall=1, pipeline price=10
+        _fundHook(hook, 10 * 1e6);
+        vm.expectRevert(MurmurEscrow.CapExceededPerCall.selector);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2004)));
+    }
+
+    function test_requestInferenceFor_allowlist_perBlockCapExceeded() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 10 * 1e6, 15 * 1e6, 100 * 1e6); // perBlock=15, pipeline price=10
+        _fundHook(hook, 50 * 1e6);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2005)));
+        // Second call in same block: 10 + 10 = 20 > 15 cap → revert.
+        vm.expectRevert(MurmurEscrow.CapExceededPerBlock.selector);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2006)));
+    }
+
+    function test_requestInferenceFor_allowlist_perBlockCounterResets() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 10 * 1e6, 15 * 1e6, 100 * 1e6);
+        _fundHook(hook, 50 * 1e6);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2007)));
+        // Advance to next block.
+        vm.roll(block.number + 1);
+        // Now the per-block counter resets — second call succeeds.
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2008)));
+    }
+
+    function test_requestInferenceFor_allowlist_perDayCapExceeded() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 10 * 1e6, 10 * 1e6, 15 * 1e6);
+        _fundHook(hook, 50 * 1e6);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2009)));
+        vm.roll(block.number + 1);
+        // Same UTC day, second 10 USDC → total 20 > 15 cap → revert.
+        vm.expectRevert(MurmurEscrow.CapExceededPerDay.selector);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2010)));
+    }
+
+    function test_requestInferenceFor_allowlist_perDayCounterResets() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 10 * 1e6, 10 * 1e6, 15 * 1e6);
+        _fundHook(hook, 50 * 1e6);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2011)));
+        // Advance to next UTC day.
+        vm.warp(block.timestamp + 1 days);
+        vm.roll(block.number + 1);
+        // Day counter resets → succeed.
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(2012)));
+    }
+
+    function test_proposeAllowlistAdd_rejectsWrongCodehashPin() public {
+        // Codex audit 2026-05-23: propose-time codehash check enforced.
+        // Pin must equal current `integrator.codehash` at propose time;
+        // commit-time + call-time recheck is defense-in-depth, not the
+        // only guard.
+        MockHook hook = new MockHook();
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.CodehashMismatch.selector);
+        escrow.proposeAllowlistAdd(
+            address(hook),
+            bytes32(uint256(0xDEADBEEF)),
+            100 * 1e6, 100 * 1e6, 100 * 1e6
+        );
+    }
+
+    function test_commitAllowlistAdd_rejectsCodehashDriftDuringTimelock() public {
+        // Drift scenario: hook had codehash X at propose, gets replaced
+        // (vm.etch) with different bytecode before commit. commit
+        // re-reads codehash and rejects.
+        MockHook hook = new MockHook();
+        bytes32 ch = address(hook).codehash;
+        vm.prank(owner);
+        escrow.proposeAllowlistAdd(address(hook), ch, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        vm.warp(block.timestamp + escrow.ALLOWLIST_TIMELOCK_SECONDS() + 1);
+        // Replace bytecode mid-window — codehash changes.
+        vm.etch(address(hook), hex"6080604052"); // tiny stub
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.CodehashMismatch.selector);
+        escrow.commitAllowlistAdd(address(hook));
+    }
+
+    // (Note: a dedicated call-time codehash-drift test using vm.etch is
+    // tricky because the etched bytecode also affects ABI dispatch, so
+    // the failure mode isn't a clean CodehashMismatch — it's a generic
+    // revert from the call. The call-time check is exercised indirectly
+    // by every allowlist test that runs through `_enforceAllowlistCall`,
+    // and the propose-time + commit-time tests above pin the codehash
+    // semantics. Dedicated drift test deferred to Phase 3 audit with a
+    // more controlled scenario.)
+
+    // ─── Wave L.B — Allowlist admin ────────────────────────────────────────
+
+    function test_proposeAllowlistAdd_rejectsNonOwner() public {
+        MockHook hook = new MockHook();
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.NotOwner.selector);
+        escrow.proposeAllowlistAdd(address(hook), address(hook).codehash, 10, 10, 10);
+    }
+
+    function test_proposeAllowlistAdd_rejectsEoa() public {
+        // EOA has no code → revert HookHasNoCode.
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.HookHasNoCode.selector);
+        escrow.proposeAllowlistAdd(buyer, bytes32(uint256(1)), 10, 10, 10);
+    }
+
+    function test_proposeAllowlistAdd_rejectsZeroCodehashPin() public {
+        MockHook hook = new MockHook();
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.HookHasNoCode.selector);
+        escrow.proposeAllowlistAdd(address(hook), bytes32(0), 10, 10, 10);
+    }
+
+    function test_proposeAllowlistAdd_rejectsNonMonotonicCaps() public {
+        MockHook hook = new MockHook();
+        bytes32 ch = address(hook).codehash;
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.CapsNotMonotonic.selector);
+        escrow.proposeAllowlistAdd(address(hook), ch, 100, 50, 200); // perBlock < perCall
+    }
+
+    function test_proposeAllowlistAdd_rejectsZeroPerCall() public {
+        MockHook hook = new MockHook();
+        bytes32 ch = address(hook).codehash;
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.CapsNotMonotonic.selector);
+        escrow.proposeAllowlistAdd(address(hook), ch, 0, 10, 10);
+    }
+
+    function test_commitAllowlistAdd_beforeTimelockReverts() public {
+        MockHook hook = new MockHook();
+        bytes32 ch = address(hook).codehash;
+        vm.prank(owner);
+        escrow.proposeAllowlistAdd(address(hook), ch, 10, 10, 10);
+        // Don't warp.
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.ProposalNotReady.selector);
+        escrow.commitAllowlistAdd(address(hook));
+    }
+
+    function test_commitAllowlistAdd_withoutProposalReverts() public {
+        MockHook hook = new MockHook();
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.WrongProposalKind.selector);
+        escrow.commitAllowlistAdd(address(hook));
+    }
+
+    function test_commitAllowlistAdd_rejectsNonOwner() public {
+        MockHook hook = new MockHook();
+        bytes32 ch = address(hook).codehash;
+        vm.prank(owner);
+        escrow.proposeAllowlistAdd(address(hook), ch, 10, 10, 10);
+        vm.warp(block.timestamp + escrow.ALLOWLIST_TIMELOCK_SECONDS() + 1);
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.NotOwner.selector);
+        escrow.commitAllowlistAdd(address(hook));
+    }
+
+    function test_proposeAllowlistRemove_hookCallableDuringWindow() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 50 * 1e6);
+        vm.prank(owner);
+        escrow.proposeAllowlistRemove(address(hook));
+        // Hook still callable during the propose-remove → commit window.
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(3001)));
+    }
+
+    function test_commitAllowlistRemove_afterTimelockRevokesHook() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 50 * 1e6);
+        vm.prank(owner);
+        escrow.proposeAllowlistRemove(address(hook));
+        vm.warp(block.timestamp + escrow.ALLOWLIST_TIMELOCK_SECONDS() + 1);
+        vm.prank(owner);
+        escrow.commitAllowlistRemove(address(hook));
+        vm.expectRevert(MurmurEscrow.UnauthorizedCaller.selector);
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(3002)));
+    }
+
+    function test_pauseAllowlistEntry_immediateAndRejectsNonOwner() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.NotOwner.selector);
+        escrow.pauseAllowlistEntry(address(hook));
+        // Owner can pause.
+        vm.prank(owner);
+        escrow.pauseAllowlistEntry(address(hook));
+    }
+
+    function test_unpauseTimelocked_24h() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 50 * 1e6);
+        vm.prank(owner);
+        escrow.pauseAllowlistEntry(address(hook));
+        vm.prank(owner);
+        escrow.proposeAllowlistUnpause(address(hook));
+        // Before 24h: revert.
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.ProposalNotReady.selector);
+        escrow.commitAllowlistUnpause(address(hook));
+        // After 24h: succeeds.
+        vm.warp(block.timestamp + escrow.ALLOWLIST_UNPAUSE_TIMELOCK_SECONDS() + 1);
+        vm.prank(owner);
+        escrow.commitAllowlistUnpause(address(hook));
+        // Hook callable again.
+        hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(3003)));
+    }
+
+    function test_proposeAllowlistUnpause_revertsOnNonPaused() public {
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        vm.prank(owner);
+        vm.expectRevert(MurmurEscrow.HookNotPaused.selector);
+        escrow.proposeAllowlistUnpause(address(hook));
+    }
+
+    // ─── Wave L.B — Refund / cancel route to attested buyer ────────────────
+
+    function test_refund_routesToAttestedBuyer_eip712Path() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB100);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(4001));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+        uint256 startBuyerBal = usdc.balanceOf(w.addr);
+        vm.prank(randomCaller);
+        bytes32 reqId = escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, sig);
+        // Skip SLA window without commit.
+        vm.warp(block.timestamp + 121);
+        escrow.refund(reqId);
+        // Refund must route to attested buyer (w.addr), NOT the relayer.
+        assertEq(usdc.balanceOf(w.addr), startBuyerBal, "attested buyer made whole");
+        assertEq(usdc.balanceOf(randomCaller), 0);
+    }
+
+    function test_refund_routesToAttestedBuyer_allowlistPath() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 10 * 1e6);
+        uint256 startBuyerBal = usdc.balanceOf(buyer);
+        bytes32 reqId = hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(4002)));
+        vm.warp(block.timestamp + 121);
+        escrow.refund(reqId);
+        assertEq(usdc.balanceOf(buyer), startBuyerBal + 10 * 1e6, "attested buyer received refund");
+    }
+
+    function test_cancel_routesToAttestedBuyer_eip712Path() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB101);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(4003));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+        uint256 startBuyerBal = usdc.balanceOf(w.addr);
+        vm.prank(randomCaller);
+        bytes32 reqId = escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, sig);
+        // Buyer themselves cancels within window.
+        vm.prank(w.addr);
+        escrow.cancel(reqId);
+        assertEq(usdc.balanceOf(w.addr), startBuyerBal);
+    }
+
+    function test_cancel_routesToAttestedBuyer_allowlistPath() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 10 * 1e6);
+        uint256 startBuyerBal = usdc.balanceOf(buyer);
+        bytes32 reqId = hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(4500)));
+        // Buyer themselves cancels within window (within 60s of paidAt).
+        vm.prank(buyer);
+        escrow.cancel(reqId);
+        assertEq(usdc.balanceOf(buyer), startBuyerBal + 10 * 1e6, "attested buyer received cancel refund");
+    }
+
+    function test_forceRefundCommitted_routesToAttestedBuyer_allowlistPath() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 10 * 1e6);
+        uint256 startBuyerBal = usdc.balanceOf(buyer);
+        bytes32 reqId = hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(4501)));
+        // Agent commits.
+        bytes32 commitHash = keccak256(abi.encodePacked(bytes("sig"), bytes32(uint256(11))));
+        vm.prank(agent);
+        escrow.commitSignal(reqId, commitHash, bytes32(0));
+        vm.warp(block.timestamp + 4 hours + 168 hours + 1);
+        vm.prank(owner);
+        escrow.forceRefundCommitted(reqId);
+        assertEq(usdc.balanceOf(buyer), startBuyerBal + 10 * 1e6, "attested buyer received force refund");
+    }
+
+    // ─── Wave L.B — Admin onlyOwner coverage ───────────────────────────────
+
+    function test_proposeAllowlistRemove_rejectsNonOwner() public {
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 10 * 1e6, 10 * 1e6, 10 * 1e6);
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.NotOwner.selector);
+        escrow.proposeAllowlistRemove(address(hook));
+    }
+
+    function test_commitAllowlistRemove_rejectsNonOwner() public {
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 10 * 1e6, 10 * 1e6, 10 * 1e6);
+        vm.prank(owner);
+        escrow.proposeAllowlistRemove(address(hook));
+        vm.warp(block.timestamp + escrow.ALLOWLIST_TIMELOCK_SECONDS() + 1);
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.NotOwner.selector);
+        escrow.commitAllowlistRemove(address(hook));
+    }
+
+    function test_proposeAllowlistUnpause_rejectsNonOwner() public {
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 10 * 1e6, 10 * 1e6, 10 * 1e6);
+        vm.prank(owner);
+        escrow.pauseAllowlistEntry(address(hook));
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.NotOwner.selector);
+        escrow.proposeAllowlistUnpause(address(hook));
+    }
+
+    function test_commitAllowlistUnpause_rejectsNonOwner() public {
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 10 * 1e6, 10 * 1e6, 10 * 1e6);
+        vm.prank(owner);
+        escrow.pauseAllowlistEntry(address(hook));
+        vm.prank(owner);
+        escrow.proposeAllowlistUnpause(address(hook));
+        vm.warp(block.timestamp + escrow.ALLOWLIST_UNPAUSE_TIMELOCK_SECONDS() + 1);
+        vm.prank(randomCaller);
+        vm.expectRevert(MurmurEscrow.NotOwner.selector);
+        escrow.commitAllowlistUnpause(address(hook));
+    }
+
+    // ─── Wave L.B — E1 funds-conservation across mixed entry points ───────
+
+    function test_e1_invariant_mixedEntryPoints() public {
+        // Run mixed traffic of all three entry points; assert escrow's
+        // USDC balance equals sum of paidAmount across active
+        // (Pending|Committed) requests after each transition.
+        _createPipeline(10 * 1e6, 120, 4);
+        // A: requestInference (legacy, buyer == msg.sender)
+        vm.prank(buyer);
+        bytes32 idA = escrow.requestInference(PIPELINE_ID, bytes32(uint256(7001)));
+        // B: requestInferenceFor via EIP-712
+        Vm.Wallet memory w = _makeBuyer(0xB17EB200);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonceB = bytes32(uint256(7002));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonceB, deadline);
+        vm.prank(randomCaller);
+        bytes32 idB = escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonceB, sig);
+        // C: requestInferenceFor via allowlist hook
+        MockHook hook = new MockHook();
+        _allowlistHook(hook, 100 * 1e6, 100 * 1e6, 100 * 1e6);
+        _fundHook(hook, 10 * 1e6);
+        bytes32 idC = hook.callRequestInferenceFor(address(escrow), buyer, PIPELINE_ID, bytes32(uint256(7003)));
+        // Invariant: 3 active requests × 10 USDC each = 30 USDC in escrow
+        assertEq(usdc.balanceOf(address(escrow)), 30 * 1e6, "E1: balance == sum(active)");
+        // Refund B → invariant should still hold (sum reduces by 10, balance reduces by 10).
+        vm.warp(block.timestamp + 121);
+        escrow.refund(idB);
+        assertEq(usdc.balanceOf(address(escrow)), 20 * 1e6, "E1 after refund B");
+        // Refund A.
+        escrow.refund(idA);
+        assertEq(usdc.balanceOf(address(escrow)), 10 * 1e6, "E1 after refund A");
+        // Refund C.
+        escrow.refund(idC);
+        assertEq(usdc.balanceOf(address(escrow)), 0, "E1 after refund C");
+    }
+
+    function test_forceRefundCommitted_routesToAttestedBuyer_eip712Path() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        Vm.Wallet memory w = _makeBuyer(0xB17EB102);
+        uint256 deadline = block.timestamp + 5 minutes;
+        bytes32 nonce = bytes32(uint256(4004));
+        MurmurEscrow.BuyerAuthorization memory sig =
+            _signBuyerAuth(w, PIPELINE_ID, nonce, deadline);
+        uint256 startBuyerBal = usdc.balanceOf(w.addr);
+        vm.prank(randomCaller);
+        bytes32 reqId = escrow.requestInferenceFor(w.addr, PIPELINE_ID, nonce, sig);
+        // Agent commits.
+        bytes32 commitHash = keccak256(abi.encodePacked(bytes("sig"), bytes32(uint256(7))));
+        vm.prank(agent);
+        escrow.commitSignal(reqId, commitHash, bytes32(0));
+        // Warp past horizon + 168h grace.
+        vm.warp(block.timestamp + 4 hours + 168 hours + 1);
+        vm.prank(owner);
+        escrow.forceRefundCommitted(reqId);
+        assertEq(usdc.balanceOf(w.addr), startBuyerBal);
     }
 }
