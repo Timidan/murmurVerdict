@@ -18,7 +18,7 @@ instance : Inhabited Address := ⟨Address.zero⟩
     it's a function). -/
 opaque keccakBytes : Bytes32 → Bytes32 → Bytes32
 
-/-- Compute a request id (mirrors `computeRequestId` in MurmurEscrow.sol:365).
+/-- Compute a request id (mirrors `computeRequestId` in MurmurEscrow.sol:433-439).
     Modelled as another opaque deterministic function for the proof.
     Args order matches the Solidity helper after re-arrangement:
     (buyer, pipelineId, nonce) → requestId. The Solidity contract also
@@ -29,10 +29,14 @@ opaque computeRequestId : Address → Bytes32 → Bytes32 → Bytes32
 
 /-- Solidity constants. Encoded as `def`s so they appear by name in
     the transition guards; reviewers `grep` for them to confirm.
-    Source: `MurmurEscrow.sol:44-46`. -/
+    Source: `MurmurEscrow.sol:45-47`. -/
 def MAX_PROTOCOL_FEE_BPS : Nat := 1000
 def CANCEL_WINDOW_SECONDS : Nat := 60
 def BPS_DENOMINATOR : Nat := 10000
+/-- Wave K M-1: stuck-commit recovery grace. After `committedAt +
+    horizon + COMMITTED_REFUND_GRACE_HOURS*3600` the owner may
+    `forceRefundCommitted`. Mirrors `MurmurEscrow.sol:51`. -/
+def COMMITTED_REFUND_GRACE_HOURS : Nat := 168
 
 /-- Point-update for total functions `Bytes32 → Option α`. Standalone
     helper because Lean core 4.29.1 doesn't ship `Function.update`. -/
@@ -46,50 +50,57 @@ def updateMap {α : Type} (f : Bytes32 → Option α) (k : Bytes32) (v : Option 
     argument; we drop it on the floor in `step` because the field is
     intentionally not modelled in `InferenceRequest` (per spec §4). -/
 inductive Transition where
-  | CreatePipeline       (caller : Address) (pipelineId : Bytes32) (p : Pipeline)
-  | SetPipelineActive    (caller : Address) (pipelineId : Bytes32) (active : Bool)
-  | RequestInference     (caller : Address) (pipelineId : Bytes32) (nonce : Bytes32) (now : BlockTime)
-  | CommitSignal         (caller : Address) (requestId : Bytes32) (commitHash : Bytes32) (marketDataCutoff : Bytes32) (now : BlockTime)
-  | Finalize             (caller : Address) (requestId : Bytes32) (signal : Bytes32) (nonce : Bytes32) (now : BlockTime)
-  | Refund               (caller : Address) (requestId : Bytes32) (now : BlockTime)
-  | Cancel               (caller : Address) (requestId : Bytes32) (now : BlockTime)
-  | SubmitMerkleRoot     (caller : Address) (batchId : Nat) (root : Bytes32)
-  | SetProtocolFeeBps    (caller : Address) (newBps : Nat)
-  | SetProtocolFeeSink   (caller : Address) (newSink : Address)
-  | SetPaused            (caller : Address) (paused : Bool)
-  | TransferOwnership    (caller : Address) (newOwner : Address)
+  | CreatePipeline        (caller : Address) (pipelineId : Bytes32) (p : Pipeline)
+  | SetPipelineActive     (caller : Address) (pipelineId : Bytes32) (active : Bool)
+  | RequestInference      (caller : Address) (pipelineId : Bytes32) (nonce : Bytes32) (now : BlockTime)
+  | CommitSignal          (caller : Address) (requestId : Bytes32) (commitHash : Bytes32) (marketDataCutoff : Bytes32) (now : BlockTime)
+  | Finalize              (caller : Address) (requestId : Bytes32) (signal : Bytes32) (nonce : Bytes32) (now : BlockTime)
+  | Refund                (caller : Address) (requestId : Bytes32) (now : BlockTime)
+  | Cancel                (caller : Address) (requestId : Bytes32) (now : BlockTime)
+  | ForceRefundCommitted  (caller : Address) (requestId : Bytes32) (now : BlockTime)  -- Wave K M-1
+  | SubmitMerkleRoot      (caller : Address) (batchId : Nat) (root : Bytes32)
+  | SetProtocolFeeBps     (caller : Address) (newBps : Nat)
+  | SetProtocolFeeSink    (caller : Address) (newSink : Address)
+  | SetPaused             (caller : Address) (paused : Bool)
+  | TransferOwnership     (caller : Address) (newOwner : Address)
 
 /-- Atomic transition semantics. `none` ≡ revert; `some s'` ≡ committed
     new state. Each arm cites the Solidity source line range it mirrors. -/
 def step (s : EscrowState) (t : Transition) : Option EscrowState :=
   match t with
-  -- ── CreatePipeline (MurmurEscrow.sol:170-188) ──────────────────────
-  -- Preconditions: not paused; pipeline slot empty; price/sla/horizon > 0;
-  -- caller is the declared agentOwner of the pipeline being recorded
-  -- (Solidity sets `p.agentOwner = msg.sender`'s arg; we encode that
-  -- the caller's address matches the agentOwner field of `p`).
+  -- ── CreatePipeline (MurmurEscrow.sol:192-218) ──────────────────────
+  -- Wave K H-1: now `onlyOwner` (was open to any caller with agentOwner
+  -- = msg.sender, which let a squatter redirect buyer payouts).
+  -- Wave K L-2: SLA floor — `slaSeconds > CANCEL_WINDOW_SECONDS`.
+  -- Wave K L-5: reject zero `agentOwner` and `agentOwner == escrow`
+  -- (E1 precondition: payout target must differ from escrow).
   | .CreatePipeline caller pid p =>
       if s.paused then none
+      else if caller ≠ s.owner then none
       else match s.pipelines pid with
         | some _ => none
         | none =>
-          if p.priceUsdc = 0 then none
+          if p.agentOwner = Address.zero then none
+          else if p.agentOwner = s.escrowAddr then none
+          else if p.priceUsdc = 0 then none
           else if p.horizonHours = 0 then none
           else if p.slaSeconds = 0 then none
-          else if caller ≠ p.agentOwner then none
+          else if ¬ (p.slaSeconds > CANCEL_WINDOW_SECONDS) then none
           else some { s with pipelines := updateMap s.pipelines pid (some p) }
 
-  -- ── SetPipelineActive (MurmurEscrow.sol:190-196) ────────────────────
-  -- Preconditions: pipeline exists; caller is agentOwner.
-  -- (Contract also allows owner; we narrow to agentOwner per spec.)
+  -- ── SetPipelineActive (MurmurEscrow.sol:223-228) ────────────────────
+  -- Wave K H-1: now strictly `onlyOwner`. Previously the contract allowed
+  -- `agentOwner` to re-activate, which let a squatter override owner-set
+  -- deactivation. The Lean model previously also narrowed to agentOwner;
+  -- post-Wave-K we widen to owner-only to match the contract.
   | .SetPipelineActive caller pid active =>
-      match s.pipelines pid with
-      | none => none
-      | some p =>
-        if caller ≠ p.agentOwner then none
-        else some { s with pipelines := updateMap s.pipelines pid (some { p with active := active }) }
+      if caller ≠ s.owner then none
+      else match s.pipelines pid with
+        | none => none
+        | some p =>
+          some { s with pipelines := updateMap s.pipelines pid (some { p with active := active }) }
 
-  -- ── RequestInference (MurmurEscrow.sol:200-246) ─────────────────────
+  -- ── RequestInference (MurmurEscrow.sol:233-281) ─────────────────────
   -- Preconditions: not paused; pipeline exists and active; no replay
   -- (requestId slot empty); USDC transferFrom caller → escrow succeeds.
   | .RequestInference caller pid nonce now =>
@@ -106,15 +117,17 @@ def step (s : EscrowState) (t : Transition) : Option EscrowState :=
               match s.token.transferFrom caller s.escrowAddr p.priceUsdc with
               | none => none
               | some tok' =>
+                -- Wave K M-2: snapshot `s.protocolFeeBps` into the request.
                 let r' : InferenceRequest := {
-                  pipelineId  := pid,
-                  buyer       := caller,
-                  paidAmount  := p.priceUsdc,
-                  paidAt      := now,
-                  slaDeadline := now + p.slaSeconds,
-                  commitHash  := Bytes32.zero,
-                  committedAt := 0,
-                  state       := RequestState.Pending
+                  pipelineId      := pid,
+                  buyer           := caller,
+                  paidAmount      := p.priceUsdc,
+                  paidAt          := now,
+                  slaDeadline     := now + p.slaSeconds,
+                  commitHash      := Bytes32.zero,
+                  committedAt     := 0,
+                  state           := RequestState.Pending,
+                  protocolFeeBps  := s.protocolFeeBps
                 }
                 some { s with
                   requests  := updateMap s.requests rid (some r'),
@@ -122,7 +135,7 @@ def step (s : EscrowState) (t : Transition) : Option EscrowState :=
                   blockTime := now
                 }
 
-  -- ── CommitSignal (MurmurEscrow.sol:254-269) ─────────────────────────
+  -- ── CommitSignal (MurmurEscrow.sol:289-304) ─────────────────────────
   -- Preconditions: request Pending; pipeline exists; caller = agentOwner;
   -- now ≤ slaDeadline. `marketDataCutoff` arg is intentionally discarded
   -- (field not modelled per spec §4).
@@ -147,7 +160,7 @@ def step (s : EscrowState) (t : Transition) : Option EscrowState :=
                 blockTime := now
               }
 
-  -- ── Finalize (MurmurEscrow.sol:274-297) ─────────────────────────────
+  -- ── Finalize (MurmurEscrow.sol:309-333) ─────────────────────────────
   -- Preconditions: request Committed; pipeline exists; finalize window
   -- open (now ≥ committedAt + horizonHours*3600); commit reveal matches.
   -- Token: fee→sink (if fee>0) then payout→agentOwner; both must succeed.
@@ -162,7 +175,10 @@ def step (s : EscrowState) (t : Transition) : Option EscrowState :=
             if now < r.committedAt + p.horizonHours * 3600 then none
             else if keccakBytes signal nonce ≠ r.commitHash then none
             else
-              let fee := r.paidAmount * s.protocolFeeBps / BPS_DENOMINATOR
+              -- Wave K M-2: fee comes from per-request snapshot, NOT
+              -- live `s.protocolFeeBps`. A mid-flight `setProtocolFeeBps`
+              -- doesn't change this request's payout.
+              let fee := r.paidAmount * r.protocolFeeBps / BPS_DENOMINATOR
               let agentPayout := r.paidAmount - fee
               let feeStep : Option TokenState :=
                 if fee > 0 then s.token.transfer s.escrowAddr s.protocolFeeSink fee
@@ -180,7 +196,7 @@ def step (s : EscrowState) (t : Transition) : Option EscrowState :=
                     blockTime := now
                   }
 
-  -- ── Refund (MurmurEscrow.sol:300-307) ───────────────────────────────
+  -- ── Refund (MurmurEscrow.sol:336-343) ───────────────────────────────
   -- Preconditions: request Pending; SLA elapsed (now > slaDeadline).
   -- Token: paidAmount → buyer must succeed.
   | .Refund _caller requestId now =>
@@ -200,7 +216,7 @@ def step (s : EscrowState) (t : Transition) : Option EscrowState :=
               blockTime := now
             }
 
-  -- ── Cancel (MurmurEscrow.sol:310-318) ───────────────────────────────
+  -- ── Cancel (MurmurEscrow.sol:368-376) ───────────────────────────────
   -- Preconditions: request Pending; caller = buyer; within 60s cancel
   -- window (now ≤ paidAt + CANCEL_WINDOW_SECONDS).
   -- Token: paidAmount → buyer must succeed.
@@ -222,41 +238,79 @@ def step (s : EscrowState) (t : Transition) : Option EscrowState :=
               blockTime := now
             }
 
-  -- ── SubmitMerkleRoot (MurmurEscrow.sol:322-327) ─────────────────────
+  -- ── SubmitMerkleRoot (MurmurEscrow.sol:380-385) ─────────────────────
   -- Preconditions: caller = owner. Contract only emits an event; in the
   -- abstract model this is a no-op over (requests, pipelines, token).
   | .SubmitMerkleRoot caller _batchId _root =>
       if caller ≠ s.owner then none
       else some s
 
-  -- ── SetProtocolFeeBps (MurmurEscrow.sol:336-340) ────────────────────
+  -- ── SetProtocolFeeBps (MurmurEscrow.sol:400-404) ────────────────────
   -- Preconditions: caller = owner; newBps ≤ MAX_PROTOCOL_FEE_BPS.
   | .SetProtocolFeeBps caller newBps =>
       if caller ≠ s.owner then none
       else if newBps > MAX_PROTOCOL_FEE_BPS then none
       else some { s with protocolFeeBps := newBps }
 
-  -- ── SetProtocolFeeSink (MurmurEscrow.sol:342-345) ───────────────────
-  -- Preconditions: caller = owner.
+  -- ── SetProtocolFeeSink (MurmurEscrow.sol:408-412) ───────────────────
+  -- Wave K L-5: rejects zero and self (escrow) as new sink. Both break
+  -- E1's `protocolFeeSink ≠ escrow` precondition or burn fees.
   | .SetProtocolFeeSink caller newSink =>
       if caller ≠ s.owner then none
+      else if newSink = Address.zero then none
+      else if newSink = s.escrowAddr then none
       else some { s with protocolFeeSink := newSink }
 
-  -- ── SetPaused (MurmurEscrow.sol:347-350) ────────────────────────────
+  -- ── SetPaused (MurmurEscrow.sol:415-417) ────────────────────────────
   -- Preconditions: caller = owner.
   | .SetPaused caller paused =>
       if caller ≠ s.owner then none
       else some { s with paused := paused }
 
-  -- ── TransferOwnership (MurmurEscrow.sol:331-334) ────────────────────
+  -- ── TransferOwnership (MurmurEscrow.sol:393-398) ────────────────────
   -- One-step ownership transfer in this contract (no acceptOwnership).
   -- Spec deviation note: the spec hypothesised a two-step transfer via
-  -- pendingOwner, but `MurmurEscrow.sol:331-334` writes `owner = newOwner`
-  -- directly. We mirror the actual contract: write `owner` immediately
-  -- and clear `pendingOwner` (the state field exists in our model but
-  -- the contract never reads it, so we keep it pinned at zero).
+  -- pendingOwner, but Solidity writes `owner = newOwner` directly. We
+  -- mirror the actual contract: write `owner` immediately and clear
+  -- `pendingOwner` (the state field exists in our model but the contract
+  -- never reads it, so we keep it pinned at zero).
+  -- Wave K L-5: rejects zero and self (escrow) as new owner. Owner is NOT
+  -- part of `WellFormed`, so this arm's invariant impact is just extra
+  -- guards + a no-mutation carry for everything else.
   | .TransferOwnership caller newOwner =>
       if caller ≠ s.owner then none
+      else if newOwner = Address.zero then none
+      else if newOwner = s.escrowAddr then none
       else some { s with owner := newOwner, pendingOwner := Address.zero }
+
+  -- ── ForceRefundCommitted (MurmurEscrow.sol:354-365) ─────────────────
+  -- Wave K M-1: stuck-commit recovery. Owner-gated path that returns the
+  -- buyer's funds when a Committed request can't be finalized (e.g. agent
+  -- key loss). Guarded by horizon + 168h grace so an owner can't race a
+  -- slow but legitimate finalize. Same balance-delta shape as `Refund`
+  -- (Committed → Refunded, paidAmount → buyer) but with extra guards.
+  | .ForceRefundCommitted caller requestId now =>
+      if caller ≠ s.owner then none
+      else match s.requests requestId with
+        | none => none
+        | some r =>
+          if r.state ≠ RequestState.Committed then none
+          else match s.pipelines r.pipelineId with
+            | none => none
+            | some p =>
+              -- Solidity reverts only when `block.timestamp < graceOpenAt`,
+              -- i.e. success requires `now ≥ graceOpenAt`.
+              if now < r.committedAt + p.horizonHours * 3600
+                  + COMMITTED_REFUND_GRACE_HOURS * 3600 then none
+              else
+                match s.token.transfer s.escrowAddr r.buyer r.paidAmount with
+                | none => none
+                | some tok' =>
+                  let r' := { r with state := RequestState.Refunded }
+                  some { s with
+                    requests  := updateMap s.requests requestId (some r'),
+                    token     := tok',
+                    blockTime := now
+                  }
 
 end MurmurFV.Escrow

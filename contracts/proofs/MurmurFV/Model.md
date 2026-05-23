@@ -72,7 +72,7 @@ an audit hook rather than a load-bearing axiom.
 
 ### State (`State.lean`)
 
-#### `Pipeline` — `MurmurEscrow.sol:68-74`
+#### `Pipeline` — `MurmurEscrow.sol:73-79`
 
 | Solidity field        | Lean field            |
 |-----------------------|-----------------------|
@@ -82,7 +82,7 @@ an audit hook rather than a load-bearing axiom.
 | `uint32 horizonHours` | `horizonHours : Nat`  |
 | `bool active`         | `active : Bool`       |
 
-#### `RequestState` — `MurmurEscrow.sol:50-57`
+#### `RequestState` — `MurmurEscrow.sol:55-62`
 
 Identical 6-variant enum (`None`, `Pending`, `Committed`, `Finalized`,
 `Refunded`, `Canceled`). `DecidableEq` lets proofs split on equality;
@@ -90,7 +90,7 @@ Identical 6-variant enum (`None`, `Pending`, `Committed`, `Finalized`,
 equal (used in E1 and E2 to discharge `state = Pending` contradictions
 in arms that wrote a non-`Pending` state).
 
-#### `InferenceRequest` — `MurmurEscrow.sol:76-86`
+#### `InferenceRequest` — `MurmurEscrow.sol:81-94`
 
 | Solidity field        | Lean field             |
 |-----------------------|------------------------|
@@ -103,6 +103,7 @@ in arms that wrote a non-`Pending` state).
 | `bytes32 marketDataCutoff` | (omitted)         |
 | `uint64 committedAt`  | `committedAt : Nat`    |
 | `RequestState state`  | `state : RequestState` |
+| `uint16 protocolFeeBps` | `protocolFeeBps : Nat` |
 
 The Solidity field `marketDataCutoff` is intentionally omitted. It's
 operator-declared input-freshness metadata; no E1/E2 reasoning depends
@@ -111,9 +112,13 @@ discards it (`_marketDataCutoff` in the `CommitSignal` arm).
 
 The model uses `paidAt + slaSeconds` to compute `slaDeadline` at
 `RequestInference` time; this matches the Solidity body at
-`MurmurEscrow.sol:232` (`slaDeadline: nowTs + p.slaSeconds`). The
+`MurmurEscrow.sol:264` (`slaDeadline: nowTs + p.slaSeconds`). The
 project initially stored `acceptedAt` instead of `slaDeadline` and was
 realigned in commit `93564eb` to match Solidity layout.
+
+Wave K added the per-request `protocolFeeBps` snapshot. `RequestInference`
+copies the storage fee bps into the request, and `Finalize` reads that
+snapshot rather than the live storage value.
 
 #### `EscrowState` — aggregate
 
@@ -140,52 +145,60 @@ Solidity's `pipelines[pid].agentOwner == address(0)` zero-row check.
 
 ### Transitions (`Transitions.lean`)
 
-12 constructors, one per externally-callable state-mutating function
-in `MurmurEscrow.sol`:
+13 constructors, one per externally-callable state-mutating function
+in `MurmurEscrow.sol` (Wave K added `forceRefundCommitted`):
 
 | Constructor                  | Solidity function   | Source range        |
 |------------------------------|---------------------|---------------------|
-| `CreatePipeline`             | `createPipeline`    | sol:170-188         |
-| `SetPipelineActive`          | `setPipelineActive` | sol:190-196         |
-| `RequestInference`           | `requestInference`  | sol:201-246         |
-| `CommitSignal`               | `commitSignal`      | sol:254-269         |
-| `Finalize`                   | `finalize`          | sol:274-297         |
-| `Refund`                     | `refund`            | sol:300-307         |
-| `Cancel`                     | `cancel`            | sol:310-318         |
-| `SubmitMerkleRoot`           | `submitMerkleRoot`  | sol:322-327         |
-| `SetProtocolFeeBps`          | `setProtocolFeeBps` | sol:336-340         |
-| `SetProtocolFeeSink`         | `setProtocolFeeSink`| sol:342-345         |
-| `SetPaused`                  | `setPaused`         | sol:347-350         |
-| `TransferOwnership`          | `transferOwnership` | sol:331-334         |
+| `CreatePipeline`             | `createPipeline`    | sol:192-218         |
+| `SetPipelineActive`          | `setPipelineActive` | sol:223-228         |
+| `RequestInference`           | `requestInference`  | sol:233-281         |
+| `CommitSignal`               | `commitSignal`      | sol:289-304         |
+| `Finalize`                   | `finalize`          | sol:309-333         |
+| `Refund`                     | `refund`            | sol:336-343         |
+| `Cancel`                     | `cancel`            | sol:368-376         |
+| `ForceRefundCommitted`       | `forceRefundCommitted` | sol:354-365     |
+| `SubmitMerkleRoot`           | `submitMerkleRoot`  | sol:380-385         |
+| `SetProtocolFeeBps`          | `setProtocolFeeBps` | sol:400-404         |
+| `SetProtocolFeeSink`         | `setProtocolFeeSink`| sol:408-412         |
+| `SetPaused`                  | `setPaused`         | sol:415-417         |
+| `TransferOwnership`          | `transferOwnership` | sol:393-398         |
 
 Each arm enforces the Solidity guards as `if … then none else …`
 chains. Critical guard summary:
 
-- **`CreatePipeline`** — `!paused`; slot at `pid` empty; price /
-  horizon / sla all positive; caller matches `p.agentOwner`.
-- **`SetPipelineActive`** — pipeline exists; caller is its `agentOwner`
-  (model narrows the Solidity OR-with-owner branch to the agent-only
-  case).
+- **`CreatePipeline`** — `!paused`; caller is owner; slot at `pid`
+  empty; `agentOwner` is neither zero nor escrow; price / horizon / sla
+  all positive; `slaSeconds > CANCEL_WINDOW_SECONDS`.
+- **`SetPipelineActive`** — caller is owner; pipeline exists.
 - **`RequestInference`** — `!paused`; pipeline exists and active;
-  `requests[rid] = none` (no replay); USDC `transferFrom` succeeds.
+  `requests[rid] = none` (no replay); USDC `transferFrom` succeeds;
+  stores `protocolFeeBps := s.protocolFeeBps`.
 - **`CommitSignal`** — `r.state = Pending`; pipeline exists; caller is
   `agentOwner`; `now ≤ r.slaDeadline`.
 - **`Finalize`** — `r.state = Committed`; pipeline exists; `now ≥
   r.committedAt + p.horizonHours * 3600`; `keccakBytes(signal, nonce) =
-  r.commitHash`; both USDC transfers succeed.
+  r.commitHash`; fee uses `r.protocolFeeBps`; both USDC transfers
+  succeed.
 - **`Refund`** — `r.state = Pending`; `now > r.slaDeadline`; transfer
   to buyer succeeds.
 - **`Cancel`** — `r.state = Pending`; caller is `r.buyer`; `now ≤
   r.paidAt + CANCEL_WINDOW_SECONDS` (= 60); transfer to buyer succeeds.
+- **`ForceRefundCommitted`** — caller is owner; `r.state = Committed`;
+  pipeline exists; `now ≥ committedAt + horizonHours*3600 +
+  COMMITTED_REFUND_GRACE_HOURS*3600`; transfer to buyer succeeds.
 - **`SubmitMerkleRoot`** — caller is owner. No state change in the
   abstract model (the Solidity `merkleRoots` mapping is not modelled).
 - **`SetProtocolFeeBps`** — caller is owner; `newBps ≤
   MAX_PROTOCOL_FEE_BPS` (= 1000).
-- **`SetProtocolFeeSink` / `SetPaused`** — caller is owner.
-- **`TransferOwnership`** — caller is owner. Writes `owner = newOwner`
-  directly (matches Solidity at `sol:331-334`, which does NOT use the
-  `pendingOwner` field — this contract is 1-step despite the field
-  being declared). `pendingOwner` stays pinned at zero in the model.
+- **`SetProtocolFeeSink`** — caller is owner; new sink is neither zero
+  nor escrow.
+- **`SetPaused`** — caller is owner.
+- **`TransferOwnership`** — caller is owner; new owner is neither zero
+  nor escrow. Writes `owner = newOwner` directly (matches Solidity at
+  `sol:393-398`, which does NOT use the `pendingOwner` field — this
+  contract is 1-step despite the field being declared). `pendingOwner`
+  stays pinned at zero in the model.
 
 `step : EscrowState → Transition → Option EscrowState` is total and
 deterministic; `none` ≡ revert; `some s'` ≡ committed new state.
@@ -193,22 +206,23 @@ deterministic; `none` ≡ revert; `some s'` ≡ committed new state.
 ### Off-chain invariants assumed by the proofs
 
 E1 is stated with a `WellFormed s₀` precondition
-(`MurmurFV/Escrow/InvariantE1.lean:1058`). The predicate is:
+(`MurmurFV/Escrow/InvariantE1.lean:1291`). The predicate is:
 
 ```lean
--- MurmurFV/Escrow/InvariantE1.lean:89-93
+-- MurmurFV/Escrow/InvariantE1.lean:90-95
 def WellFormed (s : EscrowState) : Prop :=
   s.escrowAddr ≠ s.protocolFeeSink ∧
   (∀ pid p, s.pipelines pid = some p → s.escrowAddr ≠ p.agentOwner) ∧
   (∀ rid r, s.requests rid = some r → s.escrowAddr ≠ r.buyer) ∧
-  s.protocolFeeBps ≤ BPS_DENOMINATOR
+  s.protocolFeeBps ≤ MAX_PROTOCOL_FEE_BPS ∧
+  (∀ rid r, s.requests rid = some r → r.protocolFeeBps ≤ MAX_PROTOCOL_FEE_BPS)
 ```
 
 `ReachableWF` also requires transition inputs that preserve those
 clauses:
 
 ```lean
--- MurmurFV/Escrow/InvariantE1.lean:106-111
+-- MurmurFV/Escrow/InvariantE1.lean:108-113
 def WellFormedTx (s : EscrowState) (tx : Transition) : Prop :=
   match tx with
   | .RequestInference caller _ _ _ => s.escrowAddr ≠ caller
@@ -217,62 +231,50 @@ def WellFormedTx (s : EscrowState) (tx : Transition) : Prop :=
   | _ => True
 ```
 
-These are proof preconditions, not new Solidity guards. The address
-separation clauses are operator/deployment invariants: the constructor
-stores `protocolFeeSink_` directly
-(`MurmurEscrow.sol:155-158`), `createPipeline` stores the supplied
-`agentOwner` directly (`MurmurEscrow.sol:170-182`), and
-`requestInference` records `buyer: msg.sender`
-(`MurmurEscrow.sol:226-229`). The bps clause is still part of
-`WellFormed`; current Solidity maintains a stronger runtime bound with
-`MAX_PROTOCOL_FEE_BPS = 1000` (`MurmurEscrow.sol:44`) and
+These are proof preconditions. Wave K made several address-separation
+facts runtime-enforced: the constructor rejects zero USDC and zero/self
+fee sink, `createPipeline` rejects zero/self agent owner, and
+`setProtocolFeeSink` rejects zero/self sink. `requestInference` still
+records `buyer: msg.sender` (`MurmurEscrow.sol:261`). The storage bps
+clause is still part of `WellFormed` and now matches Solidity's runtime
+bound, `MAX_PROTOCOL_FEE_BPS = 1000` (`MurmurEscrow.sol:45`), enforced by
 `if (newBps > MAX_PROTOCOL_FEE_BPS) revert FeeTooHigh();`
-(`MurmurEscrow.sol:336-337`).
+(`MurmurEscrow.sol:401`). New requests snapshot that contract-capped
+value into `r.protocolFeeBps`.
 
 | Clause | Why E1 needs it | Operator check | Production harm if violated |
 |--------|-----------------|----------------|-----------------------------|
-| `s.escrowAddr ≠ s.protocolFeeSink` (`InvariantE1.lean:90`) | `Finalize` uses it to prove the fee transfer reduces escrow balance (`InvariantE1.lean:896-923`). | Deploy script must reject a fee sink equal to the escrow address, or post-deploy set a non-escrow sink before enabling traffic. | The fee leg becomes an escrow-to-escrow transfer; the request can finalize while fee value remains trapped in escrow, so live request sum and escrow balance diverge. |
-| `∀ pid p, s.pipelines pid = some p → s.escrowAddr ≠ p.agentOwner` (`InvariantE1.lean:91`) | `Finalize` uses it to prove the agent payout reduces escrow balance (`InvariantE1.lean:896-898`, `InvariantE1.lean:931-933`). | Pipeline construction must assert `agentOwner != escrowAddr` before calling `createPipeline`. | The payout leg becomes an escrow-to-escrow transfer; the request is finalized but the agent is not paid and funds remain stranded. |
-| `∀ rid r, s.requests rid = some r → s.escrowAddr ≠ r.buyer` (`InvariantE1.lean:92`) | `RequestInference` uses the transition-level caller check to prove escrow balance increases (`InvariantE1.lean:538-554`); `Refund`/`Cancel` use the stored-buyer clause to prove refunds reduce escrow balance (`InvariantE1.lean:658-665`). | The x402/router path must never submit a request from the escrow address; deployment smoke tests should assert no self-call path records the escrow as buyer. | A payment or refund can degenerate to a self-transfer; request bookkeeping moves while escrow balance does not, and refunds/cancellations can leave funds stuck. |
-| `s.protocolFeeBps ≤ BPS_DENOMINATOR` (`InvariantE1.lean:93`) | `Finalize` uses it to prove `fee ≤ paidAmount` and `fee + agentPayout = paidAmount` (`InvariantE1.lean:899-915`). | Keep `MAX_PROTOCOL_FEE_BPS <= BPS_DENOMINATOR` in contract changes and deployment checks; current Solidity caps setter input at 1000 bps (`MurmurEscrow.sol:44`, `MurmurEscrow.sol:336-337`). | If a future contract version allowed bps above the denominator, finalization could revert or overdraw pooled escrow value, invalidating the per-request conservation argument. |
+| `s.escrowAddr ≠ s.protocolFeeSink` (`InvariantE1.lean:91`) | `Finalize` uses it to prove the fee transfer reduces escrow balance. | Deploy script must reject a fee sink equal to the escrow address, or post-deploy set a non-escrow sink before enabling traffic. | The fee leg becomes an escrow-to-escrow transfer; the request can finalize while fee value remains trapped in escrow, so live request sum and escrow balance diverge. |
+| `∀ pid p, s.pipelines pid = some p → s.escrowAddr ≠ p.agentOwner` (`InvariantE1.lean:92`) | `Finalize` uses it to prove the agent payout reduces escrow balance. | Pipeline construction must assert `agentOwner != escrowAddr` before calling `createPipeline`. | The payout leg becomes an escrow-to-escrow transfer; the request is finalized but the agent is not paid and funds remain stranded. |
+| `∀ rid r, s.requests rid = some r → s.escrowAddr ≠ r.buyer` (`InvariantE1.lean:93`) | `RequestInference` uses the transition-level caller check to prove escrow balance increases; `Refund`/`Cancel` use the stored-buyer clause to prove refunds reduce escrow balance. | The x402/router path must never submit a request from the escrow address; deployment smoke tests should assert no self-call path records the escrow as buyer. | A payment or refund can degenerate to a self-transfer; request bookkeeping moves while escrow balance does not, and refunds/cancellations can leave funds stuck. |
+| `s.protocolFeeBps ≤ MAX_PROTOCOL_FEE_BPS` (`InvariantE1.lean:94`) | `RequestInference` uses it to prove newly-created requests snapshot a contract-capped fee bps. | Keep `MAX_PROTOCOL_FEE_BPS <= BPS_DENOMINATOR` in contract changes and deployment checks; current Solidity caps setter input at 1000 bps (`MurmurEscrow.sol:45`, `MurmurEscrow.sol:401`). | If a future contract version allowed storage bps above the contract cap, request snapshots could diverge from the setter-enforced model; above the denominator, finalization fee arithmetic could also break. |
+| `∀ rid r, s.requests rid = some r → r.protocolFeeBps ≤ MAX_PROTOCOL_FEE_BPS` (`InvariantE1.lean:95`) | `Finalize` derives `r.protocolFeeBps ≤ BPS_DENOMINATOR` from this cap and then proves `fee ≤ paidAmount` and `fee + agentPayout = paidAmount`. | `requestInference` snapshots the already-bounded storage bps (`MurmurEscrow.sol:269-271`). | If a stored request carried a bps above the contract cap, finalization could diverge from the contract-enforced snapshot invariant; above the denominator, it could overdraw pooled escrow value. |
 
-### Authority narrowing
+### Pipeline authority
 
-`SetPipelineActive` is intentionally narrower in the Lean model than in
-the Solidity contract. Solidity allows either the pipeline owner or the
-contract owner:
+Wave K made pipeline administration owner-only. Both Solidity and the
+Lean model now require owner authority for pipeline creation and active
+flag changes.
 
 ```solidity
-// MurmurEscrow.sol:190-194
-function setPipelineActive(bytes32 pipelineId, bool active_) external {
+// MurmurEscrow.sol:223-227
+function setPipelineActive(bytes32 pipelineId, bool active_) external onlyOwner {
     Pipeline storage p = pipelines[pipelineId];
     if (p.agentOwner == address(0)) revert PipelineNotFound();
-    if (msg.sender != p.agentOwner && msg.sender != owner) revert NotPipelineOwner();
     p.active = active_;
 ```
 
-The Lean transition constructor carries a caller, but the `step` arm only
-accepts the pipeline `agentOwner`:
+The Lean `step` arm mirrors that owner-only gate:
 
 ```lean
--- MurmurFV/Escrow/Transitions.lean:85-90
 | .SetPipelineActive caller pid active =>
+    if caller ≠ s.owner then none
+    else
     match s.pipelines pid with
     | none => none
     | some p =>
-      if caller ≠ p.agentOwner then none
-      else some { s with pipelines := updateMap s.pipelines pid (some { p with active := active }) }
+      some { s with pipelines := updateMap s.pipelines pid (some { p with active := active }) }
 ```
-
-This narrowing is sound for the current E1/E2 claims because the extra
-Solidity owner branch has the same state effect as the modeled
-agent-owner branch after the same pipeline-existence check: it only
-writes `p.active = active_`. Any Solidity owner call can therefore be
-simulated, for these state/commit-count invariants, by the Lean
-agent-owner call with the same `pipelineId` and `active` value. This is
-not a general authority proof; any future caller-sensitive invariant
-must widen this arm to `owner OR agentOwner` or prove the simulation
-lemma explicitly.
 
 ## SealedVerdicts layer (`MurmurFV/SealedVerdicts/`)
 

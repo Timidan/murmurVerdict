@@ -148,6 +148,9 @@ theorem no_transition_restores_pending
       split at hstep <;> try (simp at hstep; done)
       split at hstep <;> try (simp at hstep; done)
       split at hstep <;> try (simp at hstep; done)
+      split at hstep <;> try (simp at hstep; done)
+      split at hstep <;> try (simp at hstep; done)
+      split at hstep <;> try (simp at hstep; done)
       injection hstep with heq
       exact ⟨r, by rw [← heq]; exact hreq, hne⟩
   | SetPipelineActive caller pid active =>
@@ -240,6 +243,26 @@ theorem no_transition_restores_pending
       · refine ⟨r, ?_, hne⟩
         rw [← heq]
         simp [updateMap_other _ _ _ _ h_eq, hreq]
+  | ForceRefundCommitted caller requestId now =>
+      simp only [step] at hstep
+      split at hstep <;> try (simp at hstep; done)
+      split at hstep <;> try (simp at hstep; done)
+      rename_i r2 hreq2
+      split at hstep <;> try (simp at hstep; done)
+      rename_i h_state
+      split at hstep <;> try (simp at hstep; done)
+      rename_i p h_pipe
+      split at hstep <;> try (simp at hstep; done)
+      rename_i h_grace
+      split at hstep <;> try (simp at hstep; done)
+      injection hstep with heq
+      by_cases h_eq : rid = requestId
+      · refine ⟨{ r2 with state := RequestState.Refunded }, ?_, ?_⟩
+        · rw [← heq]; simp [h_eq, updateMap_same]
+        · intro hcontra; exact RequestState.noConfusion hcontra
+      · refine ⟨r, ?_, hne⟩
+        rw [← heq]
+        simp [updateMap_other _ _ _ _ h_eq, hreq]
   | Cancel caller requestId now =>
       simp only [step] at hstep
       split at hstep <;> try (simp at hstep; done)
@@ -273,6 +296,8 @@ theorem no_transition_restores_pending
   | SetProtocolFeeSink caller newSink =>
       simp only [step] at hstep
       split at hstep <;> try (simp at hstep; done)
+      split at hstep <;> try (simp at hstep; done)
+      split at hstep <;> try (simp at hstep; done)
       injection hstep with heq
       exact ⟨r, by rw [← heq]; exact hreq, hne⟩
   | SetPaused caller paused =>
@@ -282,6 +307,8 @@ theorem no_transition_restores_pending
       exact ⟨r, by rw [← heq]; exact hreq, hne⟩
   | TransferOwnership caller newOwner =>
       simp only [step] at hstep
+      split at hstep <;> try (simp at hstep; done)
+      split at hstep <;> try (simp at hstep; done)
       split at hstep <;> try (simp at hstep; done)
       injection hstep with heq
       exact ⟨r, by rw [← heq]; exact hreq, hne⟩
@@ -333,6 +360,7 @@ theorem nonPending_propagates_with_no_commits
       | Finalize _ _ _ _ _ => simp [h_rest_zero]
       | Refund _ _ _ => simp [h_rest_zero]
       | Cancel _ _ _ => simp [h_rest_zero]
+      | ForceRefundCommitted _ _ _ => simp [h_rest_zero]
       | SubmitMerkleRoot _ _ _ => simp [h_rest_zero]
       | SetProtocolFeeBps _ _ => simp [h_rest_zero]
       | SetProtocolFeeSink _ _ => simp [h_rest_zero]
@@ -376,6 +404,7 @@ theorem singleCommit
       | Finalize _ _ _ _ _ => simp; exact ih
       | Refund _ _ _ => simp; exact ih
       | Cancel _ _ _ => simp; exact ih
+      | ForceRefundCommitted _ _ _ => simp; exact ih
       | SubmitMerkleRoot _ _ _ => simp; exact ih
       | SetProtocolFeeBps _ _ => simp; exact ih
       | SetProtocolFeeSink _ _ => simp; exact ih

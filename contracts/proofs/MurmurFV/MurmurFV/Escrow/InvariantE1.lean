@@ -22,7 +22,7 @@ provided:
 
 The proof is by induction on `Reachable`. The inductive step case-splits
 on the next transition and shows that the delta on LHS (`liveSumList`)
-matches the delta on RHS (`balanceOf escrowAddr`). All 12 arms close.
+matches the delta on RHS (`balanceOf escrowAddr`). All 13 arms close.
 
 ### Approach choice — parametric over an external rid list (Approach B)
 
@@ -74,6 +74,7 @@ def touchedRid : Transition → Option Bytes32
   | .Finalize _ rid _ _ _ => some rid
   | .Refund _ rid _ => some rid
   | .Cancel _ rid _ => some rid
+  | .ForceRefundCommitted _ rid _ => some rid
   | _ => none
 
 /-- Every transition's touched rid (if any) is in `rids`. -/
@@ -84,13 +85,14 @@ def traceCovered (rids : List Bytes32) : List Transition → Prop
 
 /-- Well-formedness predicate over `s`. Captures the closed-world
     assumption that token transfers in transitions actually move
-    balance (no self-transfers), and that `protocolFeeBps` stays within
-    the denominator so `fee ≤ r.paidAmount` in `Finalize`. -/
+    balance (no self-transfers), and that live + snapshotted
+    `protocolFeeBps` values stay within the contract cap. -/
 def WellFormed (s : EscrowState) : Prop :=
   s.escrowAddr ≠ s.protocolFeeSink ∧
   (∀ pid p, s.pipelines pid = some p → s.escrowAddr ≠ p.agentOwner) ∧
   (∀ rid r, s.requests rid = some r → s.escrowAddr ≠ r.buyer) ∧
-  s.protocolFeeBps ≤ BPS_DENOMINATOR
+  s.protocolFeeBps ≤ MAX_PROTOCOL_FEE_BPS ∧
+  (∀ rid r, s.requests rid = some r → r.protocolFeeBps ≤ MAX_PROTOCOL_FEE_BPS)
 
 /-- A transition is *well-formed* when its inputs preserve `WellFormed`.
 
@@ -273,7 +275,7 @@ structure E1Inv (s : EscrowState) (rids : List Bytes32) : Prop where
 /-- Helper: when `s'` only differs from `s` in non-`requests`,
     non-`token`, non-`escrowAddr`, non-`protocolFeeSink`, non-`pipelines`
     fields, the invariant carries over. This applies to `SetPaused`,
-    `TransferOwnership`, `SetProtocolFeeBps`, `SubmitMerkleRoot`. -/
+    `TransferOwnership`, `SubmitMerkleRoot`. -/
 theorem E1Inv_carry_no_mutation
     (s s' : EscrowState) (rids : List Bytes32)
     (h_req : s.requests = s'.requests)
@@ -284,7 +286,7 @@ theorem E1Inv_carry_no_mutation
     (h_pipe : s.pipelines = s'.pipelines)
     (h_inv : E1Inv s rids) :
     E1Inv s' rids := by
-  refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+  refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
   · -- liveSumList s' rids = s'.token.balanceOf s'.escrowAddr
     have h_sum_eq : liveSumList s' rids = liveSumList s rids :=
       (liveSumList_requests_eq s s' rids h_req).symm
@@ -298,7 +300,10 @@ theorem E1Inv_carry_no_mutation
     rw [← h_req] at hr
     rw [← h_addr]
     exact h_inv.wf.2.2.1 rid r hr
-  · rw [← h_bps]; exact h_inv.wf.2.2.2
+  · rw [← h_bps]; exact h_inv.wf.2.2.2.1
+  · intro rid r hr
+    rw [← h_req] at hr
+    exact h_inv.wf.2.2.2.2 rid r hr
   · intro rid hactive
     apply h_inv.coverActive
     unfold isActive at hactive ⊢
@@ -328,15 +333,11 @@ theorem step_preserves_E1Inv
       split at h_step <;> try (simp at h_step; done)
       rename_i h_bps_le
       injection h_step with heq
-      -- Changes protocolFeeBps. Other fields unchanged. WellFormed needs new bps ≤ BPS_DENOMINATOR.
-      have h_new_bps_le : newBps ≤ BPS_DENOMINATOR := by
-        have h_bound : newBps ≤ MAX_PROTOCOL_FEE_BPS := Nat.not_lt.mp h_bps_le
-        show newBps ≤ 10000
-        have : (MAX_PROTOCOL_FEE_BPS : Nat) = 1000 := rfl
-        omega
+      -- Changes protocolFeeBps. Other fields unchanged. WellFormed needs the setter cap.
+      have h_new_bps_le : newBps ≤ MAX_PROTOCOL_FEE_BPS := Nat.not_lt.mp h_bps_le
       -- s' = { s with protocolFeeBps := newBps }
       subst heq
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · show liveSumList _ rids = _
         simp only []
         exact h_inv.eq
@@ -344,6 +345,7 @@ theorem step_preserves_E1Inv
       · exact h_inv.wf.2.1
       · exact h_inv.wf.2.2.1
       · exact h_new_bps_le
+      · exact h_inv.wf.2.2.2.2
       · intro rid hactive
         exact h_inv.coverActive rid hactive
       · exact h_inv.nodup
@@ -357,6 +359,8 @@ theorem step_preserves_E1Inv
   | TransferOwnership caller newOwner =>
       simp only [step] at h_step
       split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
       injection h_step with heq
       apply E1Inv_carry_no_mutation s s' rids
         (by rw [← heq]) (by rw [← heq]) (by rw [← heq]) (by rw [← heq])
@@ -365,15 +369,18 @@ theorem step_preserves_E1Inv
       -- This DOES change protocolFeeSink. Need WellFormedTx.
       simp only [step] at h_step
       split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
       injection h_step with heq
       unfold WellFormedTx at h_wf_tx
       subst heq
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · exact h_inv.eq
       · exact h_wf_tx
       · exact h_inv.wf.2.1
       · exact h_inv.wf.2.2.1
-      · exact h_inv.wf.2.2.2
+      · exact h_inv.wf.2.2.2.1
+      · exact h_inv.wf.2.2.2.2
       · intro rid hactive
         exact h_inv.coverActive rid hactive
       · exact h_inv.nodup
@@ -387,10 +394,13 @@ theorem step_preserves_E1Inv
       split at h_step <;> try (simp at h_step; done)
       split at h_step <;> try (simp at h_step; done)
       split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
       injection h_step with heq
       unfold WellFormedTx at h_wf_tx
       subst heq
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · exact h_inv.eq
       · exact h_inv.wf.1
       · intro pid' p' hp'
@@ -403,7 +413,8 @@ theorem step_preserves_E1Inv
         · simp [updateMap_other _ _ _ _ h_eq] at hp'
           exact h_inv.wf.2.1 pid' p' hp'
       · exact h_inv.wf.2.2.1
-      · exact h_inv.wf.2.2.2
+      · exact h_inv.wf.2.2.2.1
+      · exact h_inv.wf.2.2.2.2
       · intro rid hactive
         exact h_inv.coverActive rid hactive
       · exact h_inv.nodup
@@ -411,11 +422,11 @@ theorem step_preserves_E1Inv
       -- Changes only `pipelines`. agentOwner of edited pipeline unchanged.
       simp only [step] at h_step
       split at h_step <;> try (simp at h_step; done)
-      rename_i p h_pipe_some
       split at h_step <;> try (simp at h_step; done)
+      rename_i p h_pipe_some
       injection h_step with heq
       subst heq
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · exact h_inv.eq
       · exact h_inv.wf.1
       · intro pid' p' hp'
@@ -430,7 +441,8 @@ theorem step_preserves_E1Inv
         · simp [updateMap_other _ _ _ _ h_eq] at hp'
           exact h_inv.wf.2.1 pid' p' hp'
       · exact h_inv.wf.2.2.1
-      · exact h_inv.wf.2.2.2
+      · exact h_inv.wf.2.2.2.1
+      · exact h_inv.wf.2.2.2.2
       · intro rid hactive
         exact h_inv.coverActive rid hactive
       · exact h_inv.nodup
@@ -477,7 +489,7 @@ theorem step_preserves_E1Inv
         apply liveSumList_congr
         intro rid _; exact h_paid_eq rid
       have h_bps : s.protocolFeeBps = s'.protocolFeeBps := by rw [← heq]
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · rw [← h_sum, ← h_addr, ← h_tok]; exact h_inv.eq
       · rw [← h_addr, ← h_sink]; exact h_inv.wf.1
       · intro pid' p' hp'
@@ -501,7 +513,22 @@ theorem step_preserves_E1Inv
             rw [← heq]; simp [updateMap_other _ _ _ _ h_eq]
           rw [this] at hr'
           exact h_inv.wf.2.2.1 rid r' hr'
-      · rw [← h_bps]; exact h_inv.wf.2.2.2
+      · rw [← h_bps]; exact h_inv.wf.2.2.2.1
+      · intro rid r' hr'
+        by_cases h_eq : rid = requestId
+        · subst h_eq
+          have : s'.requests rid = some
+              { r with state := RequestState.Committed,
+                       commitHash := commitHash,
+                       committedAt := now } := by
+            rw [← heq]; simp [updateMap_same]
+          rw [this] at hr'; injection hr' with hrr
+          rw [← hrr]
+          exact h_inv.wf.2.2.2.2 rid r h_req_some
+        · have : s'.requests rid = s.requests rid := by
+            rw [← heq]; simp [updateMap_other _ _ _ _ h_eq]
+          rw [this] at hr'
+          exact h_inv.wf.2.2.2.2 rid r' hr'
       · intro rid hactive
         apply h_inv.coverActive
         unfold isActive at hactive ⊢
@@ -565,7 +592,8 @@ theorem step_preserves_E1Inv
             { pipelineId := pid, buyer := caller, paidAmount := p.priceUsdc,
               paidAt := now, slaDeadline := now + p.slaSeconds,
               commitHash := Bytes32.zero, committedAt := 0,
-              state := RequestState.Pending } := by
+              state := RequestState.Pending,
+              protocolFeeBps := s.protocolFeeBps } := by
           show s'.requests (computeRequestId caller pid nonce) = _
           rw [← heq]
           show updateMap _ _ _ (computeRequestId caller pid nonce) = _
@@ -588,7 +616,7 @@ theorem step_preserves_E1Inv
         rw [h_paid_s_rid, h_paid_s'_rid] at h_update
         omega
       have h_bps : s.protocolFeeBps = s'.protocolFeeBps := by rw [← heq]
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · rw [h_sum_delta, h_bal, h_inv.eq]
       · rw [← h_addr, ← h_sink]; exact h_inv.wf.1
       · intro pid' p' hp'
@@ -604,7 +632,8 @@ theorem step_preserves_E1Inv
                 { pipelineId := pid, buyer := caller, paidAmount := p.priceUsdc,
                   paidAt := now, slaDeadline := now + p.slaSeconds,
                   commitHash := Bytes32.zero, committedAt := 0,
-                  state := RequestState.Pending } := by
+                  state := RequestState.Pending,
+                  protocolFeeBps := s.protocolFeeBps } := by
             show s'.requests (computeRequestId caller pid nonce) = _
             rw [← heq]
             show updateMap _ _ _ (computeRequestId caller pid nonce) = _
@@ -619,7 +648,31 @@ theorem step_preserves_E1Inv
             exact updateMap_other _ _ _ _ h_eq
           rw [h_eq_req] at hr'
           exact h_inv.wf.2.2.1 rid' r hr'
-      · rw [← h_bps]; exact h_inv.wf.2.2.2
+      · rw [← h_bps]; exact h_inv.wf.2.2.2.1
+      · intro rid' r hr'
+        by_cases h_eq : rid' = rid
+        · subst h_eq
+          have h_eq_req :
+              s'.requests rid = some
+                { pipelineId := pid, buyer := caller, paidAmount := p.priceUsdc,
+                  paidAt := now, slaDeadline := now + p.slaSeconds,
+                  commitHash := Bytes32.zero, committedAt := 0,
+                  state := RequestState.Pending,
+                  protocolFeeBps := s.protocolFeeBps } := by
+            show s'.requests (computeRequestId caller pid nonce) = _
+            rw [← heq]
+            show updateMap _ _ _ (computeRequestId caller pid nonce) = _
+            exact updateMap_same _ _ _
+          rw [h_eq_req] at hr'
+          injection hr' with hrr
+          rw [← hrr]
+          exact h_inv.wf.2.2.2.1
+        · have h_eq_req : s'.requests rid' = s.requests rid' := by
+            rw [← heq]
+            show updateMap _ (computeRequestId caller pid nonce) _ rid' = _
+            exact updateMap_other _ _ _ _ h_eq
+          rw [h_eq_req] at hr'
+          exact h_inv.wf.2.2.2.2 rid' r hr'
       · intro rid' hactive
         unfold isActive at hactive
         by_cases h_eq : rid' = rid
@@ -713,7 +766,7 @@ theorem step_preserves_E1Inv
         rw [← h_inv.eq]; exact h_le
       have h_bps : s.protocolFeeBps = s'.protocolFeeBps := by rw [← heq]
       have h_inv_eq := h_inv.eq
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · rw [h_bal]; omega
       · rw [← h_addr, ← h_sink]; exact h_inv.wf.1
       · intro pid' p' hp'
@@ -733,7 +786,157 @@ theorem step_preserves_E1Inv
             exact updateMap_other _ _ _ _ h_eq
           rw [h_req_other] at hr'
           exact h_inv.wf.2.2.1 rid' r' hr'
-      · rw [← h_bps]; exact h_inv.wf.2.2.2
+      · rw [← h_bps]; exact h_inv.wf.2.2.2.1
+      · intro rid' r' hr'
+        by_cases h_eq : rid' = requestId
+        · subst h_eq
+          rw [h_req_s'] at hr'; injection hr' with hrr
+          rw [← hrr]
+          exact h_inv.wf.2.2.2.2 rid' r h_req_some
+        · have h_req_other : s'.requests rid' = s.requests rid' := by
+            rw [← heq]
+            show updateMap _ requestId _ rid' = _
+            exact updateMap_other _ _ _ _ h_eq
+          rw [h_req_other] at hr'
+          exact h_inv.wf.2.2.2.2 rid' r' hr'
+      · intro rid' hactive
+        unfold isActive at hactive
+        by_cases h_eq : rid' = requestId
+        · subst h_eq
+          -- State at requestId in s' is Refunded, which is NOT active.
+          rw [h_req_s'] at hactive
+          simp only at hactive
+          cases hactive with
+          | inl h => exact absurd h (by intro hc; exact RequestState.noConfusion hc)
+          | inr h => exact absurd h (by intro hc; exact RequestState.noConfusion hc)
+        · have h_req_other : s'.requests rid' = s.requests rid' := by
+            rw [← heq]
+            show updateMap _ requestId _ rid' = _
+            exact updateMap_other _ _ _ _ h_eq
+          rw [h_req_other] at hactive
+          apply h_inv.coverActive
+          unfold isActive; exact hactive
+      · exact h_inv.nodup
+  | ForceRefundCommitted caller requestId now =>
+      -- Changes state Committed → Refunded. Transfers paidAmount to buyer.
+      -- LHS loses paidAmount. RHS loses paidAmount.
+      simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      rename_i r h_req_some
+      split at h_step <;> try (simp at h_step; done)
+      rename_i h_state_ne_committed
+      split at h_step <;> try (simp at h_step; done)
+      rename_i p h_pipe_some
+      split at h_step <;> try (simp at h_step; done)
+      rename_i h_grace
+      split at h_step <;> try (simp at h_step; done)
+      rename_i tok' h_tok_some
+      injection h_step with heq
+      have h_rid_in_rids : requestId ∈ rids := by
+        apply h_cover_tx requestId
+        simp [touchedRid]
+      -- Frame
+      have h_addr : s.escrowAddr = s'.escrowAddr := by rw [← heq]
+      have h_sink : s.protocolFeeSink = s'.protocolFeeSink := by rw [← heq]
+      have h_pipe : s.pipelines = s'.pipelines := by rw [← heq]
+      -- State was Committed (so active). r.paidAmount is the live value.
+      have h_state_committed : r.state = RequestState.Committed :=
+        Classical.not_not.mp h_state_ne_committed
+      -- Buyer ≠ escrow from WellFormed.
+      have h_buyer_ne : s.escrowAddr ≠ r.buyer := h_inv.wf.2.2.1 requestId r h_req_some
+      -- Token: balanceOf escrowAddr drops by r.paidAmount.
+      have h_tok_s' : s'.token = tok' := by rw [← heq]
+      have h_bal : s'.token.balanceOf s'.escrowAddr =
+          s.token.balanceOf s.escrowAddr - r.paidAmount := by
+        have hbalfrom :=
+          transfer_balance_from s.token s.escrowAddr r.buyer r.paidAmount tok' h_tok_some h_buyer_ne
+        rw [← h_addr, h_tok_s']
+        exact hbalfrom
+      -- LHS: paidAmountOf changes from paidAmount to 0 at requestId.
+      have h_paid_s_rid : paidAmountOf s requestId = r.paidAmount := by
+        unfold paidAmountOf; rw [h_req_some]
+        have : r.state = RequestState.Pending ∨ r.state = RequestState.Committed :=
+          Or.inr h_state_committed
+        simp [this]
+      have h_req_s' : s'.requests requestId = some { r with state := RequestState.Refunded } := by
+        rw [← heq]
+        show updateMap _ requestId _ requestId = _
+        exact updateMap_same _ _ _
+      have h_paid_s'_rid : paidAmountOf s' requestId = 0 := by
+        unfold paidAmountOf
+        rw [h_req_s']
+        simp
+      have h_paid_other : ∀ other, other ≠ requestId → paidAmountOf s other = paidAmountOf s' other := by
+        intro other hne
+        unfold paidAmountOf
+        have h_req' : s'.requests other = s.requests other := by
+          rw [← heq]
+          show updateMap _ requestId _ other = _
+          exact updateMap_other _ _ _ _ hne
+        rw [h_req']
+      -- Sum change
+      have h_sum_delta : liveSumList s rids = liveSumList s' rids + r.paidAmount := by
+        have h_update := liveSumList_update_single s s' rids requestId h_rid_in_rids h_inv.nodup
+          (fun rid' _ hne => h_paid_other rid' hne)
+        rw [h_paid_s_rid, h_paid_s'_rid] at h_update
+        omega
+      -- Need: r.paidAmount ≤ s.token.balanceOf s.escrowAddr (so the subtraction is exact).
+      have h_paid_le_bal : r.paidAmount ≤ s.token.balanceOf s.escrowAddr := by
+        have h_sum_ge : ∀ (rl : List Bytes32),
+            requestId ∈ rl → paidAmountOf s requestId ≤ liveSumList s rl := by
+          intro rl hmem
+          unfold liveSumList
+          induction rl with
+          | nil => exact absurd hmem (List.not_mem_nil)
+          | cons head tail ih =>
+              simp only [List.map_cons, List.foldr_cons]
+              by_cases h_head : head = requestId
+              · subst h_head; omega
+              · have h_rid_in_tail : requestId ∈ tail := by
+                  cases hmem with
+                  | head => exact absurd rfl h_head
+                  | tail _ h => exact h
+                have := ih h_rid_in_tail
+                omega
+        have h_le := h_sum_ge rids h_rid_in_rids
+        rw [h_paid_s_rid] at h_le
+        rw [← h_inv.eq]; exact h_le
+      have h_bps : s.protocolFeeBps = s'.protocolFeeBps := by rw [← heq]
+      have h_inv_eq := h_inv.eq
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      · rw [h_bal]; omega
+      · rw [← h_addr, ← h_sink]; exact h_inv.wf.1
+      · intro pid' p' hp'
+        rw [← h_pipe] at hp'
+        rw [← h_addr]
+        exact h_inv.wf.2.1 pid' p' hp'
+      · intro rid' r' hr'
+        rw [← h_addr]
+        by_cases h_eq : rid' = requestId
+        · subst h_eq
+          rw [h_req_s'] at hr'; injection hr' with hrr
+          rw [← hrr]
+          exact h_inv.wf.2.2.1 rid' r h_req_some
+        · have h_req_other : s'.requests rid' = s.requests rid' := by
+            rw [← heq]
+            show updateMap _ requestId _ rid' = _
+            exact updateMap_other _ _ _ _ h_eq
+          rw [h_req_other] at hr'
+          exact h_inv.wf.2.2.1 rid' r' hr'
+      · rw [← h_bps]; exact h_inv.wf.2.2.2.1
+      · intro rid' r' hr'
+        by_cases h_eq : rid' = requestId
+        · subst h_eq
+          rw [h_req_s'] at hr'; injection hr' with hrr
+          rw [← hrr]
+          exact h_inv.wf.2.2.2.2 rid' r h_req_some
+        · have h_req_other : s'.requests rid' = s.requests rid' := by
+            rw [← heq]
+            show updateMap _ requestId _ rid' = _
+            exact updateMap_other _ _ _ _ h_eq
+          rw [h_req_other] at hr'
+          exact h_inv.wf.2.2.2.2 rid' r' hr'
       · intro rid' hactive
         unfold isActive at hactive
         by_cases h_eq : rid' = requestId
@@ -827,7 +1030,7 @@ theorem step_preserves_E1Inv
         rw [← h_inv.eq]; exact h_le
       have h_bps : s.protocolFeeBps = s'.protocolFeeBps := by rw [← heq]
       have h_inv_eq := h_inv.eq
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · rw [h_bal]; omega
       · rw [← h_addr, ← h_sink]; exact h_inv.wf.1
       · intro pid' p' hp'
@@ -847,7 +1050,19 @@ theorem step_preserves_E1Inv
             exact updateMap_other _ _ _ _ h_eq
           rw [h_req_other] at hr'
           exact h_inv.wf.2.2.1 rid' r' hr'
-      · rw [← h_bps]; exact h_inv.wf.2.2.2
+      · rw [← h_bps]; exact h_inv.wf.2.2.2.1
+      · intro rid' r' hr'
+        by_cases h_eq : rid' = requestId
+        · subst h_eq
+          rw [h_req_s'] at hr'; injection hr' with hrr
+          rw [← hrr]
+          exact h_inv.wf.2.2.2.2 rid' r h_req_some
+        · have h_req_other : s'.requests rid' = s.requests rid' := by
+            rw [← heq]
+            show updateMap _ requestId _ rid' = _
+            exact updateMap_other _ _ _ _ h_eq
+          rw [h_req_other] at hr'
+          exact h_inv.wf.2.2.2.2 rid' r' hr'
       · intro rid' hactive
         unfold isActive at hactive
         by_cases h_eq : rid' = requestId
@@ -896,17 +1111,23 @@ theorem step_preserves_E1Inv
       -- WellFormed gives: escrow ≠ feeSink, escrow ≠ p.agentOwner.
       have h_sink_ne : s.escrowAddr ≠ s.protocolFeeSink := h_inv.wf.1
       have h_owner_ne : s.escrowAddr ≠ p.agentOwner := h_inv.wf.2.1 r.pipelineId p h_pipe_some
-      have h_bps_le : s.protocolFeeBps ≤ BPS_DENOMINATOR := h_inv.wf.2.2.2
+      have h_bps_max_le : r.protocolFeeBps ≤ MAX_PROTOCOL_FEE_BPS :=
+        h_inv.wf.2.2.2.2 requestId r h_req_some
+      have h_max_le_den : MAX_PROTOCOL_FEE_BPS ≤ BPS_DENOMINATOR := by
+        show 1000 ≤ 10000
+        omega
+      have h_bps_le : r.protocolFeeBps ≤ BPS_DENOMINATOR :=
+        Nat.le_trans h_bps_max_le h_max_le_den
       -- Compute fee and agentPayout.
-      let fee : Nat := r.paidAmount * s.protocolFeeBps / BPS_DENOMINATOR
+      let fee : Nat := r.paidAmount * r.protocolFeeBps / BPS_DENOMINATOR
       let agentPayout : Nat := r.paidAmount - fee
       -- fee ≤ r.paidAmount
       have h_fee_le : fee ≤ r.paidAmount := by
-        show r.paidAmount * s.protocolFeeBps / BPS_DENOMINATOR ≤ r.paidAmount
-        have h_mul_le : r.paidAmount * s.protocolFeeBps ≤ r.paidAmount * BPS_DENOMINATOR :=
+        show r.paidAmount * r.protocolFeeBps / BPS_DENOMINATOR ≤ r.paidAmount
+        have h_mul_le : r.paidAmount * r.protocolFeeBps ≤ r.paidAmount * BPS_DENOMINATOR :=
           Nat.mul_le_mul_left r.paidAmount h_bps_le
         have h_pos : 0 < BPS_DENOMINATOR := by show 0 < 10000; omega
-        calc r.paidAmount * s.protocolFeeBps / BPS_DENOMINATOR
+        calc r.paidAmount * r.protocolFeeBps / BPS_DENOMINATOR
             ≤ r.paidAmount * BPS_DENOMINATOR / BPS_DENOMINATOR :=
               Nat.div_le_div_right h_mul_le
           _ = r.paidAmount := Nat.mul_div_cancel _ h_pos
@@ -990,7 +1211,7 @@ theorem step_preserves_E1Inv
         rw [← h_inv.eq]; exact h_le
       have h_bps : s.protocolFeeBps = s'.protocolFeeBps := by rw [← heq]
       have h_inv_eq := h_inv.eq
-      refine ⟨?_, ⟨?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+      refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · rw [h_bal]; omega
       · rw [← h_addr, ← h_sink]; exact h_inv.wf.1
       · intro pid' p' hp'
@@ -1010,7 +1231,19 @@ theorem step_preserves_E1Inv
             exact updateMap_other _ _ _ _ h_eq
           rw [h_req_other] at hr'
           exact h_inv.wf.2.2.1 rid' r' hr'
-      · rw [← h_bps]; exact h_inv.wf.2.2.2
+      · rw [← h_bps]; exact h_inv.wf.2.2.2.1
+      · intro rid' r' hr'
+        by_cases h_eq : rid' = requestId
+        · subst h_eq
+          rw [h_req_s'] at hr'; injection hr' with hrr
+          rw [← hrr]
+          exact h_inv.wf.2.2.2.2 rid' r h_req_some
+        · have h_req_other : s'.requests rid' = s.requests rid' := by
+            rw [← heq]
+            show updateMap _ requestId _ rid' = _
+            exact updateMap_other _ _ _ _ h_eq
+          rw [h_req_other] at hr'
+          exact h_inv.wf.2.2.2.2 rid' r' hr'
       · intro rid' hactive
         unfold isActive at hactive
         by_cases h_eq : rid' = requestId
