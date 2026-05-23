@@ -465,7 +465,7 @@ function runtimeKeyUsageAttributes(
   };
 }
 
-function sealedFhenixCommitHash(input: {
+export function sealedFhenixCommitHash(input: {
   agent_id: string;
   market_id: string;
   market_config_version: number;

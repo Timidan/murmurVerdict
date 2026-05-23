@@ -5,6 +5,8 @@ import { OracleClient } from "../integrations/oracle.js";
 import { Resolver } from "../verdict/resolver.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import { accountRouter } from "../verdict/routes/account.js";
+import { nanopayRouter, type PipelineInfo } from "../verdict/routes/nanopay.js";
+import type { FhenixAnchorTuple } from "../verdict/single-stream-binding.js";
 import { agentsRepo, openDb, resolutionsRepo } from "../verdict/db.js";
 import { VerdictEventBus } from "../verdict/events.js";
 import { runFeedSlaTick } from "../verdict/feed-sla.js";
@@ -274,6 +276,106 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   // store, tracked in scaling research §6). Mounted after the verdict router;
   // `/v1/account/*` is a fresh path prefix with no collision.
   app.use(accountRouter({ db }));
+
+  // Wave L.A Phase 1 — Nanopayments via Circle Gateway middleware.
+  // Mounts `POST /v2/nanopay/infer/:pipelineId`. Wire-format details
+  // (x402 V2 headers, EIP-3009 sig recovery, Circle /settle call) are
+  // handled by `@circle-fin/x402-batching/server`'s middleware; Murmur
+  // owns the pipeline catalog, sealed-Fhenix anchor lookup, receipt
+  // persistence, and single-stream binding response.
+  //
+  // Phase 1 testnet MVP: `resolvePipeline` + `resolveLatestSealedCall`
+  // ship as stubs (return null) until Phase 2 wires them to real
+  // catalogs. With stubs the route returns 404/503 — safe (no
+  // free-serve), but it does ALREADY settle the buyer's payment via
+  // the SDK middleware before reaching the stub. Operator must wire
+  // real resolvers before promoting beyond local-smoke testing.
+  //
+  // Env config:
+  //   MURMUR_NANOPAY_ENABLED=true              — enables the route mount
+  //   MURMUR_NANOPAY_NETWORK                   — "testnet" (default) | "mainnet"
+  //   MURMUR_NANOPAY_SELLER_ADDRESS            — seller wallet that receives
+  //                                              Nanopayments (required)
+  //   MURMUR_NANOPAY_DOMAIN_CHAIN_ID           — chainId for the EIP-712
+  //                                              requestSignalId domain
+  //                                              (defaults to FHENIX_CHAIN_ID)
+  //   MURMUR_NANOPAY_DOMAIN_CONTRACT           — sealed-verdicts contract addr
+  //                                              for the EIP-712 verifyingContract
+  //                                              (defaults to FHENIX_SEALED_VERDICTS_ADDRESS)
+  //   MURMUR_NANOPAY_DEFAULT_PRICE             — default per-call price string,
+  //                                              e.g. "$0.001". (Phase 2 will
+  //                                              switch to per-pipeline pricing.)
+  //   MURMUR_NANOPAY_ACCEPT_NETWORKS           — optional comma-separated
+  //                                              CAIP-2 network restrictions
+  //                                              (default: all Gateway-supported)
+  //
+  // Design note:
+  //   docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
+  if ((process.env.MURMUR_NANOPAY_ENABLED ?? "false").toLowerCase() === "true") {
+    const domainChainId = Number(
+      process.env.MURMUR_NANOPAY_DOMAIN_CHAIN_ID ??
+        process.env.FHENIX_CHAIN_ID ??
+        "0",
+    );
+    const domainContract =
+      process.env.MURMUR_NANOPAY_DOMAIN_CONTRACT ??
+      fhenixSealedVerdictsAddress ??
+      "";
+    const sellerAddress = process.env.MURMUR_NANOPAY_SELLER_ADDRESS ?? "";
+    if (!domainChainId || !domainContract || !sellerAddress) {
+      console.warn(
+        "[daemon] MURMUR_NANOPAY_ENABLED=true but required config missing (need MURMUR_NANOPAY_SELLER_ADDRESS + domain chainId + domain contract); nanopay route NOT mounted",
+      );
+    } else if (!/^0x[0-9a-fA-F]{40}$/.test(sellerAddress)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_SELLER_ADDRESS not a valid 0x address (got ${sellerAddress}); nanopay route NOT mounted`,
+      );
+    } else if (!/^0x[0-9a-fA-F]{40}$/.test(domainContract)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_DOMAIN_CONTRACT not a valid 0x address (got ${domainContract}); nanopay route NOT mounted`,
+      );
+    } else {
+      const network =
+        (process.env.MURMUR_NANOPAY_NETWORK ?? "testnet").toLowerCase() === "mainnet"
+          ? "mainnet"
+          : "testnet";
+      const defaultPrice = process.env.MURMUR_NANOPAY_DEFAULT_PRICE ?? "$0.001";
+      const acceptNetworks = process.env.MURMUR_NANOPAY_ACCEPT_NETWORKS
+        ? process.env.MURMUR_NANOPAY_ACCEPT_NETWORKS.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+
+      // express.json() so handlers can read req.body if any future
+      // path needs it. The SDK middleware does not require a body
+      // parser (the PAYMENT-SIGNATURE comes via headers), but
+      // mounting it broadly is the safe default.
+      app.use("/v2/nanopay", express.json({ limit: "16kb" }));
+
+      app.use(
+        nanopayRouter({
+          db,
+          network,
+          bindingDomain: {
+            chainId: domainChainId,
+            verifyingContract: domainContract as `0x${string}`,
+          },
+          sellerAddress: sellerAddress as `0x${string}`,
+          defaultPrice,
+          acceptNetworks,
+          // Phase 1 stubs — Phase 2 will wire real lookups.
+          resolvePipeline: (_pipelineId: string): PipelineInfo | null => null,
+          resolveLatestSealedCall: (
+            _pipelineId: string,
+          ): { anchor: FhenixAnchorTuple; revealArtifact: unknown | null } | null =>
+            null,
+        }),
+      );
+      console.log(
+        `[daemon] Nanopayments route mounted on POST /v2/nanopay/infer/:pipelineId (network=${network}, seller=${sellerAddress}, price=${defaultPrice})`,
+      );
+    }
+  }
 
   // Polymarket Gamma adapter registration happens in the market-maker
   // registry at module load. The optional ticker only pre-warms/syncs Gamma

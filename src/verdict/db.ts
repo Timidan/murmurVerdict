@@ -923,6 +923,36 @@ function applyMigrations(db: Database.Database): void {
     v = 50;
     set.run("schema_version", String(v));
   }
+
+  if (v < 51) {
+    // Wave L.A — Nanopayments via Circle Gateway middleware. New table
+    // `nanopay_receipts` persists the composite idempotency key + status
+    // state machine + full Fhenix anchor binding for every paid inference
+    // call served via the `/v2/nanopay/infer` rail.
+    //
+    // Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
+    //
+    // Status state machine: settling → settled | failed | settlement_unknown.
+    // `settling_intent` row written BEFORE Circle /v1/x402/settle so a
+    // daemon crash mid-settle leaves a row to reconcile (full reconciliation
+    // cron is Phase 3; Phase 1 ships testnet MVP that surfaces stuck rows
+    // for operator inspection — never free-serves).
+    //
+    // Composite idempotency:
+    //   (payer, eip3009_nonce, source_domain, payment_payload_hash, payment_requirements_hash)
+    // UNIQUE indexed. EIP-3009 nonces are unique per-payer, not globally,
+    // so the composite includes payer + the verifying-contract source
+    // domain + content hashes to detect "same payer+nonce, different
+    // payload" → 409 Conflict (the pre-settle DB lookup catches this
+    // before calling Circle).
+    //
+    // Binding fields persisted as binding_json (Fhenix anchor tuple) and
+    // reveal_artifact_json (the revealed signal once horizon opens). Single-
+    // stream invariant: served signal == sealed-Fhenix-anchored signal.
+    db.exec(MIGRATION_051_NANOPAY_RECEIPTS);
+    v = 51;
+    set.run("schema_version", String(v));
+  }
 }
 
 /**
@@ -3501,6 +3531,86 @@ const MIGRATION_049_OPERATOR_ALERTS = `
     WHERE status = 'open';
   CREATE INDEX IF NOT EXISTS idx_operator_alerts_last_seen
     ON operator_alerts(last_seen_at);
+`;
+
+const MIGRATION_051_NANOPAY_RECEIPTS = `
+  CREATE TABLE IF NOT EXISTS nanopay_receipts (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Composite idempotency key (per design 2026-05-23-wave-l-a):
+    --   EIP-3009 nonces are unique per-payer, not globally. The
+    --   composite extends with source_domain (verifying contract on
+    --   the chain where the EIP-3009 sig was generated) + content
+    --   hashes so "same payer+nonce, different payload" is detected
+    --   as 409 Conflict before a second Circle /settle is attempted.
+    payer                           TEXT NOT NULL,
+    eip3009_nonce                   TEXT NOT NULL,
+    source_domain                   TEXT NOT NULL,
+    payment_payload_hash            TEXT NOT NULL,
+    payment_requirements_hash       TEXT NOT NULL,
+
+    -- Status state machine:
+    --   settling: row written BEFORE Circle /settle; expected to
+    --             transition to settled or failed within seconds.
+    --   settled: Circle /settle returned 200 + transaction UUID.
+    --   failed: Circle /settle returned 4xx (insufficient balance,
+    --           bad sig, etc.). Buyer can re-submit with a fresh nonce.
+    --   settlement_unknown: reconciliation could not determine state
+    --                       after N attempts (Phase 3 reconciler).
+    --                       Operator intervention required.
+    status                          TEXT NOT NULL
+                                    CHECK (status IN ('settling','settled','failed','settlement_unknown')),
+
+    -- Circle's response field on POST /v1/x402/settle is the
+    -- transaction UUID. Set on transition to 'settled'.
+    circle_transaction_uuid         TEXT,
+
+    -- Application context — what the buyer paid for.
+    pipeline_id                     TEXT NOT NULL,
+
+    -- EIP-712 typed-data hash that deterministically identifies this
+    -- per-call signal (binds pipelineId + payer + EIP-3009 nonce via
+    -- the chain's domain separator). Cross-rail replay-safe because
+    -- the escrow rail (Wave L.B) consumes a different typed-data hash.
+    request_signal_id               TEXT NOT NULL,
+
+    paid_amount_usdc_atoms          TEXT NOT NULL,
+
+    -- Full Fhenix anchor tuple as JSON: chainId, sealed-verdicts
+    -- contract addr, onchainCallId, marketId, agent, submit tx/log,
+    -- both ciphertext hashes, revealOpenAt, commitScheme. Lets
+    -- callers verify the served signal == sealed-Fhenix-anchored
+    -- signal (single-stream invariant) without re-querying chain.
+    binding_json                    TEXT NOT NULL,
+
+    -- Reveal artifact, present once the sealed-Fhenix horizon opens.
+    -- Pre-reveal calls store NULL and the binding includes an anchor
+    -- handle + revealOpenAt instead.
+    reveal_artifact_json            TEXT,
+
+    created_at                      TEXT NOT NULL,
+    settled_at                      TEXT,
+    failed_at                       TEXT,
+    failure_reason                  TEXT
+  );
+
+  -- Prefix-level UNIQUE on (payer, eip3009_nonce, source_domain) is
+  -- the load-bearing race protection. EIP-3009 nonces are unique
+  -- per-(payer, verifying-contract); the source_domain captures the
+  -- verifying contract. So at most ONE row per (payer, nonce, source)
+  -- is correct semantics. Concurrent inserts with the same prefix but
+  -- different payload/requirements hashes (e.g. attacker trying to
+  -- get a second settle attempt for the same authorization) will fail
+  -- with SQLITE_CONSTRAINT_UNIQUE. The route handler catches this and
+  -- re-reads, comparing hashes to decide cached-replay vs 409 conflict.
+  -- (Per codex audit 2026-05-23.)
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_nanopay_receipts_payer_nonce_domain
+    ON nanopay_receipts(payer, eip3009_nonce, source_domain);
+
+  -- Index for the Phase 3 reconciliation cron to find stuck 'settling'
+  -- rows quickly. Phase 1 doesn't actively use this but defines it now
+  -- so Phase 3 doesn't add an ALTER on an already-populated table.
+  CREATE INDEX IF NOT EXISTS idx_nanopay_receipts_status_created
+    ON nanopay_receipts(status, created_at);
 `;
 
 /**
