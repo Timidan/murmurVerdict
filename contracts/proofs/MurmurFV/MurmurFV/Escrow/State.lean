@@ -48,6 +48,53 @@ structure InferenceRequest where
   protocolFeeBps  : Nat        -- uint16; snapshot at request time (Wave K M-2)
 deriving Repr
 
+/-! ## Wave L.B additions
+
+`requestInferenceFor` (per attested buyer) and the strict integration
+allowlist machinery. None of these new fields affect E1 / E2 directly
+— the balance equation reads `requests` and `token`, the single-commit
+guarantee reads `requests.state`. The new state is included so the
+contract surface that mutates it (8 new transitions) round-trips in
+the model. -/
+
+/-- One row of the strict integration allowlist. Mirrors
+    `MurmurEscrow.sol:157-168`. The `committedAt == 0` sentinel doubles
+    as "not active" — see `isAllowlistActive` notion documented in the
+    Phase 2 design note. -/
+structure AllowlistEntry where
+  codehashPin       : Bytes32
+  perCallCapUsdc    : Nat       -- uint96
+  perBlockCapUsdc   : Nat       -- uint96
+  perDayCapUsdc     : Nat       -- uint96
+  spentThisBlock    : Nat       -- uint96
+  spentToday        : Nat       -- uint96
+  spentBlockNumber  : Nat       -- uint64
+  spentTodayDayUtc  : Nat       -- uint64
+  paused            : Bool
+  committedAt       : Nat       -- uint64; 0 ≡ not committed/active
+deriving Repr
+
+/-- Kind discriminator for `AllowlistProposal`. Mirrors Solidity's
+    `PROPOSAL_KIND_*` constants at `MurmurEscrow.sol:89-92`. -/
+inductive ProposalKind where
+  | Add
+  | Remove
+  | Unpause
+deriving DecidableEq, Repr
+
+/-- Pending allowlist change. Mirrors `MurmurEscrow.sol:173-180`.
+    `effectiveAt = 0` (per Solidity convention) means no pending
+    proposal; in the Lean model we represent absence with `none` on
+    the `allowlistProposed` mapping rather than the sentinel. -/
+structure AllowlistProposal where
+  codehashPin     : Bytes32
+  perCallCapUsdc  : Nat       -- uint96
+  perBlockCapUsdc : Nat       -- uint96
+  perDayCapUsdc   : Nat       -- uint96
+  effectiveAt     : Nat       -- uint64
+  kind            : ProposalKind
+deriving Repr
+
 /-- Aggregate Escrow state. `pipelines` and `requests` are total functions
     Bytes32 → Option _. The `_locked` reentrancy guard from Solidity is
     `locked` here; in our atomic-transition model it's informational only.
@@ -58,19 +105,34 @@ deriving Repr
     via `TransferOwnership` (`Transitions.lean:280-284`, mirroring
     `MurmurEscrow.sol:393-398`) and keep it in the
     struct to avoid mutating the type for downstream proofs. Removal
-    deferred (Wave K alignment leaves it in place). -/
+    deferred (Wave K alignment leaves it in place).
+
+    Wave L.B adds three function fields:
+    - `usedAuthDigest : Bytes32 → Bool` — EIP-712 replay-protection
+      register; flipped to `true` by a successful Sig-path
+      `RequestInferenceFor`. Mirrors `MurmurEscrow.sol:153`.
+    - `allowlist : Address → Option AllowlistEntry` — integration
+      allowlist storage. `none` = deleted/default; `some entry` with
+      `entry.committedAt = 0` is also treated as not-active by all
+      consuming guards. Mirrors `MurmurEscrow.sol:169`.
+    - `allowlistProposed : Address → Option AllowlistProposal` —
+      pending two-step propose/commit state. Mirrors
+      `MurmurEscrow.sol:181`. -/
 structure EscrowState where
-  owner          : Address
-  pendingOwner   : Address
-  protocolFeeBps : Nat
-  protocolFeeSink: Address
-  paused         : Bool
-  locked         : Bool
-  pipelines      : Bytes32 → Option Pipeline
-  requests       : Bytes32 → Option InferenceRequest
-  token          : TokenState
-  escrowAddr     : Address
-  blockTime      : BlockTime
-  -- No `deriving Repr` — `pipelines` and `requests` are function fields.
+  owner             : Address
+  pendingOwner      : Address
+  protocolFeeBps    : Nat
+  protocolFeeSink   : Address
+  paused            : Bool
+  locked            : Bool
+  pipelines         : Bytes32 → Option Pipeline
+  requests          : Bytes32 → Option InferenceRequest
+  token             : TokenState
+  escrowAddr        : Address
+  blockTime         : BlockTime
+  usedAuthDigest    : Bytes32 → Bool                        -- Wave L.B
+  allowlist         : Address → Option AllowlistEntry       -- Wave L.B
+  allowlistProposed : Address → Option AllowlistProposal    -- Wave L.B
+  -- No `deriving Repr` — function fields are not Repr.
 
 end MurmurFV.Escrow

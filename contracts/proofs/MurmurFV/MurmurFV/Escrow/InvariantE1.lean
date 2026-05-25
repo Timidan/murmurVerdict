@@ -70,6 +70,7 @@ def liveSumList (s : EscrowState) (rids : List Bytes32) : Nat :=
     that don't touch any request slot. Used to express coverage. -/
 def touchedRid : Transition → Option Bytes32
   | .RequestInference caller pid nonce _ => some (computeRequestId caller pid nonce)
+  | .RequestInferenceFor _caller buyer pid nonce _ _ _ => some (computeRequestId buyer pid nonce)
   | .CommitSignal _ rid _ _ _ => some rid
   | .Finalize _ rid _ _ _ => some rid
   | .Refund _ rid _ => some rid
@@ -108,6 +109,11 @@ def WellFormed (s : EscrowState) : Prop :=
 def WellFormedTx (s : EscrowState) (tx : Transition) : Prop :=
   match tx with
   | .RequestInference caller _ _ _ => s.escrowAddr ≠ caller
+  | .RequestInferenceFor caller buyer _ _ auth _ _ =>
+      s.escrowAddr ≠ buyer ∧
+      (match auth with
+       | .Hooked _   => s.escrowAddr ≠ caller
+       | .Sig _ _ _  => True)
   | .CreatePipeline _ _ p          => s.escrowAddr ≠ p.agentOwner
   | .SetProtocolFeeSink _ newSink  => s.escrowAddr ≠ newSink
   | _ => True
@@ -311,6 +317,103 @@ theorem E1Inv_carry_no_mutation
     exact hactive
   · exact h_inv.nodup
 
+/-- Helper for request-creation arms: a fresh Pending request is written
+    and `priceUsdc` is transferred into escrow. -/
+theorem E1Inv_request_create
+    (s s' : EscrowState) (rids : List Bytes32)
+    (rid pid : Bytes32) (buyer payer : Address) (p : Pipeline)
+    (now : BlockTime) (tok' : TokenState)
+    (h_req_none : s.requests rid = none)
+    (h_requests : s'.requests =
+      updateMap s.requests rid
+        (some { pipelineId := pid, buyer := buyer, paidAmount := p.priceUsdc,
+                paidAt := now, slaDeadline := now + p.slaSeconds,
+                commitHash := Bytes32.zero, committedAt := 0,
+                state := RequestState.Pending,
+                protocolFeeBps := s.protocolFeeBps }))
+    (h_tok : s'.token = tok')
+    (h_addr : s.escrowAddr = s'.escrowAddr)
+    (h_sink : s.protocolFeeSink = s'.protocolFeeSink)
+    (h_bps : s.protocolFeeBps = s'.protocolFeeBps)
+    (h_pipe : s.pipelines = s'.pipelines)
+    (h_tok_some : s.token.transferFrom payer s.escrowAddr p.priceUsdc = some tok')
+    (h_payer_ne : payer ≠ s.escrowAddr)
+    (h_buyer_ne : s.escrowAddr ≠ buyer)
+    (h_rid_in_rids : rid ∈ rids)
+    (h_inv : E1Inv s rids) :
+    E1Inv s' rids := by
+  have h_bal : s'.token.balanceOf s'.escrowAddr =
+      s.token.balanceOf s.escrowAddr + p.priceUsdc := by
+    unfold TokenState.transferFrom at h_tok_some
+    have hbalto :=
+      transfer_balance_to s.token payer s.escrowAddr p.priceUsdc tok'
+        h_tok_some h_payer_ne
+    rw [← h_addr, h_tok]
+    exact hbalto
+  have h_paid_s_rid : paidAmountOf s rid = 0 := by
+    unfold paidAmountOf
+    rw [h_req_none]
+  have h_paid_s'_rid : paidAmountOf s' rid = p.priceUsdc := by
+    unfold paidAmountOf
+    rw [h_requests]
+    simp [updateMap_same]
+  have h_paid_other : ∀ other, other ≠ rid →
+      paidAmountOf s other = paidAmountOf s' other := by
+    intro other hne
+    unfold paidAmountOf
+    have h_req' : s'.requests other = s.requests other := by
+      rw [h_requests]
+      exact updateMap_other _ _ _ _ hne
+    rw [h_req']
+  have h_sum_delta :
+      liveSumList s' rids = liveSumList s rids + p.priceUsdc := by
+    have h_update := liveSumList_update_single s s' rids rid h_rid_in_rids h_inv.nodup
+      (fun rid' _ hne => h_paid_other rid' hne)
+    rw [h_paid_s_rid, h_paid_s'_rid] at h_update
+    omega
+  refine ⟨?_, ⟨?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
+  · rw [h_sum_delta, h_bal, h_inv.eq]
+  · rw [← h_addr, ← h_sink]; exact h_inv.wf.1
+  · intro pid' p' hp'
+    rw [← h_pipe] at hp'
+    rw [← h_addr]
+    exact h_inv.wf.2.1 pid' p' hp'
+  · intro rid' r hr'
+    rw [← h_addr]
+    by_cases h_eq : rid' = rid
+    · subst h_eq
+      rw [h_requests] at hr'
+      simp [updateMap_same] at hr'
+      rw [← hr']
+      exact h_buyer_ne
+    · rw [h_requests] at hr'
+      simp [updateMap_other _ _ _ _ h_eq] at hr'
+      exact h_inv.wf.2.2.1 rid' r hr'
+  · rw [← h_bps]; exact h_inv.wf.2.2.2.1
+  · intro rid' r hr'
+    by_cases h_eq : rid' = rid
+    · subst h_eq
+      rw [h_requests] at hr'
+      simp [updateMap_same] at hr'
+      rw [← hr']
+      exact h_inv.wf.2.2.2.1
+    · rw [h_requests] at hr'
+      simp [updateMap_other _ _ _ _ h_eq] at hr'
+      exact h_inv.wf.2.2.2.2 rid' r hr'
+  · intro rid' hactive
+    unfold isActive at hactive
+    by_cases h_eq : rid' = rid
+    · subst h_eq
+      exact h_rid_in_rids
+    · have h_eq_req : s'.requests rid' = s.requests rid' := by
+        rw [h_requests]
+        exact updateMap_other _ _ _ _ h_eq
+      rw [h_eq_req] at hactive
+      apply h_inv.coverActive
+      unfold isActive
+      exact hactive
+  · exact h_inv.nodup
+
 /-- The main inductive lemma. Each transition preserves `E1Inv`. -/
 theorem step_preserves_E1Inv
     (s s' : EscrowState) (tx : Transition) (rids : List Bytes32)
@@ -358,6 +461,83 @@ theorem step_preserves_E1Inv
         (by rw [← heq]) (by rw [← heq]) h_inv
   | TransferOwnership caller newOwner =>
       simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      injection h_step with heq
+      apply E1Inv_carry_no_mutation s s' rids
+        (by rw [← heq]) (by rw [← heq]) (by rw [← heq]) (by rw [← heq])
+        (by rw [← heq]) (by rw [← heq]) h_inv
+  | ProposeAllowlistAdd caller integrator codehashPin perCall perBlock perDay
+      integratorCodehash now =>
+      simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      injection h_step with heq
+      apply E1Inv_carry_no_mutation s s' rids
+        (by rw [← heq]) (by rw [← heq]) (by rw [← heq]) (by rw [← heq])
+        (by rw [← heq]) (by rw [← heq]) h_inv
+  | CommitAllowlistAdd caller integrator integratorCodehash now =>
+      simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      injection h_step with heq
+      apply E1Inv_carry_no_mutation s s' rids
+        (by rw [← heq]) (by rw [← heq]) (by rw [← heq]) (by rw [← heq])
+        (by rw [← heq]) (by rw [← heq]) h_inv
+  | ProposeAllowlistRemove caller integrator now =>
+      simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      injection h_step with heq
+      apply E1Inv_carry_no_mutation s s' rids
+        (by rw [← heq]) (by rw [← heq]) (by rw [← heq]) (by rw [← heq])
+        (by rw [← heq]) (by rw [← heq]) h_inv
+  | CommitAllowlistRemove caller integrator now =>
+      simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      injection h_step with heq
+      apply E1Inv_carry_no_mutation s s' rids
+        (by rw [← heq]) (by rw [← heq]) (by rw [← heq]) (by rw [← heq])
+        (by rw [← heq]) (by rw [← heq]) h_inv
+  | PauseAllowlistEntry caller integrator =>
+      simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      injection h_step with heq
+      apply E1Inv_carry_no_mutation s s' rids
+        (by rw [← heq]) (by rw [← heq]) (by rw [← heq]) (by rw [← heq])
+        (by rw [← heq]) (by rw [← heq]) h_inv
+  | ProposeAllowlistUnpause caller integrator now =>
+      simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      injection h_step with heq
+      apply E1Inv_carry_no_mutation s s' rids
+        (by rw [← heq]) (by rw [← heq]) (by rw [← heq]) (by rw [← heq])
+        (by rw [← heq]) (by rw [← heq]) h_inv
+  | CommitAllowlistUnpause caller integrator now =>
+      simp only [step] at h_step
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
+      split at h_step <;> try (simp at h_step; done)
       split at h_step <;> try (simp at h_step; done)
       split at h_step <;> try (simp at h_step; done)
       split at h_step <;> try (simp at h_step; done)
@@ -685,6 +865,173 @@ theorem step_preserves_E1Inv
           apply h_inv.coverActive
           unfold isActive; exact hactive
       · exact h_inv.nodup
+  | RequestInferenceFor caller buyer pid nonce auth now blockNumber =>
+      -- Same balance shape as `RequestInference`, but the stored buyer is
+      -- attested separately. Sig pays from `buyer`; Hooked pays from `caller`.
+      simp only [step] at h_step
+      by_cases h_paused : s.paused
+      · rw [if_pos h_paused] at h_step
+        nomatch h_step
+      rw [if_neg h_paused] at h_step
+      by_cases h_buyer_zero : buyer = Address.zero
+      · rw [if_pos h_buyer_zero] at h_step
+        nomatch h_step
+      rw [if_neg h_buyer_zero] at h_step
+      by_cases h_buyer_escrow : buyer = s.escrowAddr
+      · rw [if_pos h_buyer_escrow] at h_step
+        nomatch h_step
+      rw [if_neg h_buyer_escrow] at h_step
+      cases h_pipe_some : s.pipelines pid with
+      | none =>
+          rw [h_pipe_some] at h_step
+          simp only at h_step
+          nomatch h_step
+      | some p =>
+        rw [h_pipe_some] at h_step
+        simp only at h_step
+        by_cases h_inactive : ¬ p.active
+        · rw [if_pos h_inactive] at h_step
+          nomatch h_step
+        rw [if_neg h_inactive] at h_step
+        cases auth with
+        | Sig deadline signer digest =>
+          simp only at h_step
+          by_cases h_deadline_zero : deadline = 0
+          · rw [if_pos h_deadline_zero] at h_step
+            nomatch h_step
+          rw [if_neg h_deadline_zero] at h_step
+          by_cases h_deadline_expired : now > deadline
+          · rw [if_pos h_deadline_expired] at h_step
+            nomatch h_step
+          rw [if_neg h_deadline_expired] at h_step
+          by_cases h_bad_signer : signer ≠ buyer
+          · rw [if_pos h_bad_signer] at h_step
+            nomatch h_step
+          rw [if_neg h_bad_signer] at h_step
+          by_cases h_digest_used : s.usedAuthDigest digest
+          · rw [if_pos h_digest_used] at h_step
+            nomatch h_step
+          rw [if_neg h_digest_used] at h_step
+          let rid := computeRequestId buyer pid nonce
+          cases h_req_none : s.requests rid with
+          | some _ =>
+              rw [h_req_none] at h_step
+              simp only at h_step
+              nomatch h_step
+          | none =>
+              rw [h_req_none] at h_step
+              simp only at h_step
+              cases h_tok_some : s.token.transferFrom buyer s.escrowAddr p.priceUsdc with
+              | none =>
+                  rw [h_tok_some] at h_step
+                  simp only at h_step
+                  nomatch h_step
+              | some tok' =>
+                  rw [h_tok_some] at h_step
+                  simp only at h_step
+                  injection h_step with heq
+                  unfold WellFormedTx at h_wf_tx
+                  have h_buyer_ne : s.escrowAddr ≠ buyer := h_wf_tx.1
+                  have h_rid_in_rids : rid ∈ rids := by
+                    apply h_cover_tx rid
+                    simp [touchedRid, rid]
+                  exact
+                    E1Inv_request_create
+                      s s' rids rid pid buyer buyer p now tok'
+                      h_req_none
+                      (by rw [← heq])
+                      (by rw [← heq])
+                      (by rw [← heq])
+                      (by rw [← heq])
+                      (by rw [← heq])
+                      (by rw [← heq])
+                      h_tok_some
+                      (Ne.symm h_buyer_ne)
+                      h_buyer_ne
+                      h_rid_in_rids
+                      h_inv
+        | Hooked callerCodehash =>
+          simp only at h_step
+          cases h_allow : s.allowlist caller with
+          | none =>
+              rw [h_allow] at h_step
+              simp only at h_step
+              nomatch h_step
+          | some entry =>
+              rw [h_allow] at h_step
+              simp only at h_step
+              by_cases h_uncommitted : entry.committedAt = 0
+              · rw [if_pos h_uncommitted] at h_step
+                nomatch h_step
+              rw [if_neg h_uncommitted] at h_step
+              by_cases h_paused_entry : entry.paused
+              · rw [if_pos h_paused_entry] at h_step
+                nomatch h_step
+              rw [if_neg h_paused_entry] at h_step
+              by_cases h_codehash : entry.codehashPin ≠ callerCodehash
+              · rw [if_pos h_codehash] at h_step
+                nomatch h_step
+              rw [if_neg h_codehash] at h_step
+              by_cases h_per_call : p.priceUsdc > entry.perCallCapUsdc
+              · rw [if_pos h_per_call] at h_step
+                nomatch h_step
+              rw [if_neg h_per_call] at h_step
+              let blockSpent :=
+                if entry.spentBlockNumber = blockNumber
+                  then entry.spentThisBlock + p.priceUsdc
+                  else p.priceUsdc
+              by_cases h_per_block : blockSpent > entry.perBlockCapUsdc
+              · rw [if_pos h_per_block] at h_step
+                nomatch h_step
+              rw [if_neg h_per_block] at h_step
+              let todayUtc := now / DAY_SECONDS
+              let daySpent :=
+                if entry.spentTodayDayUtc = todayUtc
+                  then entry.spentToday + p.priceUsdc
+                  else p.priceUsdc
+              by_cases h_per_day : daySpent > entry.perDayCapUsdc
+              · rw [if_pos h_per_day] at h_step
+                nomatch h_step
+              rw [if_neg h_per_day] at h_step
+              let rid := computeRequestId buyer pid nonce
+              cases h_req_none : s.requests rid with
+              | some _ =>
+                  rw [h_req_none] at h_step
+                  simp only at h_step
+                  nomatch h_step
+              | none =>
+                  rw [h_req_none] at h_step
+                  simp only at h_step
+                  cases h_tok_some : s.token.transferFrom caller s.escrowAddr p.priceUsdc with
+                  | none =>
+                      rw [h_tok_some] at h_step
+                      simp only at h_step
+                      nomatch h_step
+                  | some tok' =>
+                      rw [h_tok_some] at h_step
+                      simp only at h_step
+                      injection h_step with heq
+                      unfold WellFormedTx at h_wf_tx
+                      have h_buyer_ne : s.escrowAddr ≠ buyer := h_wf_tx.1
+                      have h_caller_ne : s.escrowAddr ≠ caller := h_wf_tx.2
+                      have h_rid_in_rids : rid ∈ rids := by
+                        apply h_cover_tx rid
+                        simp [touchedRid, rid]
+                      exact
+                        E1Inv_request_create
+                          s s' rids rid pid buyer caller p now tok'
+                          h_req_none
+                          (by rw [← heq])
+                          (by rw [← heq])
+                          (by rw [← heq])
+                          (by rw [← heq])
+                          (by rw [← heq])
+                          (by rw [← heq])
+                          h_tok_some
+                          (Ne.symm h_caller_ne)
+                          h_buyer_ne
+                          h_rid_in_rids
+                          h_inv
   | Refund _caller requestId now =>
       -- Changes state Pending → Refunded. Transfers paidAmount to buyer.
       -- LHS loses paidAmount. RHS loses paidAmount.

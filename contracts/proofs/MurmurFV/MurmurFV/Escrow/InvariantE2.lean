@@ -183,6 +183,146 @@ theorem no_transition_restores_pending
       refine ⟨r, ?_, hne⟩
       rw [← heq]
       simp [updateMap_other _ _ _ _ hne_rid, hreq]
+  | RequestInferenceFor caller buyer pid nonce auth now blockNumber =>
+      simp only [step] at hstep
+      by_cases h_paused : s.paused
+      · rw [if_pos h_paused] at hstep
+        nomatch hstep
+      rw [if_neg h_paused] at hstep
+      by_cases h_buyer_zero : buyer = Address.zero
+      · rw [if_pos h_buyer_zero] at hstep
+        nomatch hstep
+      rw [if_neg h_buyer_zero] at hstep
+      by_cases h_buyer_escrow : buyer = s.escrowAddr
+      · rw [if_pos h_buyer_escrow] at hstep
+        nomatch hstep
+      rw [if_neg h_buyer_escrow] at hstep
+      cases h_pipe : s.pipelines pid with
+      | none =>
+          rw [h_pipe] at hstep
+          simp only at hstep
+          nomatch hstep
+      | some p =>
+        rw [h_pipe] at hstep
+        simp only at hstep
+        by_cases h_inactive : ¬ p.active
+        · rw [if_pos h_inactive] at hstep
+          nomatch hstep
+        rw [if_neg h_inactive] at hstep
+        cases auth with
+        | Sig deadline signer digest =>
+          simp only at hstep
+          by_cases h_deadline_zero : deadline = 0
+          · rw [if_pos h_deadline_zero] at hstep
+            nomatch hstep
+          rw [if_neg h_deadline_zero] at hstep
+          by_cases h_deadline_expired : now > deadline
+          · rw [if_pos h_deadline_expired] at hstep
+            nomatch hstep
+          rw [if_neg h_deadline_expired] at hstep
+          by_cases h_bad_signer : signer ≠ buyer
+          · rw [if_pos h_bad_signer] at hstep
+            nomatch hstep
+          rw [if_neg h_bad_signer] at hstep
+          by_cases h_digest_used : s.usedAuthDigest digest
+          · rw [if_pos h_digest_used] at hstep
+            nomatch hstep
+          rw [if_neg h_digest_used] at hstep
+          let newRid := computeRequestId buyer pid nonce
+          cases h_new_rid : s.requests newRid with
+          | some _ =>
+              rw [h_new_rid] at hstep
+              simp only at hstep
+              nomatch hstep
+          | none =>
+              rw [h_new_rid] at hstep
+              simp only at hstep
+              cases h_tok : s.token.transferFrom buyer s.escrowAddr p.priceUsdc with
+              | none =>
+                  rw [h_tok] at hstep
+                  simp only at hstep
+                  nomatch hstep
+              | some tok' =>
+                  rw [h_tok] at hstep
+                  simp only at hstep
+                  injection hstep with heq
+                  have hne_rid : rid ≠ computeRequestId buyer pid nonce := by
+                    intro heq_rid
+                    rw [heq_rid] at hreq
+                    rw [hreq] at h_new_rid
+                    nomatch h_new_rid
+                  refine ⟨r, ?_, hne⟩
+                  rw [← heq]
+                  simp [updateMap_other _ _ _ _ hne_rid, hreq]
+        | Hooked callerCodehash =>
+          simp only at hstep
+          cases h_allow : s.allowlist caller with
+          | none =>
+              rw [h_allow] at hstep
+              simp only at hstep
+              nomatch hstep
+          | some entry =>
+              rw [h_allow] at hstep
+              simp only at hstep
+              by_cases h_uncommitted : entry.committedAt = 0
+              · rw [if_pos h_uncommitted] at hstep
+                nomatch hstep
+              rw [if_neg h_uncommitted] at hstep
+              by_cases h_paused_entry : entry.paused
+              · rw [if_pos h_paused_entry] at hstep
+                nomatch hstep
+              rw [if_neg h_paused_entry] at hstep
+              by_cases h_codehash : entry.codehashPin ≠ callerCodehash
+              · rw [if_pos h_codehash] at hstep
+                nomatch hstep
+              rw [if_neg h_codehash] at hstep
+              by_cases h_per_call : p.priceUsdc > entry.perCallCapUsdc
+              · rw [if_pos h_per_call] at hstep
+                nomatch hstep
+              rw [if_neg h_per_call] at hstep
+              let blockSpent :=
+                if entry.spentBlockNumber = blockNumber
+                  then entry.spentThisBlock + p.priceUsdc
+                  else p.priceUsdc
+              by_cases h_per_block : blockSpent > entry.perBlockCapUsdc
+              · rw [if_pos h_per_block] at hstep
+                nomatch hstep
+              rw [if_neg h_per_block] at hstep
+              let todayUtc := now / DAY_SECONDS
+              let daySpent :=
+                if entry.spentTodayDayUtc = todayUtc
+                  then entry.spentToday + p.priceUsdc
+                  else p.priceUsdc
+              by_cases h_per_day : daySpent > entry.perDayCapUsdc
+              · rw [if_pos h_per_day] at hstep
+                nomatch hstep
+              rw [if_neg h_per_day] at hstep
+              let newRid := computeRequestId buyer pid nonce
+              cases h_new_rid : s.requests newRid with
+              | some _ =>
+                  rw [h_new_rid] at hstep
+                  simp only at hstep
+                  nomatch hstep
+              | none =>
+                  rw [h_new_rid] at hstep
+                  simp only at hstep
+                  cases h_tok : s.token.transferFrom caller s.escrowAddr p.priceUsdc with
+                  | none =>
+                      rw [h_tok] at hstep
+                      simp only at hstep
+                      nomatch hstep
+                  | some tok' =>
+                      rw [h_tok] at hstep
+                      simp only at hstep
+                      injection hstep with heq
+                      have hne_rid : rid ≠ computeRequestId buyer pid nonce := by
+                        intro heq_rid
+                        rw [heq_rid] at hreq
+                        rw [hreq] at h_new_rid
+                        nomatch h_new_rid
+                      refine ⟨r, ?_, hne⟩
+                      rw [← heq]
+                      simp [updateMap_other _ _ _ _ hne_rid, hreq]
   | CommitSignal caller requestId commitHash _mdc now =>
       simp only [step] at hstep
       split at hstep <;> try (simp at hstep; done)
@@ -312,6 +452,103 @@ theorem no_transition_restores_pending
       split at hstep <;> try (simp at hstep; done)
       injection hstep with heq
       exact ⟨r, by rw [← heq]; exact hreq, hne⟩
+  | ProposeAllowlistAdd caller integrator codehashPin perCall perBlock perDay
+      integratorCodehash now =>
+      simp only [step] at hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      injection hstep with heq
+      exact ⟨r, by rw [← heq]; exact hreq, hne⟩
+  | CommitAllowlistAdd caller integrator integratorCodehash now =>
+      simp only [step] at hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      injection hstep with heq
+      exact ⟨r, by rw [← heq]; exact hreq, hne⟩
+  | ProposeAllowlistRemove caller integrator now =>
+      simp only [step] at hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      injection hstep with heq
+      exact ⟨r, by rw [← heq]; exact hreq, hne⟩
+  | CommitAllowlistRemove caller integrator now =>
+      simp only [step] at hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      injection hstep with heq
+      exact ⟨r, by rw [← heq]; exact hreq, hne⟩
+  | PauseAllowlistEntry caller integrator =>
+      simp only [step] at hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      injection hstep with heq
+      exact ⟨r, by rw [← heq]; exact hreq, hne⟩
+  | ProposeAllowlistUnpause caller integrator now =>
+      simp only [step] at hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      injection hstep with heq
+      exact ⟨r, by rw [← heq]; exact hreq, hne⟩
+  | CommitAllowlistUnpause caller integrator now =>
+      simp only [step] at hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      split at hstep
+      · nomatch hstep
+      injection hstep with heq
+      exact ⟨r, by rw [← heq]; exact hreq, hne⟩
 
 /-- Helper — once a request `rid` has settled into a non-`Pending` state,
     no transition in any subsequent reachable suffix can move it back to
@@ -357,6 +594,7 @@ theorem nonPending_propagates_with_no_commits
       | CreatePipeline _ _ _ => simp [h_rest_zero]
       | SetPipelineActive _ _ _ => simp [h_rest_zero]
       | RequestInference _ _ _ _ => simp [h_rest_zero]
+      | RequestInferenceFor _ _ _ _ _ _ _ => simp [h_rest_zero]
       | Finalize _ _ _ _ _ => simp [h_rest_zero]
       | Refund _ _ _ => simp [h_rest_zero]
       | Cancel _ _ _ => simp [h_rest_zero]
@@ -366,6 +604,13 @@ theorem nonPending_propagates_with_no_commits
       | SetProtocolFeeSink _ _ => simp [h_rest_zero]
       | SetPaused _ _ => simp [h_rest_zero]
       | TransferOwnership _ _ => simp [h_rest_zero]
+      | ProposeAllowlistAdd _ _ _ _ _ _ _ _ => simp [h_rest_zero]
+      | CommitAllowlistAdd _ _ _ _ => simp [h_rest_zero]
+      | ProposeAllowlistRemove _ _ _ => simp [h_rest_zero]
+      | CommitAllowlistRemove _ _ _ => simp [h_rest_zero]
+      | PauseAllowlistEntry _ _ => simp [h_rest_zero]
+      | ProposeAllowlistUnpause _ _ _ => simp [h_rest_zero]
+      | CommitAllowlistUnpause _ _ _ => simp [h_rest_zero]
 
 /-- E2 headline — along any reachable trace, the syntactic count of
     `CommitSignal` transitions for `rid` is at most one.
@@ -401,6 +646,7 @@ theorem singleCommit
       | CreatePipeline _ _ _ => simp; exact ih
       | SetPipelineActive _ _ _ => simp; exact ih
       | RequestInference _ _ _ _ => simp; exact ih
+      | RequestInferenceFor _ _ _ _ _ _ _ => simp; exact ih
       | Finalize _ _ _ _ _ => simp; exact ih
       | Refund _ _ _ => simp; exact ih
       | Cancel _ _ _ => simp; exact ih
@@ -410,5 +656,12 @@ theorem singleCommit
       | SetProtocolFeeSink _ _ => simp; exact ih
       | SetPaused _ _ => simp; exact ih
       | TransferOwnership _ _ => simp; exact ih
+      | ProposeAllowlistAdd _ _ _ _ _ _ _ _ => simp; exact ih
+      | CommitAllowlistAdd _ _ _ _ => simp; exact ih
+      | ProposeAllowlistRemove _ _ _ => simp; exact ih
+      | CommitAllowlistRemove _ _ _ => simp; exact ih
+      | PauseAllowlistEntry _ _ => simp; exact ih
+      | ProposeAllowlistUnpause _ _ _ => simp; exact ih
+      | CommitAllowlistUnpause _ _ _ => simp; exact ih
 
 end MurmurFV.Escrow

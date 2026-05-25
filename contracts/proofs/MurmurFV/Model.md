@@ -124,18 +124,50 @@ snapshot rather than the live storage value.
 
 ```
 structure EscrowState where
-  owner          : Address
-  pendingOwner   : Address    -- present in Lean; contract has 1-step ownership (see TransferOwnership)
-  protocolFeeBps : Nat
-  protocolFeeSink: Address
-  paused         : Bool
-  locked         : Bool       -- abstract no-op; reentrancy is informational
-  pipelines      : Bytes32 → Option Pipeline
-  requests       : Bytes32 → Option InferenceRequest
-  token          : TokenState
-  escrowAddr     : Address
-  blockTime      : BlockTime
+  owner             : Address
+  pendingOwner      : Address    -- present in Lean; contract has 1-step ownership (see TransferOwnership)
+  protocolFeeBps    : Nat
+  protocolFeeSink   : Address
+  paused            : Bool
+  locked            : Bool       -- abstract no-op; reentrancy is informational
+  pipelines         : Bytes32 → Option Pipeline
+  requests          : Bytes32 → Option InferenceRequest
+  token             : TokenState
+  escrowAddr        : Address
+  blockTime         : BlockTime
+  usedAuthDigest    : Bytes32 → Bool                       -- Wave L.B
+  allowlist         : Address → Option AllowlistEntry      -- Wave L.B
+  allowlistProposed : Address → Option AllowlistProposal   -- Wave L.B
 ```
+
+Wave L.B added three function fields:
+
+- `usedAuthDigest : Bytes32 → Bool` — EIP-712 replay-protection register
+  mirroring `MurmurEscrow.sol:153`. Mutated only by a successful Sig-path
+  `RequestInferenceFor` (flips one digest to `true`); read by the same
+  arm as a precondition. Not part of `WellFormed` — `liveSumList` and
+  `balanceOf escrowAddr` are unaffected by its value.
+- `allowlist : Address → Option AllowlistEntry` — strict integration
+  allowlist storage mirroring `MurmurEscrow.sol:169`. `none` abstracts
+  "deleted/default storage slot." Active-allowlisted is the stricter
+  predicate `s.allowlist a = some entry ∧ entry.committedAt ≠ 0`; the
+  five consuming arms (`RequestInferenceFor.Hooked`,
+  `ProposeAllowlistRemove`, `PauseAllowlistEntry`,
+  `ProposeAllowlistUnpause`, `CommitAllowlistUnpause`) all enforce it.
+- `allowlistProposed : Address → Option AllowlistProposal` — pending
+  two-step propose/commit state mirroring `MurmurEscrow.sol:181`. Each
+  proposal carries a `kind ∈ {Add, Remove, Unpause}` discriminator
+  matching Solidity's `PROPOSAL_KIND_*` constants.
+
+The new `AllowlistEntry`, `AllowlistProposal`, and `ProposalKind`
+types are defined in `State.lean` alongside the existing `Pipeline`
+and `InferenceRequest`. The `BuyerAuth` inductive (carried as an
+argument by `RequestInferenceFor`) is defined in `Transitions.lean`
+and is NOT a state field — it's a per-call witness of the trust mode
+plus the post-recovery facts (Sig: `deadline`, `signer`, `digest`;
+Hooked: `callerCodehash`). The Lean model does not derive the EIP-712
+digest cryptographically — it carries the digest as an argument and
+proves replay protection state-based via `usedAuthDigest`.
 
 `pipelines` and `requests` are total functions `Bytes32 → Option _`
 (not Lean `Std.HashMap`). The function-field encoding eliminates a
@@ -145,8 +177,9 @@ Solidity's `pipelines[pid].agentOwner == address(0)` zero-row check.
 
 ### Transitions (`Transitions.lean`)
 
-13 constructors, one per externally-callable state-mutating function
-in `MurmurEscrow.sol` (Wave K added `forceRefundCommitted`):
+21 constructors, one per externally-callable state-mutating function
+in `MurmurEscrow.sol` (Wave K added `forceRefundCommitted`; Wave L.B
+added `requestInferenceFor` + 7 allowlist admin externals):
 
 | Constructor                  | Solidity function   | Source range        |
 |------------------------------|---------------------|---------------------|
@@ -163,6 +196,14 @@ in `MurmurEscrow.sol` (Wave K added `forceRefundCommitted`):
 | `SetProtocolFeeSink`         | `setProtocolFeeSink`| sol:408-412         |
 | `SetPaused`                  | `setPaused`         | sol:415-417         |
 | `TransferOwnership`          | `transferOwnership` | sol:393-398         |
+| `RequestInferenceFor`        | `requestInferenceFor` | sol:511-560       |
+| `ProposeAllowlistAdd`        | `proposeAllowlistAdd` | sol:675-710       |
+| `CommitAllowlistAdd`         | `commitAllowlistAdd` | sol:712-735        |
+| `ProposeAllowlistRemove`     | `proposeAllowlistRemove` | sol:737-749    |
+| `CommitAllowlistRemove`      | `commitAllowlistRemove` | sol:751-758     |
+| `PauseAllowlistEntry`        | `pauseAllowlistEntry` | sol:763-768       |
+| `ProposeAllowlistUnpause`    | `proposeAllowlistUnpause` | sol:770-784   |
+| `CommitAllowlistUnpause`     | `commitAllowlistUnpause` | sol:786-795    |
 
 Each arm enforces the Solidity guards as `if … then none else …`
 chains. Critical guard summary:
@@ -187,6 +228,50 @@ chains. Critical guard summary:
 - **`ForceRefundCommitted`** — caller is owner; `r.state = Committed`;
   pipeline exists; `now ≥ committedAt + horizonHours*3600 +
   COMMITTED_REFUND_GRACE_HOURS*3600`; transfer to buyer succeeds.
+- **`RequestInferenceFor`** (Wave L.B) — `!paused`; `buyer ≠ 0` and
+  `buyer ≠ escrow`; pipeline exists and active; trust-mode branch on
+  the `BuyerAuth` constructor:
+  - `Sig deadline signer digest`: `deadline ≠ 0`, `now ≤ deadline`,
+    `s.usedAuthDigest digest = false`, `signer = buyer`; on success
+    sets `usedAuthDigest digest := true`; payer = `buyer`.
+  - `Hooked callerCodehash`: `s.allowlist caller = some entry`,
+    `entry.committedAt ≠ 0`, `!entry.paused`, `entry.codehashPin =
+    callerCodehash`, per-call / per-block / per-day caps respected
+    (per-block uses `entry.spentBlockNumber == blockNumber` reset;
+    per-day uses `entry.spentTodayDayUtc == now / 86400` reset); payer
+    = `caller`. On success updates the `spent*` counters.
+  - In both branches: `requests[rid] = none` (no replay; rid =
+    `computeRequestId buyer pid nonce`); USDC `transferFrom payer
+    escrow` succeeds; stores `protocolFeeBps := s.protocolFeeBps`,
+    `buyer := buyer` (attested, NOT `caller`).
+- **`ProposeAllowlistAdd`** (Wave L.B) — caller is owner; `integrator`
+  not zero, not escrow; `integratorCodehash ≠ 0`; `codehashPin ≠ 0`;
+  `codehashPin = integratorCodehash`; caps monotonic
+  (`0 < perCall ≤ perBlock ≤ perDay`). Writes
+  `allowlistProposed[integrator]` with `effectiveAt = now +
+  ALLOWLIST_TIMELOCK_SECONDS`, `kind = Add`.
+- **`CommitAllowlistAdd`** (Wave L.B) — caller is owner; matching `Add`
+  proposal exists; `now ≥ prop.effectiveAt`; current
+  `integratorCodehash = prop.codehashPin` (catches drift during the
+  timelock window). Writes the live `allowlist[integrator]` entry and
+  clears the proposal.
+- **`ProposeAllowlistRemove`** (Wave L.B) — caller is owner;
+  `integrator` actively allowlisted (`entry.committedAt ≠ 0`). Writes
+  the proposal with `kind = Remove`.
+- **`CommitAllowlistRemove`** (Wave L.B) — caller is owner; matching
+  `Remove` proposal exists; timelock elapsed. Clears `allowlist`
+  entry and proposal.
+- **`PauseAllowlistEntry`** (Wave L.B) — caller is owner; entry
+  actively allowlisted. Immediate (no timelock); flips `entry.paused
+  := true`. Asymmetric with unpause (which IS timelocked).
+- **`ProposeAllowlistUnpause`** (Wave L.B) — caller is owner; entry
+  actively allowlisted AND currently paused. Writes proposal with
+  `kind = Unpause`, `effectiveAt = now +
+  ALLOWLIST_UNPAUSE_TIMELOCK_SECONDS` (24h, shorter than the add/
+  remove timelock).
+- **`CommitAllowlistUnpause`** (Wave L.B) — caller is owner; matching
+  `Unpause` proposal; timelock elapsed; entry still active. Flips
+  `entry.paused := false` and clears proposal.
 - **`SubmitMerkleRoot`** — caller is owner. No state change in the
   abstract model (the Solidity `merkleRoots` mapping is not modelled).
 - **`SetProtocolFeeBps`** — caller is owner; `newBps ≤
