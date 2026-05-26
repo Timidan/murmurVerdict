@@ -8,6 +8,7 @@ import { accountRouter } from "../verdict/routes/account.js";
 import { nanopayRouter, type PipelineInfo } from "../verdict/routes/nanopay.js";
 import type { FhenixAnchorTuple } from "../verdict/single-stream-binding.js";
 import { agentsRepo, openDb, resolutionsRepo } from "../verdict/db.js";
+import { fhenixLifecycleReadRepo } from "../verdict/repos/fhenix-lifecycle-read-repo.js";
 import { VerdictEventBus } from "../verdict/events.js";
 import { runFeedSlaTick } from "../verdict/feed-sla.js";
 import { getLeaderboard } from "../verdict/leaderboard.js";
@@ -41,6 +42,206 @@ const DASHBOARD_ORIGIN = (process.env.DASHBOARD_ORIGIN ?? "*").trim();
 // deploy without FILECOIN_API_TOKEN set, and the receipts table it pinned
 // canonical JSON for is gone. v3 attested tier will pin EAS attestations
 // directly; nothing in v0.2 needs an HTTP-pinning shim.
+
+// ─── Wave L.A Phase 1b — Nanopayments env-config parsers ─────────────────────
+
+/**
+ * Parses `MURMUR_NANOPAY_PIPELINES`. Format:
+ *
+ *   <pipelineId>:<priceAtoms>:<recipient>:<chainId>[,...]
+ *
+ * Where:
+ *   - pipelineId: 0x + 64 hex
+ *   - priceAtoms: positive integer (USDC atoms; 6 decimals)
+ *   - recipient: 0x + 40 hex EVM address
+ *   - chainId: positive integer
+ *
+ * Phase 1b enforces equality with the shared SDK middleware price +
+ * seller (`expectedAtoms` / `expectedSeller`) so a buyer can never be
+ * charged at one price/seller and then refused at another. Mismatched
+ * entries get a warning + skip; malformed entries the same. Duplicate
+ * pipelineIds are last-write-wins with a warning.
+ *
+ * Returns a lowercased-key map. Resolver should lowercase the lookup
+ * key before reading.
+ */
+function parseNanopayPipelinesEnv(
+  raw: string | undefined,
+  expectedAtoms: bigint,
+  expectedSeller: string,
+): Map<string, PipelineInfo> {
+  const out = new Map<string, PipelineInfo>();
+  if (!raw || raw.trim() === "") return out;
+  const expectedSellerLower = expectedSeller.toLowerCase();
+  for (const entry of raw.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(":");
+    if (parts.length !== 4) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: malformed entry "${trimmed}" (need 4 colon-separated fields); skipping`,
+      );
+      continue;
+    }
+    const [pipelineId, priceAtomsStr, recipient, chainIdStr] = parts;
+    if (!/^0x[0-9a-fA-F]{64}$/.test(pipelineId)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: bad pipelineId "${pipelineId}" (need 0x + 64 hex); skipping`,
+      );
+      continue;
+    }
+    // Codex audit 2026-05-24: BigInt() accepts "0x3e8" / "1e3" /
+    // "0o123" forms; the env contract says decimal atoms. Gate with a
+    // strict decimal regex before conversion so an operator typo can't
+    // silently load a hex price.
+    if (!/^\d+$/.test(priceAtomsStr)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: priceAtoms "${priceAtomsStr}" for ${pipelineId} is not a plain decimal integer; skipping`,
+      );
+      continue;
+    }
+    let priceAtoms: bigint;
+    try {
+      priceAtoms = BigInt(priceAtomsStr);
+    } catch {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: bad priceAtoms "${priceAtomsStr}" for ${pipelineId}; skipping`,
+      );
+      continue;
+    }
+    if (priceAtoms <= 0n) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: priceAtoms must be > 0 for ${pipelineId} (got ${priceAtomsStr}); skipping`,
+      );
+      continue;
+    }
+    if (priceAtoms !== expectedAtoms) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: priceAtoms ${priceAtomsStr} for ${pipelineId} does not match MURMUR_NANOPAY_DEFAULT_PRICE (${expectedAtoms.toString()} atoms); skipping (Phase 1b enforces single shared price)`,
+      );
+      continue;
+    }
+    if (!/^0x[0-9a-fA-F]{40}$/.test(recipient)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: bad recipient "${recipient}" for ${pipelineId}; skipping`,
+      );
+      continue;
+    }
+    if (recipient.toLowerCase() !== expectedSellerLower) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: recipient ${recipient} for ${pipelineId} does not match MURMUR_NANOPAY_SELLER_ADDRESS (${expectedSeller}); skipping (Phase 1b enforces single shared seller)`,
+      );
+      continue;
+    }
+    // Same strict-decimal gate as priceAtoms — Number() accepts
+    // "0x84532" / "84532e0" forms which would silently parse to
+    // unexpected ids.
+    if (!/^\d+$/.test(chainIdStr)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: chainId "${chainIdStr}" for ${pipelineId} is not a plain decimal integer; skipping`,
+      );
+      continue;
+    }
+    const chainId = Number(chainIdStr);
+    if (!Number.isInteger(chainId) || chainId <= 0) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: bad chainId "${chainIdStr}" for ${pipelineId}; skipping`,
+      );
+      continue;
+    }
+    const key = pipelineId.toLowerCase();
+    if (out.has(key)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINES: duplicate pipelineId ${pipelineId}; last-write-wins`,
+      );
+    }
+    out.set(key, {
+      priceAtoms: priceAtoms.toString(),
+      recipient: recipient as `0x${string}`,
+      chainId,
+    });
+  }
+  return out;
+}
+
+/**
+ * Parses `MURMUR_NANOPAY_PIPELINE_AGENT_MAP`. Format:
+ *
+ *   <pipelineId>:<agentId>:<marketId>[,...]
+ *
+ * `agentId` and `marketId` are opaque TEXT in the DB schema; the
+ * parser rejects entries containing `:` or `,` (which would corrupt
+ * the env grammar). Duplicate pipelineIds → last-write-wins +
+ * warning.
+ *
+ * Returns a lowercased-key map of pipelineId → (agentId, marketId).
+ */
+function parseNanopayPipelineAgentMapEnv(
+  raw: string | undefined,
+): Map<string, { agentId: string; marketId: string }> {
+  const out = new Map<string, { agentId: string; marketId: string }>();
+  if (!raw || raw.trim() === "") return out;
+  for (const entry of raw.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(":");
+    if (parts.length !== 3) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: malformed entry "${trimmed}" (need 3 colon-separated fields: pipelineId:agentId:marketId); skipping`,
+      );
+      continue;
+    }
+    const [pipelineId, agentId, marketId] = parts;
+    if (!/^0x[0-9a-fA-F]{64}$/.test(pipelineId)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: bad pipelineId "${pipelineId}"; skipping`,
+      );
+      continue;
+    }
+    if (!agentId || agentId.includes(":") || agentId.includes(",")) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: bad agentId for ${pipelineId} (must be non-empty and contain no ':' or ','); skipping`,
+      );
+      continue;
+    }
+    if (!marketId || marketId.includes(":") || marketId.includes(",")) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: bad marketId for ${pipelineId} (must be non-empty and contain no ':' or ','); skipping`,
+      );
+      continue;
+    }
+    const key = pipelineId.toLowerCase();
+    if (out.has(key)) {
+      console.warn(
+        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: duplicate pipelineId ${pipelineId}; last-write-wins`,
+      );
+    }
+    out.set(key, { agentId, marketId });
+  }
+  return out;
+}
+
+/**
+ * Parses a dollar-string price (e.g. "$0.001") into USDC atoms (6
+ * decimals). Throws on malformed input — the caller should fall back
+ * to skipping per-pipeline price equality enforcement if this throws.
+ *
+ * Accepts:
+ *   - "$D" / "$D.d" / "$D.dd" up to 6 fractional digits.
+ *   - Bare "D[.d…]" without the leading "$" (for tolerance).
+ * Rejects negatives, scientific notation, and >6 fractional digits.
+ */
+function parseDollarPriceToUsdcAtoms(price: string): bigint {
+  const m = price.match(/^\$?(\d+)(?:\.(\d{1,6}))?$/);
+  if (!m) {
+    throw new Error(
+      `parseDollarPriceToUsdcAtoms: cannot parse "${price}" (need $D or $D.d[d…] with ≤6 fractional digits)`,
+    );
+  }
+  const whole = m[1];
+  const frac = (m[2] ?? "").padEnd(6, "0");
+  return BigInt(whole) * 1_000_000n + BigInt(frac);
+}
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -345,11 +546,128 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
             .filter(Boolean)
         : undefined;
 
+      // Phase 1b — env-config-driven resolvers replace the Phase 1 null
+      // stubs. Two env vars feed the resolvers:
+      //
+      //   MURMUR_NANOPAY_PIPELINES           — pipeline catalog
+      //                                          (id:atoms:recipient:chainId)
+      //   MURMUR_NANOPAY_PIPELINE_AGENT_MAP  — pipeline → (agentId, marketId)
+      //                                          used to find the latest
+      //                                          sealed-Fhenix anchored call
+      //
+      // Both are optional; absent means the resolvers return null and
+      // preflight gives 404/503 (safe — no charge). Per-entry validation
+      // is best-effort: a malformed/inconsistent entry warns + is skipped
+      // so an operator typo doesn't bring the route down.
+      //
+      // Per-pipeline `priceAtoms` MUST equal the shared default price
+      // (which the SDK middleware advertises) because Phase 1b uses a
+      // single shared middleware instance; differentiated per-pipeline
+      // pricing is the same Phase 2 work the parent design already
+      // defers. The parser enforces equality at boot.
+      let defaultPriceAtoms: bigint | null = null;
+      try {
+        defaultPriceAtoms = parseDollarPriceToUsdcAtoms(defaultPrice);
+      } catch (err) {
+        console.warn(
+          `[daemon] MURMUR_NANOPAY_DEFAULT_PRICE "${defaultPrice}" unparseable; nanopay pipeline catalog will be empty. Reason: ${(err as Error).message}`,
+        );
+      }
+      const pipelineCatalog =
+        defaultPriceAtoms !== null
+          ? parseNanopayPipelinesEnv(
+              process.env.MURMUR_NANOPAY_PIPELINES,
+              defaultPriceAtoms,
+              sellerAddress,
+            )
+          : new Map<string, PipelineInfo>();
+      const pipelineAgentMap = parseNanopayPipelineAgentMapEnv(
+        process.env.MURMUR_NANOPAY_PIPELINE_AGENT_MAP,
+      );
+
+      if (pipelineCatalog.size === 0) {
+        console.warn(
+          "[daemon] MURMUR_NANOPAY_PIPELINES is empty or all entries were rejected; nanopay route mounted but will preflight-404 every request until the env is set",
+        );
+      } else {
+        console.log(
+          `[daemon] Nanopay pipeline catalog parsed: ${pipelineCatalog.size} pipeline(s)`,
+        );
+      }
+      if (pipelineCatalog.size > 0 && pipelineAgentMap.size === 0) {
+        console.warn(
+          "[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP is empty; cataloged pipelines will preflight-503 because no sealed-call mapping exists",
+        );
+      }
+      // Codex audit 2026-05-24: per-pipeline drift between catalog and
+      // agent-map is silent without these warnings. Cataloged pipelines
+      // missing a map entry preflight-503 before settle (immutable
+      // boot-time maps mean preflight + settle see the same state); a
+      // map entry without a catalog entry is dead config the operator
+      // should clean up.
+      for (const pipelineId of pipelineCatalog.keys()) {
+        if (!pipelineAgentMap.has(pipelineId)) {
+          console.warn(
+            `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: cataloged pipeline ${pipelineId} has no agent/market mapping; calls will preflight-503`,
+          );
+        }
+      }
+      for (const pipelineId of pipelineAgentMap.keys()) {
+        if (!pipelineCatalog.has(pipelineId)) {
+          console.warn(
+            `[daemon] MURMUR_NANOPAY_PIPELINES: agent-map entry for ${pipelineId} has no catalog entry; calls will preflight-404 (dead config)`,
+          );
+        }
+      }
+
       // express.json() so handlers can read req.body if any future
       // path needs it. The SDK middleware does not require a body
       // parser (the PAYMENT-SIGNATURE comes via headers), but
       // mounting it broadly is the safe default.
       app.use("/v2/nanopay", express.json({ limit: "16kb" }));
+
+      const resolvePipeline = (pipelineId: string): PipelineInfo | null => {
+        return pipelineCatalog.get(pipelineId.toLowerCase()) ?? null;
+      };
+
+      const resolveLatestSealedCall = (
+        pipelineId: string,
+      ): { anchor: FhenixAnchorTuple; revealArtifact: unknown | null } | null => {
+        const mapping = pipelineAgentMap.get(pipelineId.toLowerCase());
+        if (!mapping) return null;
+        const row = fhenixLifecycleReadRepo.latestSealedCallForPipeline(db, {
+          agentId: mapping.agentId,
+          marketId: mapping.marketId,
+        });
+        if (!row) return null;
+        const agent = agentsRepo.byId(db, mapping.agentId);
+        const walletAddress = agent?.wallet_address ?? null;
+        if (!walletAddress) {
+          console.warn(
+            `[nanopay] pipeline ${pipelineId} → agent ${mapping.agentId} has no wallet_address; cannot build binding anchor. Returning null (route will 503).`,
+          );
+          return null;
+        }
+        const anchor: FhenixAnchorTuple = {
+          bindingVersion: 1,
+          chainId: row.chain_id,
+          sealedVerdictsContractAddress: row.contract_address as `0x${string}`,
+          onchainCallId: row.onchain_call_id as `0x${string}`,
+          marketId: row.market_id,
+          agent: walletAddress as `0x${string}`,
+          submitTxHash: row.submit_tx_hash as `0x${string}`,
+          submitLogIndex: row.submit_log_index,
+          binaryIndexCiphertextHash: row.binary_index_ct_hash as `0x${string}`,
+          confidenceCiphertextHash: row.confidence_ct_hash as `0x${string}`,
+          revealOpenAt: row.reveal_open_at,
+          commitScheme: row.commit_scheme,
+          commitHash: row.commit_hash,
+        };
+        // Phase 1b returns revealArtifact=null regardless. Materializing
+        // the artifact when `fhenix_sealed_calls.revealed_at IS NOT
+        // NULL` is Phase 3 reconciler work.
+        return { anchor, revealArtifact: null };
+      };
 
       app.use(
         nanopayRouter({
@@ -362,12 +680,8 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
           sellerAddress: sellerAddress as `0x${string}`,
           defaultPrice,
           acceptNetworks,
-          // Phase 1 stubs — Phase 2 will wire real lookups.
-          resolvePipeline: (_pipelineId: string): PipelineInfo | null => null,
-          resolveLatestSealedCall: (
-            _pipelineId: string,
-          ): { anchor: FhenixAnchorTuple; revealArtifact: unknown | null } | null =>
-            null,
+          resolvePipeline,
+          resolveLatestSealedCall,
         }),
       );
       console.log(

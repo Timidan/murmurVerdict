@@ -266,9 +266,11 @@ async function handleAfterPayment(
     return;
   }
 
-  // ── Validate paid amount + recipient match the pipeline (defense-in-depth) ──
-  // The SDK middleware advertised the pipeline's price + recipient as
-  // payment requirements, so this should always match. Belt + braces.
+  // ── Validate paid amount matches the pipeline (defense-in-depth) ──
+  // The SDK middleware advertised the pipeline's price as a payment
+  // requirement, so this should always match. Recipient safety comes
+  // from the env parser, which rejects per-pipeline entries whose
+  // recipient differs from MURMUR_NANOPAY_SELLER_ADDRESS at boot.
   if (BigInt(payment.amount) < BigInt(pipeline.priceAtoms)) {
     console.error(
       `[nanopay] settled payment ${payment.transaction} amount ${payment.amount} < pipeline price ${pipeline.priceAtoms}; refusing to serve`,
@@ -307,9 +309,15 @@ async function handleAfterPayment(
   // Format `caip2:<network>` so future cross-chain attribution stays
   // disambiguated.
   const sourceDomain = `caip2:${payment.network}`;
-  // Use the Circle transaction UUID as the "eip3009_nonce" surrogate.
-  // It's globally unique per Circle and serves the same dedup role.
-  const eip3009Nonce = payment.transaction;
+  // The Circle transaction UUID is the payment handle — globally unique
+  // per Circle settlement, it's the durable replay-prevention key the
+  // daemon owns post-middleware. (The raw EIP-3009 nonce is consumed by
+  // the SDK middleware before this handler runs.) Phase 1b renamed the
+  // schema column from `eip3009_nonce` to `payment_handle` to stop the
+  // semantic lie; the binding-wire field below keeps the historical
+  // `eip3009Nonce` name for buyer-side backwards compat (Phase 2 will
+  // version the wire shape).
+  const paymentHandle = payment.transaction;
   // Hash inputs are canonical post-settle artifacts. Stable across
   // restarts because the transaction UUID + amount + payer are
   // immutable once Circle settles.
@@ -325,10 +333,15 @@ async function handleAfterPayment(
   });
 
   // ── Compute requestSignalId binding ───────────────────────────────────
+  // `eip3009Nonce` here is the binding-wire field name; the actual value
+  // is a digest of the payment handle (Circle's transaction UUID),
+  // because the SDK middleware consumed the raw EIP-3009 nonce before
+  // we got control. See `paymentHandle` comment above.
+  const paymentHandleDigest = transactionUuidToBytes32(paymentHandle);
   const requestSignalId = computeRequestSignalId({
     pipelineId: pipelineId as `0x${string}`,
     buyer: payer,
-    eip3009Nonce: transactionUuidToBytes32(eip3009Nonce),
+    eip3009Nonce: paymentHandleDigest,
     domain: deps.bindingDomain,
   });
 
@@ -336,7 +349,7 @@ async function handleAfterPayment(
     pipelineId: pipelineId as `0x${string}`,
     buyerAddress: payer,
     requestSignalId,
-    eip3009Nonce: transactionUuidToBytes32(eip3009Nonce),
+    eip3009Nonce: paymentHandleDigest,
     circleTransactionUuid: payment.transaction,
     anchor: sealedCall.anchor,
   };
@@ -344,13 +357,14 @@ async function handleAfterPayment(
   // ── Insert nanopay_receipts row (status='settled' directly) ──────────
   // Per the SDK-pivot deviation from the original design: receipts are
   // inserted AFTER settle (the SDK middleware already settled before
-  // this handler runs). The prefix UNIQUE on (payer, eip3009_nonce,
-  // source_domain) catches concurrent identical inserts → serve cached.
+  // this handler runs). The prefix UNIQUE on (payer, payment_handle,
+  // source_domain) — renamed from eip3009_nonce in v52 — catches
+  // concurrent identical inserts → serve cached.
   let receiptId: number;
   try {
     receiptId = nanopayReceiptsRepo.insertSettled(deps.db, {
       payer,
-      eip3009Nonce,
+      paymentHandle,
       sourceDomain,
       paymentPayloadHash: payloadHash,
       paymentRequirementsHash: requirementsHash,
@@ -371,9 +385,9 @@ async function handleAfterPayment(
       "code" in err &&
       (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
     ) {
-      const existing = nanopayReceiptsRepo.findByPayerNonceDomain(deps.db, {
+      const existing = nanopayReceiptsRepo.findByPayerHandleDomain(deps.db, {
         payer,
-        eip3009Nonce,
+        paymentHandle,
         sourceDomain,
       });
       if (existing && existing.status === "settled") {
@@ -419,9 +433,10 @@ function respondWithReceipt(res: Response, row: NanopayReceiptRow): void {
  * SDK middleware consumed + verified it before our handler runs.
  * Callers should treat this as a "settlement-handle digest" tying
  * the binding to Circle's transaction UUID rather than to the
- * buyer's signed nonce. Schema follow-up: rename the receipts
- * column from `eip3009_nonce` to `payment_handle` to match
- * semantics. Deferred to a follow-up commit.
+ * buyer's signed nonce. Phase 1b (v52) renamed the schema column
+ * from `eip3009_nonce` to `payment_handle`; the binding-wire field
+ * name above keeps the legacy `eip3009Nonce` slot for buyer-side
+ * backwards compat until Phase 2 versions the wire shape.
  */
 function transactionUuidToBytes32(uuid: string): `0x${string}` {
   return keccak256(toHex(uuid));

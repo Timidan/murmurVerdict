@@ -946,12 +946,52 @@ function applyMigrations(db: Database.Database): void {
     // payload" → 409 Conflict (the pre-settle DB lookup catches this
     // before calling Circle).
     //
+    // Phase 1b update (v52): the `eip3009_nonce` column is renamed to
+    // `payment_handle` because the SDK-pivot flow stores Circle's
+    // transaction UUID there, not the raw EIP-3009 nonce. See v52 block
+    // below.
+    //
     // Binding fields persisted as binding_json (Fhenix anchor tuple) and
     // reveal_artifact_json (the revealed signal once horizon opens). Single-
     // stream invariant: served signal == sealed-Fhenix-anchored signal.
     db.exec(MIGRATION_051_NANOPAY_RECEIPTS);
     v = 51;
     set.run("schema_version", String(v));
+  }
+
+  if (v < 52) {
+    // Wave L.A Phase 1b — rename `nanopay_receipts.eip3009_nonce` →
+    // `payment_handle`. The Phase 1 column name was a semantic lie:
+    // the SDK middleware consumes + verifies the EIP-3009 nonce before
+    // the daemon handler runs, so what we actually store there is
+    // Circle's transaction UUID (the "payment handle"). See
+    // `src/verdict/routes/nanopay.ts` Phase 1 comment for the deferral
+    // note.
+    //
+    // SQLite ALTER TABLE RENAME COLUMN (3.25.0+) auto-rewrites the
+    // index definition's referenced column, but does not rename the
+    // index itself. We drop + recreate so the index name stops
+    // perpetuating the old semantics.
+    //
+    // Wrapped in db.transaction() because a crash AFTER the rename but
+    // BEFORE the schema_version bump would leave the next boot
+    // attempting to rename a column that no longer exists — startup
+    // failure with no recovery path. The wrap makes the rename + index
+    // swap + version bump atomic.
+    //
+    // Design note: docs/superpowers/specs/2026-05-24-wave-l-a-phase-1b-design.md
+    const migrateTo52 = db.transaction(() => {
+      db.exec(`
+        ALTER TABLE nanopay_receipts RENAME COLUMN eip3009_nonce TO payment_handle;
+
+        DROP INDEX IF EXISTS idx_nanopay_receipts_payer_nonce_domain;
+        CREATE UNIQUE INDEX idx_nanopay_receipts_payer_handle_domain
+          ON nanopay_receipts(payer, payment_handle, source_domain);
+      `);
+      set.run("schema_version", "52");
+    });
+    migrateTo52();
+    v = 52;
   }
 }
 

@@ -37,6 +37,29 @@ export interface FhenixLifecycleCursorRow {
   updated_at: string;
 }
 
+/**
+ * Wave L.A Phase 1b — latest sealed-Fhenix call for a (agent, market)
+ * pair, used by the Nanopayments resolver to bind a paid request to
+ * the most recent anchored signal. Returns the columns the binding
+ * tuple needs from `fhenix_sealed_calls` + `submissions`, joined on
+ * `call_id`. Filters out rows that pre-date the commit-hash backfill
+ * (`commit_hash` / `commit_scheme` null) because the binding tuple
+ * requires both. Returns `null` if no qualifying row exists.
+ */
+export interface LatestSealedCallForPipelineRow {
+  chain_id: number;
+  contract_address: string;
+  onchain_call_id: string;
+  submit_tx_hash: string;
+  submit_log_index: number;
+  binary_index_ct_hash: string;
+  confidence_ct_hash: string;
+  reveal_open_at: string;
+  market_id: string;
+  commit_hash: string;
+  commit_scheme: string;
+}
+
 export const fhenixLifecycleReadRepo = {
   statusCounts(db: Database.Database): Record<FhenixRevealStatus, number> {
     const counts = Object.fromEntries(
@@ -106,6 +129,62 @@ export const fhenixLifecycleReadRepo = {
       )
       .all() as Array<{ event_name: string; count: number }>;
     return Object.fromEntries(rows.map((row) => [row.event_name, row.count]));
+  },
+
+  /**
+   * Wave L.A Phase 1b — used by the Nanopayments resolver
+   * (`resolveLatestSealedCall`) to find the latest **servable**
+   * sealed call for a (agent, market) pair. Returns the columns
+   * needed to build a `FhenixAnchorTuple` plus the binding metadata.
+   *
+   * Filters:
+   *   - `s.commit_hash IS NOT NULL` / `s.commit_scheme IS NOT NULL`:
+   *     the binding tuple requires both; rows missing them pre-date
+   *     the commit-hash backfill and aren't bindable.
+   *   - `f.reveal_status IN ('pending','revealed')`: codex audit
+   *     2026-05-24 — `'invalid'` / `'missed'` rows are terminal-bad
+   *     and the reveal can never resolve, so binding to them would
+   *     guarantee the buyer pays for a signal that never resolves.
+   *     Skip them; the resolver falls back to the next eligible row
+   *     because we `ORDER BY created_at DESC LIMIT 1` over the
+   *     filtered set — i.e. the next-most-recent servable row.
+   *
+   * Ordering: `fhenix_sealed_calls.created_at DESC` matches the
+   * "latest sealed-Fhenix call" semantic — the row indexed most
+   * recently from the chain. Tie-break on `call_id DESC` for
+   * deterministic order under same-millisecond inserts (rare but
+   * possible with multiple agents per `created_at` precision).
+   */
+  latestSealedCallForPipeline(
+    db: Database.Database,
+    key: { agentId: string; marketId: string },
+  ): LatestSealedCallForPipelineRow | null {
+    const row = db
+      .prepare(
+        `SELECT
+           f.chain_id,
+           f.contract_address,
+           f.onchain_call_id,
+           f.submit_tx_hash,
+           f.submit_log_index,
+           f.binary_index_ct_hash,
+           f.confidence_ct_hash,
+           f.reveal_open_at,
+           s.market_id,
+           s.commit_hash,
+           s.commit_scheme
+         FROM fhenix_sealed_calls f
+         JOIN submissions s ON s.call_id = f.call_id
+         WHERE s.agent_id = ?
+           AND s.market_id = ?
+           AND s.commit_hash IS NOT NULL
+           AND s.commit_scheme IS NOT NULL
+           AND f.reveal_status IN ('pending','revealed')
+         ORDER BY f.created_at DESC, f.call_id DESC
+         LIMIT 1`,
+      )
+      .get(key.agentId, key.marketId) as LatestSealedCallForPipelineRow | undefined;
+    return row ?? null;
   },
 
   rows(

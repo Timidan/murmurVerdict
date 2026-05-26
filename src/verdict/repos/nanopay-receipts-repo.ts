@@ -25,7 +25,10 @@ function normalizeSourceDomain(sourceDomain: string): string {
  * full Fhenix anchor binding for every paid-inference call served via
  * the `POST /v2/nanopay/infer` rail.
  *
- * Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
+ * Design notes:
+ *   - Phase 1: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
+ *   - Phase 1b (this file's payment_handle rename):
+ *     docs/superpowers/specs/2026-05-24-wave-l-a-phase-1b-design.md
  *
  * Phase 1 (testnet MVP) responsibilities:
  *   - insertSettlingIntent: write row BEFORE calling Circle /settle so
@@ -35,18 +38,28 @@ function normalizeSourceDomain(sourceDomain: string): string {
  *   - markFailed: transition settling → failed.
  *   - findByCompositeKey: exact composite-key lookup (cached-response
  *     path on replay).
- *   - findByPayerNonceDomain: partial-key lookup for pre-settle
- *     conflict detection (returns array — there should be 0 or 1 row).
+ *   - findByPayerHandleDomain: partial-key lookup for pre-settle
+ *     conflict detection (returns 0 or 1 row).
  *
  * Phase 3 will add:
  *   - findStuckSettlingOlderThan: reconciliation cron query.
  *   - markSettlementUnknown: terminal state after N failed reconciles.
  *   - patchRevealArtifact: update reveal_artifact_json when horizon opens.
+ *
+ * Phase 1b naming note: the column historically called `eip3009_nonce`
+ * was renamed to `payment_handle` in migration v52 because the SDK
+ * middleware consumes + verifies the EIP-3009 nonce before the daemon
+ * handler runs — what we actually store is Circle's transaction UUID
+ * (the "payment handle" / settlement handle). The repo's TypeScript
+ * surface uses `paymentHandle` to match. The `NanopayBinding` wire
+ * field returned in the route response keeps the legacy
+ * `eip3009Nonce` name for backwards compatibility with any buyer that
+ * already parses it; renaming the wire field is deferred to Phase 2.
  */
 export interface NanopayReceiptRow {
   readonly id: number;
   readonly payer: string;
-  readonly eip3009_nonce: string;
+  readonly payment_handle: string;
   readonly source_domain: string;
   readonly payment_payload_hash: string;
   readonly payment_requirements_hash: string;
@@ -65,7 +78,7 @@ export interface NanopayReceiptRow {
 
 export interface InsertSettlingIntentInput {
   readonly payer: string;
-  readonly eip3009Nonce: string;
+  readonly paymentHandle: string;
   readonly sourceDomain: string;
   readonly paymentPayloadHash: string;
   readonly paymentRequirementsHash: string;
@@ -84,7 +97,7 @@ export interface InsertSettlingIntentInput {
  */
 export interface InsertSettledInput {
   readonly payer: string;
-  readonly eip3009Nonce: string;
+  readonly paymentHandle: string;
   readonly sourceDomain: string;
   readonly paymentPayloadHash: string;
   readonly paymentRequirementsHash: string;
@@ -108,7 +121,7 @@ export interface MarkFailedInput {
   readonly reason: string;
 }
 
-const COLUMNS = `id, payer, eip3009_nonce, source_domain, payment_payload_hash,
+const COLUMNS = `id, payer, payment_handle, source_domain, payment_payload_hash,
        payment_requirements_hash, status, circle_transaction_uuid, pipeline_id,
        request_signal_id, paid_amount_usdc_atoms, binding_json,
        reveal_artifact_json, created_at, settled_at, failed_at, failure_reason`;
@@ -126,13 +139,13 @@ export const nanopayReceiptsRepo = {
   insertSettlingIntent(db: Database.Database, input: InsertSettlingIntentInput): number {
     const stmt = db.prepare(`
       INSERT INTO nanopay_receipts (
-        payer, eip3009_nonce, source_domain, payment_payload_hash,
+        payer, payment_handle, source_domain, payment_payload_hash,
         payment_requirements_hash, status, circle_transaction_uuid,
         pipeline_id, request_signal_id, paid_amount_usdc_atoms,
         binding_json, reveal_artifact_json,
         created_at, settled_at, failed_at, failure_reason
       ) VALUES (
-        @payer, @eip3009_nonce, @source_domain, @payment_payload_hash,
+        @payer, @payment_handle, @source_domain, @payment_payload_hash,
         @payment_requirements_hash, 'settling', NULL,
         @pipeline_id, @request_signal_id, @paid_amount_usdc_atoms,
         @binding_json, @reveal_artifact_json,
@@ -141,7 +154,7 @@ export const nanopayReceiptsRepo = {
     `);
     const result = stmt.run({
       payer: normalizePayer(input.payer),
-      eip3009_nonce: input.eip3009Nonce,
+      payment_handle: input.paymentHandle,
       source_domain: normalizeSourceDomain(input.sourceDomain),
       payment_payload_hash: input.paymentPayloadHash,
       payment_requirements_hash: input.paymentRequirementsHash,
@@ -163,22 +176,22 @@ export const nanopayReceiptsRepo = {
    * codex audit 2026-05-23 flagged as semantically misleading.
    *
    * Same race safety as `insertSettlingIntent`: the schema's prefix
-   * UNIQUE on (payer, eip3009_nonce, source_domain) prevents
+   * UNIQUE on (payer, payment_handle, source_domain) prevents
    * duplicate rows; concurrent identical inserts throw
    * SQLITE_CONSTRAINT_UNIQUE and the caller should re-read via
-   * `findByPayerNonceDomain` to serve cached.
+   * `findByPayerHandleDomain` to serve cached.
    */
   insertSettled(db: Database.Database, input: InsertSettledInput): number {
     const now = nowIso(new Date());
     const stmt = db.prepare(`
       INSERT INTO nanopay_receipts (
-        payer, eip3009_nonce, source_domain, payment_payload_hash,
+        payer, payment_handle, source_domain, payment_payload_hash,
         payment_requirements_hash, status, circle_transaction_uuid,
         pipeline_id, request_signal_id, paid_amount_usdc_atoms,
         binding_json, reveal_artifact_json,
         created_at, settled_at, failed_at, failure_reason
       ) VALUES (
-        @payer, @eip3009_nonce, @source_domain, @payment_payload_hash,
+        @payer, @payment_handle, @source_domain, @payment_payload_hash,
         @payment_requirements_hash, 'settled', @circle_transaction_uuid,
         @pipeline_id, @request_signal_id, @paid_amount_usdc_atoms,
         @binding_json, @reveal_artifact_json,
@@ -187,7 +200,7 @@ export const nanopayReceiptsRepo = {
     `);
     const result = stmt.run({
       payer: normalizePayer(input.payer),
-      eip3009_nonce: input.eip3009Nonce,
+      payment_handle: input.paymentHandle,
       source_domain: normalizeSourceDomain(input.sourceDomain),
       payment_payload_hash: input.paymentPayloadHash,
       payment_requirements_hash: input.paymentRequirementsHash,
@@ -272,7 +285,7 @@ export const nanopayReceiptsRepo = {
     db: Database.Database,
     key: {
       payer: string;
-      eip3009Nonce: string;
+      paymentHandle: string;
       sourceDomain: string;
       paymentPayloadHash: string;
       paymentRequirementsHash: string;
@@ -282,14 +295,14 @@ export const nanopayReceiptsRepo = {
       SELECT ${COLUMNS}
       FROM nanopay_receipts
       WHERE payer = @payer
-        AND eip3009_nonce = @eip3009_nonce
+        AND payment_handle = @payment_handle
         AND source_domain = @source_domain
         AND payment_payload_hash = @payment_payload_hash
         AND payment_requirements_hash = @payment_requirements_hash
     `);
     const row = stmt.get({
       payer: normalizePayer(key.payer),
-      eip3009_nonce: key.eip3009Nonce,
+      payment_handle: key.paymentHandle,
       source_domain: normalizeSourceDomain(key.sourceDomain),
       payment_payload_hash: key.paymentPayloadHash,
       payment_requirements_hash: key.paymentRequirementsHash,
@@ -299,10 +312,10 @@ export const nanopayReceiptsRepo = {
 
   /**
    * Partial-key lookup used by the pre-settle conflict-detection step.
-   * Returns the unique row matching (payer, eip3009_nonce, source_domain)
+   * Returns the unique row matching (payer, payment_handle, source_domain)
    * if one exists, else null.
    *
-   * Per the v51 migration, `(payer, eip3009_nonce, source_domain)` is
+   * Per the v52 migration, `(payer, payment_handle, source_domain)` is
    * UNIQUE in the schema. So at most one row exists for any prefix.
    * The route handler:
    *   1. Calls this to find the existing row (if any).
@@ -316,20 +329,20 @@ export const nanopayReceiptsRepo = {
    * composite UNIQUE alone prevented prefix conflicts — it doesn't;
    * the schema now has a separate prefix UNIQUE that does.
    */
-  findByPayerNonceDomain(
+  findByPayerHandleDomain(
     db: Database.Database,
-    key: { payer: string; eip3009Nonce: string; sourceDomain: string },
+    key: { payer: string; paymentHandle: string; sourceDomain: string },
   ): NanopayReceiptRow | null {
     const stmt = db.prepare(`
       SELECT ${COLUMNS}
       FROM nanopay_receipts
       WHERE payer = @payer
-        AND eip3009_nonce = @eip3009_nonce
+        AND payment_handle = @payment_handle
         AND source_domain = @source_domain
     `);
     const row = stmt.get({
       payer: normalizePayer(key.payer),
-      eip3009_nonce: key.eip3009Nonce,
+      payment_handle: key.paymentHandle,
       source_domain: normalizeSourceDomain(key.sourceDomain),
     }) as NanopayReceiptRow | undefined;
     return row ?? null;
