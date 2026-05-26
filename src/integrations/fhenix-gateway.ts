@@ -20,7 +20,6 @@ import {
   FEED_PACKET_SUBMITTED_EVENT,
   SEALED_CALL_SUBMITTED_EVENT,
   fhenixMarketIdForMurmurMarket,
-  type FhenixEventVerifier,
 } from "./fhenix-events.js";
 import {
   agentsRepo,
@@ -32,7 +31,6 @@ import {
   marketsRepo,
   submissionsRepo,
   type FeedContractRow,
-  type FeedPacketRow,
   type FhenixGatewayReceiptTelemetry,
   type FhenixGatewayFeedPacketTxAttemptRow,
   type FhenixGatewayTelemetrySummary,
@@ -220,7 +218,6 @@ type ContractCofheInput = {
 
 export interface FhenixGatewayConfig {
   db: Database.Database;
-  verifier: FhenixEventVerifier;
   chainId: number;
   contractAddress: string;
   relayerAddress: string;
@@ -422,7 +419,6 @@ const GATEWAY_TX_STATUSES: FhenixGatewayTxStatus[] = [
 
 export class FhenixGatewayBroadcaster {
   private readonly db: Database.Database;
-  private readonly verifier: FhenixEventVerifier;
   private readonly chainId: number;
   private readonly contractAddress: string;
   private readonly relayerAddress: string;
@@ -437,7 +433,6 @@ export class FhenixGatewayBroadcaster {
 
   constructor(config: FhenixGatewayConfig) {
     this.db = config.db;
-    this.verifier = config.verifier;
     this.chainId = config.chainId;
     this.contractAddress = normalizeAddress(config.contractAddress);
     this.relayerAddress = normalizeAddress(config.relayerAddress);
@@ -1616,7 +1611,6 @@ export class FhenixGatewayBroadcaster {
 
 export function createFhenixGatewayFromEnv(
   db: Database.Database,
-  verifier: FhenixEventVerifier,
 ): FhenixGatewayBroadcaster | null {
   const enabled = process.env.FHENIX_GATEWAY_ENABLED === "true";
   const rpcUrl = process.env.FHENIX_RPC_URL?.trim();
@@ -1660,7 +1654,6 @@ export function createFhenixGatewayFromEnv(
   };
   return new FhenixGatewayBroadcaster({
     db,
-    verifier,
     chainId,
     contractAddress,
     relayerAddress: account.address,

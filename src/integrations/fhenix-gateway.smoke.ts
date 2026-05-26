@@ -295,7 +295,6 @@ try {
   });
   const gateway = new FhenixGatewayBroadcaster({
     db,
-    verifier,
     chainId,
     contractAddress: contract,
     relayerAddress: relayer,

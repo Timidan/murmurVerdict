@@ -83,7 +83,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     const { createFhenixGatewayFromEnv } = await import(
       "../integrations/fhenix-gateway.js"
     );
-    fhenixGateway = createFhenixGatewayFromEnv(db, fhenixVerifier);
+    fhenixGateway = createFhenixGatewayFromEnv(db);
     if (!fhenixIngestor && process.env.FHENIX_RPC_URL) {
       console.warn(
         "[daemon] Fhenix verifier is configured, but event watcher is disabled; set FHENIX_CHAIN_ID and either FHENIX_SEALED_VERDICTS_ADDRESS or run sync-deployments to index reveals",
@@ -200,10 +200,9 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
                   pending_calls: r.pending_calls,
                 })),
               });
-              // Phase 3b follow-up B: per-market delta. Scoped to the call's
-              // market_id so MarketsMatrix cards refresh without a poll.
-              // Legacy rows without market_id (pre-migration 009) skip this —
-              // there's no market surface to update for them.
+              // Per-market delta: scoped to the call's market_id so any
+              // per-market dashboard surface can refresh without a poll.
+              // Legacy rows without market_id (pre-migration 009) skip this.
               const marketRow = db
                 .prepare(
                   "SELECT market_id FROM submissions WHERE call_id = ?",

@@ -131,8 +131,8 @@ export interface StatsTickEvent {
 
 /**
  * Per-market top-N snapshot. Fired alongside `leaderboard.update` whenever a
- * t1 resolution lands on a market — lets dashboards keep the per-market
- * MarketsMatrix card in sync without polling every market's REST endpoint.
+ * t1 resolution lands on a market — lets per-market dashboard surfaces stay
+ * in sync without polling every market's REST endpoint.
  *
  * Subscribers should filter by `market_id` to scope to the market they're
  * displaying. Legacy submissions without a market_id never trigger this

@@ -8,8 +8,6 @@ Small `tsx` scripts for local operator workflows. They read env vars or
 | `tools/operations/admin-claim.ts` | — | attach an existing agent or newly minted slug to an account after out-of-band operator review |
 | `tools/operations/launch-thread.ts` | `npm run outreach:thread` | draft a current leaderboard launch thread into `artifacts/launch-thread.md` |
 | `tools/verify/verify-deploy.ts` | `npm run verify:deploy` | check daemon and dashboard endpoints after deploy |
-| `tools/wiring/chainlink-probe.ts` | — | one-shot live RPC probe of registered Chainlink Base feeds |
-| `tools/wiring/pyth-probe.ts` | — | one-shot live Hermes + adapter probe of Pyth feeds |
 
 Tree:
 
@@ -17,7 +15,6 @@ Tree:
 tools/
   operations/
   verify/
-  wiring/
   README.md
 ```
 

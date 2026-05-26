@@ -109,7 +109,7 @@ import {
   attachInvalidFhenixReveal,
   attachValidFhenixReveal,
 } from "./fhenix-reveal-ingestion.js";
-import { isoFromMs, nowIso, parseIsoMs } from "./time.js";
+import { nowIso, parseIsoMs } from "./time.js";
 
 const OperatorAlertStatusSchema = z.enum(["open", "resolved"]);
 const OperatorAlertDeliveryStatusSchema = z.enum(["pending", "delivered", "failed"]);
@@ -1173,7 +1173,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   router.post(
     "/v1/feeds/:feed_id/packets",
     json,
-    asyncHandler(async (req, res) => {
+    asyncHandler(async (_req, res) => {
       res.status(410).json({
         code: "endpoint_removed",
         message:
