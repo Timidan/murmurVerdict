@@ -11,17 +11,19 @@ import {
   VERDICT_REVEAL_INVALID_EVENT,
   type FhenixEventVerifier,
 } from "./fhenix-events.js";
-import {
-  fhenixEventsRepo,
-  fhenixSealedCallsRepo,
-} from "../verdict/db.js";
+import { fhenixEventsRepo } from "../verdict/repos/fhenix-event-index-repo.js";
+import { fhenixSealedCallsRepo } from "../verdict/repos/fhenix-sealed-calls-repo.js";
 import {
   attachInvalidFhenixReveal,
   attachValidFhenixReveal,
   markMissedFhenixReveals,
 } from "../verdict/fhenix-reveal-ingestion.js";
 import { nowIso } from "../verdict/time.js";
-import { resolveFhenixContractAddress } from "./deployments.js";
+import {
+  parseFhenixAddressInput,
+  parseFhenixChainIdInput,
+  resolveFhenixContractAddress,
+} from "./deployments.js";
 
 type WatchClient = {
   getBlockNumber: () => Promise<bigint>;
@@ -52,15 +54,30 @@ export interface FhenixEventIngestorConfig {
   batchSize?: number;
   revealGraceSeconds?: number;
   client?: WatchClient;
-  now?: () => Date;
+  now: () => Date;
   log?: (line: string) => void;
 }
+
+export type FhenixEventIngestorRuntimeConfig = Omit<
+  FhenixEventIngestorConfig,
+  "db" | "verifier" | "client" | "now" | "log"
+>;
 
 export interface FhenixIngestTickResult {
   indexed: number;
   valid_reveals_attached: number;
   invalid_reveals_attached: number;
   missed_reveals_marked: number;
+}
+
+export class FhenixEventIngestorConfigError extends Error {
+  readonly key: string;
+
+  constructor(key: string, message: string) {
+    super(`${key}: ${message}`);
+    this.name = "FhenixEventIngestorConfigError";
+    this.key = key;
+  }
 }
 
 export class FhenixEventIngestor {
@@ -90,7 +107,7 @@ export class FhenixEventIngestor {
       (createPublicClient({
         transport: http(config.rpcUrl),
       }) as unknown as WatchClient);
-    this.now = config.now ?? (() => new Date());
+    this.now = config.now;
     this.log = config.log ?? ((line) => console.log(line));
   }
 
@@ -142,7 +159,6 @@ export class FhenixEventIngestor {
         continue;
       }
       const blockNumber = numberFromBigint(log.blockNumber, "block_number");
-      const payload = normalizePayload(log.args);
       fhenixEventsRepo.upsertEvent(this.db, {
         chain_id: this.chainId,
         contract_address: this.contractAddress,
@@ -151,7 +167,7 @@ export class FhenixEventIngestor {
         log_index: log.logIndex,
         block_number: blockNumber,
         block_hash: log.blockHash?.toLowerCase() ?? null,
-        payload_json: JSON.stringify(payload),
+        payload: log.args,
         observed_at: nowIso(this.now()),
       });
 
@@ -253,33 +269,71 @@ export class FhenixEventIngestor {
 export function createFhenixEventIngestorFromEnv(
   db: Database.Database,
   verifier: FhenixEventVerifier,
+  opts: {
+    contractAddress?: string | null;
+    env?: NodeJS.ProcessEnv;
+    now: () => Date;
+  },
 ): FhenixEventIngestor | null {
-  const rpcUrl = process.env.FHENIX_RPC_URL?.trim();
-  const rawChainId = process.env.FHENIX_CHAIN_ID?.trim();
-  if (!rpcUrl || !rawChainId) return null;
-  const chainId = Number(rawChainId);
-  if (!Number.isInteger(chainId) || chainId <= 0) return null;
-  const contractAddress = resolveFhenixContractAddress(chainId);
+  const config = loadFhenixEventIngestorConfig(opts.env, {
+    contractAddress: opts.contractAddress,
+  });
+  return config
+    ? new FhenixEventIngestor({ db, verifier, ...config, now: opts.now })
+    : null;
+}
+
+export interface FhenixEventIngestorConfigOptions {
+  contractAddress?: string | null;
+}
+
+export function loadFhenixEventIngestorConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: FhenixEventIngestorConfigOptions = {},
+): FhenixEventIngestorRuntimeConfig | null {
+  const rpcUrl = env.FHENIX_RPC_URL?.trim();
+  if (!rpcUrl) return null;
+  const chainIdInput = parseFhenixChainIdInput(env.FHENIX_CHAIN_ID);
+  if (chainIdInput.kind === "empty") return null;
+  if (chainIdInput.kind === "invalid") {
+    throw new FhenixEventIngestorConfigError(
+      "FHENIX_CHAIN_ID",
+      "must be a positive integer",
+    );
+  }
+  const chainId = chainIdInput.chainId;
+  const contractAddress = resolveIngestorContractAddress(env, chainId, opts);
   if (!contractAddress) return null;
-  return new FhenixEventIngestor({
-    db,
-    verifier,
+  return {
     rpcUrl,
     chainId,
     contractAddress,
-    startBlock: envInt("FHENIX_EVENT_START_BLOCK", 0),
-    confirmations: envInt("FHENIX_EVENT_CONFIRMATIONS", 2),
-    batchSize: envInt("FHENIX_EVENT_BATCH_SIZE", 1_000),
-    revealGraceSeconds: envInt("FHENIX_REVEAL_GRACE_SEC", 3_600),
-  });
+    startBlock: configInt(env, "FHENIX_EVENT_START_BLOCK", 0, { min: 0 }),
+    confirmations: configInt(env, "FHENIX_EVENT_CONFIRMATIONS", 2, { min: 0 }),
+    batchSize: configInt(env, "FHENIX_EVENT_BATCH_SIZE", 1_000, {
+      min: 1,
+      max: 10_000,
+    }),
+    revealGraceSeconds: configInt(env, "FHENIX_REVEAL_GRACE_SEC", 3_600, {
+      min: 0,
+    }),
+  };
 }
 
-function normalizePayload(args: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(args).map(([key, value]) => [
-      key,
-      typeof value === "bigint" ? value.toString() : value,
-    ]),
+function resolveIngestorContractAddress(
+  env: NodeJS.ProcessEnv,
+  chainId: number,
+  opts: FhenixEventIngestorConfigOptions,
+): string | null {
+  if (opts.contractAddress === undefined) {
+    return resolveFhenixContractAddress(chainId, env);
+  }
+  const parsed = parseFhenixAddressInput(opts.contractAddress);
+  if (parsed.kind === "empty") return null;
+  if (parsed.kind === "address") return parsed.address;
+  throw new FhenixEventIngestorConfigError(
+    "FHENIX_SEALED_VERDICTS_ADDRESS",
+    "must be a 20-byte 0x-prefixed address",
   );
 }
 
@@ -301,9 +355,24 @@ function numberFromBigint(value: bigint, field: string): number {
   return n;
 }
 
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
+function configInt(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  opts: { min: number; max?: number },
+): number {
+  const raw = env[name]?.trim();
   if (!raw) return fallback;
   const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+  if (
+    Number.isInteger(parsed) &&
+    parsed >= opts.min &&
+    (opts.max === undefined || parsed <= opts.max)
+  ) {
+    return parsed;
+  }
+  const range = opts.max === undefined
+    ? `an integer >= ${opts.min}`
+    : `an integer from ${opts.min} to ${opts.max}`;
+  throw new FhenixEventIngestorConfigError(name, `must be ${range}`);
 }

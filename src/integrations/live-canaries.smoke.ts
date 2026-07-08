@@ -1,9 +1,15 @@
 import express from "express";
+import { strict as nodeAssert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { LiveCanaryRunner, type FhenixCanaryClient } from "./live-canaries.js";
+import {
+  LiveCanaryConfigError,
+  LiveCanaryRunner,
+  loadLiveCanaryConfig,
+  type FhenixCanaryClient,
+} from "./live-canaries.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import { openDb } from "../verdict/db.js";
 import { SCHEMA_VERSION } from "../verdict/schema.js";
@@ -15,6 +21,8 @@ const tmp = mkdtempSync(join(tmpdir(), "murmur-live-canaries-smoke-"));
 const db = openDb({ path: join(tmp, "verdict.db") });
 let failures = 0;
 let server: Server | null = null;
+const fixedNow = () => new Date("2026-05-15T12:00:00Z");
+const fixedNowMs = () => fixedNow().getTime();
 
 async function check(name: string, fn: () => Promise<void> | void): Promise<void> {
   try {
@@ -33,32 +41,132 @@ const fhenixClient: FhenixCanaryClient = {
 };
 
 const runner = new LiveCanaryRunner({
-  schemaVersion: SCHEMA_VERSION,
-  db,
-  now: () => new Date("2026-05-15T12:00:00Z"),
-  fhenix: {
-    enabled: true,
-    expectedChainId: 8008135,
-    contractAddress: "0x1111111111111111111111111111111111111111",
-    requireContractCode: true,
-    client: fhenixClient,
-  },
-  polymarket: {
-    enabled: true,
-    conditionId,
-    client: {
-      fetchMarketByConditionId: async (id) => ({
-        snapshot: {
-          conditionId: id,
-          closed: false,
-          slug: "live-canary-smoke",
-          endDate: "2026-06-01T00:00:00Z",
-        },
-        source: "fresh",
-        error: null,
-      }),
+  config: {
+    schemaVersion: SCHEMA_VERSION,
+    db,
+    fhenix: {
+      enabled: true,
+      expectedChainId: 8008135,
+      contractAddress: "0x1111111111111111111111111111111111111111",
+      requireContractCode: true,
+      client: fhenixClient,
+    },
+    polymarket: {
+      enabled: true,
+      conditionId,
+      client: {
+        fetchMarketByConditionId: async (id) => ({
+          snapshot: {
+            conditionId: id,
+            closed: false,
+            slug: "live-canary-smoke",
+            endDate: "2026-06-01T00:00:00Z",
+          },
+          source: "fresh",
+          error: null,
+        }),
+      },
     },
   },
+  now: fixedNow,
+});
+
+await check("env-backed config normalizes canary boolean defaults", () => {
+  const config = loadLiveCanaryConfig(db, SCHEMA_VERSION, {
+    FHENIX_CANARY_REQUIRE_CONTRACT_CODE: "FALSE",
+    MURMUR_POLYMARKET_GAMMA_ENABLED: "true",
+  }, {
+    nowMs: fixedNowMs,
+  });
+  assert(config.fhenix.requireContractCode === false, "expected false contract-code flag");
+  assert(config.polymarket.enabled === true, "expected Polymarket canary default enabled");
+
+  const explicitlyDisabled = loadLiveCanaryConfig(db, SCHEMA_VERSION, {
+    MURMUR_POLYMARKET_GAMMA_ENABLED: "true",
+    POLYMARKET_CANARY_ENABLED: "false",
+  }, {
+    nowMs: fixedNowMs,
+  });
+  assert(explicitlyDisabled.polymarket.enabled === false, "explicit canary flag should win");
+});
+
+await check("env-backed config consumes resolved Fhenix contract address", () => {
+  const envContract = "0x2222222222222222222222222222222222222222";
+  const resolvedContract = "0x3333333333333333333333333333333333333333";
+  const baseEnv = {
+    FHENIX_CANARY_ENABLED: "true",
+    FHENIX_CHAIN_ID: "84532",
+    FHENIX_RPC_URL: "http://fhenix.invalid",
+    FHENIX_SEALED_VERDICTS_ADDRESS: envContract,
+  };
+
+  const resolved = loadLiveCanaryConfig(db, SCHEMA_VERSION, baseEnv, {
+    fhenixContractAddress: resolvedContract,
+    nowMs: fixedNowMs,
+  });
+  assert(
+    resolved.fhenix.contractAddress === resolvedContract,
+    "resolved contract address should win",
+  );
+
+  const explicitNull = loadLiveCanaryConfig(db, SCHEMA_VERSION, baseEnv, {
+    fhenixContractAddress: null,
+    nowMs: fixedNowMs,
+  });
+  assert(
+    explicitNull.fhenix.contractAddress === null,
+    "explicit null should not fall back to env",
+  );
+
+  nodeAssert.throws(
+    () =>
+      loadLiveCanaryConfig(db, SCHEMA_VERSION, baseEnv, {
+        fhenixContractAddress: "not-an-address",
+        nowMs: fixedNowMs,
+      }),
+    (err) =>
+      err instanceof LiveCanaryConfigError &&
+      err.key === "FHENIX_SEALED_VERDICTS_ADDRESS",
+  );
+});
+
+await check("env-backed config rejects malformed canary operator knobs", () => {
+  nodeAssert.throws(
+    () =>
+      loadLiveCanaryConfig(db, SCHEMA_VERSION, {
+        FHENIX_CANARY_ENABLED: "sometimes",
+      }, {
+        nowMs: fixedNowMs,
+      }),
+    (err) =>
+      err instanceof LiveCanaryConfigError &&
+      err.key === "FHENIX_CANARY_ENABLED",
+  );
+  nodeAssert.throws(
+    () =>
+      loadLiveCanaryConfig(db, SCHEMA_VERSION, {
+        FHENIX_CANARY_ENABLED: "true",
+        FHENIX_RPC_URL: "http://fhenix.invalid",
+        FHENIX_CHAIN_ID: "not-a-chain",
+      }, {
+        nowMs: fixedNowMs,
+      }),
+    (err) =>
+      err instanceof LiveCanaryConfigError &&
+      err.key === "FHENIX_CHAIN_ID",
+  );
+  nodeAssert.throws(
+    () =>
+      loadLiveCanaryConfig(db, SCHEMA_VERSION, {
+        POLYMARKET_CANARY_ENABLED: "true",
+        POLYMARKET_CANARY_CONDITION_ID: "not-a-condition-id",
+      }, {
+        nowMs: fixedNowMs,
+      }),
+    (err) =>
+      err instanceof LiveCanaryConfigError &&
+      err.key === "POLYMARKET_CANARY_CONDITION_ID",
+  );
 });
 
 await check("runner succeeds with Fhenix and Polymarket checks", async () => {
@@ -66,27 +174,30 @@ await check("runner succeeds with Fhenix and Polymarket checks", async () => {
   assert(snapshot.ok, "snapshot should be ok");
   assert(snapshot.checks.length === 2, "expected two checks");
   assert(snapshot.checks.every((row) => row.status === "ok"), "expected all checks ok");
+  assert(snapshot.checks.every((row) => row.latency_ms === 0), "expected supplied clock latency");
 });
 
 await check("runner fails closed on Fhenix chain mismatch", async () => {
   const failing = new LiveCanaryRunner({
-    schemaVersion: SCHEMA_VERSION,
-    now: () => new Date("2026-05-15T12:00:00Z"),
-    fhenix: {
-      enabled: true,
-      expectedChainId: 8008135,
-      contractAddress: null,
-      requireContractCode: false,
-      client: {
-        ...fhenixClient,
-        getChainId: async () => 7,
+    config: {
+      schemaVersion: SCHEMA_VERSION,
+      fhenix: {
+        enabled: true,
+        expectedChainId: 8008135,
+        contractAddress: null,
+        requireContractCode: false,
+        client: {
+          ...fhenixClient,
+          getChainId: async () => 7,
+        },
+      },
+      polymarket: {
+        enabled: false,
+        conditionId: null,
+        client: null,
       },
     },
-    polymarket: {
-      enabled: false,
-      conditionId: null,
-      client: null,
-    },
+    now: fixedNow,
   });
   const snapshot = await failing.runNow();
   assert(!snapshot.ok, "snapshot should fail");
@@ -103,7 +214,7 @@ await check("admin canary routes and required readiness use cached snapshot", as
     adminToken: "admin-token",
     liveCanaries: runner,
     requireLiveCanaries: true,
-    now: () => new Date("2026-05-15T12:00:00Z"),
+    now: fixedNow,
   }));
   const started = await listen(app);
   server = started.server;

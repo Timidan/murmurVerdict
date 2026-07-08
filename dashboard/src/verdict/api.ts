@@ -289,13 +289,17 @@ export interface AgentCrossFamilyRow {
   display_name: string;
   kind: LeaderboardRow["kind"];
   cross_family_score: number | null;
+  general_score: number | null;
   families: Array<{
     market_family: string;
     verdict_score: number | null;
+    verdict_score_lb: number | null;
     resolved_calls: number;
     qualifies: boolean;
   }>;
   qualifying_families: number;
+  available_families: number;
+  coverage_ratio: number;
   cross_family_main_tier: boolean;
 }
 
@@ -313,10 +317,11 @@ export interface AgentMarketRow {
   last_resolved_at: string | null;
   /** resolved_calls >= 20 */
   market_main_tier: boolean;
-  /** Chronological per-call score series for this market. Nulls = void /
-   * oracle_unavailable resolutions; render as gaps in the sparkline.
-   * Optional in the type because older daemon versions don't project this
-   * field — the consumer must `?.filter() ?? []` defensively. */
+  /** Chronological per-call score series for this market, powering the trend
+   * sparkline. Nulls mark void / oracle_unavailable resolutions; consumers
+   * filter them out before CompactSparkline (which takes number[]), so a null
+   * is a dropped point, not a rendered gap. Optional because older daemon
+   * versions don't project it — consume as `?.filter() ?? []` defensively. */
   call_scores?: (number | null)[];
 }
 
@@ -1347,7 +1352,7 @@ export const verdictApi = {
     if (opts.limit) params.set("limit", String(opts.limit));
     const q = params.toString();
     return get<{ agents: AgentCrossFamilyRow[]; served_at: string }>(
-      `/v1/leaderboard/cross-family${q ? `?${q}` : ""}`,
+      `/v1/leaderboard/general${q ? `?${q}` : ""}`,
     );
   },
   agentGrid: (slug: string) =>
@@ -1371,8 +1376,8 @@ export const verdictApi = {
 
   /**
    * List agents owned by the authenticated account. Empty array when the
-   * user hasn't declared an agent yet — Phase 7b's AgentNewPage handles
-   * that case.
+   * user hasn't onboarded any agent yet — AccountPage's empty state
+   * routes to #/agent/onboard, where the bot itself drives /v1/account/agents.
    */
   getAccountAgents: (privyToken: string) =>
     get<{ agents: AccountAgent[] }>("/v1/account/agents", {

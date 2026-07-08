@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 /* Fonts loaded via Google Fonts in dashboard/index.html.
    Doto requires the variable axis served by Google Fonts; no fontsource
@@ -29,12 +30,17 @@
   --font-mono: "Space Mono", "JetBrains Mono", "SF Mono", ui-monospace, monospace;
   --font-display: "Doto", "Space Mono", monospace;
 
-  /* Surfaces (dark — flagship) */
-  --color-bg: #000000;
-  --color-surface: #111111;
-  --color-raised: #1A1A1A;
-  --color-border: #222222;
-  --color-border-vis: #333333;
+  /* Surfaces (dark — flagship). Lifted off pure #000 on 2026-05-31 to reduce
+     chromatic vibration of brand red on the canvas and give the surface→raised
+     ramp more breathing room. Still reads as "near black" on every display;
+     the OLED-pure-black brand note in V14_HANDOFF.md §3 is relaxed to "deep
+     near-black" with the trade explicitly accepted because the red was
+     burning. */
+  --color-bg: #0A0A0A;
+  --color-surface: #161616;
+  --color-raised: #1F1F1F;
+  --color-border: #262626;
+  --color-border-vis: #363636;
 
   /* Text scale (4 levels per Nothing discipline) */
   --color-disabled: #666666;
@@ -90,6 +96,92 @@
 
 /* Theme-color meta gets updated by the bootstrap script in index.html, not here. */
 
+/* ────────────────────────────────────────────────────────────────────────────
+   shadcn/ui token aliases — installed for @efferd/dashboard-4 block.
+   All shadcn tokens are aliases pointing at the Nothing palette above
+   (--color-bg, --color-surface, etc.), so paper-mode swap flows through
+   automatically and we never duplicate brand colors. Uses plain @theme
+   (NOT inline) per tailwind-v4-shadcn skill Error #6 because we have
+   the data-theme="paper" multi-theme variant.
+   ──────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --background: var(--color-bg);
+  --foreground: var(--color-primary);
+  --card: var(--color-surface);
+  --card-foreground: var(--color-primary);
+  --popover: var(--color-raised);
+  --popover-foreground: var(--color-primary);
+  --primary: var(--color-accent);
+  --primary-foreground: var(--color-display);
+  --secondary: var(--color-raised);
+  --secondary-foreground: var(--color-primary);
+  --muted: var(--color-surface);
+  --muted-foreground: var(--color-secondary);
+  --accent: var(--color-raised);
+  --accent-foreground: var(--color-primary);
+  --destructive: var(--color-accent);
+  --destructive-foreground: var(--color-display);
+  --border: var(--color-border);
+  --input: var(--color-border);
+  --ring: var(--color-accent);
+  --radius: 0.5rem;
+  --chart-1: var(--color-accent);
+  --chart-2: var(--color-display);
+  --chart-3: var(--color-primary);
+  --chart-4: var(--color-secondary);
+  --chart-5: var(--color-disabled);
+  --sidebar: var(--color-surface);
+  --sidebar-foreground: var(--color-primary);
+  --sidebar-primary: var(--color-accent);
+  --sidebar-primary-foreground: var(--color-display);
+  --sidebar-accent: var(--color-raised);
+  --sidebar-accent-foreground: var(--color-primary);
+  --sidebar-border: var(--color-border);
+  --sidebar-ring: var(--color-accent);
+}
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  /* NOTE: --color-primary, --color-secondary, --color-accent, --color-border
+     are NOT mapped here because Nothing's @theme block above already defines
+     them with brand semantics (--color-accent=#FD3C3C brand red, etc.). The
+     shadcn dashboard-4 block uses these Tailwind utility names — they resolve
+     to Nothing's brand values when used inside that block. If a future block
+     needs shadcn-specific hover/muted variants, scope the override in a
+     .shadcn-scope wrapper rather than redefining globally. */
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
 
@@ -137,27 +229,27 @@
   .t-display-md { font-family: var(--font-display); font-weight: 700; line-height: 0.9;  letter-spacing: -0.03em; font-size: clamp(64px, 9vw,  128px); color: var(--color-display); }
 
   /* HEADING — Space Grotesk medium. Page section titles. */
-  .t-heading    { font-family: var(--font-sans); font-weight: 500; font-size: 24px; line-height: 1.2;  letter-spacing: -0.01em; color: var(--color-display); }
-  .t-subheading { font-family: var(--font-sans); font-weight: 500; font-size: 20px; line-height: 1.25; letter-spacing: -0.01em; color: var(--color-display); }
+  .t-heading    { font-family: var(--font-sans); font-weight: 500; font-size: 26px; line-height: 1.2;  letter-spacing: -0.01em; color: var(--color-display); }
+  .t-subheading { font-family: var(--font-sans); font-weight: 500; font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; color: var(--color-display); }
 
   /* STAT — Space Mono regular. Data readouts in stat cells. */
-  .t-stat-num   { font-family: var(--font-mono); font-weight: 400; font-size: 26px; line-height: 1.1; letter-spacing: -0.02em; color: var(--color-display); font-variant-numeric: tabular-nums; }
+  .t-stat-num   { font-family: var(--font-mono); font-weight: 400; font-size: 28px; line-height: 1.1; letter-spacing: -0.02em; color: var(--color-display); font-variant-numeric: tabular-nums; }
 
   /* BODY — Space Grotesk regular. Descriptions. */
-  .t-body       { font-family: var(--font-sans); font-weight: 400; font-size: 14px; line-height: 1.5;  letter-spacing: 0; color: var(--color-primary); }
-  .t-body-sm    { font-family: var(--font-sans); font-weight: 400; font-size: 13px; line-height: 1.45; letter-spacing: 0; color: var(--color-secondary); }
+  .t-body       { font-family: var(--font-sans); font-weight: 400; font-size: 16px; line-height: 1.55; letter-spacing: 0; color: var(--color-primary); }
+  .t-body-sm    { font-family: var(--font-sans); font-weight: 400; font-size: 15px; line-height: 1.5;  letter-spacing: 0; color: var(--color-secondary); }
 
   /* DATA — Space Mono regular. Timestamps, side, horizon, tabular figures. */
-  .t-data       { font-family: var(--font-mono); font-weight: 400; font-size: 13px; line-height: 1.5; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+  .t-data       { font-family: var(--font-mono); font-weight: 400; font-size: 15px; line-height: 1.5; letter-spacing: 0; font-variant-numeric: tabular-nums; }
 
   /* LABEL — Space Mono bold. Stat labels, sidebar sections, chips. */
-  .t-label      { font-family: var(--font-mono); font-weight: 700; font-size: 11px; line-height: 1.2;  letter-spacing: 0.04em; color: var(--color-secondary); }
+  .t-label      { font-family: var(--font-mono); font-weight: 700; font-size: 12px; line-height: 1.25; letter-spacing: 0.04em; color: var(--color-secondary); }
 
   /* META — Space Mono regular sentence case. Top bar, crumb, footer hints. */
-  .t-meta       { font-family: var(--font-mono); font-weight: 400; font-size: 12px; line-height: 1.4;  letter-spacing: 0; color: var(--color-secondary); }
+  .t-meta       { font-family: var(--font-mono); font-weight: 400; font-size: 14px; line-height: 1.45; letter-spacing: 0; color: var(--color-secondary); }
 
   /* BUTTON — Space Mono bold. */
-  .t-button     { font-family: var(--font-mono); font-weight: 700; font-size: 13px; line-height: 1.2;  letter-spacing: 0.03em; }
+  .t-button     { font-family: var(--font-mono); font-weight: 700; font-size: 14px; line-height: 1.2;  letter-spacing: 0.03em; }
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -252,11 +344,11 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0 6px;
-  height: 18px;
+  padding: 0 7px;
+  height: 20px;
   border: 1px solid var(--color-border-vis);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.05em;
   text-transform: lowercase;
   color: var(--color-display);

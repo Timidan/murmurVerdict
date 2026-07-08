@@ -11,7 +11,7 @@
 
 import {
   type MarketRow,
-} from "./db.js";
+} from "./repos/market-registry-repo.js";
 import { getMarketMakerRegistry } from "./market-maker/registry.js";
 import type { MarketMakerAdapter } from "../markets/types.js";
 

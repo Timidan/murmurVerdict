@@ -9,8 +9,10 @@ import {
   type Hex,
 } from "viem";
 import {
+  FhenixEventVerificationError,
   ViemFhenixEventVerifier,
   fhenixMarketIdForMurmurMarket,
+  loadFhenixEventVerifierConfig,
 } from "./fhenix-events.js";
 
 let failures = 0;
@@ -30,6 +32,7 @@ process.stdout.write("murmur fhenix events smoke\n");
 
 const chainId = 84532;
 const contract = "0x2222222222222222222222222222222222222222";
+const resolvedContract = "0x3333333333333333333333333333333333333333";
 const agent = "0x1111111111111111111111111111111111111111";
 const marketId = "eth.1h";
 const onchainCallId = "0x" + "33".repeat(32);
@@ -73,6 +76,59 @@ const client = {
     ],
   }),
 };
+
+await check("verifier config consumes resolved contract address", () => {
+  const env = {
+    FHENIX_RPC_URL: "http://fhenix.invalid",
+    FHENIX_CHAIN_ID: String(chainId),
+  };
+  assert.throws(
+    () =>
+      loadFhenixEventVerifierConfig({
+        FHENIX_RPC_URL: "http://fhenix.invalid",
+      }),
+    (err) =>
+      err instanceof FhenixEventVerificationError &&
+      err.kind === "not_configured",
+  );
+  assert.throws(
+    () =>
+      loadFhenixEventVerifierConfig({
+        FHENIX_RPC_URL: "http://fhenix.invalid",
+        FHENIX_CHAIN_ID: "not-a-chain",
+      }),
+    (err) =>
+      err instanceof FhenixEventVerificationError &&
+      err.kind === "not_configured",
+  );
+  assert.equal(
+    loadFhenixEventVerifierConfig(env, {
+      contractAddress: resolvedContract,
+    })?.contractAddress,
+    resolvedContract,
+  );
+  assert.throws(
+    () =>
+      loadFhenixEventVerifierConfig({
+        ...env,
+        FHENIX_SEALED_VERDICTS_ADDRESS: contract,
+      }, {
+        contractAddress: null,
+      }),
+    (err) =>
+      err instanceof FhenixEventVerificationError &&
+      err.kind === "not_configured",
+  );
+  assert.throws(
+    () =>
+      loadFhenixEventVerifierConfig(env, {
+        contractAddress: "not-an-address",
+      }),
+    (err) =>
+      err instanceof FhenixEventVerificationError &&
+      err.kind === "not_configured",
+  );
+});
 
 await check("verifier accepts configured contract event", async () => {
   const verifier = new ViemFhenixEventVerifier({

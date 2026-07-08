@@ -1,17 +1,22 @@
-// ─── IntegratePage — Maya onboarding step f (Phase 7d) ─────────────────────
+// ─── IntegratePage — agent welcome packet (post-mint handoff target) ──────
 //
 // Route: #/account/agent/:slug/integrate. Auth-gated.
 //
-// Renders the CodeSnippetPanel keyed to the user's freshly-created agent.
-// The canonical snippet path is Runtime Key + Fhenix Gateway.
+// This is where a freshly-minted agent lands after [ open integrate guide → ]
+// in RuntimeKeyMintModal. Renders the welcome packet for both LLM-driven
+// agents and human-driven bots:
+//   · CodeSnippetPanel with the plaintext runtime key substituted into
+//     TS / Python / curl snippets (one-time, gone on refresh).
+//   · Warning banner: "shown once · refreshing this page hides it · mint
+//     again to recover."
+//   · "next steps" links to the agent's own agent-card (JSON manifest),
+//     /v1/skill.md (the LLM-readable Murmur runbook), and the OpenAPI spec.
 //
-// SessionStorage handoff (the only non-obvious bit):
-//   Older API-key flows may stash `{ secret, expires_at }` in
-//   sessionStorage[`murmur_just_minted:${slug}`] right before navigating
-//   here. We read and clear it so retired submission credentials are not
-//   re-shown on the Gateway integration screen.
-//
-//   Runtime Key plaintext is shown only by the Runtime Key mint flow.
+// SessionStorage handoff:
+//   RuntimeKeyMintModal stashes the secret in
+//   sessionStorage[`murmur_just_minted:${slug}`] before navigating here.
+//   consumeJustMinted reads + clears the entry; the secret survives one
+//   render in component state and then is gone.
 
 import { useEffect, useMemo, useState } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
@@ -22,9 +27,21 @@ const SESSION_KEY_PREFIX = "murmur_just_minted:";
 /** Handoff secrets older than this are treated as stale — see header comment. */
 const HANDOFF_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Just-minted envelope. `source` discriminates between live runtime-key mints
+ * (`"runtime"`) and the retired API-key path (`"api-key"`); IntegratePage
+ * switches its copy + snippet-substitution behavior based on which one.
+ * `runtime_key_id` + `runtime_key_prefix` let the next page show the same
+ * key identifiers the operator will see in the runtime-keys management UI.
+ */
 interface JustMintedEnvelope {
   secret: string;
   expires_at: number;
+  source?: "runtime" | "api-key";
+  agent_slug?: string;
+  runtime_key_id?: string;
+  runtime_key_prefix?: string;
+  minted_at?: number;
 }
 
 /**
@@ -32,10 +49,10 @@ interface JustMintedEnvelope {
  * when the entry is missing, malformed, or past its expiry. Clearing on
  * read is intentional — refreshing the page should not re-reveal the key.
  *
- * Codex P2 fix — returns the full `{ secret, expires_at }` so the caller
- * can schedule an expiry-driven clear. Earlier this only returned the
- * secret string, so state held the key past `expires_at` if the tab was
- * left idle.
+ * Codex P2 fix — returns the full envelope (including `expires_at`) so the
+ * caller can schedule an expiry-driven clear. Earlier this only returned
+ * the secret string, so state held the key past `expires_at` if the tab
+ * was left idle.
  */
 function consumeJustMinted(slug: string): JustMintedEnvelope | null {
   if (typeof window === "undefined" || !window.sessionStorage) return null;
@@ -54,7 +71,15 @@ function consumeJustMinted(slug: string): JustMintedEnvelope | null {
       return null;
     }
     if (Date.now() > env.expires_at) return null;
-    return { secret: env.secret, expires_at: env.expires_at };
+    return {
+      secret: env.secret,
+      expires_at: env.expires_at,
+      source: env.source,
+      agent_slug: env.agent_slug,
+      runtime_key_id: env.runtime_key_id,
+      runtime_key_prefix: env.runtime_key_prefix,
+      minted_at: env.minted_at,
+    };
   } catch {
     return null;
   }
@@ -103,8 +128,8 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     account.agents.length > 0 &&
     !agent;
 
-  // Auth gate — same posture as AccountPage/AgentNewPage. Bounce when
-  // Privy reports a stable signed-out state.
+  // Auth gate — same posture as AccountPage. Bounce when Privy reports a
+  // stable signed-out state.
   useEffect(() => {
     if (!account.ready) return;
     if (account.isAuthenticated) return;
@@ -119,8 +144,14 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     return <LoadingShell slug={slug} />;
   }
 
-  const arrivedWithRetiredApiKey = envelope !== null;
-  const headerAccent = arrivedWithRetiredApiKey ? "ck-pos" : "ck-dim";
+  // `envelope.source` distinguishes the live runtime-key path from the
+  // retired API-key path. Old call sites that didn't set `source` default
+  // to "runtime" in stashJustMinted, but be defensive at the read site too.
+  const envSource = envelope?.source ?? "runtime";
+  const arrivedWithFreshRuntimeKey = envelope !== null && envSource === "runtime";
+  const arrivedWithRetiredApiKey = envelope !== null && envSource === "api-key";
+  const headerAccent =
+    arrivedWithFreshRuntimeKey || arrivedWithRetiredApiKey ? "ck-pos" : "ck-dim";
 
   return (
     <div className="compact-shell min-h-dvh flex flex-col">
@@ -143,7 +174,17 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           <h1 className="ck-mono ck-pos text-[14px] font-bold mb-1">
             integrate · {slug}
           </h1>
-          {!arrivedWithRetiredApiKey && (
+          {arrivedWithFreshRuntimeKey && (
+            <p className="ck-mono ck-pos text-[10px] leading-relaxed max-w-[60ch]">
+              Your runtime key is wired into the snippet below — paste it into
+              your agent.{" "}
+              <span className="ck-neg">
+                Shown only on this view. Refresh or leave this page and the key is gone;
+                you'll need to mint a new one to recover.
+              </span>
+            </p>
+          )}
+          {!arrivedWithFreshRuntimeKey && !arrivedWithRetiredApiKey && (
             <p className="ck-mono ck-dim text-[10px] leading-relaxed max-w-[60ch]">
               paste this into your agent. set <code className="ck-pos">MURMUR_RUNTIME_KEY</code>{" "}
               to a Runtime Key authorized by the agent's Controller Wallet.{" "}
@@ -183,6 +224,9 @@ export function IntegratePage({ slug }: IntegratePageProps) {
         {agent ? (
           <CodeSnippetPanel
             agentSlug={slug}
+            runtimeKey={
+              arrivedWithFreshRuntimeKey ? envelope!.secret : undefined
+            }
           />
         ) : agentMissing ? (
           <section className="ck-frame-strong px-4 py-4">
@@ -209,36 +253,41 @@ export function IntegratePage({ slug }: IntegratePageProps) {
 
         <section className="ck-frame">
           <div className="ck-header">
-            <span className="ck-label ck-pos">next steps</span>
+            <span className="ck-label ck-pos">welcome packet</span>
           </div>
           <ul className="divide-y divide-[var(--color-border)]">
             <li>
               <a
-                href={`#/agents/${encodeURIComponent(slug)}`}
+                href="/v1/skill.md"
+                target="_blank"
+                rel="noreferrer"
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
               >
-                <span className="ck-pos">view my agent</span>
-                <span className="ck-dim text-[10px]">
-                  [ agent profile → ]
+                <span className="flex flex-col">
+                  <span className="ck-pos">skill.md for your agent's LLM</span>
+                  <span className="ck-dim text-[10px]">
+                    feed this to Claude / Cursor / GPT so it knows how to drive
+                    Murmur end-to-end
+                  </span>
                 </span>
+                <span className="ck-dim text-[10px]">[ open .md → ]</span>
               </a>
             </li>
             <li>
               <a
-                href={`#/account/agent/${encodeURIComponent(slug)}/runtime`}
+                href={`/v1/agents/${encodeURIComponent(slug)}/agent-card`}
+                target="_blank"
+                rel="noreferrer"
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
               >
-                <span className="ck-pos">manage runtime keys</span>
-                <span className="ck-dim text-[10px]">[ mint / revoke → ]</span>
-              </a>
-            </li>
-            <li>
-              <a
-                href={`#/account/agent/${encodeURIComponent(slug)}/keys`}
-                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
-              >
-                <span className="ck-pos">legacy api keys</span>
-                <span className="ck-dim text-[10px]">[ rotate / mint → ]</span>
+                <span className="flex flex-col">
+                  <span className="ck-pos">your agent's ERC-8004 card (JSON)</span>
+                  <span className="ck-dim text-[10px]">
+                    machine-readable identity manifest — endpoints, services,
+                    privacy posture
+                  </span>
+                </span>
+                <span className="ck-dim text-[10px]">[ open json → ]</span>
               </a>
             </li>
             <li>
@@ -248,8 +297,48 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 rel="noreferrer"
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
               >
-                <span className="ck-pos">full api reference</span>
-                <span className="ck-dim text-[10px]">[ more docs → ]</span>
+                <span className="flex flex-col">
+                  <span className="ck-pos">full OpenAPI spec</span>
+                  <span className="ck-dim text-[10px]">
+                    every endpoint shape your agent can call against this daemon
+                  </span>
+                </span>
+                <span className="ck-dim text-[10px]">[ open json → ]</span>
+              </a>
+            </li>
+          </ul>
+        </section>
+
+        <section className="ck-frame">
+          <div className="ck-header">
+            <span className="ck-label ck-pos">manage</span>
+          </div>
+          <ul className="divide-y divide-[var(--color-border)]">
+            <li>
+              <a
+                href={`#/agents/${encodeURIComponent(slug)}`}
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+              >
+                <span className="ck-pos">public profile</span>
+                <span className="ck-dim text-[10px]">[ agent page → ]</span>
+              </a>
+            </li>
+            <li>
+              <a
+                href={`#/account/agent/${encodeURIComponent(slug)}/runtime`}
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+              >
+                <span className="ck-pos">runtime keys</span>
+                <span className="ck-dim text-[10px]">[ mint / revoke → ]</span>
+              </a>
+            </li>
+            <li>
+              <a
+                href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+              >
+                <span className="ck-pos">controller wallet</span>
+                <span className="ck-dim text-[10px]">[ re-attest / bind → ]</span>
               </a>
             </li>
           </ul>
@@ -263,12 +352,37 @@ export function IntegratePage({ slug }: IntegratePageProps) {
  * Public helper — modules that want to stash the just-minted secret for
  * IntegratePage to pick up. Kept here (rather than ad-hoc inline in the
  * modal) so the storage shape is owned by one file.
+ *
+ * The extended envelope carries `runtime_key_id`/`runtime_key_prefix`/
+ * `minted_at` so IntegratePage can show the same identifiers the
+ * operator will later see in the runtime-keys management UI, and a
+ * `source` discriminator so it can switch its copy between the live
+ * runtime-key path and the retired API-key warning path.
  */
-export function stashJustMinted(slug: string, secret: string): void {
+export interface StashJustMintedInput {
+  secret: string;
+  /** Defaults to "runtime". Pass "api-key" only for the retired flow. */
+  source?: "runtime" | "api-key";
+  runtime_key_id?: string;
+  runtime_key_prefix?: string;
+}
+
+export function stashJustMinted(
+  slug: string,
+  input: string | StashJustMintedInput,
+): void {
   if (typeof window === "undefined" || !window.sessionStorage) return;
+  const normalized: StashJustMintedInput =
+    typeof input === "string" ? { secret: input } : input;
+  const now = Date.now();
   const env: JustMintedEnvelope = {
-    secret,
-    expires_at: Date.now() + HANDOFF_TTL_MS,
+    secret: normalized.secret,
+    expires_at: now + HANDOFF_TTL_MS,
+    source: normalized.source ?? "runtime",
+    agent_slug: slug,
+    runtime_key_id: normalized.runtime_key_id,
+    runtime_key_prefix: normalized.runtime_key_prefix,
+    minted_at: now,
   };
   try {
     window.sessionStorage.setItem(

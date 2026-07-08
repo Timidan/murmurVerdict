@@ -129,6 +129,17 @@ try {
   const marketId = "0x" + "ab".repeat(32);
   const wallet = "0x1111111111111111111111111111111111111111";
   const agentId = randomUUID();
+  const sealedCallIds = [
+    "00000000-0000-4000-8000-000000000301",
+    "00000000-0000-4000-8000-000000000302",
+  ];
+  const consumedSealedCallIds: string[] = [];
+  const newSealedCallId = () => {
+    const id = sealedCallIds.shift();
+    assert.ok(id, "Sealed Call ID Adapter consumed too many IDs");
+    consumedSealedCallIds.push(id);
+    return id;
+  };
 
   agentsRepo.insert(db, {
     agent_id: agentId,
@@ -143,8 +154,12 @@ try {
     privy_user_id: "did:privy:fhenix-api-smoke",
     session_id: "smoke-session",
     expires_at: "2026-05-14T18:00:00Z",
+  }, {
+    resolvedAt: new Date(acceptedAt),
   });
-  linkAgentToAccount(db, account.account_id, agentId);
+  linkAgentToAccount(db, account.account_id, agentId, {
+    linkedAt: new Date(acceptedAt),
+  });
   bindControllerWallet(db, {
     account_id: account.account_id,
     agent_id: agentId,
@@ -154,7 +169,7 @@ try {
     provider: "smoke",
     binding_message: "smoke controller wallet binding",
     binding_signature: "0x" + "11".repeat(65),
-    created_at: acceptedAt,
+    createdAt: new Date(acceptedAt),
   });
 
   marketsRepo.upsertExternalMarket(db, {
@@ -184,6 +199,7 @@ try {
       db,
       adminToken,
       fhenixVerifier: verifier,
+      newSealedCallId,
       now: () => new Date("2026-05-14T12:50:00Z"),
     }),
   );
@@ -263,6 +279,7 @@ try {
       commit_hash: string;
     };
     callId = body.call_id;
+    assert.equal(callId, "00000000-0000-4000-8000-000000000301");
     assert.equal(body.privacy_mode, "sealed_fhenix");
     assert.match(body.commit_hash, /^[0-9a-f]{64}$/);
     const ctx = submissionsRepo.loadResolverContext(db, callId);
@@ -271,6 +288,23 @@ try {
       "SELECT binary_index_ct_hash FROM fhenix_sealed_calls WHERE call_id = ?",
     ).get(callId) as { binary_index_ct_hash: string } | undefined;
     assert.equal(sealed?.binary_index_ct_hash, submitBody.fhenix.binary_index_ct_hash);
+    assert.deepEqual(consumedSealedCallIds, [
+      "00000000-0000-4000-8000-000000000301",
+    ]);
+  });
+
+  await check("submit idempotent path does not consume Sealed Call IDs", async () => {
+    const res = await adminBackfill(submitBody);
+    assert.equal(res.status, 200);
+    const body = await res.json() as {
+      call_id: string;
+      idempotent_hit: boolean;
+    };
+    assert.equal(body.call_id, "00000000-0000-4000-8000-000000000301");
+    assert.equal(body.idempotent_hit, true);
+    assert.deepEqual(consumedSealedCallIds, [
+      "00000000-0000-4000-8000-000000000301",
+    ]);
   });
 
   await check("verified invalid reveal terminates without scoring commitment", async () => {
@@ -289,6 +323,11 @@ try {
     const submitRes = await adminBackfill(invalidSubmitBody);
     assert.equal(submitRes.status, 201);
     invalidCallId = ((await submitRes.json()) as { call_id: string }).call_id;
+    assert.equal(invalidCallId, "00000000-0000-4000-8000-000000000302");
+    assert.deepEqual(consumedSealedCallIds, [
+      "00000000-0000-4000-8000-000000000301",
+      "00000000-0000-4000-8000-000000000302",
+    ]);
 
     const revealRes = await fetch(`${baseUrl}/v1/admin/fhenix/invalid-reveals`, {
       method: "POST",

@@ -121,10 +121,17 @@ contracts/broadcast/
 /OPENSERV_MEETING_BRIEF.md
 
 # Smoke / driver scripts colocated with their modules — local-only.
+# Covers both the legacy double-underscore convention (__smoke__.ts) AND
+# the current per-module sibling convention (foo.smoke.ts / foo.smoke.tsx
+# / foo.live-smoke.ts). Smokes are operator-runnable verification kept on
+# disk but NEVER tracked — they're scaffolding, not shippable code.
 **/__smoke__.ts
 **/__*_smoke__.ts
 **/__smoke__.tsx
 **/__*_smoke__.tsx
+**/*.smoke.ts
+**/*.smoke.tsx
+**/*.live-smoke.ts
 
 # Local SQLite databases
 data/*.db

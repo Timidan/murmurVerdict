@@ -186,6 +186,9 @@ export function AdminGatewayPage() {
             <h1 className="t-heading" style={{ textWrap: "balance" }}>relayer control plane.</h1>
           </div>
           <div className="flex items-center gap-3">
+            <a href="#/admin/overview">
+              <PillButton variant="secondary">← overview</PillButton>
+            </a>
             <PillButton variant="secondary" onClick={() => void load()} disabled={busy !== null}>
               refresh
             </PillButton>

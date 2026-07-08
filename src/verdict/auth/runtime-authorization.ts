@@ -1,23 +1,16 @@
 import type Database from "better-sqlite3";
-import { z } from "zod";
 
-import { fhenixGatewayTxRepo, submissionsRepo } from "../db.js";
+import { fhenixGatewayTxRepo } from "../repos/fhenix-gateway-tx-repo.js";
+import { submissionsRepo } from "../repos/sealed-call-submissions-repo.js";
 import { ERROR_CODES, VerdictError } from "../schema.js";
 import { isoFromMs } from "../time.js";
 import type { AuthIdentity } from "./dispatcher.js";
 import type { RuntimeKeyVerification } from "./accounts.js";
-
-const RuntimeKeyGatewayPolicySchema = z
-  .object({
-    allowed_market_ids: z.array(z.string()).max(64).optional(),
-    max_calls_per_hour: z.number().int().min(1).max(1000).optional(),
-    max_calls_per_day: z.number().int().min(1).max(10000).optional(),
-    feed_packets: z.boolean().optional(),
-    notes: z.string().max(280).optional(),
-  })
-  .passthrough();
-
-export type RuntimeKeyGatewayPolicy = z.infer<typeof RuntimeKeyGatewayPolicySchema>;
+import {
+  parseRuntimeKeyGatewayPolicyJson,
+  type RuntimeKeyGatewayPolicy,
+} from "./runtime-key-policy.js";
+export type { RuntimeKeyGatewayPolicy } from "./runtime-key-policy.js";
 
 export interface RuntimeKeyIdentity {
   agent_id: string;
@@ -162,9 +155,7 @@ function parseRuntimeKeyPolicy(
   runtimeKey: RuntimeKeyVerification,
 ): RuntimeKeyGatewayPolicy {
   try {
-    return RuntimeKeyGatewayPolicySchema.parse(
-      JSON.parse(runtimeKey.policy_json) as unknown,
-    );
+    return parseRuntimeKeyGatewayPolicyJson(runtimeKey.policy_json);
   } catch (err) {
     throw new VerdictError(
       "Runtime Key policy is invalid; revoke and mint a new key",

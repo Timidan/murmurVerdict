@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { agentsRepo } from "./db.js";
+import { agentsRepo } from "./repos/agents-repo.js";
 import { ERROR_CODES, VerdictError } from "./schema.js";
 import {
   FhenixEventVerificationError,

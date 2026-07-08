@@ -1,26 +1,17 @@
 import type Database from "better-sqlite3";
 import {
   HORIZONS_HOURS,
-  OracleFeed,
   Outcome,
   T0Policy,
 } from "./schema.js";
-import {
-  anchorsRepo,
-  marketsRepo,
-  submissionsRepo,
-} from "./db.js";
+import { marketsRepo } from "./repos/market-registry-repo.js";
+import { anchorsRepo } from "./repos/resolution-repo.js";
+import { submissionsRepo } from "./repos/sealed-call-submissions-repo.js";
 import {
   OracleClient,
-  OracleError,
-  type OracleObservation,
 } from "../integrations/oracle.js";
-import { observeOracle } from "../integrations/oracles/registry.js";
-import {
-  AdapterError,
-  type OracleObservation as AdapterObservation,
-} from "../integrations/oracles/types.js";
-import { derivePolicyFromMarket, feedToOracleId } from "./oracle-routing.js";
+import { derivePolicyFromMarket } from "./oracle-routing.js";
+import { tryAnchorOracleFeed } from "./resolver-oracle-anchor.js";
 import {
   markOracleUnavailable,
   resolveRevealedAdapter,
@@ -32,7 +23,7 @@ import {
 export interface ResolverDeps {
   db: Database.Database;
   oracle: OracleClient;
-  now?: () => Date;
+  now: () => Date;
   /** Test hook so we can drive logs assertively; default no-op. */
   log?: (line: ResolverLogEvent) => void;
   /** Called for every call that becomes terminal (resolved, oracle_unavailable). */
@@ -40,8 +31,8 @@ export interface ResolverDeps {
 }
 
 export type ResolverLogEvent =
-  | { kind: "anchored_t0"; call_id: string; feed: OracleFeed; p0: string }
-  | { kind: "anchored_t1"; call_id: string; feed: OracleFeed; p1: string; outcome: Outcome }
+  | { kind: "anchored_t0"; call_id: string; feed: T0Policy["primary_feed"]; p0: string }
+  | { kind: "anchored_t1"; call_id: string; feed: T0Policy["primary_feed"]; p1: string; outcome: Outcome }
   | { kind: "adapter_resolved"; call_id: string; adapter: string; outcome: Outcome; call_score: number | null }
   | { kind: "oracle_unavailable"; call_id: string; phase: "t0" | "t1" }
   | { kind: "still_pending"; call_id: string; phase: "t0" | "t1"; reason: string }
@@ -64,7 +55,7 @@ export class Resolver {
   constructor(deps: ResolverDeps) {
     this.db = deps.db;
     this.oracle = deps.oracle;
-    this.now = deps.now ?? (() => new Date());
+    this.now = deps.now;
     this.log = deps.log ?? (() => undefined);
     this.onResolved = deps.onResolved ?? (() => undefined);
   }
@@ -142,23 +133,29 @@ export class Resolver {
         });
         continue;
       }
-      const outcome = await this.tryAnchor({
-        call_id: ctx.call_id,
+      const outcome = await tryAnchorOracleFeed({
+        db: this.db,
+        oracle: this.oracle,
         mustBeAfterIso: ctx.accepted_at,
         elapsedSec: this.elapsedSecSince(ctx.accepted_at),
         policy,
-        phase: "t0",
       });
       if (outcome.kind === "anchored") {
-        anchorsRepo.setT0(this.db, {
-          call_id: ctx.call_id,
-          t0: outcome.observation.feed_timestamp,
-          p0: outcome.observation.price,
-          feed: outcome.observation.feed,
-          source_id: outcome.observation.source_id,
-          anchored_at: this.nowIso(),
+        // T0 anchor + status change must commit atomically: a crash between
+        // the two leaves submissions stuck in pending_t0 with the anchor row
+        // already written, breaking the resolver's two-phase invariant.
+        const t0AnchorTx = this.db.transaction(() => {
+          anchorsRepo.setT0(this.db, {
+            call_id: ctx.call_id,
+            t0: outcome.observation.feed_timestamp,
+            p0: outcome.observation.price,
+            feed: outcome.observation.feed,
+            source_id: outcome.observation.source_id,
+            anchored_at: this.nowIso(),
+          });
+          submissionsRepo.setStatus(this.db, ctx.call_id, "pending_t1");
         });
-        submissionsRepo.setStatus(this.db, ctx.call_id, "pending_t1");
+        t0AnchorTx();
         anchored++;
         this.log({
           kind: "anchored_t0",
@@ -304,12 +301,12 @@ export class Resolver {
       const elapsedSinceT1 = this.elapsedSecSince(t1Iso);
       if (elapsedSinceT1 < 0) continue; // not yet
 
-      const outcome = await this.tryAnchor({
-        call_id: ctx.call_id,
+      const outcome = await tryAnchorOracleFeed({
+        db: this.db,
+        oracle: this.oracle,
         mustBeAfterIso: t1Iso,
         elapsedSec: elapsedSinceT1,
         policy,
-        phase: "t1",
       });
 
       if (outcome.kind === "anchored") {
@@ -405,92 +402,6 @@ export class Resolver {
     return { resolved, oracle_unavailable: oracleUnavailable };
   }
 
-  // ── core anchoring step (used for both t0 and t1) ──
-
-  private async tryAnchor(args: {
-    call_id: string;
-    mustBeAfterIso: string;
-    elapsedSec: number;
-    policy: T0Policy;
-    phase: "t0" | "t1";
-  }): Promise<
-    | { kind: "anchored"; observation: OracleObservation }
-    | { kind: "oracle_unavailable" }
-    | { kind: "pending"; reason: string }
-  > {
-    if (args.elapsedSec > args.policy.t0_extended_grace_seconds) {
-      return { kind: "oracle_unavailable" };
-    }
-    // Phase 2d: T0Policy fallback fields are optional. For sub-hour Pyth-only
-    // markets we have no second oracle to walk to — keep retrying primary
-    // until t0_extended_grace_seconds expires, then mark oracle_unavailable.
-    // Past primary grace WITH a configured fallback, switch to fallback.
-    const wantFallback = args.elapsedSec > args.policy.t0_grace_seconds;
-    const fallbackConfigured =
-      args.policy.fallback_feed !== undefined &&
-      args.policy.fallback_max_staleness_sec !== undefined;
-    const useFallback = wantFallback && fallbackConfigured;
-    const feed = useFallback
-      ? args.policy.fallback_feed!
-      : args.policy.primary_feed;
-    const maxStaleness = useFallback
-      ? args.policy.fallback_max_staleness_sec!
-      : args.policy.primary_max_staleness_sec;
-    let obs: OracleObservation;
-    try {
-      obs = await this.observeFeed(feed);
-    } catch (err) {
-      if (err instanceof OracleError || err instanceof AdapterError) {
-        const kind = err instanceof OracleError ? err.cause_kind : err.cause_kind;
-        return { kind: "pending", reason: `oracle_error:${kind}` };
-      }
-      throw err;
-    }
-    const feedMs = Date.parse(obs.feed_timestamp);
-    const afterMs = Date.parse(args.mustBeAfterIso);
-    if (feedMs < afterMs) {
-      return { kind: "pending", reason: "feed_not_yet_advanced" };
-    }
-    if (obs.source_age_seconds > maxStaleness) {
-      return {
-        kind: "pending",
-        reason: `feed_stale:${obs.source_age_seconds}s>${maxStaleness}s`,
-      };
-    }
-    return { kind: "anchored", observation: obs };
-  }
-
-  // ── oracle observation routing (P3 Phase 2) ──
-  //
-  // The legacy OracleClient hard-codes Chainlink Base ETH/USD + Pyth Hermes.
-  // The new adapter registry (src/integrations/oracles/) is data-driven —
-  // any registered oracle row dispatches to its named adapter. For the four
-  // listed ETH markets (eth.1h/4h/24h/7d) both paths produce equivalent
-  // observations, so the resolver routes through the registry first and
-  // falls back to OracleClient only if the registry refuses (unknown feed,
-  // not-listed oracle row, missing adapter config). When BTC/SOL/BNB markets
-  // flip to listed, the registry path is the only one that knows about them
-  // — the legacy fallback simply errors and the call stays pending until
-  // the schema work in Phase 2b lands.
-  private async observeFeed(feed: OracleFeed): Promise<OracleObservation> {
-    // Phase 2b: every legal OracleFeed has a bidirectional map entry, so
-    // oracle_id is always defined. The legacy OracleClient fallback only
-    // triggers on an AdapterError (registry-level misconfiguration like
-    // draft oracle row or missing config) — at which point the legacy
-    // client knows ETH feeds and errors otherwise; non-ETH calls land
-    // pending and the operator gets a chance to fix the registry.
-    const oracle_id = feedToOracleId(feed);
-    try {
-      const obs = await observeOracle(this.db, oracle_id);
-      return adapterToLegacyObservation(obs, feed);
-    } catch (err) {
-      if (!(err instanceof AdapterError)) {
-        throw err;
-      }
-    }
-    return this.oracle.getLatestPrice(feed);
-  }
-
   // ── helpers ──
 
   private elapsedSecSince(iso: string): number {
@@ -544,27 +455,8 @@ function isoFromUnixMs(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
 }
 
-// (feedToOracleId is imported at the top of the file from oracle-routing.js
-//  AND re-exported below for back-compat with smoke tests that imported it
-//  from resolver.)
 export { feedToOracleId } from "./oracle-routing.js";
-
-// Adapter observations carry `oracle_id` + `asset_id`; the resolver still
-// expects the legacy shape (`feed`). Re-shape without losing fields the
-// resolver actually consumes.
-export function adapterToLegacyObservation(
-  obs: AdapterObservation,
-  feed: OracleFeed,
-): OracleObservation {
-  return {
-    feed,
-    price: obs.price,
-    feed_timestamp: obs.feed_timestamp,
-    observed_at: obs.observed_at,
-    source_id: obs.source_id,
-    source_age_seconds: obs.source_age_seconds,
-  };
-}
+export { adapterToLegacyObservation } from "./resolver-oracle-anchor.js";
 
 // Keep import surface stable for test harness.
 export const _exposed = { HORIZONS_HOURS };

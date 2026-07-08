@@ -37,16 +37,21 @@ import type {
 } from "../types.js";
 import { CommitmentSchema } from "../../verdict/markets-core.js";
 import { PolymarketGammaClient } from "./client.js";
+import {
+  marketConfigSchema,
+  POLYMARKET_CONDITION_ID_REGEX,
+} from "./config.js";
 import { gammaMarketToOutcome } from "./transform.js";
+export {
+  marketConfigSchema,
+  POLYMARKET_CONDITION_ID_REGEX,
+} from "./config.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 export const ADAPTER_NAME = "polymarket-gamma" as const;
 export const ADAPTER_VERSION = "1.0.0" as const;
 export const MARKET_FAMILY = "prediction-market-binary" as const;
-
-/** 32-byte hex conditionId — Polymarket's only stable global key. */
-const CONDITION_ID_REGEX = /^0x[0-9a-fA-F]{64}$/;
 
 // ─── Schemas (V2_REVIEW BLOCKER #1: `.passthrough()` everywhere) ───────────
 
@@ -84,7 +89,7 @@ export const commitmentSchema = CommitmentSchema.superRefine((c, ctx) => {
       path: ["marketRef", "protocol"],
     });
   }
-  if (!CONDITION_ID_REGEX.test(c.marketRef.sourceId)) {
+  if (!POLYMARKET_CONDITION_ID_REGEX.test(c.marketRef.sourceId)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message:
@@ -93,25 +98,6 @@ export const commitmentSchema = CommitmentSchema.superRefine((c, ctx) => {
     });
   }
 }) as unknown as z.ZodSchema<Commitment>;
-
-/**
- * Stamped onto `markets.config_json` at acceptance. Gamma adds undocumented
- * fields constantly (feeSchedule, seriesColor, pendingDeployment have all
- * appeared); `.passthrough()` is non-negotiable per V2_REVIEW BLOCKER #1 —
- * a throwing schema bricks resolution the moment Polymarket adds a field.
- */
-export const marketConfigSchema = z
-  .object({
-    conditionId: z.string().regex(CONDITION_ID_REGEX),
-    questionID: z.string().regex(CONDITION_ID_REGEX).optional(),
-    slug: z.string().min(1),
-    outcomes: z.array(z.string()).length(2),
-    endDate: z.string(),
-    umaBond: z.string().optional(),
-    resolvedBy: z.string().optional(),
-    gamma_url: z.string().url(),
-  })
-  .passthrough();
 
 // ─── Observation context ────────────────────────────────────────────────────
 
@@ -141,7 +127,7 @@ export interface PolymarketGammaContext {
 
 function narrowContext(ctx: ObservationContext): PolymarketGammaContext | null {
   if (typeof ctx.conditionId !== "string") return null;
-  if (!CONDITION_ID_REGEX.test(ctx.conditionId)) return null;
+  if (!POLYMARKET_CONDITION_ID_REGEX.test(ctx.conditionId)) return null;
   if (typeof ctx.market_id !== "string") return null;
   const narrowed: PolymarketGammaContext = {
     conditionId: ctx.conditionId,
@@ -159,8 +145,7 @@ function narrowContext(ctx: ObservationContext): PolymarketGammaContext | null {
 // ─── Default Gamma client (module-level singleton) ─────────────────────────
 
 let defaultClient: PolymarketGammaClient | null = null;
-function getDefaultClient(): PolymarketGammaClient {
-  if (defaultClient === null) defaultClient = new PolymarketGammaClient();
+function getDefaultClient(): PolymarketGammaClient | null {
   return defaultClient;
 }
 
@@ -172,6 +157,10 @@ export function setDefaultPolymarketClient(
   client: PolymarketGammaClient | null,
 ): void {
   defaultClient = client;
+}
+
+export function setDefaultPolymarketClock(nowMs: () => number): void {
+  defaultClient = new PolymarketGammaClient({ nowMs });
 }
 
 // ─── Adapter implementation ────────────────────────────────────────────────
@@ -216,6 +205,10 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
       narrowed.onError?.("conditionId_mismatch");
     }
     const client = narrowed.client ?? getDefaultClient();
+    if (!client) {
+      narrowed.onError?.("polymarket_client_unconfigured");
+      return "pending";
+    }
     try {
       const result = await client.fetchMarketByConditionId(narrowed.conditionId);
       if (result.error) narrowed.onError?.(result.error);

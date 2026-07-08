@@ -15,41 +15,19 @@ import {
   AdapterError,
   OracleAdapter,
   OracleObservation,
-  adapterHelpers,
 } from "./types.js";
-import type { AssetRow, OracleRow } from "../../verdict/db.js";
-
-interface ReadContractClient {
-  readContract: (args: {
-    address: `0x${string}`;
-    abi: readonly unknown[];
-    functionName: string;
-    args?: readonly unknown[];
-  }) => Promise<unknown>;
-}
-
-const AGGREGATOR_V3_ABI = [
-  {
-    inputs: [],
-    name: "latestRoundData",
-    outputs: [
-      { name: "roundId", type: "uint80" },
-      { name: "answer", type: "int256" },
-      { name: "startedAt", type: "uint256" },
-      { name: "updatedAt", type: "uint256" },
-      { name: "answeredInRound", type: "uint80" },
-    ],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    inputs: [],
-    name: "decimals",
-    outputs: [{ name: "", type: "uint8" }],
-    stateMutability: "view",
-    type: "function",
-  },
-] as const;
+import type {
+  AssetRow,
+  OracleRow,
+} from "../../verdict/repos/market-registry-repo.js";
+import {
+  parseOracleAdapterHexConfig,
+} from "./adapter-config.js";
+import {
+  ChainlinkEvmReadContractClient,
+  ChainlinkEvmReadError,
+  readChainlinkEvmPrice,
+} from "../chainlink-evm-feed.js";
 
 interface ChainlinkConfig {
   feed_address: string;
@@ -65,84 +43,52 @@ export const chainlinkEvmAdapter: OracleAdapter = {
     _asset: AssetRow,
     ctx: AdapterContext,
   ): Promise<OracleObservation> {
-    const cfg = adapterHelpers.parseConfig<ChainlinkConfig>(oracle, [
-      "feed_address",
-    ]);
-    if (!/^0x[0-9a-fA-F]{40}$/.test(cfg.feed_address)) {
-      throw new AdapterError(
-        `oracle ${oracle.oracle_id}: feed_address malformed`,
-        oracle.oracle_id,
-        "config_invalid",
-        { feed_address: cfg.feed_address },
-      );
-    }
+    const cfg = parseOracleAdapterHexConfig<ChainlinkConfig>(oracle, [{
+      key: "feed_address",
+      bytes: 20,
+      malformedMessage: "feed_address malformed",
+    }]);
 
     const client = makePublicClient(oracle, ctx);
-    const now = ctx.now ?? (() => new Date());
     const address = cfg.feed_address as `0x${string}`;
 
-    let roundId: bigint;
-    let answer: bigint;
-    let updatedAt: bigint;
     try {
-      const result = (await client.readContract({
+      const observation = await readChainlinkEvmPrice({
+        client,
         address,
-        abi: AGGREGATOR_V3_ABI,
-        functionName: "latestRoundData",
-      })) as readonly [bigint, bigint, bigint, bigint, bigint];
-      [roundId, answer, , updatedAt] = result;
+        now: ctx.now,
+        decimalsCache,
+        decimalsCacheKey: `${oracle.chain}:${address}`,
+      });
+      return {
+        oracle_id: oracle.oracle_id,
+        asset_id: oracle.asset_id,
+        ...observation,
+      };
     } catch (err) {
+      if (err instanceof ChainlinkEvmReadError) {
+        throw new AdapterError(
+          err.message,
+          oracle.oracle_id,
+          err.cause_kind,
+          err.context,
+        );
+      }
       throw new AdapterError(
-        `chainlink RPC read failed`,
+        err instanceof Error ? err.message : String(err),
         oracle.oracle_id,
         "rpc_failure",
-        { error: errorMessage(err) },
       );
     }
-
-    if (answer <= 0n) {
-      throw new AdapterError(
-        "chainlink answer non-positive",
-        oracle.oracle_id,
-        "missing_field",
-        { answer: answer.toString() },
-      );
-    }
-    if (updatedAt === 0n) {
-      throw new AdapterError(
-        "chainlink updatedAt is zero",
-        oracle.oracle_id,
-        "missing_field",
-      );
-    }
-
-    const decimals = await getDecimals(client, oracle, address);
-    const price = adapterHelpers.formatFixed(answer, decimals);
-    const feed_timestamp = adapterHelpers.isoFromUnixSeconds(updatedAt);
-    const observed_at = adapterHelpers.nowIso(now);
-    const source_age_seconds = Math.max(
-      0,
-      Math.floor(now().getTime() / 1000) - Number(updatedAt),
-    );
-
-    return {
-      oracle_id: oracle.oracle_id,
-      asset_id: oracle.asset_id,
-      price,
-      feed_timestamp,
-      observed_at,
-      source_id: `0x${roundId.toString(16)}`,
-      source_age_seconds,
-    };
   },
 };
 
 function makePublicClient(
   oracle: OracleRow,
   ctx: AdapterContext,
-): ReadContractClient {
-  const rpcUrl = ctx.baseRpcUrl ?? process.env.BASE_MAINNET_RPC_URL;
-  if (!rpcUrl) {
+): ChainlinkEvmReadContractClient {
+  if (ctx.readContractClient) return ctx.readContractClient;
+  if (!ctx.baseRpcUrl) {
     throw new AdapterError(
       `chainlink-evm: BASE_MAINNET_RPC_URL not set (or AdapterContext.baseRpcUrl)`,
       oracle.oracle_id,
@@ -160,38 +106,6 @@ function makePublicClient(
   }
   return createPublicClient({
     chain: base,
-    transport: http(rpcUrl, { timeout: ctx.rpcTimeoutMs ?? 8_000 }),
-  }) as unknown as ReadContractClient;
-}
-
-async function getDecimals(
-  client: ReadContractClient,
-  oracle: OracleRow,
-  address: `0x${string}`,
-): Promise<number> {
-  const cacheKey = `${oracle.chain}:${address}`;
-  const cached = decimalsCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-  try {
-    const d = (await client.readContract({
-      address,
-      abi: AGGREGATOR_V3_ABI,
-      functionName: "decimals",
-    })) as number;
-    const n = Number(d);
-    decimalsCache.set(cacheKey, n);
-    return n;
-  } catch (err) {
-    throw new AdapterError(
-      "chainlink decimals() read failed",
-      oracle.oracle_id,
-      "rpc_failure",
-      { error: errorMessage(err) },
-    );
-  }
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
+    transport: http(ctx.baseRpcUrl, { timeout: ctx.rpcTimeoutMs ?? 8_000 }),
+  }) as unknown as ChainlinkEvmReadContractClient;
 }

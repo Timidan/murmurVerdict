@@ -8,7 +8,12 @@ export default defineConfig({
   root: path.resolve(__dirname),
   resolve: {
     alias: {
-      "@types": path.resolve(__dirname, "../src/types"),
+      "@": path.resolve(__dirname, "src"),
+      // NB: not "@types" — TypeScript reserves the "@types/*" specifier for
+      // DefinitelyTyped ambient packages, so "@types/events" collides with
+      // Node's events .d.ts. "@shared" maps the backend↔dashboard shared
+      // wire types (src/types/) without that collision.
+      "@shared": path.resolve(__dirname, "../src/types"),
     },
   },
   build: {

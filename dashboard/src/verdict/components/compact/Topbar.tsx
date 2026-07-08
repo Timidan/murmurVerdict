@@ -50,6 +50,7 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
         <CompactNavLink href="#/today">feed</CompactNavLink>
         <CompactNavLink href="#/launch">install</CompactNavLink>
         <CompactNavLink href="#/recruiters">recruiters</CompactNavLink>
+        <CompactNavLink href="#/account">account</CompactNavLink>
         <span
           aria-hidden="true"
           className="px-2 ck-mono ck-dim border-l border-[var(--color-border)] tabular-nums"

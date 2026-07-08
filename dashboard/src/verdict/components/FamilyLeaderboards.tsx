@@ -1,15 +1,14 @@
 // ─── FamilyLeaderboards (Phase 10) ─────────────────────────────────────────
 //
-// Per-family + cross-family leaderboards. A `market_family` (e.g.
+// Per-family + general leaderboards. A `market_family` (e.g.
 // 'financial-direction', 'prediction-market-binary') groups markets that
 // share a scoring shape so single-family specialists aren't penalized
 // against generalists. This component:
 //
 //   1. Fetches /v1/families and renders a switcher of available families
 //      (sorted by submission count desc).
-//   2. Default view: top-10 cross-family practitioners (≥2 qualifying
-//      families). Click a family chip to switch into that family's
-//      per-family LB.
+//   2. Default view: top-10 general practitioners by conservative family
+//      coverage. Click a family chip to switch into that family's LB.
 //
 // Visual rhythm matches CompactSparkline/LiveFeed (Nothing density).
 
@@ -79,13 +78,13 @@ export function FamilyLeaderboards() {
       <div className="ck-header flex items-center gap-2 px-2 py-1">
         <span className="ck-label ck-pos">families</span>
         <span className="ck-mono ck-dim text-xs">
-          {view === "cross" ? "cross-family" : `per-family · ${view.family}`}
+          {view === "cross" ? "general" : `per-family · ${view.family}`}
         </span>
       </div>
       <div className="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)]">
         <FamilyChip
           active={view === "cross"}
-          label="all"
+          label="general"
           onClick={() => setView("cross")}
         />
         {families?.map((f) => (
@@ -171,12 +170,12 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
             {r.display_slug}
           </a>
           <span className="ck-dim">
-            {r.cross_family_score !== null
-              ? r.cross_family_score.toFixed(3)
+            {r.general_score !== null
+              ? r.general_score.toFixed(3)
               : "—"}
           </span>
           <span className="ck-dim">
-            {r.qualifying_families}/{r.families.length} fam
+            {Math.round(r.coverage_ratio * 100)}% cov
           </span>
         </li>
       ))}

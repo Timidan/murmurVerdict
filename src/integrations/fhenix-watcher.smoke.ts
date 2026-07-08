@@ -6,7 +6,11 @@ import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { FhenixEventIngestor } from "./fhenix-watcher.js";
+import {
+  FhenixEventIngestor,
+  FhenixEventIngestorConfigError,
+  loadFhenixEventIngestorConfig,
+} from "./fhenix-watcher.js";
 import {
   fhenixMarketIdForMurmurMarket,
   type FhenixEventVerifier,
@@ -98,12 +102,86 @@ try {
   const wallet = "0x1111111111111111111111111111111111111111";
   const chainId = 84532;
   const contractAddress = "0x2222222222222222222222222222222222222222";
+  const resolvedContractAddress = "0x3333333333333333333333333333333333333333";
   const acceptedAt = "2026-05-14T12:00:00Z";
   const revealOpenAt = "2026-05-14T13:00:00Z";
   const validCallId = randomUUID();
   const missedCallId = randomUUID();
   const onchainValidCallId = "0x" + "33".repeat(32);
   const onchainMissedCallId = "0x" + "44".repeat(32);
+
+  await check("ingestor config rejects malformed numeric env", () => {
+    const baseEnv: NodeJS.ProcessEnv = {
+      FHENIX_RPC_URL: "http://127.0.0.1:8545",
+      FHENIX_CHAIN_ID: String(chainId),
+      FHENIX_SEALED_VERDICTS_ADDRESS: contractAddress,
+    };
+    assert.throws(
+      () =>
+        loadFhenixEventIngestorConfig({
+          ...baseEnv,
+          FHENIX_CHAIN_ID: "not-a-chain",
+        }),
+      (err) =>
+        err instanceof FhenixEventIngestorConfigError &&
+        err.key === "FHENIX_CHAIN_ID",
+    );
+    assert.throws(
+      () =>
+        loadFhenixEventIngestorConfig({
+          ...baseEnv,
+          FHENIX_EVENT_BATCH_SIZE: "0",
+        }),
+      (err) =>
+        err instanceof FhenixEventIngestorConfigError &&
+        err.key === "FHENIX_EVENT_BATCH_SIZE",
+    );
+    assert.throws(
+      () =>
+        loadFhenixEventIngestorConfig({
+          ...baseEnv,
+          FHENIX_EVENT_CONFIRMATIONS: "-1",
+        }),
+      (err) =>
+        err instanceof FhenixEventIngestorConfigError &&
+        err.key === "FHENIX_EVENT_CONFIRMATIONS",
+    );
+
+    const parsed = loadFhenixEventIngestorConfig({
+      ...baseEnv,
+      FHENIX_EVENT_BATCH_SIZE: "10000",
+      FHENIX_REVEAL_GRACE_SEC: "0",
+    });
+    assert.equal(parsed?.batchSize, 10_000);
+    assert.equal(parsed?.revealGraceSeconds, 0);
+
+    const parsedWithResolvedAddress = loadFhenixEventIngestorConfig({
+      FHENIX_RPC_URL: "http://127.0.0.1:8545",
+      FHENIX_CHAIN_ID: String(chainId),
+    }, {
+      contractAddress: resolvedContractAddress,
+    });
+    assert.equal(
+      parsedWithResolvedAddress?.contractAddress,
+      resolvedContractAddress,
+    );
+    assert.equal(
+      loadFhenixEventIngestorConfig(baseEnv, { contractAddress: null }),
+      null,
+    );
+    assert.throws(
+      () =>
+        loadFhenixEventIngestorConfig({
+          FHENIX_RPC_URL: "http://127.0.0.1:8545",
+          FHENIX_CHAIN_ID: String(chainId),
+        }, {
+          contractAddress: "not-an-address",
+        }),
+      (err) =>
+        err instanceof FhenixEventIngestorConfigError &&
+        err.key === "FHENIX_SEALED_VERDICTS_ADDRESS",
+    );
+  });
 
   agentsRepo.insert(db, {
     agent_id: agentId,

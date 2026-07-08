@@ -12,8 +12,8 @@
  * Five phases:
  *   0. pre-flight — env vars present, daemon + dashboard reachable.
  *   1. snapshot 0 — baseline of the daemon DB before any new call.
- *   2. snapshot 1 — submit sealed call through /v2/gateway/calls, then assert
- *      daemon (A1) + DOM (A2) are opaque pre-reveal.
+ *   2. snapshot 1 — submit prediction intent through /v2/gateway/calls/seal,
+ *      then assert daemon (A1) + DOM (A2) are opaque pre-reveal.
  *   3. contract steps — wait for reveal window, openReveal, poll cofhejs
  *      threshold network for plaintext + signatures, publishReveal.
  *   4. snapshot 2 — assert daemon + DOM (A3) carry plaintext post-publish.
@@ -40,8 +40,6 @@ import {
   http,
   getAddress,
   parseAbi,
-  toHex,
-  keccak256,
   type Address,
   type Hex,
 } from "viem";
@@ -54,12 +52,26 @@ import { baseSepolia } from "viem/chains";
 //    Migration verified via tools/cofhe-sdk-spike.ts (2026-05-20).
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
-import { Encryptable } from "@cofhe/sdk";
 import { PermitUtils } from "@cofhe/sdk/permits";
 import type { Permit } from "@cofhe/sdk/permits";
 
 // ── deployments loader — same module the live-smoke uses.
 import { loadDeployment } from "../src/integrations/deployments.js";
+import {
+  OPERATOR_BLIND_DEFAULT_MARKET_ID as DEFAULT_OPERATOR_BLIND_MARKET_ID,
+  OPERATOR_BLIND_FHENIX_REVEALED_SUBOBJECT_KEY as FHENIX_REVEALED_SUBOBJECT_KEY,
+  OPERATOR_BLIND_FHENIX_SEALED_HANDLE_KEYS as FHENIX_SEALED_HANDLE_KEYS,
+  OPERATOR_BLIND_ROUNDTRIP_CHAIN_ID as CHAIN_ID,
+  OperatorBlindRoundtripError,
+  assertOperatorBlindDashboardPostRevealText,
+  assertOperatorBlindDashboardPreRevealText,
+  assertOperatorBlindRevealSnapshotPlaintext,
+  assertOperatorBlindSealedSnapshotOpaque,
+  makeOperatorBlindClientNonce,
+  operatorBlindClientOrderId,
+  operatorBlindSentinelTextForms as sentinelTextForms,
+  startOperatorBlindRoundtrip,
+} from "../src/verdict/operator-blind-roundtrip-surface.js";
 
 // ── playwright is a dev dep; chromium browser is installed separately via
 //    `npx playwright install chromium`. The script gives a clear hint if it
@@ -67,7 +79,6 @@ import { loadDeployment } from "../src/integrations/deployments.js";
 import { chromium, type Browser, type Page } from "playwright";
 
 // ── pinned constants ──────────────────────────────────────────────────────
-const CHAIN_ID = 84532;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_MS = 5_000;
 const GATEWAY_ACCEPT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -75,23 +86,6 @@ const THRESHOLD_NETWORK_URL = "https://testnet-cofhe-tn.fhenix.zone";
 const INDEXER_LAG_BUDGET_MS = 60 * 1000;
 const INDEXER_POLL_INTERVAL_MS = 3_000;
 const SNAPSHOT_GRACE_MS = 10_000;
-const DEFAULT_OPERATOR_BLIND_MARKET_ID = keccak256(
-  toHex("murmur:operator-blind-test:market:v1"),
-).toLowerCase() as Hex;
-
-// Daemon API names pinned from spec §13 (2026-05-19). The script asserts on
-// these EXACT names; if the daemon's projection has drifted, A3 fails with a
-// "missing key" diagnostic rather than silently passing.
-const FHENIX_SEALED_HANDLE_KEYS = {
-  binaryIndexCtHash: "binary_index_ct_hash",
-  confidenceCtHash: "confidence_ct_hash",
-} as const;
-const FHENIX_ONCHAIN_CALL_ID_KEY = "onchain_call_id";
-const FHENIX_REVEALED_SUBOBJECT_KEY = "revealed_verdict";
-const FHENIX_REVEALED_PLAINTEXT_KEYS = {
-  binaryIndex: "binary_index",
-  confidenceBps: "confidence_bps",
-} as const;
 
 // ── ANSI helpers (same palette as tools/verify/verify-deploy.ts) ─────────
 const ANSI = {
@@ -105,6 +99,27 @@ const log = (s: string) => console.log(`[operator-blind] ${s}`);
 const ok = (s: string) => log(`${ANSI.green}ok${ANSI.reset}    ${s}`);
 const fail = (s: string) => log(`${ANSI.red}FAIL${ANSI.reset}  ${s}`);
 
+function printHelp(): void {
+  console.log(
+    [
+      "operator-blind-roundtrip",
+      "",
+      "Runs the live operator-blind FHE round-trip release gate.",
+      "",
+      "Required env:",
+      "  BASE_RPC_URL",
+      "  FHENIX_GATEWAY_RELAYER_PRIVATE_KEY",
+      "  OPERATOR_BLIND_RUNTIME_KEY",
+      "  DAEMON_URL",
+      "  DASHBOARD_URL",
+      "  AGENT_ADDRESS",
+      "",
+      "Optional env:",
+      "  OPERATOR_BLIND_MARKET_ID",
+    ].join("\n"),
+  );
+}
+
 // ── failure helper. Prints the offending excerpt + exits 1. No retries. ──
 function die(label: string, detail: string, excerpt?: unknown): never {
   fail(`${label}: ${detail}`);
@@ -117,6 +132,17 @@ function die(label: string, detail: string, excerpt?: unknown): never {
     console.log(`${ANSI.dim}excerpt:${ANSI.reset}\n${truncated}`);
   }
   process.exit(1);
+}
+
+function fromSurface<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof OperatorBlindRoundtripError) {
+      die(err.phase, err.detail, err.excerpt);
+    }
+    throw err;
+  }
 }
 
 // ── env-var pre-flight. All four are required; missing means abort. ──────
@@ -181,73 +207,6 @@ async function probeUrl(label: string, url: string, expectStatuses: number[] = [
       `${label} at ${url} returned status ${res.status}; expected one of [${expectStatuses.join(", ")}]`,
     );
   }
-}
-
-// ── deep numeric walk. Recursively visits every numeric leaf (number or
-//    numeric-coercible string of digits) and returns the first JSON-pointer
-//    path where it matches the sentinel. null = no match.
-//    Catches the case where the daemon stores plaintext as a number, not a
-//    string — JSON.stringify(resp).includes("7531") would catch that too,
-//    but a numeric leaf 7531 vs string "7531" cross-check makes the privacy
-//    assertion strict.
-function findNumericLeaf(value: unknown, sentinel: number, path: string = "$"): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "number") {
-    return value === sentinel ? path : null;
-  }
-  if (typeof value === "bigint") {
-    return value === BigInt(sentinel) ? path : null;
-  }
-  if (typeof value === "string") {
-    // Catch numeric-as-string ("7531"). Don't match against the sentinel
-    // appearing inside an opaque hex ctHash — those are scanned separately
-    // via the JSON.stringify substring check below.
-    if (/^\d+$/.test(value) && Number(value) === sentinel) {
-      return path;
-    }
-    return null;
-  }
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) {
-      const hit = findNumericLeaf(value[i], sentinel, `${path}[${i}]`);
-      if (hit) return hit;
-    }
-    return null;
-  }
-  if (typeof value === "object") {
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      const hit = findNumericLeaf(v, sentinel, `${path}.${k}`);
-      if (hit) return hit;
-    }
-  }
-  return null;
-}
-
-// ── randomized confidence sentinel in [5100, 9500] (contract valid band) ─
-function randomSentinel(): number {
-  const lo = 5100;
-  const hi = 9500;
-  return lo + Math.floor(Math.random() * (hi - lo + 1));
-}
-
-// ── sentinel text forms. The daemon's JSON carries `confidence_bps` as a
-//    raw integer (e.g. 7531), but the dashboard's CallPage renders it as
-//    `(confidence_bps / 100).toFixed(2) + "%"` → "75.31%". A DOM substring
-//    search for the raw "7531" misses that render because the "." breaks
-//    the substring. Both forms must be considered when scanning innerText.
-//
-//    Canonical forms returned:
-//      - raw integer: `${sentinel}` (e.g. 7531 → "7531")
-//      - percent:     `${(sentinel/100).toFixed(2)}%` (e.g. 7531 → "75.31%",
-//                     5100 → "51.00%", 9500 → "95.00%")
-//
-//    The two are always distinct strings within the valid band (the
-//    percent form always contains "."; the raw form never does), so this
-//    is safe for both A2 (negative search) and A3 (positive search).
-function sentinelTextForms(sentinel: number): string[] {
-  const raw = `${sentinel}`;
-  const percent = `${(sentinel / 100).toFixed(2)}%`;
-  return [raw, percent];
 }
 
 // ── minimal contract ABI (subset of live-smoke's) ─────────────────────────
@@ -330,13 +289,6 @@ interface GatewayCallResponse {
   idempotent_hit: boolean;
 }
 
-interface GatewayCofheInput {
-  ct_hash: Hex;
-  security_zone: number;
-  utype: number;
-  signature: Hex;
-}
-
 interface GatewaySealedCallBody {
   marketRef: {
     protocol: string;
@@ -345,57 +297,20 @@ interface GatewaySealedCallBody {
   };
   client_order_id: string;
   client_nonce: Hex;
-  rationale: string;
-  privacy_mode: "sealed_fhenix";
-  binary_index_input: GatewayCofheInput;
-  confidence_input: GatewayCofheInput;
-}
-
-function cofheCtHashToHex32(value: unknown, label: string): Hex {
-  let hex: string;
-  if (typeof value === "bigint") {
-    hex = value.toString(16);
-  } else if (typeof value === "number") {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      die("encrypt", `${label}.ctHash is not a safe non-negative integer`, value);
-    }
-    hex = BigInt(value).toString(16);
-  } else if (typeof value === "string") {
-    hex = value.startsWith("0x") ? value.slice(2) : BigInt(value).toString(16);
-  } else {
-    die("encrypt", `${label}.ctHash has unsupported type ${typeof value}`);
-  }
-  const out = `0x${hex.padStart(64, "0")}`.toLowerCase();
-  if (!/^0x[0-9a-f]{64}$/.test(out)) {
-    die("encrypt", `${label}.ctHash did not normalize to bytes32`, { value, normalized: out });
-  }
-  return out as Hex;
-}
-
-function normalizeBytesHex(value: unknown, label: string): Hex {
-  if (typeof value !== "string") {
-    die("encrypt", `${label}.signature must be a hex string`, value);
-  }
-  const out = value.startsWith("0x") ? value : `0x${value}`;
-  if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(out)) {
-    die("encrypt", `${label}.signature is not even-length hex`, out);
-  }
-  return out as Hex;
-}
-
-function requireHex32(value: unknown, label: string): Hex {
-  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
-    die(label, "expected 0x-prefixed bytes32", value);
-  }
-  return value.toLowerCase() as Hex;
+  privacy_mode: "murmur_sealed_fhenix";
+  verdict: {
+    binary_index: number;
+    confidence_bps: number;
+  };
+  public_strategy_tag: string;
 }
 
 async function postGatewayCall(
-  daemonUrl: string,
+  gatewayUrl: string,
   runtimeKey: string,
   body: GatewaySealedCallBody,
 ): Promise<GatewayCallResponse> {
-  const res = await fetch(`${daemonUrl}/v2/gateway/calls`, {
+  const res = await fetch(gatewayUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -411,7 +326,7 @@ async function postGatewayCall(
     die("gateway-submit", `daemon returned non-JSON status ${res.status}`, text);
   }
   if (res.status !== 200 && res.status !== 202) {
-    die("gateway-submit", `POST /v2/gateway/calls returned ${res.status}`, json);
+    die("gateway-submit", `POST ${gatewayUrl} returned ${res.status}`, json);
   }
   const out = json as Partial<GatewayCallResponse>;
   if (
@@ -432,7 +347,7 @@ async function postGatewayCall(
 }
 
 async function submitGatewayCallAndWaitForAccepted(
-  daemonUrl: string,
+  gatewayUrl: string,
   runtimeKey: string,
   body: GatewaySealedCallBody,
 ): Promise<GatewayCallResponse & { call_id: string }> {
@@ -441,7 +356,7 @@ async function submitGatewayCallAndWaitForAccepted(
   let last: GatewayCallResponse | null = null;
   while (Date.now() < deadline) {
     attempt++;
-    last = await postGatewayCall(daemonUrl, runtimeKey, body);
+    last = await postGatewayCall(gatewayUrl, runtimeKey, body);
     if (last.call_id && last.status === "accepted") {
       log(`gateway accepted after ${attempt} poll(s): call_id=${last.call_id}`);
       return { ...last, call_id: last.call_id };
@@ -549,13 +464,20 @@ async function waitForIndexedReveal(
 
 // ── main ──────────────────────────────────────────────────────────────────
 async function main() {
-  const startMs = Date.now();
+  if (process.argv.includes("-h") || process.argv.includes("--help")) {
+    printHelp();
+    return;
+  }
 
   // 0. pre-flight
   const env = preflightEnv();
-  const runId = `ob-${Date.now()}-${randomSentinel()}`;
-  const sentinelConfidence = randomSentinel();
-  const sentinelBinaryIndex = 0;
+  const run = fromSurface(() =>
+    startOperatorBlindRoundtrip({ nowMs: () => Date.now() }),
+  );
+  const startMs = run.startedAtMs;
+  const runId = run.runId;
+  const sentinelConfidence = run.sentinelConfidence;
+  const sentinelBinaryIndex = run.sentinelBinaryIndex;
   log(`runId=${runId} sentinelConfidence=${sentinelConfidence} sentinelBinaryIndex=${sentinelBinaryIndex}`);
 
   log(`probing DAEMON_URL=${env.daemonUrl}/v1/health`);
@@ -632,9 +554,9 @@ async function main() {
     ok("snapshot-0: baseline taken (daemon reachable, runId not present yet)");
 
     // 2. Gateway submit — market/account/agent/runtime-key fixtures are
-    //    seeded by tools/seed-operator-blind-fixtures.ts. This script now
-    //    submits through the same Runtime-Key-authenticated Gateway path that
-    //    production agents use; the daemon broadcaster sends submitSealedFor.
+    //    seeded by tools/seed-operator-blind-fixtures.ts. The script submits
+    //    prediction intent to Murmur-owned sealing; the daemon encrypts,
+    //    then its broadcaster sends submitSealedFor.
     const marketId = env.marketId;
     log(`using seeded gateway marketId=${marketId} agentAddress=${env.agentAddress}`);
     log(`initializing @cofhe/sdk client (chain=${CHAIN_ID})`);
@@ -650,44 +572,26 @@ async function main() {
     });
     const permission: Permit = selfPermit as unknown as Permit;
 
-    log(`encrypting inputs (binaryIndex=${sentinelBinaryIndex}, confidenceBps=${sentinelConfidence})`);
-    const encryptedInputs = await cofheClient
-      .encryptInputs([
-        Encryptable.uint8(BigInt(sentinelBinaryIndex)),
-        Encryptable.uint16(BigInt(sentinelConfidence)),
-      ])
-      .execute();
-    const binEnc = encryptedInputs[0];
-    const confEnc = encryptedInputs[1];
-    log(`encrypted: bin.ctHash=${binEnc.ctHash} conf.ctHash=${confEnc.ctHash}`);
-
-    const clientNonce = keccak256(toHex(`${runId}-nonce-${Math.random()}`));
+    const clientNonce = makeOperatorBlindClientNonce({ runId });
     const gatewayBody: GatewaySealedCallBody = {
       marketRef: {
         protocol: "native-price",
         sourceId: marketId,
         configVersion: 1,
       },
-      client_order_id: `${runId}-${clientNonce.slice(2, 14)}`,
+      client_order_id: operatorBlindClientOrderId(runId, clientNonce),
       client_nonce: clientNonce,
-      rationale: `operator-blind release gate ${runId}`,
-      privacy_mode: "sealed_fhenix",
-      binary_index_input: {
-        ct_hash: cofheCtHashToHex32(binEnc.ctHash, "binary_index_input"),
-        security_zone: binEnc.securityZone,
-        utype: binEnc.utype,
-        signature: normalizeBytesHex(binEnc.signature, "binary_index_input"),
+      privacy_mode: "murmur_sealed_fhenix",
+      verdict: {
+        binary_index: sentinelBinaryIndex,
+        confidence_bps: sentinelConfidence,
       },
-      confidence_input: {
-        ct_hash: cofheCtHashToHex32(confEnc.ctHash, "confidence_input"),
-        security_zone: confEnc.securityZone,
-        utype: confEnc.utype,
-        signature: normalizeBytesHex(confEnc.signature, "confidence_input"),
-      },
+      public_strategy_tag: "release-gate",
     };
-    log(`POST /v2/gateway/calls marketId=${marketId} nonce=${clientNonce}`);
+    const gatewayUrl = `${env.daemonUrl}/v2/gateway/calls/seal`;
+    log(`POST /v2/gateway/calls/seal marketId=${marketId} nonce=${clientNonce}`);
     const accepted = await submitGatewayCallAndWaitForAccepted(
-      env.daemonUrl,
+      gatewayUrl,
       env.runtimeKey,
       gatewayBody,
     );
@@ -700,60 +604,12 @@ async function main() {
     const sealedSnapshot = await waitForIndexedSealedCall(env.daemonUrl, callId);
 
     // ── A1 — daemon opaque pre-reveal
-    const fhenixPre = sealedSnapshot["fhenix"] as Record<string, unknown> | undefined;
-    if (!fhenixPre || typeof fhenixPre !== "object") {
-      die("A1", "daemon response missing top-level 'fhenix' sub-object", sealedSnapshot);
-    }
-    const binHandle = fhenixPre[FHENIX_SEALED_HANDLE_KEYS.binaryIndexCtHash];
-    const confHandle = fhenixPre[FHENIX_SEALED_HANDLE_KEYS.confidenceCtHash];
-    if (typeof binHandle !== "string" || !binHandle.startsWith("0x")) {
-      die(
-        "A1",
-        `fhenix.${FHENIX_SEALED_HANDLE_KEYS.binaryIndexCtHash} missing or not a 0x-prefixed handle`,
-        fhenixPre,
-      );
-    }
-    if (typeof confHandle !== "string" || !confHandle.startsWith("0x")) {
-      die(
-        "A1",
-        `fhenix.${FHENIX_SEALED_HANDLE_KEYS.confidenceCtHash} missing or not a 0x-prefixed handle`,
-        fhenixPre,
-      );
-    }
-    const onchainCallId = requireHex32(
-      fhenixPre[FHENIX_ONCHAIN_CALL_ID_KEY],
-      `A1 fhenix.${FHENIX_ONCHAIN_CALL_ID_KEY}`,
+    const { onchainCallId } = fromSurface(() =>
+      assertOperatorBlindSealedSnapshotOpaque({
+        snapshot: sealedSnapshot,
+        sentinelConfidence,
+      }),
     );
-    if (fhenixPre[FHENIX_REVEALED_SUBOBJECT_KEY] !== undefined && fhenixPre[FHENIX_REVEALED_SUBOBJECT_KEY] !== null) {
-      die(
-        "A1",
-        `fhenix.${FHENIX_REVEALED_SUBOBJECT_KEY} populated pre-reveal — operator-blind invariant broken`,
-        fhenixPre[FHENIX_REVEALED_SUBOBJECT_KEY],
-      );
-    }
-    const preStringified = JSON.stringify(sealedSnapshot);
-    if (preStringified.includes(`${sentinelConfidence}`)) {
-      // Could be a coincidental substring in an opaque hex handle. Disambiguate
-      // by scrubbing the two known ctHash hex strings and re-checking.
-      const scrubbed = preStringified
-        .replaceAll(binHandle, "")
-        .replaceAll(confHandle, "");
-      if (scrubbed.includes(`${sentinelConfidence}`)) {
-        die(
-          "A1",
-          `JSON.stringify(daemon response) contains confidence sentinel ${sentinelConfidence} outside the opaque ctHash handles`,
-          preStringified,
-        );
-      }
-    }
-    const numericHit = findNumericLeaf(sealedSnapshot, sentinelConfidence);
-    if (numericHit) {
-      die(
-        "A1",
-        `deep numeric walk found confidence sentinel ${sentinelConfidence} at JSON path ${numericHit}`,
-        sealedSnapshot,
-      );
-    }
     ok(`A1: daemon opaque pre-reveal (ctHash handles present, no plaintext, no sentinel match)`);
 
     // ── A2 — dashboard masked pre-reveal
@@ -777,29 +633,12 @@ async function main() {
         { timeout: 30_000 },
       );
       const preInnerText = await prePage.evaluate(() => document.body?.innerText ?? "");
-      const sealedAffordancePresent =
-        preInnerText.includes("sealed") || preInnerText.includes("operator-blind");
-      if (!sealedAffordancePresent) {
-        die(
-          "A2",
-          `dashboard call page is missing the sealed affordance (neither "sealed" nor "operator-blind" found in innerText)`,
-          preInnerText.slice(0, 2000),
-        );
-      }
-      // Scan for BOTH the raw integer form ("7531") and the percent form
-      // ("75.31%") — CallPage.tsx renders the latter, so the raw form
-      // alone is not sufficient. Any hit on either is a leak.
-      const preForms = sentinelTextForms(sentinelConfidence);
-      const preLeakForm = preForms.find((f) => preInnerText.includes(f));
-      if (preLeakForm) {
-        const idx = preInnerText.indexOf(preLeakForm);
-        const excerpt = preInnerText.slice(Math.max(0, idx - 200), idx + 200);
-        die(
-          "A2",
-          `dashboard DOM innerText contains confidence sentinel "${preLeakForm}" (scanned for both raw=${preForms[0]} and percent=${preForms[1]})`,
-          excerpt,
-        );
-      }
+      fromSurface(() =>
+        assertOperatorBlindDashboardPreRevealText({
+          innerText: preInnerText,
+          sentinelConfidence,
+        }),
+      );
       const prePath = pathResolve(screenshotDir, `pre-${runId}.png`);
       await prePage.screenshot({ path: prePath, fullPage: true });
       ok(`A2: dashboard masked pre-reveal (sealed affordance present, no sentinel). screenshot=${prePath}`);
@@ -910,36 +749,14 @@ async function main() {
     await new Promise((r) => setTimeout(r, SNAPSHOT_GRACE_MS));
     const revealedSnapshot = await waitForIndexedReveal(env.daemonUrl, callId);
 
-    const fhenixPost = revealedSnapshot["fhenix"] as Record<string, unknown> | undefined;
-    if (!fhenixPost) {
-      die("A3", `daemon post-publish response missing 'fhenix' sub-object`, revealedSnapshot);
-    }
-    const revealedVerdict = fhenixPost[FHENIX_REVEALED_SUBOBJECT_KEY] as
-      | Record<string, unknown>
-      | undefined;
-    if (!revealedVerdict || typeof revealedVerdict !== "object") {
-      die(
-        "A3",
-        `daemon never returned a populated fhenix.${FHENIX_REVEALED_SUBOBJECT_KEY} sub-object after publishReveal landed at tx ${publishTx}`,
-        fhenixPost,
-      );
-    }
-    const revealedBin = revealedVerdict[FHENIX_REVEALED_PLAINTEXT_KEYS.binaryIndex];
-    const revealedConf = revealedVerdict[FHENIX_REVEALED_PLAINTEXT_KEYS.confidenceBps];
-    if (revealedBin !== sentinelBinaryIndex) {
-      die(
-        "A3",
-        `expected fhenix.${FHENIX_REVEALED_SUBOBJECT_KEY}.${FHENIX_REVEALED_PLAINTEXT_KEYS.binaryIndex}=${sentinelBinaryIndex}, got ${JSON.stringify(revealedBin)} (keys present: [${Object.keys(revealedVerdict).join(", ")}])`,
-        revealedVerdict,
-      );
-    }
-    if (revealedConf !== sentinelConfidence) {
-      die(
-        "A3",
-        `expected fhenix.${FHENIX_REVEALED_SUBOBJECT_KEY}.${FHENIX_REVEALED_PLAINTEXT_KEYS.confidenceBps}=${sentinelConfidence}, got ${JSON.stringify(revealedConf)} (keys present: [${Object.keys(revealedVerdict).join(", ")}])`,
-        revealedVerdict,
-      );
-    }
+    fromSurface(() =>
+      assertOperatorBlindRevealSnapshotPlaintext({
+        snapshot: revealedSnapshot,
+        sentinelBinaryIndex,
+        sentinelConfidence,
+        publishTx,
+      }),
+    );
     ok(`A3 (daemon): fhenix.${FHENIX_REVEALED_SUBOBJECT_KEY} populated with both spec-pinned plaintext fields`);
 
     // ── A3 — dashboard side. Reload the page (the SPA refreshes its data
@@ -968,17 +785,15 @@ async function main() {
         /* fall through — innerText snapshot below produces the diagnostic */
       });
       const postInnerText = await postPage.evaluate(() => document.body?.innerText ?? "");
-      const postHitForm = postForms.find((f) => postInnerText.includes(f));
-      if (!postHitForm) {
-        die(
-          "A3",
-          `dashboard DOM never surfaced confidence sentinel post-publish; scanned for raw=${postForms[0]} and percent=${postForms[1]} (innerText excerpt below)`,
-          postInnerText.slice(0, 2000),
-        );
-      }
+      const { hitForm: postHitForm, forms: postHitForms } = fromSurface(() =>
+        assertOperatorBlindDashboardPostRevealText({
+          innerText: postInnerText,
+          sentinelConfidence,
+        }),
+      );
       const postPath = pathResolve(screenshotDir, `post-${runId}.png`);
       await postPage.screenshot({ path: postPath, fullPage: true });
-      ok(`A3 (dashboard): DOM carries confidence sentinel "${postHitForm}" (scanned raw=${postForms[0]}, percent=${postForms[1]}). screenshot=${postPath}`);
+      ok(`A3 (dashboard): DOM carries confidence sentinel "${postHitForm}" (scanned raw=${postHitForms[0]}, percent=${postHitForms[1]}). screenshot=${postPath}`);
     } finally {
       await postPage.close();
     }

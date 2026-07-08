@@ -9,7 +9,11 @@
 // hard-coded to chainlink+pyth on Base ETH/USD. Adapter migration happens
 // gradually — adapters land first, the resolver migrates next.
 
-import type { OracleRow, AssetRow } from "../../verdict/db.js";
+import type {
+  AssetRow,
+  OracleRow,
+} from "../../verdict/repos/market-registry-repo.js";
+import type { PythHermesTimers } from "../pyth-hermes.js";
 
 export interface OracleObservation {
   oracle_id: string;
@@ -52,9 +56,18 @@ export interface AdapterContext {
   hermesEndpoint?: string;
   rpcTimeoutMs?: number;
   hermesTimeoutMs?: number;
+  hermesTimers?: PythHermesTimers;
   /** Test injection seam. */
   fetchImpl?: typeof fetch;
-  now?: () => Date;
+  readContractClient?: {
+    readContract: (args: {
+      address: `0x${string}`;
+      abi: readonly unknown[];
+      functionName: string;
+      args?: readonly unknown[];
+    }) => Promise<unknown>;
+  };
+  now: () => Date;
 }
 
 export interface OracleAdapter {
@@ -71,64 +84,3 @@ export interface OracleAdapter {
     ctx: AdapterContext,
   ): Promise<OracleObservation>;
 }
-
-/** Helpers shared by adapters. Kept in a value namespace so adapters can
- *  reach for them without importing each other. */
-export const adapterHelpers = {
-  nowIso(now: () => Date): string {
-    return now().toISOString().replace(/\.\d+Z$/, "Z");
-  },
-  isoFromUnixSeconds(s: bigint | number): string {
-    const ms = typeof s === "bigint" ? Number(s) * 1000 : s * 1000;
-    return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
-  },
-  formatFixed(value: bigint, decimals: number): string {
-    const neg = value < 0n;
-    const abs = neg ? -value : value;
-    const s = abs.toString().padStart(decimals + 1, "0");
-    const cut = s.length - decimals;
-    const intPart = s.slice(0, cut);
-    const fracPart = s.slice(cut).replace(/0+$/, "");
-    const out = fracPart.length > 0 ? `${intPart}.${fracPart}` : intPart;
-    return neg ? `-${out}` : out;
-  },
-  formatPythDecimal(value: bigint, expo: number): string {
-    if (expo === 0) return value.toString();
-    if (expo > 0) return `${value.toString()}${"0".repeat(expo)}`;
-    return adapterHelpers.formatFixed(value, -expo);
-  },
-  parseConfig<T = Record<string, unknown>>(
-    oracle: OracleRow,
-    requiredKeys: ReadonlyArray<string>,
-  ): T {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(oracle.config_json);
-    } catch {
-      throw new AdapterError(
-        `oracle ${oracle.oracle_id}: config_json is not valid JSON`,
-        oracle.oracle_id,
-        "config_invalid",
-      );
-    }
-    if (typeof parsed !== "object" || parsed === null) {
-      throw new AdapterError(
-        `oracle ${oracle.oracle_id}: config_json must be a JSON object`,
-        oracle.oracle_id,
-        "config_invalid",
-      );
-    }
-    const obj = parsed as Record<string, unknown>;
-    for (const k of requiredKeys) {
-      if (!(k in obj) || typeof obj[k] !== "string") {
-        throw new AdapterError(
-          `oracle ${oracle.oracle_id}: config missing required string '${String(k)}'`,
-          oracle.oracle_id,
-          "config_invalid",
-          { config: obj },
-        );
-      }
-    }
-    return obj as T;
-  },
-};

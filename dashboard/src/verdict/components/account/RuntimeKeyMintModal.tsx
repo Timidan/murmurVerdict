@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RuntimeKeyMintResponse } from "../../api.js";
+import { stashJustMinted } from "../../pages/IntegratePage.js";
 
 export interface RuntimeKeyMintModalProps {
   /** Mint response — `secret` is the plaintext (one-time) runtime key. */
@@ -32,6 +33,29 @@ export function RuntimeKeyMintModal({ result, slug, onDone }: RuntimeKeyMintModa
       document.body.style.overflow = prev;
     };
   }, []);
+
+  // Stash the just-minted secret for the integrate page handoff. The
+  // envelope auto-expires after 5 min and is single-use (consumeJustMinted
+  // clears it on read), so this is safe even if the operator never
+  // navigates — sessionStorage drops on tab close.
+  useEffect(() => {
+    stashJustMinted(slug, {
+      secret: result.secret,
+      source: "runtime",
+      runtime_key_id: result.runtime_key_id,
+      runtime_key_prefix: result.runtime_key_prefix,
+    });
+  }, [slug, result.secret, result.runtime_key_id, result.runtime_key_prefix]);
+
+  const onOpenIntegrate = useCallback(() => {
+    // Navigate to the integrate page where the snippet panel will pick
+    // up the stashed secret. We deliberately DO NOT call onDone — some
+    // parents (AgentOnboardPage) chain a "#/account" navigation inside
+    // onDone, which would race with this hash assignment. The hash
+    // change here naturally unmounts the current route (and the modal
+    // with it), so the cleanup onDone normally does isn't needed.
+    window.location.hash = `#/account/agent/${encodeURIComponent(slug)}/integrate`;
+  }, [slug]);
 
   useEffect(() => {
     return () => {
@@ -152,14 +176,29 @@ export function RuntimeKeyMintModal({ result, slug, onDone }: RuntimeKeyMintModa
           I have saved this key somewhere safe.
         </label>
 
-        <button
-          className="ck-btn-primary self-end"
-          onClick={onDone}
-          disabled={!saved}
-          type="button"
-        >
-          {saved ? "[ done ]" : "[ done ] · save the key first"}
-        </button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button
+            className="ck-btn"
+            onClick={onOpenIntegrate}
+            disabled={!saved}
+            type="button"
+            title={
+              saved
+                ? "open the integrate guide for this agent (skill.md + sample code + next steps)"
+                : "save the key, then open the integrate guide"
+            }
+          >
+            [ open integrate guide → ]
+          </button>
+          <button
+            className="ck-btn-primary"
+            onClick={onDone}
+            disabled={!saved}
+            type="button"
+          >
+            {saved ? "[ done ]" : "[ done ] · save the key first"}
+          </button>
+        </div>
       </section>
     </div>
   );

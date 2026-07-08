@@ -2,8 +2,8 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import {
   marketsRepo,
-  usageRepo,
-} from "./db.js";
+} from "./repos/market-registry-repo.js";
+import { usageRepo } from "./repos/usage-events-repo.js";
 import { CommitmentSchema } from "./markets-core.js";
 import {
   ERROR_CODES,
@@ -22,6 +22,7 @@ import {
   acceptSealedCall,
   makeSealedCallUsage,
   type AcceptSealedCallResult,
+  type SealedCallIdAdapter,
 } from "./sealed-call-acceptance.js";
 
 export const V2SubmissionBodySchema = z
@@ -55,6 +56,7 @@ export interface AcceptSealedCallParams {
   authResult: DispatchedAuthIdentity;
   bodyJson: unknown;
   fhenixVerifier: FhenixEventVerifier | null;
+  newCallId?: SealedCallIdAdapter;
   now: () => Date;
 }
 
@@ -186,6 +188,7 @@ export async function acceptSealedCallMetadata(
       rationale: body.rationale,
       strategy_tag: body.strategy_tag,
       verifiedSubmit,
+      newCallId: params.newCallId,
       now,
     });
   } catch (err) {

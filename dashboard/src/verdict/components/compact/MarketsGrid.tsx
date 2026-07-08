@@ -60,7 +60,14 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
   const merged = useMemo<Record<string, AgentMarketRow[]>>(() => {
     const out: Record<string, AgentMarketRow[]> = { ...leaderboards };
     for (const [market_id, evt] of Object.entries(liveMarkets)) {
-      out[market_id] = evt.agents.slice(0, 3);
+      // markets.update rows are the lean wire shape; project into
+      // AgentMarketRow with REST-only fields absent (null). Behavior-identical
+      // to the prior raw slice (those fields were already undefined at runtime).
+      out[market_id] = evt.agents.slice(0, 3).map((a) => ({
+        ...a,
+        verdict_score_lb: null,
+        last_resolved_at: null,
+      }));
     }
     return out;
   }, [leaderboards, liveMarkets]);

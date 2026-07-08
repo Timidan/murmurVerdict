@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { FhenixRevealStatus } from "../db.js";
+import type { FhenixRevealStatus } from "./fhenix-sealed-calls-repo.js";
 
 const FHENIX_REVEAL_STATUSES: readonly FhenixRevealStatus[] = [
   "pending",

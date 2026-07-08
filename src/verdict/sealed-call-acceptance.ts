@@ -1,37 +1,33 @@
 import type Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  agentsRepo,
-  fhenixSealedCallsRepo,
-  isUniqueViolation,
-  submissionsRepo,
-  usageRepo,
-  type MarketRow,
-} from "./db.js";
-import {
-  acceptsSubmissions,
-  buildMarketDedupKey,
-  perMarketDailyCap,
-} from "./markets.js";
+import type { MarketRow } from "./repos/market-registry-repo.js";
+import { fhenixSealedCallsRepo } from "./repos/fhenix-sealed-calls-repo.js";
+import { submissionsRepo } from "./repos/sealed-call-submissions-repo.js";
+import { usageRepo } from "./repos/usage-events-repo.js";
+import { isUniqueViolation } from "./sqlite-errors.js";
 import {
   ERROR_CODES,
   SCHEMA_VERSION,
   SCORING_VERSION,
-  SUBMISSION_LIMITS,
-  type UsageEvent,
   VerdictError,
 } from "./schema.js";
 import {
-  derivePolicyFromMarket,
-  PolicyDerivationError,
-} from "./oracle-routing.js";
+  prepareSealedCallAcceptance,
+  requireSealedCallAcceptanceAgent,
+} from "./sealed-call-acceptance-guards.js";
+import {
+  makeSealedCallUsage,
+  runtimeKeyUsageAttributes,
+} from "./sealed-call-usage.js";
 import type { AuthIdentity as DispatchedAuthIdentity } from "./auth/dispatcher.js";
 import type { CallAcceptedEvent } from "./events.js";
+import { publicAcceptedCallEvent } from "./public-event-fanout.js";
 import type { VerifiedSealedCallSubmitted } from "../integrations/fhenix-events.js";
-import {
-  expectedRevealOpenMsForMarket,
-} from "./market-adapter-config.js";
-import { isoFromMs, nowIso, parseIsoMs } from "./time.js";
+import { nowIso } from "./time.js";
+
+export { makeSealedCallUsage } from "./sealed-call-usage.js";
+
+export type SealedCallIdAdapter = () => string;
 
 export interface SealedCallAcceptanceInput {
   db: Database.Database;
@@ -42,6 +38,7 @@ export interface SealedCallAcceptanceInput {
   rationale?: string;
   strategy_tag?: string;
   verifiedSubmit: VerifiedSealedCallSubmitted;
+  newCallId?: SealedCallIdAdapter;
   now: () => Date;
 }
 
@@ -76,21 +73,7 @@ export async function acceptSealedCall(
     now,
   } = input;
 
-  if (authResult.agent_kind === "attested") {
-    throw new VerdictError(
-      "attested-tier sealed Fhenix acceptance is not yet supported",
-      ERROR_CODES.agent_not_authorized,
-      503,
-    );
-  }
-  if (!authResult.agent_id) {
-    throw new VerdictError(
-      "agent identity required before accepting sealed Fhenix calls",
-      ERROR_CODES.agent_slug_required,
-      400,
-    );
-  }
-  const agentId = authResult.agent_id;
+  const agentId = requireSealedCallAcceptanceAgent(authResult);
 
   const existing = submissionsRepo.findByClientOrderId(
     db,
@@ -142,177 +125,20 @@ export async function acceptSealedCall(
     };
   }
 
-  if (!acceptsSubmissions(market)) {
-    usageRepo.emit(
-      db,
-      makeSealedCallUsage(
-        agentId,
-        "submission_rejected",
-        {
-          reason: "market_not_listed",
-          market_id: market.market_id,
-          status: market.status,
-        },
-        now,
-      ),
-    );
-    throw new VerdictError(
-      `market ${market.market_id} status=${market.status} (not accepting submissions)`,
-      ERROR_CODES.asset_not_supported,
-      400,
-      {
-        reason: "market_not_listed",
-        market_id: market.market_id,
-        market_status: market.status,
-      },
-    );
-  }
-
-  try {
-    derivePolicyFromMarket(db, market);
-  } catch (err) {
-    if (err instanceof PolicyDerivationError) {
-      usageRepo.emit(
-        db,
-        makeSealedCallUsage(
-          agentId,
-          "submission_rejected",
-          {
-            reason: "policy_derivation_failed",
-            market_id: market.market_id,
-            cause: err.cause,
-          },
-          now,
-        ),
-      );
-      throw new VerdictError(
-        `cannot mint call on ${market.market_id}: ${err.message}`,
-        ERROR_CODES.asset_not_supported,
-        400,
-        {
-          reason: "policy_derivation_failed",
-          market_id: market.market_id,
-          cause: err.cause,
-        },
-      );
-    }
-    throw err;
-  }
-
-  const acceptedAtMs = parseIsoMs(verifiedSubmit.accepted_at, "fhenix.accepted_at");
-  const revealOpenMs = parseIsoMs(
-    verifiedSubmit.reveal_open_at,
-    "fhenix.reveal_open_at",
-  );
-  const expectedRevealOpenMs = expectedRevealOpenMsForMarket(market, acceptedAtMs);
-  if (expectedRevealOpenMs <= acceptedAtMs) {
-    throw new VerdictError(
-      "market resolution window is already closed; refusing sealed call",
-      ERROR_CODES.schema_invalid,
-      400,
-      {
-        market_id: market.market_id,
-        accepted_at: verifiedSubmit.accepted_at,
-        expected_reveal_open_at: isoFromMs(expectedRevealOpenMs),
-      },
-    );
-  }
-  if (revealOpenMs !== expectedRevealOpenMs) {
-    throw new VerdictError(
-      "fhenix.reveal_open_at must equal the market reveal window",
-      ERROR_CODES.schema_invalid,
-      400,
-      {
-        accepted_at: verifiedSubmit.accepted_at,
-        reveal_open_at: verifiedSubmit.reveal_open_at,
-        expected_reveal_open_at: isoFromMs(expectedRevealOpenMs),
-        horizon_seconds: market.horizon_seconds,
-      },
-    );
-  }
-  if (acceptedAtMs > now().getTime() + 5 * 60 * 1000) {
-    throw new VerdictError(
-      "fhenix.accepted_at is too far in the future",
-      ERROR_CODES.schema_invalid,
-      400,
-    );
-  }
-
-  const activeCount = agentsRepo.countActiveCallsForAgent(db, agentId);
-  if (activeCount >= SUBMISSION_LIMITS.max_active_calls_per_agent) {
-    usageRepo.emit(
-      db,
-      makeSealedCallUsage(
-        agentId,
-        "submission_rejected",
-        { reason: "max_active" },
-        now,
-      ),
-    );
-    throw new VerdictError(
-      `max ${SUBMISSION_LIMITS.max_active_calls_per_agent} active calls per agent`,
-      ERROR_CODES.rate_limited,
-      429,
-    );
-  }
-  const since = isoFromMs(now().getTime() - 24 * 60 * 60 * 1000);
-  const perMarketCap = perMarketDailyCap(market.market_id);
-  const todayMarketCount = submissionsRepo.countCallsForAgentMarketWindow(
+  const prepared = prepareSealedCallAcceptance({
     db,
     agentId,
-    market.market_id,
-    since,
-  );
-  if (todayMarketCount >= perMarketCap) {
-    usageRepo.emit(
-      db,
-      makeSealedCallUsage(
-        agentId,
-        "submission_rejected",
-        {
-          reason: "daily_cap_market",
-          market_id: market.market_id,
-          cap: perMarketCap,
-        },
-        now,
-      ),
-    );
-    throw new VerdictError(
-      `max ${perMarketCap} calls/market/24h on ${market.market_id}`,
-      ERROR_CODES.rate_limited,
-      429,
-      { market_id: market.market_id, cap: perMarketCap },
-    );
-  }
-
-  const acceptedAt = verifiedSubmit.accepted_at;
-  const submittedAt = submitted_at ?? acceptedAt;
-  const dedupKey = buildMarketDedupKey({
-    agent_id: agentId,
-    market_id: market.market_id,
-    horizon_seconds: market.horizon_seconds,
-    accepted_at_iso: acceptedAt,
+    market,
+    client_order_id,
+    submitted_at,
+    verifiedSubmit,
+    now,
   });
-  const duplicate = submissionsRepo.findByDedupKey(db, dedupKey);
-  if (duplicate) {
-    usageRepo.emit(
-      db,
-      makeSealedCallUsage(
-        agentId,
-        "submission_rejected",
-        { reason: "dedup" },
-        now,
-      ),
-    );
-    throw new VerdictError(
-      "duplicate submission inside dedup window",
-      ERROR_CODES.duplicate,
-      409,
-      { existing_call_id: duplicate.call_id },
-    );
-  }
+  const acceptedAt = prepared.acceptedAt;
+  const submittedAt = prepared.submittedAt;
+  const dedupKey = prepared.dedupKey;
 
-  const callId = randomUUID();
+  const callId = (input.newCallId ?? randomUUID)();
   const commitHash = sealedFhenixCommitHash({
     agent_id: agentId,
     market_id: market.market_id,
@@ -411,7 +237,6 @@ export async function acceptSealedCall(
     throw err;
   }
 
-  const agent = agentsRepo.byId(db, agentId);
   return {
     status: 201,
     body: {
@@ -425,43 +250,14 @@ export async function acceptSealedCall(
       idempotent_hit: false,
       tier: authResult.tier,
     },
-    event: {
-      type: "call.accepted",
+    event: publicAcceptedCallEvent({
+      db,
       call_id: callId,
       agent_id: agentId,
-      agent_slug: agent?.display_slug ?? agentId,
-      privacy_mode: "sealed_fhenix",
       accepted_at: acceptedAt,
       commit_hash: commitHash,
-      adapter_id: market.adapter_id ?? "native-price",
-      market_family: market.market_family ?? "financial-direction",
-      market_id: market.market_id,
-    },
-  };
-}
-
-export function makeSealedCallUsage(
-  agent_id: string | null,
-  kind: UsageEvent["kind"],
-  attributes: Record<string, unknown>,
-  now: () => Date,
-): UsageEvent {
-  return {
-    event_id: randomUUID(),
-    agent_id,
-    kind,
-    ts: nowIso(now()),
-    attributes,
-  };
-}
-
-function runtimeKeyUsageAttributes(
-  authResult: DispatchedAuthIdentity,
-): Record<string, string> {
-  if (!authResult.runtime_key) return {};
-  return {
-    runtime_key_id: authResult.runtime_key.runtime_key_id,
-    runtime_key_policy_hash: authResult.runtime_key.policy_hash,
+      market,
+    }),
   };
 }
 

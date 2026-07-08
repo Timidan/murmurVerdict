@@ -28,7 +28,6 @@
  * step that comes after).
  */
 
-import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,10 +72,6 @@ function usageText(): string {
   return `admin-claim --slug <slug> --account <uuid|privy:<did>> [--display-name "..."] [--bio "..."] [--db-path PATH]`;
 }
 
-function nowIso(): string {
-  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
-}
-
 async function main(): Promise<void> {
   const args = parseArgv(process.argv);
   if (!args.slug || !args.account) {
@@ -89,98 +84,31 @@ async function main(): Promise<void> {
 
   // Dynamic imports so the CLI can run without pulling the full
   // daemon graph at module-load time.
-  const { openDb, agentsRepo, agentSecurityEventsRepo } = await import(
+  const { openDb } = await import(
     "../../src/verdict/db.js"
   );
   const {
-    getAccountById,
-    getAccountByPrivyUserId,
-    linkAgentToAccount,
-    AgentAlreadyOwnedError,
-  } = await import("../../src/verdict/auth/accounts.js");
+    AdminClaimError,
+    adminClaimAgent,
+  } = await import(
+    "../../src/verdict/admin-claim-surface.js"
+  );
 
   const db = openDb({ path: dbPath });
-
-  // Resolve the account_id. Two forms accepted:
-  //   - bare uuid:  resolves directly against accounts.account_id
-  //   - 'privy:<did>': resolves via accounts.privy_user_id
-  let account_id: string;
-  if (args.account.startsWith("privy:")) {
-    const did = args.account.slice("privy:".length);
-    const account = getAccountByPrivyUserId(db, did);
-    if (!account) {
-      console.error(
-        `error: no account row for privy_user_id='${did}'. The owner must log in via Privy at least once first.`,
-      );
-      process.exit(3);
-    }
-    account_id = account.account_id;
-  } else {
-    const account = getAccountById(db, args.account);
-    if (!account) {
-      console.error(
-        `error: no account row for account_id='${args.account}'`,
-      );
-      process.exit(3);
-    }
-    account_id = account.account_id;
-  }
-
-  // Wave 5 codex review fixes (BLOCKER + MAJOR):
-  //   - Validate the constructed AgentProfile via Zod BEFORE the insert so
-  //     malformed flag values exit cleanly with code 2 rather than
-  //     producing a malformed row.
-  //   - Wrap agent resolve/create + linkAgentToAccount + security event
-  //     emit in a single SQLite transaction so a crash mid-flow can't
-  //     leave a claim half-applied or unaudited.
-  const { AgentProfileSchema } = await import("../../src/verdict/schema.js");
-  const displayName = args.displayName ?? args.slug;
-  let agent_id: string;
-  let created_agent = false;
-  const event_id = randomUUID();
+  let result: ReturnType<typeof adminClaimAgent>;
   try {
-    db.transaction(() => {
-      const existing = agentsRepo.bySlug(db, args.slug!);
-      if (existing) {
-        agent_id = existing.agent_id;
-      } else {
-        agent_id = randomUUID();
-        const profile = AgentProfileSchema.parse({
-          agent_id,
-          display_slug: args.slug,
-          kind: "agent",
-          display_name: displayName,
-          ...(args.bio !== undefined ? { bio: args.bio } : {}),
-          created_at: nowIso(),
-        });
-        agentsRepo.insert(db, profile);
-        created_agent = true;
-      }
-      linkAgentToAccount(db, account_id, agent_id!);
-      agentSecurityEventsRepo.emit(db, {
-        event_id,
-        agent_id: agent_id!,
-        account_id,
-        kind: "admin_claim",
-        actor: "cli:admin-claim",
-        payload: {
-          slug: args.slug,
-          created_agent,
-          display_name: args.displayName ?? null,
-        },
-        created_at: nowIso(),
-      });
-    })();
+    result = adminClaimAgent({
+      db,
+      account: args.account,
+      slug: args.slug,
+      displayName: args.displayName,
+      bio: args.bio,
+      now: () => new Date(),
+    });
   } catch (err) {
-    if (err instanceof AgentAlreadyOwnedError) {
-      console.error(
-        `error: agent ${err.agent_id} is already linked to a different account. Use --unlink first (not implemented in Wave 5).`,
-      );
-      process.exit(4);
-    }
-    if (err instanceof Error && err.name === "ZodError") {
-      console.error(`error: invalid input — ${err.message}`);
-      process.exit(2);
+    if (err instanceof AdminClaimError) {
+      console.error(`error: ${err.message}`);
+      process.exit(err.exitCode);
     }
     throw err;
   }
@@ -189,12 +117,7 @@ async function main(): Promise<void> {
   console.log(
     JSON.stringify(
       {
-        ok: true,
-        event_id,
-        agent_id,
-        account_id,
-        slug: args.slug,
-        created_agent,
+        ...result,
       },
       null,
       2,

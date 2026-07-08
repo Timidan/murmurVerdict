@@ -14,7 +14,7 @@ takes ~7 minutes wall-clock, and is run by hand before any prod deploy.
 ## What it asserts (3 assertions across 3 snapshots)
 
 - **A1 — Daemon DB is opaque pre-reveal.**
-  After `/v2/gateway/calls` accepts and the daemon Gateway records the submit,
+  After `/v2/gateway/calls/seal` accepts and the daemon Gateway records the submit,
   `GET /v1/calls/<callId>` returns ciphertext handles
   (`fhenix.binary_index_ct_hash`, `fhenix.confidence_ct_hash`) but no
   `fhenix.revealed_verdict` sub-object. A per-run randomized confidence sentinel
@@ -74,7 +74,8 @@ takes ~7 minutes wall-clock, and is run by hand before any prod deploy.
 | `OPERATOR_BLIND_RUNTIME_KEY` | `runtime_key_secret` printed by the seed tool |
 | `DAEMON_URL` | base URL of the running local daemon (no trailing slash) |
 | `DASHBOARD_URL` | base URL of the running local dashboard (no trailing slash) |
-| `FHENIX_GATEWAY_ENABLED=true` | enables `/v2/gateway/calls` broadcaster in the daemon |
+| `FHENIX_GATEWAY_ENABLED=true` | enables Gateway broadcasters in the daemon |
+| `MURMUR_OWNED_SEALING_ENABLED` | enables `/v2/gateway/calls/seal` Murmur-owned sealing; defaults to true |
 | `FHENIX_RPC_URL` / `FHENIX_CHAIN_ID` | daemon Gateway RPC configuration |
 
 Optional:

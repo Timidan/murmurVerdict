@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
-import { projectCallRow } from "./projections.js";
+import { projectPublicCallRow } from "./sealed-call-public-projection.js";
+import { publicActivityWindow } from "./public-activity-window.js";
 
 // ─── /v1/feed/today data shape ────────────────────────────────────────────────
 // Live tape backing the Today page. Three rolling lists:
@@ -75,8 +76,8 @@ const PENDING_LIMIT = 20;
 const RESOLVED_LIMIT = 20;
 const MOVERS_LIMIT = 5;
 
-export function getTodayFeed(db: Database.Database, now: Date = new Date()): TodayFeed {
-  const nowIso = now.toISOString().replace(/\.\d+Z$/, "Z");
+export function getTodayFeed(db: Database.Database, now: Date): TodayFeed {
+  const activityWindow = publicActivityWindow(now);
 
   // The feed reads only the public submission projection. Revealed verdict
   // fields reach scoring through the post-horizon commitment attachment,
@@ -141,13 +142,13 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
        FROM agents a
        JOIN submissions s ON s.agent_id = a.agent_id
        JOIN t1_resolutions r ON r.call_id = s.call_id
-       WHERE r.resolved_at >= datetime('now', '-1 day')
+       WHERE r.resolved_at >= ?
          AND a.kind IN ('agent','attested','benchmark')
        GROUP BY a.agent_id
        ORDER BY resolved_24h DESC, wins_24h DESC
        LIMIT ?`,
     )
-    .all(MOVERS_LIMIT) as Array<{
+    .all(activityWindow.since_iso, MOVERS_LIMIT) as Array<{
     agent_id: string;
     agent_slug: string;
     display_name: string;
@@ -168,13 +169,13 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
   const totalsRow = db
     .prepare(
       `SELECT
-         (SELECT COUNT(*) FROM submissions WHERE accepted_at >= datetime('now','-1 day')) AS accepted_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= datetime('now','-1 day')) AS resolved_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= datetime('now','-1 day') AND outcome='win') AS wins_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= datetime('now','-1 day') AND outcome='loss') AS losses_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= datetime('now','-1 day') AND outcome='void') AS void_24h`,
+         (SELECT COUNT(*) FROM submissions WHERE accepted_at >= @rolling_since) AS accepted_24h,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since) AS resolved_24h,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since AND outcome='win') AS wins_24h,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since AND outcome='loss') AS losses_24h,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since AND outcome='void') AS void_24h`,
     )
-    .get() as {
+    .get({ rolling_since: activityWindow.since_iso }) as {
     accepted_24h: number;
     resolved_24h: number;
     wins_24h: number;
@@ -184,7 +185,7 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
 
   return {
     schema_version: 1,
-    served_at: nowIso,
+    served_at: activityWindow.served_at,
     accepted_recent: acceptedRows,
     pending_resolution: pendingRows,
     resolved_recent: resolvedRows,
@@ -199,50 +200,12 @@ export function getTodayFeed(db: Database.Database, now: Date = new Date()): Tod
  * pass through from the SQL row.
  */
 function toFeedRow(row: Record<string, unknown>): TodayFeedRow {
-  const projected = projectCallRow(
-    {
-      call_id: row.call_id as string,
-      status: row.status as string,
-      accepted_at: row.accepted_at as string,
-      privacy_mode: row.privacy_mode as string | null,
-      commit_hash: row.commit_hash as string | null,
-      // Wave 4b: receipts subsystem dropped; projection always emits null.
-      acceptance_receipt_hash: null,
-      submitted_at: row.submitted_at as string | null,
-    },
-    row.agent_slug as string,
-  );
-  // Phase 10 / Z4-extra Drift C — discriminators travel with the row.
-  // Native-price defaults match MIGRATION_016 backfill semantics.
-  const adapter_id = (row.adapter_id as string | null) ?? "native-price";
-  const market_family =
-    (row.market_family as string | null) ?? "financial-direction";
-  const market_id = (row.market_id as string | null) ?? null;
-  // signed_return is a price-return concept — keep it only for the
-  // native-price adapter. Non-native rows surface outcome + call_score
-  // but omit signed_return entirely so consumers (RSS, embed, mobile)
-  // don't render a misleading "null %" / "0%" formatting for event-
-  // based markets.
-  const isNativePrice = adapter_id === "native-price";
+  const projected = projectPublicCallRow(row, row.agent_slug as string);
   const result: TodayFeedRow = {
     ...projected,
     agent_id: row.agent_id as string,
     agent_slug: row.agent_slug as string,
     agent_kind: row.agent_kind as string,
-    adapter_id,
-    market_family,
-    ...(market_id ? { market_id } : {}),
   };
-  // Resolved-side fields come from t1_resolutions (public, not under FHE).
-  // Forward straight from the SQL row when present.
-  if (typeof row.submitted_at === "string") {
-    result.submitted_at = row.submitted_at;
-  }
-  if (typeof row.outcome === "string") result.outcome = row.outcome;
-  if (typeof row.call_score === "number") result.call_score = row.call_score;
-  if (typeof row.resolved_at === "string") result.resolved_at = row.resolved_at;
-  if (isNativePrice && typeof row.signed_return === "string") {
-    result.signed_return = row.signed_return;
-  }
   return result;
 }

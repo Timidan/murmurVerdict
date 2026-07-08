@@ -24,7 +24,11 @@
 // surfaces here at submit time, not during the resolver tick.
 
 import type Database from "better-sqlite3";
-import { oraclesRepo, type MarketRow, type OracleRow } from "./db.js";
+import {
+  oraclesRepo,
+  type MarketRow,
+  type OracleRow,
+} from "./repos/market-registry-repo.js";
 import type { OracleFeed, T0Policy } from "./schema.js";
 
 // ─── Bidirectional feed ↔ oracle_id map ─────────────────────────────────────

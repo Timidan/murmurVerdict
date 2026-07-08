@@ -1,247 +1,29 @@
 import "dotenv/config";
-import express from "express";
-import cors from "cors";
-import { OracleClient } from "../integrations/oracle.js";
-import { Resolver } from "../verdict/resolver.js";
-import { createVerdictRouter } from "../verdict/api.js";
-import { accountRouter } from "../verdict/routes/account.js";
-import { nanopayRouter, type PipelineInfo } from "../verdict/routes/nanopay.js";
-import type { FhenixAnchorTuple } from "../verdict/single-stream-binding.js";
-import { agentsRepo, openDb, resolutionsRepo } from "../verdict/db.js";
-import { fhenixLifecycleReadRepo } from "../verdict/repos/fhenix-lifecycle-read-repo.js";
-import { VerdictEventBus } from "../verdict/events.js";
-import { runFeedSlaTick } from "../verdict/feed-sla.js";
-import { getLeaderboard } from "../verdict/leaderboard.js";
-import {
-  operatorAlertSinkFromEnv,
-  runOperatorAlertTick,
-} from "../verdict/operator-alerts.js";
-import { startWebhookDispatcher } from "../verdict/webhooks.js";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import type { Server } from "node:http";
-import { createFhenixEventVerifierFromEnv } from "../integrations/fhenix-events.js";
-import { loadDeployment, resolveFhenixContractAddress } from "../integrations/deployments.js";
-import { createLiveCanaryRunnerFromEnv } from "../integrations/live-canaries.js";
+import { openDb } from "../verdict/db-bootstrap.js";
+import type { AgentSecurityEventIdAdapter } from "../verdict/agent-security-event.js";
+import type { FeedContractIdAdapter } from "../verdict/feed-contract-surface.js";
+import type { FeedPacketIdAdapter } from "../verdict/feed-packet-ingestion.js";
+import type { FeedSlaIncidentIdAdapter } from "../verdict/feed-sla.js";
+import type { OperatorAlertIdAdapter } from "../verdict/operator-alerts.js";
+import type {
+  PolymarketMarketRegistrationGammaAdapter,
+} from "../verdict/polymarket-market-registration.js";
+import type { SealedCallIdAdapter } from "../verdict/sealed-call-acceptance.js";
 import { SCHEMA_VERSION } from "../verdict/schema.js";
-
-// ─── Env knobs ──────────────────────────────────────────────────────────────
-
-const PORT = Number(process.env.PORT ?? 8080);
-const RESOLVER_TICK_SEC = Number(process.env.RESOLVER_TICK_SEC ?? 30);
-const FHENIX_EVENT_TICK_SEC = Number(process.env.FHENIX_EVENT_TICK_SEC ?? RESOLVER_TICK_SEC);
-const FHENIX_GATEWAY_TICK_SEC = Number(process.env.FHENIX_GATEWAY_TICK_SEC ?? 10);
-const FEED_SLA_TICK_SEC = Number(process.env.FEED_SLA_TICK_SEC ?? 60);
-const LIVE_CANARY_TICK_SEC = Number(process.env.LIVE_CANARY_TICK_SEC ?? 300);
-const OPERATOR_ALERT_TICK_SEC = Number(process.env.OPERATOR_ALERT_TICK_SEC ?? 60);
-const VERDICT_DB_PATH = process.env.VERDICT_DB_PATH ?? "./data/verdict.db";
-const DASHBOARD_ORIGIN = (process.env.DASHBOARD_ORIGIN ?? "*").trim();
+import { loadDaemonRuntimeConfig } from "./daemon-config.js";
+import { createDaemonHttpSurface } from "./daemon-http.js";
+import { createDaemonLifecycle } from "./daemon-lifecycle.js";
+import { loadDaemonRuntimeAdapters } from "./daemon-runtime-adapters.js";
+import { startDaemonHttpServer } from "./daemon-server.js";
+import { startDaemonOpenServLaunchpad } from "./openserv-launchpad-runtime.js";
+import { startDaemonPolymarketGammaRuntime } from "./polymarket-gamma-runtime.js";
+import { startDaemonTickers } from "./tickers.js";
 
 // Wave 4b — receipts subsystem and Filecoin pin callback retired.
 // The legacy makePinReceipt() helper that lived here was a no-op for any
 // deploy without FILECOIN_API_TOKEN set, and the receipts table it pinned
 // canonical JSON for is gone. v3 attested tier will pin EAS attestations
 // directly; nothing in v0.2 needs an HTTP-pinning shim.
-
-// ─── Wave L.A Phase 1b — Nanopayments env-config parsers ─────────────────────
-
-/**
- * Parses `MURMUR_NANOPAY_PIPELINES`. Format:
- *
- *   <pipelineId>:<priceAtoms>:<recipient>:<chainId>[,...]
- *
- * Where:
- *   - pipelineId: 0x + 64 hex
- *   - priceAtoms: positive integer (USDC atoms; 6 decimals)
- *   - recipient: 0x + 40 hex EVM address
- *   - chainId: positive integer
- *
- * Phase 1b enforces equality with the shared SDK middleware price +
- * seller (`expectedAtoms` / `expectedSeller`) so a buyer can never be
- * charged at one price/seller and then refused at another. Mismatched
- * entries get a warning + skip; malformed entries the same. Duplicate
- * pipelineIds are last-write-wins with a warning.
- *
- * Returns a lowercased-key map. Resolver should lowercase the lookup
- * key before reading.
- */
-function parseNanopayPipelinesEnv(
-  raw: string | undefined,
-  expectedAtoms: bigint,
-  expectedSeller: string,
-): Map<string, PipelineInfo> {
-  const out = new Map<string, PipelineInfo>();
-  if (!raw || raw.trim() === "") return out;
-  const expectedSellerLower = expectedSeller.toLowerCase();
-  for (const entry of raw.split(",")) {
-    const trimmed = entry.trim();
-    if (!trimmed) continue;
-    const parts = trimmed.split(":");
-    if (parts.length !== 4) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: malformed entry "${trimmed}" (need 4 colon-separated fields); skipping`,
-      );
-      continue;
-    }
-    const [pipelineId, priceAtomsStr, recipient, chainIdStr] = parts;
-    if (!/^0x[0-9a-fA-F]{64}$/.test(pipelineId)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: bad pipelineId "${pipelineId}" (need 0x + 64 hex); skipping`,
-      );
-      continue;
-    }
-    // Codex audit 2026-05-24: BigInt() accepts "0x3e8" / "1e3" /
-    // "0o123" forms; the env contract says decimal atoms. Gate with a
-    // strict decimal regex before conversion so an operator typo can't
-    // silently load a hex price.
-    if (!/^\d+$/.test(priceAtomsStr)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: priceAtoms "${priceAtomsStr}" for ${pipelineId} is not a plain decimal integer; skipping`,
-      );
-      continue;
-    }
-    let priceAtoms: bigint;
-    try {
-      priceAtoms = BigInt(priceAtomsStr);
-    } catch {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: bad priceAtoms "${priceAtomsStr}" for ${pipelineId}; skipping`,
-      );
-      continue;
-    }
-    if (priceAtoms <= 0n) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: priceAtoms must be > 0 for ${pipelineId} (got ${priceAtomsStr}); skipping`,
-      );
-      continue;
-    }
-    if (priceAtoms !== expectedAtoms) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: priceAtoms ${priceAtomsStr} for ${pipelineId} does not match MURMUR_NANOPAY_DEFAULT_PRICE (${expectedAtoms.toString()} atoms); skipping (Phase 1b enforces single shared price)`,
-      );
-      continue;
-    }
-    if (!/^0x[0-9a-fA-F]{40}$/.test(recipient)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: bad recipient "${recipient}" for ${pipelineId}; skipping`,
-      );
-      continue;
-    }
-    if (recipient.toLowerCase() !== expectedSellerLower) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: recipient ${recipient} for ${pipelineId} does not match MURMUR_NANOPAY_SELLER_ADDRESS (${expectedSeller}); skipping (Phase 1b enforces single shared seller)`,
-      );
-      continue;
-    }
-    // Same strict-decimal gate as priceAtoms — Number() accepts
-    // "0x84532" / "84532e0" forms which would silently parse to
-    // unexpected ids.
-    if (!/^\d+$/.test(chainIdStr)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: chainId "${chainIdStr}" for ${pipelineId} is not a plain decimal integer; skipping`,
-      );
-      continue;
-    }
-    const chainId = Number(chainIdStr);
-    if (!Number.isInteger(chainId) || chainId <= 0) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: bad chainId "${chainIdStr}" for ${pipelineId}; skipping`,
-      );
-      continue;
-    }
-    const key = pipelineId.toLowerCase();
-    if (out.has(key)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: duplicate pipelineId ${pipelineId}; last-write-wins`,
-      );
-    }
-    out.set(key, {
-      priceAtoms: priceAtoms.toString(),
-      recipient: recipient as `0x${string}`,
-      chainId,
-    });
-  }
-  return out;
-}
-
-/**
- * Parses `MURMUR_NANOPAY_PIPELINE_AGENT_MAP`. Format:
- *
- *   <pipelineId>:<agentId>:<marketId>[,...]
- *
- * `agentId` and `marketId` are opaque TEXT in the DB schema; the
- * parser rejects entries containing `:` or `,` (which would corrupt
- * the env grammar). Duplicate pipelineIds → last-write-wins +
- * warning.
- *
- * Returns a lowercased-key map of pipelineId → (agentId, marketId).
- */
-function parseNanopayPipelineAgentMapEnv(
-  raw: string | undefined,
-): Map<string, { agentId: string; marketId: string }> {
-  const out = new Map<string, { agentId: string; marketId: string }>();
-  if (!raw || raw.trim() === "") return out;
-  for (const entry of raw.split(",")) {
-    const trimmed = entry.trim();
-    if (!trimmed) continue;
-    const parts = trimmed.split(":");
-    if (parts.length !== 3) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: malformed entry "${trimmed}" (need 3 colon-separated fields: pipelineId:agentId:marketId); skipping`,
-      );
-      continue;
-    }
-    const [pipelineId, agentId, marketId] = parts;
-    if (!/^0x[0-9a-fA-F]{64}$/.test(pipelineId)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: bad pipelineId "${pipelineId}"; skipping`,
-      );
-      continue;
-    }
-    if (!agentId || agentId.includes(":") || agentId.includes(",")) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: bad agentId for ${pipelineId} (must be non-empty and contain no ':' or ','); skipping`,
-      );
-      continue;
-    }
-    if (!marketId || marketId.includes(":") || marketId.includes(",")) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: bad marketId for ${pipelineId} (must be non-empty and contain no ':' or ','); skipping`,
-      );
-      continue;
-    }
-    const key = pipelineId.toLowerCase();
-    if (out.has(key)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: duplicate pipelineId ${pipelineId}; last-write-wins`,
-      );
-    }
-    out.set(key, { agentId, marketId });
-  }
-  return out;
-}
-
-/**
- * Parses a dollar-string price (e.g. "$0.001") into USDC atoms (6
- * decimals). Throws on malformed input — the caller should fall back
- * to skipping per-pipeline price equality enforcement if this throws.
- *
- * Accepts:
- *   - "$D" / "$D.d" / "$D.dd" up to 6 fractional digits.
- *   - Bare "D[.d…]" without the leading "$" (for tolerance).
- * Rejects negatives, scientific notation, and >6 fractional digits.
- */
-function parseDollarPriceToUsdcAtoms(price: string): bigint {
-  const m = price.match(/^\$?(\d+)(?:\.(\d{1,6}))?$/);
-  if (!m) {
-    throw new Error(
-      `parseDollarPriceToUsdcAtoms: cannot parse "${price}" (need $D or $D.d[d…] with ≤6 fractional digits)`,
-    );
-  }
-  const whole = m[1];
-  const frac = (m[2] ?? "").padEnd(6, "0");
-  return BigInt(whole) * 1_000_000n + BigInt(frac);
-}
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -250,7 +32,19 @@ export interface DaemonHandle {
   close: () => Promise<void>;
 }
 
+export interface DaemonLogger {
+  log: (message?: unknown, ...optionalParams: unknown[]) => void;
+  warn: (message?: unknown, ...optionalParams: unknown[]) => void;
+  error: (message?: unknown, ...optionalParams: unknown[]) => void;
+}
+
 export interface DaemonOpts {
+  /** Environment source; default process.env */
+  env?: NodeJS.ProcessEnv;
+  /** Runtime logger; default console */
+  logger?: DaemonLogger;
+  /** Daemon operation clock; default live wall clock */
+  now?: () => Date;
   /** Override DB path; default VERDICT_DB_PATH or ./data/verdict.db */
   dbPath?: string;
   /** Override port; default $PORT or 8080 */
@@ -259,578 +53,141 @@ export interface DaemonOpts {
   skipOpenServ?: boolean;
   /** Skip cron tickers (useful in tests; smoke driver still calls .tick() manually) */
   skipTickers?: boolean;
+  /** Polymarket Gamma lookup Adapter for admin market registration. */
+  marketRegistrationGammaLookup?: PolymarketMarketRegistrationGammaAdapter;
+  /** Agent Security Event ID Adapter; default uses random UUIDs inside Agent Security Event. */
+  newAgentSecurityEventId?: AgentSecurityEventIdAdapter;
+  /** Feed SLA incident ID Adapter; default uses random UUIDs inside Feed SLA. */
+  newFeedSlaIncidentId?: FeedSlaIncidentIdAdapter;
+  /** Feed Contract ID Adapter; default uses random UUIDs inside Feed Contract Surface. */
+  newFeedId?: FeedContractIdAdapter;
+  /** Feed Packet ID Adapter; default uses random UUIDs inside packet writers. */
+  newFeedPacketId?: FeedPacketIdAdapter;
+  /** Operator Alert ID Adapter; default uses random UUIDs when alert keys first open. */
+  newOperatorAlertId?: OperatorAlertIdAdapter;
+  /** Sealed Call ID Adapter; default uses random UUIDs inside acceptance. */
+  newSealedCallId?: SealedCallIdAdapter;
 }
 
 export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> {
-  const dbPath = opts.dbPath ?? VERDICT_DB_PATH;
-  const port = opts.port ?? PORT;
-
-  ensureParentDir(dbPath);
-  const db = openDb({ path: dbPath });
-
-  // Wave 4b-2 — MarketContextProvider (Santiment scout/analyst) removed.
-  // Murmur is a pure ranking layer over canonical price/event oracles;
-  // no sentiment cache or 5-minute refresh tick.
-  const oracle = makeOracle();
-  const events = new VerdictEventBus();
-  const fhenixVerifier = createFhenixEventVerifierFromEnv();
-  let fhenixIngestor: { tick: () => Promise<unknown> } | null = null;
-  let fhenixGateway: import("../integrations/fhenix-gateway.js").FhenixGatewayBroadcaster | null = null;
-  if (fhenixVerifier) {
-    const { createFhenixEventIngestorFromEnv } = await import(
-      "../integrations/fhenix-watcher.js"
-    );
-    fhenixIngestor = createFhenixEventIngestorFromEnv(db, fhenixVerifier);
-    const { createFhenixGatewayFromEnv } = await import(
-      "../integrations/fhenix-gateway.js"
-    );
-    fhenixGateway = createFhenixGatewayFromEnv(db);
-    if (!fhenixIngestor && process.env.FHENIX_RPC_URL) {
-      console.warn(
-        "[daemon] Fhenix verifier is configured, but event watcher is disabled; set FHENIX_CHAIN_ID and either FHENIX_SEALED_VERDICTS_ADDRESS or run sync-deployments to index reveals",
-      );
-    }
-  }
-  const fhenixChainId = Number(process.env.FHENIX_CHAIN_ID ?? "0") || null;
-  const fhenixSealedVerdictsAddress =
-    resolveFhenixContractAddress(fhenixChainId ?? undefined);
-  const fhenixEscrowAddress =
-    process.env.FHENIX_ESCROW_ADDRESS?.trim() ||
-    (fhenixChainId ? loadDeployment(fhenixChainId, "MurmurEscrow")?.address : null) ||
-    null;
-  console.log(
-    "[daemon] Fhenix config:",
-    JSON.stringify({
-      chainId: fhenixChainId,
-      sealedVerdictsAddress: fhenixSealedVerdictsAddress,
-      escrowAddress: fhenixEscrowAddress,
-      gatewayEnabled: (process.env.FHENIX_GATEWAY_ENABLED ?? "false").toLowerCase() === "true",
-      verifierActive: Boolean(fhenixVerifier),
-      ingestorActive: Boolean(fhenixIngestor),
-      gatewayActive: Boolean(fhenixGateway),
-    }),
-  );
-  // Webhooks fan-out: subscribes once and dispatches HTTP POST to every
-  // matching subscription on call.accepted / call.resolved.
-  const webhookDispatcher = startWebhookDispatcher(db, events);
-  const liveCanaries = createLiveCanaryRunnerFromEnv(db, SCHEMA_VERSION);
-  const operatorAlertSink = operatorAlertSinkFromEnv();
-  const resolver = oracle
-    ? new Resolver({
-        db,
-        oracle,
-        onResolved: async (call_id) => {
-          // 1. Fan out to SSE subscribers
-          try {
-            const full = resolutionsRepo.loadFullCall(db, call_id);
-            const agent = full ? agentsRepo.byId(db, full.submission.agent_id) : null;
-            if (full?.resolution && agent) {
-              // Phase 5 — surface universal payout-vector additive fields
-              // when the resolver dispatched through an adapter. Subscribers
-              // that read only legacy fields (outcome / call_score) keep
-              // working unchanged; v2 clients can read resolved_outcome /
-              // payout_vector for the universal shape.
-              const resolvedOutcome = full.resolution.resolved_outcome_json
-                ? (JSON.parse(full.resolution.resolved_outcome_json) as unknown)
-                : undefined;
-              const payoutVector = full.resolution.payout_vector_json
-                ? (JSON.parse(
-                    full.resolution.payout_vector_json,
-                  ) as string[])
-                : undefined;
-              // Phase 10 / Z4-extra Drift C — read the adapter/family
-              // off the submission so non-native resolutions (Polymarket,
-              // future event-binary adapters) don't emit a meaningless
-              // signed_return on the SSE channel. Native-price defaults
-              // when the columns are null (pre-MIGRATION_016 legacy rows).
-              const adapterRow = db
-                .prepare(
-                  "SELECT adapter_id, market_family, market_id FROM submissions WHERE call_id = ?",
-                )
-                .get(call_id) as
-                | {
-                    adapter_id: string | null;
-                    market_family: string | null;
-                    market_id: string | null;
-                  }
-                | undefined;
-              const adapterId = adapterRow?.adapter_id ?? "native-price";
-              const marketFamily =
-                adapterRow?.market_family ?? "financial-direction";
-              const isNativePrice = adapterId === "native-price";
-              events.emit({
-                type: "call.resolved",
-                call_id,
-                agent_id: agent.agent_id,
-                agent_slug: agent.display_slug,
-                outcome: full.resolution.outcome,
-                // signed_return is a price-return concept — emit ONLY for
-                // native-price adapters. Polymarket and other event/
-                // category families omit the field entirely (Drift C).
-                ...(isNativePrice
-                  ? { signed_return: full.resolution.signed_return }
-                  : {}),
-                call_score: full.resolution.call_score ?? null,
-                resolved_at: full.resolution.resolved_at,
-                adapter_id: adapterId,
-                market_family: marketFamily,
-                ...(adapterRow?.market_id
-                  ? { market_id: adapterRow.market_id }
-                  : {}),
-                ...(resolvedOutcome !== undefined
-                  ? { resolved_outcome: resolvedOutcome }
-                  : {}),
-                ...(payoutVector !== undefined
-                  ? { payout_vector: payoutVector }
-                  : {}),
-              });
-              // Resolution typically reorders the leaderboard — push new top.
-              const rows = getLeaderboard(db, { limit: 20 });
-              events.emit({
-                type: "leaderboard.update",
-                served_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
-                rows: rows.map((r) => ({
-                  rank: r.rank,
-                  agent_id: r.agent_id,
-                  display_slug: r.display_slug,
-                  display_name: r.display_name,
-                  kind: r.kind,
-                  verdict_score: r.verdict_score,
-                  win_rate: r.win_rate,
-                  resolved_calls: r.resolved_calls,
-                  pending_calls: r.pending_calls,
-                })),
-              });
-              // Per-market delta: scoped to the call's market_id so any
-              // per-market dashboard surface can refresh without a poll.
-              // Legacy rows without market_id (pre-migration 009) skip this.
-              const marketRow = db
-                .prepare(
-                  "SELECT market_id FROM submissions WHERE call_id = ?",
-                )
-                .get(call_id) as { market_id: string | null } | undefined;
-              if (marketRow?.market_id) {
-                events.emitMarketsUpdate(db, marketRow.market_id);
-              }
-            }
-          } catch (err) {
-            console.warn(`[daemon] sse fan-out failed for ${call_id}:`, err);
-          }
-          // SSE remains the canonical fan-out; subscribers route their own
-          // Discord/Zapier/OpenServ/custom bridges through webhooks.
-        },
-      })
-    : null;
-  const app = express();
-  // Phase 4 Hardening B — trust the first reverse-proxy hop. The casual
-  // tier (V2 §7.1) lives behind express-rate-limit's IP-keyed buckets
-  // (see src/verdict/routes/account.ts); without trust-proxy, req.ip
-  // collapses to the LB's address and a single IPv4 floods every bucket.
-  // Set to 1 (a single hop) rather than `true` (which is permissive about
-  // X-Forwarded-For spoofing) — Render / Fly / Railway all sit on a
-  // single proxy hop.
-  app.set("trust proxy", 1);
-  if (DASHBOARD_ORIGIN === "*") {
-    app.use(cors());
-  } else {
-    app.use(
-      cors({
-        origin: DASHBOARD_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean),
-        credentials: true,
-      }),
-    );
-  }
-  app.use(
-    createVerdictRouter({
-      db,
-      events,
-      oracleProbe: oracle
-        ? async () => {
-            try {
-              const obs = await oracle.getLatestPrice("pyth:base:ETH-USD");
-              if (!obs?.price) return "no price returned";
-              return null;
-            } catch (err) {
-              return err instanceof Error ? err.message : String(err);
-            }
-          }
-        : undefined,
-      fhenixVerifier,
-      fhenixGateway,
-      liveCanaries,
-      requireLiveCanaries: process.env.MURMUR_REQUIRE_LIVE_CANARIES === "true",
-      operatorAlertSink,
-    }),
-  );
-
-  // Phase 4 — mount the account router (V2 §7.1 casual tier). Routes:
-  //   POST   /v1/account/session                          Privy → account
-  //   POST   /v1/account/agents                           create casual agent
-  //   GET    /v1/account/agents                           list owned agents
-  //   POST   /v1/account/agents/:slug/api-keys            mint scoped key
-  //   DELETE /v1/account/api-keys/:key_id                 rotate (soft delete)
-  //   PATCH  /v1/account/agents/:slug/destination-address §7.4 cooldown
-  //
-  // Each route ships with its own express-rate-limit middleware (in-process
-  // MemoryStore — single-instance; multi-replica requires Redis-backed
-  // store, tracked in scaling research §6). Mounted after the verdict router;
-  // `/v1/account/*` is a fresh path prefix with no collision.
-  app.use(accountRouter({ db }));
-
-  // Wave L.A Phase 1 — Nanopayments via Circle Gateway middleware.
-  // Mounts `POST /v2/nanopay/infer/:pipelineId`. Wire-format details
-  // (x402 V2 headers, EIP-3009 sig recovery, Circle /settle call) are
-  // handled by `@circle-fin/x402-batching/server`'s middleware; Murmur
-  // owns the pipeline catalog, sealed-Fhenix anchor lookup, receipt
-  // persistence, and single-stream binding response.
-  //
-  // Phase 1 testnet MVP: `resolvePipeline` + `resolveLatestSealedCall`
-  // ship as stubs (return null) until Phase 2 wires them to real
-  // catalogs. With stubs the route returns 404/503 — safe (no
-  // free-serve), but it does ALREADY settle the buyer's payment via
-  // the SDK middleware before reaching the stub. Operator must wire
-  // real resolvers before promoting beyond local-smoke testing.
-  //
-  // Env config:
-  //   MURMUR_NANOPAY_ENABLED=true              — enables the route mount
-  //   MURMUR_NANOPAY_NETWORK                   — "testnet" (default) | "mainnet"
-  //   MURMUR_NANOPAY_SELLER_ADDRESS            — seller wallet that receives
-  //                                              Nanopayments (required)
-  //   MURMUR_NANOPAY_DOMAIN_CHAIN_ID           — chainId for the EIP-712
-  //                                              requestSignalId domain
-  //                                              (defaults to FHENIX_CHAIN_ID)
-  //   MURMUR_NANOPAY_DOMAIN_CONTRACT           — sealed-verdicts contract addr
-  //                                              for the EIP-712 verifyingContract
-  //                                              (defaults to FHENIX_SEALED_VERDICTS_ADDRESS)
-  //   MURMUR_NANOPAY_DEFAULT_PRICE             — default per-call price string,
-  //                                              e.g. "$0.001". (Phase 2 will
-  //                                              switch to per-pipeline pricing.)
-  //   MURMUR_NANOPAY_ACCEPT_NETWORKS           — optional comma-separated
-  //                                              CAIP-2 network restrictions
-  //                                              (default: all Gateway-supported)
-  //
-  // Design note:
-  //   docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
-  if ((process.env.MURMUR_NANOPAY_ENABLED ?? "false").toLowerCase() === "true") {
-    const domainChainId = Number(
-      process.env.MURMUR_NANOPAY_DOMAIN_CHAIN_ID ??
-        process.env.FHENIX_CHAIN_ID ??
-        "0",
-    );
-    const domainContract =
-      process.env.MURMUR_NANOPAY_DOMAIN_CONTRACT ??
-      fhenixSealedVerdictsAddress ??
-      "";
-    const sellerAddress = process.env.MURMUR_NANOPAY_SELLER_ADDRESS ?? "";
-    if (!domainChainId || !domainContract || !sellerAddress) {
-      console.warn(
-        "[daemon] MURMUR_NANOPAY_ENABLED=true but required config missing (need MURMUR_NANOPAY_SELLER_ADDRESS + domain chainId + domain contract); nanopay route NOT mounted",
-      );
-    } else if (!/^0x[0-9a-fA-F]{40}$/.test(sellerAddress)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_SELLER_ADDRESS not a valid 0x address (got ${sellerAddress}); nanopay route NOT mounted`,
-      );
-    } else if (!/^0x[0-9a-fA-F]{40}$/.test(domainContract)) {
-      console.warn(
-        `[daemon] MURMUR_NANOPAY_DOMAIN_CONTRACT not a valid 0x address (got ${domainContract}); nanopay route NOT mounted`,
-      );
-    } else {
-      const network =
-        (process.env.MURMUR_NANOPAY_NETWORK ?? "testnet").toLowerCase() === "mainnet"
-          ? "mainnet"
-          : "testnet";
-      const defaultPrice = process.env.MURMUR_NANOPAY_DEFAULT_PRICE ?? "$0.001";
-      const acceptNetworks = process.env.MURMUR_NANOPAY_ACCEPT_NETWORKS
-        ? process.env.MURMUR_NANOPAY_ACCEPT_NETWORKS.split(",")
-            .map((s) => s.trim())
-            .filter(Boolean)
-        : undefined;
-
-      // Phase 1b — env-config-driven resolvers replace the Phase 1 null
-      // stubs. Two env vars feed the resolvers:
-      //
-      //   MURMUR_NANOPAY_PIPELINES           — pipeline catalog
-      //                                          (id:atoms:recipient:chainId)
-      //   MURMUR_NANOPAY_PIPELINE_AGENT_MAP  — pipeline → (agentId, marketId)
-      //                                          used to find the latest
-      //                                          sealed-Fhenix anchored call
-      //
-      // Both are optional; absent means the resolvers return null and
-      // preflight gives 404/503 (safe — no charge). Per-entry validation
-      // is best-effort: a malformed/inconsistent entry warns + is skipped
-      // so an operator typo doesn't bring the route down.
-      //
-      // Per-pipeline `priceAtoms` MUST equal the shared default price
-      // (which the SDK middleware advertises) because Phase 1b uses a
-      // single shared middleware instance; differentiated per-pipeline
-      // pricing is the same Phase 2 work the parent design already
-      // defers. The parser enforces equality at boot.
-      let defaultPriceAtoms: bigint | null = null;
-      try {
-        defaultPriceAtoms = parseDollarPriceToUsdcAtoms(defaultPrice);
-      } catch (err) {
-        console.warn(
-          `[daemon] MURMUR_NANOPAY_DEFAULT_PRICE "${defaultPrice}" unparseable; nanopay pipeline catalog will be empty. Reason: ${(err as Error).message}`,
-        );
-      }
-      const pipelineCatalog =
-        defaultPriceAtoms !== null
-          ? parseNanopayPipelinesEnv(
-              process.env.MURMUR_NANOPAY_PIPELINES,
-              defaultPriceAtoms,
-              sellerAddress,
-            )
-          : new Map<string, PipelineInfo>();
-      const pipelineAgentMap = parseNanopayPipelineAgentMapEnv(
-        process.env.MURMUR_NANOPAY_PIPELINE_AGENT_MAP,
-      );
-
-      if (pipelineCatalog.size === 0) {
-        console.warn(
-          "[daemon] MURMUR_NANOPAY_PIPELINES is empty or all entries were rejected; nanopay route mounted but will preflight-404 every request until the env is set",
-        );
-      } else {
-        console.log(
-          `[daemon] Nanopay pipeline catalog parsed: ${pipelineCatalog.size} pipeline(s)`,
-        );
-      }
-      if (pipelineCatalog.size > 0 && pipelineAgentMap.size === 0) {
-        console.warn(
-          "[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP is empty; cataloged pipelines will preflight-503 because no sealed-call mapping exists",
-        );
-      }
-      // Codex audit 2026-05-24: per-pipeline drift between catalog and
-      // agent-map is silent without these warnings. Cataloged pipelines
-      // missing a map entry preflight-503 before settle (immutable
-      // boot-time maps mean preflight + settle see the same state); a
-      // map entry without a catalog entry is dead config the operator
-      // should clean up.
-      for (const pipelineId of pipelineCatalog.keys()) {
-        if (!pipelineAgentMap.has(pipelineId)) {
-          console.warn(
-            `[daemon] MURMUR_NANOPAY_PIPELINE_AGENT_MAP: cataloged pipeline ${pipelineId} has no agent/market mapping; calls will preflight-503`,
-          );
-        }
-      }
-      for (const pipelineId of pipelineAgentMap.keys()) {
-        if (!pipelineCatalog.has(pipelineId)) {
-          console.warn(
-            `[daemon] MURMUR_NANOPAY_PIPELINES: agent-map entry for ${pipelineId} has no catalog entry; calls will preflight-404 (dead config)`,
-          );
-        }
-      }
-
-      // express.json() so handlers can read req.body if any future
-      // path needs it. The SDK middleware does not require a body
-      // parser (the PAYMENT-SIGNATURE comes via headers), but
-      // mounting it broadly is the safe default.
-      app.use("/v2/nanopay", express.json({ limit: "16kb" }));
-
-      const resolvePipeline = (pipelineId: string): PipelineInfo | null => {
-        return pipelineCatalog.get(pipelineId.toLowerCase()) ?? null;
-      };
-
-      const resolveLatestSealedCall = (
-        pipelineId: string,
-      ): { anchor: FhenixAnchorTuple; revealArtifact: unknown | null } | null => {
-        const mapping = pipelineAgentMap.get(pipelineId.toLowerCase());
-        if (!mapping) return null;
-        const row = fhenixLifecycleReadRepo.latestSealedCallForPipeline(db, {
-          agentId: mapping.agentId,
-          marketId: mapping.marketId,
-        });
-        if (!row) return null;
-        const agent = agentsRepo.byId(db, mapping.agentId);
-        const walletAddress = agent?.wallet_address ?? null;
-        if (!walletAddress) {
-          console.warn(
-            `[nanopay] pipeline ${pipelineId} → agent ${mapping.agentId} has no wallet_address; cannot build binding anchor. Returning null (route will 503).`,
-          );
-          return null;
-        }
-        const anchor: FhenixAnchorTuple = {
-          bindingVersion: 1,
-          chainId: row.chain_id,
-          sealedVerdictsContractAddress: row.contract_address as `0x${string}`,
-          onchainCallId: row.onchain_call_id as `0x${string}`,
-          marketId: row.market_id,
-          agent: walletAddress as `0x${string}`,
-          submitTxHash: row.submit_tx_hash as `0x${string}`,
-          submitLogIndex: row.submit_log_index,
-          binaryIndexCiphertextHash: row.binary_index_ct_hash as `0x${string}`,
-          confidenceCiphertextHash: row.confidence_ct_hash as `0x${string}`,
-          revealOpenAt: row.reveal_open_at,
-          commitScheme: row.commit_scheme,
-          commitHash: row.commit_hash,
-        };
-        // Phase 1b returns revealArtifact=null regardless. Materializing
-        // the artifact when `fhenix_sealed_calls.revealed_at IS NOT
-        // NULL` is Phase 3 reconciler work.
-        return { anchor, revealArtifact: null };
-      };
-
-      app.use(
-        nanopayRouter({
-          db,
-          network,
-          bindingDomain: {
-            chainId: domainChainId,
-            verifyingContract: domainContract as `0x${string}`,
-          },
-          sellerAddress: sellerAddress as `0x${string}`,
-          defaultPrice,
-          acceptNetworks,
-          resolvePipeline,
-          resolveLatestSealedCall,
-        }),
-      );
-      console.log(
-        `[daemon] Nanopayments route mounted on POST /v2/nanopay/infer/:pipelineId (network=${network}, seller=${sellerAddress}, price=${defaultPrice})`,
-      );
-    }
-  }
-
-  // Polymarket Gamma adapter registration happens in the market-maker
-  // registry at module load. The optional ticker only pre-warms/syncs Gamma
-  // rows; the resolver can still observe a listed conditionId directly.
-  let polymarketStop: (() => void) | null = null;
-  if (process.env.MURMUR_POLYMARKET_GAMMA_ENABLED === "1") {
-    const { registerPolymarketGammaAdapter } = await import(
-      "../markets/polymarket-gamma/register.js"
-    );
-    const handle = registerPolymarketGammaAdapter(
-      opts.skipTickers ? {} : { db },
-    );
-    polymarketStop = handle.stop;
-  }
-
-  const server: Server = await new Promise((resolve, reject) => {
-    const s = app.listen(port, () => resolve(s));
-    s.once("error", reject);
+  const env = opts.env ?? process.env;
+  const logger = opts.logger ?? console;
+  const now = opts.now ?? (() => new Date());
+  const nowMs = () => now().getTime();
+  const config = loadDaemonRuntimeConfig(env, {
+    dbPath: opts.dbPath,
+    port: opts.port,
   });
-  const addr = server.address();
-  const actualPort =
-    typeof addr === "object" && addr !== null ? addr.port : port;
+  const lifecycle = createDaemonLifecycle();
 
-  // Cron tickers — every ticker is wrapped in an in-flight guard so a slow
-  // oracle or event-indexing run never overlaps with the next tick.
-  const tickers: NodeJS.Timeout[] = [];
-  if (!opts.skipTickers) {
-    if (resolver) {
-      tickers.push(
-        setIntervalGuarded(RESOLVER_TICK_SEC * 1000, "resolver", async () => {
-          await resolver.tick();
-        }),
-      );
-    } else {
-      console.warn(
-        "[daemon] resolver disabled — set BASE_MAINNET_RPC_URL to enable",
-      );
-    }
-    if (fhenixIngestor) {
-      tickers.push(
-        setIntervalGuarded(FHENIX_EVENT_TICK_SEC * 1000, "fhenix-events", async () => {
-          await fhenixIngestor.tick();
-        }),
-      );
-    }
-    if (fhenixGateway) {
-      tickers.push(
-        setIntervalGuarded(FHENIX_GATEWAY_TICK_SEC * 1000, "fhenix-gateway", async () => {
-          await fhenixGateway.tick();
-        }),
-      );
-    }
-    tickers.push(
-      setIntervalGuarded(FEED_SLA_TICK_SEC * 1000, "feed-sla", async () => {
-        runFeedSlaTick(db);
-      }),
-    );
-    if (liveCanaries.hasEnabledChecks()) {
-      void liveCanaries.runNow().catch((err) => {
-        console.warn("[daemon] live canary startup check failed:", err);
+  try {
+    const db = openDb({ path: config.dbPath });
+    lifecycle.defer({
+      name: "database",
+      run: () => {
+        db.close();
+      },
+    });
+
+    const adapters = await loadDaemonRuntimeAdapters({
+      config,
+      db,
+      gatewayFeedPacketId: opts.newFeedPacketId,
+      gatewaySealedCallId: opts.newSealedCallId,
+      liveCanaryEnv: env,
+      logger,
+      now,
+      schemaVersion: SCHEMA_VERSION,
+    });
+    lifecycle.defer({ name: "runtime-adapters", run: () => adapters.stop() });
+    const app = createDaemonHttpSurface({
+      db,
+      config,
+      logger,
+      events: adapters.events,
+      oracle: adapters.oracle,
+      fhenixVerifier: adapters.fhenixVerifier,
+      fhenixGateway: adapters.fhenixGateway,
+      privyAuth: adapters.privyAuth,
+      liveCanaries: adapters.liveCanaries,
+      marketRegistrationGammaLookup: opts.marketRegistrationGammaLookup,
+      operatorAlertSink: adapters.operatorAlertSink,
+      nanopayRuntime: adapters.nanopayRuntime,
+      newAgentSecurityEventId: opts.newAgentSecurityEventId,
+      newFeedId: opts.newFeedId,
+      newFeedPacketId: opts.newFeedPacketId,
+      newFeedSlaIncidentId: opts.newFeedSlaIncidentId,
+      newOperatorAlertId: opts.newOperatorAlertId,
+      newSealedCallId: opts.newSealedCallId,
+      fhenixChainId: adapters.fhenixChainId,
+      fhenixSealedVerdictsAddress: adapters.fhenixSealedVerdictsAddress,
+      now,
+    });
+
+    const polymarketRuntime = await startDaemonPolymarketGammaRuntime({
+      db,
+      enabled: config.polymarketGammaEnabled,
+      nowMs,
+      skipTickers: opts.skipTickers,
+    });
+    if (polymarketRuntime) {
+      lifecycle.defer({
+        name: "polymarket-gamma",
+        run: () => polymarketRuntime.stop(),
       });
-      tickers.push(
-        setIntervalGuarded(LIVE_CANARY_TICK_SEC * 1000, "live-canaries", async () => {
-          await liveCanaries.runNow();
-        }),
-      );
     }
-    tickers.push(
-      setIntervalGuarded(OPERATOR_ALERT_TICK_SEC * 1000, "operator-alerts", async () => {
-        await runOperatorAlertTick({
+
+    const httpServerRuntime = await startDaemonHttpServer(app, config.port);
+    lifecycle.defer({ name: "http-server", run: () => httpServerRuntime.close() });
+
+    const tickerRuntime = opts.skipTickers
+      ? null
+      : startDaemonTickers({
           db,
-          liveCanaries,
-          sink: operatorAlertSink,
+          events: adapters.events,
+          now,
+          resolver: adapters.resolver,
+          fhenixIngestor: adapters.fhenixIngestor,
+          fhenixGateway: adapters.fhenixGateway,
+          liveCanaries: adapters.liveCanaries,
+          newFeedSlaIncidentId: opts.newFeedSlaIncidentId,
+          newOperatorAlertId: opts.newOperatorAlertId,
+          operatorAlertSink: adapters.operatorAlertSink,
+          intervals: config.intervals,
+          logger,
         });
-      }),
-    );
-    // Stats heartbeat — emits a `stats.tick` every 10s so the landing-page
-    // hero counter stays current even when no calls flow through. Cheap:
-    // single COUNT-with-WHERE query; no oracle calls.
-    tickers.push(
-      setIntervalGuarded(10_000, "stats", async () => {
-        const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
-          .toISOString()
-          .replace(/\.\d+Z$/, "Z");
-        const row = db
-          .prepare(
-            `SELECT
-               (SELECT COUNT(*) FROM submissions WHERE accepted_at >= ?) AS accepted_24h,
-               (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ?) AS resolved_24h,
-               (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome = 'win')  AS wins_24h,
-               (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome = 'loss') AS losses_24h,
-               (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome IN ('void','oracle_unavailable')) AS void_24h`,
-          )
-          .get(since, since, since, since, since) as {
-          accepted_24h: number;
-          resolved_24h: number;
-          wins_24h: number;
-          losses_24h: number;
-          void_24h: number;
-        };
-        events.emit({
-          type: "stats.tick",
-          served_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
-          ...row,
-        });
-      }),
-    );
-  }
-
-  // Optional OpenServ Launchpad agent — opt-in only. This is a public
-  // discovery/growth surface for OpenServ, not part of Murmur's private
-  // verdict submission, Fhenix reveal, scoring, or resolution path.
-  if (
-    !opts.skipOpenServ &&
-    process.env.OPENSERV_LAUNCHPAD_ENABLED === "true" &&
-    process.env.OPENSERV_API_KEY
-  ) {
-    try {
-      const { startLaunchpadOpenServAgent } = await import(
-        "../integrations/openserv-launchpad.js"
-      );
-      await startLaunchpadOpenServAgent({
-        db,
-      });
-    } catch (err) {
-      console.warn("[daemon] OpenServ Launchpad agent failed to start:", err);
+    if (tickerRuntime) {
+      lifecycle.defer({ name: "tickers", run: () => tickerRuntime.stop() });
     }
+
+    const openServLaunchpadRuntime = await startDaemonOpenServLaunchpad({
+      db,
+      config: config.openServLaunchpad,
+      logger,
+      now,
+      skip: opts.skipOpenServ,
+    });
+    if (openServLaunchpadRuntime) {
+      lifecycle.defer({
+        name: "openserv-launchpad",
+        run: () => openServLaunchpadRuntime.stop(),
+      });
+    }
+
+    logger.log(
+      `[daemon] verdict listening on :${httpServerRuntime.port} (resolver=${config.resolverTickSec}s)`,
+    );
+
+    return { port: httpServerRuntime.port, close: lifecycle.close };
+  } catch (err) {
+    try {
+      await lifecycle.close();
+    } catch (shutdownErr) {
+      logger.warn("[daemon] startup cleanup failed:", shutdownErr);
+    }
+
+    throw err;
   }
-
-  console.log(
-    `[daemon] verdict listening on :${actualPort} (resolver=${RESOLVER_TICK_SEC}s)`,
-  );
-
-  const close = async (): Promise<void> => {
-    for (const t of tickers) clearInterval(t);
-    webhookDispatcher.stop();
-    if (polymarketStop) polymarketStop();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    db.close();
-  };
-
-  return { port: actualPort, close };
 }
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
@@ -850,56 +207,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));
   });
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function makeOracle(): OracleClient | null {
-  // Default to the free public Base mainnet RPC when no override is set.
-  // The public endpoint is rate-limited but sufficient for dev + low-volume
-  // production; operators expecting real load should set a paid RPC URL
-  // (Alchemy / Infura / QuickNode) via env. Removing the env-gate here
-  // lets the resolver enable out of the box on a fresh boot.
-  if (!process.env.BASE_MAINNET_RPC_URL) {
-    process.env.BASE_MAINNET_RPC_URL = "https://mainnet.base.org";
-    console.log(
-      "[daemon] BASE_MAINNET_RPC_URL unset; defaulting to public https://mainnet.base.org (rate-limited; set a paid RPC URL for production load)",
-    );
-  }
-  try {
-    return new OracleClient();
-  } catch (err) {
-    console.warn(
-      "[daemon] OracleClient init failed:",
-      err instanceof Error ? err.message : err,
-    );
-    return null;
-  }
-}
-
-function setIntervalGuarded(
-  intervalMs: number,
-  label: string,
-  work: () => Promise<unknown>,
-): NodeJS.Timeout {
-  let inFlight = false;
-  return setInterval(() => {
-    if (inFlight) {
-      console.warn(`[daemon] ${label} tick still in flight — skipping`);
-      return;
-    }
-    inFlight = true;
-    work()
-      .catch((err) => console.warn(`[daemon] ${label} tick failed:`, err))
-      .finally(() => {
-        inFlight = false;
-      });
-  }, intervalMs);
-}
-
-function ensureParentDir(filePath: string): void {
-  const dir = dirname(filePath);
-  if (dir && dir !== ".") {
-    mkdirSync(dir, { recursive: true });
-  }
 }

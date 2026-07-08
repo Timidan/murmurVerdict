@@ -9,10 +9,22 @@ import {
   openDb,
   resolutionsRepo,
   submissionsRepo,
+  usageRepo,
 } from "../verdict/db.js";
-import { buildLaunchpadOpenServCapabilities } from "./openserv-launchpad.js";
+import { makeUsageEvent } from "../verdict/usage-event.js";
+import {
+  buildLaunchpadOpenServCapabilities,
+  OpenServLaunchpadConfigError,
+  startLaunchpadOpenServAgent,
+} from "./openserv-launchpad.js";
 
 let failures = 0;
+const launchpadLogs: unknown[][] = [];
+const launchpadWarnings: unknown[][] = [];
+const launchpadLogger = {
+  log: (...args: unknown[]) => launchpadLogs.push(args),
+  warn: (...args: unknown[]) => launchpadWarnings.push(args),
+};
 
 async function check(name: string, fn: () => void | Promise<void>): Promise<void> {
   try {
@@ -27,6 +39,24 @@ async function check(name: string, fn: () => void | Promise<void>): Promise<void
 
 const tmp = mkdtempSync(join(tmpdir(), "murmur-openserv-smoke-"));
 const dbPath = join(tmp, "test.db");
+const ambientEnvKeys = [
+  "MURMUR_DASHBOARD_URL",
+  "MURMUR_PUBLIC_URL",
+  "OPENSERV_API_KEY",
+  "OPENSERV_LAUNCHPAD_ENABLED",
+  "OPENSERV_LAUNCHPAD_PROJECT_ID",
+  "OPENSERV_LAUNCHPAD_PROJECT_URL",
+  "OPENSERV_LAUNCHPAD_STAGE",
+] as const;
+const priorEnv = new Map(ambientEnvKeys.map((key) => [key, process.env[key]]));
+
+process.env.MURMUR_DASHBOARD_URL = "https://ambient-dashboard.invalid";
+process.env.MURMUR_PUBLIC_URL = "https://ambient-api.invalid";
+process.env.OPENSERV_API_KEY = "ambient-api-key";
+process.env.OPENSERV_LAUNCHPAD_ENABLED = "true";
+process.env.OPENSERV_LAUNCHPAD_PROJECT_ID = "ambient-project";
+process.env.OPENSERV_LAUNCHPAD_PROJECT_URL = "https://ambient.openserv.invalid";
+process.env.OPENSERV_LAUNCHPAD_STAGE = "ambient-stage";
 
 try {
   process.stdout.write("murmur openserv launchpad smoke\n");
@@ -35,6 +65,7 @@ try {
   const pendingCallId = randomUUID();
   const resolvedCallId = randomUUID();
   const acceptedAt = "2026-05-14T12:00:00Z";
+  const now = () => new Date("2026-05-14T15:00:00Z");
 
   agentsRepo.insert(db, {
     agent_id: agentId,
@@ -95,9 +126,20 @@ try {
     resolved_at: "2026-05-14T14:00:05Z",
   });
   submissionsRepo.setStatus(db, resolvedCallId, "resolved");
+  usageRepo.emit(db, makeUsageEvent({
+    agent_id: agentId,
+    kind: "submission_accepted",
+    occurredAt: new Date("2026-05-14T14:55:00Z"),
+  }));
+  usageRepo.emit(db, makeUsageEvent({
+    agent_id: agentId,
+    kind: "submission_accepted",
+    occurredAt: new Date("2026-05-13T14:00:00Z"),
+  }));
 
   const capabilities = buildLaunchpadOpenServCapabilities({
     db,
+    now,
     dashboardUrl: "https://murmur.example",
     publicApiUrl: "https://api.murmur.example",
     launchpadProjectId: "openserv-project-1",
@@ -125,9 +167,129 @@ try {
       "rank_agents_for_market",
       "search_markets",
     ]);
+    assert.equal(names.includes("seal_call"), false);
+    assert.equal(names.includes("seal_and_submit_call"), false);
     assert.equal(names.includes("submit_call"), false);
+    assert.equal(names.includes("submit_murmur_sealed_call"), false);
     assert.equal(names.includes("submit_verdict"), false);
     assert.equal(names.some((name) => name.includes("fhenix")), false);
+    assert.equal(names.some((name) => name.includes("gateway")), false);
+  });
+
+  await check("explicit runtime disable beats ambient OpenServ enable", async () => {
+    launchpadLogs.length = 0;
+    launchpadWarnings.length = 0;
+    const agent = await startLaunchpadOpenServAgent({
+      db,
+      enabled: false,
+      apiKey: "configured-api-key",
+      logger: launchpadLogger,
+      now,
+    });
+    assert.equal(agent, null);
+    assert.equal(launchpadLogs.length, 1);
+    assert.match(String(launchpadLogs[0][0]), /disabled by config/);
+    assert.equal(launchpadWarnings.length, 0);
+  });
+
+  await check("env-backed runtime disable is normalized before SDK startup", async () => {
+    launchpadLogs.length = 0;
+    launchpadWarnings.length = 0;
+    const agent = await startLaunchpadOpenServAgent({
+      db,
+      env: {
+        OPENSERV_API_KEY: "configured-api-key",
+        OPENSERV_LAUNCHPAD_ENABLED: "FALSE",
+      },
+      logger: launchpadLogger,
+      now,
+    });
+    assert.equal(agent, null);
+    assert.equal(launchpadLogs.length, 1);
+    assert.match(String(launchpadLogs[0][0]), /disabled by config/);
+    assert.equal(launchpadWarnings.length, 0);
+  });
+
+  await check("malformed OpenServ enabled flag fails at the runtime Interface", async () => {
+    await assert.rejects(
+      () =>
+        startLaunchpadOpenServAgent({
+          db,
+          env: {
+            OPENSERV_LAUNCHPAD_ENABLED: "maybe",
+          },
+          logger: launchpadLogger,
+          now,
+        }),
+      (err) =>
+        err instanceof OpenServLaunchpadConfigError &&
+        err.key === "OPENSERV_LAUNCHPAD_ENABLED",
+    );
+  });
+
+  await check("malformed OpenServ port fails before SDK startup", async () => {
+    await assert.rejects(
+      () =>
+        startLaunchpadOpenServAgent({
+          db,
+          env: {
+            OPENSERV_API_KEY: "configured-api-key",
+            OPENSERV_LAUNCHPAD_ENABLED: "true",
+            OPENSERV_LAUNCHPAD_PORT: "not-a-port",
+          },
+          logger: launchpadLogger,
+          now,
+        }),
+      (err) =>
+        err instanceof OpenServLaunchpadConfigError &&
+        err.key === "OPENSERV_LAUNCHPAD_PORT",
+    );
+  });
+
+  await check("env-backed launch metadata is captured at capability construction", async () => {
+    const isolatedEnv: NodeJS.ProcessEnv = {
+      MURMUR_DASHBOARD_URL: "https://env-dashboard.example",
+      MURMUR_PUBLIC_URL: "https://env-api.example",
+      OPENSERV_LAUNCHPAD_PROJECT_ID: "env-project",
+      OPENSERV_LAUNCHPAD_PROJECT_URL: "https://env.openserv.example",
+      OPENSERV_LAUNCHPAD_STAGE: "env-stage",
+    };
+    const envBackedCapabilities = buildLaunchpadOpenServCapabilities({
+      db,
+      env: isolatedEnv,
+      now,
+    });
+    isolatedEnv.MURMUR_DASHBOARD_URL = "https://mutated-dashboard.invalid";
+    isolatedEnv.MURMUR_PUBLIC_URL = "https://mutated-api.invalid";
+    isolatedEnv.OPENSERV_LAUNCHPAD_STAGE = "mutated-stage";
+
+    const statusCapability = envBackedCapabilities.find(
+      (item) => item.name === "get_murmur_launch_status",
+    );
+    assert.ok(statusCapability);
+    const status = JSON.parse(await statusCapability.run({ args: {} }));
+    assert.equal(status.stage, "env-stage");
+    assert.equal(status.launchpad_project_id, "env-project");
+    assert.equal(status.launchpad_project_url, "https://env.openserv.example");
+    assert.equal(status.dashboard_url, "https://env-dashboard.example");
+    assert.equal(status.public_api_url, "https://env-api.example");
+  });
+
+  await check("capability construction ignores ambient env without an env Adapter", async () => {
+    const isolatedCapabilities = buildLaunchpadOpenServCapabilities({
+      db,
+      now,
+    });
+    const statusCapability = isolatedCapabilities.find(
+      (item) => item.name === "get_murmur_launch_status",
+    );
+    assert.ok(statusCapability);
+    const status = JSON.parse(await statusCapability.run({ args: {} }));
+    assert.equal(status.stage, "prelaunch");
+    assert.equal(status.launchpad_project_id, null);
+    assert.equal(status.launchpad_project_url, null);
+    assert.equal(status.dashboard_url, "http://localhost:8080");
+    assert.equal(status.public_api_url, "http://localhost:8080");
   });
 
   await check("market discovery returns public registry metadata", async () => {
@@ -152,6 +314,7 @@ try {
   await check("market taxonomy is discoverable by OpenServ", async () => {
     const result = await call("get_market_taxonomy");
     assert.equal(result.kind, "murmur_market_taxonomy");
+    assert.equal(result.served_at, "2026-05-14T15:00:00Z");
     assert.ok(result.taxonomy.live_resolution_classes.includes("price_direction"));
     assert.ok(result.taxonomy.reserved_resolution_classes.includes("sports_match"));
   });
@@ -183,6 +346,16 @@ try {
     assert.equal(resolved.call_score, 1);
   });
 
+  await check("leaderboard volume shares Launchpad response clock", async () => {
+    const result = await call("get_leaderboard", { limit: 10 });
+    assert.equal(result.kind, "murmur_leaderboard");
+    assert.equal(result.served_at, "2026-05-14T15:00:00Z");
+    assert.deepEqual(result.verified_volume_24h, {
+      count: 1,
+      since_iso: "2026-05-13T15:00:00Z",
+    });
+  });
+
   await check("single public call keeps pending rows operator-blind", async () => {
     const pending = await call("get_public_call", { call_id: pendingCallId });
     const asText = JSON.stringify(pending);
@@ -197,6 +370,8 @@ try {
     const status = await call("get_murmur_launch_status");
     assert.equal(status.stage, "prelaunch");
     assert.equal(status.launchpad_project_id, "openserv-project-1");
+    assert.equal(status.launchpad_project_url, "https://launch.openserv.ai/projects/murmur");
+    assert.equal(status.dashboard_url, "https://murmur.example");
     assert.equal(status.public_api_url, "https://api.murmur.example");
     const link = await call("create_murmur_deeplink", {
       target: "market",
@@ -209,5 +384,14 @@ try {
     process.exitCode = 1;
   }
 } finally {
+  restoreEnv();
   rmSync(tmp, { recursive: true, force: true });
+}
+
+function restoreEnv(): void {
+  for (const key of ambientEnvKeys) {
+    const value = priorEnv.get(key);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 }

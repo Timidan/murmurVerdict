@@ -4,8 +4,10 @@
 //   1) Env-driven `appId` (read from VITE_PRIVY_APP_ID).
 //   2) Nothing-design styling defaults (dark theme, brand accent #FD3C3C).
 //   3) Login methods scoped to email + Google + wallet (per UX spec §2 step-b).
-//   4) `embeddedWallets.createOnLogin = "off"` — Maya path is wallet-less; the
-//      wallet-tier upgrade in Phase 7c+ explicitly creates one when needed.
+//   4) `embeddedWallets.createOnLogin = "users-without-wallets"` — every
+//      signed-in user ends up with at least one wallet (auto-created if
+//      they haven't linked an external one). The wallet becomes the
+//      Controller Wallet for any agent they onboard via #/agent/onboard.
 //
 // If the env var is missing, this component does NOT throw at module import
 // (that would crash the whole bundle for public routes). Instead it renders
@@ -64,10 +66,13 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
           showWalletLoginFirst: false,
         },
         embeddedWallets: {
-          // Privy 3.x nests createOnLogin under each chain family. Maya
-          // path never creates a wallet at signup — the wallet-tier
-          // upgrade in Phase 7c+ provisions one explicitly when needed.
-          ethereum: { createOnLogin: "off" },
+          // Auto-create an Ethereum embedded wallet for users who don't
+          // link an external one. Users who DO link MetaMask / WalletConnect
+          // at login skip this — Privy treats their external wallet as the
+          // primary. Either way `useWallets()` always returns at least one
+          // Ethereum wallet on which signMessage can run.
+          ethereum: { createOnLogin: "users-without-wallets" },
+          // Solana stays off — Murmur is EVM-only today.
           solana: { createOnLogin: "off" },
         },
       }}

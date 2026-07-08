@@ -1,99 +1,28 @@
 import { useEffect, useState } from "react";
-import { verdictApi, type AgentMarketRow } from "../api.js";
+import { verdictApi } from "../api.js";
+import type {
+  CallAcceptedEvent,
+  CallResolvedEvent,
+  LeaderboardUpdateEvent,
+  MarketsUpdateEvent,
+  StatsTickEvent,
+  VerdictEvent,
+} from "@shared/events";
 
-// Mirrors the union from src/verdict/events.ts on the daemon side.
-// Kept loose here (string fields where the backend uses literals) to
-// avoid coupling the dashboard build to backend internal types.
-
-export interface CallAcceptedEvent {
-  type: "call.accepted";
-  call_id: string;
-  agent_id: string;
-  agent_slug: string;
-  privacy_mode: string;
-  commit_hash?: string;
-  acceptance_receipt_hash?: string;
-  // Phase 10 / Z4-extra discriminators. Backend populates these from
-  // submissions.adapter_id / market_family / market_id. Optional for
-  // forward compat with daemons that haven't shipped the wire-shape
-  // bump yet.
-  adapter_id?: string;
-  market_family?: string;
-  market_id?: string;
-  side?: "BUY" | "SELL";
-  asset_id?: string;
-  horizon_hours?: number;
-  confidence?: number;
-  accepted_at: string;
-}
-
-export interface CallResolvedEvent {
-  type: "call.resolved";
-  call_id: string;
-  agent_id: string;
-  agent_slug: string;
-  outcome: string;
-  /** Native-price markets emit a string-decimal return; non-native
-   *  adapters (Polymarket and future event/category families) OMIT this
-   *  field entirely (Drift C). Consumers must guard with `if
-   *  (signed_return)` before formatting. */
-  signed_return?: string | null;
-  call_score: number | null;
-  resolved_at: string;
-  // Phase 10 / Z4-extra discriminators.
-  adapter_id?: string;
-  market_family?: string;
-  market_id?: string;
-  // Phase 5 — universal payout-vector additive fields. Populated by the
-  // resolver when the v2 adapter dispatch ran (Outcome JSON +
-  // payoutNumerators stringified). Consumers that want the universal
-  // outcome shape read these; legacy consumers reading outcome /
-  // call_score continue working unchanged.
-  resolved_outcome?: unknown;
-  payout_vector?: string[];
-}
-
-export interface LeaderboardUpdateEvent {
-  type: "leaderboard.update";
-  served_at: string;
-  rows: Array<{
-    rank: number | null;
-    agent_id: string;
-    display_slug: string;
-    display_name: string;
-    // Wave 3 — collapsed enum, mirrors AgentKind in ../api.ts.
-    kind: "benchmark" | "agent" | "internal_test" | "attested";
-    verdict_score: number | null;
-    verdict_score_lb?: number | null;
-    win_rate: number | null;
-    resolved_calls: number;
-    pending_calls: number;
-  }>;
-}
-
-export interface StatsTickEvent {
-  type: "stats.tick";
-  served_at: string;
-  accepted_24h: number;
-  resolved_24h: number;
-  wins_24h: number;
-  losses_24h: number;
-  void_24h: number;
-}
-
-export interface MarketsUpdateEvent {
-  type: "markets.update";
-  market_id: string;
-  served_at: string;
-  agents: AgentMarketRow[];
-}
-
-export type VerdictEvent =
-  | CallAcceptedEvent
-  | CallResolvedEvent
-  | LeaderboardUpdateEvent
-  | MarketsUpdateEvent
-  | StatsTickEvent;
+// SSE wire event types are the SHARED source of truth in src/types/events.ts,
+// imported by BOTH the daemon (src/verdict/events.ts re-exports them) and this
+// hook so the /v1/stream contract cannot drift between them. Streamed rows
+// carry only the lean wire fields — REST-only fields (verdict_score_lb,
+// call_scores, last_resolved_at, …) are NOT present on stream deltas, so
+// consumers must source those from REST state, not the streamed row.
+export type {
+  CallAcceptedEvent,
+  CallResolvedEvent,
+  LeaderboardUpdateEvent,
+  MarketsUpdateEvent,
+  StatsTickEvent,
+  VerdictEvent,
+} from "@shared/events";
 
 export type StreamStatus = "connecting" | "open" | "reconnecting" | "closed";
 

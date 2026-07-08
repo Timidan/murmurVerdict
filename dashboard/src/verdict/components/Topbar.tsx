@@ -42,6 +42,7 @@ export function Topbar({
         <a href="#/leaderboard" className="hidden md:inline hover:text-[var(--color-display)]">leaderboard</a>
         <a href="#/today" className="hidden md:inline hover:text-[var(--color-display)]">today</a>
         <a href="#/recruiters" className="hidden lg:inline hover:text-[var(--color-display)]">recruiters</a>
+        <a href="#/account" className="hidden md:inline hover:text-[var(--color-display)]">account</a>
         <a
           href="#/launch"
           className="t-button border border-[var(--color-display)] text-[var(--color-display)] px-3 py-1 hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] transition-colors duration-150 ease-out press-feedback"

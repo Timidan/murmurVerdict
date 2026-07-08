@@ -114,7 +114,7 @@ Hash-based router at `dashboard/src/verdict/Router.tsx`. Every route renders the
 | `#/spec` | inline `SpecPage` | public |
 | `#/account` | `AccountPage` (inside `AccountShell`) | Privy-authed |
 | `#/account/login` | `LoginPage` (supports `?next=`) | public |
-| `#/account/agent/new` | `AgentNewPage` | Privy-authed |
+| `#/agent/onboard` | `AgentOnboardPage` (slug input + in-browser signing → runtime key) | Privy-authed |
 | `#/account/agent/:slug/{payout\|wallet\|runtime\|keys}` | `AgentSettingsPage` | Privy-authed |
 | `#/account/agent/:slug/integrate` | `IntegratePage` | Privy-authed |
 
@@ -224,19 +224,46 @@ Hero score + sparkline + recent calls. `MarketHeatGrid` for per-market score bre
 from the future Gateway relayer address. Buyers need a clear "owner-authorized"
 badge once the runtime-key/Gateway flow is visible.
 
-### 5.7 Account Agent Creation (`#/account/agent/new`)
+### 5.7 Agent Onboarding (`#/agent/onboard`)
 
-Account-owned agent creation is the only self-serve path.
+The dashboard owns the full agent registration flow. The bot only ever
+sees one credential — `MURMUR_RUNTIME_KEY` — minted at the end of this
+page. The Privy session never leaves the browser.
 
-Flow: Privy account → `POST /v1/account/agents` → Controller Wallet challenge
-and signature → Runtime Key challenge and signature → one-time Runtime Key
-modal. The agent program should use the Runtime Key against the Gateway path.
+Flow: Privy login on `#/account/login` → AccountPage shows the profile +
+existing agents → operator clicks `[ + add agent ]` → AgentOnboardPage
+collects the agent's slug and chains seven calls in-browser using the
+Privy embedded (or external) wallet:
+
+1. `POST /v1/account/agents`
+2. `POST /v1/account/agents/:slug/wallet/challenge`
+3. `useSignMessage` against the controller wallet
+4. `PATCH /v1/account/agents/:slug/wallet`
+5. `POST /v1/account/agents/:slug/runtime-keys/challenge`
+6. `useSignMessage` against the controller wallet again
+7. `POST /v1/account/agents/:slug/runtime-keys`
+
+On 201 the page opens `RuntimeKeyMintModal`, which reveals the runtime
+key once with the standard friction-loaded dismissal pattern. The display
+name auto-derives from the slug (`my-bot` → `My Bot`); the operator can
+edit it later from agent settings.
+
+If create-agent succeeds but a later step fails (e.g. operator rejected
+the wallet popup), the page surfaces a "continue setup" link to
+`#/account/agent/:slug/wallet`, so the operator doesn't have to retype
+the slug and orphan the first row.
+
+Per-agent management (additional wallet binds, runtime-key list/revoke,
+payout address, account API keys) lives at
+`#/account/agent/:slug/{payout|wallet|runtime|keys}` once the agent
+exists.
 
 **Missing today**:
-- Dashboard UI has not yet grown the Controller Wallet signature screens even
-  though the backend routes and client types now exist.
-- Runtime Key list/revoke surfaces are typed in the client but not rendered.
-- Gateway submit snippets use `/v2/gateway/calls`; public `/v2/calls` is retired.
+- The dashboard does not yet offer an in-browser submit path — bots
+  invoke `POST /v2/gateway/calls` directly via their runtime key.
+- External-wallet support is wired through Privy's `useSignMessage`
+  abstraction. Operators with non-Privy-managed wallets (raw MetaMask
+  without Privy connector) are not currently a target.
 
 ### 5.8 Call detail (`#/calls/:call_id`) — `CallPage.tsx`
 

@@ -10,7 +10,7 @@ import {
   oraclesRepo,
   type AssetRow,
   type OracleRow,
-} from "../../verdict/db.js";
+} from "../../verdict/repos/market-registry-repo.js";
 import {
   AdapterContext,
   AdapterError,
@@ -22,12 +22,37 @@ import { pythPullAdapter } from "./pyth-pull.js";
 
 const adapters = new Map<string, OracleAdapter>();
 
+export type OracleAdapterRegistryRefusal =
+  | "unknown_oracle"
+  | "oracle_not_listed"
+  | "asset_missing"
+  | "adapter_missing";
+
 export function registerAdapter(adapter: OracleAdapter): void {
   adapters.set(adapter.name, adapter);
 }
 
 export function getAdapter(name: string): OracleAdapter | null {
   return adapters.get(name) ?? null;
+}
+
+export function oracleAdapterRegistryRefusal(
+  err: AdapterError,
+): OracleAdapterRegistryRefusal | null {
+  const reason = err.context?.oracle_adapter_registry_refusal;
+  if (
+    reason === "unknown_oracle" ||
+    reason === "oracle_not_listed" ||
+    reason === "asset_missing" ||
+    reason === "adapter_missing"
+  ) {
+    return reason;
+  }
+  return null;
+}
+
+export function isOracleAdapterRegistryRefusal(err: AdapterError): boolean {
+  return oracleAdapterRegistryRefusal(err) !== null;
 }
 
 // Bootstrap built-in adapters at module load.
@@ -46,7 +71,7 @@ registerAdapter(pythPullAdapter);
 export async function observeOracle(
   db: Database.Database,
   oracle_id: string,
-  ctx: AdapterContext = {},
+  ctx: AdapterContext,
 ): Promise<OracleObservation> {
   const oracle = oraclesRepo.get(db, oracle_id);
   if (!oracle) {
@@ -54,6 +79,7 @@ export async function observeOracle(
       `unknown oracle: ${oracle_id}`,
       oracle_id,
       "config_invalid",
+      registryRefusal("unknown_oracle"),
     );
   }
   if (oracle.status !== "listed") {
@@ -61,7 +87,7 @@ export async function observeOracle(
       `oracle ${oracle_id} status=${oracle.status} (expected 'listed')`,
       oracle_id,
       "config_invalid",
-      { status: oracle.status },
+      registryRefusal("oracle_not_listed", { status: oracle.status }),
     );
   }
   const asset = assetsRepo.get(db, oracle.asset_id);
@@ -70,6 +96,7 @@ export async function observeOracle(
       `oracle ${oracle_id} references unknown asset ${oracle.asset_id}`,
       oracle_id,
       "config_invalid",
+      registryRefusal("asset_missing", { asset_id: oracle.asset_id }),
     );
   }
   const adapter = adapters.get(oracle.adapter);
@@ -78,6 +105,7 @@ export async function observeOracle(
       `oracle ${oracle_id} adapter '${oracle.adapter}' not registered`,
       oracle_id,
       "config_invalid",
+      registryRefusal("adapter_missing", { adapter: oracle.adapter }),
     );
   }
   return adapter.getLatest(oracle, asset, ctx);
@@ -90,7 +118,7 @@ export async function observeOracle(
 export async function observeWithRows(
   oracle: OracleRow,
   asset: AssetRow,
-  ctx: AdapterContext = {},
+  ctx: AdapterContext,
 ): Promise<OracleObservation> {
   const adapter = adapters.get(oracle.adapter);
   if (!adapter) {
@@ -98,7 +126,18 @@ export async function observeWithRows(
       `adapter '${oracle.adapter}' not registered`,
       oracle.oracle_id,
       "config_invalid",
+      registryRefusal("adapter_missing", { adapter: oracle.adapter }),
     );
   }
   return adapter.getLatest(oracle, asset, ctx);
+}
+
+function registryRefusal(
+  reason: OracleAdapterRegistryRefusal,
+  context: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...context,
+    oracle_adapter_registry_refusal: reason,
+  };
 }

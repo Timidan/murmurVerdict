@@ -12,7 +12,7 @@
 
 import type Database from "better-sqlite3";
 import { Resvg } from "@resvg/resvg-js";
-import { agentsRepo } from "./db.js";
+import { agentsRepo } from "./repos/agents-repo.js";
 import { getLeaderboard } from "./leaderboard.js";
 
 interface BadgeInput {

@@ -21,7 +21,7 @@ import type { Outcome } from "../../verdict/markets-core.js";
 
 /**
  * The subset of a Gamma `/markets` row we read. Pure-data, no methods.
- * The Zod marketConfigSchema in `./index.ts` is the canonical validator
+ * The Zod marketConfigSchema in `./config.ts` is the canonical validator
  * for storage (with `.passthrough()` for forward-compat); this type is
  * a sympathetic mirror so the transform code reads like the schema.
  *

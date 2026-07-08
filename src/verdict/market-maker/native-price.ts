@@ -71,13 +71,24 @@ import type {
   MarketMakerAdapter,
   ObservationContext,
 } from "../../markets/types.js";
+import {
+  narrowNativePriceContext,
+  observeResolutionForCall,
+} from "./native-price-resolution.js";
+
+export {
+  observeResolutionForCall,
+  signedReturnToPayoutNumerators,
+} from "./native-price-resolution.js";
+export type {
+  NativePriceObservationContext,
+} from "./native-price-resolution.js";
 
 // ─── Adapter constants ──────────────────────────────────────────────────────
 
 const ADAPTER_NAME = "native-price" as const;
 const ADAPTER_VERSION = "1.0.0" as const;
 const MARKET_FAMILY = "financial-direction" as const;
-const SOURCE_PROTOCOL = "native-price" as const;
 
 // ─── commitmentSchema ───────────────────────────────────────────────────────
 //
@@ -147,29 +158,6 @@ export function sideToPayoutNumerators(
   side: "BUY" | "SELL",
 ): readonly [bigint, bigint] {
   return side === "BUY" ? [1n, 0n] : [0n, 1n];
-}
-
-/**
- * Inverse mapping: signed_return + void_band → resolved payout vector.
- * Encapsulates the V0.1 binary-collapse rule documented at the top of this
- * file. `signed_return` is `ln(p1/p0)` (BUY-perspective). `void_band` is the
- * per-market threshold from `markets.void_band`.
- *
- * Returns numerators only; the caller wraps with `denominator=1n` and
- * `kind='binary'`. Indices are [UP, DOWN].
- */
-export function signedReturnToPayoutNumerators(
-  signed_return: number,
-  void_band: number,
-): readonly [bigint, bigint] {
-  if (!(void_band >= 0)) {
-    throw new Error(
-      `signedReturnToPayoutNumerators: void_band must be >= 0 (got ${void_band})`,
-    );
-  }
-  if (signed_return >= +void_band) return [1n, 0n]; // UP wins
-  if (signed_return <= -void_band) return [0n, 1n]; // DOWN wins
-  return [0n, 0n]; // void — see docstring at top of file for the 0.5-score consequence
 }
 
 // The transform output is exactly the universal Commitment. Zod's type
@@ -320,44 +308,6 @@ class NativePriceAdapter implements MarketMakerAdapter {
 }
 
 /**
- * Structurally narrow the universal {@link ObservationContext} to the
- * native-price-specific shape. Returns null when any required field is
- * missing or mistyped — the adapter caller maps null → "pending" so the
- * resolver falls through to its still-pending path rather than throwing.
- *
- * Mirrors {@link NativePriceObservationContext} exactly. Kept structural
- * (no Zod) because the resolver constructs the context inline and we don't
- * want a runtime schema parse on every t1 tick.
- */
-function narrowNativePriceContext(
-  ctx: ObservationContext,
-): NativePriceObservationContext | null {
-  if (typeof ctx.t0_p0 !== "string") return null;
-  if (typeof ctx.t1_p1 !== "string") return null;
-  if (typeof ctx.t1_iso !== "string") return null;
-  if (typeof ctx.t1_feed !== "string") return null;
-  if (typeof ctx.t1_source_id !== "string") return null;
-  if (typeof ctx.void_band !== "number") return null;
-  if (typeof ctx.market_id !== "string") return null;
-  // Accept BUY/SELL only after a reveal or from internal debug callers.
-  // The resolved Outcome is computed side-independently regardless.
-  const sideField: { side?: "BUY" | "SELL" } =
-    ctx.side === "BUY" || ctx.side === "SELL"
-      ? { side: ctx.side as "BUY" | "SELL" }
-      : {};
-  return {
-    t0_p0: ctx.t0_p0,
-    t1_p1: ctx.t1_p1,
-    t1_iso: ctx.t1_iso,
-    t1_feed: ctx.t1_feed,
-    t1_source_id: ctx.t1_source_id,
-    void_band: ctx.void_band,
-    market_id: ctx.market_id,
-    ...sideField,
-  };
-}
-
-/**
  * Tag the legacy bin a resolved 2-element binary outcome falls into. Covers
  * the three valid legacy outcomes (UP / DOWN / VOID); throws on
  * unrecognized vectors so a broken adapter surfaces here, not at the
@@ -383,118 +333,6 @@ export const nativePriceAdapter: MarketMakerAdapter = new NativePriceAdapter();
 // without dual-importing the class. Actual construction is centralized via
 // the singleton.
 export type { NativePriceAdapter };
-
-// ─── Native-price observation context + helper ──────────────────────────────
-//
-// The universal `MarketRef` carries no DB / call context — the legacy
-// resolver flow needs a t0 anchor (per-call) and the void_band (per-market).
-// The resolver builds this context from `anchorsRepo.getT0(db, call_id)`,
-// the latest `observeOracle` result, and `markets.void_band` parsed via
-// `voidBandFloat()`, then passes it through `adapter.observeResolution(
-// marketRef, ctx)`. Wave 4d wired the adapter's `observeResolution` method
-// directly to this helper; the helper stays exported for back-compat callers
-// (verifier harness, internal tooling) that already speak the structured
-// shape.
-
-export interface NativePriceObservationContext {
-  /** From `anchorsRepo.getT0(db, call_id)`. */
-  t0_p0: string;
-  /** From the latest `observeOracle` / `OracleClient` call on the t1 path. */
-  t1_p1: string;
-  /** Feed timestamp from the t1 observation. */
-  t1_iso: string;
-  /** Source feed string ("chainlink:base:ETH-USD", "pyth:base:ETH-USD", ...). */
-  t1_feed: string;
-  /** Source id (round / publish slot, hex). */
-  t1_source_id: string;
-  /** From `markets.void_band` parsed via `voidBandFloat()`. */
-  void_band: number;
-  /**
-   * OPTIONAL. The adapter's resolved Outcome is side-independent
-   * (the payout vector is keyed on the actual price direction [UP, DOWN],
-   * not the agent's prediction). Sealed Fhenix rows omit this while pending
-   * and supply it only after the post-horizon reveal.
-   *
-   * When supplied (legacy / debug callers), it's used purely to compute
-   * the SIDE-ADJUSTED signed_return on evidence.raw (a display-only
-   * metadata field). When absent, evidence.raw.signed_return falls back
-   * to the canonical BUY-perspective return r = ln(p1/p0).
-   */
-  side?: "BUY" | "SELL";
-  /** marketRef.sourceId — used as evidence.sourceId on the Outcome. */
-  market_id: string;
-}
-
-/**
- * Compute the resolved {@link Outcome} for a native-price call exactly the way
- * the legacy resolver does today. Returned shape:
- *
- *   - kind: 'binary' (always, even on void — see top-of-file docstring)
- *   - payoutNumerators: [UP, DOWN] integer pair
- *   - payoutDenominator: 1n
- *   - resolvedAt: unix seconds parsed from t1_iso
- *   - evidence.sourceProtocol: "native-price"
- *   - evidence.sourceId: market_id
- *   - evidence.raw: { p0, p1, signed_return, void_band, side, t1_feed, t1_source_id }
- *
- * Equivalence claim: for any legacy ETH call, the (kind, payoutNumerators,
- * payoutDenominator) tuple emitted by this helper matches the legacy
- * `outcomeFromSignedReturn(...)` result via the mapping in
- * {@link signedReturnToPayoutNumerators}. The verification harness exercises
- * this against fixtures from `__resolver_smoke__.ts`.
- */
-export function observeResolutionForCall(
-  ctx: NativePriceObservationContext,
-): Outcome {
-  // BUG FIX (codex review v2 P2 #1): the resolved payout vector is keyed on
-  // the ACTUAL price direction ([UP, DOWN]) — independent of the side the
-  // agent predicted. signedReturnToPayoutNumerators expects the BUY-perspective
-  // signed return r = ln(p1/p0). Previously this function passed the
-  // side-adjusted return (which negates for SELL), causing the resolved vector
-  // to flip for SELL calls — a winning SELL on a price drop got recorded as
-  // [1n, 0n] (UP) instead of [0n, 1n] (DOWN). The agent's predicted vector is
-  // [0n, 1n] for SELL, so the wrong resolution vector flipped win <-> loss for
-  // every SELL call.
-  //
-  // Fix: derive numerators from the RAW BUY-perspective return, and keep the
-  // side-adjusted signed_return on `evidence.raw` (matches legacy
-  // `t1_resolutions.signed_return` semantics where r is BUY's = -SELL's).
-  const a = Number(ctx.t0_p0);
-  const b = Number(ctx.t1_p1);
-  if (!(a > 0) || !(b > 0)) {
-    throw new Error("p0 and p1 must be positive decimal strings");
-  }
-  const buyPerspectiveReturn = Math.log(b / a);
-  const numerators = signedReturnToPayoutNumerators(
-    buyPerspectiveReturn,
-    ctx.void_band,
-  );
-  // When `side` is absent, evidence.raw.signed_return is the canonical
-  // BUY-perspective return. When `side` is present, retain the
-  // side-adjusted semantic for internal/debug parity.
-  const sideAdjustedReturn =
-    ctx.side === "SELL" ? -buyPerspectiveReturn : buyPerspectiveReturn;
-  const resolvedAt = Math.floor(Date.parse(ctx.t1_iso) / 1000);
-  return {
-    kind: "binary",
-    payoutNumerators: [...numerators],
-    payoutDenominator: 1n,
-    resolvedAt,
-    evidence: {
-      sourceProtocol: SOURCE_PROTOCOL,
-      sourceId: ctx.market_id,
-      raw: {
-        p0: ctx.t0_p0,
-        p1: ctx.t1_p1,
-        signed_return: sideAdjustedReturn,
-        void_band: ctx.void_band,
-        side: ctx.side,
-        t1_feed: ctx.t1_feed,
-        t1_source_id: ctx.t1_source_id,
-      },
-    },
-  };
-}
 
 // Wave 4b — receipts subsystem dropped. The Phase-5 cutover-seam stub
 // that bound the receipt schemas here is no longer needed; SCHEMA_VERSION

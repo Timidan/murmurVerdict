@@ -11,24 +11,24 @@
 // for translating null into the route-specific auth response.
 //
 // Why async at the dispatcher level:
-//   verifyPrivyAuth is async (jose's jwtVerify uses Web Crypto under
-//   the hood). The API-key path is sync. We keep the dispatcher async so
-//   route handlers can compose both without special casing Privy.
+//   Privy verification is async (jose's jwtVerify uses Web Crypto under the
+//   hood). The API-key path is sync. We keep the dispatcher async so route
+//   handlers can compose both without special casing Privy.
 
 import type Database from "better-sqlite3";
 import type { Request } from "express";
 import type { AgentKind } from "../schema.js";
 import { ERROR_CODES, VerdictError } from "../schema.js";
-import { agentsRepo } from "../db.js";
+import { agentsRepo } from "../repos/agents-repo.js";
 import {
-  getAccountByPrivyUserId,
   getAccountForAgent,
   listAccountAgents,
+  resolveAccountForClaims,
   verifyApiKey as verifyAccountApiKey,
   verifyRuntimeKey,
   type RuntimeKeyVerification,
 } from "./accounts.js";
-import { verifyPrivyAuth, type PrivyClaims } from "./privy.js";
+import { verifyPrivyBearer, type PrivyAuthVerifier, type PrivyClaims } from "./privy.js";
 
 export type AuthTier = "casual";
 
@@ -53,10 +53,12 @@ export interface AuthIdentity {
 
 export interface DispatchAuthDeps {
   db: Database.Database;
-  /** Clock injection for tests. */
-  now?: () => Date;
+  /** Caller-supplied auth read instant for Runtime Key verification. */
+  now: () => Date;
   /** Runtime Keys are powerful bot credentials; routes must opt in. */
   allowRuntimeKey?: boolean;
+  /** Explicit Privy verifier Adapter. Daemon callers should pass this. */
+  privyAuth?: PrivyAuthVerifier;
 }
 
 /**
@@ -85,15 +87,18 @@ export interface DispatchAuthDeps {
  *
  * Throws VerdictError on policy rejections; returns AuthIdentity on
  * success. Never returns null — the caller (dispatchAuth) only invokes
- * this function once verifyPrivyAuth returned non-null claims.
+ * this function once the caller-supplied PrivyAuthVerifier returned non-null
+ * claims.
  */
 export function __resolveCasualIdentity(
   db: Database.Database,
   claims: PrivyClaims,
   slug: string | undefined,
 ): AuthIdentity {
-  const account = getAccountByPrivyUserId(db, claims.privy_user_id);
-  const account_id = account?.account_id;
+  // READ-only account lookup: dispatch auth (gateway/feed) must never create
+  // an account as a side effect. The explicit "read" mode makes that a named
+  // contract rather than an inline call choice.
+  const account_id = resolveAccountForClaims(db, claims, { mode: "read" }).account_id ?? undefined;
 
   // ─── Path A: explicit slug provided ──────────────────────────
   if (slug) {
@@ -178,27 +183,26 @@ export async function dispatchAuth(
   deps: DispatchAuthDeps,
 ): Promise<AuthIdentity | null> {
   // ─── Mode 1: Authorization: Bearer <privy-token> ─────────────────────
-  const authzHeader = req.header("Authorization") ?? req.header("authorization");
-  if (authzHeader && /^Bearer\s+/i.test(authzHeader)) {
-    const token = authzHeader.replace(/^Bearer\s+/i, "").trim();
-    const claims = await verifyPrivyAuth(token);
-    if (claims) {
-      const slug = req.header("X-Murmur-Agent-Slug");
-      // Delegate post-verify policy to the pure function so the smoke
-      // suite can exercise every branch without minting a real token.
-      return __resolveCasualIdentity(deps.db, claims, slug);
-    }
-    // Bearer present but failed Privy verification — fall through to
-    // other modes rather than 403. A client that sends both Bearer +
-    // X-Murmur-Api-Key still gets a chance to authenticate via the
-    // second header. (Whether to allow that downgrade is a Phase-4
-    // policy call.)
+  // verifyPrivyBearer returns null when there is no verifier, no/non-Bearer
+  // header, or the token fails verification — every case that should fall
+  // through to the other modes rather than 403. A client that sends both
+  // Bearer + X-Murmur-Api-Key still gets a chance via the second header.
+  const claims = await verifyPrivyBearer(req, deps.privyAuth);
+  if (claims) {
+    const slug = req.header("X-Murmur-Agent-Slug");
+    // Delegate post-verify policy to the pure function so the smoke
+    // suite can exercise every branch without minting a real token.
+    return __resolveCasualIdentity(deps.db, claims, slug);
   }
 
   // ─── Mode 2: X-Murmur-Runtime-Key ────────────────────────────────────
   const runtimeKey = req.header("X-Murmur-Runtime-Key");
   if (deps.allowRuntimeKey && runtimeKey) {
-    const verified = verifyRuntimeKey(deps.db, runtimeKey, { now: deps.now });
+    const verifiedAt = deps.now();
+    const verified = verifyRuntimeKey(deps.db, {
+      secret: runtimeKey,
+      verifiedAt,
+    });
     if (verified) {
       const agent = agentsRepo.byId(deps.db, verified.agent_id);
       const slug = req.header("X-Murmur-Agent-Slug");

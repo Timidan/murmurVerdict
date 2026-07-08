@@ -6,31 +6,37 @@ const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ defau
 const RecruitersPage = lazy(() => import("./pages/RecruitersPage.js").then((m) => ({ default: m.RecruitersPage })));
 const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => ({ default: m.AdminRefsPage })));
 const AdminGatewayPage = lazy(() => import("./pages/AdminGatewayPage.js").then((m) => ({ default: m.AdminGatewayPage })));
+const AdminOverviewPage = lazy(() => import("./pages/AdminOverviewPage.js").then((m) => ({ default: m.AdminOverviewPage })));
 
 // Phase 7a — account-area pages. Lazy so the Privy SDK chunk isn't pulled
 // into the landing/leaderboard bundles.
 const AccountPage = lazy(() => import("./pages/AccountPage.js").then((m) => ({ default: m.AccountPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage.js").then((m) => ({ default: m.LoginPage })));
-// Phase 7b — real agent-creation form + one-time api-key reveal modal.
-// Replaces the Phase 7a placeholder that lived at this route.
-const AgentNewPage = lazy(() =>
-  import("./pages/AgentNewPage.js").then((m) => ({ default: m.AgentNewPage })),
-);
 // Phase 7c — per-agent settings shell (payout + keys sub-tabs).
 const AgentSettingsPage = lazy(() =>
   import("./pages/AgentSettingsPage.js").then((m) => ({
     default: m.AgentSettingsPage,
   })),
 );
-// Phase 7d — step f of the new-agent flow. Renders the CodeSnippetPanel
-// keyed to the agent + reads the freshly-minted secret out of the
-// sessionStorage handoff dropped by ApiKeyMintModal.
+// Per-agent integration snippet view. Renders the CodeSnippetPanel keyed
+// to the agent + reads the most-recently-minted api-key secret out of
+// the sessionStorage handoff dropped by ApiKeyMintModal (mint flow now
+// lives under the /keys settings tab; the page falls back to a
+// secret-redacted snippet when no fresh secret is stashed).
 const IntegratePage = lazy(() =>
   import("./pages/IntegratePage.js").then((m) => ({ default: m.IntegratePage })),
 );
+// Primary new-agent surface — slug input + in-browser signing flow that
+// chains create-agent → controller-wallet bind → runtime-key mint and
+// surfaces the runtime key once via RuntimeKeyMintModal.
+const AgentOnboardPage = lazy(() =>
+  import("./pages/AgentOnboardPage.js").then((m) => ({
+    default: m.AgentOnboardPage,
+  })),
+);
 // PrivyProvider mounts here, not in main.tsx, so public routes never load
 // the Privy SDK. One AccountShell instance wraps every /account/* route so
-// auth state survives navigation between login → list → new-agent.
+// auth state survives navigation between login → list → onboarding/settings.
 const AccountShell = lazy(() => import("./auth/AccountShell.js").then((m) => ({ default: m.AccountShell })));
 
 const LandingPage = lazy(() =>
@@ -81,12 +87,13 @@ interface ParsedRoute {
     | "recruiters"
     | "admin_refs"
     | "admin_gateway"
+    | "admin_overview"
     | "market"
     | "account"
     | "account_login"
-    | "account_agent_new"
     | "account_agent_settings"
     | "account_agent_integrate"
+    | "agent_onboard"
     | "spec";
   params?: Record<string, string>;
 }
@@ -106,14 +113,19 @@ function parseHash(hash: string): ParsedRoute {
   if (path === "/recruiters") return { name: "recruiters" };
   if (path === "/admin/refs") return { name: "admin_refs" };
   if (path === "/admin/gateway") return { name: "admin_gateway" };
+  if (path === "/admin/overview") return { name: "admin_overview" };
   if (path === "/spec") return { name: "spec" };
   // Phase 7a — account area. `?next=` is parsed below via parseNext()
   // so deep links like #/account/login?next=/account survive sign-in.
   if (path === "/account") return { name: "account" };
   if (path === "/account/login") return { name: "account_login" };
-  // Phase 7b — AgentNewPage owns this route: slug/name/bio form +
-  // one-time api-key reveal modal. Replaces the Phase 7a placeholder.
-  if (path === "/account/agent/new") return { name: "account_agent_new" };
+  // New-agent onboarding — slug input + in-browser signing flow that
+  // chains create-agent → controller-wallet bind → runtime-key mint.
+  // The human gives their bot one credential: MURMUR_RUNTIME_KEY. Privy
+  // stays browser-side. Auth-gated by the page itself (redirects to
+  // /account/login when
+  // unauth'd).
+  if (path === "/agent/onboard") return { name: "agent_onboard" };
   // Phase 7d — integration / snippet view. Matched BEFORE the settings
   // regex because /payout|/keys is the only tab set we want to fold into
   // settings; /integrate is its own page so the URL is bookmark-stable
@@ -125,15 +137,11 @@ function parseHash(hash: string): ParsedRoute {
       params: { slug: agentIntegrateMatch[1] },
     };
   }
-  // Phase 7c — per-agent settings, with /payout (default) and /keys
-  // sub-tabs. The trailing tab segment is optional so #/account/agent/foo
-  // alone still resolves to the payout tab.
-  //
-  // Codex P2 fix — bare `/account/agent/new` is caught above by the
-  // creation-route check, so we don't need a separate "new" guard here.
-  // An agent whose slug happens to be "new" reaches its settings via
-  // /account/agent/new/payout or /account/agent/new/keys with no
-  // collision against the creation page.
+  // Per-agent settings, with /payout (default) and /keys sub-tabs. The
+  // trailing tab segment is optional so #/account/agent/foo alone still
+  // resolves to the payout tab. An agent named "new" reaches its
+  // settings normally; there's no creation-route collision anymore now
+  // that the AgentNewPage form was removed in favor of #/agent/onboard.
   const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|wallet|runtime|keys))?$/.exec(path);
   if (agentSettingsMatch) {
     return {
@@ -196,16 +204,16 @@ export function VerdictRouter() {
       {route.name === "recruiters" && <RecruitersPage />}
       {route.name === "admin_refs" && <AdminRefsPage />}
       {route.name === "admin_gateway" && <AdminGatewayPage />}
+      {route.name === "admin_overview" && <AdminOverviewPage />}
       {route.name === "market" && <MarketDetailPage marketId={route.params!.market_id} />}
       {(route.name === "account" ||
         route.name === "account_login" ||
-        route.name === "account_agent_new" ||
         route.name === "account_agent_settings" ||
-        route.name === "account_agent_integrate") && (
+        route.name === "account_agent_integrate" ||
+        route.name === "agent_onboard") && (
         <AccountShell>
           {route.name === "account" && <AccountPage />}
           {route.name === "account_login" && <LoginPage next={decodeNext(next)} />}
-          {route.name === "account_agent_new" && <AgentNewPage />}
           {route.name === "account_agent_settings" && (
             <AgentSettingsPage
               slug={route.params!.slug}
@@ -215,6 +223,7 @@ export function VerdictRouter() {
           {route.name === "account_agent_integrate" && (
             <IntegratePage slug={route.params!.slug} />
           )}
+          {route.name === "agent_onboard" && <AgentOnboardPage />}
         </AccountShell>
       )}
       {route.name === "spec" && <SpecPage />}

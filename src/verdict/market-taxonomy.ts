@@ -1,4 +1,7 @@
-import type { MarketRow } from "./db.js";
+import type { MarketRow } from "./repos/market-registry-repo.js";
+import {
+  parseMarketConfigJson,
+} from "./market-adapter-config.js";
 import {
   RESOLUTION_CLASSES,
   type ResolutionClass,
@@ -146,7 +149,7 @@ export function marketTaxonomyForMarket(
     "adapter_id" | "market_family" | "market_kind" | "scoring_kind" | "config_json"
   >,
 ): MarketTaxonomyAssignment {
-  const config = parseConfig(market.config_json);
+  const config = parseMarketConfigJson(market.config_json);
   const explicit = configuredResolutionClass(config);
   if (explicit) return assign(explicit, "config");
 
@@ -209,16 +212,4 @@ function configuredResolutionClass(
   return (RESOLUTION_CLASSES as readonly string[]).includes(raw)
     ? (raw as ResolutionClass)
     : null;
-}
-
-function parseConfig(raw: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    return {};
-  }
-  return {};
 }

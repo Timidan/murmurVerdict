@@ -1,8 +1,10 @@
-import type { MarketRow } from "./db.js";
+import type { MarketRow } from "./repos/market-registry-repo.js";
 import { getAdapterForMarket } from "./markets.js";
 import type { Commitment, MarketRef } from "./markets-core.js";
 import type { ObservationContext } from "../markets/types.js";
 import { isoFromMs, parseIsoMs } from "./time.js";
+
+const CONDITION_ID_REGEX = /^0x[0-9a-fA-F]{64}$/;
 
 export interface CommitmentWire {
   marketRef: Commitment["marketRef"];
@@ -56,6 +58,21 @@ export function parseMarketConfigJson(raw: unknown): Record<string, unknown> {
     // Fail-soft: malformed market config should not crash a whole tick.
   }
   return {};
+}
+
+export function conditionIdForMarketConfig(raw: unknown): string | null {
+  const config = parseMarketConfigJson(raw);
+  return typeof config.conditionId === "string" &&
+    CONDITION_ID_REGEX.test(config.conditionId)
+    ? config.conditionId
+    : null;
+}
+
+export function endDateMsForMarketConfig(raw: unknown): number | null {
+  const config = parseMarketConfigJson(raw);
+  if (typeof config.endDate !== "string") return null;
+  const endDateMs = Date.parse(config.endDate);
+  return Number.isFinite(endDateMs) ? endDateMs : null;
 }
 
 export function expectedRevealOpenMsForMarket(

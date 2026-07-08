@@ -24,10 +24,31 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
   const [notFound, setNotFound] = useState(false);
   const stream = useStream();
 
-  // Fold SSE markets.update for this specific market_id.
+  // Fold SSE markets.update for this specific market_id. The markets.update
+  // rows are the lean wire shape (MarketLeaderboardEventAgentRow) — no REST-only
+  // fields. MERGE the streamed wire fields onto the REST-hydrated row keyed by
+  // agent_id so REST-only state survives a live tick instead of blanking,
+  // mirroring LeaderboardPage's leaderboard.update merge. The RENDERED
+  // REST-only fields — verdict_score_lb (lb score column) and call_scores (the
+  // trend sparkline) — are preserved from the prior REST row so a live tick
+  // doesn't blank them; last_resolved_at is preserved because AgentMarketRow
+  // requires it. Functional updater reads prev without adding `agents` to the
+  // effect deps.
   useEffect(() => {
     const evt = stream.markets[marketId];
-    if (evt) setAgents(evt.agents);
+    if (!evt) return;
+    setAgents((prev) => {
+      const byAgent = new Map((prev ?? []).map((r) => [r.agent_id, r]));
+      return evt.agents.map((a) => {
+        const previous = byAgent.get(a.agent_id);
+        return {
+          ...a,
+          verdict_score_lb: previous?.verdict_score_lb ?? null,
+          last_resolved_at: previous?.last_resolved_at ?? null,
+          call_scores: previous?.call_scores,
+        };
+      });
+    });
   }, [stream.markets, marketId]);
 
   useEffect(() => {
@@ -218,7 +239,11 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
             </span>
             <span className="flex justify-end items-center">
-              <CompactSparkline values={[]} width={56} height={12} />
+              <CompactSparkline
+                values={r.call_scores?.filter((s): s is number => s !== null) ?? []}
+                width={56}
+                height={12}
+              />
             </span>
             <span className="text-right ck-mono ck-dim">
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}

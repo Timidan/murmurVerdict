@@ -87,6 +87,7 @@ export interface InsertSettlingIntentInput {
   readonly paidAmountUsdcAtoms: string;
   readonly bindingJson: string;
   readonly revealArtifactJson: string | null;
+  readonly createdAt: Date;
 }
 
 /**
@@ -107,6 +108,7 @@ export interface InsertSettledInput {
   readonly bindingJson: string;
   readonly revealArtifactJson: string | null;
   readonly circleTransactionUuid: string;
+  readonly settledAt: Date;
 }
 
 export interface MarkSettledInput {
@@ -114,11 +116,13 @@ export interface MarkSettledInput {
   readonly circleTransactionUuid: string;
   /** Set only if reveal was open at settle time; otherwise null. */
   readonly revealArtifactJson: string | null;
+  readonly settledAt: Date;
 }
 
 export interface MarkFailedInput {
   readonly id: number;
   readonly reason: string;
+  readonly failedAt: Date;
 }
 
 const COLUMNS = `id, payer, payment_handle, source_domain, payment_payload_hash,
@@ -163,7 +167,7 @@ export const nanopayReceiptsRepo = {
       paid_amount_usdc_atoms: input.paidAmountUsdcAtoms,
       binding_json: input.bindingJson,
       reveal_artifact_json: input.revealArtifactJson,
-      created_at: nowIso(new Date()),
+      created_at: nowIso(input.createdAt),
     });
     return Number(result.lastInsertRowid);
   },
@@ -182,7 +186,7 @@ export const nanopayReceiptsRepo = {
    * `findByPayerHandleDomain` to serve cached.
    */
   insertSettled(db: Database.Database, input: InsertSettledInput): number {
-    const now = nowIso(new Date());
+    const settledAt = nowIso(input.settledAt);
     const stmt = db.prepare(`
       INSERT INTO nanopay_receipts (
         payer, payment_handle, source_domain, payment_payload_hash,
@@ -210,8 +214,8 @@ export const nanopayReceiptsRepo = {
       paid_amount_usdc_atoms: input.paidAmountUsdcAtoms,
       binding_json: input.bindingJson,
       reveal_artifact_json: input.revealArtifactJson,
-      created_at: now,
-      settled_at: now,
+      created_at: settledAt,
+      settled_at: settledAt,
     });
     return Number(result.lastInsertRowid);
   },
@@ -240,7 +244,7 @@ export const nanopayReceiptsRepo = {
       id: input.id,
       circle_transaction_uuid: input.circleTransactionUuid,
       reveal_artifact_json: input.revealArtifactJson,
-      settled_at: nowIso(new Date()),
+      settled_at: nowIso(input.settledAt),
     });
     if (result.changes === 0) {
       throw new Error(
@@ -266,7 +270,7 @@ export const nanopayReceiptsRepo = {
     `);
     const result = stmt.run({
       id: input.id,
-      failed_at: nowIso(new Date()),
+      failed_at: nowIso(input.failedAt),
       failure_reason: input.reason,
     });
     if (result.changes === 0) {

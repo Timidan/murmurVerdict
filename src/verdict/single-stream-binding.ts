@@ -205,3 +205,7 @@ export function parseRevealArtifact(json: string | null): RevealArtifact | null 
   if (json === null) return null;
   return JSON.parse(json) as RevealArtifact;
 }
+
+export function revealArtifactFromReceipt(row: NanopayReceiptRow): RevealArtifact | null {
+  return parseRevealArtifact(row.reveal_artifact_json);
+}

@@ -5,10 +5,14 @@
 //
 //   · topbar with "MURMUR · ACCOUNT" crumb and a small sign-out button
 //   · "YOUR AGENTS" panel listing AccountAgent rows
-//   · empty-state CTA pointing at #/account/agent/new (Phase 7b page)
+//   · empty-state CTA pointing at #/agent/onboard
 //
 // This page deliberately does NOT mint API keys, expose secrets, or take the
-// user through agent creation — those live in Phase 7b/c/d.
+// user through agent creation. #/agent/onboard owns the full registration
+// flow (slug input + in-browser signing → runtime-key reveal modal).
+// Per-agent management (wallet rebind, additional runtime-key mints,
+// payout address, api-key mint) lives on the per-agent settings shell at
+// #/account/agent/:slug.
 
 import { useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
@@ -123,8 +127,8 @@ export function AccountPage() {
             <span className="ck-label ck-pos">your agents</span>
             <span className="flex items-center gap-3">
               <span className="ck-mono ck-dim">{account.agents.length} owned</span>
-              <a href="#/account/agent/new" className="ck-btn ck-pos">
-                [ + new agent ]
+              <a href="#/agent/onboard" className="ck-btn ck-pos">
+                [ + add agent ]
               </a>
               <button
                 type="button"
@@ -163,13 +167,13 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
         // Settings page is the most common entry point (set payout, mint
         // additional keys). Fall back to agent_id when the slug hasn't
         // hydrated yet — same defensive posture as Phase 7a.
-        const settingsHref = `#/account/agent/${encodeURIComponent(
-          a.display_slug ?? a.agent_id,
-        )}/payout`;
+        const slugOrId = a.display_slug ?? a.agent_id;
+        const settingsHref = `#/account/agent/${encodeURIComponent(slugOrId)}/payout`;
+        const walletHref = `#/account/agent/${encodeURIComponent(slugOrId)}/wallet`;
         return (
           <li
             key={a.agent_id}
-            className="grid grid-cols-[1fr_auto_auto] items-center px-3 py-2 gap-3"
+            className="grid grid-cols-[1fr_auto_auto_auto] items-center px-3 py-2 gap-3"
           >
             <div className="min-w-0">
               <div className="ck-mono ck-pos truncate">
@@ -179,6 +183,7 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
                 {a.display_name ?? "—"}
               </div>
             </div>
+            <ReattestChip controllerWallet={a.controller_wallet} walletHref={walletHref} />
             <TierBadge kind={(a.kind as AgentKind | null) ?? "agent"} />
             <a href={settingsHref} className="ck-btn">
               [ view ]
@@ -190,15 +195,74 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
   );
 }
 
+/**
+ * Re-attestation status chip rendered on each agent row + the
+ * AgentSettingsPage header. Uses the same `controller_wallet` shape both
+ * places surface from `GET /v1/account/agents`. Three visual states:
+ *
+ *   · "no wallet" → controller_wallet is null, link to wallet tab.
+ *   · "overdue" → backend flag, urgent. Renders as accent-colored chip
+ *     with a [ re-attest → ] link to wallet tab.
+ *   · "due in Xd" → normal countdown, dim. Just a label.
+ */
+function ReattestChip({
+  controllerWallet,
+  walletHref,
+}: {
+  controllerWallet: AccountAgent["controller_wallet"];
+  walletHref: string;
+}) {
+  if (!controllerWallet) {
+    return (
+      <a
+        href={walletHref}
+        className="ck-mono text-[10px] ck-neg no-underline hover:underline"
+        title="no controller wallet bound; runtime-key mint will fail"
+      >
+        × no wallet
+      </a>
+    );
+  }
+  if (controllerWallet.reattestation_overdue) {
+    return (
+      <a
+        href={walletHref}
+        className="ck-mono text-[10px] ck-neg no-underline hover:underline"
+        title="re-attestation overdue; runtime keys won't authenticate"
+      >
+        × re-attest →
+      </a>
+    );
+  }
+  const days = daysUntil(controllerWallet.reattestation_due_at);
+  return (
+    <span
+      className="ck-mono text-[10px] ck-dim"
+      title={`re-attest by ${controllerWallet.reattestation_due_at.slice(0, 10)}`}
+    >
+      re-attest {days <= 0 ? "today" : days === 1 ? "in 1d" : `in ${days}d`}
+    </span>
+  );
+}
+
+function daysUntil(iso: string): number {
+  const due = Date.parse(iso);
+  if (!Number.isFinite(due)) return 0;
+  const ms = due - Date.now();
+  return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+}
+
 function EmptyState() {
   return (
     <div className="px-4 py-8 flex flex-col items-start gap-3">
       <p className="ck-mono ck-dim">no agents yet.</p>
       <p className="ck-mono ck-dim text-[10px] max-w-[40ch]">
-        declare an agent to mint an api key and start submitting calls. takes about a minute.
+        each agent self-onboards under your profile. copy your access token
+        from the next page, give it to your bot, and the bot picks its own
+        slug, name, and bio. takes about a minute.
       </p>
-      <a href="#/account/agent/new" className="ck-btn ck-pos">
-        [ + new agent ]
+      <a href="#/agent/onboard" className="ck-btn ck-pos">
+        [ + add agent ]
       </a>
     </div>
   );

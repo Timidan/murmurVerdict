@@ -17,8 +17,10 @@ import {
 import {
   bindControllerWallet,
   controllerWalletAttestationStatus,
+  controllerWalletReattestationHealth,
   getControllerWalletForAgent,
   getOrCreateAccount,
+  isControllerWalletAttestationCurrent,
   linkAgentToAccount,
   listRuntimeKeysForAccountAgent,
   mintRuntimeKey,
@@ -55,8 +57,12 @@ try {
     privy_user_id: "did:privy:controller-smoke",
     session_id: "controller-smoke-session",
     expires_at: "2026-05-15T12:00:00Z",
+  }, {
+    resolvedAt: new Date(now),
   });
-  linkAgentToAccount(db, account.account_id, agentId);
+  linkAgentToAccount(db, account.account_id, agentId, {
+    linkedAt: new Date(now),
+  });
 
   const bindingMessage = buildControllerWalletBindingMessage({
     agentSlug: "controller-smoke",
@@ -81,11 +87,51 @@ try {
     provider: "privy",
     binding_message: bindingMessage,
     binding_signature: bindingSignature,
-    created_at: now,
+    createdAt: new Date(now),
   });
   assert.equal(bound.idempotent_hit, false);
   assert.equal(getControllerWalletForAgent(db, agentId)?.wallet_address, wallet);
   assert.equal(agentsRepo.byId(db, agentId)?.wallet_address, wallet);
+  assert.equal(
+    controllerWalletAttestationStatus(
+      { ...bound, reattestation_due_at: "not-a-date" },
+      { checkedAt: new Date("2026-05-20T09:30:00Z") },
+    ).reattestation_overdue,
+    true,
+  );
+  const invalidBaseStatus = controllerWalletAttestationStatus(
+    {
+      ...bound,
+      created_at: "not-a-date",
+      last_attested_at: null,
+      reattestation_due_at: null,
+    },
+    { checkedAt: new Date("2026-05-20T09:30:00Z") },
+  );
+  assert.equal(invalidBaseStatus.reattestation_due_at, "not-a-date");
+  assert.equal(invalidBaseStatus.reattestation_overdue, true);
+  const derivedCurrentHealth = controllerWalletReattestationHealth(
+    { ...bound, reattestation_due_at: null },
+    {
+      checkedAt: new Date("2026-05-20T09:30:00Z"),
+      dueSoonAt: "2026-05-21T09:30:00Z",
+    },
+  );
+  assert.equal(derivedCurrentHealth.status, "current");
+  assert.equal(derivedCurrentHealth.reattestation_due_soon, false);
+  const dueSoonHealth = controllerWalletReattestationHealth(bound, {
+    checkedAt: new Date("2026-05-20T09:30:00Z"),
+    dueSoonAt: "2026-05-30T09:30:00Z",
+  });
+  assert.equal(dueSoonHealth.status, "due_soon");
+  assert.equal(dueSoonHealth.reattestation_due_soon, true);
+  assert.equal(
+    controllerWalletReattestationHealth(
+      { ...bound, reattestation_due_at: "not-a-date" },
+      { checkedAt: new Date("2026-05-20T09:30:00Z") },
+    ).status,
+    "overdue",
+  );
 
   const idempotent = bindControllerWallet(db, {
     account_id: account.account_id,
@@ -96,7 +142,7 @@ try {
     provider: "privy",
     binding_message: bindingMessage,
     binding_signature: bindingSignature,
-    created_at: now,
+    createdAt: new Date(now),
   });
   assert.equal(idempotent.idempotent_hit, true);
 
@@ -134,7 +180,7 @@ try {
     authorization_message: runtimeMessage,
     authorization_signature: runtimeSignature,
     expires_at: "2026-06-16T09:30:00Z",
-    created_at: now,
+    createdAt: new Date(now),
   });
   assert.match(minted.secret, /^mrt_[0-9a-f]{64}$/);
   assert.equal(minted.runtime_key_prefix, minted.secret.slice(0, 12));
@@ -149,14 +195,16 @@ try {
   assert.equal(keys[0]?.runtime_key_prefix, minted.runtime_key_prefix);
   assert.equal(keys[0]?.policy_hash, policyHash);
   assert.equal(
-    verifyRuntimeKey(db, minted.secret, {
-      now: () => new Date("2026-05-20T09:30:00Z"),
+    verifyRuntimeKey(db, {
+      secret: minted.secret,
+      verifiedAt: new Date("2026-05-20T09:30:00Z"),
     })?.runtime_key_id,
     minted.runtime_key_id,
   );
   assert.equal(
-    verifyRuntimeKey(db, minted.secret, {
-      now: () => new Date("2026-06-01T09:30:00Z"),
+    verifyRuntimeKey(db, {
+      secret: minted.secret,
+      verifiedAt: new Date("2026-06-01T09:30:00Z"),
     }),
     null,
   );
@@ -189,20 +237,23 @@ try {
     attestation_nonce: attestationNonce,
     attestation_message: reattestationMessage,
     attestation_signature: reattestationSignature,
-    attested_at: attestationIssuedAt,
+    attestedAt: new Date(attestationIssuedAt),
+    newReattestationId: () => "controller-smoke-reattestation-id-1",
   });
+  assert.equal(attestation.attestation_id, "controller-smoke-reattestation-id-1");
   assert.equal(attestation.next_due_at, "2026-06-11T09:30:00Z");
   const refreshedController = getControllerWalletForAgent(db, agentId);
   assert(refreshedController);
   assert.equal(
     controllerWalletAttestationStatus(refreshedController, {
-      now: () => new Date("2026-06-01T09:30:00Z"),
+      checkedAt: new Date("2026-06-01T09:30:00Z"),
     }).reattestation_overdue,
     false,
   );
   assert.equal(
-    verifyRuntimeKey(db, minted.secret, {
-      now: () => new Date("2026-06-01T09:30:00Z"),
+    verifyRuntimeKey(db, {
+      secret: minted.secret,
+      verifiedAt: new Date("2026-06-01T09:30:00Z"),
     })?.runtime_key_id,
     minted.runtime_key_id,
   );
@@ -244,7 +295,12 @@ try {
   }
 
   assert.equal(
-    revokeRuntimeKey(db, account.account_id, minted.runtime_key_id, "smoke revoke"),
+    revokeRuntimeKey(db, {
+      account_id: account.account_id,
+      runtime_key_id: minted.runtime_key_id,
+      reason: "smoke revoke",
+      revokedAt: new Date("2026-06-01T09:30:00Z"),
+    }),
     true,
   );
   assert.equal(
@@ -255,6 +311,16 @@ try {
     listRuntimeKeysForAccountAgent(db, account.account_id, agentId, true)[0]
       ?.revoke_reason,
     "smoke revoke",
+  );
+  db.prepare(
+    "UPDATE agent_controller_wallets SET reattestation_due_at = ? WHERE agent_id = ?",
+  ).run("not-a-date", agentId);
+  assert.equal(
+    isControllerWalletAttestationCurrent(db, {
+      agent_id: agentId,
+      checkedAt: new Date("2026-06-01T09:30:00Z"),
+    }),
+    false,
   );
 
   db.close();

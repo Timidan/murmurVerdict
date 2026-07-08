@@ -60,6 +60,11 @@ export interface FetchFnLike {
   }>;
 }
 
+export interface PolymarketGammaTimers {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
 export interface PolymarketClientOpts {
   /** Override the Gamma base URL (test fixtures point at a stub). */
   baseUrl?: string;
@@ -69,10 +74,14 @@ export interface PolymarketClientOpts {
   timeoutMs?: number;
   /** Max retry count on transient failure. */
   maxRetries?: number;
-  /** Override clock (smoke driver pins time for deterministic TTL). */
-  nowMs?: () => number;
+  /** Cache TTL clock. */
+  nowMs: () => number;
+  /** Retry jitter helper. Defaults to 0..199ms random jitter. */
+  retryJitterMs?: () => number;
   /** Sleep helper (smoke skips real backoff sleeps). */
   sleepMs?: (ms: number) => Promise<void>;
+  /** Timer Adapter for request aborts and default sleeps. */
+  timers?: PolymarketGammaTimers;
 }
 
 /** Cache entry — `snapshot=null` for negative-cache (404 / final error). */
@@ -97,20 +106,29 @@ export class PolymarketGammaClient {
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly nowMs: () => number;
+  private readonly retryJitterMs: () => number;
   private readonly sleepMs: (ms: number) => Promise<void>;
+  private readonly timers: PolymarketGammaTimers;
 
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inflight = new Map<string, Promise<FetchResult>>();
 
-  constructor(opts: PolymarketClientOpts = {}) {
+  constructor(opts: PolymarketClientOpts) {
     this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
     this.fetchFn = opts.fetchFn ?? defaultFetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
-    this.nowMs = opts.nowMs ?? (() => Date.now());
+    this.nowMs = opts.nowMs;
+    this.retryJitterMs =
+      opts.retryJitterMs ??
+      (() => Math.floor(Math.random() * BASE_BACKOFF_MS));
+    this.timers = opts.timers ?? defaultTimers;
     this.sleepMs =
       opts.sleepMs ??
-      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      ((ms) =>
+        new Promise<void>((resolve) => {
+          this.timers.setTimeout(resolve, ms);
+        }));
   }
 
   /**
@@ -188,7 +206,7 @@ export class PolymarketGammaClient {
       // 3 attempts. Errors here are network, 5xx, timeout, or HTML body.
       lastError = result.error;
       if (attempt < this.maxRetries - 1) {
-        const jitter = Math.floor(Math.random() * BASE_BACKOFF_MS);
+        const jitter = Math.max(0, Math.floor(this.retryJitterMs()));
         await this.sleepMs(BASE_BACKOFF_MS * 2 ** attempt + jitter);
       }
     }
@@ -219,7 +237,7 @@ export class PolymarketGammaClient {
   > {
     const url = `${this.baseUrl}/markets?condition_ids=${encodeURIComponent(conditionId)}&limit=1`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = this.timers.setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Awaited<ReturnType<FetchFnLike>>;
     try {
       response = await this.fetchFn(url, { signal: controller.signal });
@@ -230,7 +248,7 @@ export class PolymarketGammaClient {
         error: msg.includes("abort") ? "timeout" : `network:${msg}`,
       };
     } finally {
-      clearTimeout(timer);
+      this.timers.clearTimeout(timer);
     }
     if (response.status === 404) return { kind: "not_found" };
     if (response.status < 200 || response.status >= 300) {
@@ -317,4 +335,13 @@ const defaultFetch: FetchFnLike = async (input, init) => {
     text(): Promise<string>;
   };
   return res;
+};
+
+const defaultTimers: PolymarketGammaTimers = {
+  setTimeout(callback, ms) {
+    return setTimeout(callback, ms);
+  },
+  clearTimeout(handle) {
+    clearTimeout(handle as ReturnType<typeof setTimeout>);
+  },
 };

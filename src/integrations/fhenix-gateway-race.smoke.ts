@@ -29,10 +29,38 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import {
+  encodeAbiParameters,
+  keccak256,
+  padHex,
+  parseAbiParameters,
+  toBytes,
+  type Address,
+  type Hex,
+} from "viem";
+
+import {
+  fhenixGatewayFeedPacketTxRepo,
   fhenixGatewayTxRepo,
   openDb,
+  type FhenixGatewayFeedPacketTxAttemptInsert,
   type FhenixGatewayTxAttemptInsert,
 } from "../verdict/db.js";
+import { broadcastGatewayAttempt } from "./fhenix-gateway-attempt-machine.js";
+import {
+  feedPacketAttemptKind,
+  sealedCallAttemptKind,
+} from "./fhenix-gateway-attempt-kinds.js";
+import type {
+  FhenixGatewayClient,
+  GatewayGetLogsArgs,
+  GatewayLog,
+  GatewayReadContractArgs,
+  GatewayWriteContractArgs,
+} from "./fhenix-gateway-contract.js";
+import {
+  computeFeedPacketId,
+  computeSealedCallId,
+} from "./fhenix-gateway-reconciliation.js";
 
 function check(name: string, fn: () => void | Promise<void>): Promise<void> {
   return Promise.resolve(fn()).then(
@@ -370,6 +398,321 @@ async function main(): Promise<void> {
       const after = fhenixGatewayTxRepo.byId(dbB, attempt.attempt_id);
       assert.notEqual(after?.broadcast_claim_token, null);
       assert.equal(after?.status, "queued");
+    });
+
+    // ── 7. Reconciliation recovers tx_hash after writeContract timeout ──
+    //
+    // Fix 1's reconciliation path lives in fhenix-gateway-attempt-machine.ts
+    // (broadcastGatewayAttempt's reconcile-before-retry phase):
+    // when an attempt has `attempt_count > 0 && tx_hash IS NULL`, the next
+    // broadcast tick consults the contract via readContract.getCall plus
+    // getLogs filtered by the indexed callId. If the contract already has
+    // the row (the prior writeContract landed but its receipt was lost),
+    // markReconciledSubmitted persists the recovered tx_hash WITHOUT
+    // incrementing attempt_count and WITHOUT calling writeContract again.
+    await check("reconciliation recovers tx_hash after writeContract timeout", async () => {
+      const attempt = makeAttempt("recon");
+      // Deterministic agent/market/nonce so we can compute the on-chain
+      // callId off-chain via keccak256(abi.encodePacked(...)) — see
+      // fhenix-gateway-reconciliation.ts:computeSealedCallId.
+      attempt.client_nonce = "0x" + "9c".repeat(32);
+      attempt.market_id_hash = "0x" + "ad".repeat(32);
+      attempt.agent_wallet_address = "0x" + "5a".repeat(20);
+      fhenixGatewayTxRepo.insert(dbA, attempt);
+
+      const chainId = 84532;
+      const contractAddress = "0x" + "11".repeat(20);
+      const recoveredCallId = computeSealedCallId(chainId, contractAddress, {
+        agentWalletAddress: attempt.agent_wallet_address,
+        marketIdHash: attempt.market_id_hash,
+        clientNonce: attempt.client_nonce,
+      });
+      const landedTxHash = ("0x" + "ee".repeat(32)) as Hex;
+      const landedBlock = 4242n;
+      const landedLogIndex = 7;
+
+      // Simulate the outcome of a prior failed broadcast: attempt_count=1,
+      // tx_hash=null, status='failed_retryable' — matches what
+      // markRetryableFailure leaves after withTimeout rejects.
+      dbA
+        .prepare(
+          `UPDATE fhenix_gateway_tx_attempts
+           SET status = 'failed_retryable',
+               attempt_count = 1,
+               last_error = 'submitSealedFor timed out',
+               broadcast_started_at = ?,
+               updated_at = ?,
+               next_attempt_at = ?
+           WHERE attempt_id = ?`,
+        )
+        .run(nowIso(), nowIso(), nowIso(), attempt.attempt_id);
+
+      // ── Fake client: writeContract MUST NOT run; readContract +
+      //    getLogs return the landed-tx fixture.
+      let writeContractCalls = 0;
+      let readContractCalls = 0;
+      let getLogsCalls = 0;
+      const sealedCallEventTopic = keccak256(
+        toBytes(
+          "SealedCallSubmitted(bytes32,address,bytes32,uint64,uint64,bytes32,bytes32,bytes32)",
+        ),
+      );
+      const fakeClient: FhenixGatewayClient = {
+        getChainId: async () => chainId,
+        getBlockNumber: async () => landedBlock + 5n,
+        writeContract: async (_args: GatewayWriteContractArgs) => {
+          writeContractCalls += 1;
+          throw new Error(
+            "writeContract must not be called when reconciliation recovered the tx",
+          );
+        },
+        getTransactionReceipt: async () => {
+          throw new Error("not used on the broadcast path");
+        },
+        readContract: async (args: GatewayReadContractArgs) => {
+          readContractCalls += 1;
+          assert.equal(args.functionName, "getCall");
+          assert.equal(args.args[0], recoveredCallId);
+          // Any truthy tuple; reconciler only branches on revert vs success.
+          return [
+            attempt.agent_wallet_address,
+            attempt.market_id_hash,
+            0n,
+            0n,
+            0n,
+            0,
+            0,
+            0,
+          ];
+        },
+        getLogs: async (
+          args: GatewayGetLogsArgs,
+        ): Promise<readonly GatewayLog[]> => {
+          getLogsCalls += 1;
+          assert.equal(args.args.callId, recoveredCallId);
+          return [
+            {
+              address: contractAddress as Address,
+              topics: [
+                sealedCallEventTopic as Hex,
+                recoveredCallId,
+                padHex(attempt.agent_wallet_address as Hex, { size: 32 }),
+                attempt.market_id_hash as Hex,
+              ],
+              data: encodeAbiParameters(
+                parseAbiParameters("uint64,uint64,bytes32,bytes32,bytes32"),
+                [
+                  BigInt(Math.floor(Date.now() / 1000)),
+                  BigInt(Math.floor(Date.now() / 1000) + 3600),
+                  ("0x" + "01".repeat(32)) as Hex,
+                  ("0x" + "02".repeat(32)) as Hex,
+                  attempt.client_nonce as Hex,
+                ],
+              ),
+              logIndex: landedLogIndex,
+              blockNumber: landedBlock,
+              transactionHash: landedTxHash,
+            },
+          ];
+        },
+      };
+
+      await broadcastGatewayAttempt(sealedCallAttemptKind(), {
+        db: dbA,
+        client: fakeClient,
+        chainId,
+        contractAddress,
+        reconcileFromBlock: 0,
+        maxAttempts: 5,
+        retryBaseMs: 5_000,
+        retryMaxMs: 120_000,
+        broadcastTimeoutMs: 0,
+        now: () => new Date(),
+        attemptId: attempt.attempt_id,
+      });
+
+      assert.equal(writeContractCalls, 0, "must not re-broadcast");
+      assert.equal(readContractCalls, 1, "reconciler must call readContract once");
+      assert.equal(getLogsCalls, 1, "reconciler must call getLogs once");
+      const after = fhenixGatewayTxRepo.byId(dbB, attempt.attempt_id);
+      assert.equal(after?.status, "submitted");
+      assert.equal(after?.tx_hash, landedTxHash.toLowerCase());
+      assert.equal(
+        after?.attempt_count,
+        1,
+        "attempt_count must NOT increment on reconciliation",
+      );
+      assert.equal(after?.broadcast_claim_token, null);
+      assert.equal(after?.last_error, null);
+    });
+
+    // ── 8. Feed-lane reconciliation (same invariant, feed_packet kind) ──
+    //
+    // The Gateway Attempt Machine runs reconcile-before-retry for BOTH
+    // lanes through one implementation; this check pins the feed lane's
+    // deterministic-id wiring (getFeedPacket + packetId topic filter) so a
+    // future lane-adapter change can't silently drop feed recovery.
+    await check("feed reconciliation recovers tx_hash after writeContract timeout", async () => {
+      const feedId = randomUUID();
+      dbA.prepare(
+        `INSERT INTO feed_contracts (feed_id, agent_id, name, description, status, venue,
+           resolution_classes_json, edge_classes_json, covered_market_ids_json,
+           delivery_cadence_seconds, trigger_rules_json, max_latency_seconds,
+           subscriber_capacity, commercial_template, reveal_policy_json,
+           refund_rule_json, slash_rule_json, created_at, updated_at)
+         VALUES (?, ?, 'Race Feed', NULL, 'listed', 'polymarket', '[]', '[]', '[]',
+           NULL, '{}', NULL, 10, 'per_alert', '{}', '{}', '{}', ?, ?)`,
+      ).run(feedId, agentId, ts, ts);
+
+      const attempt: FhenixGatewayFeedPacketTxAttemptInsert = {
+        attempt_id: randomUUID(),
+        status: "queued",
+        runtime_key_id: null,
+        runtime_key_policy_hash: "0x" + "00".repeat(32),
+        runtime_key_policy_json: "{}",
+        account_id: accountId,
+        agent_id: agentId,
+        chain_id: 84532,
+        contract_address: "0x" + "11".repeat(20),
+        relayer_address: "0x" + "22".repeat(20),
+        agent_wallet_address: "0x" + "6b".repeat(20),
+        feed_id: feedId,
+        feed_id_hash: "0x" + "fe".repeat(32),
+        market_id: null,
+        market_id_hash: "0x" + "ad".repeat(32),
+        packet_kind: "verdict",
+        sequence: 1,
+        payload_schema: "verdict-v1",
+        client_order_id: "race-feed-order-recon",
+        client_nonce: "0x" + "7d".repeat(32),
+        submitted_at: ts,
+        delivery_deadline_at: null,
+        reveal_after: new Date(Date.now() + 3600_000).toISOString(),
+        action_input_json: "{}",
+        signal_input_json: "{}",
+        next_attempt_at: ts,
+        created_at: ts,
+        updated_at: ts,
+      };
+      fhenixGatewayFeedPacketTxRepo.insert(dbA, attempt);
+
+      const chainId = 84532;
+      const contractAddress = "0x" + "11".repeat(20);
+      const recoveredPacketId = computeFeedPacketId(chainId, contractAddress, {
+        agentWalletAddress: attempt.agent_wallet_address,
+        feedIdHash: attempt.feed_id_hash,
+        marketIdHash: attempt.market_id_hash,
+        clientNonce: attempt.client_nonce,
+      });
+      const landedTxHash = ("0x" + "cd".repeat(32)) as Hex;
+      const landedBlock = 5151n;
+      const landedLogIndex = 3;
+
+      // Same shape as the sealed case: a prior failed broadcast left
+      // attempt_count=1, tx_hash=null, status='failed_retryable'.
+      dbA
+        .prepare(
+          `UPDATE fhenix_gateway_feed_packet_tx_attempts
+           SET status = 'failed_retryable',
+               attempt_count = 1,
+               last_error = 'submitFeedPacketFor timed out',
+               broadcast_started_at = ?,
+               updated_at = ?,
+               next_attempt_at = ?
+           WHERE attempt_id = ?`,
+        )
+        .run(nowIso(), nowIso(), nowIso(), attempt.attempt_id);
+
+      let writeContractCalls = 0;
+      let readContractCalls = 0;
+      let getLogsCalls = 0;
+      const feedPacketEventTopic = keccak256(
+        toBytes(
+          "FeedPacketSubmitted(bytes32,address,bytes32,bytes32,uint64,uint64,bytes32,bytes32,bytes32)",
+        ),
+      );
+      const fakeClient: FhenixGatewayClient = {
+        getChainId: async () => chainId,
+        getBlockNumber: async () => landedBlock + 5n,
+        writeContract: async (_args: GatewayWriteContractArgs) => {
+          writeContractCalls += 1;
+          throw new Error(
+            "writeContract must not be called when feed reconciliation recovered the tx",
+          );
+        },
+        getTransactionReceipt: async () => {
+          throw new Error("not used on the broadcast path");
+        },
+        readContract: async (args: GatewayReadContractArgs) => {
+          readContractCalls += 1;
+          assert.equal(args.functionName, "getFeedPacket");
+          assert.equal(args.args[0], recoveredPacketId);
+          // Any truthy tuple; reconciler only branches on revert vs success.
+          return [
+            attempt.agent_wallet_address,
+            attempt.feed_id_hash,
+            attempt.market_id_hash,
+            0n,
+            0n,
+            "0x" + "01".repeat(32),
+            "0x" + "02".repeat(32),
+            0,
+            0,
+            0,
+          ];
+        },
+        getLogs: async (
+          args: GatewayGetLogsArgs,
+        ): Promise<readonly GatewayLog[]> => {
+          getLogsCalls += 1;
+          assert.equal(args.args.packetId, recoveredPacketId);
+          // findSubmitEvent only reads transactionHash/logIndex/blockNumber;
+          // the topic layout mirrors the real indexed fields for realism.
+          return [
+            {
+              address: contractAddress as Address,
+              topics: [
+                feedPacketEventTopic as Hex,
+                recoveredPacketId,
+                padHex(attempt.agent_wallet_address as Hex, { size: 32 }),
+                attempt.feed_id_hash as Hex,
+              ],
+              data: "0x" as Hex,
+              logIndex: landedLogIndex,
+              blockNumber: landedBlock,
+              transactionHash: landedTxHash,
+            },
+          ];
+        },
+      };
+
+      await broadcastGatewayAttempt(feedPacketAttemptKind(), {
+        db: dbA,
+        client: fakeClient,
+        chainId,
+        contractAddress,
+        reconcileFromBlock: 0,
+        maxAttempts: 5,
+        retryBaseMs: 5_000,
+        retryMaxMs: 120_000,
+        broadcastTimeoutMs: 0,
+        now: () => new Date(),
+        attemptId: attempt.attempt_id,
+      });
+
+      assert.equal(writeContractCalls, 0, "must not re-broadcast feed packet");
+      assert.equal(readContractCalls, 1, "feed reconciler must call readContract once");
+      assert.equal(getLogsCalls, 1, "feed reconciler must call getLogs once");
+      const after = fhenixGatewayFeedPacketTxRepo.byId(dbB, attempt.attempt_id);
+      assert.equal(after?.status, "submitted");
+      assert.equal(after?.tx_hash, landedTxHash.toLowerCase());
+      assert.equal(
+        after?.attempt_count,
+        1,
+        "attempt_count must NOT increment on feed reconciliation",
+      );
+      assert.equal(after?.broadcast_claim_token, null);
+      assert.equal(after?.last_error, null);
     });
 
     console.log("fhenix gateway race smoke ok");

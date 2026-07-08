@@ -1,0 +1,23 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": false,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "dashboard/src/styles.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "dashboard/src/components",
+    "utils": "dashboard/src/lib/utils",
+    "ui": "dashboard/src/components/ui",
+    "lib": "dashboard/src/lib",
+    "hooks": "dashboard/src/hooks"
+  },
+  "registries": {
+    "@efferd": "https://efferd.com/r/{style}/{name}.json"
+  }
+}

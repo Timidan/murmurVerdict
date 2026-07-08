@@ -26,6 +26,10 @@
 import type Database from "better-sqlite3";
 import { PolymarketGammaClient } from "./client.js";
 import { ADAPTER_NAME } from "./index.js";
+import {
+  conditionIdForMarketConfig,
+  endDateMsForMarketConfig,
+} from "../../verdict/market-adapter-config.js";
 
 // ─── Cadence policy ─────────────────────────────────────────────────────────
 
@@ -59,8 +63,8 @@ export interface SyncStateRow {
 export interface SyncTickerOpts {
   db: Database.Database;
   client?: PolymarketGammaClient;
-  /** Override clock for deterministic smoke runs. */
-  nowMs?: () => number;
+  /** Operation clock for poll scheduling and alert timestamps. */
+  nowMs: () => number;
   /** Operator-alert sink. Default: stderr log. */
   onAlert?: (alert: { code: string; market_id: string; details?: unknown }) => void;
   /** Per-tick row budget. */
@@ -87,14 +91,7 @@ function endDateMsForRow(
     .prepare("SELECT config_json FROM markets WHERE market_id = ?")
     .get(market_id) as { config_json: string } | undefined;
   if (!row) return null;
-  try {
-    const cfg = JSON.parse(row.config_json) as { endDate?: string };
-    if (typeof cfg.endDate !== "string") return null;
-    const ms = Date.parse(cfg.endDate);
-    return Number.isNaN(ms) ? null : ms;
-  } catch {
-    return null;
-  }
+  return endDateMsForMarketConfig(row.config_json);
 }
 
 function conditionIdForRow(
@@ -105,12 +102,7 @@ function conditionIdForRow(
     .prepare("SELECT config_json FROM markets WHERE market_id = ?")
     .get(market_id) as { config_json: string } | undefined;
   if (!row) return null;
-  try {
-    const cfg = JSON.parse(row.config_json) as { conditionId?: string };
-    return typeof cfg.conditionId === "string" ? cfg.conditionId : null;
-  } catch {
-    return null;
-  }
+  return conditionIdForMarketConfig(row.config_json);
 }
 
 function pickPollIntervalMs(nowMs: number, endDateMs: number | null): number {
@@ -136,8 +128,8 @@ export async function runPolymarketSyncTick(
   opts: SyncTickerOpts,
 ): Promise<SyncTickResult> {
   const db = opts.db;
-  const client = opts.client ?? new PolymarketGammaClient();
-  const nowMs = opts.nowMs ?? (() => Date.now());
+  const nowMs = opts.nowMs;
+  const client = opts.client ?? new PolymarketGammaClient({ nowMs });
   const onAlert =
     opts.onAlert ??
     ((a) => {
@@ -322,13 +314,14 @@ export async function runPolymarketSyncTick(
  */
 export function startPolymarketSyncTicker(
   opts: SyncTickerOpts & { intervalMs?: number },
-): { stop: () => void } {
+): { stop: () => Promise<void> } {
   const intervalMs = opts.intervalMs ?? 60_000;
   let running = false;
+  let inFlightPromise: Promise<unknown> = Promise.resolve();
   const handle = setInterval(() => {
     if (running) return;
     running = true;
-    runPolymarketSyncTick(opts)
+    inFlightPromise = runPolymarketSyncTick(opts)
       .catch((err) => {
         console.error(
           `[polymarket-sync] tick failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -339,6 +332,9 @@ export function startPolymarketSyncTicker(
       });
   }, intervalMs);
   return {
-    stop: () => clearInterval(handle),
+    stop: async () => {
+      clearInterval(handle);
+      await inFlightPromise;
+    },
   };
 }

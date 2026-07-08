@@ -1,9 +1,10 @@
 // ─── CodeSnippetPanel — tabbed multi-language snippet renderer (Phase 7d) ──
 //
 // Three use sites planned (V2 §7 onboarding research):
-//   1. `IntegratePage` — Step f of the new-agent flow. Shows the canonical
-//      Runtime Key Gateway path. Runtime Key plaintext is only shown by the
-//      runtime-key mint flow; snippets use env-var placeholders here.
+//   1. `IntegratePage` — reached via the [ integrate ] button on the
+//      per-agent settings shell. Shows the canonical Runtime Key Gateway
+//      path. Runtime Key plaintext is only shown by the runtime-key mint
+//      flow; snippets use env-var placeholders here.
 //   2. `LaunchPage` — public install track. The user is NOT
 //      authenticated, so the panel always renders the env-var fallback
 //      for MURMUR_RUNTIME_KEY.
@@ -36,6 +37,14 @@ export interface CodeSnippetPanelProps {
    * that want a label header without recomputing.
    */
   agentSlug?: string;
+  /**
+   * When provided, the snippets substitute the plaintext runtime key
+   * directly into each language's auth line (with a "// remove before
+   * committing" comment). When omitted, snippets render the env-var
+   * placeholder pattern (process.env.MURMUR_RUNTIME_KEY, etc.). This is
+   * the one-time post-mint path — the secret is gone on refresh.
+   */
+  runtimeKey?: string;
   /** Subset of languages to render. Defaults to all three. */
   languages?: SnippetLanguage[];
   /** Which tab opens active. Defaults to "typescript". */
@@ -75,16 +84,22 @@ function getApiBase(): string {
 }
 
 /**
- * Substitute the `{{base}}` placeholder in a template.
+ * Substitute the `{{base}}` and `{{key}}` placeholders in a template.
+ * When `runtimeKey` is undefined, swap `{{key}}` for the env-var pattern
+ * idiomatic to each language (handled via the `keyBlock` arg per call).
  */
-function renderSnippet(template: string, base: string): string {
-  return template.replaceAll("{{base}}", base);
+function renderSnippet(
+  template: string,
+  base: string,
+  keyBlock: string,
+): string {
+  return template.replaceAll("{{base}}", base).replaceAll("{{key}}", keyBlock);
 }
 
 // ─── Templates ──────────────────────────────────────────────────────────────
 
 const TS_TEMPLATE = `// Create CoFHE inputs client-side, then let Murmur relay submitSealedFor.
-const runtimeKey = process.env.MURMUR_RUNTIME_KEY ?? "";
+{{key}}
 const encrypted = await createCofheVerdictInputs({
   binaryIndex: 0,
   confidenceBps: 7200,
@@ -93,7 +108,7 @@ const res = await fetch("{{base}}/v2/gateway/calls", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    "X-Murmur-Runtime-Key": runtimeKey,
+    "X-Murmur-Runtime-Key": MURMUR_RUNTIME_KEY,
   },
   body: JSON.stringify({
     marketRef: { protocol: "polymarket-gamma", sourceId: "<condition-id>", configVersion: 1 },
@@ -113,13 +128,15 @@ import os
 import urllib.request
 import uuid
 
+{{key}}
+
 encrypted = create_cofhe_verdict_inputs(binary_index=0, confidence_bps=7200)
 req = urllib.request.Request(
     "{{base}}/v2/gateway/calls",
     method="POST",
     headers={
         "Content-Type": "application/json",
-        "X-Murmur-Runtime-Key": os.environ["MURMUR_RUNTIME_KEY"],
+        "X-Murmur-Runtime-Key": MURMUR_RUNTIME_KEY,
     },
     data=json.dumps({
         "marketRef": {"protocol": "polymarket-gamma", "sourceId": "<condition-id>", "configVersion": 1},
@@ -135,7 +152,8 @@ with urllib.request.urlopen(req) as resp:
     body = json.load(resp)
     print(body["call_id"], body["status"])`;
 
-const CURL_TEMPLATE = `curl -X POST {{base}}/v2/gateway/calls \\
+const CURL_TEMPLATE = `{{key}}
+curl -X POST {{base}}/v2/gateway/calls \\
   -H "Content-Type: application/json" \\
   -H "X-Murmur-Runtime-Key: $MURMUR_RUNTIME_KEY" \\
   -d '{
@@ -154,7 +172,35 @@ function pickTemplate(language: SnippetLanguage): string {
   return CURL_TEMPLATE;
 }
 
+/**
+ * Build the language-idiomatic key-binding line. When `runtimeKey` is set
+ * we inline it with a "// rotate before committing" hint so the operator
+ * knows the snippet is paste-ready but secret-ful. When unset we fall back
+ * to the env-var pattern so the snippet is safe to share.
+ */
+function buildKeyBlock(
+  language: SnippetLanguage,
+  runtimeKey: string | undefined,
+): string {
+  const literal = runtimeKey && runtimeKey.length > 0 ? runtimeKey : null;
+  if (language === "typescript") {
+    return literal
+      ? `const MURMUR_RUNTIME_KEY = "${literal}"; // shown once — store in env before committing`
+      : `const MURMUR_RUNTIME_KEY = process.env.MURMUR_RUNTIME_KEY ?? "";`;
+  }
+  if (language === "python") {
+    return literal
+      ? `MURMUR_RUNTIME_KEY = "${literal}"  # shown once — store in env before committing`
+      : `MURMUR_RUNTIME_KEY = os.environ["MURMUR_RUNTIME_KEY"]`;
+  }
+  // curl
+  return literal
+    ? `# Shown once — export now then remove this line before sharing.\nexport MURMUR_RUNTIME_KEY='${literal}'\n`
+    : `# Set MURMUR_RUNTIME_KEY in your shell first.`;
+}
+
 export function CodeSnippetPanel({
+  runtimeKey,
   languages,
   initialLanguage = "typescript",
   showHeader = true,
@@ -199,8 +245,9 @@ export function CodeSnippetPanel({
   const base = getApiBase();
   const body = useMemo(() => {
     const tpl = pickTemplate(active);
-    return renderSnippet(tpl, base);
-  }, [active, base]);
+    const keyBlock = buildKeyBlock(active, runtimeKey);
+    return renderSnippet(tpl, base, keyBlock);
+  }, [active, base, runtimeKey]);
 
   const doCopy = useCallback(async () => {
     if (!navigator.clipboard?.writeText) {

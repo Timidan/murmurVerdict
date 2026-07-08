@@ -1,220 +1,93 @@
 import type Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
 import {
-  createPublicClient,
-  createWalletClient,
-  decodeEventLog,
-  getAddress,
-  http,
-  isAddressEqual,
-  keccak256,
-  parseAbi,
-  toBytes,
-  type Address,
-  type Hex,
-} from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { z } from "zod";
-import { resolveFhenixContractAddress } from "./deployments.js";
+  broadcastGatewayAttempt,
+  confirmGatewayAttempt,
+  type GatewayAttemptKind,
+} from "./fhenix-gateway-attempt-machine.js";
 import {
-  FEED_PACKET_SUBMITTED_EVENT,
-  SEALED_CALL_SUBMITTED_EVENT,
-  fhenixMarketIdForMurmurMarket,
-} from "./fhenix-events.js";
+  feedPacketAttemptKind,
+  sealedCallAttemptKind,
+} from "./fhenix-gateway-attempt-kinds.js";
+import { loadFhenixGatewayEnvConfig } from "./fhenix-gateway-env.js";
+import type { FhenixGatewayClient } from "./fhenix-gateway-contract.js";
+import type { MurmurOwnedCofheSealer } from "./murmur-owned-cofhe-sealer.js";
 import {
-  agentsRepo,
-  feedContractsRepo,
-  feedPacketsRepo,
-  fhenixGatewayFeedPacketTxRepo,
-  fhenixGatewayTxRepo,
-  isUniqueViolation,
-  marketsRepo,
-  submissionsRepo,
-  type FeedContractRow,
-  type FhenixGatewayReceiptTelemetry,
-  type FhenixGatewayFeedPacketTxAttemptRow,
-  type FhenixGatewayTelemetrySummary,
-  type FhenixGatewayTxAttemptRow,
-  type FhenixGatewayTxStatus,
-} from "../verdict/db.js";
+  MurmurOwnedSealedCallBodySchema,
+  murmurOwnedSealedCallToGatewayBody,
+} from "./murmur-owned-sealing-schemas.js";
 import {
-  acceptsSubmissions,
-  perMarketDailyCap,
-} from "../verdict/markets.js";
-import { CommitmentSchema } from "../verdict/markets-core.js";
+  GatewayFeedPacketBodySchema,
+  GatewaySealedCallBodySchema,
+} from "./fhenix-gateway-schemas.js";
 import {
-  derivePolicyFromMarket,
-  PolicyDerivationError,
-} from "../verdict/oracle-routing.js";
+  buildGatewayOperatorSnapshot,
+  gatewayFeedPacketResult as feedResultFromAttempt,
+  gatewaySubmissionResult as resultFromAttempt,
+  type GatewayFeedPacketSubmitResult,
+  type GatewayOperatorSnapshot,
+  type GatewaySubmitResult,
+} from "./fhenix-gateway-presenters.js";
+import {
+  reserveFeedPacketAttempt,
+  reserveSealedCallAttempt,
+} from "./fhenix-gateway-reservations.js";
+import {
+  normalizeAddress,
+  type FhenixGatewayRuntimeTimers,
+} from "./fhenix-gateway-runtime.js";
+import { fhenixGatewayTxRepo } from "../verdict/repos/fhenix-gateway-tx-repo.js";
+import { fhenixGatewayFeedPacketTxRepo } from "../verdict/repos/fhenix-gateway-feed-packet-tx-repo.js";
+import type {
+  FhenixGatewayTxStatus,
+  GatewayAttemptLifecycleRow,
+} from "../verdict/repos/fhenix-gateway-attempt-lifecycle.js";
+import {
+  type AgentSecurityEventIdAdapter,
+  makeAgentSecurityEvent,
+} from "../verdict/agent-security-event.js";
+import { agentSecurityEventsRepo } from "../verdict/repos/agent-security-events-repo.js";
+import { agentsRepo } from "../verdict/repos/agents-repo.js";
+import { feedContractsRepo } from "../verdict/repos/feed-availability-repo.js";
+import type { FeedPacketIdAdapter } from "../verdict/feed-packet-ingestion.js";
+import type { SealedCallIdAdapter } from "../verdict/sealed-call-acceptance.js";
+import { marketsRepo } from "../verdict/repos/market-registry-repo.js";
+import { submissionsRepo } from "../verdict/repos/sealed-call-submissions-repo.js";
 import {
   ERROR_CODES,
-  FeedPacketKindSchema,
-  MarketIdSchema,
-  SUBMISSION_LIMITS,
   VerdictError,
 } from "../verdict/schema.js";
-import { Hex32Schema } from "../verdict/fhenix-common.js";
-import { acceptSealedCall } from "../verdict/sealed-call-acceptance.js";
 import { isoFromMs, nowIso } from "../verdict/time.js";
 import type { AuthIdentity } from "../verdict/auth/dispatcher.js";
-import { isRuntimeKeyActive } from "../verdict/auth/accounts.js";
 import {
-  authorizeRuntimeKeyGatewayIntent,
   requireRuntimeKeyIdentity,
-  runtimeKeyAcceptanceAuthIdentity,
 } from "../verdict/auth/runtime-authorization.js";
-import {
-  classifyFeedPacketSla,
-  inferFeedDeliveryDeadline,
-  validateFeedPacketMarket,
-} from "../verdict/feed-availability.js";
 
-const COFHE_EUINT8_UTYPE = 2;
-const COFHE_EUINT16_UTYPE = 3;
-const ZERO_BYTES32 = `0x${"00".repeat(32)}`;
-
-const BytesHexSchema = z.string().regex(/^0x(?:[0-9a-fA-F]{2})*$/);
-
-export const CofheInputSchema = z
-  .object({
-    ct_hash: Hex32Schema,
-    security_zone: z.number().int().min(0).max(255),
-    utype: z.number().int().min(0).max(255),
-    signature: BytesHexSchema,
-  })
-  .strict();
-
-export const GatewaySealedCallBodySchema = z
-  .object({
-    marketRef: CommitmentSchema.shape.marketRef,
-    client_order_id: z.string().min(8).max(128),
-    client_nonce: Hex32Schema,
-    rationale: z.string().max(240).optional(),
-    strategy_tag: z.string().min(2).max(32).optional(),
-    submitted_at: z.string().datetime({ offset: false }).optional(),
-    privacy_mode: z.literal("sealed_fhenix"),
-    binary_index_input: CofheInputSchema.refine(
-      (value) => value.utype === COFHE_EUINT8_UTYPE,
-      "binary_index_input.utype must be CoFHE euint8",
-    ),
-    confidence_input: CofheInputSchema.refine(
-      (value) => value.utype === COFHE_EUINT16_UTYPE,
-      "confidence_input.utype must be CoFHE euint16",
-    ),
-  })
-  .strict()
-  .superRefine((v, ctx) => {
-    if (!v.rationale && !v.strategy_tag) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "rationale or strategy_tag is required",
-        path: ["rationale"],
-      });
-    }
-  });
-
-export const GatewayFeedPacketBodySchema = z
-  .object({
-    packet_kind: FeedPacketKindSchema,
-    market_id: MarketIdSchema.optional(),
-    sequence: z.number().int().positive().optional(),
-    payload_schema: z
-      .string()
-      .min(3)
-      .max(64)
-      .regex(/^[a-z0-9_.-]+$/)
-      .default("murmur-feed-packet-v1"),
-    client_order_id: z.string().min(8).max(128),
-    client_nonce: Hex32Schema,
-    submitted_at: z.string().datetime({ offset: false }).optional(),
-    delivery_deadline_at: z.string().datetime({ offset: false }).optional(),
-    reveal_after: z.string().datetime({ offset: false }).optional(),
-    privacy_mode: z.literal("sealed_fhenix"),
-    action_input: CofheInputSchema.refine(
-      (value) => value.utype === COFHE_EUINT8_UTYPE,
-      "action_input.utype must be CoFHE euint8",
-    ),
-    signal_input: CofheInputSchema.refine(
-      (value) => value.utype === COFHE_EUINT16_UTYPE,
-      "signal_input.utype must be CoFHE euint16",
-    ),
-  })
-  .strict();
-
-export type GatewaySealedCallBody = z.infer<typeof GatewaySealedCallBodySchema>;
-export type GatewayFeedPacketBody = z.infer<typeof GatewayFeedPacketBodySchema>;
-export type CofheInput = z.infer<typeof CofheInputSchema>;
-
-export interface FhenixGatewayClient {
-  getChainId: () => Promise<number>;
-  getBlockNumber: () => Promise<bigint>;
-  writeContract: (args: GatewayWriteContractArgs) => Promise<Hex>;
-  getTransactionReceipt: (args: { hash: Hex }) => Promise<GatewayReceipt>;
-}
-
-type GatewayWriteContractArgs =
-  | {
-      address: Address;
-      abi: typeof MURMUR_SEALED_VERDICTS_GATEWAY_ABI;
-      functionName: "submitSealedFor";
-      args: readonly [
-        Address,
-        Hex,
-        ContractCofheInput,
-        ContractCofheInput,
-        Hex,
-      ];
-    }
-  | {
-      address: Address;
-      abi: typeof MURMUR_SEALED_VERDICTS_GATEWAY_ABI;
-      functionName: "submitFeedPacketFor";
-      args: readonly [
-        Address,
-        Hex,
-        Hex,
-        bigint,
-        ContractCofheInput,
-        ContractCofheInput,
-        Hex,
-      ];
-    };
-
-type GatewayReceipt = {
-  status?: "success" | "reverted";
-  blockNumber?: bigint;
-  gasUsed?: bigint;
-  effectiveGasPrice?: bigint;
-  logs: readonly GatewayLog[];
-};
-
-type GatewayLog = {
-  address: Address;
-  data: Hex;
-  topics: readonly Hex[];
-  logIndex: number;
-  blockNumber?: bigint;
-  transactionHash?: Hex;
-};
-
-type Measured<T> = {
-  value: T;
-  latencyMs: number;
-};
-
-type ConfirmationState = {
-  ready: boolean;
-  latestBlockNumber: number | null;
-  latestBlockLatencyMs: number | null;
-  confirmationsObserved: number | null;
-};
-
-type ContractCofheInput = {
-  ctHash: bigint;
-  securityZone: number;
-  utype: number;
-  signature: Hex;
-};
+export {
+  MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
+} from "./fhenix-gateway-contract.js";
+export type {
+  FhenixGatewayClient,
+  GatewayLog,
+  GatewayReceipt,
+  GatewayWriteContractArgs,
+} from "./fhenix-gateway-contract.js";
+export {
+  CofheInputSchema,
+  GatewayFeedPacketBodySchema,
+  GatewaySealedCallBodySchema,
+} from "./fhenix-gateway-schemas.js";
+export type {
+  CofheInput,
+  GatewayFeedPacketBody,
+  GatewaySealedCallBody,
+} from "./fhenix-gateway-schemas.js";
+export type {
+  GatewayFeedPacketSubmitResult,
+  GatewayOperatorAttempt,
+  GatewayOperatorFeedAttempt,
+  GatewayOperatorSnapshot,
+  GatewaySubmitResult,
+} from "./fhenix-gateway-presenters.js";
 
 export interface FhenixGatewayConfig {
   db: Database.Database;
@@ -222,6 +95,7 @@ export interface FhenixGatewayConfig {
   contractAddress: string;
   relayerAddress: string;
   client: FhenixGatewayClient;
+  murmurOwnedSealer?: MurmurOwnedCofheSealer | null;
   confirmations?: number;
   retryBaseMs?: number;
   retryMaxMs?: number;
@@ -234,35 +108,27 @@ export interface FhenixGatewayConfig {
    * broadcast will revert). The default sits well below stuckAfterMs
    * so a hung broadcast surfaces as a retryable failure long before
    * sweepStuckClaims kicks in. 0 disables.
-   */
+  */
   broadcastTimeoutMs?: number;
-  now?: () => Date;
-}
-
-export interface GatewaySubmitResult {
-  status: 200 | 202;
-  body: {
-    attempt_id: string;
-    status: string;
-    tx_hash: string | null;
-    call_id: string | null;
-    next_attempt_at: string;
-    idempotent_hit: boolean;
-  };
-}
-
-export interface GatewayFeedPacketSubmitResult {
-  status: 200 | 202;
-  body: {
-    attempt_id: string;
-    status: string;
-    tx_hash: string | null;
-    packet_id: string | null;
-    sequence: number;
-    sla_status: string | null;
-    next_attempt_at: string;
-    idempotent_hit: boolean;
-  };
+  /**
+   * Block height the reconciliation log scan starts from when a previous
+   * writeContract timed out and we need to recover the on-chain tx_hash
+   * via getLogs. Defaults to 0 — the env-config layer in
+   * fhenix-gateway-env.ts:loadFhenixGatewayEnvConfig() prefers the
+   * manifest deployment block when available.
+   */
+  reconcileFromBlock?: number;
+  timers?: FhenixGatewayRuntimeTimers;
+  newAttemptId?: () => string;
+  newClaimToken?: () => string;
+  newFeedPacketId?: FeedPacketIdAdapter;
+  newSealedCallId?: SealedCallIdAdapter;
+  /**
+   * Adapter for `admin_fhenix_gateway_retry` audit event ids. Defaults to
+   * randomUUID inside makeAgentSecurityEvent.
+   */
+  newAgentSecurityEventId?: AgentSecurityEventIdAdapter;
+  now: () => Date;
 }
 
 export interface GatewayTickResult {
@@ -272,164 +138,29 @@ export interface GatewayTickResult {
   failed: number;
 }
 
-export interface GatewayOperatorAttempt {
-  attempt_id: string;
-  status: FhenixGatewayTxStatus;
-  account_id: string;
-  agent_id: string;
-  runtime_key_id: string | null;
-  runtime_key_policy_hash: string;
-  chain_id: number;
-  contract_address: string;
-  relayer_address: string;
-  agent_wallet_address: string;
-  market_id: string;
-  market_id_hash: string;
-  market_ref_protocol: string;
-  market_config_version: number;
-  client_order_id: string;
-  client_nonce: string;
-  tx_hash: string | null;
-  submit_log_index: number | null;
-  submit_block_number: number | null;
-  onchain_call_id: string | null;
-  call_id: string | null;
-  attempt_count: number;
-  next_attempt_at: string;
-  last_error: string | null;
-  broadcast_started_at: string | null;
-  broadcast_latency_ms: number | null;
-  receipt_observed_at: string | null;
-  receipt_latency_ms: number | null;
-  latest_block_latency_ms: number | null;
-  receipt_status: "success" | "reverted" | null;
-  receipt_block_number: number | null;
-  latest_block_number: number | null;
-  confirmations_observed: number | null;
-  gas_used: string | null;
-  effective_gas_price_wei: string | null;
-  last_rpc_error: string | null;
-  submitted_at: string;
-  accepted_at: string | null;
-  reveal_open_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GatewayOperatorFeedAttempt {
-  attempt_id: string;
-  status: FhenixGatewayTxStatus;
-  account_id: string;
-  agent_id: string;
-  runtime_key_id: string | null;
-  runtime_key_policy_hash: string;
-  chain_id: number;
-  contract_address: string;
-  relayer_address: string;
-  agent_wallet_address: string;
-  feed_id: string;
-  feed_id_hash: string;
-  market_id: string | null;
-  market_id_hash: string;
-  packet_kind: string;
-  sequence: number;
-  payload_schema: string;
-  client_order_id: string;
-  client_nonce: string;
-  tx_hash: string | null;
-  submit_log_index: number | null;
-  submit_block_number: number | null;
-  onchain_packet_id: string | null;
-  packet_id: string | null;
-  action_ct_hash: string | null;
-  signal_ct_hash: string | null;
-  attempt_count: number;
-  next_attempt_at: string;
-  last_error: string | null;
-  broadcast_started_at: string | null;
-  broadcast_latency_ms: number | null;
-  receipt_observed_at: string | null;
-  receipt_latency_ms: number | null;
-  latest_block_latency_ms: number | null;
-  receipt_status: "success" | "reverted" | null;
-  receipt_block_number: number | null;
-  latest_block_number: number | null;
-  confirmations_observed: number | null;
-  gas_used: string | null;
-  effective_gas_price_wei: string | null;
-  last_rpc_error: string | null;
-  submitted_at: string;
-  delivery_deadline_at: string | null;
-  accepted_at: string | null;
-  reveal_after: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GatewayOperatorSnapshot {
-  served_at: string;
-  configured: true;
-  config: {
-    chain_id: number;
-    contract_address: string;
-    relayer_address: string;
-    confirmations: number;
-    retry_base_ms: number;
-    retry_max_ms: number;
-    max_attempts: number;
-    stuck_after_ms: number;
-  };
-  queues: {
-    due_for_broadcast: number;
-    submitted_awaiting_confirmation: number;
-    confirmed_awaiting_acceptance: number;
-    stuck: number;
-    stale_before: string;
-  };
-  status_counts: Record<FhenixGatewayTxStatus, number>;
-  telemetry: FhenixGatewayTelemetrySummary;
-  recent_attempts: GatewayOperatorAttempt[];
-  stuck_attempts: GatewayOperatorAttempt[];
-  feed_queues: {
-    due_for_broadcast: number;
-    submitted_awaiting_confirmation: number;
-    confirmed_awaiting_acceptance: number;
-    stuck: number;
-    stale_before: string;
-  };
-  feed_status_counts: Record<FhenixGatewayTxStatus, number>;
-  feed_telemetry: FhenixGatewayTelemetrySummary;
-  feed_recent_attempts: GatewayOperatorFeedAttempt[];
-  feed_stuck_attempts: GatewayOperatorFeedAttempt[];
-}
-
-export const MURMUR_SEALED_VERDICTS_GATEWAY_ABI = parseAbi([
-  "function submitSealedFor(address agent,bytes32 marketId,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) binaryIndexInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) confidenceInput,bytes32 clientNonce) returns (bytes32)",
-  "function submitFeedPacketFor(address agent,bytes32 feedId,bytes32 marketId,uint64 revealAfter,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) actionInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) signalInput,bytes32 clientNonce) returns (bytes32)",
-]);
-
-const GATEWAY_TX_STATUSES: FhenixGatewayTxStatus[] = [
-  "queued",
-  "submitted",
-  "confirmed",
-  "accepted",
-  "failed_retryable",
-  "failed_terminal",
-];
-
 export class FhenixGatewayBroadcaster {
   private readonly db: Database.Database;
   private readonly chainId: number;
   private readonly contractAddress: string;
   private readonly relayerAddress: string;
   private readonly client: FhenixGatewayClient;
+  private readonly murmurOwnedSealer: MurmurOwnedCofheSealer | null;
   private readonly confirmations: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
   private readonly maxAttempts: number;
   private readonly broadcastTimeoutMs: number;
+  private readonly reconcileFromBlock: number;
   private readonly stuckAfterMs: number;
+  private readonly timers: FhenixGatewayRuntimeTimers | undefined;
+  private readonly newAttemptId: (() => string) | undefined;
+  private readonly newClaimToken: (() => string) | undefined;
+  private readonly newFeedPacketId: FeedPacketIdAdapter | undefined;
+  private readonly newSealedCallId: SealedCallIdAdapter | undefined;
+  private readonly newAgentSecurityEventId: AgentSecurityEventIdAdapter | undefined;
   private readonly now: () => Date;
+  private readonly sealedKind: ReturnType<typeof sealedCallAttemptKind>;
+  private readonly feedKind: ReturnType<typeof feedPacketAttemptKind>;
 
   constructor(config: FhenixGatewayConfig) {
     this.db = config.db;
@@ -437,6 +168,7 @@ export class FhenixGatewayBroadcaster {
     this.contractAddress = normalizeAddress(config.contractAddress);
     this.relayerAddress = normalizeAddress(config.relayerAddress);
     this.client = config.client;
+    this.murmurOwnedSealer = config.murmurOwnedSealer ?? null;
     this.confirmations = Math.max(0, Math.floor(config.confirmations ?? 2));
     this.retryBaseMs = Math.max(1_000, Math.floor(config.retryBaseMs ?? 5_000));
     this.retryMaxMs = Math.max(this.retryBaseMs, Math.floor(config.retryMaxMs ?? 120_000));
@@ -447,7 +179,20 @@ export class FhenixGatewayBroadcaster {
     this.broadcastTimeoutMs = config.broadcastTimeoutMs === 0
       ? 0
       : Math.max(1_000, Math.floor(config.broadcastTimeoutMs ?? 90_000));
-    this.now = config.now ?? (() => new Date());
+    this.reconcileFromBlock = Math.max(0, Math.floor(config.reconcileFromBlock ?? 0));
+    this.timers = config.timers;
+    this.newAttemptId = config.newAttemptId;
+    this.newClaimToken = config.newClaimToken;
+    this.newFeedPacketId = config.newFeedPacketId;
+    this.newSealedCallId = config.newSealedCallId;
+    this.newAgentSecurityEventId = config.newAgentSecurityEventId;
+    this.now = config.now;
+    this.sealedKind = sealedCallAttemptKind({
+      newSealedCallId: this.newSealedCallId,
+    });
+    this.feedKind = feedPacketAttemptKind({
+      newFeedPacketId: this.newFeedPacketId,
+    });
   }
 
   async submitSealedCall(params: {
@@ -468,11 +213,7 @@ export class FhenixGatewayBroadcaster {
       params.authResult,
       "gateway submissions require X-Murmur-Runtime-Key auth",
     );
-    const {
-      agent_id: agentId,
-      account_id: accountId,
-      runtime_key: runtimeKey,
-    } = runtimeIdentity;
+    const { agent_id: agentId } = runtimeIdentity;
 
     const existingAttempt = fhenixGatewayTxRepo.byClientOrder(
       this.db,
@@ -523,118 +264,100 @@ export class FhenixGatewayBroadcaster {
         },
       );
     }
-    // Rate-limit check + queued-attempt insert must be atomic. Without the
-    // IMMEDIATE transaction below, two concurrent submissions can both pass
-    // the count check before either inserts — the relayer then burns gas
-    // on attempts that violate the policy. The IMMEDIATE lock serializes
-    // count-then-insert across writers; the broadcast (async) stays outside
-    // because better-sqlite3 transactions are sync-only.
-    const ts = nowIso(this.now());
-    const attempt = {
-      attempt_id: randomUUID(),
-      status: "queued" as const,
-      runtime_key_id: runtimeKey.runtime_key_id,
-      runtime_key_policy_hash: runtimeKey.policy_hash,
-      runtime_key_policy_json: runtimeKey.policy_json,
-      account_id: accountId,
-      agent_id: agentId,
-      chain_id: this.chainId,
-      contract_address: this.contractAddress,
-      relayer_address: this.relayerAddress,
-      agent_wallet_address: normalizeAddress(runtimeKey.controller_wallet_address),
-      market_id: market.market_id,
-      market_id_hash: fhenixMarketIdForMurmurMarket(market.market_id),
-      market_ref_protocol: body.marketRef.protocol,
-      market_config_version: body.marketRef.configVersion,
-      client_order_id: body.client_order_id,
-      client_nonce: body.client_nonce.toLowerCase(),
-      submitted_at: body.submitted_at ?? ts,
-      rationale: body.rationale ?? null,
-      strategy_tag: body.strategy_tag ?? null,
-      binary_index_input_json: JSON.stringify(body.binary_index_input),
-      confidence_input_json: JSON.stringify(body.confidence_input),
-      next_attempt_at: ts,
-      created_at: ts,
-      updated_at: ts,
-    };
-
-    let idempotentReturn: FhenixGatewayTxAttemptRow | null = null;
-    let idempotentSubmissionCallId: string | null = null;
-    const reserveAndInsert = this.db.transaction(() => {
-      // Re-check inside the lock: a competing process may have inserted
-      // the same (agent_id, client_order_id) attempt OR already promoted
-      // it to an accepted submission between our earlier pre-lock
-      // idempotency check and this point.
-      const competing = fhenixGatewayTxRepo.byClientOrder(
-        this.db,
-        agentId,
-        body.client_order_id,
-      );
-      if (competing) {
-        idempotentReturn = competing;
-        return;
-      }
-      const competingSubmission = submissionsRepo.findByClientOrderId(
-        this.db,
-        agentId,
-        body.client_order_id,
-      );
-      if (competingSubmission) {
-        idempotentSubmissionCallId = competingSubmission.call_id;
-        return;
-      }
-      authorizeRuntimeKeyGatewayIntent(
-        this.db,
-        runtimeIdentity,
-        {
-          kind: "sealed_call",
-          chain_id: this.chainId,
-          market_id: market.market_id,
-        },
-        { now: this.now },
-      );
-      preflightMarketAndRateLimits(this.db, agentId, market, this.now);
-      try {
-        fhenixGatewayTxRepo.insert(this.db, attempt);
-      } catch (err) {
-        if (isUniqueViolation(err)) {
-          const row = fhenixGatewayTxRepo.byClientOrder(
-            this.db,
-            agentId,
-            body.client_order_id,
-          );
-          if (row) {
-            idempotentReturn = row;
-            return;
-          }
-        }
-        throw err;
-      }
+    const reservation = reserveSealedCallAttempt({
+      db: this.db,
+      runtimeIdentity,
+      body,
+      market,
+      chainId: this.chainId,
+      contractAddress: this.contractAddress,
+      relayerAddress: this.relayerAddress,
+      newAttemptId: this.newAttemptId,
+      now: this.now,
     });
-    reserveAndInsert.immediate();
-
-    if (idempotentReturn) {
-      return resultFromAttempt(idempotentReturn, true);
+    if (reservation.kind === "existing_attempt") {
+      return resultFromAttempt(reservation.attempt, true);
     }
-    if (idempotentSubmissionCallId !== null) {
-      const callId: string = idempotentSubmissionCallId;
+    if (reservation.kind === "accepted_submission") {
       return {
         status: 200,
         body: {
           attempt_id: "",
           status: "accepted",
           tx_hash: null,
-          call_id: callId,
+          call_id: reservation.call_id,
           next_attempt_at: nowIso(this.now()),
           idempotent_hit: true,
         },
       };
     }
 
-    await this.broadcastAttempt(attempt.attempt_id);
-    const row = fhenixGatewayTxRepo.byId(this.db, attempt.attempt_id);
-    if (!row) throw new Error(`gateway attempt missing after insert: ${attempt.attempt_id}`);
+    await this.broadcastAttempt(reservation.attempt_id);
+    const row = fhenixGatewayTxRepo.byId(this.db, reservation.attempt_id);
+    if (!row) throw new Error(`gateway attempt missing after insert: ${reservation.attempt_id}`);
     return resultFromAttempt(row, false);
+  }
+
+  async submitMurmurSealedCall(params: {
+    authResult: AuthIdentity;
+    bodyJson: unknown;
+  }): Promise<GatewaySubmitResult> {
+    if (!this.murmurOwnedSealer) {
+      throw new VerdictError(
+        "Murmur-owned sealing is not configured; set MURMUR_OWNED_SEALING_ENABLED=true with CoFHE signer credentials",
+        ERROR_CODES.oracle_unavailable,
+        503,
+      );
+    }
+    const parsed = MurmurOwnedSealedCallBodySchema.safeParse(params.bodyJson);
+    if (!parsed.success) {
+      throw new VerdictError(
+        "murmur-owned sealed call failed schema validation",
+        ERROR_CODES.schema_invalid,
+        400,
+        { issues: parsed.error.format() },
+      );
+    }
+    const runtimeIdentity = requireRuntimeKeyIdentity(
+      params.authResult,
+      "murmur-owned sealing requires X-Murmur-Runtime-Key auth",
+    );
+    const existingAttempt = fhenixGatewayTxRepo.byClientOrder(
+      this.db,
+      runtimeIdentity.agent_id,
+      parsed.data.client_order_id,
+    );
+    if (existingAttempt) {
+      return resultFromAttempt(existingAttempt, true);
+    }
+    const existingSubmission = submissionsRepo.findByClientOrderId(
+      this.db,
+      runtimeIdentity.agent_id,
+      parsed.data.client_order_id,
+    );
+    if (existingSubmission) {
+      return {
+        status: 200,
+        body: {
+          attempt_id: "",
+          status: "accepted",
+          tx_hash: null,
+          call_id: existingSubmission.call_id,
+          next_attempt_at: nowIso(this.now()),
+          idempotent_hit: true,
+        },
+      };
+    }
+
+    const sealed = await this.murmurOwnedSealer.sealVerdict(parsed.data.verdict);
+    return this.submitSealedCall({
+      authResult: params.authResult,
+      bodyJson: murmurOwnedSealedCallToGatewayBody({
+        body: parsed.data,
+        binaryIndexInput: sealed.binary_index_input,
+        confidenceInput: sealed.confidence_input,
+      }),
+    });
   }
 
   async submitFeedPacket(params: {
@@ -656,11 +379,7 @@ export class FhenixGatewayBroadcaster {
       params.authResult,
       "gateway feed packets require X-Murmur-Runtime-Key auth",
     );
-    const {
-      agent_id: agentId,
-      account_id: accountId,
-      runtime_key: runtimeKey,
-    } = runtimeIdentity;
+    const { agent_id: agentId } = runtimeIdentity;
 
     const feed = feedContractsRepo.byId(this.db, params.feedId);
     if (!feed) {
@@ -687,241 +406,108 @@ export class FhenixGatewayBroadcaster {
         { feed_id: params.feedId, status: feed.status },
       );
     }
-    authorizeRuntimeKeyGatewayIntent(
-      this.db,
+    const reservation = reserveFeedPacketAttempt({
+      db: this.db,
       runtimeIdentity,
-      {
-        kind: "feed_packet",
-        chain_id: this.chainId,
-        market_id: body.market_id ?? null,
-      },
-      { now: this.now },
-    );
-    validateFeedPacketMarket(this.db, feed, body.market_id ?? null);
-
-    const existingAttempt = fhenixGatewayFeedPacketTxRepo.byClientOrder(
-      this.db,
-      agentId,
-      feed.feed_id,
-      body.client_order_id,
-    );
-    if (existingAttempt) {
-      return feedResultFromAttempt(existingAttempt, true, this.db);
+      body,
+      feed,
+      chainId: this.chainId,
+      contractAddress: this.contractAddress,
+      relayerAddress: this.relayerAddress,
+      newAttemptId: this.newAttemptId,
+      now: this.now,
+    });
+    if (reservation.kind === "existing_attempt") {
+      return feedResultFromAttempt(reservation.attempt, true, this.db);
     }
 
-    const now = this.now();
-    const ts = nowIso(now);
-    const revealAfter = deriveFeedRevealAfter(feed, body.reveal_after, now);
-    const revealAfterMs = Date.parse(revealAfter);
-    if (!Number.isFinite(revealAfterMs) || revealAfterMs <= now.getTime()) {
-      throw new VerdictError(
-        "feed packet reveal_after must be in the future",
-        ERROR_CODES.schema_invalid,
-        400,
-        { reveal_after: revealAfter },
-      );
-    }
-
-    const attemptId = randomUUID();
-    // Mirrors the sealed-call path: sequence-allocation + insert must be
-    // atomic under an IMMEDIATE lock so two concurrent submitFeedPacket
-    // calls don't both pick the same sequence number for a feed. The
-    // accepted-packet UNIQUE(feed_id, sequence) constraint would still
-    // reject one, but only after the relayer has already broadcast.
-    let idempotentFeedReturn: ReturnType<typeof fhenixGatewayFeedPacketTxRepo.byClientOrder> | null = null;
-    try {
-      const reserveFeedAttempt = this.db.transaction(() => {
-        const competing = fhenixGatewayFeedPacketTxRepo.byClientOrder(
-          this.db,
-          agentId,
-          feed.feed_id,
-          body.client_order_id,
-        );
-        if (competing) {
-          idempotentFeedReturn = competing;
-          return;
-        }
-        const sequence = body.sequence ?? Math.max(
-          feedPacketsRepo.nextSequence(this.db, feed.feed_id),
-          fhenixGatewayFeedPacketTxRepo.nextSequence(this.db, feed.feed_id),
-        );
-        // Explicit body.sequence bypasses the nextSequence allocator,
-        // and the gateway-attempt table doesn't carry a UNIQUE on
-        // (feed_id, sequence) — only the accepted_packet table does,
-        // and that fires much later (post-broadcast, post-confirmation).
-        // Catch the collision here, inside the IMMEDIATE-locked txn,
-        // so the relayer never wastes gas on a duplicate sequence.
-        if (
-          body.sequence !== undefined &&
-          fhenixGatewayFeedPacketTxRepo.hasNonTerminalSequence(this.db, feed.feed_id, sequence)
-        ) {
-          throw new VerdictError(
-            `feed packet sequence ${sequence} for feed ${feed.feed_id} is already held by a non-terminal gateway attempt`,
-            ERROR_CODES.duplicate,
-            409,
-            { feed_id: feed.feed_id, sequence },
-          );
-        }
-        const latest = feedPacketsRepo.latestForFeed(this.db, feed.feed_id);
-        const deadline = body.delivery_deadline_at ??
-          inferFeedDeliveryDeadline(feed, latest, sequence);
-        fhenixGatewayFeedPacketTxRepo.insert(this.db, {
-          attempt_id: attemptId,
-          status: "queued",
-          runtime_key_id: runtimeKey.runtime_key_id,
-          runtime_key_policy_hash: runtimeKey.policy_hash,
-          runtime_key_policy_json: runtimeKey.policy_json,
-          account_id: accountId,
-          agent_id: agentId,
-          chain_id: this.chainId,
-          contract_address: this.contractAddress,
-          relayer_address: this.relayerAddress,
-          agent_wallet_address: normalizeAddress(runtimeKey.controller_wallet_address),
-          feed_id: feed.feed_id,
-          feed_id_hash: fhenixFeedIdForMurmurFeed(feed.feed_id),
-          market_id: body.market_id ?? null,
-          market_id_hash: body.market_id ? fhenixMarketIdForMurmurMarket(body.market_id) : ZERO_BYTES32,
-          packet_kind: body.packet_kind,
-          sequence,
-          payload_schema: body.payload_schema,
-          client_order_id: body.client_order_id,
-          client_nonce: body.client_nonce.toLowerCase(),
-          submitted_at: body.submitted_at ?? ts,
-          delivery_deadline_at: deadline,
-          reveal_after: revealAfter,
-          action_input_json: JSON.stringify(body.action_input),
-          signal_input_json: JSON.stringify(body.signal_input),
-          next_attempt_at: ts,
-          created_at: ts,
-          updated_at: ts,
-        });
-      });
-      reserveFeedAttempt.immediate();
-    } catch (err) {
-      if (isUniqueViolation(err)) {
-        const row = fhenixGatewayFeedPacketTxRepo.byClientOrder(
-          this.db,
-          agentId,
-          feed.feed_id,
-          body.client_order_id,
-        );
-        if (row) return feedResultFromAttempt(row, true, this.db);
-      }
-      throw err;
-    }
-    if (idempotentFeedReturn) {
-      return feedResultFromAttempt(idempotentFeedReturn, true, this.db);
-    }
-
-    await this.broadcastFeedPacketAttempt(attemptId);
-    const row = fhenixGatewayFeedPacketTxRepo.byId(this.db, attemptId);
-    if (!row) throw new Error(`gateway feed attempt missing after insert: ${attemptId}`);
+    await this.broadcastFeedPacketAttempt(reservation.attempt_id);
+    const row = fhenixGatewayFeedPacketTxRepo.byId(this.db, reservation.attempt_id);
+    if (!row) throw new Error(`gateway feed attempt missing after insert: ${reservation.attempt_id}`);
     return feedResultFromAttempt(row, false, this.db);
   }
 
   async tick(): Promise<GatewayTickResult> {
-    let broadcasted = 0;
-    let confirmed = 0;
-    let accepted = 0;
-    let failed = 0;
+    const counters: GatewayTickResult = {
+      broadcasted: 0,
+      confirmed: 0,
+      accepted: 0,
+      failed: 0,
+    };
     // Release any claims held by crashed/killed broadcast processes BEFORE
     // listing due attempts. Without this, an attempt whose claimant died
     // mid-broadcast would stay claimed forever and never re-broadcast.
     const stuckBeforeIso = isoFromMs(this.now().getTime() - this.stuckAfterMs);
     const sweepUpdatedAt = nowIso(this.now());
-    fhenixGatewayTxRepo.sweepStuckClaims(this.db, {
+    this.sealedKind.lifecycle.sweepStuckClaims(this.db, {
       stuckBeforeIso,
       updated_at: sweepUpdatedAt,
       errorMessage: "broadcast claim stuck; reset by tick sweep",
     });
-    fhenixGatewayFeedPacketTxRepo.sweepStuckClaims(this.db, {
+    this.feedKind.lifecycle.sweepStuckClaims(this.db, {
       stuckBeforeIso,
       updated_at: sweepUpdatedAt,
       errorMessage: "broadcast claim stuck; reset by tick sweep",
     });
-    for (const attempt of fhenixGatewayTxRepo.listDueForBroadcast(
+    await this.tickKind(this.sealedKind, counters);
+    await this.tickKind(this.feedKind, counters);
+    return counters;
+  }
+
+  private async tickKind<Row extends GatewayAttemptLifecycleRow, Event>(
+    kind: GatewayAttemptKind<Row, Event>,
+    counters: GatewayTickResult,
+  ): Promise<void> {
+    for (const attempt of kind.lifecycle.listDueForBroadcast(
       this.db,
       nowIso(this.now()),
     )) {
       const before = attempt.attempt_count;
-      await this.broadcastAttempt(attempt.attempt_id);
-      const after = fhenixGatewayTxRepo.byId(this.db, attempt.attempt_id);
-      if (after?.status === "submitted" && after.attempt_count > before) broadcasted++;
-      if (after?.status === "failed_terminal") failed++;
+      await broadcastGatewayAttempt(kind, {
+        ...this.broadcastConfig(),
+        attemptId: attempt.attempt_id,
+      });
+      const after = kind.lifecycle.byId(this.db, attempt.attempt_id);
+      if (after?.status === "submitted" && after.attempt_count > before) counters.broadcasted++;
+      if (after?.status === "failed_terminal") counters.failed++;
     }
-    for (const attempt of fhenixGatewayTxRepo.listSubmittedForConfirmation(this.db)) {
-      const ok = await this.confirmAttempt(attempt);
+    for (const attempt of kind.lifecycle.listSubmittedForConfirmation(this.db)) {
+      const confirmed = await confirmGatewayAttempt(kind, {
+        db: this.db,
+        client: this.client,
+        confirmations: this.confirmations,
+        attempt,
+        now: this.now,
+      });
+      if (confirmed.kind !== "confirmed") continue;
+      const ok = confirmed.attempt
+        ? await kind.accept(this.db, confirmed.attempt, this.now)
+        : true;
       if (ok) {
-        confirmed++;
-        const after = fhenixGatewayTxRepo.byId(this.db, attempt.attempt_id);
-        if (after?.status === "accepted") accepted++;
+        counters.confirmed++;
+        const after = kind.lifecycle.byId(this.db, attempt.attempt_id);
+        if (after?.status === "accepted") counters.accepted++;
       }
     }
-    for (const attempt of fhenixGatewayTxRepo.listConfirmedForAcceptance(this.db)) {
-      const ok = await this.acceptConfirmedAttempt(attempt);
-      if (ok) accepted++;
-      else failed++;
+    for (const attempt of kind.lifecycle.listConfirmedForAcceptance(this.db)) {
+      const ok = await kind.accept(this.db, attempt, this.now);
+      if (ok) counters.accepted++;
+      else counters.failed++;
     }
-    for (const attempt of fhenixGatewayFeedPacketTxRepo.listDueForBroadcast(
-      this.db,
-      nowIso(this.now()),
-    )) {
-      const before = attempt.attempt_count;
-      await this.broadcastFeedPacketAttempt(attempt.attempt_id);
-      const after = fhenixGatewayFeedPacketTxRepo.byId(this.db, attempt.attempt_id);
-      if (after?.status === "submitted" && after.attempt_count > before) broadcasted++;
-      if (after?.status === "failed_terminal") failed++;
-    }
-    for (const attempt of fhenixGatewayFeedPacketTxRepo.listSubmittedForConfirmation(this.db)) {
-      const ok = await this.confirmFeedPacketAttempt(attempt);
-      if (ok) {
-        confirmed++;
-        const after = fhenixGatewayFeedPacketTxRepo.byId(this.db, attempt.attempt_id);
-        if (after?.status === "accepted") accepted++;
-      }
-    }
-    for (const attempt of fhenixGatewayFeedPacketTxRepo.listConfirmedForAcceptance(this.db)) {
-      const ok = await this.acceptConfirmedFeedPacketAttempt(attempt);
-      if (ok) accepted++;
-      else failed++;
-    }
-    return { broadcasted, confirmed, accepted, failed };
   }
 
   operatorSnapshot(opts: {
+    servedAt: Date;
     status?: FhenixGatewayTxStatus;
     limit?: number;
     stuckAfterMs?: number;
-  } = {}): GatewayOperatorSnapshot {
-    const servedAt = nowIso(this.now());
-    const stuckAfterMs = Math.max(
-      60_000,
-      Math.floor(opts.stuckAfterMs ?? this.stuckAfterMs),
-    );
-    const staleBefore = isoFromMs(this.now().getTime() - stuckAfterMs);
-    const statusCounts = Object.fromEntries(
-      GATEWAY_TX_STATUSES.map((status) => [status, 0]),
-    ) as Record<FhenixGatewayTxStatus, number>;
-    for (const row of fhenixGatewayTxRepo.statusCounts(this.db)) {
-      statusCounts[row.status] = row.count;
-    }
-    const feedStatusCounts = Object.fromEntries(
-      GATEWAY_TX_STATUSES.map((status) => [status, 0]),
-    ) as Record<FhenixGatewayTxStatus, number>;
-    for (const row of fhenixGatewayFeedPacketTxRepo.statusCounts(this.db)) {
-      feedStatusCounts[row.status] = row.count;
-    }
-    const stuck = fhenixGatewayTxRepo.listStuck(this.db, {
-      stale_before: staleBefore,
-      limit: opts.limit ?? 50,
-    });
-    const feedStuck = fhenixGatewayFeedPacketTxRepo.listStuck(this.db, {
-      stale_before: staleBefore,
-      limit: opts.limit ?? 50,
-    });
-    return {
-      served_at: servedAt,
-      configured: true,
+  }): GatewayOperatorSnapshot {
+    return buildGatewayOperatorSnapshot({
+      db: this.db,
+      servedAt: opts.servedAt,
+      status: opts.status,
+      limit: opts.limit,
+      stuckAfterMs: opts.stuckAfterMs,
       config: {
         chain_id: this.chainId,
         contract_address: this.contractAddress,
@@ -930,1083 +516,144 @@ export class FhenixGatewayBroadcaster {
         retry_base_ms: this.retryBaseMs,
         retry_max_ms: this.retryMaxMs,
         max_attempts: this.maxAttempts,
-        stuck_after_ms: stuckAfterMs,
+        stuck_after_ms: this.stuckAfterMs,
       },
-      queues: {
-        due_for_broadcast: fhenixGatewayTxRepo.countDueForBroadcast(this.db, servedAt),
-        submitted_awaiting_confirmation: fhenixGatewayTxRepo.countSubmittedForConfirmation(this.db),
-        confirmed_awaiting_acceptance: fhenixGatewayTxRepo.countConfirmedForAcceptance(this.db),
-        stuck: stuck.length,
-        stale_before: staleBefore,
-	      },
-	      status_counts: statusCounts,
-	      telemetry: fhenixGatewayTxRepo.telemetrySummary(this.db),
-	      recent_attempts: fhenixGatewayTxRepo
-	        .listRecent(this.db, { status: opts.status, limit: opts.limit ?? 50 })
-	        .map(operatorAttempt),
-      stuck_attempts: stuck.map(operatorAttempt),
-      feed_queues: {
-        due_for_broadcast: fhenixGatewayFeedPacketTxRepo.countDueForBroadcast(this.db, servedAt),
-        submitted_awaiting_confirmation: fhenixGatewayFeedPacketTxRepo.countSubmittedForConfirmation(this.db),
-        confirmed_awaiting_acceptance: fhenixGatewayFeedPacketTxRepo.countConfirmedForAcceptance(this.db),
-        stuck: feedStuck.length,
-        stale_before: staleBefore,
-	      },
-	      feed_status_counts: feedStatusCounts,
-	      feed_telemetry: fhenixGatewayFeedPacketTxRepo.telemetrySummary(this.db),
-	      feed_recent_attempts: fhenixGatewayFeedPacketTxRepo
-	        .listRecent(this.db, { status: opts.status, limit: opts.limit ?? 50 })
-	        .map(operatorFeedAttempt),
-      feed_stuck_attempts: feedStuck.map(operatorFeedAttempt),
-    };
+    });
   }
 
   async retryAttemptNow(
     attemptId: string,
   ): Promise<GatewaySubmitResult | GatewayFeedPacketSubmitResult> {
-    const attempt = fhenixGatewayTxRepo.byId(this.db, attemptId);
-    if (attempt) {
-      if (!["queued", "failed_retryable"].includes(attempt.status)) {
-        throw new VerdictError(
-          `cannot retry gateway attempt in status=${attempt.status}`,
-          ERROR_CODES.schema_invalid,
-          409,
-          {
-            attempt_id: attempt.attempt_id,
-            status: attempt.status,
-          },
-        );
-      }
-      fhenixGatewayTxRepo.markRetryNow(this.db, {
+    const sealed = await this.retryKind(this.sealedKind, attemptId);
+    if (sealed) return sealed;
+    const feed = await this.retryKind(this.feedKind, attemptId);
+    if (feed) return feed;
+    throw new VerdictError(
+      `unknown Fhenix Gateway attempt: ${attemptId}`,
+      ERROR_CODES.asset_not_supported,
+      404,
+    );
+  }
+
+  private async retryKind<Row extends GatewayAttemptLifecycleRow, Event>(
+    kind: GatewayAttemptKind<Row, Event>,
+    attemptId: string,
+  ): Promise<GatewaySubmitResult | GatewayFeedPacketSubmitResult | null> {
+    const attempt = kind.lifecycle.byId(this.db, attemptId);
+    if (!attempt) return null;
+    if (!["queued", "failed_retryable"].includes(attempt.status)) {
+      throw new VerdictError(
+        kind.retryConflictMessage(attempt.status),
+        ERROR_CODES.schema_invalid,
+        409,
+        {
+          attempt_id: attempt.attempt_id,
+          status: attempt.status,
+        },
+      );
+    }
+    // Fix 3 — emit `admin_fhenix_gateway_retry` audit in the same
+    // transaction as the queue-state mutation so the forensic record
+    // and the state change commit together. Resolve agent_id from the
+    // attempt's wallet so listForAgent surfaces the retry in the agent's
+    // own security timeline (codex audit finding).
+    // agents.chain_id is CAIP-2 (schema.ts ChainIdSchema), so the lookup
+    // must use the eip155 form — a bare numeric string never matches.
+    const agent = agentsRepo.byWallet(
+      this.db,
+      attempt.agent_wallet_address,
+      `eip155:${this.chainId}`,
+    );
+    this.db.transaction(() => {
+      kind.lifecycle.markRetryNow(this.db, {
         attempt_id: attempt.attempt_id,
         next_attempt_at: nowIso(this.now()),
         updated_at: nowIso(this.now()),
       });
-      await this.broadcastAttempt(attempt.attempt_id);
-      const row = fhenixGatewayTxRepo.byId(this.db, attempt.attempt_id);
-      if (!row) throw new Error(`gateway attempt missing after retry: ${attempt.attempt_id}`);
-      return resultFromAttempt(row, false);
-    }
-    const feedAttempt = fhenixGatewayFeedPacketTxRepo.byId(this.db, attemptId);
-    if (!feedAttempt) {
-      throw new VerdictError(
-        `unknown Fhenix Gateway attempt: ${attemptId}`,
-        ERROR_CODES.asset_not_supported,
-        404,
+      agentSecurityEventsRepo.emit(
+        this.db,
+        makeAgentSecurityEvent({
+          kind: "admin_fhenix_gateway_retry",
+          actor: "admin_token",
+          agent_id: agent?.agent_id ?? null,
+          newEventId: this.newAgentSecurityEventId,
+          payload: kind.retryAuditPayload(attempt, {
+            chain_id: this.chainId,
+            contract_address: this.contractAddress,
+          }),
+          createdAt: this.now(),
+        }),
       );
-    }
-    if (!["queued", "failed_retryable"].includes(feedAttempt.status)) {
-      throw new VerdictError(
-        `cannot retry gateway feed attempt in status=${feedAttempt.status}`,
-        ERROR_CODES.schema_invalid,
-        409,
-        {
-          attempt_id: feedAttempt.attempt_id,
-          status: feedAttempt.status,
-        },
-      );
-    }
-    fhenixGatewayFeedPacketTxRepo.markRetryNow(this.db, {
-      attempt_id: feedAttempt.attempt_id,
-      next_attempt_at: nowIso(this.now()),
-      updated_at: nowIso(this.now()),
+    })();
+    await broadcastGatewayAttempt(kind, {
+      ...this.broadcastConfig(),
+      attemptId: attempt.attempt_id,
     });
-    await this.broadcastFeedPacketAttempt(feedAttempt.attempt_id);
-    const row = fhenixGatewayFeedPacketTxRepo.byId(this.db, feedAttempt.attempt_id);
-    if (!row) throw new Error(`gateway feed attempt missing after retry: ${feedAttempt.attempt_id}`);
-    return feedResultFromAttempt(row, false, this.db);
+    const row = kind.lifecycle.byId(this.db, attempt.attempt_id);
+    if (!row) {
+      throw new Error(
+        kind.label === "feed_packet"
+          ? `gateway feed attempt missing after retry: ${attempt.attempt_id}`
+          : `gateway attempt missing after retry: ${attempt.attempt_id}`,
+      );
+    }
+    return kind.presentResult(this.db, row, false);
   }
 
   private async broadcastAttempt(attemptId: string): Promise<void> {
-    const attempt = fhenixGatewayTxRepo.byId(this.db, attemptId);
-    if (!attempt || !["queued", "failed_retryable"].includes(attempt.status)) return;
-    if (
-      attempt.runtime_key_id &&
-      !isRuntimeKeyActive(this.db, attempt.runtime_key_id, { now: this.now })
-    ) {
-      fhenixGatewayTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: "Runtime Key revoked or expired before broadcast",
-        updated_at: nowIso(this.now()),
-      });
-      return;
-    }
-    if (attempt.attempt_count >= this.maxAttempts) {
-      fhenixGatewayTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: `Gateway relay exceeded max attempts (${this.maxAttempts})`,
-        updated_at: nowIso(this.now()),
-      });
-      return;
-    }
-    const broadcastStartedAt = nowIso(this.now());
-    // Claim the row atomically. If another writer (e.g. the relayer tick
-    // racing the synchronous submit path) already claimed it, abort —
-    // the winner will broadcast and mark. We RETAIN the token locally so
-    // the post-broadcast mark is conditional on the row still carrying
-    // OUR claim. Without this, a slow writeContract that outlives
-    // stuckAfterMs could be reclaimed by another writer; our late mark
-    // would then overwrite the new winner's result.
-    const claimToken = randomUUID();
-    const claimed = fhenixGatewayTxRepo.claimForBroadcast(this.db, {
-      attempt_id: attempt.attempt_id,
-      broadcast_started_at: broadcastStartedAt,
-      updated_at: broadcastStartedAt,
-      token: claimToken,
+    await broadcastGatewayAttempt(this.sealedKind, {
+      ...this.broadcastConfig(),
+      attemptId,
     });
-    if (!claimed) return;
-    try {
-      const { value: txHash, latencyMs } = await measure(() =>
-        withTimeout(
-          this.client.writeContract({
-            address: this.contractAddress as Address,
-            abi: MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
-            functionName: "submitSealedFor",
-            args: [
-              attempt.agent_wallet_address as Address,
-              attempt.market_id_hash as Hex,
-              contractInput(JSON.parse(attempt.binary_index_input_json) as CofheInput),
-              contractInput(JSON.parse(attempt.confidence_input_json) as CofheInput),
-              attempt.client_nonce as Hex,
-            ],
-          }),
-          this.broadcastTimeoutMs,
-          "submitSealedFor",
-        ),
-      );
-      fhenixGatewayTxRepo.markSubmitted(this.db, {
-        attempt_id: attempt.attempt_id,
-        tx_hash: txHash.toLowerCase(),
-        next_attempt_at: isoFromMs(this.now().getTime() + this.retryMaxMs),
-        updated_at: nowIso(this.now()),
-        broadcast_started_at: broadcastStartedAt,
-        broadcast_latency_ms: latencyMs,
-        claim_token: claimToken,
-      });
-    } catch (err) {
-      fhenixGatewayTxRepo.markRetryableFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: errorMessage(err),
-        next_attempt_at: this.nextRetryAt(attempt.attempt_count + 1),
-        updated_at: nowIso(this.now()),
-        broadcast_started_at: broadcastStartedAt,
-        broadcast_latency_ms: null,
-        claim_token: claimToken,
-      });
-    }
   }
 
   private async broadcastFeedPacketAttempt(attemptId: string): Promise<void> {
-    const attempt = fhenixGatewayFeedPacketTxRepo.byId(this.db, attemptId);
-    if (!attempt || !["queued", "failed_retryable"].includes(attempt.status)) return;
-    if (
-      attempt.runtime_key_id &&
-      !isRuntimeKeyActive(this.db, attempt.runtime_key_id, { now: this.now })
-    ) {
-      fhenixGatewayFeedPacketTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: "Runtime Key revoked or expired before feed packet broadcast",
-        updated_at: nowIso(this.now()),
-      });
-      return;
-    }
-    if (attempt.attempt_count >= this.maxAttempts) {
-      fhenixGatewayFeedPacketTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: `Gateway feed relay exceeded max attempts (${this.maxAttempts})`,
-        updated_at: nowIso(this.now()),
-      });
-      return;
-    }
-    const broadcastStartedAt = nowIso(this.now());
-    // Claim the row atomically — see broadcastAttempt comment for the
-    // token-retention rationale.
-    const claimToken = randomUUID();
-    const claimed = fhenixGatewayFeedPacketTxRepo.claimForBroadcast(this.db, {
-      attempt_id: attempt.attempt_id,
-      broadcast_started_at: broadcastStartedAt,
-      updated_at: broadcastStartedAt,
-      token: claimToken,
+    await broadcastGatewayAttempt(this.feedKind, {
+      ...this.broadcastConfig(),
+      attemptId,
     });
-    if (!claimed) return;
-    try {
-      const { value: txHash, latencyMs } = await measure(() =>
-        withTimeout(
-          this.client.writeContract({
-            address: this.contractAddress as Address,
-            abi: MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
-            functionName: "submitFeedPacketFor",
-            args: [
-              attempt.agent_wallet_address as Address,
-              attempt.feed_id_hash as Hex,
-              attempt.market_id_hash as Hex,
-              BigInt(Math.floor(Date.parse(attempt.reveal_after) / 1000)),
-              contractInput(JSON.parse(attempt.action_input_json) as CofheInput),
-              contractInput(JSON.parse(attempt.signal_input_json) as CofheInput),
-              attempt.client_nonce as Hex,
-            ],
-          }),
-          this.broadcastTimeoutMs,
-          "submitFeedPacketFor",
-        ),
-      );
-      fhenixGatewayFeedPacketTxRepo.markSubmitted(this.db, {
-        attempt_id: attempt.attempt_id,
-        tx_hash: txHash.toLowerCase(),
-        next_attempt_at: isoFromMs(this.now().getTime() + this.retryMaxMs),
-        updated_at: nowIso(this.now()),
-        broadcast_started_at: broadcastStartedAt,
-        broadcast_latency_ms: latencyMs,
-        claim_token: claimToken,
-      });
-    } catch (err) {
-      fhenixGatewayFeedPacketTxRepo.markRetryableFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: errorMessage(err),
-        next_attempt_at: this.nextRetryAt(attempt.attempt_count + 1),
-        updated_at: nowIso(this.now()),
-        broadcast_started_at: broadcastStartedAt,
-        broadcast_latency_ms: null,
-        claim_token: claimToken,
-      });
-    }
   }
 
-	  private async confirmAttempt(attempt: FhenixGatewayTxAttemptRow): Promise<boolean> {
-	    if (!attempt.tx_hash) return false;
-	    const receiptObservedAt = nowIso(this.now());
-	    let measuredReceipt: Measured<GatewayReceipt>;
-	    try {
-	      measuredReceipt = await measure(() =>
-	        this.client.getTransactionReceipt({ hash: attempt.tx_hash as Hex }),
-	      );
-	    } catch (err) {
-	      fhenixGatewayTxRepo.recordRpcError(this.db, {
-	        attempt_id: attempt.attempt_id,
-	        receipt_observed_at: receiptObservedAt,
-	        receipt_latency_ms: null,
-	        last_rpc_error: errorMessage(err),
-	      });
-	      return false;
-	    }
-	    const receipt = measuredReceipt.value;
-	    let confirmation: ConfirmationState;
-	    try {
-	      confirmation = await this.confirmationState(receipt);
-	    } catch (err) {
-	      fhenixGatewayTxRepo.recordReceiptTelemetry(this.db, receiptTelemetry({
-	        attempt_id: attempt.attempt_id,
-	        receipt,
-	        receipt_observed_at: receiptObservedAt,
-	        receipt_latency_ms: measuredReceipt.latencyMs,
-	        confirmation: null,
-	        last_rpc_error: errorMessage(err),
-	      }));
-	      return false;
-	    }
-	    fhenixGatewayTxRepo.recordReceiptTelemetry(this.db, receiptTelemetry({
-	      attempt_id: attempt.attempt_id,
-	      receipt,
-	      receipt_observed_at: receiptObservedAt,
-	      receipt_latency_ms: measuredReceipt.latencyMs,
-	      confirmation,
-	      last_rpc_error: null,
-	    }));
-	    if (receipt.status === "reverted") {
-	      fhenixGatewayTxRepo.markTerminalFailure(this.db, {
-	        attempt_id: attempt.attempt_id,
-	        last_error: "Fhenix Gateway relay transaction reverted",
-	        updated_at: nowIso(this.now()),
-	      });
-	      return false;
-	    }
-	    if (!confirmation.ready) return false;
-	    const event = this.extractSubmitEvent(attempt, receipt);
-	    if (!event) return false;
-    fhenixGatewayTxRepo.markConfirmed(this.db, {
-      attempt_id: attempt.attempt_id,
-      submit_log_index: event.logIndex,
-      submit_block_number: event.blockNumber,
-      onchain_call_id: event.onchain_call_id,
-      binary_index_ct_hash: event.binary_index_ct_hash,
-      confidence_ct_hash: event.confidence_ct_hash,
-      accepted_at: event.accepted_at,
-      reveal_open_at: event.reveal_open_at,
-      updated_at: nowIso(this.now()),
-    });
-    const confirmed = fhenixGatewayTxRepo.byId(this.db, attempt.attempt_id);
-    return confirmed ? this.acceptConfirmedAttempt(confirmed) : true;
-  }
-
-	  private async confirmFeedPacketAttempt(
-	    attempt: FhenixGatewayFeedPacketTxAttemptRow,
-	  ): Promise<boolean> {
-	    if (!attempt.tx_hash) return false;
-	    const receiptObservedAt = nowIso(this.now());
-	    let measuredReceipt: Measured<GatewayReceipt>;
-	    try {
-	      measuredReceipt = await measure(() =>
-	        this.client.getTransactionReceipt({ hash: attempt.tx_hash as Hex }),
-	      );
-	    } catch (err) {
-	      fhenixGatewayFeedPacketTxRepo.recordRpcError(this.db, {
-	        attempt_id: attempt.attempt_id,
-	        receipt_observed_at: receiptObservedAt,
-	        receipt_latency_ms: null,
-	        last_rpc_error: errorMessage(err),
-	      });
-	      return false;
-	    }
-	    const receipt = measuredReceipt.value;
-	    let confirmation: ConfirmationState;
-	    try {
-	      confirmation = await this.confirmationState(receipt);
-	    } catch (err) {
-	      fhenixGatewayFeedPacketTxRepo.recordReceiptTelemetry(this.db, receiptTelemetry({
-	        attempt_id: attempt.attempt_id,
-	        receipt,
-	        receipt_observed_at: receiptObservedAt,
-	        receipt_latency_ms: measuredReceipt.latencyMs,
-	        confirmation: null,
-	        last_rpc_error: errorMessage(err),
-	      }));
-	      return false;
-	    }
-	    fhenixGatewayFeedPacketTxRepo.recordReceiptTelemetry(this.db, receiptTelemetry({
-	      attempt_id: attempt.attempt_id,
-	      receipt,
-	      receipt_observed_at: receiptObservedAt,
-	      receipt_latency_ms: measuredReceipt.latencyMs,
-	      confirmation,
-	      last_rpc_error: null,
-	    }));
-	    if (receipt.status === "reverted") {
-	      fhenixGatewayFeedPacketTxRepo.markTerminalFailure(this.db, {
-	        attempt_id: attempt.attempt_id,
-	        last_error: "Fhenix Gateway feed relay transaction reverted",
-	        updated_at: nowIso(this.now()),
-	      });
-	      return false;
-	    }
-	    if (!confirmation.ready) return false;
-	    const event = this.extractFeedPacketEvent(attempt, receipt);
-    if (!event) return false;
-    fhenixGatewayFeedPacketTxRepo.markConfirmed(this.db, {
-      attempt_id: attempt.attempt_id,
-      submit_log_index: event.logIndex,
-      submit_block_number: event.blockNumber,
-      onchain_packet_id: event.onchain_packet_id,
-      action_ct_hash: event.action_ct_hash,
-      signal_ct_hash: event.signal_ct_hash,
-      accepted_at: event.accepted_at,
-      updated_at: nowIso(this.now()),
-    });
-    const confirmed = fhenixGatewayFeedPacketTxRepo.byId(this.db, attempt.attempt_id);
-    return confirmed ? this.acceptConfirmedFeedPacketAttempt(confirmed) : true;
-  }
-
-  private async acceptConfirmedAttempt(attempt: FhenixGatewayTxAttemptRow): Promise<boolean> {
-    if (
-      !attempt.tx_hash ||
-      attempt.submit_log_index === null ||
-      !attempt.onchain_call_id ||
-      !attempt.binary_index_ct_hash ||
-      !attempt.confidence_ct_hash ||
-      !attempt.accepted_at ||
-      !attempt.reveal_open_at
-    ) {
-      fhenixGatewayTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: "confirmed gateway attempt is missing event metadata",
-        updated_at: nowIso(this.now()),
-      });
-      return false;
-    }
-    const market = marketsRepo.get(this.db, attempt.market_id);
-    if (!market) {
-      fhenixGatewayTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: `confirmed gateway attempt references unknown market ${attempt.market_id}`,
-        updated_at: nowIso(this.now()),
-      });
-      return false;
-    }
-    try {
-      const result = await acceptSealedCall({
-        db: this.db,
-        authResult: runtimeKeyAcceptanceAuthIdentity({
-          agent_id: attempt.agent_id,
-          account_id: attempt.account_id,
-          runtime_key_id: attempt.runtime_key_id,
-          runtime_key_policy_json: attempt.runtime_key_policy_json,
-          runtime_key_policy_hash: attempt.runtime_key_policy_hash,
-          controller_wallet_address: attempt.agent_wallet_address,
-          controller_chain_id: `eip155:${attempt.chain_id}`,
-        }),
-        market,
-        client_order_id: attempt.client_order_id,
-        submitted_at: attempt.submitted_at,
-        rationale: attempt.rationale ?? undefined,
-        strategy_tag: attempt.strategy_tag ?? undefined,
-        verifiedSubmit: {
-          chain_id: attempt.chain_id,
-          contract_address: attempt.contract_address,
-          onchain_call_id: attempt.onchain_call_id,
-          submit_tx_hash: attempt.tx_hash,
-          submit_log_index: attempt.submit_log_index,
-          binary_index_ct_hash: attempt.binary_index_ct_hash,
-          confidence_ct_hash: attempt.confidence_ct_hash,
-          accepted_at: attempt.accepted_at,
-          reveal_open_at: attempt.reveal_open_at,
-          agent_wallet: attempt.agent_wallet_address,
-          market_id_hash: attempt.market_id_hash,
-          client_nonce: attempt.client_nonce,
-        },
-        now: this.now,
-      });
-      fhenixGatewayTxRepo.markAccepted(this.db, {
-        attempt_id: attempt.attempt_id,
-        call_id: result.body.call_id,
-        updated_at: nowIso(this.now()),
-      });
-      return true;
-    } catch (err) {
-      fhenixGatewayTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: errorMessage(err),
-        updated_at: nowIso(this.now()),
-      });
-      return false;
-    }
-  }
-
-  private async acceptConfirmedFeedPacketAttempt(
-    attempt: FhenixGatewayFeedPacketTxAttemptRow,
-  ): Promise<boolean> {
-    if (
-      !attempt.tx_hash ||
-      attempt.submit_log_index === null ||
-      !attempt.onchain_packet_id ||
-      !attempt.action_ct_hash ||
-      !attempt.signal_ct_hash ||
-      !attempt.accepted_at
-    ) {
-      fhenixGatewayFeedPacketTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: "confirmed gateway feed packet attempt is missing event metadata",
-        updated_at: nowIso(this.now()),
-      });
-      return false;
-    }
-    try {
-      const existing = feedPacketsRepo.byFhenixEvent(this.db, {
-        chain_id: attempt.chain_id,
-        contract_address: attempt.contract_address,
-        onchain_packet_id: attempt.onchain_packet_id,
-      });
-      if (existing) {
-        fhenixGatewayFeedPacketTxRepo.markAccepted(this.db, {
-          attempt_id: attempt.attempt_id,
-          packet_id: existing.packet_id,
-          updated_at: nowIso(this.now()),
-        });
-        return true;
-      }
-      const packetId = randomUUID();
-      const slaStatus = classifyFeedPacketSla(
-        attempt.accepted_at,
-        attempt.delivery_deadline_at,
-      );
-      this.db.transaction(() => {
-        feedPacketsRepo.insert(this.db, {
-          packet_id: packetId,
-          feed_id: attempt.feed_id,
-          agent_id: attempt.agent_id,
-          market_id: attempt.market_id,
-          packet_kind: attempt.packet_kind,
-          sequence: attempt.sequence,
-          payload_schema: attempt.payload_schema,
-          submitted_at: attempt.submitted_at,
-          accepted_at: attempt.accepted_at!,
-          reveal_after: attempt.reveal_after,
-          delivery_deadline_at: attempt.delivery_deadline_at,
-          sla_status: slaStatus,
-          chain_id: attempt.chain_id,
-          contract_address: attempt.contract_address,
-          onchain_packet_id: attempt.onchain_packet_id!,
-          submit_tx_hash: attempt.tx_hash!,
-          submit_log_index: attempt.submit_log_index!,
-          packet_ct_hash: attempt.action_ct_hash!,
-          binary_index_ct_hash: attempt.action_ct_hash!,
-          confidence_ct_hash: attempt.signal_ct_hash!,
-          created_at: nowIso(this.now()),
-        });
-        fhenixGatewayFeedPacketTxRepo.markAccepted(this.db, {
-          attempt_id: attempt.attempt_id,
-          packet_id: packetId,
-          updated_at: nowIso(this.now()),
-        });
-      })();
-      return true;
-    } catch (err) {
-      if (isUniqueViolation(err)) {
-        const existing = feedPacketsRepo.byFhenixEvent(this.db, {
-          chain_id: attempt.chain_id,
-          contract_address: attempt.contract_address,
-          onchain_packet_id: attempt.onchain_packet_id ?? "",
-        });
-        if (existing) {
-          fhenixGatewayFeedPacketTxRepo.markAccepted(this.db, {
-            attempt_id: attempt.attempt_id,
-            packet_id: existing.packet_id,
-            updated_at: nowIso(this.now()),
-          });
-          return true;
-        }
-      }
-      fhenixGatewayFeedPacketTxRepo.markTerminalFailure(this.db, {
-        attempt_id: attempt.attempt_id,
-        last_error: errorMessage(err),
-        updated_at: nowIso(this.now()),
-      });
-      return false;
-    }
-  }
-
-	  private async confirmationState(receipt: GatewayReceipt): Promise<ConfirmationState> {
-	    if (this.confirmations === 0 || receipt.blockNumber === undefined) {
-	      return {
-	        ready: true,
-	        latestBlockNumber: safeBlockNumber(receipt.blockNumber),
-	        latestBlockLatencyMs: null,
-	        confirmationsObserved: receipt.blockNumber === undefined ? null : 1,
-	      };
-	    }
-	    const latest = await measure(() => this.client.getBlockNumber());
-	    const observed = latest.value >= receipt.blockNumber
-	      ? latest.value - receipt.blockNumber + 1n
-	      : 0n;
-	    return {
-	      ready: latest.value >= receipt.blockNumber + BigInt(this.confirmations - 1),
-	      latestBlockNumber: safeBlockNumber(latest.value),
-	      latestBlockLatencyMs: latest.latencyMs,
-	      confirmationsObserved: safeBlockNumber(observed),
-	    };
-	  }
-
-  private extractSubmitEvent(
-    attempt: FhenixGatewayTxAttemptRow,
-    receipt: GatewayReceipt,
-  ): {
-    logIndex: number;
-    blockNumber: number | null;
-    onchain_call_id: string;
-    binary_index_ct_hash: string;
-    confidence_ct_hash: string;
-    accepted_at: string;
-    reveal_open_at: string;
-  } | null {
-    for (const log of receipt.logs) {
-      if (!isAddressEqual(getAddress(log.address), getAddress(attempt.contract_address as Address))) {
-        continue;
-      }
-      try {
-        const decoded = decodeEventLog({
-          abi: [SEALED_CALL_SUBMITTED_EVENT],
-          data: log.data,
-          topics: log.topics as [Hex, ...Hex[]],
-        });
-        const args = decoded.args as {
-          callId: Hex;
-          agent: Address;
-          marketId: Hex;
-          acceptedAt: bigint;
-          revealOpenAt: bigint;
-          binaryIndexCtHash: Hex;
-          confidenceCtHash: Hex;
-          clientNonce: Hex;
-        };
-        if (decoded.eventName !== "SealedCallSubmitted") continue;
-        if (!isAddressEqual(args.agent, attempt.agent_wallet_address as Address)) continue;
-        if (args.marketId.toLowerCase() !== attempt.market_id_hash) continue;
-        if (args.clientNonce.toLowerCase() !== attempt.client_nonce) continue;
-        return {
-          logIndex: log.logIndex,
-          blockNumber: safeBlockNumber(log.blockNumber ?? receipt.blockNumber),
-          onchain_call_id: args.callId.toLowerCase(),
-          binary_index_ct_hash: args.binaryIndexCtHash.toLowerCase(),
-          confidence_ct_hash: args.confidenceCtHash.toLowerCase(),
-          accepted_at: unixSecondsToIso(args.acceptedAt),
-          reveal_open_at: unixSecondsToIso(args.revealOpenAt),
-        };
-      } catch {
-        continue;
-      }
-    }
-    return null;
-  }
-
-  private extractFeedPacketEvent(
-    attempt: FhenixGatewayFeedPacketTxAttemptRow,
-    receipt: GatewayReceipt,
-  ): {
-    logIndex: number;
-    blockNumber: number | null;
-    onchain_packet_id: string;
-    action_ct_hash: string;
-    signal_ct_hash: string;
-    accepted_at: string;
-  } | null {
-    for (const log of receipt.logs) {
-      if (!isAddressEqual(getAddress(log.address), getAddress(attempt.contract_address as Address))) {
-        continue;
-      }
-      try {
-        const decoded = decodeEventLog({
-          abi: [FEED_PACKET_SUBMITTED_EVENT],
-          data: log.data,
-          topics: log.topics as [Hex, ...Hex[]],
-        });
-        const args = decoded.args as {
-          packetId: Hex;
-          agent: Address;
-          feedId: Hex;
-          marketId: Hex;
-          acceptedAt: bigint;
-          revealAfter: bigint;
-          actionCtHash: Hex;
-          signalCtHash: Hex;
-          clientNonce: Hex;
-        };
-        if (decoded.eventName !== "FeedPacketSubmitted") continue;
-        if (!isAddressEqual(args.agent, attempt.agent_wallet_address as Address)) continue;
-        if (args.feedId.toLowerCase() !== attempt.feed_id_hash) continue;
-        if (args.marketId.toLowerCase() !== attempt.market_id_hash) continue;
-        if (args.clientNonce.toLowerCase() !== attempt.client_nonce) continue;
-        const revealAfter = unixSecondsToIso(args.revealAfter);
-        if (revealAfter !== attempt.reveal_after) continue;
-        return {
-          logIndex: log.logIndex,
-          blockNumber: safeBlockNumber(log.blockNumber ?? receipt.blockNumber),
-          onchain_packet_id: args.packetId.toLowerCase(),
-          action_ct_hash: args.actionCtHash.toLowerCase(),
-          signal_ct_hash: args.signalCtHash.toLowerCase(),
-          accepted_at: unixSecondsToIso(args.acceptedAt),
-        };
-      } catch {
-        continue;
-      }
-    }
-    return null;
-  }
-
-  private nextRetryAt(nextAttemptNumber: number): string {
-    const delay = Math.min(
-      this.retryMaxMs,
-      this.retryBaseMs * 2 ** Math.max(0, nextAttemptNumber - 1),
-    );
-    return isoFromMs(this.now().getTime() + delay);
+  private broadcastConfig() {
+    return {
+      db: this.db,
+      client: this.client,
+      chainId: this.chainId,
+      contractAddress: this.contractAddress,
+      reconcileFromBlock: this.reconcileFromBlock,
+      maxAttempts: this.maxAttempts,
+      retryBaseMs: this.retryBaseMs,
+      retryMaxMs: this.retryMaxMs,
+      broadcastTimeoutMs: this.broadcastTimeoutMs,
+      timers: this.timers,
+      newClaimToken: this.newClaimToken,
+      now: this.now,
+    };
   }
 }
 
 export function createFhenixGatewayFromEnv(
   db: Database.Database,
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    timers?: FhenixGatewayRuntimeTimers;
+    newAttemptId?: () => string;
+    newClaimToken?: () => string;
+    newFeedPacketId?: FeedPacketIdAdapter;
+    newSealedCallId?: SealedCallIdAdapter;
+    now: () => Date;
+  },
 ): FhenixGatewayBroadcaster | null {
-  const enabled = process.env.FHENIX_GATEWAY_ENABLED === "true";
-  const rpcUrl = process.env.FHENIX_RPC_URL?.trim();
-  const rawChainId = process.env.FHENIX_CHAIN_ID?.trim();
-  const privateKey = process.env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY?.trim();
-  if (!enabled) return null;
-  if (!rpcUrl || !rawChainId || !privateKey) {
-    throw new Error(
-      "FHENIX_GATEWAY_ENABLED=true requires FHENIX_RPC_URL, FHENIX_CHAIN_ID, and FHENIX_GATEWAY_RELAYER_PRIVATE_KEY",
-    );
-  }
-  const chainId = Number(rawChainId);
-  if (!Number.isInteger(chainId) || chainId <= 0) {
-    throw new Error("FHENIX_CHAIN_ID must be a positive integer");
-  }
-  const contractAddress = resolveFhenixContractAddress(chainId);
-  if (!contractAddress) {
-    throw new Error(
-      `FHENIX_GATEWAY_ENABLED=true but no contract address found: set FHENIX_SEALED_VERDICTS_ADDRESS, FHENIX_CONTRACT_ADDRESS, or run sync-deployments to populate data/deployments.json for chainId ${chainId}`,
-    );
-  }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
-    throw new Error("FHENIX_GATEWAY_RELAYER_PRIVATE_KEY must be a 32-byte 0x-prefixed private key");
-  }
-  const account = privateKeyToAccount(privateKey as Hex);
-  const publicClient = createPublicClient({ transport: http(rpcUrl) });
-  const walletClient = createWalletClient({
-    account,
-    transport: http(rpcUrl),
-  });
-  const client: FhenixGatewayClient = {
-    getChainId: () => publicClient.getChainId(),
-    getBlockNumber: () => publicClient.getBlockNumber(),
-    getTransactionReceipt: (args) => publicClient.getTransactionReceipt(args),
-    writeContract: (args) =>
-      walletClient.writeContract({
-        ...args,
-        account,
-        chain: null,
-      } as never),
-  };
+  const config = loadFhenixGatewayEnvConfig(opts.env);
+  if (!config) return null;
   return new FhenixGatewayBroadcaster({
     db,
-    chainId,
-    contractAddress,
-    relayerAddress: account.address,
-    client,
-    confirmations: numberEnv("FHENIX_GATEWAY_CONFIRMATIONS", 2),
-    retryBaseMs: numberEnv("FHENIX_GATEWAY_RETRY_BASE_MS", 5_000),
-    retryMaxMs: numberEnv("FHENIX_GATEWAY_RETRY_MAX_MS", 120_000),
-    maxAttempts: numberEnv("FHENIX_GATEWAY_MAX_ATTEMPTS", 5),
-    stuckAfterMs: numberEnv("FHENIX_GATEWAY_STUCK_SEC", 600) * 1_000,
-    broadcastTimeoutMs: numberEnv("FHENIX_GATEWAY_BROADCAST_TIMEOUT_MS", 90_000),
+    ...config,
+    timers: opts.timers,
+    newAttemptId: opts.newAttemptId,
+    newClaimToken: opts.newClaimToken,
+    newFeedPacketId: opts.newFeedPacketId,
+    newSealedCallId: opts.newSealedCallId,
+    now: opts.now,
   });
-}
-
-function preflightMarketAndRateLimits(
-  db: Database.Database,
-  agentId: string,
-  market: NonNullable<ReturnType<typeof marketsRepo.get>>,
-  now: () => Date,
-): void {
-  if (!acceptsSubmissions(market)) {
-    throw new VerdictError(
-      `market ${market.market_id} status=${market.status} (not accepting submissions)`,
-      ERROR_CODES.asset_not_supported,
-      400,
-      {
-        reason: "market_not_listed",
-        market_id: market.market_id,
-        market_status: market.status,
-      },
-    );
-  }
-  try {
-    derivePolicyFromMarket(db, market);
-  } catch (err) {
-    if (err instanceof PolicyDerivationError) {
-      throw new VerdictError(
-        `cannot mint call on ${market.market_id}: ${err.message}`,
-        ERROR_CODES.asset_not_supported,
-        400,
-        {
-          reason: "policy_derivation_failed",
-          market_id: market.market_id,
-          cause: err.cause,
-        },
-      );
-    }
-    throw err;
-  }
-  const activeCount =
-    agentsRepo.countActiveCallsForAgent(db, agentId) +
-    fhenixGatewayTxRepo.countInflightByAgent(db, agentId);
-  if (activeCount >= SUBMISSION_LIMITS.max_active_calls_per_agent) {
-    throw new VerdictError(
-      `max ${SUBMISSION_LIMITS.max_active_calls_per_agent} active calls per agent`,
-      ERROR_CODES.rate_limited,
-      429,
-    );
-  }
-  const since = isoFromMs(now().getTime() - 24 * 60 * 60 * 1000);
-  const cap = perMarketDailyCap(market.market_id);
-  const count =
-    submissionsRepo.countCallsForAgentMarketWindow(db, agentId, market.market_id, since) +
-    fhenixGatewayTxRepo.countInflightByAgentMarketWindow(db, agentId, market.market_id, since);
-  if (count >= cap) {
-    throw new VerdictError(
-      `max ${cap} calls/market/24h on ${market.market_id}`,
-      ERROR_CODES.rate_limited,
-      429,
-      { market_id: market.market_id, cap },
-    );
-  }
-}
-
-function contractInput(input: CofheInput): ContractCofheInput {
-  return {
-    ctHash: BigInt(input.ct_hash),
-    securityZone: input.security_zone,
-    utype: input.utype,
-    signature: input.signature as Hex,
-  };
-}
-
-function resultFromAttempt(
-  attempt: FhenixGatewayTxAttemptRow,
-  idempotent_hit: boolean,
-): GatewaySubmitResult {
-  return {
-    status: attempt.status === "accepted" ? 200 : 202,
-    body: {
-      attempt_id: attempt.attempt_id,
-      status: attempt.status,
-      tx_hash: attempt.tx_hash,
-      call_id: attempt.call_id,
-      next_attempt_at: attempt.next_attempt_at,
-      idempotent_hit,
-    },
-  };
-}
-
-function feedResultFromAttempt(
-  attempt: FhenixGatewayFeedPacketTxAttemptRow,
-  idempotent_hit: boolean,
-  db: Database.Database,
-): GatewayFeedPacketSubmitResult {
-  const packet = attempt.packet_id ? feedPacketsRepo.byFhenixEvent(db, {
-    chain_id: attempt.chain_id,
-    contract_address: attempt.contract_address,
-    onchain_packet_id: attempt.onchain_packet_id ?? "",
-  }) : null;
-  return {
-    status: attempt.status === "accepted" ? 200 : 202,
-    body: {
-      attempt_id: attempt.attempt_id,
-      status: attempt.status,
-      tx_hash: attempt.tx_hash,
-      packet_id: attempt.packet_id,
-      sequence: attempt.sequence,
-      sla_status: packet?.sla_status ?? null,
-      next_attempt_at: attempt.next_attempt_at,
-      idempotent_hit,
-    },
-  };
-}
-
-function operatorAttempt(row: FhenixGatewayTxAttemptRow): GatewayOperatorAttempt {
-  return {
-    attempt_id: row.attempt_id,
-    status: row.status,
-    account_id: row.account_id,
-    agent_id: row.agent_id,
-    runtime_key_id: row.runtime_key_id,
-    runtime_key_policy_hash: row.runtime_key_policy_hash,
-    chain_id: row.chain_id,
-    contract_address: row.contract_address,
-    relayer_address: row.relayer_address,
-    agent_wallet_address: row.agent_wallet_address,
-    market_id: row.market_id,
-    market_id_hash: row.market_id_hash,
-    market_ref_protocol: row.market_ref_protocol,
-    market_config_version: row.market_config_version,
-    client_order_id: row.client_order_id,
-    client_nonce: row.client_nonce,
-    tx_hash: row.tx_hash,
-    submit_log_index: row.submit_log_index,
-    submit_block_number: row.submit_block_number,
-    onchain_call_id: row.onchain_call_id,
-    call_id: row.call_id,
-    attempt_count: row.attempt_count,
-    next_attempt_at: row.next_attempt_at,
-    last_error: row.last_error,
-    broadcast_started_at: row.broadcast_started_at,
-    broadcast_latency_ms: row.broadcast_latency_ms,
-    receipt_observed_at: row.receipt_observed_at,
-    receipt_latency_ms: row.receipt_latency_ms,
-    latest_block_latency_ms: row.latest_block_latency_ms,
-    receipt_status: row.receipt_status,
-    receipt_block_number: row.receipt_block_number,
-    latest_block_number: row.latest_block_number,
-    confirmations_observed: row.confirmations_observed,
-    gas_used: row.gas_used,
-    effective_gas_price_wei: row.effective_gas_price_wei,
-    last_rpc_error: row.last_rpc_error,
-    submitted_at: row.submitted_at,
-    accepted_at: row.accepted_at,
-    reveal_open_at: row.reveal_open_at,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  };
-}
-
-function operatorFeedAttempt(
-  row: FhenixGatewayFeedPacketTxAttemptRow,
-): GatewayOperatorFeedAttempt {
-  return {
-    attempt_id: row.attempt_id,
-    status: row.status,
-    account_id: row.account_id,
-    agent_id: row.agent_id,
-    runtime_key_id: row.runtime_key_id,
-    runtime_key_policy_hash: row.runtime_key_policy_hash,
-    chain_id: row.chain_id,
-    contract_address: row.contract_address,
-    relayer_address: row.relayer_address,
-    agent_wallet_address: row.agent_wallet_address,
-    feed_id: row.feed_id,
-    feed_id_hash: row.feed_id_hash,
-    market_id: row.market_id,
-    market_id_hash: row.market_id_hash,
-    packet_kind: row.packet_kind,
-    sequence: row.sequence,
-    payload_schema: row.payload_schema,
-    client_order_id: row.client_order_id,
-    client_nonce: row.client_nonce,
-    tx_hash: row.tx_hash,
-    submit_log_index: row.submit_log_index,
-    submit_block_number: row.submit_block_number,
-    onchain_packet_id: row.onchain_packet_id,
-    packet_id: row.packet_id,
-    action_ct_hash: row.action_ct_hash,
-    signal_ct_hash: row.signal_ct_hash,
-    attempt_count: row.attempt_count,
-    next_attempt_at: row.next_attempt_at,
-    last_error: row.last_error,
-    broadcast_started_at: row.broadcast_started_at,
-    broadcast_latency_ms: row.broadcast_latency_ms,
-    receipt_observed_at: row.receipt_observed_at,
-    receipt_latency_ms: row.receipt_latency_ms,
-    latest_block_latency_ms: row.latest_block_latency_ms,
-    receipt_status: row.receipt_status,
-    receipt_block_number: row.receipt_block_number,
-    latest_block_number: row.latest_block_number,
-    confirmations_observed: row.confirmations_observed,
-    gas_used: row.gas_used,
-    effective_gas_price_wei: row.effective_gas_price_wei,
-    last_rpc_error: row.last_rpc_error,
-    submitted_at: row.submitted_at,
-    delivery_deadline_at: row.delivery_deadline_at,
-    accepted_at: row.accepted_at,
-    reveal_after: row.reveal_after,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  };
-}
-
-function deriveFeedRevealAfter(
-  feed: FeedContractRow,
-  requested: string | undefined,
-  now: Date,
-): string {
-  if (requested) return stripIsoMillis(requested);
-  const policy = parseJsonObject(feed.reveal_policy_json, "feed.reveal_policy_json");
-  if (policy.kind === "fixed_delay" && typeof policy.delay_seconds === "number") {
-    return isoFromMs(now.getTime() + policy.delay_seconds * 1000);
-  }
-  const delaySeconds = Math.max(
-    60,
-    feed.max_latency_seconds ?? feed.delivery_cadence_seconds ?? 3600,
-  );
-  return isoFromMs(now.getTime() + delaySeconds * 1000);
-}
-
-function fhenixFeedIdForMurmurFeed(feedId: string): string {
-  if (/^0x[0-9a-fA-F]{64}$/.test(feedId)) return feedId.toLowerCase();
-  return keccak256(toBytes(feedId)).toLowerCase();
-}
-
-function parseJsonObject(raw: string, field: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("not an object");
-    }
-    return parsed as Record<string, unknown>;
-  } catch (err) {
-    throw new Error(`${field} is malformed JSON: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-function stripIsoMillis(value: string): string {
-  return new Date(value).toISOString().replace(/\.\d+Z$/, "Z");
-}
-
-async function measure<T>(fn: () => Promise<T>): Promise<Measured<T>> {
-  const started = Date.now();
-  const value = await fn();
-  return {
-    value,
-    latencyMs: Math.max(0, Date.now() - started),
-  };
-}
-
-/**
- * Race the promise against a setTimeout. On timeout, the underlying
- * network call is NOT canceled — Node + viem don't expose an abort
- * surface here. We just stop waiting and surface a clear error; the
- * contract's client_nonce dedup means a tx that lands after we timed
- * out won't corrupt state (the next retry will revert at the contract,
- * which markRetryableFailure handles as just another failed broadcast).
- * Used by broadcast{Attempt,FeedPacketAttempt} to bound the maximum
- * time we wait on writeContract before treating it as a retryable
- * failure, well in advance of sweepStuckClaims kicking in.
- */
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
-  if (timeoutMs <= 0) return promise;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
-          timeoutMs,
-        );
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-function receiptTelemetry(input: {
-  attempt_id: string;
-  receipt: GatewayReceipt;
-  receipt_observed_at: string;
-  receipt_latency_ms: number;
-  confirmation: ConfirmationState | null;
-  last_rpc_error: string | null;
-}): FhenixGatewayReceiptTelemetry {
-  return {
-    attempt_id: input.attempt_id,
-    receipt_observed_at: input.receipt_observed_at,
-    receipt_latency_ms: input.receipt_latency_ms,
-    latest_block_latency_ms: input.confirmation?.latestBlockLatencyMs ?? null,
-    receipt_status: input.receipt.status ?? null,
-    receipt_block_number: safeBlockNumber(input.receipt.blockNumber),
-    latest_block_number: input.confirmation?.latestBlockNumber ?? null,
-    confirmations_observed: input.confirmation?.confirmationsObserved ?? null,
-    gas_used: input.receipt.gasUsed?.toString() ?? null,
-    effective_gas_price_wei: input.receipt.effectiveGasPrice?.toString() ?? null,
-    last_rpc_error: input.last_rpc_error,
-  };
-}
-
-function numberEnv(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isFinite(value)) return fallback;
-  return value;
-}
-
-function normalizeAddress(value: string): string {
-  return getAddress(value as Address).toLowerCase();
-}
-
-function unixSecondsToIso(value: bigint): string {
-  const seconds = Number(value);
-  if (!Number.isSafeInteger(seconds) || seconds < 0) {
-    throw new Error(`unsafe Fhenix event timestamp: ${value.toString()}`);
-  }
-  return new Date(seconds * 1000).toISOString().replace(/\.\d+Z$/, "Z");
-}
-
-function safeBlockNumber(value: bigint | undefined): number | null {
-  if (value === undefined) return null;
-  const n = Number(value);
-  return Number.isSafeInteger(n) ? n : null;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

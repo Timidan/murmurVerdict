@@ -7,34 +7,56 @@
 // see them via GET /v1/webhooks/:id; sustained failures should be
 // handled out-of-band (disable the row, talk to the subscriber).
 
-import { createHmac, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
-import { webhooksRepo, type WebhookRow } from "./db.js";
-import type { VerdictEvent, VerdictEventBus } from "./events.js";
+import type { VerdictEventBus } from "./events.js";
+import { publicWebhookFanoutEvent } from "./public-event-fanout.js";
+import {
+  webhooksRepo,
+} from "./repos/webhooks-repo.js";
+import {
+  deliverWebhook,
+  type WebhookDeliveryInput,
+} from "./webhook-delivery.js";
 
-const DELIVERY_TIMEOUT_MS = 5_000;
+export { verifyWebhookSignature } from "./webhook-subscription.js";
 
 export interface WebhookDispatcher {
   stop(): void;
   deliveryCount: () => number;
 }
 
+export type WebhookDispatcherDelivery = (
+  input: WebhookDeliveryInput,
+) => Promise<void> | void;
+
+export interface WebhookDispatcherDeps {
+  now: () => Date;
+  deliver?: WebhookDispatcherDelivery;
+}
+
 export function startWebhookDispatcher(
   db: Database.Database,
   events: VerdictEventBus,
+  deps: WebhookDispatcherDeps,
 ): WebhookDispatcher {
   let total = 0;
+  const deliver = deps.deliver ?? deliverWebhook;
+  const now = deps.now;
 
   const unsubscribe = events.subscribe((event) => {
-    // We only fan out per-agent events. stats.tick / leaderboard.update are
-    // SSE-only — pushing them to every webhook would be loud and useless.
-    if (event.type !== "call.accepted" && event.type !== "call.resolved") return;
-    const targets = webhooksRepo.matchAgent(db, event.agent_slug);
+    const fanout = publicWebhookFanoutEvent(event);
+    if (!fanout) return;
+    const targets = webhooksRepo.matchAgent(db, fanout.agent_slug);
     if (targets.length === 0) return;
 
     for (const target of targets) {
       total++;
-      void deliver(db, target, event);
+      void deliver({
+        db,
+        target,
+        event: fanout.event,
+        deliveredAt: now(),
+      });
     }
   });
 
@@ -42,73 +64,4 @@ export function startWebhookDispatcher(
     stop: unsubscribe,
     deliveryCount: () => total,
   };
-}
-
-async function deliver(
-  db: Database.Database,
-  target: WebhookRow,
-  event: VerdictEvent,
-): Promise<void> {
-  const body = JSON.stringify({
-    schema_version: 1,
-    delivered_at: nowIso(),
-    event,
-  });
-  const signature = createHmac("sha256", target.secret).update(body).digest("hex");
-
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), DELIVERY_TIMEOUT_MS);
-
-  let status = 0;
-  let failed = false;
-  try {
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": "murmur-verdict-webhook/0.1",
-        "X-Murmur-Webhook-Id": target.id,
-        "X-Murmur-Event": event.type,
-        "X-Murmur-Signature": `sha256=${signature}`,
-      },
-      body,
-      signal: ac.signal,
-      // SSRF defence-in-depth: registration-time URL validation can't
-      // catch a public host that 302s the delivery to 127.0.0.1 or the
-      // 169.254.169.254 metadata IP. `redirect: "error"` makes fetch()
-      // throw on any 3xx — subscribers must accept the POST directly.
-      redirect: "error",
-    });
-    status = res.status;
-    failed = !res.ok;
-    // Drain the body so the connection can be reused / closed cleanly.
-    await res.text().catch(() => "");
-  } catch {
-    failed = true;
-  } finally {
-    clearTimeout(t);
-  }
-
-  webhooksRepo.bumpDelivery(db, target.id, nowIso(), status, failed);
-}
-
-/**
- * Constant-time HMAC verification helper exported for tests / docs.
- * Subscribers should run this against the X-Murmur-Signature header.
- */
-export function verifyWebhookSignature(args: {
-  secret: string;
-  rawBody: string;
-  signatureHeader: string;
-}): boolean {
-  const expected = createHmac("sha256", args.secret).update(args.rawBody).digest();
-  const m = /^sha256=([0-9a-fA-F]{64})$/.exec(args.signatureHeader);
-  if (!m) return false;
-  const provided = Buffer.from(m[1], "hex");
-  if (provided.length !== expected.length) return false;
-  return timingSafeEqual(provided, expected);
-}
-
-function nowIso(): string {
-  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }

@@ -57,7 +57,11 @@ export function LeaderboardPage() {
           tier: r.rank ? "main" : "provisional",
           rank: r.rank,
           verdict_score: r.verdict_score,
-          verdict_score_lb: r.verdict_score_lb ?? previous?.verdict_score_lb ?? null,
+          // The SSE leaderboard row is the lean wire shape — it carries no
+          // verdict_score_lb (the daemon's public-event-fanout omits it). Keep
+          // the REST-hydrated previous value; identical to the old
+          // `r.verdict_score_lb ?? …` since the stream value was always undefined.
+          verdict_score_lb: previous?.verdict_score_lb ?? null,
           resolved_calls: r.resolved_calls,
           win_rate: r.win_rate,
           pending_calls: r.pending_calls,

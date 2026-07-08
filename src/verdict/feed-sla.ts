@@ -5,8 +5,11 @@ import {
   feedContractsRepo,
   feedPacketsRepo,
   feedSlaIncidentsRepo,
-  type FeedContractRow,
-} from "./db.js";
+} from "./repos/feed-availability-repo.js";
+import { missedPacketIncidentDetailsJson } from "./feed-sla-incident-detail.js";
+import { feedSlaPolicy } from "./feed-policy.js";
+
+export type FeedSlaIncidentIdAdapter = () => string;
 
 export interface FeedSlaTickResult {
   served_at: string;
@@ -15,23 +18,25 @@ export interface FeedSlaTickResult {
   max_incidents: number;
 }
 
-export interface FeedSlaTickOptions {
-  now?: () => Date;
+export interface FeedSlaTickInput {
+  tickedAt: Date;
+  newIncidentId?: FeedSlaIncidentIdAdapter;
   maxIncidents?: number;
   feedLimit?: number;
 }
 
 export function runFeedSlaTick(
   db: Database.Database,
-  opts: FeedSlaTickOptions = {},
+  input: FeedSlaTickInput,
 ): FeedSlaTickResult {
-  const now = opts.now ?? (() => new Date());
-  const tickNow = now();
-  const servedAt = stripIso(tickNow);
-  const nowMs = tickNow.getTime();
-  const maxIncidents = Math.max(1, Math.min(1_000, Math.floor(opts.maxIncidents ?? 100)));
+  const servedAt = stripIso(input.tickedAt);
+  const nowMs = input.tickedAt.getTime();
+  const maxIncidents = Math.max(
+    1,
+    Math.min(1_000, Math.floor(input.maxIncidents ?? 100)),
+  );
   const feeds = feedContractsRepo.listCadenceListed(db, {
-    limit: opts.feedLimit ?? 500,
+    limit: input.feedLimit ?? 500,
   });
   let incidentsOpened = 0;
   let inspectedFeeds = 0;
@@ -45,18 +50,22 @@ export function runFeedSlaTick(
     const baseMs = Date.parse(latest?.accepted_at ?? feed.created_at);
     if (!Number.isFinite(baseMs)) continue;
 
-    const graceSeconds = feedMissedGraceSeconds(feed);
-    const actions = feedIncidentActions(feed);
+    const policy = feedSlaPolicy(feed);
     let expectedSequence = (latest?.sequence ?? 0) + 1;
     let deadlineMs = baseMs + cadence * 1_000;
 
     while (
-      deadlineMs + graceSeconds * 1_000 <= nowMs &&
+      deadlineMs + policy.grace_seconds * 1_000 <= nowMs &&
       incidentsOpened < maxIncidents
     ) {
+      if (feedSlaIncidentsRepo.byFeedSequence(db, feed.feed_id, expectedSequence)) {
+        expectedSequence++;
+        deadlineMs += cadence * 1_000;
+        continue;
+      }
       const expectedDeadline = stripIso(new Date(deadlineMs));
       const created = feedSlaIncidentsRepo.insertMissed(db, {
-        incident_id: randomUUID(),
+        incident_id: (input.newIncidentId ?? randomUUID)(),
         feed_id: feed.feed_id,
         agent_id: feed.agent_id,
         incident_kind: "missed_packet",
@@ -64,15 +73,14 @@ export function runFeedSlaTick(
         expected_sequence: expectedSequence,
         expected_delivery_deadline_at: expectedDeadline,
         detected_at: servedAt,
-        grace_seconds: graceSeconds,
-        refund_action: actions.refund_action,
-        slash_action: actions.slash_action,
-        details_json: JSON.stringify({
+        grace_seconds: policy.grace_seconds,
+        refund_action: policy.refund_action,
+        slash_action: policy.slash_action,
+        details_json: missedPacketIncidentDetailsJson({
           cadence_seconds: cadence,
-          grace_seconds: graceSeconds,
-          refund_rule: safeJsonObject(feed.refund_rule_json),
-          slash_rule: safeJsonObject(feed.slash_rule_json),
-          generated_by: "feed_sla_tick_v1",
+          grace_seconds: policy.grace_seconds,
+          refund_rule: policy.refund_rule,
+          slash_rule: policy.slash_rule,
         }),
         created_at: servedAt,
         updated_at: servedAt,
@@ -89,43 +97,6 @@ export function runFeedSlaTick(
     incidents_opened: incidentsOpened,
     max_incidents: maxIncidents,
   };
-}
-
-function feedMissedGraceSeconds(feed: FeedContractRow): number {
-  if (feed.max_latency_seconds !== null) {
-    return Math.max(0, Math.floor(feed.max_latency_seconds));
-  }
-  const refundRule = safeJsonObject(feed.refund_rule_json);
-  const minutes = Number(refundRule.missed_delivery_grace ?? 0);
-  if (!Number.isFinite(minutes)) return 0;
-  return Math.max(0, Math.floor(minutes * 60));
-}
-
-function feedIncidentActions(feed: FeedContractRow): {
-  refund_action: "none" | "credit" | "prorated";
-  slash_action: "none" | "reputation" | "stake";
-} {
-  const refundRule = safeJsonObject(feed.refund_rule_json);
-  const slashRule = safeJsonObject(feed.slash_rule_json);
-  const refundKind = refundRule.kind;
-  const slashKind = slashRule.kind;
-  return {
-    refund_action:
-      refundKind === "credit" || refundKind === "prorated" ? refundKind : "none",
-    slash_action:
-      slashKind === "reputation" || slashKind === "stake" ? slashKind : "none",
-  };
-}
-
-function safeJsonObject(raw: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
 }
 
 function stripIso(date: Date): string {

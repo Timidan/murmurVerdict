@@ -1,0 +1,321 @@
+import type Database from "better-sqlite3";
+
+import type { LiveCanaryProvider } from "../integrations/live-canaries.js";
+import { controllerWalletReattestationHealth } from "./auth/controller-wallets.js";
+import {
+  fhenixGatewayTxRepo,
+  type FhenixGatewayTxAttemptRow,
+} from "./repos/fhenix-gateway-tx-repo.js";
+import {
+  fhenixGatewayFeedPacketTxRepo,
+  type FhenixGatewayFeedPacketTxAttemptRow,
+} from "./repos/fhenix-gateway-feed-packet-tx-repo.js";
+import { feedSlaIncidentsRepo } from "./repos/feed-availability-repo.js";
+import { fhenixSealedCallsRepo } from "./repos/fhenix-sealed-calls-repo.js";
+import type {
+  OperatorAlertInput,
+  OperatorAlertSeverity,
+} from "./repos/operator-alerts-repo.js";
+import {
+  encodeOperatorAlertPayload,
+  feedSlaIncidentAlertPayload,
+} from "./operator-alert-payload.js";
+import { isoFromMs } from "./time.js";
+
+const DEFAULT_STUCK_AFTER_MS = 10 * 60_000;
+const DEFAULT_REVEAL_GRACE_SEC = 60 * 60;
+const DEFAULT_IDENTITY_DUE_SOON_HOURS = 24;
+
+export interface OperatorAlertSourceOptions {
+  db: Database.Database;
+  servedAt: string;
+  liveCanaries?: LiveCanaryProvider | null;
+  gatewayStuckAfterMs?: number;
+  fhenixRevealGraceSec?: number;
+  identityDueSoonHours?: number;
+}
+
+export interface OperatorAlertSourceBatch {
+  source: string;
+  alerts: OperatorAlertInput[];
+}
+
+export function collectOperatorAlertSources(
+  opts: OperatorAlertSourceOptions,
+): OperatorAlertSourceBatch[] {
+  const batches: OperatorAlertSourceBatch[] = [
+    {
+      source: "gateway",
+      alerts: gatewayAlerts(opts.db, opts.servedAt, opts.gatewayStuckAfterMs),
+    },
+    {
+      source: "fhenix_lifecycle",
+      alerts: fhenixLifecycleAlerts(
+        opts.db,
+        opts.servedAt,
+        opts.fhenixRevealGraceSec,
+      ),
+    },
+    {
+      source: "feed_sla",
+      alerts: feedSlaAlerts(opts.db, opts.servedAt),
+    },
+    {
+      source: "identity",
+      alerts: identityAlerts(
+        opts.db,
+        opts.servedAt,
+        opts.identityDueSoonHours,
+      ),
+    },
+  ];
+  if (opts.liveCanaries) {
+    batches.push({
+      source: "live_canary",
+      alerts: liveCanaryAlerts(opts.liveCanaries, opts.servedAt),
+    });
+  }
+  return batches;
+}
+
+function gatewayAlerts(
+  db: Database.Database,
+  servedAt: string,
+  stuckAfterMs = DEFAULT_STUCK_AFTER_MS,
+): OperatorAlertInput[] {
+  const staleBefore = isoFromMs(Date.parse(servedAt) - Math.max(60_000, stuckAfterMs));
+  const alerts: OperatorAlertInput[] = [];
+  for (const attempt of fhenixGatewayTxRepo.listStuck(db, { stale_before: staleBefore, limit: 100 })) {
+    alerts.push(gatewayAttemptAlert("call", "gateway_call_stuck", attempt, servedAt));
+  }
+  for (const attempt of fhenixGatewayFeedPacketTxRepo.listStuck(db, { stale_before: staleBefore, limit: 100 })) {
+    alerts.push(gatewayAttemptAlert("feed_packet", "gateway_feed_packet_stuck", attempt, servedAt));
+  }
+  for (const attempt of fhenixGatewayTxRepo.listRecent(db, { status: "failed_terminal", limit: 100 })) {
+    alerts.push(gatewayAttemptAlert("call", "gateway_call_terminal_failure", attempt, servedAt));
+  }
+  for (const attempt of fhenixGatewayFeedPacketTxRepo.listRecent(db, { status: "failed_terminal", limit: 100 })) {
+    alerts.push(gatewayAttemptAlert("feed_packet", "gateway_feed_packet_terminal_failure", attempt, servedAt));
+  }
+  return alerts;
+}
+
+function gatewayAttemptAlert(
+  target: "call" | "feed_packet",
+  kind: string,
+  attempt: FhenixGatewayTxAttemptRow | FhenixGatewayFeedPacketTxAttemptRow,
+  seenAt: string,
+): OperatorAlertInput {
+  const isTerminal = attempt.status === "failed_terminal";
+  const noun = target === "call" ? "sealed-call" : "feed-packet";
+  return alertInput({
+    source: "gateway",
+    kind,
+    key: `gateway:${target}:${kind}:${attempt.attempt_id}`,
+    severity: isTerminal ? "critical" : "warning",
+    title: isTerminal
+      ? `Gateway ${noun} attempt failed terminally`
+      : `Gateway ${noun} attempt is stuck`,
+    description: isTerminal
+      ? `Gateway ${noun} attempt ${attempt.attempt_id} reached failed_terminal.`
+      : `Gateway ${noun} attempt ${attempt.attempt_id} has been ${attempt.status} since ${attempt.updated_at}.`,
+    seenAt,
+    payload: {
+      attempt_id: attempt.attempt_id,
+      status: attempt.status,
+      agent_id: attempt.agent_id,
+      chain_id: attempt.chain_id,
+      contract_address: attempt.contract_address,
+      relayer_address: attempt.relayer_address,
+      tx_hash: attempt.tx_hash,
+      attempt_count: attempt.attempt_count,
+      last_error: attempt.last_error,
+      last_rpc_error: attempt.last_rpc_error,
+      updated_at: attempt.updated_at,
+    },
+  });
+}
+
+function liveCanaryAlerts(
+  liveCanaries: LiveCanaryProvider,
+  servedAt: string,
+): OperatorAlertInput[] {
+  const snapshot = liveCanaries.snapshot();
+  return snapshot.checks
+    .filter((check) => check.status === "fail")
+    .map((check) => alertInput({
+      source: "live_canary",
+      kind: "live_canary_failed",
+      key: `live_canary:${check.name}`,
+      severity: "critical",
+      title: `Live canary failed: ${check.name}`,
+      description: check.error ?? `Live canary ${check.name} is failing.`,
+      seenAt: servedAt,
+      payload: {
+        name: check.name,
+        checked_at: check.checked_at,
+        latency_ms: check.latency_ms,
+        details: check.details,
+        error: check.error,
+      },
+    }));
+}
+
+function fhenixLifecycleAlerts(
+  db: Database.Database,
+  servedAt: string,
+  revealGraceSec = DEFAULT_REVEAL_GRACE_SEC,
+): OperatorAlertInput[] {
+  const cutoff = isoFromMs(Date.parse(servedAt) - Math.max(0, revealGraceSec) * 1_000);
+  const alerts: OperatorAlertInput[] = [];
+  for (const row of fhenixSealedCallsRepo.listMissable(db, cutoff, 100)) {
+    alerts.push(alertInput({
+      source: "fhenix_lifecycle",
+      kind: "fhenix_reveal_overdue",
+      key: `fhenix_lifecycle:overdue:${row.call_id}`,
+      severity: "critical",
+      title: "Fhenix reveal overdue",
+      description: `Call ${row.call_id} passed reveal_open_at ${row.reveal_open_at} without a reveal.`,
+      seenAt: servedAt,
+      payload: row,
+    }));
+  }
+  const terminalRows = db.prepare(
+    `SELECT f.call_id, s.agent_id, a.display_slug AS agent_slug,
+            f.reveal_status, f.invalid_reason, f.terminal_at, f.reveal_open_at
+     FROM fhenix_sealed_calls f
+     JOIN submissions s ON s.call_id = f.call_id
+     LEFT JOIN agents a ON a.agent_id = s.agent_id
+     WHERE f.reveal_status IN ('invalid','missed')
+     ORDER BY f.terminal_at DESC
+     LIMIT 100`,
+  ).all() as Array<{
+    call_id: string;
+    agent_id: string;
+    agent_slug: string | null;
+    reveal_status: "invalid" | "missed";
+    invalid_reason: string | null;
+    terminal_at: string | null;
+    reveal_open_at: string;
+  }>;
+  for (const row of terminalRows) {
+    alerts.push(alertInput({
+      source: "fhenix_lifecycle",
+      kind: `fhenix_reveal_${row.reveal_status}`,
+      key: `fhenix_lifecycle:${row.reveal_status}:${row.call_id}`,
+      severity: row.reveal_status === "invalid" ? "critical" : "warning",
+      title: row.reveal_status === "invalid" ? "Fhenix reveal invalid" : "Fhenix reveal missed",
+      description: `Call ${row.call_id} terminalized as ${row.reveal_status}.`,
+      seenAt: servedAt,
+      payload: row,
+    }));
+  }
+  return alerts;
+}
+
+function feedSlaAlerts(db: Database.Database, servedAt: string): OperatorAlertInput[] {
+  return feedSlaIncidentsRepo
+    .list(db, { status: "open", limit: 200 })
+    .map((incident) => alertInput({
+      source: "feed_sla",
+      kind: "feed_sla_missed_packet",
+      key: `feed_sla:missed_packet:${incident.incident_id}`,
+      severity: incident.slash_action === "stake" ? "critical" : "warning",
+      title: "Feed SLA missed packet",
+      description: `Feed ${incident.feed_id} missed expected sequence ${incident.expected_sequence}.`,
+      seenAt: servedAt,
+      payload: feedSlaIncidentAlertPayload(incident),
+    }));
+}
+
+function identityAlerts(
+  db: Database.Database,
+  servedAt: string,
+  dueSoonHours = DEFAULT_IDENTITY_DUE_SOON_HOURS,
+): OperatorAlertInput[] {
+  const dueSoonAt = isoFromMs(Date.parse(servedAt) + Math.max(1, dueSoonHours) * 60 * 60 * 1_000);
+  const rows = db.prepare(
+    `SELECT c.agent_id, c.account_id, a.display_slug AS agent_slug,
+            c.wallet_address, c.chain_id, c.wallet_kind, c.provider,
+            c.created_at, c.last_attested_at, c.reattestation_due_at,
+            (
+              SELECT COUNT(*) FROM agent_runtime_keys k
+              WHERE k.agent_id = c.agent_id
+                AND k.revoked_at IS NULL
+                AND (k.expires_at IS NULL OR k.expires_at > @served_at)
+            ) AS active_runtime_keys
+     FROM agent_controller_wallets c
+     LEFT JOIN agents a ON a.agent_id = c.agent_id
+     WHERE c.reattestation_due_at IS NULL
+        OR julianday(c.reattestation_due_at) IS NULL
+        OR c.reattestation_due_at <= @due_soon_at
+     ORDER BY c.reattestation_due_at ASC
+     LIMIT 200`,
+  ).all({ served_at: servedAt, due_soon_at: dueSoonAt }) as Array<{
+    agent_id: string;
+    account_id: string;
+    agent_slug: string | null;
+    wallet_address: string;
+    chain_id: string;
+    wallet_kind: string;
+    provider: string | null;
+    created_at: string;
+    last_attested_at: string | null;
+    reattestation_due_at: string | null;
+    active_runtime_keys: number;
+  }>;
+  const alerts: OperatorAlertInput[] = [];
+  const checkedAt = new Date(servedAt);
+  for (const row of rows) {
+    const health = controllerWalletReattestationHealth(row, {
+      checkedAt,
+      dueSoonAt,
+    });
+    if (health.status === "current") continue;
+    const overdue = health.status === "overdue";
+    alerts.push(alertInput({
+      source: "identity",
+      kind: overdue ? "controller_reattestation_overdue" : "controller_reattestation_due_soon",
+      key: `identity:controller:${overdue ? "overdue" : "due_soon"}:${row.agent_id}`,
+      severity: overdue ? "critical" : "warning",
+      title: overdue
+        ? "Controller Wallet re-attestation overdue"
+        : "Controller Wallet re-attestation due soon",
+      description: overdue
+        ? `Agent ${row.agent_slug ?? row.agent_id} has an overdue Controller Wallet re-attestation.`
+        : `Agent ${row.agent_slug ?? row.agent_id} must re-attest by ${health.reattestation_due_at}.`,
+      seenAt: servedAt,
+      payload: {
+        ...row,
+        last_attested_at: health.last_attested_at,
+        reattestation_due_at: health.reattestation_due_at,
+        reattestation_status: health.status,
+        reattestation_overdue: health.reattestation_overdue,
+        reattestation_due_soon: health.reattestation_due_soon,
+      },
+    }));
+  }
+  return alerts;
+}
+
+function alertInput(args: {
+  source: string;
+  kind: string;
+  key: string;
+  severity: OperatorAlertSeverity;
+  title: string;
+  description: string;
+  seenAt: string;
+  payload: unknown;
+}): OperatorAlertInput {
+  return {
+    alert_key: args.key,
+    source: args.source,
+    kind: args.kind,
+    severity: args.severity,
+    title: args.title,
+    description: args.description,
+    payload_json: encodeOperatorAlertPayload(args.payload),
+    seen_at: args.seenAt,
+  };
+}

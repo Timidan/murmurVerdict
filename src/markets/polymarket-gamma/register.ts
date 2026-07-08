@@ -18,7 +18,12 @@ import type Database from "better-sqlite3";
 import {
   getMarketMakerRegistry,
 } from "../../verdict/market-maker/registry.js";
-import { polymarketGammaAdapter, ADAPTER_NAME, ADAPTER_VERSION } from "./index.js";
+import {
+  polymarketGammaAdapter,
+  setDefaultPolymarketClock,
+  ADAPTER_NAME,
+  ADAPTER_VERSION,
+} from "./index.js";
 import {
   startPolymarketSyncTicker,
   type SyncTickerOpts,
@@ -26,7 +31,24 @@ import {
 
 export interface RegisterPolymarketOpts {
   /** When provided, also start the per-conditionId sync ticker. */
-  db?: Database.Database;
+  db?: undefined;
+  /** Configure the adapter default client from nowMs. */
+  configureDefaultClient?: boolean;
+  /** Optional clock for callers that only need adapter registration. */
+  nowMs?: () => number;
+  /** Tick interval in ms. Default 60s. */
+  syncIntervalMs?: number;
+  /** Optional alert sink override. */
+  onAlert?: SyncTickerOpts["onAlert"];
+}
+
+export interface RegisterPolymarketWithSyncOpts {
+  /** When provided, also start the per-conditionId sync ticker. */
+  db: Database.Database;
+  /** Configure the adapter default client from nowMs. */
+  configureDefaultClient?: boolean;
+  /** Sync ticker operation clock. */
+  nowMs: () => number;
   /** Tick interval in ms. Default 60s. */
   syncIntervalMs?: number;
   /** Optional alert sink override. */
@@ -39,7 +61,7 @@ export interface RegisterPolymarketOpts {
  * is already present.
  */
 export function registerPolymarketGammaAdapter(
-  opts: RegisterPolymarketOpts = {},
+  opts: RegisterPolymarketOpts | RegisterPolymarketWithSyncOpts = {},
 ): { stop: () => void } {
   const registry = getMarketMakerRegistry();
   const existing = registry.get(ADAPTER_NAME, ADAPTER_VERSION);
@@ -53,9 +75,13 @@ export function registerPolymarketGammaAdapter(
       `[polymarket-gamma] adapter already registered — skipping re-register`,
     );
   }
+  if (opts.configureDefaultClient && opts.nowMs) {
+    setDefaultPolymarketClock(opts.nowMs);
+  }
   if (opts.db) {
     const tickerOpts: SyncTickerOpts & { intervalMs?: number } = {
       db: opts.db,
+      nowMs: opts.nowMs,
     };
     if (opts.syncIntervalMs !== undefined) {
       tickerOpts.intervalMs = opts.syncIntervalMs;
@@ -69,5 +95,5 @@ export function registerPolymarketGammaAdapter(
     );
     return handle;
   }
-  return { stop: () => undefined };
+  return { stop: async () => undefined };
 }

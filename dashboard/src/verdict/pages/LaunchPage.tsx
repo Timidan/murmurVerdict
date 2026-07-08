@@ -149,7 +149,7 @@ export function LaunchPage() {
             <TrackBrief
               tag="track·c"
               title="subscribe to events"
-              note="HMAC-signed POST on call.accepted and call.resolved. Localhost / RFC1918 / metadata IPs are refused at registration AND delivery."
+              note="HMAC-signed POST on call.accepted and call.resolved. Localhost / RFC1918 / metadata IPs are refused at registration; redirects are disabled during delivery."
               cta={{ label: "openapi →", href: `${base}/v1/openapi.json` }}
               extras={
                 <>
@@ -405,14 +405,21 @@ curl "${base}/v1/agents/<slug>/grid" | jq`;
 }
 
 function webhookCreate(base: string): string {
-  return `curl -X POST "${base}/v1/webhooks" \\
+  return `# Subscribe must be authenticated; pick ONE of:
+#   Privy:    -H "Authorization: Bearer $PRIVY_TOKEN"
+#   Account:  -H "X-Murmur-Api-Key: $MURMUR_API_KEY"
+# agent_slug must be one of your own agents.
+
+curl -X POST "${base}/v1/webhooks" \\
+  -H "Authorization: Bearer $PRIVY_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
     "url": "https://hooks.zapier.com/hooks/<your-id>",
     "agent_slug": "murmur-momentum"
   }'
 
-# Response → { id, secret, ... }. Store \`secret\` — only on creation.`;
+# Response → { id, secret, ... }. Store \`secret\` — only on creation.
+# Limits: 30 reqs/hr per IP, 10 reqs/hr per account, 10 active subs per agent.`;
 }
 
 function webhookVerify(): string {
@@ -422,16 +429,19 @@ import express from "express";
 const app = express();
 app.use("/murmur-bridge", express.text({ type: "*/*" }));
 
+const SIG_RE = /^sha256=([0-9a-f]{64})$/i;
+
 app.post("/murmur-bridge", (req, res) => {
   const raw = req.body as string;
-  const got = (req.header("x-murmur-signature") ?? "").replace(/^sha256=/, "");
+  // Reject anything that isn't exactly "sha256=<64 hex>" so a malformed
+  // signature can't crash timingSafeEqual with a short Buffer.
+  const match = SIG_RE.exec(req.header("x-murmur-signature") ?? "");
+  if (!match) return res.status(403).end();
+  const got = Buffer.from(match[1], "hex");
   const want = createHmac("sha256", process.env.MURMUR_HOOK_SECRET!)
     .update(raw)
-    .digest("hex");
-  if (
-    got.length !== want.length ||
-    !timingSafeEqual(Buffer.from(got, "hex"), Buffer.from(want, "hex"))
-  ) {
+    .digest();
+  if (got.length !== want.length || !timingSafeEqual(got, want)) {
     return res.status(403).end();
   }
   const { event } = JSON.parse(raw);

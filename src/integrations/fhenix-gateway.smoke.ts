@@ -21,6 +21,10 @@ import {
   FhenixGatewayBroadcaster,
   type FhenixGatewayClient,
 } from "./fhenix-gateway.js";
+import type { MurmurOwnedCofheSealer } from "./murmur-owned-cofhe-sealer.js";
+import {
+  MurmurOwnedSealedCallBodySchema,
+} from "./murmur-owned-sealing-schemas.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import {
   bindControllerWallet,
@@ -81,6 +85,9 @@ try {
   const clientNonce = "0x" + "77".repeat(32);
   const retryClientNonce = "0x" + "78".repeat(32);
   const feedClientNonce = "0x" + "79".repeat(32);
+  const feedRetryClientNonce = "0x" + "7a".repeat(32);
+  const ownedSealClientNonce = "0x" + "7b".repeat(32);
+  const feedRetryTxHash = "0x" + "4b".repeat(32);
 
   const db = openDb({ path: dbPath });
   const agentId = randomUUID();
@@ -97,8 +104,12 @@ try {
     privy_user_id: "did:privy:fhenix-gateway-smoke",
     session_id: "smoke-session",
     expires_at: "2026-05-14T18:00:00Z",
+  }, {
+    resolvedAt: new Date(acceptedAt),
   });
-  linkAgentToAccount(db, account.account_id, agentId);
+  linkAgentToAccount(db, account.account_id, agentId, {
+    linkedAt: new Date(acceptedAt),
+  });
   bindControllerWallet(db, {
     account_id: account.account_id,
     agent_id: agentId,
@@ -108,7 +119,7 @@ try {
     provider: "smoke",
     binding_message: "smoke controller wallet binding",
     binding_signature: "0x" + "11".repeat(65),
-    created_at: acceptedAt,
+    createdAt: new Date(acceptedAt),
   });
   const runtimePolicy = {
     allowed_market_ids: [marketId],
@@ -129,7 +140,7 @@ try {
     authorization_nonce: "gateway-smoke-runtime-001",
     authorization_message: "gateway smoke runtime key authorization",
     authorization_signature: "0x" + "12".repeat(65),
-    created_at: acceptedAt,
+    createdAt: new Date(acceptedAt),
   });
   marketsRepo.upsertExternalMarket(db, {
     market_id: marketId,
@@ -267,6 +278,7 @@ try {
     ],
   };
   let writes = 0;
+  let lastFeedRevealAfterArg: bigint | null = null;
   const gatewayClient: FhenixGatewayClient = {
     getChainId: async () => chainId,
     getBlockNumber: async () => 22n,
@@ -276,13 +288,20 @@ try {
         assert.equal(args.args[0].toLowerCase(), wallet.toLowerCase());
         assert.equal(args.args[1], feedIdHash);
         assert.equal(args.args[2], fhenixMarketIdForMurmurMarket(marketId));
-        assert.equal(args.args[6], feedClientNonce);
-        return feedTxHash as Hex;
+        lastFeedRevealAfterArg = args.args[3];
+        assert.ok(
+          args.args[6] === feedClientNonce || args.args[6] === feedRetryClientNonce,
+        );
+        return (args.args[6] === feedRetryClientNonce ? feedRetryTxHash : feedTxHash) as Hex;
       }
       assert.equal(args.functionName, "submitSealedFor");
       assert.equal(args.args[0].toLowerCase(), wallet.toLowerCase());
       assert.equal(args.args[1], fhenixMarketIdForMurmurMarket(marketId));
-      assert.ok(args.args[4] === clientNonce || args.args[4] === retryClientNonce);
+      assert.ok(
+        args.args[4] === clientNonce ||
+          args.args[4] === retryClientNonce ||
+          args.args[4] === ownedSealClientNonce,
+      );
       return (args.args[4] === retryClientNonce ? retryTxHash : txHash) as Hex;
     },
     getTransactionReceipt: async ({ hash }) => hash === feedTxHash ? feedReceipt : receipt,
@@ -293,6 +312,34 @@ try {
     contractAddress: contract,
     client: gatewayClient as never,
   });
+  const fakeMurmurOwnedSealer: MurmurOwnedCofheSealer & {
+    calls: Array<{ binary_index: number; confidence_bps: number }>;
+  } = {
+    calls: [],
+    async sealVerdict(input) {
+      this.calls.push(input);
+      return {
+        binary_index_input: {
+          ct_hash: binaryIndexCtHash,
+          security_zone: 0,
+          utype: 2,
+          signature: "0x1234",
+        },
+        confidence_input: {
+          ct_hash: confidenceCtHash,
+          security_zone: 0,
+          utype: 3,
+          signature: "0xabcd",
+        },
+      };
+    },
+  };
+  const attemptIds: string[] = [];
+  const claimTokens: string[] = [];
+  const sealedCallIds = ["00000000-0000-4000-8000-000000000401"];
+  const consumedSealedCallIds: string[] = [];
+  const feedPacketIds = ["gateway-smoke-packet-1"];
+  const consumedFeedPacketIds: string[] = [];
   const gateway = new FhenixGatewayBroadcaster({
     db,
     chainId,
@@ -300,6 +347,29 @@ try {
     relayerAddress: relayer,
     client: gatewayClient,
     confirmations: 2,
+    murmurOwnedSealer: fakeMurmurOwnedSealer,
+    newAttemptId: () => {
+      const attemptId = `gateway-smoke-attempt-${attemptIds.length + 1}`;
+      attemptIds.push(attemptId);
+      return attemptId;
+    },
+    newClaimToken: () => {
+      const token = `gateway-smoke-claim-${claimTokens.length + 1}`;
+      claimTokens.push(token);
+      return token;
+    },
+    newSealedCallId: () => {
+      const id = sealedCallIds.shift();
+      assert.ok(id, "Sealed Call ID Adapter consumed too many IDs");
+      consumedSealedCallIds.push(id);
+      return id;
+    },
+    newFeedPacketId: () => {
+      const id = feedPacketIds.shift();
+      assert.ok(id, "Feed Packet ID Adapter consumed too many IDs");
+      consumedFeedPacketIds.push(id);
+      return id;
+    },
     now: () => new Date("2026-05-14T12:05:00Z"),
   });
 
@@ -366,6 +436,26 @@ try {
   };
 
   let attemptId = "";
+  let feedAttemptId = "";
+
+  await check("murmur-owned sealing request rejects provider-created ciphertext", () => {
+    const parsed = MurmurOwnedSealedCallBodySchema.safeParse({
+      marketRef: {
+        protocol: "polymarket-gamma",
+        sourceId: marketId,
+        configVersion: 1,
+      },
+      client_order_id: "owned-seal-smoke-order-001",
+      client_nonce: clientNonce,
+      privacy_mode: "murmur_sealed_fhenix",
+      verdict: {
+        binary_index: 1,
+        confidence_bps: 7400,
+      },
+      binary_index_input: body.binary_index_input,
+    });
+    assert.equal(parsed.success, false);
+  });
 
   await check("runtime key gateway policy rejects disallowed market", async () => {
     const res = await fetch(`${baseUrl}/v2/gateway/calls`, {
@@ -388,6 +478,7 @@ try {
     const payload = await res.json() as { code: string };
     assert.equal(payload.code, "agent_not_authorized");
     assert.equal(writes, 0);
+    assert.deepEqual(attemptIds, []);
   });
 
   await check("public feed packet metadata route is retired", async () => {
@@ -419,10 +510,13 @@ try {
       idempotent_hit: boolean;
     };
     attemptId = payload.attempt_id;
+    assert.equal(payload.attempt_id, "gateway-smoke-attempt-1");
     assert.equal(payload.status, "submitted");
     assert.equal(payload.tx_hash, txHash);
     assert.equal(payload.idempotent_hit, false);
     assert.equal(writes, 1);
+    assert.deepEqual(attemptIds, ["gateway-smoke-attempt-1"]);
+    assert.deepEqual(claimTokens, ["gateway-smoke-claim-1"]);
   });
 
   await check("admin gateway snapshot exposes relayer queue state", async () => {
@@ -446,10 +540,10 @@ try {
 	    assert.equal(payload.configured, true);
 	    assert.equal(payload.status_counts.submitted, 1);
 	    assert.equal(payload.queues.submitted_awaiting_confirmation, 1);
-	    assert.ok(payload.telemetry.avg_broadcast_latency_ms !== null);
+	    assert.equal(payload.telemetry.avg_broadcast_latency_ms, 0);
 	    assert.equal(payload.recent_attempts[0].attempt_id, attemptId);
 	    assert.equal(payload.recent_attempts[0].binary_index_input_json, undefined);
-	    assert.ok(payload.recent_attempts[0].broadcast_latency_ms !== null);
+	    assert.equal(payload.recent_attempts[0].broadcast_latency_ms, 0);
 	  });
 
   await check("gateway tick confirms receipt and accepts sealed call", async () => {
@@ -458,10 +552,12 @@ try {
     assert.equal(result.accepted, 1);
 	    const attempt = fhenixGatewayTxRepo.byId(db, attemptId);
 	    assert.equal(attempt?.status, "accepted");
-	    assert.ok(attempt?.call_id);
+	    assert.equal(attempt?.call_id, "00000000-0000-4000-8000-000000000401");
 	    assert.equal(attempt?.receipt_status, "success");
 	    assert.equal(attempt?.receipt_block_number, 20);
 	    assert.equal(attempt?.latest_block_number, 22);
+	    assert.equal(attempt?.receipt_latency_ms, 0);
+	    assert.equal(attempt?.latest_block_latency_ms, 0);
 	    assert.equal(attempt?.confirmations_observed, 3);
 	    assert.equal(attempt?.gas_used, "123456");
 	    assert.equal(attempt?.effective_gas_price_wei, "1000000000");
@@ -470,6 +566,9 @@ try {
     const sealed = fhenixSealedCallsRepo.byCallId(db, attempt!.call_id!);
     assert.equal(sealed?.submit_tx_hash, txHash);
     assert.equal(sealed?.submit_log_index, 4);
+    assert.deepEqual(consumedSealedCallIds, [
+      "00000000-0000-4000-8000-000000000401",
+    ]);
   });
 
   await check("gateway submit is idempotent after acceptance", async () => {
@@ -491,6 +590,9 @@ try {
     assert.equal(payload.status, "accepted");
     assert.equal(payload.idempotent_hit, true);
     assert.equal(writes, 1);
+    assert.deepEqual(consumedSealedCallIds, [
+      "00000000-0000-4000-8000-000000000401",
+    ]);
   });
 
   await check("runtime key gateway feed packet submit broadcasts relayer transaction", async () => {
@@ -509,13 +611,31 @@ try {
       tx_hash: string;
       sequence: number;
     };
+    assert.equal(payload.attempt_id, "gateway-smoke-attempt-2");
+    feedAttemptId = payload.attempt_id;
     assert.equal(payload.status, "submitted");
     assert.equal(payload.tx_hash, feedTxHash);
     assert.equal(payload.sequence, 1);
-	    const attempt = fhenixGatewayFeedPacketTxRepo.byId(db, payload.attempt_id);
-	    assert.equal(attempt?.feed_id_hash, feedIdHash);
-	    assert.ok(attempt?.broadcast_latency_ms !== null);
-	  });
+    assert.deepEqual(attemptIds, [
+      "gateway-smoke-attempt-1",
+      "gateway-smoke-attempt-2",
+    ]);
+    assert.deepEqual(claimTokens, [
+      "gateway-smoke-claim-1",
+      "gateway-smoke-claim-2",
+    ]);
+    const attempt = fhenixGatewayFeedPacketTxRepo.byId(db, payload.attempt_id);
+    assert.equal(attempt?.feed_id_hash, feedIdHash);
+    assert.equal(attempt?.broadcast_latency_ms, 0);
+    // The contract's uint64 revealAfter arg must be the stored
+    // reveal_after epoch — pins the feed lane's contractWrite mapping.
+    assert.ok(attempt?.reveal_after, "feed attempt must persist reveal_after");
+    assert.equal(
+      lastFeedRevealAfterArg,
+      BigInt(Math.floor(Date.parse(attempt!.reveal_after) / 1000)),
+    );
+    assert.deepEqual(consumedFeedPacketIds, []);
+  });
 
   await check("gateway tick confirms and records feed packet SLA", async () => {
     const result = await gateway.tick();
@@ -526,15 +646,39 @@ try {
       contract_address: contract,
       onchain_packet_id: onchainFeedPacketId,
     });
+    assert.equal(packet?.packet_id, "gateway-smoke-packet-1");
     assert.equal(packet?.feed_id, feedId);
     assert.equal(packet?.sequence, 1);
-	    assert.equal(packet?.sla_status, "on_time");
-	    assert.equal(packet?.packet_ct_hash, feedActionCtHash);
-	    assert.equal(packet?.confidence_ct_hash, feedSignalCtHash);
-	    const attempt = fhenixGatewayFeedPacketTxRepo.listRecent(db, { limit: 1 })[0];
-	    assert.equal(attempt?.receipt_status, "success");
-	    assert.equal(attempt?.gas_used, "234567");
-	  });
+    assert.equal(packet?.sla_status, "on_time");
+    assert.equal(packet?.packet_ct_hash, feedActionCtHash);
+    assert.equal(packet?.confidence_ct_hash, feedSignalCtHash);
+    assert.deepEqual(consumedFeedPacketIds, ["gateway-smoke-packet-1"]);
+    const attempt = fhenixGatewayFeedPacketTxRepo.listRecent(db, { limit: 1 })[0];
+    assert.equal(attempt?.receipt_status, "success");
+    assert.equal(attempt?.receipt_latency_ms, 0);
+    assert.equal(attempt?.latest_block_latency_ms, 0);
+    assert.equal(attempt?.gas_used, "234567");
+  });
+
+  await check("gateway feed packet acceptance is idempotent by event", async () => {
+    fhenixGatewayFeedPacketTxRepo.markConfirmed(db, {
+      attempt_id: feedAttemptId,
+      submit_log_index: 5,
+      submit_block_number: 21,
+      onchain_packet_id: onchainFeedPacketId,
+      action_ct_hash: feedActionCtHash,
+      signal_ct_hash: feedSignalCtHash,
+      accepted_at: acceptedAt,
+      updated_at: "2026-05-14T12:06:00Z",
+    });
+    const result = await gateway.tick();
+    assert.equal(result.confirmed, 0);
+    assert.equal(result.accepted, 1);
+    assert.deepEqual(consumedFeedPacketIds, ["gateway-smoke-packet-1"]);
+    const attempt = fhenixGatewayFeedPacketTxRepo.byId(db, feedAttemptId);
+    assert.equal(attempt?.status, "accepted");
+    assert.equal(attempt?.packet_id, "gateway-smoke-packet-1");
+  });
 
   await check("admin gateway retry submits only retryable attempts", async () => {
     const retryAttemptId = randomUUID();
@@ -578,6 +722,15 @@ try {
     assert.equal(payload.status, "submitted");
     assert.equal(payload.tx_hash, retryTxHash);
     assert.equal(writes, 3);
+    assert.deepEqual(attemptIds, [
+      "gateway-smoke-attempt-1",
+      "gateway-smoke-attempt-2",
+    ]);
+    assert.deepEqual(claimTokens, [
+      "gateway-smoke-claim-1",
+      "gateway-smoke-claim-2",
+      "gateway-smoke-claim-3",
+    ]);
 
     const acceptedRetry = await fetch(`${baseUrl}/v1/admin/fhenix/gateway/attempts/${attemptId}/retry`, {
       method: "POST",
@@ -588,6 +741,140 @@ try {
       body: "{}",
     });
     assert.equal(acceptedRetry.status, 409);
+  });
+
+  await check("admin gateway retry covers feed lane and audits both payload shapes", async () => {
+    const feedRetryAttemptId = randomUUID();
+    fhenixGatewayFeedPacketTxRepo.insert(db, {
+      attempt_id: feedRetryAttemptId,
+      status: "failed_retryable",
+      runtime_key_id: runtimeKey.runtime_key_id,
+      runtime_key_policy_hash: runtimePolicyHash,
+      runtime_key_policy_json: runtimePolicyJson,
+      account_id: account.account_id,
+      agent_id: agentId,
+      chain_id: chainId,
+      contract_address: contract,
+      relayer_address: relayer,
+      agent_wallet_address: wallet,
+      feed_id: feedId,
+      feed_id_hash: feedIdHash,
+      market_id: marketId,
+      market_id_hash: fhenixMarketIdForMurmurMarket(marketId),
+      packet_kind: "verdict",
+      sequence: 2,
+      payload_schema: "murmur.feed-packet.v1",
+      client_order_id: "gateway-feed-smoke-order-retry",
+      client_nonce: feedRetryClientNonce,
+      submitted_at: acceptedAt,
+      delivery_deadline_at: null,
+      reveal_after: revealOpenAt,
+      action_input_json: JSON.stringify(feedBody.action_input),
+      signal_input_json: JSON.stringify(feedBody.signal_input),
+      next_attempt_at: "2026-05-14T13:05:00Z",
+      created_at: acceptedAt,
+      updated_at: acceptedAt,
+    });
+    const res = await fetch(`${baseUrl}/v1/admin/fhenix/gateway/attempts/${feedRetryAttemptId}/retry`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Token": "gateway-admin-token",
+      },
+      body: "{}",
+    });
+    assert.equal(res.status, 202);
+    const payload = await res.json() as { status: string; tx_hash: string; sequence: number };
+    assert.equal(payload.status, "submitted");
+    assert.equal(payload.tx_hash, feedRetryTxHash);
+    assert.equal(payload.sequence, 2);
+
+    // Both lanes' admin_fhenix_gateway_retry audit payloads must keep their
+    // historical shapes (payload_json key order is the persisted contract):
+    // sealed carries market_id, feed carries feed_id_hash. The audit row
+    // must also attach agent_id so the retry shows up on the agent's own
+    // security timeline.
+    const auditRows = db.prepare(
+      `SELECT agent_id, payload_json FROM agent_security_events
+       WHERE kind = 'admin_fhenix_gateway_retry'
+       ORDER BY created_at`,
+    ).all() as { agent_id: string | null; payload_json: string }[];
+    const audits = auditRows.map((row) => ({
+      agent_id: row.agent_id,
+      payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+      keys: Object.keys(JSON.parse(row.payload_json) as Record<string, unknown>),
+    }));
+    const sealedAudit = audits.find((a) => a.payload.attempt_type === "sealed_call");
+    assert.ok(sealedAudit, "sealed retry must emit an audit event");
+    assert.equal(sealedAudit.agent_id, agentId);
+    assert.deepEqual(sealedAudit.keys, [
+      "attempt_id",
+      "attempt_type",
+      "previous_status",
+      "previous_attempt_count",
+      "previous_next_attempt_at",
+      "previous_last_error",
+      "chain_id",
+      "contract_address",
+      "agent_wallet_address",
+      "client_nonce",
+      "market_id",
+    ]);
+    assert.equal(sealedAudit.payload.market_id, marketId);
+    assert.equal(sealedAudit.payload.agent_wallet_address, wallet);
+    assert.equal(sealedAudit.payload.client_nonce, retryClientNonce);
+    const feedAudit = audits.find((a) => a.payload.attempt_type === "feed_packet");
+    assert.ok(feedAudit, "feed retry must emit an audit event");
+    assert.equal(feedAudit.agent_id, agentId);
+    assert.deepEqual(feedAudit.keys, [
+      "attempt_id",
+      "attempt_type",
+      "previous_status",
+      "previous_attempt_count",
+      "previous_next_attempt_at",
+      "previous_last_error",
+      "chain_id",
+      "contract_address",
+      "agent_wallet_address",
+      "feed_id_hash",
+      "client_nonce",
+    ]);
+    assert.equal(feedAudit.payload.feed_id_hash, feedIdHash);
+    assert.equal(feedAudit.payload.agent_wallet_address, wallet);
+    assert.equal(feedAudit.payload.client_nonce, feedRetryClientNonce);
+    assert.equal(feedAudit.payload.previous_status, "failed_retryable");
+  });
+
+  await check("murmur-owned sealing route encrypts before gateway relay", async () => {
+    const res = await fetch(`${baseUrl}/v2/gateway/calls/seal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Murmur-Runtime-Key": runtimeKey.secret,
+      },
+      body: JSON.stringify({
+        marketRef: {
+          protocol: "polymarket-gamma",
+          sourceId: marketId,
+          configVersion: 1,
+        },
+        client_order_id: "owned-seal-smoke-order-001",
+        client_nonce: ownedSealClientNonce,
+        privacy_mode: "murmur_sealed_fhenix",
+        verdict: {
+          binary_index: 1,
+          confidence_bps: 7400,
+        },
+        public_strategy_tag: "momentum",
+      }),
+    });
+    assert.equal(res.status, 202);
+    assert.deepEqual(fakeMurmurOwnedSealer.calls, [
+      { binary_index: 1, confidence_bps: 7400 },
+    ]);
+    const payload = await res.json() as { status: string; tx_hash: string };
+    assert.equal(payload.status, "submitted");
+    assert.equal(payload.tx_hash, txHash);
   });
 
   db.close();

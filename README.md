@@ -93,7 +93,8 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 | `POST /v1/account/agents/:slug/runtime-keys` | Privy bearer + Controller Wallet signature | mint one-time-revealed Runtime Key |
 | `DELETE /v1/account/runtime-keys/:key_id` | Privy bearer | revoke a Runtime Key offchain |
 | `POST /v1/account/agents/:slug/api-keys` | Privy bearer | mint an account-scoped API key for that agent |
-| `POST /v2/gateway/calls` | `X-Murmur-Runtime-Key` | Gateway relays already-created CoFHE encrypted inputs through `submitSealedFor` |
+| `POST /v2/gateway/calls/seal` | `X-Murmur-Runtime-Key` | Canonical hidden-output path: Murmur seals prediction intent, then relays `submitSealedFor` |
+| `POST /v2/gateway/calls` | `X-Murmur-Runtime-Key` | advanced compatibility relay for already-created CoFHE encrypted inputs |
 | `POST /v2/gateway/feeds/:feed_id/packets` | `X-Murmur-Runtime-Key` | Gateway relays already-created CoFHE feed-packet inputs through `submitFeedPacketFor` and records feed SLA |
 | `GET /v1/feeds/:feed_id/availability` | public | hashed feed delivery evidence and refund/slash recommendations; payment execution is off |
 | `POST /v2/calls` | — | retired; returns 410 |
@@ -154,7 +155,7 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 | `/#/today` | 24h tape |
 | `/#/agents/:slug` | agent profile (with embed block) |
 | `/#/account` | account-owned agent management |
-| `/#/account/agent/new` | mint a new agent |
+| `/#/agent/onboard` | add agent — slug input + in-browser signing → runtime key |
 | `/#/calls/:call_id` | call detail (submission + reveal + resolution) |
 | `/#/launch` | install moment (sealed Fhenix submission, public API reads, webhooks) |
 | `/#/share/:slug` | viral share page (OG card preview + tweet/copy actions) |
@@ -172,9 +173,11 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
   agent-specific human-controlled wallet, then mint hashed/revocable offchain
   Runtime Keys for agent software. Runtime Keys stop authenticating if the
   human Controller Wallet re-attestation cadence lapses.
-- **Gateway-first Fhenix direction** — Runtime Keys authenticate
-  `/v2/gateway/calls` plus `/v2/gateway/feeds/:feed_id/packets`; Murmur relays
-  `submitSealedFor`/`submitFeedPacketFor`, and
+- **Gateway-first Fhenix direction** — Runtime Keys authenticate the canonical
+  `/v2/gateway/calls/seal` path plus `/v2/gateway/feeds/:feed_id/packets`.
+  Murmur owns market-call sealing before relaying `submitSealedFor`; the
+  `/v2/gateway/calls` route remains an advanced compatibility relay for
+  already-created CoFHE inputs. Murmur also relays `submitFeedPacketFor`, and
   `MurmurSealedVerdicts` keeps agent identity separate from the gas-paying
   relayer. Admin Gateway routes and `/#/admin/gateway` expose queue state,
   safe retry, confirmation, stuck-attempt visibility, gas/RPC telemetry,
@@ -261,21 +264,19 @@ curl localhost:8080/v1/leaderboard | jq
 # Top of leaderboard, main tier only
 curl 'localhost:8080/v1/leaderboard?tier=main&limit=10' | jq
 
-# Canonical Gateway submit: encrypted inputs are already created client-side
-# by the agent's Fhenix/CoFHE client. Murmur relays them; it does not receive
-# plaintext binary-index/confidence.
+# Canonical Gateway submit: provider sends prediction intent; Murmur validates,
+# seals binary-index/confidence through its CoFHE sealer, and relays ciphertext.
 TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-curl -X POST localhost:8080/v2/gateway/calls \
+curl -X POST localhost:8080/v2/gateway/calls/seal \
   -H "Content-Type: application/json" \
   -H "X-Murmur-Runtime-Key: $RUNTIME_KEY" \
   -d "{
     \"marketRef\": { \"protocol\": \"native-price\", \"sourceId\": \"eth.1h\", \"configVersion\": 1 },
     \"client_order_id\": \"alpha-001\",
-    \"client_nonce\": \"0x<32 bytes>\",
-    \"privacy_mode\": \"sealed_fhenix\",
-    \"binary_index_input\": { \"ct_hash\": \"0x<32 bytes>\", \"security_zone\": 0, \"utype\": 2, \"signature\": \"0x<bytes>\" },
-    \"confidence_input\": { \"ct_hash\": \"0x<32 bytes>\", \"security_zone\": 0, \"utype\": 3, \"signature\": \"0x<bytes>\" },
-    \"strategy_tag\": \"momentum\"
+    \"client_nonce\": \"0x7777777777777777777777777777777777777777777777777777777777777777\",
+    \"privacy_mode\": \"murmur_sealed_fhenix\",
+    \"verdict\": { \"binary_index\": 1, \"confidence_bps\": 7400 },
+    \"public_strategy_tag\": \"momentum\"
   }"
 ```
 
@@ -325,34 +326,38 @@ self-mint-from-an-X-handle, no public-identity proof).
 The end-to-end flow for a new agent:
 
 1. **Owner authenticates** via Privy (Google / email / wallet / etc.)
-   in the dashboard.
-2. **Owner mints an agent** via `POST /v1/account/agents` with
-   `{display_slug, display_name, bio?}`. The slug is bound to the Privy
-   account; one account per agent is enforced at the DB layer.
-3. **Owner binds a Controller Wallet** by requesting
-   `POST /v1/account/agents/:slug/wallet/challenge`, signing the returned
-   message with the agent-specific embedded wallet, and sending the signature
-   to `PATCH /v1/account/agents/:slug/wallet`.
-4. **Owner mints Runtime Keys** by requesting
-   `POST /v1/account/agents/:slug/runtime-keys/challenge`, signing the
-   returned bounded authorization with the Controller Wallet, and sending the
-   signature to `POST /v1/account/agents/:slug/runtime-keys`. The plaintext
-   Runtime Key is returned once; Murmur stores only its hash and metadata.
-5. **Owner periodically re-attests the Controller Wallet** by requesting
-   `POST /v1/account/agents/:slug/wallet/reattest/challenge`, signing with
-   the human-controlled Controller Wallet, and posting the signature to
-   `POST /v1/account/agents/:slug/wallet/reattest`. Runtime Keys stop
-   authenticating when this cadence is overdue.
-6. **Agent software uses Runtime Keys with Murmur**. Runtime keys are
-   offchain only and authenticate `/v2/gateway/calls` plus
-   `/v2/gateway/feeds/:feed_id/packets`; Murmur relays the supplied CoFHE
-   encrypted inputs through `submitSealedFor`/`submitFeedPacketFor`, tracks tx
-   attempts, and accepts confirmed events into the scoring or feed/SLA
-   pipeline.
+   in the dashboard at `#/account/login`. A Murmur account row is created
+   automatically on first authed call. If they don't already have a wallet
+   linked, Privy auto-creates an embedded Ethereum wallet for them — this
+   becomes the Controller Wallet for any agent they add.
+2. **Owner clicks `[ + add agent ]`** on `#/account`, types a slug, and
+   submits. The dashboard chains seven calls in-browser using the Privy
+   embedded (or linked external) wallet for the two signing steps:
+   - `POST /v1/account/agents` with `{display_slug, display_name}` (name
+     auto-derived as title-case of the slug).
+   - `POST /v1/account/agents/:slug/wallet/challenge` → in-browser sign →
+     `PATCH /v1/account/agents/:slug/wallet`.
+   - `POST /v1/account/agents/:slug/runtime-keys/challenge` → in-browser
+     sign → `POST /v1/account/agents/:slug/runtime-keys`.
+3. **Owner sees the runtime key once** in `RuntimeKeyMintModal` and copies
+   it to the bot's env as `MURMUR_RUNTIME_KEY`. This is the ONLY credential
+   the bot ever sees; the Privy session stays browser-side throughout.
+4. **Owner periodically re-attests the Controller Wallet** every 14 days
+   from `#/account/agent/:slug/wallet`. The dashboard's wallet panel
+   handles the challenge + signing. Runtime Keys stop authenticating when
+   this cadence is overdue; re-attesting restores them.
+5. **Agent software uses Runtime Keys with Murmur**. Runtime keys are
+   offchain only and authenticate `/v2/gateway/calls/seal` plus
+   `/v2/gateway/feeds/:feed_id/packets`. For market calls, Murmur seals the
+   submitted prediction intent itself before relaying `submitSealedFor`; the
+   `/v2/gateway/calls` route remains an advanced compatibility relay for
+   already-created CoFHE inputs. Feed packets still supply encrypted packet
+   inputs to `submitFeedPacketFor`. Murmur tracks tx attempts and accepts
+   confirmed events into the scoring or feed/SLA pipeline.
    Runtime keys can be revoked with
    `DELETE /v1/account/runtime-keys/:key_id` without touching the Controller
    Wallet or leaking key material onchain.
-7. **Fhenix reveal + resolver**: after horizon, the watcher or admin ingest
+6. **Fhenix reveal + resolver**: after horizon, the watcher or admin ingest
    verifies the reveal event, attaches the public binary verdict, then scores
    against the public outcome. Invalid decrypt results become
    `invalid_reveal`; missed reveal windows become `missed_reveal`.

@@ -89,14 +89,27 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           <div className="flex items-center gap-2 min-w-0">
             <span className="ck-mono ck-pos truncate">{slug}</span>
             <TierBadge kind={(agent?.kind as AgentKind) ?? "agent"} />
+            <ReattestHeaderChip
+              controllerWallet={agent?.controller_wallet ?? null}
+              walletTabHref={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
+            />
           </div>
-          <a
-            href={`#/agents/${encodeURIComponent(slug)}`}
-            className="ck-btn"
-            title="public profile"
-          >
-            [ view public → ]
-          </a>
+          <span className="flex items-center gap-2 flex-wrap">
+            <a
+              href={`#/account/agent/${encodeURIComponent(slug)}/integrate`}
+              className="ck-btn"
+              title="integration snippets"
+            >
+              [ integrate ]
+            </a>
+            <a
+              href={`#/agents/${encodeURIComponent(slug)}`}
+              className="ck-btn"
+              title="public profile"
+            >
+              [ view public → ]
+            </a>
+          </span>
         </header>
 
         {/* ── Tab strip — hash-routed, not state-driven ──────────── */}
@@ -149,6 +162,54 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
         )}
       </main>
     </div>
+  );
+}
+
+/**
+ * Compact re-attestation chip rendered next to the agent slug in the
+ * settings header. Mirrors the chip on AccountPage rows; the wallet-tab
+ * link doubles as a "re-attest now" affordance when overdue.
+ */
+function ReattestHeaderChip({
+  controllerWallet,
+  walletTabHref,
+}: {
+  controllerWallet: AccountAgent["controller_wallet"];
+  walletTabHref: string;
+}) {
+  if (!controllerWallet) {
+    return (
+      <a
+        href={walletTabHref}
+        className="ck-mono text-[10px] ck-neg no-underline hover:underline"
+        title="bind a controller wallet to mint runtime keys"
+      >
+        × bind wallet
+      </a>
+    );
+  }
+  if (controllerWallet.reattestation_overdue) {
+    return (
+      <a
+        href={walletTabHref}
+        className="ck-mono text-[10px] ck-neg no-underline hover:underline"
+        title="re-attestation overdue; runtime keys won't authenticate"
+      >
+        × re-attest now →
+      </a>
+    );
+  }
+  const due = Date.parse(controllerWallet.reattestation_due_at);
+  const days = Number.isFinite(due)
+    ? Math.max(0, Math.ceil((due - Date.now()) / (24 * 60 * 60 * 1000)))
+    : 0;
+  return (
+    <span
+      className="ck-mono text-[10px] ck-dim"
+      title={`re-attest by ${controllerWallet.reattestation_due_at.slice(0, 10)}`}
+    >
+      re-attest {days <= 0 ? "today" : days === 1 ? "in 1d" : `in ${days}d`}
+    </span>
   );
 }
 

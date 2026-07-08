@@ -8,8 +8,8 @@
 
 .compact-shell {
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.35;
+  font-size: 13px;
+  line-height: 1.4;
   letter-spacing: 0.02em;
   color: var(--color-primary);
   background: var(--color-bg);
@@ -35,8 +35,8 @@
 .compact-shell .ck-label {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 9px;
-  line-height: 1.2;
+  font-size: 11px;
+  line-height: 1.25;
   letter-spacing: 0.04em;
   color: var(--color-secondary);
 }
@@ -44,14 +44,14 @@
 .compact-shell .ck-num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0;
 }
 
 .compact-shell .ck-num-lg {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 22px;
+  font-size: 26px;
   letter-spacing: -0.02em;
   line-height: 1;
   font-weight: 700;
@@ -60,7 +60,7 @@
 
 .compact-shell .ck-mono {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -119,10 +119,10 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.03em;
   color: var(--color-primary);
   border: 1px solid var(--color-border-vis);
@@ -177,6 +177,6 @@
 .compact-shell pre,
 .compact-shell code {
   font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.45;
 }

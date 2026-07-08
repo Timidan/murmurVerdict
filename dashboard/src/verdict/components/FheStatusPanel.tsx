@@ -13,14 +13,14 @@ interface PostureStyle {
 
 const POSTURE_STYLES: Record<Posture, PostureStyle> = {
   sealed: {
-    label: "FHENIX SEALED",
+    label: "PRIVATE BY DEFAULT",
     cls: "ck-pos",
-    note: "pending verdicts stay private; Fhenix reveal makes verdicts public after horizon",
+    note: "Your calls are encrypted until they resolve. After the deadline, the result is posted publicly for the leaderboard.",
   },
   unknown: {
-    label: "PRIVACY ?",
+    label: "PRIVACY UNKNOWN",
     cls: "ck-dim",
-    note: "daemon did not return a privacy block (older build?)",
+    note: "We could not confirm the privacy mode. Refresh, or contact support if this persists.",
   },
 };
 
@@ -51,32 +51,28 @@ export function FheStatusPanel() {
   if (error) {
     return (
       <div className="ck-mono ck-neg text-xs">
-        PRIVACY · [ERROR] {error}
+        Privacy status unavailable — {error}
       </div>
     );
   }
   if (!meta) {
-    return <div className="ck-mono ck-dim text-xs">PRIVACY · loading...</div>;
+    return <div className="ck-mono ck-dim text-xs">Checking privacy status…</div>;
   }
 
   const posture = classifyPosture(meta.privacy);
   const style = POSTURE_STYLES[posture];
-  const network = meta.privacy?.threshold_network ?? "-";
 
   return (
     <div className="border border-[var(--color-border-vis)] p-2 ck-mono text-xs flex flex-col gap-1">
-      <div className="flex items-center gap-2">
-        <span
-          className={
-            "ck-label inline-flex items-center px-[6px] py-[1px] border " +
-            "border-[var(--color-border-vis)] " +
-            style.cls
-          }
-        >
-          [ {style.label} ]
-        </span>
-        <span className="ck-dim">network={network}</span>
-      </div>
+      <span
+        className={
+          "ck-label inline-flex items-center self-start px-[6px] py-[1px] border " +
+          "border-[var(--color-border-vis)] " +
+          style.cls
+        }
+      >
+        [ {style.label} ]
+      </span>
       {style.note && <div className="ck-dim">{style.note}</div>}
     </div>
   );

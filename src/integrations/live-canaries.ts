@@ -6,9 +6,14 @@ import {
   type Hex,
 } from "viem";
 import { PolymarketGammaClient } from "../markets/polymarket-gamma/client.js";
-import { marketsRepo } from "../verdict/db.js";
+import { conditionIdForMarketConfig } from "../verdict/market-adapter-config.js";
+import { marketsRepo } from "../verdict/repos/market-registry-repo.js";
 import { nowIso } from "../verdict/time.js";
-import { resolveFhenixContractAddress } from "./deployments.js";
+import {
+  parseFhenixAddressInput,
+  parseFhenixChainIdInput,
+  resolveFhenixContractAddress,
+} from "./deployments.js";
 
 const CONDITION_ID_REGEX = /^0x[0-9a-fA-F]{64}$/;
 
@@ -55,7 +60,6 @@ export interface PolymarketCanaryClient {
 export interface LiveCanaryConfig {
   schemaVersion: number;
   db?: Database.Database | null;
-  now?: () => Date;
   fhenix: {
     enabled: boolean;
     expectedChainId: number | null;
@@ -72,18 +76,48 @@ export interface LiveCanaryConfig {
   };
 }
 
+export interface LoadLiveCanaryConfigOptions {
+  fhenixContractAddress?: string | null;
+  nowMs: () => number;
+  polymarketGammaEnabled?: boolean;
+}
+
+export interface LiveCanaryRunnerDeps {
+  config: LiveCanaryConfig;
+  now: () => Date;
+}
+
+export interface CreateLiveCanaryRunnerOptions {
+  env?: NodeJS.ProcessEnv;
+  fhenixContractAddress?: string | null;
+  now: () => Date;
+}
+
+export class LiveCanaryConfigError extends Error {
+  readonly key: string;
+
+  constructor(key: string, message: string) {
+    super(`${key}: ${message}`);
+    this.name = "LiveCanaryConfigError";
+    this.key = key;
+  }
+}
+
 export class LiveCanaryRunner implements LiveCanaryProvider {
   private readonly schemaVersion: number;
   private readonly db: Database.Database | null;
   private readonly now: () => Date;
+  private readonly nowMs: () => number;
   private readonly fhenix: LiveCanaryConfig["fhenix"];
   private readonly polymarket: LiveCanaryConfig["polymarket"];
   private lastSnapshot: LiveCanarySnapshot | null = null;
 
-  constructor(config: LiveCanaryConfig) {
+  constructor(deps: LiveCanaryRunnerDeps) {
+    const { config } = deps;
     this.schemaVersion = config.schemaVersion;
     this.db = config.db ?? null;
-    this.now = config.now ?? (() => new Date());
+    this.now = deps.now;
+    this.nowMs = () => this.now().getTime();
     this.fhenix = config.fhenix;
     this.polymarket = config.polymarket;
   }
@@ -146,7 +180,7 @@ export class LiveCanaryRunner implements LiveCanaryProvider {
       );
     }
 
-    const measured = await measure(async () => {
+    const measured = await measure(this.nowMs, async () => {
       const chainId = await client.getChainId();
       if (chainId !== this.fhenix.expectedChainId) {
         return {
@@ -231,7 +265,10 @@ export class LiveCanaryRunner implements LiveCanaryProvider {
       );
     }
 
-    const measured = await measure(async () => client.fetchMarketByConditionId(conditionId));
+    const measured = await measure(
+      this.nowMs,
+      async () => client.fetchMarketByConditionId(conditionId),
+    );
     if (!measured.ok) {
       return {
         name: "polymarket_gamma",
@@ -284,39 +321,62 @@ export class LiveCanaryRunner implements LiveCanaryProvider {
 export function createLiveCanaryRunnerFromEnv(
   db: Database.Database,
   schemaVersion: number,
+  opts: CreateLiveCanaryRunnerOptions,
 ): LiveCanaryRunner {
+  return new LiveCanaryRunner({
+    config: loadLiveCanaryConfig(db, schemaVersion, opts.env ?? process.env, {
+      fhenixContractAddress: opts.fhenixContractAddress,
+      nowMs: () => opts.now().getTime(),
+    }),
+    now: opts.now,
+  });
+}
+
+export function loadLiveCanaryConfig(
+  db: Database.Database,
+  schemaVersion: number,
+  env: NodeJS.ProcessEnv,
+  opts: LoadLiveCanaryConfigOptions,
+): LiveCanaryConfig {
   const fhenixEnabled = enabledFromEnv(
+    env,
     "FHENIX_CANARY_ENABLED",
-    Boolean(process.env.FHENIX_RPC_URL?.trim() && process.env.FHENIX_CHAIN_ID?.trim()),
+    Boolean(env.FHENIX_RPC_URL?.trim() && env.FHENIX_CHAIN_ID?.trim()),
   );
+  const polymarketGammaEnabled = opts.polymarketGammaEnabled ??
+    enabledFromEnv(env, "MURMUR_POLYMARKET_GAMMA_ENABLED", false);
   const polymarketEnabled = enabledFromEnv(
+    env,
     "POLYMARKET_CANARY_ENABLED",
-    process.env.MURMUR_POLYMARKET_GAMMA_ENABLED === "1",
+    polymarketGammaEnabled,
   );
-  const rpcUrl = process.env.FHENIX_RPC_URL?.trim() || "";
-  const rawChainId = process.env.FHENIX_CHAIN_ID?.trim() || "";
-  const expectedChainId = Number(rawChainId);
-  const contractAddress =
-    resolveFhenixContractAddress(
-      Number.isInteger(expectedChainId) && expectedChainId > 0 ? expectedChainId : undefined,
-    ) || "";
+  const rpcUrl = env.FHENIX_RPC_URL?.trim() || "";
+  const expectedChainId = parseOptionalPositiveInteger(
+    env.FHENIX_CHAIN_ID,
+    "FHENIX_CHAIN_ID",
+    fhenixEnabled,
+  );
+  const contractAddress = resolveLiveCanaryFhenixContractAddress(
+    env,
+    expectedChainId,
+    opts,
+  );
   const fhenixClient = rpcUrl
     ? createViemFhenixCanaryClient(rpcUrl)
     : null;
 
-  return new LiveCanaryRunner({
+  return {
     schemaVersion,
     db,
     fhenix: {
       enabled: fhenixEnabled,
-      expectedChainId: Number.isInteger(expectedChainId) && expectedChainId > 0
-        ? expectedChainId
-        : null,
-      contractAddress: isAddressLike(contractAddress)
-        ? (contractAddress as Address)
-        : null,
-      requireContractCode:
-        process.env.FHENIX_CANARY_REQUIRE_CONTRACT_CODE !== "false",
+      expectedChainId,
+      contractAddress: contractAddress ? (contractAddress as Address) : null,
+      requireContractCode: enabledFromEnv(
+        env,
+        "FHENIX_CANARY_REQUIRE_CONTRACT_CODE",
+        true,
+      ),
       client: fhenixClient,
       disabledReason: fhenixEnabled
         ? undefined
@@ -324,13 +384,33 @@ export function createLiveCanaryRunnerFromEnv(
     },
     polymarket: {
       enabled: polymarketEnabled,
-      conditionId: normalizeConditionId(process.env.POLYMARKET_CANARY_CONDITION_ID),
-      client: new PolymarketGammaClient(),
+      conditionId: normalizeConditionId(
+        env.POLYMARKET_CANARY_CONDITION_ID,
+        polymarketEnabled,
+      ),
+      client: new PolymarketGammaClient({ nowMs: opts.nowMs }),
       disabledReason: polymarketEnabled
         ? undefined
         : "POLYMARKET_CANARY_ENABLED=false and Polymarket sync is disabled",
     },
-  });
+  };
+}
+
+function resolveLiveCanaryFhenixContractAddress(
+  env: NodeJS.ProcessEnv,
+  expectedChainId: number | null,
+  opts: LoadLiveCanaryConfigOptions,
+): string | null {
+  if (opts.fhenixContractAddress === undefined) {
+    return resolveFhenixContractAddress(expectedChainId ?? undefined, env);
+  }
+  const parsed = parseFhenixAddressInput(opts.fhenixContractAddress);
+  if (parsed.kind === "empty") return null;
+  if (parsed.kind === "address") return parsed.address;
+  throw new LiveCanaryConfigError(
+    "FHENIX_SEALED_VERDICTS_ADDRESS",
+    "must be a 20-byte 0x-prefixed address",
+  );
 }
 
 function createViemFhenixCanaryClient(rpcUrl: string): FhenixCanaryClient {
@@ -342,20 +422,51 @@ function createViemFhenixCanaryClient(rpcUrl: string): FhenixCanaryClient {
   };
 }
 
-function enabledFromEnv(name: string, defaultValue: boolean): boolean {
-  const raw = process.env[name]?.trim().toLowerCase();
+function enabledFromEnv(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  defaultValue: boolean,
+): boolean {
+  const raw = env[name]?.trim().toLowerCase();
   if (raw === "true" || raw === "1" || raw === "yes") return true;
   if (raw === "false" || raw === "0" || raw === "no") return false;
+  if (raw) {
+    throw new LiveCanaryConfigError(
+      name,
+      "must be one of true, false, 1, 0, yes, or no",
+    );
+  }
   return defaultValue;
 }
 
-function normalizeConditionId(value: string | undefined): string | null {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
+function parseOptionalPositiveInteger(
+  value: string | undefined,
+  key: string,
+  enabled: boolean,
+): number | null {
+  const parsed = parseFhenixChainIdInput(value);
+  if (parsed.kind === "empty") return null;
+  if (parsed.kind === "chain_id") return parsed.chainId;
+  if (enabled) {
+    throw new LiveCanaryConfigError(key, "must be a positive integer");
+  }
+  return null;
 }
 
-function isAddressLike(value: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(value);
+function normalizeConditionId(
+  value: string | undefined,
+  enabled: boolean,
+): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (CONDITION_ID_REGEX.test(trimmed)) return trimmed;
+  if (enabled) {
+    throw new LiveCanaryConfigError(
+      "POLYMARKET_CANARY_CONDITION_ID",
+      "must be a 32-byte conditionId",
+    );
+  }
+  return null;
 }
 
 function firstListedPolymarketConditionId(db: Database.Database | null): string | null {
@@ -363,40 +474,29 @@ function firstListedPolymarketConditionId(db: Database.Database | null): string 
   const listed = marketsRepo.listed(db);
   for (const row of listed) {
     if (row.adapter_id !== "polymarket-gamma") continue;
-    const fromConfig = conditionIdFromConfig(row.config_json);
+    const fromConfig = conditionIdForMarketConfig(row.config_json);
     if (fromConfig) return fromConfig;
     if (CONDITION_ID_REGEX.test(row.market_id)) return row.market_id;
   }
   return null;
 }
 
-function conditionIdFromConfig(configJson: string | null): string | null {
-  if (!configJson) return null;
-  try {
-    const parsed = JSON.parse(configJson) as { conditionId?: unknown };
-    return typeof parsed.conditionId === "string" && CONDITION_ID_REGEX.test(parsed.conditionId)
-      ? parsed.conditionId
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 async function measure<T>(
+  nowMs: () => number,
   fn: () => Promise<T>,
 ): Promise<
   | { ok: true; value: T; latencyMs: number }
   | { ok: false; error: string; latencyMs: number }
 > {
-  const started = Date.now();
+  const started = nowMs();
   try {
     const value = await fn();
-    return { ok: true, value, latencyMs: Date.now() - started };
+    return { ok: true, value, latencyMs: Math.max(0, nowMs() - started) };
   } catch (err) {
     return {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
-      latencyMs: Date.now() - started,
+      latencyMs: Math.max(0, nowMs() - started),
     };
   }
 }

@@ -12,7 +12,7 @@
 //   const privy = new PrivyClient({
 //     appId: process.env.PRIVY_APP_ID,
 //     appSecret: process.env.PRIVY_APP_SECRET,
-//     jwtVerificationKey: process.env.PRIVY_VERIFICATION_KEY,
+//     // PRIVY_VERIFICATION_KEY is OMITTED — see "JWKS by default" below.
 //   });
 //   const claims = await privy.utils().auth().verifyAccessToken(accessToken);
 //   // claims => { app_id, issuer, issued_at, expiration, session_id, user_id }
@@ -27,23 +27,43 @@
 //      the access token" below). Sharing one client keeps that wiring
 //      trivial when we add it.
 //
+// JWKS by default:
+//   When `jwtVerificationKey` is undefined, PrivyClient's constructor calls
+//   `createPrivyAppJWKS` (node_modules/@privy-io/node/lib/auth.js) which
+//   creates a `jose` remote-JWKS getter pointed at
+//   `<apiUrl>/v1/apps/<appId>/jwks.json` with `cacheMaxAge: 60 min` and
+//   `cooldownDuration: 10 min`. The cache age caps how long a successful
+//   fetch is reused; the cooldown throttles refetches when a presented
+//   token references an unknown `kid` (so a flood of unknown-kid tokens
+//   can't hammer Privy with refetches). That means we no longer paste a
+//   PEM at deploy time, and key rotations by Privy are picked up
+//   automatically within one cache window. The verifier function returned
+//   is plugged into the same `jose.jwtVerify` call the static-PEM path
+//   uses, so verification semantics are identical. If Privy is
+//   unreachable AND the cache is cold, verify throws → null → 401 (fail
+//   closed — desired for an auth surface).
+//
 // Why we don't throw on invalid tokens:
 //   The dispatcher (auth/dispatcher.ts) needs to fall through to API-key
 //   auth when a Privy token isn't present or doesn't verify. Throwing here
 //   would force every existing client to route around an exception. `null`
 //   lets the dispatcher try the next auth mode cleanly.
 //
-// Env contract:
+// Config contract:
 //   PRIVY_APP_ID            — required: the Privy application ID.
 //   PRIVY_APP_SECRET        — required: the server-side secret. The SDK
 //                             constructor demands it even for verify-only
 //                             flows because PrivyClient is one object that
 //                             also supports user-management API calls.
-//   PRIVY_VERIFICATION_KEY  — required: PEM-encoded SPKI public key from
-//                             the Privy dashboard (Settings → Advanced).
-//                             Baked at deploy time; we never fetch the
-//                             JWKS at request time (would re-introduce
-//                             a network dependency on every auth call).
+//   PRIVY_VERIFICATION_KEY  — optional: PEM-encoded SPKI public key from
+//                             the Privy dashboard (Configuration → App
+//                             settings → JWT / Token verification). When
+//                             set, pins the verifier to this exact key and
+//                             skips the JWKS endpoint — useful for tying
+//                             a deploy to a specific Privy key against
+//                             upstream-compromise scenarios. When unset
+//                             (recommended for ordinary deploys), the SDK
+//                             fetches + caches the JWKS automatically.
 //
 // What's NOT in the access token:
 //   The Privy access token only carries: app_id, issuer, issued_at,
@@ -88,141 +108,218 @@ export interface PrivyClaims {
   primary_login_method?: string;
 }
 
+export interface PrivyAuthConfig {
+  appId: string | null;
+  appSecret: string | null;
+  /**
+   * Optional PEM-pinned override. `null` (default) leaves the SDK to fetch
+   * + cache the JWKS endpoint. Set only when a deploy wants to lock
+   * verification to a specific key (defense against Privy infra
+   * compromise, air-gapped audits, etc.).
+   */
+  jwtVerificationKey: string | null;
+}
+
+export interface PrivyAuthVerifier {
+  isEnabled(): boolean;
+  verify(authToken: string): Promise<PrivyClaims | null>;
+}
+
 /**
- * Internal: returns true if the env contract for Privy is satisfied.
- * Exported so the dispatcher and tests can branch on this without
- * re-reading process.env. Read at call time (not module load) because
- * dotenv may not have populated process.env when this module first
- * imports.
+ * Narrow structural request shape so this module stays uncoupled from
+ * express — `verifyPrivyBearer` only needs to read headers.
  */
-export function isPrivyEnabled(): boolean {
-  return (
-    typeof process.env.PRIVY_APP_ID === "string" &&
-    process.env.PRIVY_APP_ID.length > 0 &&
-    typeof process.env.PRIVY_APP_SECRET === "string" &&
-    process.env.PRIVY_APP_SECRET.length > 0 &&
-    typeof process.env.PRIVY_VERIFICATION_KEY === "string" &&
-    process.env.PRIVY_VERIFICATION_KEY.length > 0
+export interface PrivyBearerRequest {
+  header(name: string): string | undefined;
+}
+
+/**
+ * Shared `Authorization: Bearer <privy>` extraction + verification, used by
+ * the dispatcher and the account / webhook route auth paths. Returns the
+ * verified claims, or `null` when there is no verifier, no/non-Bearer
+ * header, or the token does not verify — every case those callers currently
+ * treat as fall-through.
+ *
+ * Contract preservation: this MUST NOT add a try/catch around `verify` and
+ * MUST NOT add an empty-token guard. The three current call sites do
+ * neither — a verifier exception propagates and an empty token is passed
+ * straight to `verify` (which returns null) — and this helper keeps that
+ * exact behavior so it is a pure extraction, not a behavior change.
+ */
+export async function verifyPrivyBearer(
+  req: PrivyBearerRequest,
+  verifier: PrivyAuthVerifier | undefined,
+): Promise<PrivyClaims | null> {
+  const authzHeader = req.header("Authorization") ?? req.header("authorization");
+  if (verifier && authzHeader && /^Bearer\s+/i.test(authzHeader)) {
+    const token = authzHeader.replace(/^Bearer\s+/i, "").trim();
+    return verifier.verify(token);
+  }
+  return null;
+}
+
+export class PrivyAuthConfigError extends Error {
+  readonly key: string;
+
+  constructor(key: string, message: string) {
+    super(`${key}: ${message}`);
+    this.name = "PrivyAuthConfigError";
+    this.key = key;
+  }
+}
+
+export function loadPrivyAuthConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): PrivyAuthConfig {
+  const config = {
+    appId: nonEmpty(env.PRIVY_APP_ID),
+    appSecret: nonEmpty(env.PRIVY_APP_SECRET),
+    jwtVerificationKey: nonEmpty(env.PRIVY_VERIFICATION_KEY),
+  };
+
+  // Pair-required: APP_ID + APP_SECRET must be set together. If either is
+  // set without the other, the deploy is misconfigured and we fail loudly
+  // instead of silently disabling Privy. VERIFICATION_KEY is an optional
+  // override and never independently triggers the requirement (the SDK
+  // falls back to JWKS auto-fetch when it's null).
+  const idOrSecretSet = Boolean(config.appId || config.appSecret);
+  if (idOrSecretSet) {
+    assertPrivyConfigPart(config.appId, "PRIVY_APP_ID");
+    assertPrivyConfigPart(config.appSecret, "PRIVY_APP_SECRET");
+  } else if (config.jwtVerificationKey) {
+    // VERIFICATION_KEY without APP_ID/APP_SECRET is nonsense — the key
+    // can't verify anything if no client is constructed. Surface it.
+    assertPrivyConfigPart(config.appId, "PRIVY_APP_ID");
+  }
+
+  return config;
+}
+
+export function createPrivyAuthVerifier(
+  config: PrivyAuthConfig,
+): PrivyAuthVerifier {
+  let client: PrivyClientType | null = null;
+  let clientCtorError: Error | null = null;
+  let sdkMissingWarned = false;
+
+  const enabled = (): boolean => privyConfigEnabled(config);
+
+  const getClient = async (): Promise<PrivyClientType | null> => {
+    if (client) return client;
+    if (clientCtorError) {
+      // Surfaced once already; stay quiet until process restart or test reset.
+      return null;
+    }
+    if (!enabled()) return null;
+
+    // Dynamic import keeps the SDK and its hpke / jose / svix deps out of
+    // the import graph for deploys that don't enable Privy. A static import
+    // would pull them into every entrypoint regardless.
+    let PrivyClient: typeof PrivyClientType;
+    try {
+      const mod = (await import("@privy-io/node")) as {
+        PrivyClient: typeof PrivyClientType;
+      };
+      PrivyClient = mod.PrivyClient;
+    } catch (err) {
+      if (!sdkMissingWarned) {
+        sdkMissingWarned = true;
+        warnSdkMissing(err);
+      }
+      clientCtorError = err instanceof Error ? err : new Error(String(err));
+      return null;
+    }
+
+    try {
+      // Only forward `jwtVerificationKey` when it's set. Passing `undefined`
+      // (NOT empty string) lets PrivyClient's internal `createPrivyAppJWKS`
+      // route to the remote JWKS endpoint with default 60-min cache.
+      const clientOpts: {
+        appId: string;
+        appSecret: string;
+        jwtVerificationKey?: string;
+      } = {
+        appId: config.appId as string,
+        appSecret: config.appSecret as string,
+      };
+      if (config.jwtVerificationKey) {
+        clientOpts.jwtVerificationKey = config.jwtVerificationKey;
+      }
+      client = new PrivyClient(clientOpts);
+      return client;
+    } catch (err) {
+      // Constructor can throw on malformed verification key (jose's
+      // importSPKI bombs on a non-PEM string, for example). Treat as
+      // disabled rather than crash the request loop. Warn once so the
+      // operator sees it in logs.
+      clientCtorError = err instanceof Error ? err : new Error(String(err));
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[murmur][privy] PrivyClient construction failed; auth path disabled:",
+        clientCtorError.message,
+      );
+      return null;
+    }
+  };
+
+  return {
+    isEnabled: enabled,
+    async verify(authToken: string): Promise<PrivyClaims | null> {
+      if (!enabled()) {
+        return null;
+      }
+      if (typeof authToken !== "string" || authToken.length < 10) {
+        return null;
+      }
+
+      const verifiedClient = await getClient();
+      if (!verifiedClient) return null;
+
+      try {
+        const verified = await verifiedClient.utils().auth().verifyAccessToken(authToken);
+        const expiresAtIso = new Date(verified.expiration * 1000)
+          .toISOString()
+          .replace(/\.\d+Z$/, "Z");
+        return {
+          privy_user_id: verified.user_id,
+          session_id: verified.session_id,
+          expires_at: expiresAtIso,
+        };
+      } catch {
+        // Invalid / expired / wrong-issuer / wrong-audience token. The SDK
+        // throws InvalidAuthTokenError — we treat all failures uniformly so we
+        // never leak which check failed (timing/error-shape side channel).
+        return null;
+      }
+    },
+  };
+}
+
+function assertPrivyConfigPart(
+  value: string | null,
+  key: string,
+): asserts value is string {
+  if (value) return;
+  throw new PrivyAuthConfigError(
+    key,
+    "is required when Privy auth is configured",
   );
 }
 
-// ─── Lazy singleton ─────────────────────────────────────────────────────────
-//
-// We construct the PrivyClient on first call rather than at module load,
-// for three reasons:
-//   1) dotenv-config may not yet have run when this file imports. Reading
-//      process.env at module top-level would lock in stale values.
-//   2) Tests can rebuild the singleton by clearing the cache (see
-//      __resetPrivyClientForTests). Module-load construction can't.
-//   3) Dev / smoke runs without Privy creds set must NOT crash on import.
-//      A lazy ctor lets the env-gate at the top of verifyPrivyAuth short-
-//      circuit before any SDK code touches the missing creds.
-
-let _client: PrivyClientType | null = null;
-let _clientCtorError: Error | null = null;
-let _sdkMissingWarned = false;
-
-async function getClient(): Promise<PrivyClientType | null> {
-  if (_client) return _client;
-  if (_clientCtorError) {
-    // Surfaced once already; stay quiet until process restart or test reset.
-    return null;
-  }
-  if (!isPrivyEnabled()) return null;
-
-  // Dynamic import keeps the SDK and its hpke / jose / svix deps out of
-  // the import graph for deploys that don't enable Privy. A static import
-  // would pull them into every entrypoint regardless.
-  let PrivyClient: typeof PrivyClientType;
-  try {
-    const mod = (await import("@privy-io/node")) as {
-      PrivyClient: typeof PrivyClientType;
-    };
-    PrivyClient = mod.PrivyClient;
-  } catch (err) {
-    warnSdkMissingOnce(err);
-    _clientCtorError = err instanceof Error ? err : new Error(String(err));
-    return null;
-  }
-
-  try {
-    _client = new PrivyClient({
-      appId: process.env.PRIVY_APP_ID as string,
-      appSecret: process.env.PRIVY_APP_SECRET as string,
-      jwtVerificationKey: process.env.PRIVY_VERIFICATION_KEY as string,
-    });
-    return _client;
-  } catch (err) {
-    // Constructor can throw on malformed verification key (jose's
-    // importSPKI bombs on a non-PEM string, for example). Treat as
-    // disabled rather than crash the request loop. Warn once so the
-    // operator sees it in logs.
-    _clientCtorError = err instanceof Error ? err : new Error(String(err));
-    // eslint-disable-next-line no-console
-    console.warn(
-      "[murmur][privy] PrivyClient construction failed; auth path disabled:",
-      _clientCtorError.message,
-    );
-    return null;
-  }
+function privyConfigEnabled(config: PrivyAuthConfig): boolean {
+  // JWKS-by-default: VERIFICATION_KEY is optional. Privy is "enabled" as
+  // soon as APP_ID + APP_SECRET are both set (loadPrivyAuthConfig already
+  // enforced pair-required). When VERIFICATION_KEY is null the SDK uses
+  // the remote JWKS endpoint; when set it pins to that PEM.
+  return Boolean(config.appId && config.appSecret);
 }
 
-/**
- * Verify a Privy access token. Returns normalized claims or `null` if
- * Privy auth is disabled or the token did not verify.
- *
- * NOT YET WIRED — the dispatcher imports this but the dispatcher itself
- * is not mounted until Phase 4. See module header for env contract.
- */
-export async function verifyPrivyAuth(
-  authToken: string,
-): Promise<PrivyClaims | null> {
-  if (!isPrivyEnabled()) {
-    return null;
-  }
-  if (typeof authToken !== "string" || authToken.length < 10) {
-    return null;
-  }
-
-  const client = await getClient();
-  if (!client) return null;
-
-  try {
-    const verified = await client.utils().auth().verifyAccessToken(authToken);
-    const expiresAtIso = new Date(verified.expiration * 1000)
-      .toISOString()
-      .replace(/\.\d+Z$/, "Z");
-    return {
-      privy_user_id: verified.user_id,
-      session_id: verified.session_id,
-      expires_at: expiresAtIso,
-    };
-  } catch {
-    // Invalid / expired / wrong-issuer / wrong-audience token. The SDK
-    // throws InvalidAuthTokenError — we treat all failures uniformly so we
-    // never leak which check failed (timing/error-shape side channel).
-    return null;
-  }
+function nonEmpty(raw: string | undefined): string | null {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
 }
 
-/**
- * Test-only helper: drop the cached client so a subsequent call to
- * verifyPrivyAuth re-reads process.env and re-constructs. Smoke tests
- * use this to flip the disabled/enabled gate without spawning a new
- * process.
- *
- * Marked with __ prefix and not exported from any barrel — production
- * code should never import this.
- */
-export function __resetPrivyClientForTests(): void {
-  _client = null;
-  _clientCtorError = null;
-  _sdkMissingWarned = false;
-}
-
-function warnSdkMissingOnce(err: unknown): void {
-  if (_sdkMissingWarned) return;
-  _sdkMissingWarned = true;
+function warnSdkMissing(err: unknown): void {
   // eslint-disable-next-line no-console
   console.warn(
     "[murmur][privy] PRIVY_APP_ID is set but @privy-io/node could not be loaded; " +

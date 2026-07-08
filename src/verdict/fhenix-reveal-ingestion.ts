@@ -1,14 +1,10 @@
 import type Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
-import {
-  fhenixSealedCallsRepo,
-  marketsRepo,
-  submissionsRepo,
-  usageRepo,
-} from "./db.js";
+import { marketsRepo } from "./repos/market-registry-repo.js";
+import { fhenixSealedCallsRepo } from "./repos/fhenix-sealed-calls-repo.js";
+import { submissionsRepo } from "./repos/sealed-call-submissions-repo.js";
+import { usageRepo } from "./repos/usage-events-repo.js";
 import {
   ERROR_CODES,
-  type UsageEvent,
   VerdictError,
 } from "./schema.js";
 import type { FhenixEventVerifier } from "../integrations/fhenix-events.js";
@@ -20,10 +16,24 @@ import {
 } from "./fhenix-common.js";
 import {
   binaryCommitmentFromReveal,
-  commitmentToWire,
   outcomeLabelsForMarket,
 } from "./market-adapter-config.js";
-import { nowIso, parseIsoMs } from "./time.js";
+import {
+  revealedCommitmentEvidence,
+} from "./sealed-call-commitment.js";
+import {
+  assertRevealWindowOpen,
+  loadSealedRevealTarget,
+  makeRevealUsage,
+} from "./fhenix-reveal-ingestion-shared.js";
+import {
+  publicFhenixInvalidRevealIngestionBody,
+  publicFhenixRevealIngestionBody,
+  type PublicFhenixInvalidRevealIngestionBody,
+  type PublicFhenixRevealIngestionBody,
+} from "./fhenix-reveal-public-evidence.js";
+
+export { markMissedFhenixReveals } from "./fhenix-missed-reveals.js";
 
 export interface FhenixRevealIngestionDeps {
   db: Database.Database;
@@ -41,18 +51,7 @@ export type FhenixRevealIngestionResult =
             status: "revealed";
             idempotent_hit: true;
           }
-        | {
-            call_id: string;
-            privacy_mode: "sealed_fhenix";
-            status: "revealed";
-            revealed_at: string;
-            revealed_verdict: {
-              binary_index: 0 | 1;
-              outcome_label: string;
-              confidence_bps: number;
-              confidence: number;
-            };
-          };
+        | PublicFhenixRevealIngestionBody;
     }
   | { status: 404; body: { code: "not_found"; message: "call not found" } };
 
@@ -66,17 +65,7 @@ export type FhenixInvalidRevealIngestionResult =
             status: "invalid_reveal";
             idempotent_hit: true;
           }
-        | {
-            call_id: string;
-            privacy_mode: "sealed_fhenix";
-            status: "invalid_reveal";
-            invalid_reason: "binary_index" | "confidence" | "unknown";
-            revealed_at: string;
-            revealed_verdict: {
-              binary_index: number;
-              confidence_bps: number;
-            };
-          };
+        | PublicFhenixInvalidRevealIngestionBody;
     }
   | { status: 404; body: { code: "not_found"; message: "call not found" } };
 
@@ -160,8 +149,11 @@ export async function attachValidFhenixReveal(
     market,
     accepted_at: ctx.accepted_at,
   });
-  const commitmentWire = commitmentToWire(commitment);
   const outcomeLabels = outcomeLabelsForMarket(market);
+  const storedCommitment = revealedCommitmentEvidence({
+    commitment,
+    outcomeLabels,
+  });
   const tx = deps.db.transaction(() => {
     fhenixSealedCallsRepo.attachReveal(deps.db, {
       call_id: body.call_id,
@@ -175,29 +167,20 @@ export async function attachValidFhenixReveal(
     });
     submissionsRepo.attachRevealedCommitment(deps.db, {
       call_id: body.call_id,
-      commitment_json: JSON.stringify(commitmentWire),
-      predicted_outcome_json: JSON.stringify(commitmentWire.predictedOutcome),
-      outcome_labels_json: JSON.stringify(outcomeLabels),
+      ...storedCommitment,
     });
   });
   tx();
 
   return {
     status: 200,
-    body: {
+    body: publicFhenixRevealIngestionBody({
       call_id: body.call_id,
-      privacy_mode: "sealed_fhenix",
-      status: "revealed",
+      binary_index: verifiedReveal.binary_index,
+      confidence_bps: verifiedReveal.confidence_bps,
       revealed_at: verifiedReveal.revealed_at,
-      revealed_verdict: {
-        binary_index: verifiedReveal.binary_index,
-        outcome_label:
-          outcomeLabels[verifiedReveal.binary_index] ??
-          `outcome_${verifiedReveal.binary_index}`,
-        confidence_bps: verifiedReveal.confidence_bps,
-        confidence,
-      },
-    },
+      outcomeLabels,
+    }),
   };
 }
 
@@ -294,7 +277,7 @@ export async function attachInvalidFhenixReveal(
     submissionsRepo.setStatus(deps.db, body.call_id, "invalid_reveal");
     usageRepo.emit(
       deps.db,
-      makeUsage(ctx.agent_id, "resolution_completed", {
+      makeRevealUsage(ctx.agent_id, "resolution_completed", {
         call_id: body.call_id,
         outcome: "invalid_reveal",
         invalid_reason: verifiedInvalid.invalid_reason,
@@ -305,114 +288,12 @@ export async function attachInvalidFhenixReveal(
 
   return {
     status: 200,
-    body: {
+    body: publicFhenixInvalidRevealIngestionBody({
       call_id: body.call_id,
-      privacy_mode: "sealed_fhenix",
-      status: "invalid_reveal",
+      binary_index: verifiedInvalid.binary_index,
+      confidence_bps: verifiedInvalid.confidence_bps,
       invalid_reason: verifiedInvalid.invalid_reason,
       revealed_at: verifiedInvalid.revealed_at,
-      revealed_verdict: {
-        binary_index: verifiedInvalid.binary_index,
-        confidence_bps: verifiedInvalid.confidence_bps,
-      },
-    },
-  };
-}
-
-export function markMissedFhenixReveals(input: {
-  db: Database.Database;
-  cutoffIso: string;
-  terminalAt: string;
-  now: () => Date;
-}): number {
-  const rows = fhenixSealedCallsRepo.listMissable(input.db, input.cutoffIso);
-  let marked = 0;
-  for (const row of rows) {
-    const changed = input.db.transaction(() => {
-      const ok = fhenixSealedCallsRepo.markMissedReveal(input.db, {
-        call_id: row.call_id,
-        terminal_at: input.terminalAt,
-        invalid_reason: "reveal_timeout",
-      });
-      if (!ok) return false;
-      submissionsRepo.setStatus(input.db, row.call_id, "missed_reveal");
-      usageRepo.emit(
-        input.db,
-        makeUsage(row.agent_id, "resolution_completed", {
-          call_id: row.call_id,
-          outcome: "missed_reveal",
-        }, input.now),
-      );
-      return true;
-    })();
-    if (changed) marked++;
-  }
-  return marked;
-}
-
-type SealedRevealTarget =
-  | { kind: "not_found" }
-  | {
-      kind: "sealed";
-      ctx: NonNullable<ReturnType<typeof submissionsRepo.loadResolverContext>>;
-      sealed: NonNullable<ReturnType<typeof fhenixSealedCallsRepo.byCallId>>;
-    };
-
-function loadSealedRevealTarget(
-  db: Database.Database,
-  callId: string,
-): SealedRevealTarget {
-  const ctx = submissionsRepo.loadResolverContext(db, callId);
-  if (!ctx) return { kind: "not_found" };
-  if (ctx.privacy_mode !== "sealed_fhenix") {
-    throw new VerdictError(
-      "call is not a sealed_fhenix submission",
-      ERROR_CODES.schema_invalid,
-      409,
-      { privacy_mode: ctx.privacy_mode },
-    );
-  }
-  const sealed = fhenixSealedCallsRepo.byCallId(db, callId);
-  if (!sealed) {
-    throw new VerdictError(
-      "sealed_fhenix metadata missing for call",
-      ERROR_CODES.schema_invalid,
-      409,
-    );
-  }
-  return { kind: "sealed", ctx, sealed };
-}
-
-function assertRevealWindowOpen(
-  revealedAt: string,
-  revealOpenAt: string,
-  label: string,
-): void {
-  const revealedAtMs = parseIsoMs(revealedAt, "revealed_at");
-  const revealOpenMs = parseIsoMs(revealOpenAt, "reveal_open_at");
-  if (revealedAtMs >= revealOpenMs) return;
-  throw new VerdictError(
-    `${label} cannot be attached before reveal_open_at`,
-    ERROR_CODES.schema_invalid,
-    400,
-    {
-      revealed_at: revealedAt,
-      reveal_open_at: revealOpenAt,
-    },
-  );
-}
-
-function makeUsage(
-  agent_id: string,
-  kind: UsageEvent["kind"],
-  attributes: Record<string, unknown>,
-  now: () => Date,
-): UsageEvent {
-  return {
-    event_id: randomUUID(),
-    agent_id,
-    kind,
-    ts: nowIso(now()),
-    attributes,
+    }),
   };
 }
