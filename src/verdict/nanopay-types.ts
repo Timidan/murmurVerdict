@@ -8,9 +8,8 @@ import type {
 export interface NanopayRouterDeps {
   readonly db: Database.Database;
   /**
-   * Resolves a pipeline by id → price + recipient. Phase 1 stub
-   * returns null; Phase 2 wires a real catalog. Route returns 404
-   * when this returns null.
+   * Resolves a pipeline by id → price + recipient from the daemon's
+   * env-backed Nanopay catalog. Route returns 404 when this returns null.
    */
   readonly resolvePipeline: (pipelineId: string) => PipelineInfo | null;
   /**

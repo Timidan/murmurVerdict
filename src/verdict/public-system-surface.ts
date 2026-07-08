@@ -59,6 +59,7 @@ export interface PublicReadinessDeps extends PublicSystemClock {
 
 export interface PublicMetaDeps extends PublicSystemReadInstant {
   db: Database.Database;
+  nanopayX402Mounted?: boolean;
   fhenixChain?: PublicSystemFhenixChain | null;
 }
 
@@ -101,10 +102,16 @@ export function sendPublicSystemJsonResponse(
   res.status(result.status).json(result.body);
 }
 
-export function publicOpenApiResource(publicUrl: string): PublicSystemResource {
+export function publicOpenApiResource(input: {
+  publicUrl: string;
+  nanopayX402Mounted?: boolean;
+}): PublicSystemResource {
   return publicSystemResource(
     "application/json; charset=utf-8",
-    buildOpenApiSpec({ publicUrl }),
+    buildOpenApiSpec({
+      publicUrl: input.publicUrl,
+      nanopayX402Mounted: input.nanopayX402Mounted,
+    }),
   );
 }
 
@@ -222,6 +229,14 @@ export function publicMetaSurface(deps: PublicMetaDeps) {
     verified_volume_24h: get24hVerifiedVolume(deps.db, deps.servedAt),
     paid_inference: {
       current_venue: "polymarket-gamma",
+      nanopay: deps.nanopayX402Mounted === true
+        ? {
+            protocol: "x402",
+            gateway: "circle",
+            endpoint: "/v2/nanopay/infer/{pipelineId}",
+            mounted: true,
+          }
+        : null,
       market_taxonomy: marketTaxonomyResponse(),
       resolution_classes: RESOLUTION_CLASSES,
       edge_classes: EDGE_CLASSES,

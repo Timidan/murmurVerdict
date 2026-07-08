@@ -10,6 +10,14 @@ export interface MurmurAgentCardService {
   endpoint: string;
 }
 
+export interface MurmurAgentCardX402 {
+  protocol: "x402";
+  gateway: "circle";
+  endpoint: string;
+  mounted: true;
+  notes: string;
+}
+
 export interface MurmurAgentCard {
   type: "ERC-8004:AgentCard";
   spec_version: "erc-8004-draft-2025";
@@ -17,7 +25,8 @@ export interface MurmurAgentCard {
   slug: string;
   description: string;
   services: MurmurAgentCardService[];
-  x402Support: false;
+  x402Support: boolean;
+  x402?: MurmurAgentCardX402;
   active: boolean;
   registrations: Array<{ chain_id: string; registration_id: string }>;
   privacy: {
@@ -41,6 +50,7 @@ export interface MurmurAgentCard {
 export interface PublicMurmurAgentCardInput {
   agent: AgentRow;
   apiBase: string;
+  nanopayX402Mounted?: boolean;
   servedAt: string;
 }
 
@@ -49,6 +59,8 @@ export function publicMurmurAgentCard(
 ): MurmurAgentCard {
   const apiBase = input.apiBase.replace(/\/$/, "");
   const agent = input.agent;
+  const nanopayEndpoint = `${apiBase}/v2/nanopay/infer/{pipelineId}`;
+  const nanopayX402Mounted = input.nanopayX402Mounted === true;
   const card: MurmurAgentCard = {
     type: "ERC-8004:AgentCard",
     spec_version: "erc-8004-draft-2025",
@@ -68,13 +80,20 @@ export function publicMurmurAgentCard(
         name: "Gateway sealed Fhenix submit",
         endpoint: `${apiBase}/v2/gateway/calls`,
       },
+      ...(nanopayX402Mounted
+        ? [{
+            type: "murmur-verdict.nanopay-x402",
+            name: "x402 paid inference",
+            endpoint: nanopayEndpoint,
+          }]
+        : []),
       {
         type: "murmur-verdict.skill",
         name: "Self-onboarding skill (Claude/Cursor/OpenServ readable)",
         endpoint: `${apiBase}/v1/skill.md`,
       },
     ],
-    x402Support: false,
+    x402Support: nanopayX402Mounted,
     active: agent.kind === "agent",
     registrations: [],
     privacy: {
@@ -98,5 +117,15 @@ export function publicMurmurAgentCard(
       manifest: `${apiBase}/.well-known/murmur.json`,
     },
   };
+  if (nanopayX402Mounted) {
+    card.x402 = {
+      protocol: "x402",
+      gateway: "circle",
+      endpoint: nanopayEndpoint,
+      mounted: true,
+      notes:
+        "Backed by @circle-fin/x402-batching middleware; this deployment has mounted Nanopay with a pipeline catalog.",
+    };
+  }
   return card;
 }

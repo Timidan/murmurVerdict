@@ -99,6 +99,7 @@ export function createDaemonHttpSurface(
       fhenixChainId: deps.fhenixChainId,
       fhenixSealedVerdictsAddress: deps.fhenixSealedVerdictsAddress,
       marketRegistrationGammaLookup: deps.marketRegistrationGammaLookup,
+      nanopayX402Mounted: Boolean(deps.nanopayRuntime),
       newAgentSecurityEventId: deps.newAgentSecurityEventId,
       newFeedId: deps.newFeedId,
       newFeedPacketId: deps.newFeedPacketId,

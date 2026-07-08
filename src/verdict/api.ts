@@ -122,6 +122,7 @@ export interface ApiDeps {
   webhookSubscriptionSecret?: () => string;
   webhookUrlPolicy?: WebhookUrlPolicy;
   marketRegistrationGammaLookup?: PolymarketMarketRegistrationGammaAdapter;
+  nanopayX402Mounted?: boolean;
   newAgentSecurityEventId?: AgentSecurityEventIdAdapter;
   newFeedId?: FeedContractIdAdapter;
   newFeedPacketId?: FeedPacketIdAdapter;
@@ -171,6 +172,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     db: deps.db,
     fhenixChain: runtime.fhenixChain,
     liveCanaries: deps.liveCanaries,
+    nanopayX402Mounted: deps.nanopayX402Mounted,
     now,
     oracleProbe: deps.oracleProbe,
     publicOrigin: runtime.publicOrigin,
@@ -185,6 +187,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
   router.use(publicAgentRouter({
     db: deps.db,
+    nanopayX402Mounted: deps.nanopayX402Mounted,
     now,
     publicOrigin: runtime.publicOrigin,
   }));

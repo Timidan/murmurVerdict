@@ -18,6 +18,7 @@ import {
 
 export interface PublicAgentRouterDeps {
   db: Database.Database;
+  nanopayX402Mounted?: boolean;
   now: () => Date;
   publicOrigin: MurmurPublicOrigin;
 }
@@ -45,6 +46,7 @@ export function publicAgentRouter(deps: PublicAgentRouterDeps): Router {
       db: deps.db,
       slug: String(req.params.slug ?? ""),
       apiBase: publicApiUrlForRequest(deps.publicOrigin, req),
+      nanopayX402Mounted: deps.nanopayX402Mounted,
       servedAt: deps.now(),
     }));
   });

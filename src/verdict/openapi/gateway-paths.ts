@@ -1,8 +1,39 @@
 import { FEED_PACKET_KINDS } from "../schema.js";
 import type { OpenApiPathMap } from "./types.js";
 
-export function gatewayOpenApiPaths(): OpenApiPathMap {
+export function gatewayOpenApiPaths(input: {
+  nanopayX402Mounted?: boolean;
+} = {}): OpenApiPathMap {
+  const nanopayPaths: OpenApiPathMap = input.nanopayX402Mounted === true
+    ? {
+        "/v2/nanopay/infer/{pipelineId}": {
+          post: {
+            tags: ["payments"],
+            summary: "x402/Circle paid inference for a configured Nanopay pipeline.",
+            description:
+              "Deployment-scoped Nanopay route. Circle's @circle-fin/x402-batching middleware emits the x402 challenge, verifies the buyer signature, settles through Circle Gateway, and only then lets Murmur return the bound sealed-call signal.",
+            parameters: [
+              {
+                name: "pipelineId",
+                in: "path",
+                required: true,
+                schema: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
+              },
+            ],
+            responses: {
+              "200": { description: "Payment settled and the sealed-call signal was returned." },
+              "402": { description: "x402 payment challenge emitted by Circle Gateway middleware." },
+              "404": { description: "Unknown pipeline." },
+              "500": { description: "Payment middleware did not populate a verified payment object." },
+              "503": { description: "Pipeline exists, but no sealed signal is currently servable." },
+            },
+          },
+        },
+      }
+    : {};
+
   return {
+    ...nanopayPaths,
     "/v2/gateway/calls/seal": {
       post: {
         tags: ["calls"],

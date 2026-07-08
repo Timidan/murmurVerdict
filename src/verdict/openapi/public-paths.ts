@@ -29,7 +29,7 @@ export function publicOpenApiPaths(): OpenApiPathMap {
         tags: ["leaderboard"],
         summary: "List supported market registry rows.",
         description:
-          "Returns currently listed Murmur markets plus adapter identity and Murmur-native market taxonomy. v0.1 live rows are Polymarket binary/event and native-price direction markets; reserved taxonomy classes describe future venue/category support without enabling payments.",
+          "Returns currently listed Murmur markets plus adapter identity and Murmur-native market taxonomy. v0.1 live rows are Polymarket binary/event and native-price direction markets; reserved taxonomy classes describe future venue/category support without requiring paid inference.",
         parameters: [
           { name: "status", in: "query", schema: { type: "string", enum: ["draft", "listed", "frozen", "retired"], default: "listed" } },
           { name: "asset_id", in: "query", schema: { type: "string", example: "polymarket:event" } },

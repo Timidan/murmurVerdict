@@ -115,6 +115,7 @@ export function publicAgentCardResponse(input: {
   db: Database.Database;
   slug: string;
   apiBase: string;
+  nanopayX402Mounted?: boolean;
   servedAt: Date;
 }):
   | {
@@ -144,6 +145,7 @@ export function publicAgentCardResponse(input: {
     body: publicMurmurAgentCard({
       agent: row,
       apiBase: input.apiBase,
+      nanopayX402Mounted: input.nanopayX402Mounted,
       servedAt: nowIso(input.servedAt),
     }),
   };

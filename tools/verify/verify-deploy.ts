@@ -30,6 +30,11 @@ function parseArgs(argv: string[]): DeployVerificationTarget {
     const idx = argv.indexOf(`--${k}`);
     return idx >= 0 && idx + 1 < argv.length ? argv[idx + 1] : undefined;
   };
+  const expectNanopayX402 = parseOptionalBoolean(
+    get("expect-nanopay-x402") ??
+      process.env.VERIFY_EXPECT_NANOPAY_X402 ??
+      (argv.includes("--nanopay-x402") ? "true" : undefined),
+  );
   return {
     api: (get("api") ?? process.env.PUBLIC_API_URL ?? "http://localhost:8080")
       .replace(/\/$/, ""),
@@ -38,6 +43,9 @@ function parseArgs(argv: string[]): DeployVerificationTarget {
       process.env.PUBLIC_DASHBOARD_URL ??
       "http://127.0.0.1:5176"
     ).replace(/\/$/, ""),
+    expectNanopayX402,
+    nanopayPipelineId: get("nanopay-pipeline-id") ??
+      process.env.VERIFY_NANOPAY_PIPELINE_ID,
     slug: get("slug") ?? process.env.VERIFY_SLUG ?? "murmur-momentum",
   };
 }
@@ -51,13 +59,24 @@ function printHelp(): void {
       "",
       "Usage:",
       "  tsx tools/verify/verify-deploy.ts --api URL --dashboard URL --slug SLUG",
+      "  tsx tools/verify/verify-deploy.ts --expect-nanopay-x402 true --nanopay-pipeline-id 0x...",
       "",
       "Env fallbacks:",
       "  PUBLIC_API_URL",
       "  PUBLIC_DASHBOARD_URL",
       "  VERIFY_SLUG",
+      "  VERIFY_EXPECT_NANOPAY_X402",
+      "  VERIFY_NANOPAY_PIPELINE_ID",
     ].join("\n"),
   );
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`invalid boolean: ${value}`);
 }
 
 async function main(): Promise<void> {

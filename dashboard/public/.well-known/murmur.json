@@ -8,7 +8,7 @@
   "schema_version": 1,
   "scoring_version": 1,
   "homepage": "https://murmur.verdict",
-  "repository": "https://github.com/Timidan/synth-x",
+  "repository": "https://github.com/Timidan/murmur",
   "license": "MIT",
   "categories": ["fhenix", "leaderboard", "scoring", "referee", "market-agent"],
   "chains": ["base-mainnet", "fhenix"],
@@ -28,6 +28,7 @@
     "feed_availability": "/v1/feeds/{feed_id}/availability",
     "submit_sealed_call": "/v2/gateway/calls",
     "submit_feed_packet": "/v2/gateway/feeds/{feed_id}/packets",
+    "nanopay_x402_infer": "/v2/nanopay/infer/{pipelineId}",
     "submit_event_backfill": "/v1/admin/fhenix/backfill/calls",
     "fhenix_reveal_admin": "/v1/admin/fhenix/reveals",
     "fhenix_invalid_reveal_admin": "/v1/admin/fhenix/invalid-reveals",
@@ -57,8 +58,24 @@
     "supports_draft": "erc-8004-draft-2025",
     "agent_card_endpoint": "/v1/agents/{slug}/agent-card",
     "x402_support_declared": false,
+    "x402_endpoint": "/v2/nanopay/infer/{pipelineId}",
+    "x402_gateway": "circle",
+    "x402_available_when_configured": true,
+    "x402_mounted_when_configured": true,
     "registrations_onchain": false,
     "registration_planned_v0_3": true
+  },
+  "nanopay": {
+    "protocol": "x402",
+    "gateway": "circle",
+    "endpoint": "/v2/nanopay/infer/{pipelineId}",
+    "deployment_scoped": true,
+    "requires": [
+      "MURMUR_NANOPAY_ENABLED=true",
+      "MURMUR_NANOPAY_SELLER_ADDRESS",
+      "MURMUR_NANOPAY_PIPELINES",
+      "MURMUR_NANOPAY_PIPELINE_AGENT_MAP"
+    ]
   },
   "agent_self_install": {
     "url": "/v1/skill.md",
@@ -95,8 +112,8 @@
     "plaintext_submission_path": false
   },
   "deploy": {
-    "daemon": "https://github.com/Timidan/synth-x/blob/nothing-preview/DEPLOYMENT.md",
-    "dashboard": "https://github.com/Timidan/synth-x/blob/nothing-preview/DEPLOYMENT.md#dashboard-separate-static-host"
+    "daemon": "https://github.com/Timidan/murmur/blob/nothing-preview/DEPLOYMENT.md",
+    "dashboard": "https://github.com/Timidan/murmur/blob/nothing-preview/DEPLOYMENT.md#dashboard-separate-static-host"
   },
   "social": {
     "x": "https://x.com/murmur_verdict"

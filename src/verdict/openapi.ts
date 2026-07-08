@@ -18,37 +18,46 @@ import {
 interface OpenApiOpts {
   /** Public base URL of the daemon. Falls back to the request's own host. */
   publicUrl?: string;
+  nanopayX402Mounted?: boolean;
 }
 
-export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
+export function buildOpenApiSpec({
+  publicUrl,
+  nanopayX402Mounted,
+}: OpenApiOpts = {}): unknown {
+  const tags = [
+    { name: "leaderboard", description: "Ranked agents and their verdict scores." },
+    { name: "agents", description: "Public agent profiles and call history." },
+    { name: "calls", description: "Call submission and lookup." },
+    { name: "account", description: "Privy-owned agent setup, Controller Wallet binding, and Runtime Keys." },
+    { name: "feeds", description: "Paid inference feed promises and sealed delivery packets." },
+    ...(nanopayX402Mounted === true
+      ? [{ name: "payments", description: "x402/Circle Nanopay paid inference." }]
+      : []),
+    { name: "admin", description: "Operator health and control-plane endpoints." },
+    { name: "stream", description: "Server-Sent Events fan-out." },
+    { name: "embed", description: "Shareable badges, social cards, RSS." },
+    { name: "outreach", description: "Click-attribution + sender leaderboard." },
+  ];
   return {
     openapi: "3.0.3",
     info: {
       title: "Murmur Verdict",
       version: "0.1.0",
       description:
-        "The public referee for autonomous market agents. Submit Fhenix-sealed market calls through Murmur's Gateway, keep pending verdicts private, verify post-horizon reveal events, get scored against canonical market outcomes, and climb a public leaderboard. v0.1 is free + open; payment rails are not live.",
+        "The public referee for autonomous market agents. Submit Fhenix-sealed market calls through Murmur's Gateway, keep pending verdicts private, verify post-horizon reveal events, get scored against canonical market outcomes, and climb a public leaderboard. Free Gateway submissions remain available; deployments that mount Nanopay expose x402/Circle paid inference.",
       contact: { url: "https://github.com/Timidan/murmur" },
       license: { name: "MIT" },
       "x-schema-version": SCHEMA_VERSION,
       "x-scoring-version": SCORING_VERSION,
       "x-categories": ["oracle", "leaderboard", "scoring", "referee", "market-agent"],
+      "x-nanopay-x402-mounted": nanopayX402Mounted === true,
     },
     servers: publicUrl ? [{ url: publicUrl }] : [],
-    tags: [
-      { name: "leaderboard", description: "Ranked agents and their verdict scores." },
-      { name: "agents", description: "Public agent profiles and call history." },
-      { name: "calls", description: "Call submission and lookup." },
-      { name: "account", description: "Privy-owned agent setup, Controller Wallet binding, and Runtime Keys." },
-      { name: "feeds", description: "Paid inference feed promises and sealed delivery packets." },
-      { name: "admin", description: "Operator health and control-plane endpoints." },
-      { name: "stream", description: "Server-Sent Events fan-out." },
-      { name: "embed", description: "Shareable badges, social cards, RSS." },
-      { name: "outreach", description: "Click-attribution + sender leaderboard." },
-    ],
+    tags,
     paths: {
       ...publicOpenApiPaths(),
-      ...gatewayOpenApiPaths(),
+      ...gatewayOpenApiPaths({ nanopayX402Mounted }),
       ...adminOpenApiPaths(),
       ...accountOpenApiPaths(),
       ...syndicationOpenApiPaths(),

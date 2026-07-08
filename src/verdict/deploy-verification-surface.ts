@@ -1,6 +1,8 @@
 export interface DeployVerificationTarget {
   api: string;
   dashboard: string;
+  expectNanopayX402?: boolean;
+  nanopayPipelineId?: string;
   slug: string;
 }
 
@@ -45,7 +47,7 @@ const ANSI = {
 export function deployVerificationChecks(
   target: DeployVerificationTarget,
 ): DeployVerificationCheck[] {
-  return [
+  const checks: DeployVerificationCheck[] = [
     {
       name: "daemon /v1/health",
       url: `${target.api}/v1/health`,
@@ -180,8 +182,19 @@ export function deployVerificationChecks(
           return "wrong card type";
         }
         if (!/"services"\s*:/.test(body)) return "missing services array";
-        if (!/"x402Support"\s*:\s*false/.test(body)) {
-          return "x402Support should stay false until payment rails are wired";
+        const declaresX402 = /"x402Support"\s*:\s*true/.test(body);
+        const containsNanopayEndpoint = /\/v2\/nanopay\/infer\/\{pipelineId\}/.test(body);
+        if (target.expectNanopayX402 === true && !declaresX402) {
+          return "agent card should declare mounted x402 support";
+        }
+        if (target.expectNanopayX402 === false && declaresX402) {
+          return "agent card declares x402 support but Nanopay is not expected";
+        }
+        if (declaresX402 && !containsNanopayEndpoint) {
+          return "agent card declares x402 support without Nanopay endpoint";
+        }
+        if (!declaresX402 && containsNanopayEndpoint) {
+          return "agent card exposes Nanopay endpoint while x402Support is false";
         }
         return null;
       },
@@ -221,6 +234,18 @@ export function deployVerificationChecks(
       expectBodyContains: /murmur-verdict/,
     },
   ];
+
+  if (target.expectNanopayX402 === true && target.nanopayPipelineId) {
+    checks.push({
+      name: "daemon /v2/nanopay/infer/:pipelineId (x402)",
+      url: `${target.api}/v2/nanopay/infer/${target.nanopayPipelineId}`,
+      method: "POST",
+      body: {},
+      expectStatus: 402,
+    });
+  }
+
+  return checks;
 }
 
 export async function runDeployVerificationCheck(input: {
@@ -299,6 +324,7 @@ export function renderDeployVerificationHeader(
     `  api       ${target.api}`,
     `  dashboard ${target.dashboard}`,
     `  slug      ${target.slug}`,
+    `  nanopay   ${target.expectNanopayX402 === undefined ? "auto" : target.expectNanopayX402 ? "expected" : "not expected"}${target.nanopayPipelineId ? ` (${target.nanopayPipelineId})` : ""}`,
     "",
   ].join("\n");
 }

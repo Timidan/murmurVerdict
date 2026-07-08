@@ -24,6 +24,7 @@ export interface PublicSystemRouterDeps {
     sealedVerdictsAddress: string | null;
   } | null;
   liveCanaries?: LiveCanaryProvider | null;
+  nanopayX402Mounted?: boolean;
   now: () => Date;
   oracleProbe?: () => Promise<string | null>;
   publicOrigin: MurmurPublicOrigin;
@@ -35,7 +36,10 @@ export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
 
   router.get("/v1/openapi.json", (req, res) => {
     const publicUrl = publicApiUrlForRequest(deps.publicOrigin, req);
-    sendPublicSystemResource(req, res, publicOpenApiResource(publicUrl));
+    sendPublicSystemResource(req, res, publicOpenApiResource({
+      publicUrl,
+      nanopayX402Mounted: deps.nanopayX402Mounted,
+    }));
   });
 
   router.get("/v1/skill.md", (req, res) => {
@@ -69,6 +73,7 @@ export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
       db: deps.db,
       servedAt: deps.now(),
       fhenixChain: deps.fhenixChain,
+      nanopayX402Mounted: deps.nanopayX402Mounted,
     }));
   });
 
