@@ -22,18 +22,20 @@ export async function startLaunchpadOpenServAgent(
   const logger = params.logger ?? console;
   const enabled = params.enabled ?? enabledFromEnv(env.OPENSERV_LAUNCHPAD_ENABLED);
   if (!enabled) {
-    logger.log("[openserv-launchpad] disabled by config");
-    return null;
+    throw new OpenServLaunchpadConfigError(
+      "OPENSERV_LAUNCHPAD_ENABLED",
+      "OpenServ Launchpad is required and cannot be disabled",
+    );
   }
   if (singleton) return singleton;
 
   const apiKey = params.apiKey ?? env.OPENSERV_API_KEY?.trim();
   const authToken = params.authToken ?? env.OPENSERV_AUTH_TOKEN?.trim();
   if (!apiKey) {
-    logger.warn(
-      "[openserv-launchpad] OPENSERV_API_KEY not set; skipping agent registration",
+    throw new OpenServLaunchpadConfigError(
+      "OPENSERV_API_KEY",
+      "OpenServ Launchpad requires OPENSERV_API_KEY",
     );
-    return null;
   }
   const port = parsePort(
     params.port ?? env.OPENSERV_LAUNCHPAD_PORT,

@@ -22,20 +22,67 @@
  *
  * Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
  */
+import type { RequestHandler } from "express";
 import { keccak256, toHex } from "viem";
 
-// Re-export the SDK types so callers don't take a direct dependency
-// on the SDK package path.
-export type {
-  GatewayMiddleware,
-  GatewayMiddlewareConfig,
-  PaymentRequest,
-} from "@circle-fin/x402-batching/server";
+export interface GatewayMiddlewareConfig {
+  sellerAddress: string;
+  networks?: string[];
+  facilitatorUrl: string;
+  description?: string;
+}
 
-export {
-  createGatewayMiddleware,
-  BatchFacilitatorClient,
-} from "@circle-fin/x402-batching/server";
+export interface GatewayMiddleware {
+  require(price: string): RequestHandler;
+}
+
+export interface PaymentRequest {
+  payment?: {
+    verified?: boolean;
+    payer?: string;
+    amount?: string;
+    network?: string;
+    transaction?: string;
+  };
+}
+
+interface CircleGatewayServerModule {
+  createGatewayMiddleware(config: GatewayMiddlewareConfig): GatewayMiddleware;
+}
+
+let gatewayServerModule: Promise<CircleGatewayServerModule> | null = null;
+
+async function loadCircleGatewayServer(): Promise<CircleGatewayServerModule> {
+  gatewayServerModule ??= import("@circle-fin/x402-batching/server") as Promise<
+    CircleGatewayServerModule
+  >;
+  return gatewayServerModule;
+}
+
+export function createGatewayMiddleware(
+  config: GatewayMiddlewareConfig,
+): GatewayMiddleware {
+  const requiredByPrice = new Map<string, Promise<RequestHandler>>();
+  return {
+    require(price: string): RequestHandler {
+      return async (req, res, next) => {
+        try {
+          let middleware = requiredByPrice.get(price);
+          if (!middleware) {
+            middleware = loadCircleGatewayServer().then((sdk) =>
+              sdk.createGatewayMiddleware(config).require(price),
+            );
+            requiredByPrice.set(price, middleware);
+          }
+          const handler = await middleware;
+          return handler(req, res, next);
+        } catch (err) {
+          return next(err);
+        }
+      };
+    },
+  };
+}
 
 export const DEFAULT_TESTNET_FACILITATOR_URL = "https://gateway-api-testnet.circle.com";
 export const DEFAULT_MAINNET_FACILITATOR_URL = "https://gateway-api.circle.com";

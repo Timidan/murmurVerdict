@@ -28,7 +28,7 @@ export async function startDaemonOpenServLaunchpad(
   deps: DaemonOpenServLaunchpadRuntimeDeps,
 ): Promise<DaemonOpenServLaunchpadRuntime | null> {
   const { config, db, logger = console, skip = false } = deps;
-  if (skip || !config.enabled) return null;
+  if (skip) return null;
 
   try {
     const startAgent = deps.startAgent ?? loadStartOpenServLaunchpadAgent;
@@ -38,7 +38,7 @@ export async function startDaemonOpenServLaunchpad(
       env: {},
       port: config.port,
       logger,
-      apiKey: config.apiKey ?? undefined,
+      apiKey: config.apiKey,
       authToken: config.authToken ?? undefined,
       dashboardUrl: config.dashboardUrl,
       publicApiUrl: config.publicApiUrl,
@@ -47,7 +47,9 @@ export async function startDaemonOpenServLaunchpad(
       launchpadProjectUrl: config.launchpadProjectUrl ?? undefined,
       now: deps.now,
     });
-    if (!agent) return null;
+    if (!agent) {
+      throw new Error("OpenServ Launchpad agent did not start");
+    }
     let stopped = false;
     return {
       async stop(): Promise<void> {
@@ -58,7 +60,7 @@ export async function startDaemonOpenServLaunchpad(
     };
   } catch (err) {
     logger.warn("[daemon] OpenServ Launchpad agent failed to start:", err);
-    return null;
+    throw err;
   }
 }
 

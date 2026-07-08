@@ -61,9 +61,8 @@ export interface DaemonRuntimeConfig {
 }
 
 export interface OpenServLaunchpadRuntimeConfig {
-  enabled: boolean;
   port: number;
-  apiKey: string | null;
+  apiKey: string;
   authToken: string | null;
   dashboardUrl: string;
   publicApiUrl: string;
@@ -181,15 +180,23 @@ function loadOpenServLaunchpadRuntimeConfig(
   const apiKey = nonEmpty(env.OPENSERV_API_KEY);
   const configuredEnabled = parseBooleanFlag(
     env.OPENSERV_LAUNCHPAD_ENABLED,
-    false,
+    true,
     "OPENSERV_LAUNCHPAD_ENABLED",
   );
-  const enabled = configuredEnabled && Boolean(apiKey);
+  if (!configuredEnabled) {
+    throw new DaemonConfigError(
+      "OPENSERV_LAUNCHPAD_ENABLED",
+      "OpenServ Launchpad is required daemon infrastructure and cannot be disabled",
+    );
+  }
+  if (!apiKey) {
+    throw new DaemonConfigError(
+      "OPENSERV_API_KEY",
+      "OpenServ Launchpad is required daemon infrastructure; set OPENSERV_API_KEY",
+    );
+  }
   return {
-    enabled,
-    port: enabled
-      ? parsePort(env.OPENSERV_LAUNCHPAD_PORT, 7378, "OPENSERV_LAUNCHPAD_PORT")
-      : 7378,
+    port: parsePort(env.OPENSERV_LAUNCHPAD_PORT, 7378, "OPENSERV_LAUNCHPAD_PORT"),
     apiKey,
     authToken: nonEmpty(env.OPENSERV_AUTH_TOKEN),
     dashboardUrl: dashboardBaseUrl(publicOrigin) || DEFAULT_LOCAL_PUBLIC_ORIGIN,

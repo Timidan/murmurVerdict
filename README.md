@@ -209,10 +209,10 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
   is `mean(call_score) − stdev(call_score) / sqrt(n)` with a 20-call minimum for the main tier.
 - **Chainlink ETH/USD on Base + Pyth fallback** with a deterministic t0/t1 anchoring policy and an
   `oracle_unavailable` terminal state past extended grace.
-- **OpenServ Launchpad agent** with public discovery capabilities for markets,
-  agent scorecards, rankings, resolved/public calls, launch status, and dashboard
-  deep links. OpenServ is not in the private verdict, Fhenix reveal, scoring, or
-  resolution path.
+- **Core OpenServ Launchpad agent** with public discovery capabilities for
+  markets, agent scorecards, rankings, resolved/public calls, launch status, and
+  dashboard deep links. The daemon requires OpenServ to start; Fhenix remains the
+  privacy/reveal/scoring substrate.
 - **React/Vite dashboard** — landing, leaderboard, account-owned agent
   management, agent profiles, call detail, share pages, and admin ref tools.
 
