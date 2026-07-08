@@ -13,7 +13,7 @@
 // panel renders a deep-link to the wallet tab instead of the mint CTA.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAccessToken, useSignMessage } from "@privy-io/react-auth";
+import { getAccessToken, useSignMessage, useWallets } from "@privy-io/react-auth";
 import {
   verdictApi,
   type AccountAgent,
@@ -33,6 +33,7 @@ type BusyState = "idle" | "challenging" | "signing" | "submitting" | "revoking";
 
 export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   const { signMessage } = useSignMessage();
+  const { wallets } = useWallets();
 
   const [keys, setKeys] = useState<RuntimeKeyRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,6 +46,9 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
   const cw = agent?.controller_wallet ?? null;
   const canMint = Boolean(cw) && !cw?.reattestation_overdue;
+  const controllerWalletConnected = cw
+    ? wallets.some((wallet) => sameAddress(wallet.address, cw.wallet_address))
+    : false;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -84,9 +88,9 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       );
       return;
     }
-    if (cw.wallet_kind !== "embedded") {
+    if (!controllerWalletConnected) {
       setError(
-        "× external-wallet mint is not wired in this slice yet — connect the bound wallet via its own provider to sign the authorization",
+        "× connect the bound controller wallet in Privy before signing the runtime-key authorization",
       );
       return;
     }
@@ -287,4 +291,8 @@ function busyLabel(b: BusyState): string {
   if (b === "submitting") return "minting…";
   if (b === "revoking") return "revoking…";
   return "…";
+}
+
+function sameAddress(a: string | null | undefined, b: string | null | undefined): boolean {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
 }

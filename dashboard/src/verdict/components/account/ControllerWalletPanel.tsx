@@ -49,8 +49,11 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
   const [error, setError] = useState<string | null>(null);
   const [daemonChainId, setDaemonChainId] = useState<string | null>(null);
 
-  // Pick an embedded wallet if one exists; otherwise we'll provision below.
+  // Privy creates embedded wallets only for users who signed in without a
+  // wallet. Wallet-first users need the linked external EVM wallet path.
   const embeddedWallet = wallets.find((w) => w.walletClientType === "privy") ?? null;
+  const externalWallet =
+    wallets.find((w) => w.walletClientType !== "privy" && Boolean(w.address)) ?? null;
 
   // Clear errors when the agent record updates (e.g. after a successful bind).
   useEffect(() => {
@@ -82,7 +85,12 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       ? "overdue"
       : "bound";
 
-  async function ensureEmbeddedWallet(): Promise<{ address: string; chainId: string } | null> {
+  async function ensureControllerWallet(): Promise<{
+    address: string;
+    chainId: string;
+    walletKind: "embedded" | "external";
+    provider: string;
+  } | null> {
     if (!daemonChainId) {
       setError(
         "daemon has not reported its Fhenix chain yet; reload after the daemon is configured",
@@ -90,11 +98,29 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       return null;
     }
     if (embeddedWallet) {
-      return { address: embeddedWallet.address, chainId: daemonChainId };
+      return {
+        address: embeddedWallet.address,
+        chainId: daemonChainId,
+        walletKind: "embedded",
+        provider: "privy",
+      };
+    }
+    if (externalWallet) {
+      return {
+        address: externalWallet.address,
+        chainId: daemonChainId,
+        walletKind: "external",
+        provider: externalWallet.walletClientType || "privy-external",
+      };
     }
     try {
       const created = await createWallet();
-      return { address: created.address, chainId: daemonChainId };
+      return {
+        address: created.address,
+        chainId: daemonChainId,
+        walletKind: "embedded",
+        provider: "privy",
+      };
     } catch (e) {
       setError((e as Error)?.message ?? "could not provision embedded wallet");
       return null;
@@ -107,7 +133,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       setError("sign in with Privy first");
       return;
     }
-    const wallet = await ensureEmbeddedWallet();
+    const wallet = await ensureControllerWallet();
     if (!wallet) return;
     const token = await getAccessToken();
     if (!token) {
@@ -119,8 +145,8 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       const challenge = await verdictApi.postControllerWalletChallenge(token, slug, {
         wallet_address: wallet.address,
         chain_id: wallet.chainId,
-        wallet_kind: "embedded",
-        provider: "privy",
+        wallet_kind: wallet.walletKind,
+        provider: wallet.provider,
       });
       setBusy("signing");
       // Pin the signer to the wallet we're binding — without this, Privy's
@@ -134,8 +160,8 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       await verdictApi.patchAgentWallet(token, slug, {
         wallet_address: wallet.address,
         chain_id: wallet.chainId,
-        wallet_kind: "embedded",
-        provider: "privy",
+        wallet_kind: wallet.walletKind,
+        provider: wallet.provider,
         authorization_issued_at: challenge.authorization_issued_at,
         signature,
       });
@@ -166,9 +192,12 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
   async function reattest() {
     setError(null);
     if (!ready || !authenticated || !cw) return;
-    if (cw.wallet_kind !== "embedded") {
+    const connectedControllerWallet = wallets.find((wallet) =>
+      sameAddress(wallet.address, cw.wallet_address),
+    );
+    if (!connectedControllerWallet) {
       setError(
-        "× external-wallet re-attestation is not wired in this slice yet — connect the bound wallet via its own provider to re-sign",
+        "connect the bound controller wallet in Privy before signing re-attestation",
       );
       return;
     }
@@ -308,6 +337,10 @@ function busyLabel(b: BusyState): string {
 function shortAddr(addr: string): string {
   if (addr.length < 14) return addr;
   return `${addr.slice(0, 8)}…${addr.slice(-6)}`;
+}
+
+function sameAddress(a: string | null | undefined, b: string | null | undefined): boolean {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
 }
 
 function StateBadge({ state }: { state: "unbound" | "bound" | "overdue" }) {
