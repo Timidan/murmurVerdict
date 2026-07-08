@@ -59,7 +59,9 @@ export function listMarketsSurface(input: MarketReadInput & {
   if (input.query.assetId) {
     markets = markets.filter((m) => m.asset_id === input.query.assetId);
   }
-  const enriched = markets.map(enrichedMarketRegistryRow);
+  const enriched = markets.map((market) =>
+    enrichedMarketRegistryRow(market, { db: input.db }),
+  );
   return {
     status: 200,
     body: {

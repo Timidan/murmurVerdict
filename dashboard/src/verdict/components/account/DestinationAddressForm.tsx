@@ -2,8 +2,8 @@
 //
 // Lives at #/account/agent/:slug/payout. Lets the casual-tier operator
 // bind/update the EVM address that scored-call settlement proceeds
-// eventually land at (the rails are not wired in v0.2 — declaring the
-// address is still required so the protocol knows where to park funds).
+// eventually land at. Payout execution remains deferred, but declaring the
+// address is still required so the protocol knows where to park funds.
 //
 // Server-side invariants reflected here:
 //   · Address normalized to lowercase 0x+40hex (matches WalletAddressSchema).

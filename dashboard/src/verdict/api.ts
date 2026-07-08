@@ -226,6 +226,24 @@ export type MarketSettlementModel =
   | "venue_adapter"
   | "agent_feed"
   | "hybrid";
+export type MarketOracleHealth = "ok" | "warn" | "fail";
+
+export interface MarketOracleRef {
+  role: "primary" | "fallback";
+  oracle_id: string;
+  status: MarketStatus | "missing";
+  kind: string | null;
+  adapter: string | null;
+  chain: string | null;
+  asset_id: string | null;
+  asset_match: boolean | null;
+}
+
+export interface MarketOracleSummary {
+  health: MarketOracleHealth;
+  primary: MarketOracleRef;
+  fallback: MarketOracleRef | null;
+}
 
 export interface MarketTaxonomyClass {
   resolution_class: MarketResolutionClass;
@@ -261,6 +279,7 @@ export interface MarketRow {
   status: MarketStatus;
   market_config_version: number;
   market_taxonomy?: MarketTaxonomyAssignment;
+  oracles?: MarketOracleSummary;
   // Backend may include additional fields; preserve them through.
   [extra: string]: unknown;
 }

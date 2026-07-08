@@ -325,6 +325,9 @@ try {
     assert.equal(market.market.market_id, "eth.1h");
     assert.equal(market.market.adapter_id, "native-price");
     assert.equal(market.market.market_taxonomy.resolution_class, "price_direction");
+    assert.equal(market.market.oracles.health, "ok");
+    assert.equal(market.market.oracles.primary.oracle_id, "chainlink-base-eth-usd");
+    assert.equal(market.market.oracles.primary.status, "listed");
     const byClass = await call("search_markets", {
       resolution_class: "price_direction",
       limit: 5,
@@ -332,6 +335,15 @@ try {
     assert.ok(
       byClass.markets.some((item: { market_id: string }) => item.market_id === "eth.1h"),
     );
+    const ranking = await call("rank_agents_for_market", {
+      market_id: "eth.1h",
+      limit: 5,
+    });
+    assert.equal(ranking.kind, "murmur_market_agent_rankings");
+    assert.equal(ranking.market.market_id, "eth.1h");
+    assert.equal(ranking.market.oracles.health, "ok");
+    assert.equal(ranking.market.oracles.fallback.oracle_id, "pyth-base-eth-usd");
+    assert.ok(Array.isArray(ranking.agents));
   });
 
   await check("market taxonomy is discoverable by OpenServ", async () => {

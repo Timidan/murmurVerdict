@@ -2,9 +2,12 @@ import type Database from "better-sqlite3";
 
 import {
   marketsRepo,
+  oraclesRepo,
   type MarketRow,
+  type OracleRow,
   type RegistryStatus,
 } from "./repos/market-registry-repo.js";
+import type { OracleKind } from "./market-registry-schema.js";
 import { adapterIdentityForMarket } from "./markets.js";
 import {
   marketTaxonomyForMarket,
@@ -31,6 +34,7 @@ export interface PublicMarketRegistryRow {
   adapter_id: string;
   market_family: string;
   market_taxonomy: MarketTaxonomyAssignment;
+  oracles?: PublicMarketOracleSummary;
   config: Record<string, unknown>;
 }
 
@@ -41,7 +45,27 @@ export type EnrichedMarketRegistryRow = Omit<
   adapter_id: string;
   market_family: string;
   market_taxonomy: MarketTaxonomyAssignment;
+  oracles?: PublicMarketOracleSummary;
 };
+
+export type PublicMarketOracleHealth = "ok" | "warn" | "fail";
+
+export interface PublicMarketOracleRef {
+  role: "primary" | "fallback";
+  oracle_id: string;
+  status: RegistryStatus | "missing";
+  kind: OracleKind | null;
+  adapter: string | null;
+  chain: string | null;
+  asset_id: string | null;
+  asset_match: boolean | null;
+}
+
+export interface PublicMarketOracleSummary {
+  health: PublicMarketOracleHealth;
+  primary: PublicMarketOracleRef;
+  fallback: PublicMarketOracleRef | null;
+}
 
 export interface PublicMarketSearchOptions {
   status?: RegistryStatus;
@@ -54,6 +78,7 @@ export interface PublicMarketSearchOptions {
 
 export function publicMarketRegistryRow(
   market: MarketRow,
+  opts: { db?: Database.Database } = {},
 ): PublicMarketRegistryRow {
   const identity = adapterIdentityForMarket(market);
   return {
@@ -70,6 +95,7 @@ export function publicMarketRegistryRow(
     created_at: market.created_at,
     ...identity,
     market_taxonomy: marketTaxonomyForMarket(market),
+    ...(opts.db ? { oracles: publicMarketOracleSummary(opts.db, market) } : {}),
     config: publicMarketConfigSummary(market.config_json, {
       adapter_id: identity.adapter_id,
     }),
@@ -78,12 +104,71 @@ export function publicMarketRegistryRow(
 
 export function enrichedMarketRegistryRow(
   market: MarketRow,
+  opts: { db?: Database.Database } = {},
 ): EnrichedMarketRegistryRow {
   const identity = adapterIdentityForMarket(market);
   return {
     ...market,
     ...identity,
     market_taxonomy: marketTaxonomyForMarket(market),
+    ...(opts.db ? { oracles: publicMarketOracleSummary(opts.db, market) } : {}),
+  };
+}
+
+export function publicMarketOracleSummary(
+  db: Database.Database,
+  market: MarketRow,
+): PublicMarketOracleSummary {
+  const primary = publicMarketOracleRef(
+    oraclesRepo.get(db, market.primary_oracle_id),
+    market,
+    "primary",
+    market.primary_oracle_id,
+  );
+  const fallback = market.fallback_oracle_id
+    ? publicMarketOracleRef(
+        oraclesRepo.get(db, market.fallback_oracle_id),
+        market,
+        "fallback",
+        market.fallback_oracle_id,
+      )
+    : null;
+  const refs = fallback ? [primary, fallback] : [primary];
+  const health = refs.some((ref) => ref.status === "missing" || ref.asset_match === false)
+    ? "fail"
+    : refs.some((ref) => ref.status !== "listed")
+      ? "warn"
+      : "ok";
+  return { health, primary, fallback };
+}
+
+function publicMarketOracleRef(
+  row: OracleRow | null,
+  market: MarketRow,
+  role: "primary" | "fallback",
+  oracle_id: string,
+): PublicMarketOracleRef {
+  if (!row) {
+    return {
+      role,
+      oracle_id,
+      status: "missing",
+      kind: null,
+      adapter: null,
+      chain: null,
+      asset_id: null,
+      asset_match: null,
+    };
+  }
+  return {
+    role,
+    oracle_id,
+    status: row.status,
+    kind: row.kind,
+    adapter: row.adapter,
+    chain: row.chain,
+    asset_id: row.asset_id,
+    asset_match: row.asset_id === market.asset_id,
   };
 }
 
@@ -96,7 +181,7 @@ export function searchPublicMarkets(
   const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
   return marketsRepo
     .list(db, status)
-    .map(publicMarketRegistryRow)
+    .map((market) => publicMarketRegistryRow(market, { db }))
     .filter((market) => {
       if (opts.adapter_id && market.adapter_id !== opts.adapter_id) return false;
       if (opts.market_family && market.market_family !== opts.market_family) {

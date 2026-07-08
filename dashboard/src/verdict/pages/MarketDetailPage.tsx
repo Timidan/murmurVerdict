@@ -5,6 +5,8 @@ import {
   ApiError,
   type AgentMarketRow,
   type MarketRow,
+  type MarketOracleRef,
+  type MarketOracleSummary,
 } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
@@ -133,7 +135,7 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
             <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
               market config
             </summary>
-            <div className="grid grid-cols-2 md:grid-cols-6 border-t border-[var(--color-border)]">
+            <div className="grid grid-cols-2 md:grid-cols-8 border-t border-[var(--color-border)]">
               <RCell
                 label="class"
                 value={taxonomy?.label ?? market?.market_kind ?? "—"}
@@ -155,9 +157,19 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
                 tone="dim"
               />
               <RCell
-                label="feeds"
-                value={`${market?.primary_oracle_id ?? "—"} / ${market?.fallback_oracle_id ?? "—"}`}
-                tone="dim"
+                label="oracle"
+                value={oracleHealthLabel(market?.oracles)}
+                tone={oracleHealthTone(market?.oracles)}
+              />
+              <RCell
+                label="primary"
+                value={oracleRefLabel(market?.oracles?.primary)}
+                tone={oracleRefTone(market?.oracles?.primary)}
+              />
+              <RCell
+                label="fallback"
+                value={oracleRefLabel(market?.oracles?.fallback)}
+                tone={oracleRefTone(market?.oracles?.fallback)}
               />
               <RCell label="void·band" value={market?.void_band ?? "—"} tone="dim" />
             </div>
@@ -309,6 +321,34 @@ function formatHorizon(seconds: number): string {
   if (seconds < 60 * 60 * 24) return `${Math.round(seconds / 3600)}h`;
   if (seconds < 60 * 60 * 24 * 7) return `${Math.round(seconds / 86400)}d`;
   return `${Math.round(seconds / (86400 * 7))}w`;
+}
+
+function oracleHealthLabel(oracles: MarketOracleSummary | null | undefined): string {
+  if (!oracles) return "unknown";
+  if (oracles.health === "ok") return "ok";
+  if (oracles.health === "warn") return "check";
+  return "attention";
+}
+
+function oracleHealthTone(
+  oracles: MarketOracleSummary | null | undefined,
+): "pos" | "neg" | "dim" | "default" {
+  if (!oracles) return "dim";
+  if (oracles.health === "ok") return "pos";
+  return "neg";
+}
+
+function oracleRefLabel(ref: MarketOracleRef | null | undefined): string {
+  if (!ref) return "none";
+  return `${ref.oracle_id} · ${ref.status}`;
+}
+
+function oracleRefTone(
+  ref: MarketOracleRef | null | undefined,
+): "pos" | "neg" | "dim" | "default" {
+  if (!ref) return "dim";
+  if (ref.status === "listed" && ref.asset_match !== false) return "pos";
+  return "neg";
 }
 
 function shortAssetSlug(asset_id: string): string {

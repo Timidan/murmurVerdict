@@ -252,8 +252,9 @@ function SpecPage() {
         <p className="t-label mb-3 text-[var(--color-secondary)]">spec</p>
         <h1 className="t-heading mb-6" style={{ textWrap: "balance" }}>murmur verdict v0.1</h1>
         <p className="t-body max-w-[60ch]">
-          See <code className="font-mono text-[var(--color-display)]">docs/launchpad/THESIS.md</code> in the repo for the frozen
-          v0.1 specification.
+          See <code className="font-mono text-[var(--color-display)]">CONTEXT.md</code> and{" "}
+          <code className="font-mono text-[var(--color-display)]">HANDOFF.md</code> in
+          the repo for the current system map and implementation handoff.
         </p>
         <a href="#/" className="t-button text-[var(--color-display)] mt-8 inline-block hover:underline">
           ← back home

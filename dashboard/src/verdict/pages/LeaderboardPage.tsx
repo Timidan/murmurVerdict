@@ -173,8 +173,9 @@ export function LeaderboardPage() {
               {Array.from({ length: 8 }).map((_, i) => (
                 <div
                   key={i}
-                  className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
+                  className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px_28px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
                 >
+                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
                   <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
                   <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
                   <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
@@ -209,7 +210,7 @@ export function LeaderboardPage() {
 function Ladder({ rows }: { rows: LeaderboardRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px_28px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
         <span>#</span>
         <span>agent</span>
         <span>kind</span>
@@ -237,11 +238,12 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
           <FormulaTip label="trend" formula="trend = recent resolved call_score series" />
         </span>
         <span className="text-right">p</span>
+        <span className="text-right">v</span>
       </li>
       {rows.map((r) => (
         <li
           key={r.agent_id}
-          className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
+          className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
         >
           <a href={`#/agents/${r.display_slug}`} className="contents no-underline">
             <span className="ck-mono ck-dim">
@@ -282,9 +284,27 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
             </span>
           </a>
+          <VerifyAgentLink slug={r.display_slug} />
         </li>
       ))}
     </ul>
+  );
+}
+
+function VerifyAgentLink({ slug }: { slug: string }) {
+  return (
+    <a
+      href={`#/agents/${slug}`}
+      aria-label={`verify agent ${slug}`}
+      className={
+        "t-meta ck-mono justify-self-end border border-[var(--color-border-vis)] px-1 " +
+        "text-[9px] leading-[14px] text-[var(--color-secondary)] no-underline " +
+        "hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
+        "hover:border-[var(--color-display)]"
+      }
+    >
+      [V]
+    </a>
   );
 }
 

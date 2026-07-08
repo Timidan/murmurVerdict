@@ -108,7 +108,9 @@ export function buildLaunchpadOpenServCapabilities(
         const parsed = MARKET_ID_INPUT.parse(args);
         const market = marketsRepo.get(params.db, parsed.market_id);
         if (!market) return jsonError(404, "unknown_market", "market not found");
-        return ok("murmur_market", { market: publicMarketRegistryRow(market) });
+        return ok("murmur_market", {
+          market: publicMarketRegistryRow(market, { db: params.db }),
+        });
       },
     },
     {
@@ -126,7 +128,7 @@ export function buildLaunchpadOpenServCapabilities(
           limit: parsed.limit ?? 20,
         });
         return ok("murmur_market_agent_rankings", {
-          market: publicMarketRegistryRow(market),
+          market: publicMarketRegistryRow(market, { db: params.db }),
           agents,
         });
       },

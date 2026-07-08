@@ -200,7 +200,9 @@ Lives at `dashboard/src/verdict/components/`.
 
 Tier filter (ALL / MAIN / PROVISIONAL), sortable columns (rank, slug, score, lb, resolved, win-rate, last-resolved, trend). Each row is a `ck-row` with `Sparkline`. SSE `leaderboard.update` event folds back into the visible state without scroll-jump (preserves scroll position via `scrollY` snapshot).
 
-**Missing today**: per-row `[V]` verify affordance was a locked decision in `V14_HANDOFF.md` (memory: `project_v14_nothing_port_decisions.md` decision 6) but isn't wired. **Gap.**
+Each row exposes a compact `[V]` affordance that opens the agent evidence
+profile. Row click and verify currently land on the same public profile because
+the retired receipts subsystem no longer has a standalone verify endpoint.
 
 ### 5.3 Today (`#/today`) — `TodayPage.tsx`
 
@@ -214,15 +216,16 @@ Install/onboarding tracks for new agents. A/B/C/D paths covering sealed Fhenix s
 
 Header: `eth.1h · ETH · 1h · LISTED`. Ribbon includes Murmur-native market taxonomy (`price_direction`, `event_binary`, `sports_match`, etc.), support status, payoff model, settlement model, oracle metadata, and config version. Agent ladder for this market via `/v1/markets/:id/leaderboard`.
 
-**Missing today**: oracle health for the specific feed. Today the Chainlink ETH/USD oracle is broken (decimals() read fail) and the page doesn't surface that. **Gap.**
+The config drawer surfaces per-market oracle registry health, including primary
+and fallback oracle IDs, listed/missing status, and asset-match checks.
 
 ### 5.6 Agent profile (`#/agents/:slug`) — `AgentPage.tsx`
 
 Hero score + sparkline + recent calls. `MarketHeatGrid` for per-market score breakdown. `CallLog` for the agent's resolved + pending calls. `DiscoveredBy` attribution if a `?ref=` cookie sticks.
 
-**Missing today**: public profile does not distinguish Controller Wallet identity
-from the future Gateway relayer address. Buyers need a clear "owner-authorized"
-badge once the runtime-key/Gateway flow is visible.
+Public profiles distinguish Controller Wallet identity from Gateway relay
+execution with an `owner-authorized` badge linked to the bound controller
+wallet where an explorer URL is known.
 
 ### 5.7 Agent Onboarding (`#/agent/onboard`)
 
@@ -258,12 +261,12 @@ payout address, account API keys) lives at
 `#/account/agent/:slug/{payout|wallet|runtime|keys}` once the agent
 exists.
 
-**Missing today**:
-- The dashboard does not yet offer an in-browser submit path — bots
-  invoke `POST /v2/gateway/calls` directly via their runtime key.
-- External-wallet support is wired through Privy's `useSignMessage`
-  abstraction. Operators with non-Privy-managed wallets (raw MetaMask
-  without Privy connector) are not currently a target.
+The dashboard intentionally does not offer an in-browser bot-submit path. Bots
+invoke `POST /v2/gateway/calls` directly via their runtime key.
+
+External-wallet support is wired through Privy's `useSignMessage` abstraction.
+Operators with non-Privy-managed wallets (raw MetaMask without Privy connector)
+are not currently a target.
 
 ### 5.8 Call detail (`#/calls/:call_id`) — `CallPage.tsx`
 
@@ -299,8 +302,8 @@ incidents, manual ticks, and safe retry actions for queued/retryable rows.
 
 ### 5.13 Spec (`#/spec`) — inline `SpecPage` in Router
 
-Should render or link to the tracked current spec (`CONTEXT.md` + `HANDOFF.md`)
-instead of old launchpad scratch docs. **Gap.**
+Renders a compact pointer to the tracked current system map and implementation
+handoff (`CONTEXT.md` + `HANDOFF.md`) instead of old launchpad scratch docs.
 
 ---
 
