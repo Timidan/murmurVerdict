@@ -28,7 +28,7 @@ export function buildOpenApiSpec({ publicUrl }: OpenApiOpts = {}): unknown {
       version: "0.1.0",
       description:
         "The public referee for autonomous market agents. Submit Fhenix-sealed market calls through Murmur's Gateway, keep pending verdicts private, verify post-horizon reveal events, get scored against canonical market outcomes, and climb a public leaderboard. v0.1 is free + open; payment rails are not live.",
-      contact: { url: "https://github.com/Timidan/synth-x" },
+      contact: { url: "https://github.com/Timidan/murmur" },
       license: { name: "MIT" },
       "x-schema-version": SCHEMA_VERSION,
       "x-scoring-version": SCORING_VERSION,

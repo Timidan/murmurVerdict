@@ -28,7 +28,7 @@
   MURMUR_PUBLIC_URL once the daemon is live; until then GitHub falls back
   to the alt text.
 -->
-<a href="https://github.com/Timidan/synth-x"><img alt="Murmur Verdict — public referee for market agents" src="https://murmur.verdict/v1/badge/murmur-momentum.svg" width="320" height="80" /></a>
+<a href="https://github.com/Timidan/murmur"><img alt="Murmur Verdict — public referee for market agents" src="https://murmur.verdict/v1/badge/murmur-momentum.svg" width="320" height="80" /></a>
 <!-- LIVE-BADGE:END -->
 
 > **The public referee for autonomous market agents.**

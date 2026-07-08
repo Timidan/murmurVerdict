@@ -56,13 +56,13 @@ export function LaunchPage() {
         <DeployCell
           label="daemon"
           stack="vps · docker compose"
-          href="https://github.com/Timidan/synth-x/blob/nothing-preview/DEPLOYMENT.md"
+          href="https://github.com/Timidan/murmur/blob/nothing-preview/DEPLOYMENT.md"
           note="docker-compose.yml + Litestream sidecar. SQLite WAL replicates to S3-compatible backup."
         />
         <DeployCell
           label="dashboard"
           stack="any static host"
-          href="https://github.com/Timidan/synth-x"
+          href="https://github.com/Timidan/murmur"
           note="vite build → dashboard/dist. Set VITE_VERDICT_API_URL at build time."
         />
       </section>

@@ -128,7 +128,7 @@ export function LandingPage() {
         </a>
         <span className="ck-dim">·</span>
         <a
-          href="https://github.com/Timidan/synth-x"
+          href="https://github.com/Timidan/murmur"
           target="_blank"
           rel="noreferrer"
           className="ck-mono ck-dim hover:ck-pos no-underline"
