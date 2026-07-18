@@ -18,10 +18,11 @@
 //   consumeJustMinted reads + clears the entry; the secret survives one
 //   render in component state and then is gone.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { CodeSnippetPanel } from "../components/account/CodeSnippetPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
+import { buildAgentPrompt } from "../lib/agent-prompt.js";
 
 const SESSION_KEY_PREFIX = "murmur_just_minted:";
 /** Handoff secrets older than this are treated as stale — see header comment. */
@@ -154,7 +155,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     arrivedWithFreshRuntimeKey || arrivedWithRetiredApiKey ? "ck-pos" : "ck-dim";
 
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
           <span>
@@ -207,7 +208,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           {arrivedWithRetiredApiKey && (
             <p
               className="ck-mono text-[10px] leading-relaxed max-w-[60ch]"
-              style={{ color: "var(--color-accent)" }}
+              style={{ color: "var(--color-accent-ink)" }}
             >
               API keys no longer authorize agent submissions. Use a Runtime
               Key for the Gateway snippet below.{" "}
@@ -220,6 +221,11 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             </p>
           )}
         </section>
+
+        <AgentPromptPanel
+          slug={slug}
+          runtimeKey={arrivedWithFreshRuntimeKey ? envelope!.secret : undefined}
+        />
 
         {agent ? (
           <CodeSnippetPanel
@@ -261,7 +267,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 href="/v1/skill.md"
                 target="_blank"
                 rel="noreferrer"
-                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="flex flex-col">
                   <span className="ck-pos">skill.md for your agent's LLM</span>
@@ -278,7 +284,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 href={`/v1/agents/${encodeURIComponent(slug)}/agent-card`}
                 target="_blank"
                 rel="noreferrer"
-                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="flex flex-col">
                   <span className="ck-pos">your agent's ERC-8004 card (JSON)</span>
@@ -295,7 +301,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 href="/v1/openapi.json"
                 target="_blank"
                 rel="noreferrer"
-                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="flex flex-col">
                   <span className="ck-pos">full OpenAPI spec</span>
@@ -317,7 +323,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <li>
               <a
                 href={`#/agents/${encodeURIComponent(slug)}`}
-                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="ck-pos">public profile</span>
                 <span className="ck-dim text-[10px]">[ agent page → ]</span>
@@ -326,7 +332,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <li>
               <a
                 href={`#/account/agent/${encodeURIComponent(slug)}/runtime`}
-                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="ck-pos">runtime keys</span>
                 <span className="ck-dim text-[10px]">[ mint / revoke → ]</span>
@@ -335,7 +341,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <li>
               <a
                 href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
-                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono hover:bg-[white]/[0.03] no-underline"
+                className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="ck-pos">controller wallet</span>
                 <span className="ck-dim text-[10px]">[ re-attest / bind → ]</span>
@@ -343,6 +349,17 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             </li>
           </ul>
         </section>
+
+        <p className="ck-mono ck-dim text-[10px]">
+          key wired in? watch{" "}
+          <a
+            href={`#/agents/${encodeURIComponent(slug)}`}
+            className="ck-pos no-underline underline-offset-2 hover:underline"
+          >
+            #/agents/{slug}
+          </a>{" "}
+          — your first call appears there live.
+        </p>
       </main>
     </div>
   );
@@ -399,9 +416,114 @@ export function stashJustMinted(
   }
 }
 
+/**
+ * Agent-prompt panel — the personalized, operate-only runbook the agent's
+ * LLM reads. Same `buildAgentPrompt` helper the RuntimeKeyMintModal uses, so
+ * the modal and this page render the identical document. When we arrived with
+ * a fresh runtime key the plaintext is baked into the prompt (one-time, gone
+ * on refresh); otherwise the helper injects the mint-it placeholder.
+ */
+function AgentPromptPanel({
+  slug,
+  runtimeKey,
+}: {
+  slug: string;
+  runtimeKey?: string;
+}) {
+  const [prompt, setPrompt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [copyFallback, setCopyFallback] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
+    buildAgentPrompt(slug, runtimeKey)
+      .then((text) => {
+        if (cancelled) return;
+        setPrompt(text);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setError(true);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, runtimeKey]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  const doCopy = useCallback(async () => {
+    if (!prompt) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("no-clipboard");
+      await navigator.clipboard.writeText(prompt);
+      setCopied(true);
+      setCopyFallback(false);
+    } catch {
+      setCopyFallback(true);
+      setCopied(false);
+    }
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopied(false), 1800);
+  }, [prompt]);
+
+  return (
+    <section className="ck-frame">
+      <div className="ck-header">
+        <span className="ck-label ck-pos">agent prompt</span>
+        <span className="flex items-center gap-2">
+          {copyFallback && (
+            <span className="ck-mono text-[10px] ck-dim" aria-live="polite">
+              clipboard blocked — select + ⌘C / Ctrl-C
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => void doCopy()}
+            className="ck-btn ck-btn-bracket"
+            disabled={loading || error}
+            aria-label="copy agent prompt"
+          >
+            {copied ? "copied ✓" : "copy"}
+          </button>
+        </span>
+      </div>
+      {loading ? (
+        <p className="ck-mono ck-dim text-[11px] px-3 py-2">resolving prompt…</p>
+      ) : error ? (
+        <p className="ck-mono ck-dim text-[11px] px-3 py-2">
+          could not load the agent prompt — the runbook is also at{" "}
+          <a href="/v1/skill.md" target="_blank" rel="noreferrer" className="ck-pos no-underline">
+            /v1/skill.md
+          </a>
+          .
+        </p>
+      ) : (
+        <pre
+          className="ck-mono whitespace-pre overflow-auto px-3 py-2 leading-tight text-[11px]"
+          style={{ maxHeight: 360 }}
+        >
+          {prompt}
+        </pre>
+      )}
+    </section>
+  );
+}
+
 function LoadingShell({ slug }: { slug: string }) {
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
           <span>
@@ -424,7 +546,7 @@ function LoadingShell({ slug }: { slug: string }) {
 
 function ConfigErrorShell({ slug }: { slug: string }) {
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
           <span className="ck-neg">

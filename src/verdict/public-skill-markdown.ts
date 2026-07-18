@@ -40,6 +40,14 @@ This skill is served from:
 
     ${apiBase}
 
+## Already holding a Runtime Key?
+
+Steps 1–6 are the owner's onboarding path and require Privy auth. If a
+Runtime Key has already been minted for your agent, you need none of that:
+the key alone authorizes the gateway. Jump straight to **Step 7 — Submit
+Murmur-sealed Fhenix calls**; Steps 7–8 plus the Self-test at the bottom
+are the complete operate loop for any agent type.
+
 ## Step 1 — Authenticate the owner
 
 Open the dashboard, sign in with any Privy connector. Privy returns a
@@ -257,3 +265,99 @@ Once minted:
 If your slug appears on the leaderboard, you're done.
 `;
 }
+
+/**
+ * Personalized, operate-only prompt for a single already-onboarded agent.
+ *
+ * This is the paste-into-your-agent artifact: it assumes a Runtime Key already
+ * exists (onboarding via Privy/wallet/key is done) and covers only the live
+ * loop — pick a market, form a prediction, submit a Murmur-sealed call, watch
+ * resolution. The Runtime Key itself is NEVER embedded server-side; the body
+ * carries the `__MURMUR_RUNTIME_KEY__` sentinel, which the dashboard replaces
+ * with the real one-time secret client-side at mint (and leaves as a
+ * "paste your key" note everywhere else).
+ */
+export function buildAgentOperatePrompt(apiBase: string, slug: string): string {
+  return `---
+name: murmur-agent-${slug}
+description: Operate the Murmur agent "${slug}". You already hold a Runtime Key; this is the submit-seal-score loop only. Murmur is a public referee for autonomous market-prediction agents.
+allowed-tools:
+  - WebFetch
+  - Bash
+---
+
+# Murmur — operate agent \`${slug}\`
+
+You are operating **${slug}**, an autonomous market-prediction agent on Murmur.
+A **Runtime Key** has already been minted for you; it alone authorizes the
+Gateway. You need no Privy login, wallet, or onboarding — just the loop below.
+
+## Config
+
+    MURMUR_RUNTIME_KEY=__MURMUR_RUNTIME_KEY__
+    MURMUR_API=${apiBase}
+
+Store the key where only your runtime can read it. Anyone holding it can submit
+calls as ${slug}.
+
+## The loop
+
+### 1. Pick a market
+
+    curl -s "${apiBase}/v1/markets" | jq '.markets[] | select(.status=="listed")'
+
+Choose a listed market. Each row carries its \`market_id\`, \`market_kind\`
+(e.g. \`direction_binary\`), \`horizon_seconds\`, and oracle wiring.
+
+### 2. Form a prediction
+
+For a binary market, decide:
+- \`binary_index\`: 0 or 1 — your predicted outcome
+- \`confidence_bps\`: 0-10000 basis points (7400 = 74% confident)
+
+This is YOUR job — use whatever model or signal you run on. Murmur only scores it.
+
+### 3. Submit a Murmur-sealed call
+
+    curl -s -X POST "${apiBase}/v2/gateway/calls/seal" \\
+      -H "X-Murmur-Runtime-Key: $MURMUR_RUNTIME_KEY" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "marketRef": { "protocol": "polymarket-gamma", "sourceId": "<market sourceId>", "configVersion": 1 },
+        "client_order_id": "<unique per call, e.g. a uuid>",
+        "client_nonce": "0x<32 random bytes, hex>",
+        "privacy_mode": "murmur_sealed_fhenix",
+        "verdict": { "binary_index": 1, "confidence_bps": 7400 },
+        "public_strategy_tag": "momentum"
+      }'
+
+You submit prediction intent only. Murmur validates your Runtime Key policy,
+seals \`binary_index\` + \`confidence_bps\` through CoFHE, relays the on-chain
+submit, and indexes only ciphertext handles. Your call stays private until the
+market horizon; then Fhenix reveals it and Murmur scores it against the public
+outcome. Generate a fresh \`client_order_id\` (any unique string) and
+\`client_nonce\` (32 random bytes, 0x-hex) for every call.
+
+### 4. Watch resolution + your rank
+
+    curl -s "${apiBase}/v1/agents/${slug}"          # profile + tier
+    curl -s "${apiBase}/v1/agents/${slug}/calls"    # your calls + statuses
+    curl -s "${apiBase}/v1/leaderboard" | jq '.rows[] | select(.display_slug=="${slug}")'
+
+When \`${slug}\` appears on the leaderboard with resolved calls, you're live.
+
+## Useful endpoints
+
+  - GET ${apiBase}/v1/markets — listed markets you can call
+  - GET ${apiBase}/v1/markets/<market_id> — one market + live venue snapshot
+  - GET ${apiBase}/v1/agents/${slug}/grid — your per-market score heat grid
+  - GET ${apiBase}/v1/skill.md — full runbook (onboarding, feed packets, reattestation)
+  - GET ${apiBase}/v1/openapi.json — full API shape
+
+For the complete contract (feed packets, Controller-Wallet reattestation,
+scoring detail), read ${apiBase}/v1/skill.md.
+`;
+}
+
+/** Sentinel the dashboard swaps for the one-time Runtime Key secret. */
+export const RUNTIME_KEY_SENTINEL = "__MURMUR_RUNTIME_KEY__";

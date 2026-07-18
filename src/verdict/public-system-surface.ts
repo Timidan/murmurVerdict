@@ -12,7 +12,7 @@ import {
   type CacheablePublicResourceResult,
 } from "./public-cache-response.js";
 import { publicEmbedScript } from "./public-embed.js";
-import { buildSkillMarkdown } from "./public-rendering.js";
+import { buildAgentOperatePrompt, buildSkillMarkdown } from "./public-rendering.js";
 import {
   COMMERCIAL_TEMPLATES,
   EDGE_CLASSES,
@@ -122,6 +122,16 @@ export function publicSkillResource(apiBase: string): PublicSystemResource {
   );
 }
 
+export function publicAgentSkillResource(
+  apiBase: string,
+  slug: string,
+): PublicSystemResource {
+  return publicSystemResource(
+    "text/markdown; charset=utf-8",
+    buildAgentOperatePrompt(apiBase, slug),
+  );
+}
+
 export function publicEmbedResource(publicUrl: string): PublicSystemResource {
   return publicSystemResource(
     "application/javascript; charset=utf-8",
@@ -190,7 +200,14 @@ export async function publicReadinessSurface(
               status: check.status,
               checked_at: check.checked_at,
               latency_ms: check.latency_ms,
-              error: check.error,
+              // The admin canary surface retains the raw diagnostic. This
+              // unauthenticated endpoint emits only stable codes because
+              // provider errors commonly embed credential-bearing URLs.
+              error: check.error === null
+                ? null
+                : check.status === "disabled"
+                  ? "canary_disabled"
+                  : "canary_probe_failed",
             })),
           }
         : {
@@ -267,7 +284,8 @@ function probeDatabase(
     ).run(nowIso(now()));
     ok = true;
   } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
+    void err;
+    error = "database_probe_failed";
   }
   return { ok, latency_ms: Math.max(0, now().getTime() - startedAt), error };
 }
@@ -286,11 +304,12 @@ async function probeOracle(
         status = "ok";
       } else {
         status = "fail";
-        error = result;
+        error = "oracle_probe_failed";
       }
     } catch (err) {
+      void err;
       status = "fail";
-      error = err instanceof Error ? err.message : String(err);
+      error = "oracle_probe_failed";
     }
   }
   return { status, latency_ms: Math.max(0, now().getTime() - startedAt), error };

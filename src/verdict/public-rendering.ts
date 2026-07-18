@@ -9,4 +9,7 @@ export {
   type PublicRssAgent,
   type PublicRssCallRow,
 } from "./public-rss.js";
-export { buildSkillMarkdown } from "./public-skill-markdown.js";
+export {
+  buildAgentOperatePrompt,
+  buildSkillMarkdown,
+} from "./public-skill-markdown.js";
