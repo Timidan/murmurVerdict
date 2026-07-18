@@ -196,13 +196,12 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
       // 'pending' so the operator can fix the row without a crash.
       return "pending";
     }
-    // Belt-and-braces: marketRef.sourceId SHOULD match the conditionId.
-    // The resolver normally lifts conditionId FROM marketRef.sourceId,
-    // but if the two disagree we still trust the context (the sync
-    // ticker may carry a re-normalized id from a config bump).
+    // The local commitment and lookup context must identify the same market.
+    // Continuing on a mismatch risks resolving and scoring the call against
+    // an unrelated condition.
     if (marketRef.sourceId.toLowerCase() !== narrowed.conditionId.toLowerCase()) {
-      // No throw — log and proceed with the context value.
       narrowed.onError?.("conditionId_mismatch");
+      return "pending";
     }
     const client = narrowed.client ?? getDefaultClient();
     if (!client) {
@@ -214,6 +213,10 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
       if (result.error) narrowed.onError?.(result.error);
       const snapshot = result.snapshot;
       if (snapshot === null) return "pending";
+      if (snapshot.conditionId.toLowerCase() !== marketRef.sourceId.toLowerCase()) {
+        narrowed.onError?.("conditionId_response_mismatch");
+        return "pending";
+      }
       try {
         return gammaMarketToOutcome(snapshot);
       } catch (err) {

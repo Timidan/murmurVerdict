@@ -9,13 +9,15 @@ import {
   type PaymentRequest,
 } from "../integrations/circle-gateway.js";
 import { handleNanopayAfterPayment } from "./nanopay-handler.js";
+import { processDurableNanopay } from "./nanopay-durable-settlement.js";
 import { preflightServable } from "./nanopay-preflight.js";
+import { extractPipelineId } from "./nanopay-request.js";
 import type { NanopayRouterDeps } from "./nanopay-types.js";
 
 export type NanopayNetwork = NonNullable<NanopayRouterDeps["network"]>;
 export type NanopayGatewayFactory = (
   config: GatewayMiddlewareConfig,
-) => Pick<GatewayMiddleware, "require">;
+) => GatewayMiddleware;
 
 export interface NanopayPaymentGate {
   facilitatorUrl: string;
@@ -43,12 +45,54 @@ export function createNanopayPaymentGate(
     description: "Murmur per-call paid inference",
   });
   const price = deps.defaultPrice ?? "$0.001";
+  const challenge = gateway.require(price);
 
   return {
     facilitatorUrl,
     price,
     preflight: preflightServable(deps),
-    requirePayment: gateway.require(price),
+    requirePayment: async (req, res, next) => {
+      const paymentHeader = req.headers["payment-signature"];
+      if (paymentHeader === undefined) {
+        await challenge(req, res, next);
+        return;
+      }
+      if (typeof paymentHeader !== "string") {
+        res.status(400).json({ error: "MalformedPayment" });
+        return;
+      }
+      const pipelineId = extractPipelineId(req);
+      if (!pipelineId) {
+        res.status(400).json({ error: "BadPipelineId" });
+        return;
+      }
+      const result = await processDurableNanopay({
+        deps,
+        gateway,
+        pipelineId,
+        paymentHeader,
+      });
+      if (result.kind === "error") {
+        if (result.retryAfterSeconds !== undefined) {
+          res.setHeader("Retry-After", String(result.retryAfterSeconds));
+        }
+        res.status(result.status).json(result.body);
+        return;
+      }
+      (req as Request & PaymentRequest).payment = result.payment;
+      res.setHeader(
+        "PAYMENT-RESPONSE",
+        Buffer.from(
+          JSON.stringify({
+            success: true,
+            transaction: result.payment.transaction,
+            network: result.payment.network,
+            payer: result.payment.payer,
+          }),
+        ).toString("base64"),
+      );
+      next();
+    },
     afterPayment: async (req, res) => {
       await handleNanopayAfterPayment(req as Request & PaymentRequest, res, deps);
     },

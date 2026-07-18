@@ -1,10 +1,11 @@
 /**
  * Boot wiring for the Polymarket Gamma adapter.
  *
- * Off by default. The daemon dynamic-imports this module ONLY when
- * `MURMUR_POLYMARKET_GAMMA_ENABLED=1` so the legacy boot path stays
- * byte-identical when the flag is unset (mirrors the Z0 FHE loader
- * posture in src/daemon/index.ts).
+ * ON by default (Gamma is a public key-less API and the sync ticker no-ops
+ * with zero Polymarket markets). Set `MURMUR_POLYMARKET_GAMMA_ENABLED=false`
+ * to opt out — the daemon then skips the dynamic import entirely and the
+ * boot path stays byte-identical (mirrors the Z0 FHE loader posture in
+ * src/daemon/index.ts).
  *
  * Side effects on `registerPolymarketGammaAdapter`:
  *   1. Idempotent register of the singleton {@link polymarketGammaAdapter}

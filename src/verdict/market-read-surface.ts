@@ -10,15 +10,23 @@ import {
   getCrossFamilyLeaderboard,
   getLeaderboardForFamily,
   getLeaderboardForMarket,
+  getLeaderboardForMarkets,
 } from "./leaderboard.js";
 import {
   marketTaxonomyResponse,
 } from "./market-taxonomy.js";
 import {
+  type MarketCallsReadQuery,
   type MarketLeaderboardReadQuery,
   type MarketRegistryListQuery,
 } from "./market-read-query.js";
-import { enrichedMarketRegistryRow } from "./market-registry-public.js";
+import {
+  enrichedMarketRegistryRow,
+  type EnrichedMarketRegistryRow,
+} from "./market-registry-public.js";
+import {
+  listPublicMarketCallProjections,
+} from "./sealed-call-public-projection.js";
 import {
   ERROR_CODES,
   MarketIdSchema,
@@ -26,6 +34,10 @@ import {
   VerdictError,
 } from "./schema.js";
 import { nowIso } from "./time.js";
+import type {
+  MarketVenueSnapshot,
+  MarketVenueSnapshotAdapter,
+} from "../markets/polymarket-gamma/venue-snapshot.js";
 
 export interface MarketReadInput {
   db: Database.Database;
@@ -52,24 +64,137 @@ export function sendMarketReadJsonResponse(
   res.status(result.status).json(result.body);
 }
 
-export function listMarketsSurface(input: MarketReadInput & {
+const missingMarketBody = {
+  code: "market_not_found",
+  message: "market not found",
+} as const;
+
+export type VenueEnrichedMarketRegistryRow = EnrichedMarketRegistryRow & {
+  venue?: MarketVenueSnapshot;
+};
+
+function enrichedMarketRows(input: MarketReadInput & {
   query: MarketRegistryListQuery;
-}): MarketReadResult {
+}): EnrichedMarketRegistryRow[] {
   let markets = marketsRepo.list(input.db, input.query.status);
   if (input.query.assetId) {
     markets = markets.filter((m) => m.asset_id === input.query.assetId);
   }
-  const enriched = markets.map((market) =>
+  return markets.map((market) =>
     enrichedMarketRegistryRow(market, { db: input.db }),
   );
+}
+
+/**
+ * Stamp the venue live snapshot onto venue-adapter rows. Native rows come
+ * back untouched (no `venue` key). The Adapter is budget-bounded and
+ * fail-soft by contract, so list/detail reads never block or fail on
+ * upstream venue trouble.
+ */
+async function attachVenueSnapshots(
+  rows: EnrichedMarketRegistryRow[],
+  venue: MarketVenueSnapshotAdapter | undefined,
+): Promise<VenueEnrichedMarketRegistryRow[]> {
+  if (!venue) return rows;
+  return Promise.all(
+    rows.map(async (row) => {
+      const snapshot = await venue.venueForMarket(row);
+      return snapshot ? { ...row, venue: snapshot } : row;
+    }),
+  );
+}
+
+export function listMarketsSurface(input: MarketReadInput & {
+  query: MarketRegistryListQuery;
+}): MarketReadResult {
   return {
     status: 200,
     body: {
-      markets: enriched,
+      markets: enrichedMarketRows(input),
       taxonomy: marketTaxonomyResponse(),
       served_at: nowIso(input.servedAt),
     },
   };
+}
+
+/** `/v1/markets` — the list surface plus venue live snapshots. */
+export async function listMarketsWithVenueSurface(input: MarketReadInput & {
+  query: MarketRegistryListQuery;
+  venue?: MarketVenueSnapshotAdapter;
+}): Promise<MarketReadResult> {
+  const markets = await attachVenueSnapshots(
+    enrichedMarketRows(input),
+    input.venue,
+  );
+  return {
+    status: 200,
+    body: {
+      markets,
+      taxonomy: marketTaxonomyResponse(),
+      served_at: nowIso(input.servedAt),
+    },
+  };
+}
+
+/** `GET /v1/markets/:market_id` — one row, same shape as the list rows. */
+export async function marketDetailSurface(input: MarketReadInput & {
+  marketId: string;
+  venue?: MarketVenueSnapshotAdapter;
+}): Promise<MarketReadResult> {
+  const market_id = parseMarketIdParam(input.marketId);
+  const market = marketsRepo.get(input.db, market_id);
+  if (!market) {
+    return { status: 404, body: missingMarketBody };
+  }
+  const [row] = await attachVenueSnapshots(
+    [enrichedMarketRegistryRow(market, { db: input.db })],
+    input.venue,
+  );
+  return {
+    status: 200,
+    body: {
+      market: row,
+      served_at: nowIso(input.servedAt),
+    },
+  };
+}
+
+/** `GET /v1/markets/:market_id/calls` — recent calls, newest first. */
+export function marketCallsSurface(input: MarketReadInput & {
+  marketId: string;
+  query: MarketCallsReadQuery;
+}): MarketReadResult {
+  const market_id = parseMarketIdParam(input.marketId);
+  const market = marketsRepo.get(input.db, market_id);
+  if (!market) {
+    return { status: 404, body: missingMarketBody };
+  }
+  const calls = listPublicMarketCallProjections({
+    db: input.db,
+    market_id: market.market_id,
+    limit: input.query.limit,
+  });
+  return {
+    status: 200,
+    body: {
+      market_id: market.market_id,
+      calls,
+      served_at: nowIso(input.servedAt),
+    },
+  };
+}
+
+function parseMarketIdParam(marketId: string): string {
+  const parsed = MarketIdSchema.safeParse(marketId);
+  if (!parsed.success) {
+    throw new VerdictError(
+      "invalid market_id",
+      ERROR_CODES.schema_invalid,
+      400,
+      { market_id: marketId },
+    );
+  }
+  return parsed.data;
 }
 
 export function marketTaxonomySurface(
@@ -117,6 +242,28 @@ export function marketLeaderboardSurface(input: MarketReadInput & {
     body: {
       market_id,
       agents,
+      served_at: nowIso(input.servedAt),
+    },
+  };
+}
+
+/**
+ * `GET /v1/markets/grid` — batched per-market top rows for the markets grid.
+ * ONE facts read across every market replaces the grid's former N per-market
+ * `/leaderboard` round-trips. `limit` caps rows PER MARKET (the grid uses 3).
+ * Only markets with scoring calls appear; the grid defaults absent markets to
+ * an empty top-3.
+ */
+export function marketsGridSurface(input: MarketReadInput & {
+  query: MarketLeaderboardReadQuery;
+}): MarketReadResult {
+  return {
+    status: 200,
+    body: {
+      markets: getLeaderboardForMarkets(input.db, {
+        limitPerMarket: input.query.limit,
+        ...(input.query.tier ? { tier: input.query.tier } : {}),
+      }),
       served_at: nowIso(input.servedAt),
     },
   };

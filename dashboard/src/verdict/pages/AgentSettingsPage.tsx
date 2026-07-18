@@ -65,7 +65,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
   const agentMissing = !account.loading && !agent;
 
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
           <span>
@@ -97,17 +97,17 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           <span className="flex items-center gap-2 flex-wrap">
             <a
               href={`#/account/agent/${encodeURIComponent(slug)}/integrate`}
-              className="ck-btn"
+              className="ck-btn ck-btn-bracket"
               title="integration snippets"
             >
-              [ integrate ]
+              integrate
             </a>
             <a
               href={`#/agents/${encodeURIComponent(slug)}`}
-              className="ck-btn"
+              className="ck-btn ck-btn-bracket"
               title="public profile"
             >
-              [ view public → ]
+              view public →
             </a>
           </span>
         </header>
@@ -117,6 +117,11 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           className="w-full max-w-[720px] flex items-stretch border border-[var(--color-border-vis)]"
           aria-label="agent settings tabs"
         >
+          {/* payout is the deep-link default (route.ts) — keep it first so
+              the default tab lands leftmost, not at the end of the strip. */}
+          <TabLink slug={slug} tab="payout" active={tab === "payout"}>
+            payout
+          </TabLink>
           <TabLink slug={slug} tab="wallet" active={tab === "wallet"}>
             wallet
           </TabLink>
@@ -125,9 +130,6 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           </TabLink>
           <TabLink slug={slug} tab="keys" active={tab === "keys"}>
             api keys
-          </TabLink>
-          <TabLink slug={slug} tab="payout" active={tab === "payout"}>
-            payout
           </TabLink>
         </nav>
 
@@ -245,7 +247,7 @@ function NotFoundShell({ slug }: { slug: string }) {
     <section className="ck-frame-strong w-full max-w-[560px] px-4 py-4">
       <p
         className="ck-mono"
-        style={{ color: "var(--color-accent)" }}
+        style={{ color: "var(--color-accent-ink)" }}
       >
         × agent <span className="ck-pos">{slug}</span> not found on this account.
       </p>
@@ -259,7 +261,7 @@ function NotFoundShell({ slug }: { slug: string }) {
 
 function LoadingShell({ slug }: { slug: string }) {
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar crumb={<span className="ck-pos">{slug}</span>} />
       <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
         <div className="ck-frame px-4 py-6">
@@ -272,7 +274,7 @@ function LoadingShell({ slug }: { slug: string }) {
 
 function ConfigErrorShell() {
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar crumb={<span className="ck-neg">settings · unconfigured</span>} />
       <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">

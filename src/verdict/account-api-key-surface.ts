@@ -22,7 +22,7 @@ export interface AccountApiKeySurfaceBase {
 }
 
 export interface AccountApiKeyWriteClock {
-  now: () => Date;
+  operationInstant: Date;
 }
 
 export interface AccountApiKeyJsonResponse {
@@ -95,14 +95,13 @@ export function mintAgentApiKeyResponse(
       { issues: parsed.error.issues },
     );
   }
-  const operationNow = input.now();
   const minted = mintApiKey(input.db, {
     account_id: input.accountId,
     agent_id: agent.agent_id,
     label: parsed.data.label,
     newApiKeyId: input.newApiKeyId,
     newApiKeySecret: input.newApiKeySecret,
-    createdAt: operationNow,
+    createdAt: input.operationInstant,
   });
   return {
     status: 201,
@@ -125,11 +124,10 @@ export function rotateAccountApiKeyResponse(
     rotated: boolean;
   };
 } {
-  const operationNow = input.now();
   const rotated = rotateApiKeyForAccount(input.db, {
     account_id: input.accountId,
     api_key_id: input.keyId,
-    rotatedAt: operationNow,
+    rotatedAt: input.operationInstant,
   });
   if (rotated === null) {
     throw new VerdictError(

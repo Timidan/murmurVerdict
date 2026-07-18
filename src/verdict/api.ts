@@ -11,6 +11,7 @@ import {
 } from "./public-origin.js";
 import type { PrivyAuthVerifier } from "./auth/privy.js";
 import { accountRouteLimiters } from "./account-rate-limit-surface.js";
+import { resolvePolymarketGammaEnabled } from "./env-grammar.js";
 import type { FeedContractIdAdapter } from "./feed-contract-surface.js";
 import type { FeedPacketIdAdapter } from "./feed-packet-ingestion.js";
 import type { FeedSlaIncidentIdAdapter } from "./feed-sla.js";
@@ -131,6 +132,15 @@ export interface ApiDeps {
   newSealedCallId?: SealedCallIdAdapter;
   operatorFhenixLifecycleQueryDefaults?: OperatorFhenixLifecycleQueryDefaults;
   /**
+   * Explicit Gamma venue-snapshot kill switch. The daemon parses
+   * MURMUR_POLYMARKET_GAMMA_ENABLED into DaemonRuntimeConfig and forwards the
+   * resulting boolean here, so an env injected via startDaemon({ env }) reaches
+   * the market read surface. When unset (direct / test construction) the flag
+   * falls back to the `env` → process.env derivation below. Precedence: this
+   * boolean > env > process.env.
+   */
+  polymarketGammaEnabled?: boolean;
+  /**
    * Env source used only for backwards-compatible defaults when explicit
    * runtime adapters are not passed. Daemon callers should pass parsed
    * adapters and adminToken instead.
@@ -250,6 +260,18 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   router.use(marketReadRouter({
     db: deps.db,
     now,
+    // Gamma kill switch. The daemon parses MURMUR_POLYMARKET_GAMMA_ENABLED into
+    // DaemonRuntimeConfig and forwards the resulting boolean as
+    // deps.polymarketGammaEnabled, so an env injected via startDaemon({ env })
+    // reaches this read surface. When that explicit signal is absent (direct /
+    // test construction) the flag derives from the INJECTED env only — no
+    // process.env ambient fallback, so tests are deterministic without
+    // scrubbing the real environment — via the single shared kill-switch
+    // derivation. When false the read surface never constructs the live Gamma
+    // snapshot provider.
+    polymarketGammaEnabled:
+      deps.polymarketGammaEnabled ??
+      resolvePolymarketGammaEnabled(deps.env ?? {}),
   }));
 
   // Wave 4b-2 — /v1/market/preflight endpoint dropped alongside the

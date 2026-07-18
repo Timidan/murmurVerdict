@@ -173,7 +173,7 @@ export function getTodayFeed(db: Database.Database, now: Date): TodayFeed {
          (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since) AS resolved_24h,
          (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since AND outcome='win') AS wins_24h,
          (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since AND outcome='loss') AS losses_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since AND outcome='void') AS void_24h`,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= @rolling_since AND outcome IN ('void','oracle_unavailable')) AS void_24h`,
     )
     .get({ rolling_since: activityWindow.since_iso }) as {
     accepted_24h: number;

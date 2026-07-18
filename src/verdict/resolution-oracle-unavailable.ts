@@ -1,9 +1,6 @@
 import type Database from "better-sqlite3";
 
 import {
-  type OracleFeed,
-} from "./schema.js";
-import {
   anchorsRepo,
   resolutionsRepo,
 } from "./repos/resolution-repo.js";
@@ -25,8 +22,6 @@ export async function markOracleUnavailable(input: {
 }): Promise<boolean> {
   const resolvedAt = nowIso(input.now());
   const t0row = anchorsRepo.getT0(input.db, input.ctx.call_id);
-  const placeholderFeed: OracleFeed = "chainlink:base:ETH-USD";
-  const t1Feed = (t0row?.feed ?? placeholderFeed) as OracleFeed;
   const tx = input.db.transaction(() => {
     // setResolution returns false when the submission is already in a terminal
     // status (resolved/disputed/etc.) — a concurrent writer beat us to it.
@@ -34,9 +29,12 @@ export async function markOracleUnavailable(input: {
     const written = resolutionsRepo.setResolution(input.db, {
       call_id: input.ctx.call_id,
       t1: resolvedAt,
-      p1: "0",
-      t1_feed: t1Feed,
-      signed_return: "0",
+      // No canonical price was observed. Record the genuine t0 anchor feed if
+      // this call ever anchored; otherwise NULL — never a fabricated feed
+      // (migration 055 dropped the placeholder "chainlink:base:ETH-USD").
+      p1: null,
+      t1_feed: t0row?.feed ?? null,
+      signed_return: null,
       outcome: "oracle_unavailable",
       call_score: null,
       resolved_at: resolvedAt,

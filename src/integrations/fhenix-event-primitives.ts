@@ -5,16 +5,34 @@ import {
   keccak256,
   parseAbiItem,
   toBytes,
+  toEventSelector,
   type Address,
   type Hex,
 } from "viem";
 
+// ── Murmur Sealed Verdicts submit-event source of truth ─────────────────────
+// These two AbiEvent items are THE single declaration of the Sealed Call
+// Acceptance and Feed Packet submit events. The Murmur Gateway ABI
+// (fhenix-gateway-contract.ts) composes itself from these objects, the Fhenix
+// Runtime reconciliation path (fhenix-gateway-reconciliation.ts) filters logs
+// on them, and the smokes assert against their derived topic selectors — so
+// the event shape is written down exactly once. Their semantics track
+// contracts/src/MurmurSealedVerdicts.sol:88 / :118.
 export const SEALED_CALL_SUBMITTED_EVENT = parseAbiItem(
   "event SealedCallSubmitted(bytes32 indexed callId,address indexed agent,bytes32 indexed marketId,uint64 acceptedAt,uint64 revealOpenAt,bytes32 binaryIndexCtHash,bytes32 confidenceCtHash,bytes32 clientNonce)",
 );
 
 export const FEED_PACKET_SUBMITTED_EVENT = parseAbiItem(
   "event FeedPacketSubmitted(bytes32 indexed packetId,address indexed agent,bytes32 indexed feedId,bytes32 marketId,uint64 acceptedAt,uint64 revealAfter,bytes32 actionCtHash,bytes32 signalCtHash,bytes32 clientNonce)",
+);
+
+// Derived topic0 selectors (keccak of the canonical event signature). Consumers
+// filter/verify logs against these instead of hand-hashing the signature text.
+export const SEALED_CALL_SUBMITTED_TOPIC: Hex = toEventSelector(
+  SEALED_CALL_SUBMITTED_EVENT,
+);
+export const FEED_PACKET_SUBMITTED_TOPIC: Hex = toEventSelector(
+  FEED_PACKET_SUBMITTED_EVENT,
 );
 
 export const VERDICT_REVEALED_EVENT = parseAbiItem(

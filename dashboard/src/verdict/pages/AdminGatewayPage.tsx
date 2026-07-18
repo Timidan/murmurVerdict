@@ -17,10 +17,11 @@ import {
   type OperatorAlert,
   type OperatorAlertsSnapshot,
 } from "../api.js";
-import { PillButton } from "../components/PillButton.js";
-import { Topbar } from "../components/Topbar.js";
+import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
+import { CompactTopbar } from "../components/compact/Topbar.js";
+import { Panel } from "../components/compact/Panel.js";
+import { formatScore } from "../lib/score-format.js";
 
-const TOKEN_KEY = "murmur-verdict.admin-token.v1";
 const STATUSES: GatewayAttemptStatus[] = [
   "queued",
   "submitted",
@@ -31,7 +32,7 @@ const STATUSES: GatewayAttemptStatus[] = [
 ];
 
 export function AdminGatewayPage() {
-  const [token, setToken] = useState<string>(() => readToken());
+  const [token, setToken] = useState<string>(() => readAdminToken());
   const [tokenInput, setTokenInput] = useState("");
   const [status, setStatus] = useState<GatewayAttemptStatus | "all">("all");
   const [snapshot, setSnapshot] = useState<GatewayOperatorSnapshot | null>(null);
@@ -79,13 +80,13 @@ export function AdminGatewayPage() {
 
   const submitToken = () => {
     if (!tokenInput) return;
-    writeToken(tokenInput);
+    writeAdminToken(tokenInput);
     setToken(tokenInput);
     setTokenInput("");
   };
 
   const signOut = () => {
-    writeToken("");
+    clearAdminToken();
     setToken("");
     setSnapshot(null);
     setFeedSla(null);
@@ -177,40 +178,52 @@ export function AdminGatewayPage() {
   }
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
-      <Topbar crumb="admin · fhenix gateway" />
-      <main className="flex-1 max-w-[1380px] w-full mx-auto px-6 md:px-10 py-12">
-        <header className="mb-10 flex items-end justify-between flex-wrap gap-4">
-          <div>
-            <p className="t-label text-[var(--color-secondary)] mb-3">admin · fhenix gateway</p>
-            <h1 className="t-heading" style={{ textWrap: "balance" }}>relayer control plane.</h1>
-          </div>
-          <div className="flex items-center gap-3">
-            <a href="#/admin/overview">
-              <PillButton variant="secondary">← overview</PillButton>
-            </a>
-            <PillButton variant="secondary" onClick={() => void load()} disabled={busy !== null}>
-              refresh
-            </PillButton>
-            <PillButton variant="primary" onClick={runTick} disabled={busy !== null || !snapshot?.configured}>
-              {busy === "tick" ? "running" : "run tick"}
-            </PillButton>
-            <PillButton variant="secondary" onClick={signOut}>sign out</PillButton>
-          </div>
-        </header>
+    <div className="mmr-shell min-h-dvh flex flex-col">
+      <CompactTopbar
+        crumb={
+          <span>
+            admin <span className="ck-dim mx-1">/</span>
+            <span className="ck-pos">gateway</span>
+          </span>
+        }
+      />
 
+      {/* CONTROL STRIP ─────────────────────────────────── */}
+      <section className="border-b border-[var(--color-border)] px-3 py-2 flex items-center justify-between gap-3 flex-wrap">
+        <span className="ck-label ck-pos">relayer control plane</span>
+        <div className="flex items-center gap-3 flex-wrap">
+          <a href="#/admin/overview" className="ck-btn ck-btn-bracket no-underline">← overview</a>
+          <button
+            className="ck-btn ck-btn-bracket"
+            onClick={() => void load()}
+            disabled={busy !== null}
+          >
+            refresh
+          </button>
+          <button
+            className="ck-btn ck-btn-bracket ck-pos"
+            onClick={runTick}
+            disabled={busy !== null || !snapshot?.configured}
+          >
+            {busy === "tick" ? "running" : "run tick"}
+          </button>
+          <button className="ck-btn ck-btn-bracket" onClick={signOut}>sign out</button>
+        </div>
+      </section>
+
+      <main className="flex-1 min-h-0 overflow-auto ck-scroll flex flex-col">
         {error && (
-          <div className="border border-[var(--color-accent)] px-6 py-4 mb-8 t-body-sm text-[var(--color-accent)]">
-            [ERROR] {error}
+          <div className="border-b border-[var(--color-border)] px-3 py-2 ck-mono ck-neg">
+            [error] {error}
           </div>
         )}
 
         {!snapshot && !error && (
-          <div className="px-6 py-24 t-meta text-[var(--color-disabled)]">[loading …]</div>
+          <div className="px-3 py-10 ck-mono ck-dim">[loading …]</div>
         )}
 
         {snapshot && (
-          <div className="space-y-10">
+          <div className="flex flex-col gap-3 p-3">
             <GatewaySummary snapshot={snapshot} />
 
             <OperatorAlertsPanel snapshot={alerts} busy={busy} onRunTick={runAlertTick} />
@@ -223,53 +236,52 @@ export function AdminGatewayPage() {
 
             <FeedSlaPanel response={feedSla} busy={busy} onRunTick={runSlaTick} />
 
-            <section>
-              <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
-                <h2 className="t-subheading">attempts</h2>
+            <Panel
+              title="attempts"
+              meta={`${snapshot.recent_attempts.length}`}
+              actions={
                 <select
                   value={status}
                   onChange={(e) => setStatus(e.target.value as GatewayAttemptStatus | "all")}
-                  className="bg-transparent border border-[var(--color-border)] px-3 py-2 t-meta text-[var(--color-primary)]"
+                  className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono text-[var(--color-primary)]"
                 >
                   <option value="all">all</option>
                   {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
-              </div>
+              }
+            >
               <AttemptTable
                 rows={snapshot.recent_attempts}
                 busy={busy}
                 onRetry={retry}
               />
-            </section>
+            </Panel>
 
-            <section>
-              <h2 className="t-subheading mb-4">feed attempts</h2>
+            <Panel title="feed attempts" meta={`${snapshot.feed_recent_attempts.length}`}>
               <FeedAttemptTable
                 rows={snapshot.feed_recent_attempts}
                 busy={busy}
                 onRetry={retry}
               />
-            </section>
+            </Panel>
 
-            <section>
-              <h2 className="t-subheading mb-4">stuck</h2>
+            <Panel title="stuck" meta={`${snapshot.stuck_attempts.length}`}>
               <AttemptTable
                 rows={snapshot.stuck_attempts}
                 busy={busy}
                 onRetry={retry}
                 empty="no stuck submitted or confirmed attempts"
               />
-            </section>
+            </Panel>
 
-            <section>
-              <h2 className="t-subheading mb-4">stuck feeds</h2>
+            <Panel title="stuck feeds" meta={`${snapshot.feed_stuck_attempts.length}`}>
               <FeedAttemptTable
                 rows={snapshot.feed_stuck_attempts}
                 busy={busy}
                 onRetry={retry}
                 empty="no stuck submitted or confirmed feed attempts"
               />
-            </section>
+            </Panel>
           </div>
         )}
       </main>
@@ -289,41 +301,38 @@ function OperatorAlertsPanel({
   const rows = snapshot?.alerts ?? [];
   const counts = snapshot?.counts.open;
   return (
-    <section>
-      <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
-        <h2 className="t-subheading">operator alerts</h2>
-        <div className="flex items-center gap-3">
-          <span className="t-meta text-[var(--color-disabled)]">
-            sink {snapshot?.sink_configured ? "configured" : "local only"}
-          </span>
-          <PillButton variant="secondary" onClick={onRunTick} disabled={busy !== null}>
-            {busy === "alerts" ? "running" : "run alerts"}
-          </PillButton>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 border-y border-[var(--color-border)] py-5 mb-4">
+    <Panel
+      title="operator alerts"
+      meta={`sink ${snapshot?.sink_configured ? "configured" : "local only"}`}
+      actions={
+        <button className="ck-btn ck-btn-bracket" onClick={onRunTick} disabled={busy !== null}>
+          {busy === "alerts" ? "running" : "run alerts"}
+        </button>
+      }
+    >
+      <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat label="open" value={counts?.total ?? 0} tone={(counts?.total ?? 0) > 0 ? "neg" : "dim"} />
         <Stat label="critical" value={counts?.critical ?? 0} tone={(counts?.critical ?? 0) > 0 ? "neg" : "dim"} />
         <Stat label="warning" value={counts?.warning ?? 0} tone={(counts?.warning ?? 0) > 0 ? "neg" : "dim"} />
         <Stat label="info" value={counts?.info ?? 0} tone="dim" />
       </div>
       <OperatorAlertTable rows={rows} />
-    </section>
+    </Panel>
   );
 }
 
 function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
   if (rows.length === 0) {
     return (
-      <div className="border-y border-[var(--color-border)] px-6 py-12 t-meta text-[var(--color-disabled)]">
+      <div className="px-3 py-8 ck-mono ck-dim">
         no open operator alerts
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto border-y border-[var(--color-border)]">
+    <div className="overflow-x-auto">
       <div className="min-w-[1040px]">
-        <div className="grid grid-cols-[110px_130px_170px_1fr_150px_120px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[110px_130px_170px_1fr_150px_120px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
           <span>severity</span>
           <span>source</span>
           <span>kind</span>
@@ -336,21 +345,21 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
             <li
               key={row.alert_id}
               className={
-                "grid grid-cols-[110px_130px_170px_1fr_150px_120px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[110px_130px_170px_1fr_150px_120px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
-              <span className={`t-meta ${alertSeverityClass(row.severity)}`}>{row.severity}</span>
-              <span className="t-meta text-[var(--color-secondary)]">{row.source}</span>
-              <span className="t-meta text-[var(--color-secondary)] truncate">{row.kind}</span>
+              <span className={`ck-mono ${alertSeverityClass(row.severity)}`}>{row.severity}</span>
+              <span className="ck-mono ck-dim">{row.source}</span>
+              <span className="ck-mono ck-dim truncate">{row.kind}</span>
               <span>
-                <span className="block t-meta text-[var(--color-display)]">{row.title}</span>
-                <span className="block t-meta text-[var(--color-disabled)] truncate">{row.description}</span>
+                <span className="block ck-mono ck-pos">{row.title}</span>
+                <span className="block ck-mono ck-dim truncate">{row.description}</span>
               </span>
-              <span className="t-meta text-[var(--color-secondary)]">
+              <span className="ck-mono ck-dim">
                 {row.delivery_status} · {row.delivery_attempts}
               </span>
-              <span className="t-meta text-right text-[var(--color-disabled)]">{shortDate(row.last_seen_at)}</span>
+              <span className="ck-mono text-right ck-dim">{shortDate(row.last_seen_at)}</span>
             </li>
           ))}
         </ul>
@@ -372,14 +381,15 @@ function FeedSlaPanel({
   const summary = response?.summary;
   const health = response?.feed_health ?? [];
   return (
-    <section>
-      <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
-        <h2 className="t-subheading">feed SLA incidents</h2>
-        <PillButton variant="secondary" onClick={onRunTick} disabled={busy !== null}>
+    <Panel
+      title="feed SLA incidents"
+      actions={
+        <button className="ck-btn ck-btn-bracket" onClick={onRunTick} disabled={busy !== null}>
           {busy === "sla" ? "running" : "run sla tick"}
-        </PillButton>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 border-y border-[var(--color-border)] py-5 mb-4">
+        </button>
+      }
+    >
+      <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat label="open missed" value={summary?.open_incidents ?? rows.length} tone={(summary?.open_incidents ?? rows.length) > 0 ? "neg" : "dim"} />
         <Stat label="refund recs" value={summary?.refund_recommendations ?? 0} tone={(summary?.refund_recommendations ?? 0) > 0 ? "neg" : "dim"} />
         <Stat label="slash recs" value={summary?.slash_recommendations ?? 0} tone={(summary?.slash_recommendations ?? 0) > 0 ? "neg" : "dim"} />
@@ -387,22 +397,22 @@ function FeedSlaPanel({
       </div>
       <FeedHealthTable rows={health} />
       <FeedSlaTable rows={rows} />
-    </section>
+    </Panel>
   );
 }
 
 function FeedHealthTable({ rows }: { rows: FeedAvailabilitySummary[] }) {
   if (rows.length === 0) {
     return (
-      <div className="border-y border-[var(--color-border)] px-6 py-8 mb-4 t-meta text-[var(--color-disabled)]">
+      <div className="px-3 py-6 ck-mono ck-dim border-b border-[var(--color-border)]">
         no listed cadence feeds
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto border-y border-[var(--color-border)] mb-4">
+    <div className="overflow-x-auto border-b border-[var(--color-border)]">
       <div className="min-w-[1060px]">
-        <div className="grid grid-cols-[1fr_120px_110px_120px_130px_160px_130px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[1fr_120px_110px_120px_130px_160px_130px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
           <span>feed</span>
           <span>health</span>
           <span className="text-right">rel</span>
@@ -416,17 +426,17 @@ function FeedHealthTable({ rows }: { rows: FeedAvailabilitySummary[] }) {
             <li
               key={row.feed_id}
               className={
-                "grid grid-cols-[1fr_120px_110px_120px_130px_160px_130px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[1fr_120px_110px_120px_130px_160px_130px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
-              <span className="t-meta font-mono text-[var(--color-display)] truncate">{row.feed_id}</span>
-              <span className={`t-meta ${feedHealthClass(row.health_status)}`}>{row.overdue ? "overdue" : row.health_status}</span>
-              <span className="t-data text-right">{formatPercent(row.reliability_score)}</span>
-              <span className="t-data text-right">{row.open_missed_packets}/{row.missed_packets}</span>
-              <span className="t-data text-right">{row.next_expected_sequence ?? "—"}</span>
-              <span className="t-meta text-[var(--color-secondary)]">{row.next_deadline_at ? shortDate(row.next_deadline_at) : "—"}</span>
-              <span className="t-meta text-right font-mono text-[var(--color-disabled)]">{row.proof_hash.slice(0, 10)}</span>
+              <span className="ck-mono ck-pos truncate">{row.feed_id}</span>
+              <span className={`ck-mono ${feedHealthClass(row.health_status)}`}>{row.overdue ? "overdue" : row.health_status}</span>
+              <span className="ck-mono text-right">{formatPercent(row.reliability_score)}</span>
+              <span className="ck-mono text-right">{row.open_missed_packets}/{row.missed_packets}</span>
+              <span className="ck-mono text-right">{row.next_expected_sequence ?? "—"}</span>
+              <span className="ck-mono ck-dim">{row.next_deadline_at ? shortDate(row.next_deadline_at) : "—"}</span>
+              <span className="ck-mono text-right ck-dim">{row.proof_hash.slice(0, 10)}</span>
             </li>
           ))}
         </ul>
@@ -438,14 +448,11 @@ function FeedHealthTable({ rows }: { rows: FeedAvailabilitySummary[] }) {
 function IdentityPanel({ snapshot }: { snapshot: ControllerIdentitySnapshot | null }) {
   const rows = snapshot?.needs_attention ?? [];
   return (
-    <section>
-      <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
-        <h2 className="t-subheading">controller wallets</h2>
-        <span className="t-meta text-[var(--color-disabled)]">
-          due by {snapshot ? shortDate(snapshot.due_soon_at) : "—"}
-        </span>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 border-y border-[var(--color-border)] py-5 mb-4">
+    <Panel
+      title="controller wallets"
+      meta={`due by ${snapshot ? shortDate(snapshot.due_soon_at) : "—"}`}
+    >
+      <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-5 gap-3">
         <Stat label="bound" value={snapshot?.counts.controller_wallets ?? 0} tone="dim" />
         <Stat label="active keys" value={snapshot?.counts.active_runtime_keys ?? 0} tone="dim" />
         <Stat label="due soon" value={snapshot?.counts.due_soon ?? 0} tone={(snapshot?.counts.due_soon ?? 0) > 0 ? "neg" : "dim"} />
@@ -453,22 +460,22 @@ function IdentityPanel({ snapshot }: { snapshot: ControllerIdentitySnapshot | nu
         <Stat label="attention" value={snapshot?.counts.needs_attention ?? 0} tone={(snapshot?.counts.needs_attention ?? 0) > 0 ? "neg" : "dim"} />
       </div>
       <IdentityTable rows={rows} />
-    </section>
+    </Panel>
   );
 }
 
 function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
   if (rows.length === 0) {
     return (
-      <div className="border-y border-[var(--color-border)] px-6 py-12 t-meta text-[var(--color-disabled)]">
+      <div className="px-3 py-8 ck-mono ck-dim">
         no controller wallets need re-attestation
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto border-y border-[var(--color-border)]">
+    <div className="overflow-x-auto">
       <div className="min-w-[1040px]">
-        <div className="grid grid-cols-[120px_130px_1fr_130px_130px_90px_90px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[120px_130px_1fr_130px_130px_90px_90px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>wallet</span>
@@ -482,17 +489,17 @@ function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
             <li
               key={row.agent_id}
               className={
-                "grid grid-cols-[120px_130px_1fr_130px_130px_90px_90px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[120px_130px_1fr_130px_130px_90px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
-              <span className={`t-meta ${identityStatusClass(row.status)}`}>{row.status}</span>
-              <span className="t-meta font-mono text-[var(--color-display)] truncate">{row.agent_slug ?? row.agent_id.slice(0, 8)}</span>
-              <span className="t-meta font-mono text-[var(--color-secondary)] truncate">{shortHex(row.wallet_address)}</span>
-              <span className="t-meta text-[var(--color-secondary)]">{row.wallet_kind}{row.provider ? `/${row.provider}` : ""}</span>
-              <span className="t-meta text-right text-[var(--color-disabled)]">{row.reattestation_due_at ? shortDate(row.reattestation_due_at) : "—"}</span>
-              <span className="t-data text-right">{row.active_runtime_keys}/{row.total_runtime_keys}</span>
-              <span className="t-data text-right">{row.revoked_runtime_keys}</span>
+              <span className={`ck-mono ${identityStatusClass(row.status)}`}>{row.status}</span>
+              <span className="ck-mono ck-pos truncate">{row.agent_slug ?? row.agent_id.slice(0, 8)}</span>
+              <span className="ck-mono ck-dim truncate">{shortHex(row.wallet_address)}</span>
+              <span className="ck-mono ck-dim">{row.wallet_kind}{row.provider ? `/${row.provider}` : ""}</span>
+              <span className="ck-mono text-right ck-dim">{row.reattestation_due_at ? shortDate(row.reattestation_due_at) : "—"}</span>
+              <span className="ck-mono text-right">{row.active_runtime_keys}/{row.total_runtime_keys}</span>
+              <span className="ck-mono text-right">{row.revoked_runtime_keys}</span>
             </li>
           ))}
         </ul>
@@ -515,21 +522,22 @@ function CanaryPanel({
   const failing = rows.filter((row) => row.status === "fail").length;
   const disabled = rows.filter((row) => row.status === "disabled").length;
   return (
-    <section>
-      <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
-        <h2 className="t-subheading">live canaries</h2>
-        <PillButton variant="secondary" onClick={onRunTick} disabled={busy !== null}>
+    <Panel
+      title="live canaries"
+      actions={
+        <button className="ck-btn ck-btn-bracket" onClick={onRunTick} disabled={busy !== null}>
           {busy === "canaries" ? "running" : "run canaries"}
-        </PillButton>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 border-y border-[var(--color-border)] py-5 mb-4">
+        </button>
+      }
+    >
+      <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat label="total" value={rows.length} tone={snapshot?.ok ? "pos" : "neg"} />
         <Stat label="ok" value={ok} tone={ok > 0 ? "pos" : "dim"} />
         <Stat label="fail" value={failing} tone={failing > 0 ? "neg" : "dim"} />
         <Stat label="disabled" value={disabled} tone="dim" />
       </div>
       <CanaryTable rows={rows} />
-    </section>
+    </Panel>
   );
 }
 
@@ -538,43 +546,40 @@ function RevealLifecyclePanel({ snapshot }: { snapshot: FhenixLifecycleSnapshot 
   const attention = snapshot?.needs_attention ?? [];
   const cursors = snapshot?.cursors ?? [];
   return (
-    <section>
-      <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
-        <h2 className="t-subheading">reveal lifecycle</h2>
-        <span className="t-meta text-[var(--color-disabled)]">
-          grace {snapshot?.configured.reveal_grace_seconds ?? "—"}s
-        </span>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 border-y border-[var(--color-border)] py-5 mb-4">
+    <Panel
+      title="reveal lifecycle"
+      meta={`grace ${snapshot?.configured.reveal_grace_seconds ?? "—"}s`}
+    >
+      <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-5 gap-3">
         <Stat label="pending" value={counts?.pending ?? 0} tone={(counts?.pending ?? 0) > 0 ? "dim" : "pos"} />
         <Stat label="revealed" value={counts?.revealed ?? 0} tone="pos" />
         <Stat label="invalid" value={counts?.invalid ?? 0} tone={(counts?.invalid ?? 0) > 0 ? "neg" : "dim"} />
         <Stat label="missed" value={counts?.missed ?? 0} tone={(counts?.missed ?? 0) > 0 ? "neg" : "dim"} />
         <Stat label="attention" value={snapshot?.queues.needs_attention ?? 0} tone={(snapshot?.queues.needs_attention ?? 0) > 0 ? "neg" : "dim"} />
       </div>
-      <div className="border-y border-[var(--color-border)] py-5 grid md:grid-cols-4 gap-4 t-meta mb-4">
+      <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-4 gap-3">
         <Fact label="verifier" value={snapshot?.configured.verifier ? "yes" : "no"} />
         <Fact label="watcher" value={snapshot?.configured.watcher ? "yes" : "no"} />
         <Fact label="overdue" value={snapshot?.queues.overdue_grace ?? 0} />
         <Fact label="cursor" value={formatCursor(cursors)} />
       </div>
       <RevealLifecycleTable rows={attention} />
-    </section>
+    </Panel>
   );
 }
 
 function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
   if (rows.length === 0) {
     return (
-      <div className="border-y border-[var(--color-border)] px-6 py-12 t-meta text-[var(--color-disabled)]">
+      <div className="px-3 py-8 ck-mono ck-dim">
         no reveal lifecycle rows need attention
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto border-y border-[var(--color-border)]">
+    <div className="overflow-x-auto">
       <div className="min-w-[1180px]">
-        <div className="grid grid-cols-[110px_120px_1fr_150px_110px_120px_1fr_130px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[110px_120px_1fr_150px_110px_120px_1fr_130px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>market</span>
@@ -589,22 +594,22 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
             <li
               key={row.call_id}
               className={
-                "grid grid-cols-[110px_120px_1fr_150px_110px_120px_1fr_130px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[110px_120px_1fr_150px_110px_120px_1fr_130px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
-              <span className={`t-meta ${revealStatusClass(row.reveal_status, row.overdue_grace)}`}>
+              <span className={`ck-mono ${revealStatusClass(row.reveal_status, row.overdue_grace)}`}>
                 {row.overdue_grace ? "overdue" : row.reveal_status}
               </span>
-              <span className="t-meta font-mono text-[var(--color-secondary)]">{row.agent_slug ?? row.agent_id.slice(0, 8)}</span>
-              <span className="t-meta font-mono text-[var(--color-display)] truncate">{row.market_id ?? "—"}</span>
-              <span className="t-meta text-[var(--color-secondary)]">{shortDate(row.reveal_open_at)}</span>
-              <span className="t-meta text-right text-[var(--color-secondary)]">{row.reveal_block_number ?? "—"}</span>
-              <span className="t-meta text-[var(--color-secondary)]">
+              <span className="ck-mono ck-dim">{row.agent_slug ?? row.agent_id.slice(0, 8)}</span>
+              <span className="ck-mono ck-pos truncate">{row.market_id ?? "—"}</span>
+              <span className="ck-mono ck-dim">{shortDate(row.reveal_open_at)}</span>
+              <span className="ck-mono text-right ck-dim">{row.reveal_block_number ?? "—"}</span>
+              <span className="ck-mono ck-dim">
                 {row.resolution ? `${row.resolution.outcome} ${formatScore(row.resolution.call_score)}` : row.submission_status}
               </span>
-              <span className="t-meta text-[var(--color-accent)] truncate">{row.invalid_reason ?? "—"}</span>
-              <span className="t-meta text-right font-mono text-[var(--color-disabled)]">{shortHex(row.call_id)}</span>
+              <span className="ck-mono ck-neg truncate">{row.invalid_reason ?? "—"}</span>
+              <span className="ck-mono text-right ck-dim">{shortHex(row.call_id)}</span>
             </li>
           ))}
         </ul>
@@ -616,15 +621,15 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
 function CanaryTable({ rows }: { rows: LiveCanaryCheck[] }) {
   if (rows.length === 0) {
     return (
-      <div className="border-y border-[var(--color-border)] px-6 py-12 t-meta text-[var(--color-disabled)]">
+      <div className="px-3 py-8 ck-mono ck-dim">
         no canary snapshot
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto border-y border-[var(--color-border)]">
+    <div className="overflow-x-auto">
       <div className="min-w-[980px]">
-        <div className="grid grid-cols-[170px_110px_110px_130px_1fr_190px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[170px_110px_110px_130px_1fr_190px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
           <span>check</span>
           <span>status</span>
           <span className="text-right">lat</span>
@@ -637,16 +642,16 @@ function CanaryTable({ rows }: { rows: LiveCanaryCheck[] }) {
             <li
               key={row.name}
               className={
-                "grid grid-cols-[170px_110px_110px_130px_1fr_190px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[170px_110px_110px_130px_1fr_190px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
-              <span className="t-meta font-mono text-[var(--color-display)]">{row.name}</span>
-              <span className={`t-meta ${canaryStatusClass(row.status)}`}>{row.status}</span>
-              <span className="t-meta text-right text-[var(--color-secondary)]">{formatLatency(row.latency_ms)}</span>
-              <span className="t-meta text-right text-[var(--color-disabled)]">{shortDate(row.checked_at)}</span>
-              <span className="t-meta text-[var(--color-secondary)] truncate">{formatDetails(row.details)}</span>
-              <span className="t-meta text-[var(--color-accent)] truncate">{row.error ?? "—"}</span>
+              <span className="ck-mono ck-pos">{row.name}</span>
+              <span className={`ck-mono ${canaryStatusClass(row.status)}`}>{row.status}</span>
+              <span className="ck-mono text-right ck-dim">{formatLatency(row.latency_ms)}</span>
+              <span className="ck-mono text-right ck-dim">{shortDate(row.checked_at)}</span>
+              <span className="ck-mono ck-dim truncate">{formatDetails(row.details)}</span>
+              <span className="ck-mono ck-neg truncate">{row.error ?? "—"}</span>
             </li>
           ))}
         </ul>
@@ -658,15 +663,15 @@ function CanaryTable({ rows }: { rows: LiveCanaryCheck[] }) {
 function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
   if (rows.length === 0) {
     return (
-      <div className="border-y border-[var(--color-border)] px-6 py-12 t-meta text-[var(--color-disabled)]">
+      <div className="px-3 py-8 ck-mono ck-dim">
         no open missed-packet incidents
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto border-y border-[var(--color-border)]">
+    <div className="overflow-x-auto">
       <div className="min-w-[1060px]">
-        <div className="grid grid-cols-[1fr_120px_120px_150px_120px_120px_130px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[1fr_120px_120px_150px_120px_120px_130px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
           <span>feed</span>
           <span className="text-right">seq</span>
           <span>status</span>
@@ -680,19 +685,19 @@ function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
             <li
               key={row.incident_id}
               className={
-                "grid grid-cols-[1fr_120px_120px_150px_120px_120px_130px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[1fr_120px_120px_150px_120px_120px_130px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
-              <span className="t-meta font-mono text-[var(--color-display)] truncate">{row.feed_id}</span>
-              <span className="t-data text-right">{row.expected_sequence}</span>
-              <span className={`t-meta ${row.status === "open" ? "text-[var(--color-accent)]" : "text-[var(--color-secondary)]"}`}>
+              <span className="ck-mono ck-pos truncate">{row.feed_id}</span>
+              <span className="ck-mono text-right">{row.expected_sequence}</span>
+              <span className={`ck-mono ${row.status === "open" ? "ck-neg" : "ck-dim"}`}>
                 {row.status}
               </span>
-              <span className="t-meta text-[var(--color-secondary)]">{shortDate(row.expected_delivery_deadline_at)}</span>
-              <span className="t-meta text-[var(--color-secondary)]">{row.refund_action}</span>
-              <span className="t-meta text-[var(--color-secondary)]">{row.slash_action}</span>
-              <span className="t-meta text-right text-[var(--color-disabled)]">{shortDate(row.detected_at)}</span>
+              <span className="ck-mono ck-dim">{shortDate(row.expected_delivery_deadline_at)}</span>
+              <span className="ck-mono ck-dim">{row.refund_action}</span>
+              <span className="ck-mono ck-dim">{row.slash_action}</span>
+              <span className="ck-mono text-right ck-dim">{shortDate(row.detected_at)}</span>
             </li>
           ))}
         </ul>
@@ -717,50 +722,44 @@ function GatewaySummary({ snapshot }: { snapshot: GatewayOperatorSnapshot }) {
     ["feed stuck", snapshot.feed_queues.stuck],
   ];
   return (
-    <section className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
-      <div className="border-y border-[var(--color-border)] py-5">
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+    <Panel title="gateway summary" meta={snapshot.configured ? "configured" : "unconfigured"}>
+      <div className="flex flex-col">
+        <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-6 gap-3">
           {STATUSES.map((s) => (
             <Stat key={s} label={s.replace("failed_", "fail ")} value={counts[s] ?? 0} tone={toneFor(s)} />
           ))}
         </div>
-      </div>
-      <div className="border-y border-[var(--color-border)] py-5">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-4 gap-3">
           {queueStats.map(([label, value]) => (
             <Stat key={label} label={String(label)} value={Number(value)} tone={label === "stuck" ? "neg" : "dim"} />
           ))}
         </div>
-      </div>
-      <div className="border-y border-[var(--color-border)] py-5">
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+        <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-6 gap-3">
           {STATUSES.map((s) => (
             <Stat key={s} label={`feed ${s.replace("failed_", "fail ")}`} value={feedCounts[s] ?? 0} tone={toneFor(s)} />
           ))}
         </div>
-      </div>
-      <div className="border-y border-[var(--color-border)] py-5">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-4 gap-3">
           {feedQueueStats.map(([label, value]) => (
             <Stat key={label} label={String(label)} value={Number(value)} tone={label === "feed stuck" ? "neg" : "dim"} />
           ))}
         </div>
+        <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Fact label="configured" value={snapshot.configured ? "yes" : "no"} />
+          <Fact label="chain" value={snapshot.config?.chain_id ?? "—"} />
+          <Fact label="contract" value={shortHex(snapshot.config?.contract_address)} />
+          <Fact label="relayer" value={shortHex(snapshot.config?.relayer_address)} />
+        </div>
+        <div className="px-3 py-3 grid grid-cols-2 md:grid-cols-6 gap-3">
+          <Fact label="avg send" value={formatLatency(snapshot.telemetry.avg_broadcast_latency_ms)} />
+          <Fact label="avg receipt" value={formatLatency(snapshot.telemetry.avg_receipt_latency_ms)} />
+          <Fact label="avg block" value={formatLatency(snapshot.telemetry.avg_latest_block_latency_ms)} />
+          <Fact label="max conf" value={snapshot.telemetry.max_confirmations_observed ?? "—"} />
+          <Fact label="rpc errs" value={snapshot.telemetry.rpc_errors} />
+          <Fact label="feed rpc errs" value={snapshot.feed_telemetry.rpc_errors} />
+        </div>
       </div>
-      <div className="lg:col-span-2 border-y border-[var(--color-border)] py-5 grid md:grid-cols-4 gap-4 t-meta">
-        <Fact label="configured" value={snapshot.configured ? "yes" : "no"} />
-        <Fact label="chain" value={snapshot.config?.chain_id ?? "—"} />
-        <Fact label="contract" value={shortHex(snapshot.config?.contract_address)} />
-        <Fact label="relayer" value={shortHex(snapshot.config?.relayer_address)} />
-      </div>
-      <div className="lg:col-span-2 border-y border-[var(--color-border)] py-5 grid md:grid-cols-6 gap-4 t-meta">
-        <Fact label="avg send" value={formatLatency(snapshot.telemetry.avg_broadcast_latency_ms)} />
-        <Fact label="avg receipt" value={formatLatency(snapshot.telemetry.avg_receipt_latency_ms)} />
-        <Fact label="avg block" value={formatLatency(snapshot.telemetry.avg_latest_block_latency_ms)} />
-        <Fact label="max conf" value={snapshot.telemetry.max_confirmations_observed ?? "—"} />
-        <Fact label="rpc errs" value={snapshot.telemetry.rpc_errors} />
-        <Fact label="feed rpc errs" value={snapshot.feed_telemetry.rpc_errors} />
-      </div>
-    </section>
+    </Panel>
   );
 }
 
@@ -777,15 +776,15 @@ function FeedAttemptTable({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="border-y border-[var(--color-border)] px-6 py-12 t-meta text-[var(--color-disabled)]">
+      <div className="px-3 py-8 ck-mono ck-dim">
         {empty}
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto border-y border-[var(--color-border)]">
+    <div className="overflow-x-auto">
       <div className="min-w-[1460px]">
-        <div className="grid grid-cols-[130px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[130px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>feed</span>
@@ -804,34 +803,34 @@ function FeedAttemptTable({
             <li
               key={row.attempt_id}
               className={
-                "grid grid-cols-[130px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[130px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
-              <span className={`t-meta ${statusClass(row.status)}`}>{row.status}</span>
-              <span className="t-meta font-mono text-[var(--color-secondary)]">{row.agent_id.slice(0, 8)}</span>
-              <span className="t-meta font-mono text-[var(--color-display)] truncate">{row.feed_id}</span>
-              <span className="t-meta font-mono text-[var(--color-secondary)] truncate">{row.market_id ?? "—"}</span>
-              <span className="t-data text-right">{row.sequence}</span>
-              <span className="t-meta text-right text-[var(--color-secondary)]">{formatLatency(row.receipt_latency_ms ?? row.broadcast_latency_ms)}</span>
-              <span className="t-meta text-right text-[var(--color-secondary)]">{formatGas(row.gas_used)}</span>
-              <span className="t-meta font-mono text-[var(--color-secondary)] truncate">
+              <span className={`ck-mono ${statusClass(row.status)}`}>{row.status}</span>
+              <span className="ck-mono ck-dim">{row.agent_id.slice(0, 8)}</span>
+              <span className="ck-mono ck-pos truncate">{row.feed_id}</span>
+              <span className="ck-mono ck-dim truncate">{row.market_id ?? "—"}</span>
+              <span className="ck-mono text-right">{row.sequence}</span>
+              <span className="ck-mono text-right ck-dim">{formatLatency(row.receipt_latency_ms ?? row.broadcast_latency_ms)}</span>
+              <span className="ck-mono text-right ck-dim">{formatGas(row.gas_used)}</span>
+              <span className="ck-mono ck-dim truncate">
                 {row.tx_hash ? shortHex(row.tx_hash) : "—"}
               </span>
-              <span className="t-data text-right">{row.attempt_count}</span>
-              <span className="t-meta text-right text-[var(--color-disabled)]">{shortDate(row.updated_at)}</span>
-              <span className="t-meta text-[var(--color-accent)] truncate">{row.last_error ?? "—"}</span>
+              <span className="ck-mono text-right">{row.attempt_count}</span>
+              <span className="ck-mono text-right ck-dim">{shortDate(row.updated_at)}</span>
+              <span className="ck-mono ck-neg truncate">{row.last_error ?? "—"}</span>
               <span className="text-right">
                 {canRetry(row.status) ? (
                   <button
-                    className="t-button text-[var(--color-accent)] hover:underline press-feedback"
+                    className="ck-btn ck-btn-bracket ck-btn-accent"
                     disabled={busy !== null}
                     onClick={() => onRetry(row.attempt_id)}
                   >
                     {busy === row.attempt_id ? "…" : "retry"}
                   </button>
                 ) : (
-                  <span className="t-meta text-[var(--color-disabled)]">—</span>
+                  <span className="ck-mono ck-dim">—</span>
                 )}
               </span>
             </li>
@@ -855,15 +854,15 @@ function AttemptTable({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="border-y border-[var(--color-border)] px-6 py-12 t-meta text-[var(--color-disabled)]">
+      <div className="px-3 py-8 ck-mono ck-dim">
         {empty}
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto border-y border-[var(--color-border)]">
+    <div className="overflow-x-auto">
       <div className="min-w-[1280px]">
-        <div className="grid grid-cols-[130px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[130px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>market</span>
@@ -880,32 +879,32 @@ function AttemptTable({
             <li
               key={row.attempt_id}
               className={
-                "grid grid-cols-[130px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-4 px-6 py-4 items-center " +
+                "grid grid-cols-[130px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
-              <span className={`t-meta ${statusClass(row.status)}`}>{row.status}</span>
-              <span className="t-meta font-mono text-[var(--color-secondary)]">{row.agent_id.slice(0, 8)}</span>
-              <span className="t-meta font-mono text-[var(--color-display)] truncate">{row.market_id}</span>
-              <span className="t-meta text-right text-[var(--color-secondary)]">{formatLatency(row.receipt_latency_ms ?? row.broadcast_latency_ms)}</span>
-              <span className="t-meta text-right text-[var(--color-secondary)]">{formatGas(row.gas_used)}</span>
-              <span className="t-meta font-mono text-[var(--color-secondary)] truncate">
+              <span className={`ck-mono ${statusClass(row.status)}`}>{row.status}</span>
+              <span className="ck-mono ck-dim">{row.agent_id.slice(0, 8)}</span>
+              <span className="ck-mono ck-pos truncate">{row.market_id}</span>
+              <span className="ck-mono text-right ck-dim">{formatLatency(row.receipt_latency_ms ?? row.broadcast_latency_ms)}</span>
+              <span className="ck-mono text-right ck-dim">{formatGas(row.gas_used)}</span>
+              <span className="ck-mono ck-dim truncate">
                 {row.tx_hash ? shortHex(row.tx_hash) : "—"}
               </span>
-              <span className="t-data text-right">{row.attempt_count}</span>
-              <span className="t-meta text-right text-[var(--color-disabled)]">{shortDate(row.updated_at)}</span>
-              <span className="t-meta text-[var(--color-accent)] truncate">{row.last_error ?? "—"}</span>
+              <span className="ck-mono text-right">{row.attempt_count}</span>
+              <span className="ck-mono text-right ck-dim">{shortDate(row.updated_at)}</span>
+              <span className="ck-mono ck-neg truncate">{row.last_error ?? "—"}</span>
               <span className="text-right">
                 {canRetry(row.status) ? (
                   <button
-                    className="t-button text-[var(--color-accent)] hover:underline press-feedback"
+                    className="ck-btn ck-btn-bracket ck-btn-accent"
                     disabled={busy !== null}
                     onClick={() => onRetry(row.attempt_id)}
                   >
                     {busy === row.attempt_id ? "…" : "retry"}
                   </button>
                 ) : (
-                  <span className="t-meta text-[var(--color-disabled)]">—</span>
+                  <span className="ck-mono ck-dim">—</span>
                 )}
               </span>
             </li>
@@ -937,35 +936,44 @@ function TokenPrompt({
   }, []);
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
-      <Topbar crumb="admin · fhenix gateway" />
-      <main className="flex-1 max-w-[640px] w-full mx-auto px-6 md:px-10 py-12">
-        <p className="t-label text-[var(--color-secondary)] mb-3">admin</p>
-        <h1 className="t-heading mb-6">gateway token.</h1>
-        {error && (
-          <div className="border border-[var(--color-accent)] px-6 py-4 mb-6 t-body-sm text-[var(--color-accent)]">
-            [ERROR] {error}
+    <div className="mmr-shell min-h-dvh flex flex-col">
+      <CompactTopbar
+        crumb={
+          <span>
+            admin <span className="ck-dim mx-1">/</span>
+            <span className="ck-pos">gateway</span>
+          </span>
+        }
+      />
+      <main className="flex-1 min-h-0 flex flex-col p-3">
+        <Panel title="gateway token" meta="locked" className="max-w-[560px]">
+          <div className="p-3 flex flex-col gap-3">
+            {error && (
+              <div className="ck-mono ck-neg">[error] {error}</div>
+            )}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                onSubmit();
+              }}
+              className="flex flex-col gap-3"
+            >
+              <label htmlFor="admin-gateway-token" className="ck-label">admin token</label>
+              <input
+                id="admin-gateway-token"
+                type="password"
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1.5 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
+                placeholder="VERDICT_ADMIN_TOKEN"
+                autoFocus
+              />
+              <div>
+                <button className="ck-btn ck-btn-bracket ck-pos" type="submit">unlock</button>
+              </div>
+            </form>
           </div>
-        )}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSubmit();
-          }}
-          className="flex flex-col gap-4"
-        >
-          <label htmlFor="admin-gateway-token" className="ck-label">admin token</label>
-          <input
-            id="admin-gateway-token"
-            type="password"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
-            placeholder="VERDICT_ADMIN_TOKEN"
-            autoFocus
-          />
-          <PillButton variant="primary" type="submit">unlock</PillButton>
-        </form>
+        </Panel>
       </main>
     </div>
   );
@@ -981,23 +989,23 @@ function Stat({
   tone?: "pos" | "neg" | "dim";
 }) {
   const cls = tone === "pos"
-    ? "text-[var(--color-display)]"
+    ? "ck-pos"
     : tone === "neg"
-      ? "text-[var(--color-accent)]"
-      : "text-[var(--color-display)]";
+      ? "ck-neg"
+      : "ck-pos";
   return (
-    <div>
-      <p className="t-meta text-[var(--color-secondary)] mb-2">{label}</p>
-      <p className={`t-data text-2xl ${cls}`}>{value}</p>
+    <div className="flex flex-col gap-1">
+      <span className="ck-label">{label}</span>
+      <span className={`ck-mono text-2xl tabular-nums ${cls}`}>{value}</span>
     </div>
   );
 }
 
 function Fact({ label, value }: { label: string; value: string | number }) {
   return (
-    <div>
-      <p className="text-[var(--color-secondary)] mb-2">{label}</p>
-      <p className="font-mono text-[var(--color-display)] truncate">{String(value)}</p>
+    <div className="flex flex-col gap-1">
+      <span className="ck-label">{label}</span>
+      <span className="ck-mono ck-pos truncate">{String(value)}</span>
     </div>
   );
 }
@@ -1013,39 +1021,39 @@ function toneFor(status: GatewayAttemptStatus): "pos" | "neg" | "dim" {
 }
 
 function statusClass(status: GatewayAttemptStatus): string {
-  if (status === "accepted") return "text-[var(--color-display)]";
-  if (status.startsWith("failed")) return "text-[var(--color-accent)]";
-  if (status === "submitted" || status === "confirmed") return "text-[var(--color-display)]";
-  return "text-[var(--color-secondary)]";
+  if (status === "accepted") return "ck-pos";
+  if (status.startsWith("failed")) return "ck-neg";
+  if (status === "submitted" || status === "confirmed") return "ck-pos";
+  return "ck-dim";
 }
 
 function canaryStatusClass(status: LiveCanaryCheck["status"]): string {
-  if (status === "ok") return "text-[var(--color-display)]";
-  if (status === "fail") return "text-[var(--color-accent)]";
-  return "text-[var(--color-secondary)]";
+  if (status === "ok") return "ck-pos";
+  if (status === "fail") return "ck-neg";
+  return "ck-dim";
 }
 
 function revealStatusClass(status: FhenixLifecycleRow["reveal_status"], overdue: boolean): string {
-  if (overdue || status === "invalid" || status === "missed") return "text-[var(--color-accent)]";
-  if (status === "revealed") return "text-[var(--color-display)]";
-  return "text-[var(--color-secondary)]";
+  if (overdue || status === "invalid" || status === "missed") return "ck-neg";
+  if (status === "revealed") return "ck-pos";
+  return "ck-dim";
 }
 
 function identityStatusClass(status: ControllerIdentityRow["status"]): string {
-  if (status === "current") return "text-[var(--color-display)]";
-  return "text-[var(--color-accent)]";
+  if (status === "current") return "ck-pos";
+  return "ck-neg";
 }
 
 function alertSeverityClass(severity: OperatorAlert["severity"]): string {
-  if (severity === "critical") return "text-[var(--color-accent)]";
-  if (severity === "warning") return "text-[var(--color-display)]";
-  return "text-[var(--color-secondary)]";
+  if (severity === "critical") return "ck-neg";
+  if (severity === "warning") return "ck-pos";
+  return "ck-dim";
 }
 
 function feedHealthClass(status: FeedAvailabilitySummary["health_status"]): string {
-  if (status === "failing") return "text-[var(--color-accent)]";
-  if (status === "degraded") return "text-[var(--color-display)]";
-  return "text-[var(--color-secondary)]";
+  if (status === "failing") return "ck-neg";
+  if (status === "degraded") return "ck-pos";
+  return "ck-dim";
 }
 
 function shortHex(value: string | null | undefined): string {
@@ -1076,11 +1084,6 @@ function formatGas(value: string | null | undefined): string {
   return String(n);
 }
 
-function formatScore(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "";
-  return value >= 0 ? `+${value.toFixed(3)}` : value.toFixed(3);
-}
-
 function formatCursor(cursors: FhenixLifecycleSnapshot["cursors"]): string {
   if (cursors.length === 0) return "—";
   const max = Math.max(...cursors.map((cursor) => cursor.last_block_number));
@@ -1092,21 +1095,4 @@ function formatDetails(details: LiveCanaryCheck["details"]): string {
     .filter(([, value]) => value !== null && value !== "")
     .map(([key, value]) => `${key}=${String(value)}`);
   return parts.length > 0 ? parts.join(" / ") : "—";
-}
-
-function readToken(): string {
-  try {
-    return window.localStorage.getItem(TOKEN_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeToken(value: string): void {
-  try {
-    if (value) window.localStorage.setItem(TOKEN_KEY, value);
-    else window.localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // storage disabled
-  }
 }

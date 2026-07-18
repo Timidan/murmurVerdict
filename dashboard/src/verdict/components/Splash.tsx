@@ -1,27 +1,34 @@
 // dashboard/src/verdict/components/Splash.tsx
 //
-// Full-bleed first-paint splash. Removes itself after the first useEffect
-// fires (i.e., after React has hydrated and run the first paint).
-// `.nothing-live` triggers the breathe animation only when
-// prefers-reduced-motion is no-preference (see styles.css).
+// Full-bleed first-paint splash. Fades out (200ms) after the first
+// post-hydration frame, then unmounts.
+// Renders AnimatedMark (mode="once", no wordmark) — the mark's own motion is
+// gated on prefers-reduced-motion inside animated-mark.css.
 
 import { useEffect, useState } from "react";
-import { MMark } from "./MMark.js";
+import { AnimatedMark } from "./AnimatedMark.js";
 
 export function Splash() {
-  const [visible, setVisible] = useState(true);
+  const [leaving, setLeaving] = useState(false);
+  const [gone, setGone] = useState(false);
 
   useEffect(() => {
-    const id = requestAnimationFrame(() => setVisible(false));
-    return () => cancelAnimationFrame(id);
+    const id = requestAnimationFrame(() => setLeaving(true));
+    // Fallback in case transitionend is swallowed (tab hidden, etc.).
+    const fallback = setTimeout(() => setGone(true), 400);
+    return () => {
+      cancelAnimationFrame(id);
+      clearTimeout(fallback);
+    };
   }, []);
 
-  if (!visible) return null;
+  if (gone) return null;
 
   return (
     <div
       role="status"
       aria-label="Loading Murmur Verdict"
+      onTransitionEnd={() => setGone(true)}
       style={{
         position: "fixed",
         inset: 0,
@@ -30,9 +37,12 @@ export function Splash() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        pointerEvents: "none",
+        opacity: leaving ? 0 : 1,
+        transition: "opacity 200ms var(--ease-out)",
       }}
     >
-      <MMark size={96} decorative className="nothing-live" />
+      <AnimatedMark size={96} mode="once" showWordmark={false} />
     </div>
   );
 }

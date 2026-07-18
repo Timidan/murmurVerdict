@@ -21,6 +21,32 @@ export type FhenixGatewayTxStatus =
   | "failed_retryable"
   | "failed_terminal";
 
+/**
+ * The statuses from which a Gateway Attempt may (re)enter broadcast: freshly
+ * queued rows and rows parked as retryable after a recoverable failure. This
+ * is the single authority for "which statuses are broadcastable/retryable" —
+ * the Gateway Attempt Machine's broadcast guard and the operator-retry guard
+ * consume {@link isBroadcastableStatus}, and every lifecycle SQL statement
+ * that filters on this set builds its `IN (...)` clause from
+ * {@link BROADCASTABLE_STATUS_SQL}. Do not re-declare the literal elsewhere.
+ */
+export const BROADCASTABLE_STATUSES = [
+  "queued",
+  "failed_retryable",
+] as const satisfies readonly FhenixGatewayTxStatus[];
+
+/** True iff `status` is one a Gateway Attempt can be (re)broadcast from. */
+export function isBroadcastableStatus(status: string): boolean {
+  return (BROADCASTABLE_STATUSES as readonly string[]).includes(status);
+}
+
+/** SQL fragment for the broadcastable set, e.g. `'queued','failed_retryable'`.
+ *  The values are compile-time status literals, so interpolating them into a
+ *  prepared statement's `IN (...)` clause is safe. */
+const BROADCASTABLE_STATUS_SQL = BROADCASTABLE_STATUSES.map(
+  (status) => `'${status}'`,
+).join(",");
+
 export interface FhenixGatewayTxStatusCount {
   status: FhenixGatewayTxStatus;
   count: number;
@@ -260,7 +286,7 @@ export function gatewayAttemptLifecycleRepo<
              broadcast_started_at = @broadcast_started_at,
              updated_at = @updated_at
          WHERE attempt_id = @attempt_id
-           AND status IN ('queued','failed_retryable')
+           AND status IN (${BROADCASTABLE_STATUS_SQL})
            AND broadcast_claim_token IS NULL`,
       ).run(input);
       return info.changes === 1;
@@ -287,7 +313,7 @@ export function gatewayAttemptLifecycleRepo<
          WHERE broadcast_claim_token IS NOT NULL
            AND broadcast_started_at IS NOT NULL
            AND broadcast_started_at < @stuckBeforeIso
-           AND status IN ('queued','failed_retryable')`,
+           AND status IN (${BROADCASTABLE_STATUS_SQL})`,
       ).run(input);
       return info.changes;
     },
@@ -358,7 +384,7 @@ export function gatewayAttemptLifecycleRepo<
              last_error = NULL,
              updated_at = @updated_at
          WHERE attempt_id = @attempt_id
-           AND status IN ('queued','failed_retryable')`,
+           AND status IN (${BROADCASTABLE_STATUS_SQL})`,
       ).run(input);
       return info.changes > 0;
     },
@@ -372,7 +398,7 @@ export function gatewayAttemptLifecycleRepo<
       return prep(
         db,
         `SELECT * FROM ${table}
-         WHERE status IN ('queued','failed_retryable')
+         WHERE status IN (${BROADCASTABLE_STATUS_SQL})
            AND next_attempt_at <= ?
          ORDER BY next_attempt_at, created_at
          LIMIT ?`,
@@ -387,7 +413,7 @@ export function gatewayAttemptLifecycleRepo<
         db,
         `SELECT COUNT(*) AS count
          FROM ${table}
-         WHERE status IN ('queued','failed_retryable')
+         WHERE status IN (${BROADCASTABLE_STATUS_SQL})
            AND next_attempt_at <= ?`,
       ).get(nowIso) as { count: number } | undefined;
       return row?.count ?? 0;

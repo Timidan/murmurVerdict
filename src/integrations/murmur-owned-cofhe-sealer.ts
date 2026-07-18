@@ -8,9 +8,9 @@ import type {
 
 import type { CofheInput } from "./fhenix-gateway-schemas.js";
 import {
-  normalizeOperatorBlindBytesHex,
-  normalizeOperatorBlindCtHashToHex32,
-} from "../verdict/operator-blind-roundtrip-surface.js";
+  normalizeCofheBytesHex,
+  normalizeCofheCtHashToHex32,
+} from "./fhenix-gateway-cofhe-normalize.js";
 
 export interface MurmurOwnedCofheSealer {
   sealVerdict(input: {
@@ -62,25 +62,25 @@ export class SdkMurmurOwnedCofheSealer implements MurmurOwnedCofheSealer {
 
     return {
       binary_index_input: {
-        ct_hash: normalizeOperatorBlindCtHashToHex32(
+        ct_hash: normalizeCofheCtHashToHex32(
           binary.ctHash,
           "binary_index_input",
         ),
         security_zone: binary.securityZone,
         utype: binary.utype,
-        signature: normalizeOperatorBlindBytesHex(
+        signature: normalizeCofheBytesHex(
           binary.signature,
           "binary_index_input",
         ),
       },
       confidence_input: {
-        ct_hash: normalizeOperatorBlindCtHashToHex32(
+        ct_hash: normalizeCofheCtHashToHex32(
           confidence.ctHash,
           "confidence_input",
         ),
         security_zone: confidence.securityZone,
         utype: confidence.utype,
-        signature: normalizeOperatorBlindBytesHex(
+        signature: normalizeCofheBytesHex(
           confidence.signature,
           "confidence_input",
         ),

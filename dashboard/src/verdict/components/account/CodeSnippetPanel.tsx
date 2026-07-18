@@ -22,11 +22,14 @@
 //     show "copied" after writeText resolves, otherwise surface a manual-
 //     copy hint.
 //
-// API base URL: read from import.meta.env.VITE_VERDICT_API_URL, default to
-// the placeholder "https://murmur.verdict". Substituted consistently across
-// all three languages so users can paste any one and get a working call.
+// API base URL: read from import.meta.env.VITE_VERDICT_API_URL, falling
+// back to the page's own origin (which proxies /v1 in dev and same-host
+// deploys). Substituted consistently across all three languages so users
+// can paste any one and get a working call.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { HighlightedCode } from "../CodeWindow.js";
 
 export type SnippetLanguage = "typescript" | "python" | "curl";
 
@@ -57,7 +60,7 @@ export interface CodeSnippetPanelProps {
   showHeader?: boolean;
   /**
    * Override the outer container class. Defaults to "ck-frame", which
-   * is the compact-shell idiom used by the rest of the account flow.
+   * is the mmr-shell idiom used by the rest of the account flow.
    * Pass "" to skip the framing entirely.
    */
   containerClass?: string;
@@ -72,15 +75,17 @@ const TAB_LABEL: Record<SnippetLanguage, string> = {
 };
 
 /**
- * Read the dashboard's configured daemon base URL with a placeholder
- * fallback. The placeholder ("https://murmur.verdict") is intentionally
- * fake — it makes copy-pasted snippets fail loudly on a misconfigured
- * deploy, instead of silently hitting localhost.
+ * Read the dashboard's configured daemon base URL, falling back to the
+ * page's own origin. The old "https://murmur.verdict" placeholder made
+ * copied snippets fail on every unconfigured deploy; the origin fallback
+ * matches the API client's relative-URL behavior (dev proxies /v1, and
+ * same-host deploys serve it directly), so pasted snippets always target
+ * a resolvable host.
  */
 function getApiBase(): string {
   const env = (import.meta.env.VITE_VERDICT_API_URL ?? "").toString().trim();
   if (env.length > 0) return env.replace(/\/$/, "");
-  return "https://murmur.verdict";
+  return window.location.origin;
 }
 
 /**
@@ -288,19 +293,19 @@ export function CodeSnippetPanel({
                 type="button"
                 onClick={() => setActive(l)}
                 className={
-                  "ck-btn " + (active === l ? "ck-btn-active" : "")
+                  "ck-btn ck-btn-bracket " + (active === l ? "ck-btn-active" : "")
                 }
                 aria-pressed={active === l}
               >
-                [ {TAB_LABEL[l]} ]
+                {TAB_LABEL[l]}
               </button>
             ))}
           </span>
           <span className="flex items-center gap-2">
             {copyFallback && (
               <span
-                className="ck-mono text-[10px]"
-                style={{ color: "var(--color-accent)" }}
+                className="confirm-enter ck-mono text-[10px]"
+                style={{ color: "var(--color-accent-ink)" }}
                 aria-live="polite"
               >
                 × clipboard blocked — Cmd-C / Ctrl-C
@@ -309,16 +314,22 @@ export function CodeSnippetPanel({
             <button
               type="button"
               onClick={() => void doCopy()}
-              className="ck-btn"
+              className="ck-btn ck-btn-bracket"
               aria-label={`copy ${TAB_LABEL[active]} snippet`}
             >
-              {copied ? "[ COPIED ]" : "[ COPY ]"}
+              {copied ? "COPIED" : "COPY"}
             </button>
           </span>
         </div>
       )}
-      <pre className="ck-mono whitespace-pre overflow-x-auto px-3 py-2 leading-tight text-[11px]">
-        {body}
+      <pre
+        key={active}
+        className="snippet-fade ck-mono whitespace-pre overflow-x-auto px-3 py-2 leading-tight text-[11px]"
+      >
+        <HighlightedCode
+          code={body}
+          lang={active === "curl" ? "bash" : active}
+        />
       </pre>
     </section>
   );

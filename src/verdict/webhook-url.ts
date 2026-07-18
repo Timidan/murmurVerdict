@@ -1,8 +1,12 @@
 import { lookup as dnsLookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 
 export type WebhookUrlValidation =
   | { ok: true; url: string }
+  | { ok: false; reason: string };
+
+export type WebhookDestinationValidation =
+  | { ok: true; url: string; address: string; family: 4 | 6 }
   | { ok: false; reason: string };
 
 export interface WebhookUrlPolicy {
@@ -45,16 +49,31 @@ export function loadWebhookUrlPolicy(
  * once the daemon runs on a public host: non-public schemes, userinfo, and
  * hostnames that resolve to loopback / link-local / private / reserved IPs.
  *
- * Hostname is resolved via dns.lookup at registration time; the returned
- * canonical URL is what we persist, so subsequent deliveries fetch the same
- * string we validated. (TOCTOU re-resolution on delivery is left for a
- * follow-up — the dispatcher already has a 5s timeout cap.)
+ * Registration validates the current address set. Delivery repeats this
+ * resolution and pins the validated address into the socket lookup, closing
+ * the DNS-rebinding gap between policy validation and connection setup.
  */
 export async function validateWebhookUrl(
   raw: string,
   policy: WebhookUrlPolicy,
   deps: WebhookUrlValidationDeps = {},
 ): Promise<WebhookUrlValidation> {
+  const result = await resolveWebhookDestination(raw, policy, deps);
+  return result.ok
+    ? { ok: true, url: result.url }
+    : result;
+}
+
+/**
+ * Resolve a webhook URL to one public address suitable for a pinned socket
+ * connection. Every returned DNS address must be public; mixed public/private
+ * answers fail closed rather than allowing resolver-order tricks.
+ */
+export async function resolveWebhookDestination(
+  raw: string,
+  policy: WebhookUrlPolicy,
+  deps: WebhookUrlValidationDeps = {},
+): Promise<WebhookDestinationValidation> {
   let parsed: URL;
   try {
     parsed = new URL(raw);
@@ -92,12 +111,23 @@ export async function validateWebhookUrl(
       return { ok: false, reason: "hostname did not resolve" };
     }
   }
+  let destination: { address: string; family: 4 | 6 } | null = null;
   for (const a of addresses) {
-    if (isPrivateOrReservedIp(a.address)) {
+    const family = isIP(a.address);
+    if ((family !== 4 && family !== 6) || isPrivateOrReservedIp(a.address)) {
       return { ok: false, reason: "hostname resolves to a private/reserved address" };
     }
+    destination ??= { address: a.address, family };
   }
-  return { ok: true, url: parsed.toString() };
+  if (!destination) {
+    return { ok: false, reason: "hostname did not resolve" };
+  }
+  return {
+    ok: true,
+    url: parsed.toString(),
+    address: destination.address,
+    family: destination.family,
+  };
 }
 
 const nodeWebhookDnsLookup: WebhookDnsLookup = async (hostname) => {
@@ -108,40 +138,48 @@ const nodeWebhookDnsLookup: WebhookDnsLookup = async (hostname) => {
  * True if the address is loopback, link-local, RFC1918, CGNAT, broadcast,
  * multicast, unspecified, IPv6 unique-local, or the cloud-metadata IP.
  */
+const reservedWebhookIpv4 = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+] as const) {
+  reservedWebhookIpv4.addSubnet(network, prefix, "ipv4");
+}
+const reservedWebhookIpv6 = new BlockList();
+for (const [network, prefix] of [
+  ["::", 128],
+  ["::1", 128],
+  ["::ffff:0:0", 96],
+  ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48],
+  ["100::", 64],
+  ["2001::", 23],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["ff00::", 8],
+] as const) {
+  reservedWebhookIpv6.addSubnet(network, prefix, "ipv6");
+}
+
 function isPrivateOrReservedIp(address: string): boolean {
-  // Cloud metadata: AWS / GCP / Azure / DigitalOcean all use this.
-  if (address === "169.254.169.254") return true;
-
-  if (isIP(address) === 4) {
-    const parts = address.split(".").map((n) => Number(n));
-    if (parts.length !== 4 || parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) {
-      return true; // malformed -> treat as private/reserved
-    }
-    const [a, b] = parts as [number, number, number, number];
-    if (a === 10) return true; // 10.0.0.0/8
-    if (a === 127) return true; // loopback
-    if (a === 0) return true; // 0.0.0.0/8 unspecified
-    if (a === 169 && b === 254) return true; // link-local
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 192 && b === 168) return true; // 192.168.0.0/16
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
-    if (a >= 224) return true; // multicast (224.0.0.0/4) + reserved (240.0.0.0/4)
-    return false;
-  }
-
-  if (isIP(address) === 6) {
-    const lower = address.toLowerCase();
-    if (lower === "::" || lower === "::1") return true; // unspecified, loopback
-    if (lower.startsWith("fe80:")) return true; // link-local
-    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique-local
-    if (lower.startsWith("ff")) return true; // multicast
-    // IPv4-mapped IPv6: ::ffff:a.b.c.d -> re-check the embedded v4 address.
-    const mapped = /^::ffff:([0-9.]+)$/.exec(lower);
-    if (mapped && isIP(mapped[1]) === 4) return isPrivateOrReservedIp(mapped[1]);
-    return false;
-  }
-
-  return true; // unknown family -> fail closed
+  const family = isIP(address);
+  if (family === 4) return reservedWebhookIpv4.check(address, "ipv4");
+  if (family === 6) return reservedWebhookIpv6.check(address, "ipv6");
+  return true;
 }
 
 function booleanEnv(

@@ -77,6 +77,45 @@ export function nanopaySettlementResponse(
     };
   }
 
+  if (payment.receiptId !== undefined) {
+    const durableReceipt = nanopayReceiptsRepo.findById(deps.db, payment.receiptId);
+    if (!durableReceipt || durableReceipt.status !== "settled") {
+      return {
+        status: 500,
+        body: {
+          error: "InternalStateInconsistent",
+          message: "durable payment middleware did not finalize its receipt",
+        },
+      };
+    }
+    return receiptResponse(durableReceipt, payment.replayed === true);
+  }
+
+  const payer = payment.payer.toLowerCase() as `0x${string}`;
+  const sourceDomain = `caip2:${payment.network}`;
+  const paymentHandle = payment.transaction;
+  const requirementsHash = paymentRequirementsHash({
+    sellerAddress: deps.sellerAddress,
+    pipelineId,
+    network: payment.network,
+  });
+  const payloadHash = paymentPayloadHash({
+    transaction: payment.transaction,
+    payer,
+    amount: payment.amount,
+  });
+  const existingReceipt = nanopayReceiptsRepo.findByPayerHandleDomain(deps.db, {
+    payer,
+    paymentHandle,
+    sourceDomain,
+  });
+  if (existingReceipt) {
+    return replayResponse(existingReceipt, {
+      payloadHash,
+      requirementsHash,
+    });
+  }
+
   const pipeline = deps.resolvePipeline(pipelineId);
   if (!pipeline) {
     logger.error(
@@ -112,19 +151,6 @@ export function nanopaySettlementResponse(
     };
   }
 
-  const payer = payment.payer.toLowerCase() as `0x${string}`;
-  const sourceDomain = `caip2:${payment.network}`;
-  const paymentHandle = payment.transaction;
-  const requirementsHash = paymentRequirementsHash({
-    sellerAddress: deps.sellerAddress,
-    pipelineId,
-    network: payment.network,
-  });
-  const payloadHash = paymentPayloadHash({
-    transaction: payment.transaction,
-    payer,
-    amount: payment.amount,
-  });
   const paymentHandleDigest = transactionUuidToBytes32(paymentHandle);
   const requestSignalId = computeRequestSignalId({
     pipelineId: pipelineId as `0x${string}`,
@@ -172,8 +198,11 @@ export function nanopaySettlementResponse(
         paymentHandle,
         sourceDomain,
       });
-      if (existing && existing.status === "settled") {
-        return receiptResponse(existing);
+      if (existing) {
+        return replayResponse(existing, {
+          payloadHash,
+          requirementsHash,
+        });
       }
       return {
         status: 500,
@@ -187,14 +216,45 @@ export function nanopaySettlementResponse(
   }
 }
 
-function receiptResponse(row: NanopayReceiptRow): NanopaySettlementResponse {
+function replayResponse(
+  row: NanopayReceiptRow,
+  expected: { payloadHash: string; requirementsHash: string },
+): NanopaySettlementResponse {
+  if (
+    row.payment_payload_hash !== expected.payloadHash ||
+    row.payment_requirements_hash !== expected.requirementsHash
+  ) {
+    return {
+      status: 409,
+      body: {
+        error: "PaymentReplayConflict",
+        message: "Payment handle was already used with different payment data",
+      },
+    };
+  }
+  if (row.status === "settled") {
+    return receiptResponse(row);
+  }
+  return {
+    status: 500,
+    body: {
+      error: "InternalStateInconsistent",
+      message: "matching payment replay does not reference a settled receipt",
+    },
+  };
+}
+
+function receiptResponse(
+  row: NanopayReceiptRow,
+  replayed = true,
+): NanopaySettlementResponse {
   return {
     status: 200,
     body: {
       binding: bindingFromReceipt(row),
       revealArtifact: revealArtifactFromReceipt(row),
       receiptId: row.id,
-      replayed: true,
+      ...(replayed ? { replayed: true } : {}),
     },
   };
 }

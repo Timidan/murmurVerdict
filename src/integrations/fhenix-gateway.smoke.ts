@@ -16,6 +16,10 @@ import {
   type Hex,
 } from "viem";
 
+import {
+  FEED_PACKET_SUBMITTED_TOPIC,
+  SEALED_CALL_SUBMITTED_TOPIC,
+} from "./fhenix-event-primitives.js";
 import { ViemFhenixEventVerifier, fhenixMarketIdForMurmurMarket } from "./fhenix-events.js";
 import {
   FhenixGatewayBroadcaster,
@@ -43,6 +47,7 @@ import {
   openDb,
   submissionsRepo,
 } from "../verdict/db.js";
+import { deriveFeedRevealAfter } from "../verdict/feed-policy.js";
 import { canonicalHash, canonicalize } from "../receipts/canonical.js";
 
 let failures = 0;
@@ -68,6 +73,7 @@ try {
   const chainId = 84532;
   const acceptedAt = "2026-05-14T12:00:00Z";
   const revealOpenAt = "2026-05-14T13:00:00Z";
+  const feedRevealAfter = "2026-05-14T13:05:00Z";
   const contract = "0x2222222222222222222222222222222222222222";
   const relayer = "0x3333333333333333333333333333333333333333";
   const wallet = "0x1111111111111111111111111111111111111111";
@@ -88,6 +94,22 @@ try {
   const feedRetryClientNonce = "0x" + "7a".repeat(32);
   const ownedSealClientNonce = "0x" + "7b".repeat(32);
   const feedRetryTxHash = "0x" + "4b".repeat(32);
+
+  await check("fixed-delay feed policy cannot be shortened per packet", () => {
+    const revealAfter = deriveFeedRevealAfter(
+      {
+        reveal_policy_json: JSON.stringify({
+          kind: "fixed_delay",
+          delay_seconds: 3600,
+        }),
+        max_latency_seconds: null,
+        delivery_cadence_seconds: 60,
+      },
+      "2026-05-14T12:00:01Z",
+      new Date(acceptedAt),
+    );
+    assert.equal(revealAfter, revealOpenAt);
+  });
 
   const db = openDb({ path: dbPath });
   const agentId = randomUUID();
@@ -206,11 +228,7 @@ try {
     updated_at: acceptedAt,
   });
 
-  const eventTopic = keccak256(
-    toBytes(
-      "SealedCallSubmitted(bytes32,address,bytes32,uint64,uint64,bytes32,bytes32,bytes32)",
-    ),
-  );
+  const eventTopic = SEALED_CALL_SUBMITTED_TOPIC;
 	  const receipt = {
 	    status: "success" as const,
 	    blockNumber: 20n,
@@ -241,11 +259,7 @@ try {
       },
     ],
   };
-  const feedEventTopic = keccak256(
-    toBytes(
-      "FeedPacketSubmitted(bytes32,address,bytes32,bytes32,uint64,uint64,bytes32,bytes32,bytes32)",
-    ),
-  );
+  const feedEventTopic = FEED_PACKET_SUBMITTED_TOPIC;
 	  const feedReceipt = {
 	    status: "success" as const,
 	    blockNumber: 21n,
@@ -259,7 +273,7 @@ try {
           [
             fhenixMarketIdForMurmurMarket(marketId) as Hex,
             BigInt(Date.parse(acceptedAt) / 1000),
-            BigInt(Date.parse(revealOpenAt) / 1000),
+            BigInt(Date.parse(feedRevealAfter) / 1000),
             feedActionCtHash as Hex,
             feedSignalCtHash as Hex,
             feedClientNonce as Hex,
@@ -420,7 +434,7 @@ try {
     client_order_id: "gateway-feed-smoke-order-001",
     client_nonce: feedClientNonce,
     privacy_mode: "sealed_fhenix",
-    reveal_after: revealOpenAt,
+    reveal_after: feedRevealAfter,
     action_input: {
       ct_hash: feedActionCtHash,
       security_zone: 0,

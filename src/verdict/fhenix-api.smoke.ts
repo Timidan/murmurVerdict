@@ -20,6 +20,7 @@ import {
 } from "../integrations/fhenix-events.js";
 import {
   agentsRepo,
+  anchorsRepo,
   marketsRepo,
   openDb,
   resolutionsRepo,
@@ -33,6 +34,11 @@ import {
 } from "./auth/accounts.js";
 import { Resolver } from "./resolver.js";
 import type { OracleClient } from "../integrations/oracle.js";
+import { registerAdapter } from "../integrations/oracles/registry.js";
+import type {
+  OracleAdapter,
+  OracleObservation,
+} from "../integrations/oracles/types.js";
 import {
   PolymarketGammaClient,
   setDefaultPolymarketClient,
@@ -356,6 +362,102 @@ try {
     assert.equal(sealed?.invalid_reason, "binary_index");
   });
 
+  await check("resolver does not resurrect a call terminalized during an oracle read", async () => {
+    const raceCallId = randomUUID();
+    submissionsRepo.acceptSealedFhenixCall(db, {
+      call_id: raceCallId,
+      agent_id: agentId,
+      client_order_id: "fhenix-api-resolver-race",
+      horizon_seconds: 3600,
+      submitted_at: acceptedAt,
+      accepted_at: acceptedAt,
+      schema_version: 1,
+      scoring_version: 1,
+      dedup_key: `resolver-race-${raceCallId}`,
+      commit_hash: "a".repeat(64),
+      commit_scheme: "fhenix-sealed-v1",
+      market_id: "eth.1h",
+      market_config_version: 1,
+      adapter_id: "native-price",
+      market_family: "financial-direction",
+    });
+
+    let resolveObservation!: (observation: OracleObservation) => void;
+    const observation = new Promise<OracleObservation>((resolve) => {
+      resolveObservation = resolve;
+    });
+    let markOracleReadStarted!: () => void;
+    const oracleReadStarted = new Promise<void>((resolve) => {
+      markOracleReadStarted = resolve;
+    });
+    const adapterName = `resolver-race-${randomUUID()}`;
+    const deferredAdapter: OracleAdapter = {
+      name: adapterName,
+      async getLatest() {
+        markOracleReadStarted();
+        return observation;
+      },
+    };
+    registerAdapter(deferredAdapter);
+    db.prepare(
+      "UPDATE oracles SET adapter = ? WHERE oracle_id = 'chainlink-base-eth-usd'",
+    ).run(adapterName);
+
+    const raceNow = new Date("2026-05-14T12:01:00Z");
+    const logs: unknown[] = [];
+    const oracle = {
+      adapterContext: () => ({ now: () => raceNow }),
+      getLatestPrice: async () => {
+        throw new Error("registry adapter should handle the race observation");
+      },
+    } as unknown as OracleClient;
+
+    try {
+      const tick = new Resolver({
+        db,
+        oracle,
+        now: () => raceNow,
+        log: (event) => logs.push(event),
+      }).tick();
+      await oracleReadStarted;
+
+      // A reveal watcher can terminalize the call while a remote oracle read
+      // is in flight. The stale resolver context must not overwrite it.
+      submissionsRepo.setStatus(db, raceCallId, "invalid_reveal");
+      resolveObservation({
+        oracle_id: "chainlink-base-eth-usd",
+        asset_id: "base:ETH:USD",
+        price: "3200",
+        feed_timestamp: "2026-05-14T12:00:30Z",
+        observed_at: raceNow.toISOString(),
+        source_id: "resolver-race-round",
+        source_age_seconds: 30,
+      });
+
+      const result = await tick;
+      assert.equal(
+        submissionsRepo.loadResolverContext(db, raceCallId)?.status,
+        "invalid_reveal",
+      );
+      assert.equal(anchorsRepo.getT0(db, raceCallId), null);
+      assert.equal(result.anchored, 0);
+      assert.equal(
+        logs.some(
+          (event) =>
+            typeof event === "object" &&
+            event !== null &&
+            "kind" in event &&
+            event.kind === "anchored_t0",
+        ),
+        false,
+      );
+    } finally {
+      db.prepare(
+        "UPDATE oracles SET adapter = 'chainlink-evm' WHERE oracle_id = 'chainlink-base-eth-usd'",
+      ).run();
+    }
+  });
+
   await check("verified reveal attaches public commitment and resolver score", async () => {
     const revealRes = await fetch(`${baseUrl}/v1/admin/fhenix/reveals`, {
       method: "POST",
@@ -426,7 +528,12 @@ try {
       assert.equal(full?.submission.status, "resolved");
       assert.equal(full?.resolution?.outcome, "win");
       assert.equal(full?.resolution?.call_score, 1);
-      assert.equal(full?.resolution?.t1_feed, "polymarket-gamma");
+      // Adapter (polymarket-gamma) resolutions have no price feed: t1_feed /
+      // p1 / signed_return are native-price-only evidence and are NULL here
+      // (migration 055 — no more adapter-name-in-feed-column fabrication).
+      assert.equal(full?.resolution?.t1_feed, null);
+      assert.equal(full?.resolution?.p1, null);
+      assert.equal(full?.resolution?.signed_return, null);
     } finally {
       setDefaultPolymarketClient(null);
     }

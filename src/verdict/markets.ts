@@ -161,24 +161,6 @@ export function resolverShouldTick(market: MarketRow): boolean {
 }
 
 /**
- * Resolver scoring still uses the legacy volatility buckets, so native-price
- * markets map horizon_seconds into that finite bucket set here.
- */
-export function legacyHorizonHoursForMarket(
-  market: { market_id: string; horizon_seconds: number },
-): 0 | 1 | 4 | 24 | 168 {
-  const seconds = market.horizon_seconds;
-  if (seconds > 0 && seconds < 3600) return 0; // sub-hour sentinel
-  if (seconds === 3600) return 1;
-  if (seconds === 14400) return 4;
-  if (seconds === 86400) return 24;
-  if (seconds === 604800) return 168;
-  throw new Error(
-    `market ${market.market_id} horizon_seconds=${seconds} does not map to scoring horizon buckets {0,1,4,24,168}`,
-  );
-}
-
-/**
  * Dedup bucket size in seconds — Codex P3 D2. Floor at 5 minutes so 5m / 15m
  * markets don't degrade dedup into a no-op spam control.
  *

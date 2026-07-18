@@ -36,7 +36,7 @@ export interface AccountDestinationSurfaceBase {
 }
 
 export interface AccountDestinationWriteClock {
-  now: () => Date;
+  operationInstant: Date;
 }
 
 export interface AccountDestinationCooldownPolicy {
@@ -90,13 +90,12 @@ export function setAccountDestinationAddressResponse(
     );
   }
   const cooldownMs = input.destinationCooldownMs ?? DESTINATION_ADDRESS_COOLDOWN_MS;
-  const operationNow = input.now();
   const result = input.db.transaction(() => {
     const setResult = setDestinationAddress(input.db, {
       agent_id: agent.agent_id,
       destination_address: parsed.data.destination_address,
       cooldownMs,
-      updatedAt: operationNow,
+      updatedAt: input.operationInstant,
     });
     if (setResult.ok) {
       usageRepo.emit(
@@ -110,7 +109,7 @@ export function setAccountDestinationAddressResponse(
             cooldown_ms: cooldownMs,
           },
           newUsageEventId: input.newUsageEventId,
-          occurredAt: operationNow,
+          occurredAt: input.operationInstant,
         }),
       );
     }

@@ -46,15 +46,12 @@ function normalizeSourceDomain(sourceDomain: string): string {
  *   - markSettlementUnknown: terminal state after N failed reconciles.
  *   - patchRevealArtifact: update reveal_artifact_json when horizon opens.
  *
- * Phase 1b naming note: the column historically called `eip3009_nonce`
- * was renamed to `payment_handle` in migration v52 because the SDK
- * middleware consumes + verifies the EIP-3009 nonce before the daemon
- * handler runs — what we actually store is Circle's transaction UUID
- * (the "payment handle" / settlement handle). The repo's TypeScript
- * surface uses `paymentHandle` to match. The `NanopayBinding` wire
- * field returned in the route response keeps the legacy
- * `eip3009Nonce` name for backwards compatibility with any buyer that
- * already parses it; renaming the wire field is deferred to Phase 2.
+ * The column was historically renamed from `eip3009_nonce` to the more
+ * general `payment_handle` in migration v52. The durable payment path can
+ * once again see the signed nonce and stores it here; Circle's transaction
+ * UUID remains in its dedicated `circle_transaction_uuid` column. Keeping
+ * the general column name avoids a reversing migration while preserving the
+ * prefix-idempotency semantics.
  */
 export interface NanopayReceiptRow {
   readonly id: number;
@@ -91,10 +88,9 @@ export interface InsertSettlingIntentInput {
 }
 
 /**
- * Insert directly in `settled` state — used by the SDK-pivot flow
- * where Circle's middleware verify+settle has already completed
- * before the row is written. Carries the Circle transaction UUID
- * up-front instead of marking it later.
+ * Legacy import helper for a payment that was already settled before the
+ * daemon learned about it. The live HTTP rail uses insertSettlingIntent +
+ * markSettled so it never creates an irreversible persistence gap.
  */
 export interface InsertSettledInput {
   readonly payer: string;
@@ -114,6 +110,8 @@ export interface InsertSettledInput {
 export interface MarkSettledInput {
   readonly id: number;
   readonly circleTransactionUuid: string;
+  /** Final binding with the Circle transaction UUID filled in. */
+  readonly bindingJson: string;
   /** Set only if reveal was open at settle time; otherwise null. */
   readonly revealArtifactJson: string | null;
   readonly settledAt: Date;
@@ -173,11 +171,8 @@ export const nanopayReceiptsRepo = {
   },
 
   /**
-   * Insert directly in `settled` state — for the SDK-pivot Phase 1
-   * flow where Circle Gateway's middleware has already verified +
-   * settled the payment before the row is written. Avoids the
-   * awkward insertSettlingIntent → markSettled round-trip that
-   * codex audit 2026-05-23 flagged as semantically misleading.
+   * Insert directly in `settled` state for legacy imports/reconstruction.
+   * New HTTP settlement must use insertSettlingIntent → markSettled.
    *
    * Same race safety as `insertSettlingIntent`: the schema's prefix
    * UNIQUE on (payer, payment_handle, source_domain) prevents
@@ -236,6 +231,7 @@ export const nanopayReceiptsRepo = {
       UPDATE nanopay_receipts
       SET status = 'settled',
           circle_transaction_uuid = @circle_transaction_uuid,
+          binding_json = @binding_json,
           reveal_artifact_json = COALESCE(@reveal_artifact_json, reveal_artifact_json),
           settled_at = @settled_at
       WHERE id = @id AND status = 'settling'
@@ -243,6 +239,7 @@ export const nanopayReceiptsRepo = {
     const result = stmt.run({
       id: input.id,
       circle_transaction_uuid: input.circleTransactionUuid,
+      binding_json: input.bindingJson,
       reveal_artifact_json: input.revealArtifactJson,
       settled_at: nowIso(input.settledAt),
     });

@@ -28,7 +28,15 @@
 // it to a useEffect dep array is safe.
 
 import { useCallback, useRef } from "react";
-import { isPrivyConfigured } from "../auth/PrivyProvider.js";
+// Import from the vendor-free leaf module (NOT ../auth/PrivyProvider.js) so
+// this hook — pulled onto the public /dashboard chunk via LandingPage's
+// landing.viewed emit — never statically drags in the ~2.2MB Privy SDK. The
+// authenticated getAccessToken path stays dynamic-imported below.
+// Import from the vendor-free leaf module (NOT ../auth/PrivyProvider.js) so
+// this hook — pulled onto the public /dashboard chunk via LandingPage's
+// landing.viewed emit — never statically drags in the ~2.2MB Privy SDK. The
+// authenticated getAccessToken path stays dynamic-imported below.
+import { isPrivyConfigured } from "../auth/privy-config.js";
 import { verdictApi, type FunnelEventKind } from "../api.js";
 
 // Codex P2 fix — earlier we statically imported `getAccessToken` from
@@ -64,62 +72,74 @@ export function useFunnelEmit(): (
   kind: FunnelEventKind,
   attributes?: Record<string, unknown>,
 ) => Promise<void> {
-  // Dedupe key set — string of `${kind}:${JSON.stringify(attrs)}`. The
-  // ref persists across renders without re-triggering effects.
-  const seenRef = useRef<Set<string>>(new Set());
+  // Dedupe by DELIVERY, not by attempt. Two refs, both persisting across
+  // renders without re-triggering effects:
+  //   · deliveredRef — keys we've delivered OR terminally skipped (privy
+  //     unconfigured, anon-kind with no bearer). Never emitted again.
+  //   · inFlightRef  — keys with an emit currently awaiting. Suppresses the
+  //     StrictMode double-invoke / bootstrap re-fire without foreclosing a
+  //     later retry.
+  // A transient failure (token fetch drop, POST reject) or a not-signed-in-yet
+  // drop for an authenticated kind leaves the key in NEITHER set, so a later
+  // call (e.g. after the user signs in) retries cleanly.
+  const deliveredRef = useRef<Set<string>>(new Set());
+  const inFlightRef = useRef<Set<string>>(new Set());
 
   return useCallback(
     async (kind: FunnelEventKind, attributes?: Record<string, unknown>) => {
-      // Build the dedupe key first. Order of attribute keys is preserved
-      // by JSON.stringify in the same insertion order; for the funnel
-      // path our attributes are tiny (one or two keys) so this is fine.
+      // Build the dedupe key. Order of attribute keys is preserved by
+      // JSON.stringify in insertion order; funnel attributes are tiny.
       const dedupeKey = `${kind}:${attributes ? JSON.stringify(attributes) : ""}`;
-      if (seenRef.current.has(dedupeKey)) return;
-      seenRef.current.add(dedupeKey);
+      if (deliveredRef.current.has(dedupeKey)) return;
+      if (inFlightRef.current.has(dedupeKey)) return;
 
-      // Don't bother emitting when Privy isn't configured at all — the
-      // route would 401 every time and the network panel would fill with
-      // red. This matches useAccount's "no privy = silently inert" posture.
+      // Don't bother emitting when Privy isn't configured at all — the route
+      // would 401 every time. Config can't change mid-session, so this is a
+      // terminal skip (mark delivered to avoid re-running the dynamic import).
       if (!isPrivyConfigured()) {
+        deliveredRef.current.add(dedupeKey);
         if (typeof console !== "undefined") {
-          // Keep this at debug level — local dev devs see it, prod silent.
           console.debug(`[funnel] privy not configured, skipping ${kind}`);
         }
         return;
       }
 
-      let token: string | null;
+      inFlightRef.current.add(dedupeKey);
       try {
-        const getAccessToken = await loadGetAccessToken();
-        token = await getAccessToken();
-      } catch {
-        token = null;
-      }
+        let token: string | null;
+        try {
+          const getAccessToken = await loadGetAccessToken();
+          token = await getAccessToken();
+        } catch {
+          token = null;
+        }
 
-      if (!token) {
-        if (ANON_KINDS.has(kind)) {
-          // Anonymous emit — can't reach the route without a bearer.
-          // Drop on the floor; a future phase can buffer + flush on
-          // sign-in. The dedupe set still captured this attempt so we
-          // don't keep retrying.
-          if (typeof console !== "undefined") {
-            console.debug(`[funnel] anon ${kind} — dropped (no privy session)`);
+        if (!token) {
+          if (ANON_KINDS.has(kind)) {
+            // Anonymous emit — can't reach the route without a bearer. Treat
+            // as a terminal skip (a future phase buffers + flushes on sign-in).
+            deliveredRef.current.add(dedupeKey);
+            if (typeof console !== "undefined") {
+              console.debug(`[funnel] anon ${kind} — dropped (no privy session)`);
+            }
+            return;
           }
+          // Authenticated kind but no session YET — leave the key unmarked so
+          // a post-sign-in call retries. (finally clears in-flight.)
           return;
         }
-        // Authenticated kinds without a token: not yet ready, drop.
-        return;
-      }
 
-      try {
         await verdictApi.postFunnelEvent(token, kind, attributes);
+        // Delivered exactly once.
+        deliveredRef.current.add(dedupeKey);
       } catch (err) {
-        // Swallow. Analytics MUST NOT bubble into the UI. We log at debug
-        // so a developer running `localStorage.debug = true` can trace
-        // funnel emit failures without spamming users' consoles.
+        // Transient failure — do NOT mark delivered; a later call retries.
+        // Analytics MUST NOT bubble into the UI; log at debug only.
         if (typeof console !== "undefined") {
           console.debug(`[funnel] emit ${kind} failed`, err);
         }
+      } finally {
+        inFlightRef.current.delete(dedupeKey);
       }
     },
     [],

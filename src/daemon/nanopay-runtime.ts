@@ -7,6 +7,7 @@ import {
 } from "../verdict/nanopay-config.js";
 import { createNanopaySignalResolver } from "../verdict/nanopay-signal-resolver.js";
 import { nanopayRouter } from "../verdict/routes/nanopay.js";
+import type { NanopayGatewayFactory } from "../verdict/nanopay-payment-gate.js";
 
 export interface DaemonNanopayRuntime {
   mount: (app: Express) => void;
@@ -26,12 +27,16 @@ export interface LoadDaemonNanopayRuntimeDeps {
   config: DaemonNanopayRuntimeConfig;
   logger?: Pick<Console, "log" | "warn">;
   now: () => Date;
+  /** Circle facilitator factory Adapter. Defaults to the real SDK facade;
+   *  inject a fake for end-to-end paid-inference tests through startDaemon. */
+  gatewayFactory?: NanopayGatewayFactory;
 }
 
 export interface LoadDaemonNanopayRuntimeFromEnvDeps
   extends LoadDaemonNanopayRuntimeConfigDeps {
   db: Database.Database;
   now: () => Date;
+  gatewayFactory?: NanopayGatewayFactory;
 }
 
 export function loadDaemonNanopayRuntimeConfig(
@@ -55,6 +60,7 @@ export function loadDaemonNanopayRuntime(
     config: config.config,
     logger,
     now: deps.now,
+    gatewayFactory: deps.gatewayFactory,
   });
 }
 
@@ -70,8 +76,9 @@ function createDaemonNanopayRuntime(deps: {
   config: NanopayRuntimeConfig;
   logger: Pick<Console, "log" | "warn">;
   now: () => Date;
+  gatewayFactory?: NanopayGatewayFactory;
 }): DaemonNanopayRuntime {
-  const { db, config, logger, now } = deps;
+  const { db, config, logger, now, gatewayFactory } = deps;
   const {
     network,
     bindingDomain,
@@ -96,17 +103,20 @@ function createDaemonNanopayRuntime(deps: {
     mount(app: Express) {
       app.use("/v2/nanopay", express.json({ limit: "16kb" }));
       app.use(
-        nanopayRouter({
-          db,
-          network,
-          bindingDomain,
-          sellerAddress,
-          now,
-          defaultPrice,
-          acceptNetworks,
-          resolvePipeline,
-          resolveLatestSealedCall,
-        }),
+        nanopayRouter(
+          {
+            db,
+            network,
+            bindingDomain,
+            sellerAddress,
+            now,
+            defaultPrice,
+            acceptNetworks,
+            resolvePipeline,
+            resolveLatestSealedCall,
+          },
+          gatewayFactory,
+        ),
       );
       logger.log(
         `[daemon] Nanopayments route mounted on POST /v2/nanopay/infer/:pipelineId (network=${network}, seller=${sellerAddress}, price=${defaultPrice})`,

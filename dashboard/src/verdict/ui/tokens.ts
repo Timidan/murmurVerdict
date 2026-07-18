@@ -3,7 +3,8 @@
 // Source: nothing-design skill (~/.claude/skills/nothing-design/references/)
 // Spec: docs/launchpad/V14_HANDOFF.md
 //
-// Discipline: 3 fonts (Doto / Space Grotesk / Space Mono), 1 accent (#FD3C3C),
+// Discipline: 3 fonts (Doto / Space Grotesk / Space Mono), 1 muted UI accent,
+// with the official logo dot pinned separately to its asset-pack red,
 // pill 999px buttons, ALL CAPS labels via Space Mono, ease-out only motion,
 // pure #000 OLED canvas (intentional override per Nothing brand).
 // ──────────────────────────────────────────────────────────────────────────────
@@ -61,7 +62,7 @@ export const text = {
 const buttonBase =
   "t-button inline-flex items-center justify-center gap-2 " +
   "rounded-full px-6 py-3 min-h-[44px] " +
-  "transition-colors duration-150 ease-out press-feedback " +
+  "transition-colors duration-[var(--dur-fast)] ease-out press-feedback " +
   "cursor-pointer";
 
 export const button = {
@@ -80,7 +81,7 @@ export const button = {
   /** Destructive — accent border + accent text, used for unfollow / dispute. */
   destructive:
     buttonBase +
-    " bg-transparent text-[var(--color-accent)] border border-[var(--color-accent)] " +
+    " bg-transparent text-[var(--color-accent-ink)] border border-[var(--color-accent-ink)] " +
     "hover:bg-[var(--color-accent-tint)]",
 } as const;
 
@@ -104,12 +105,12 @@ export const chip = {
   /** Loss / bad — accent. */
   loss:
     chipBase +
-    " bg-transparent border-[var(--color-accent)] text-[var(--color-accent)]",
+    " bg-transparent border-[var(--color-accent-ink)] text-[var(--color-accent-ink)]",
 
   /** Live / pending — accent + breathing pulse on motion-OK clients. */
   live:
     chipBase +
-    " bg-transparent border-[var(--color-accent)] text-[var(--color-accent)] nothing-live",
+    " bg-transparent border-[var(--color-accent-ink)] text-[var(--color-accent-ink)] nothing-live",
 
   /** Void — disabled grey. */
   void:
@@ -119,7 +120,7 @@ export const chip = {
   /** Rank badge — accent pill, used inline next to agent name. */
   rank:
     chipBase +
-    " bg-transparent border-[var(--color-accent)] text-[var(--color-accent)]",
+    " bg-transparent border-[var(--color-accent-ink)] text-[var(--color-accent-ink)]",
 } as const;
 
 /* ── Outcome routing helper ──────────────────────────────────────────────── */
@@ -165,5 +166,5 @@ export const side = {
   /** BUY — neutral white. Up-side has no special color in Nothing. */
   buy: "text-[var(--color-display)]",
   /** SELL — accent red, marks the call as one-way. */
-  sell: "text-[var(--color-accent)]",
+  sell: "text-[var(--color-accent-ink)]",
 } as const;

@@ -1,0 +1,279 @@
+/* ────────────────────────────────────────────────────────────────────────────
+   Murmur Verdict — AnimatedMark keyframes (v2, motion-corrected).
+   Drives components/AnimatedMark.tsx. CSS-only (no JS animation, no deps).
+
+   Traced from murmursample.mkv. ONE 6400ms master timeline (loop); every track
+   shares the duration so they stay phase-locked. `once` mode replays the same
+   timeline from the respawn beat via a negative start offset (--am-start) and a
+   single iteration, ending on the assembled mark.
+
+   Beat map (source of truth: docs/superpowers/specs/
+   2026-07-11-murmur-logo-animation-design.md) — percentages are ms ÷ 6400:
+
+     HOLD       0–12.5%   (800ms)   assembled lockup, subtle breathe
+     DISSOLVE   12.5–28%  (→1800)   bars group spins + shrinks; each bar height
+                                     collapses to its width (capsule → dot) then
+                                     fades; red dot sheds up-right; letters fly
+                                     out to the right
+     RESPAWN    28–33%    (→2100)   3 orbit-dots grow in at centre (triangle):
+                                     two cream + one red anchor
+     SWIRL      33–64%    (→4100)   orbit group rotates 540° — the hero moment;
+                                     dots pulse (separate infinite anim)
+     CONVERGE   64–78%    (→5000)   dots collapse to centre + fade; bars grow back
+                                     from dots as the group tilts upright; red
+                                     verdict square pops in bottom-right
+     WORDMARK   78–94%    (→6000)   MURMUR then .VERDICT letters pop in L→R
+     HOLD       94–100%   (→6400)   assembled lockup holds → seamless loop
+                                     (hold→hold, no fade needed)
+
+   Groups rotate about the mark centre (50,50) via `transform-box: view-box`.
+   Bars/dots scale about their own centre via `transform-box: fill-box`.
+   Base (no media query) = final assembled mark, so prefers-reduced-motion users
+   get the static lockup for free; motion is layered under `no-preference`.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.am-root {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-display);
+  line-height: 1;
+  /* Master start offset: loop plays the whole cycle; once skips the opening
+     hold+dissolve and starts at the respawn beat (1800ms), ending assembled. */
+  --am-start: 0ms;
+}
+.am-once {
+  --am-start: -1800ms;
+}
+
+/* Horizontal lockup: mark LEFT, wordmark to its RIGHT, vertically centred
+   (matches 05_murmur-verdict__wordmark-horizontal). */
+.am-stage {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6em;
+}
+
+.am-mark {
+  display: block;
+  overflow: visible; /* let the spinning bars / shed dot exceed the viewBox */
+}
+
+/* Groups spin about the viewBox centre (50,50). */
+.am-bars,
+.am-orbit {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+}
+
+/* Bars — base state is the settled full-height mark (reduced-motion default).
+   Each <rect> is drawn at its FINAL height H[i] centred on y=50; scaleY about
+   the fill-box centre morphs bar↔dot (dot = scaleY(--dot-scale) where
+   --dot-scale = width/height, i.e. capsule with height==width == circle). */
+.am-bar {
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleY(1);
+}
+
+/* Red verdict rest-dot — square, bottom-right; base = landed + opaque. */
+.am-dot {
+  fill: var(--color-brand-mark);
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 1;
+}
+
+/* Orbit cluster — hidden in the base (assembled) state. */
+.am-orbit {
+  opacity: 0;
+}
+.am-orbit-dot {
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.am-orbit-dot--red {
+  fill: var(--color-brand-mark);
+}
+
+/* Wordmark lockup — MURMUR then .VERDICT inline on a single baseline. */
+.am-lockup {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+}
+.am-word {
+  font-family: var(--font-sans);
+  font-weight: 300;
+  font-size: 1em; /* root font-size is set inline ∝ mark size */
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-display);
+  white-space: nowrap;
+}
+.am-verdict {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 0.62em;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--color-primary);
+  opacity: 0.55;
+  white-space: nowrap;
+}
+/* Per-letter — inline-block so translateY applies. */
+.am-ltr {
+  display: inline-block;
+  white-space: pre; /* preserve the leading "." space in .VERDICT */
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Motion — only when the user hasn't asked to reduce it.
+   ──────────────────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: no-preference) {
+  .am-bars,
+  .am-bar,
+  .am-dot,
+  .am-orbit,
+  .am-ltr {
+    animation-duration: 6400ms;
+    animation-timing-function: var(--ease-out, cubic-bezier(0.25, 0.1, 0.25, 1));
+    animation-fill-mode: both;
+    animation-delay: var(--am-start, 0ms);
+  }
+
+  .am-bars {
+    animation-name: am-bars-cycle;
+  }
+  .am-bar {
+    animation-name: am-bar-morph;
+  }
+  .am-dot {
+    animation-name: am-dot-cycle;
+  }
+  .am-orbit {
+    animation-name: am-orbit-cycle;
+  }
+  /* Letters: master timeline + per-letter stagger (constant offset → stable
+     across loops). --letter-delay is set inline by the component. */
+  .am-ltr {
+    animation-name: am-letter-pop;
+    animation-delay: calc(var(--am-start, 0ms) + var(--letter-delay, 0ms));
+  }
+
+  /* Orbit dots pulse — a SEPARATE short anim (independent of the master
+     timeline); only visible while the orbit group is shown. Loop mode pulses
+     forever; once mode caps iterations so nothing keeps compositing after
+     the orbit has collapsed (orbit is hidden past ~64% of 6400ms; 4 × 1200ms
+     + max 600ms stagger = 5400ms < 6400ms). */
+  .am-orbit-dot {
+    animation: am-orbit-pulse 1200ms var(--ease-out, ease-out);
+    animation-iteration-count: infinite;
+    animation-delay: var(--pulse-delay, 0ms);
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .am-once .am-orbit-dot {
+    animation-iteration-count: 4;
+  }
+
+  /* once → single pass, hold assembled. loop → forever. */
+  .am-once .am-bars,
+  .am-once .am-bar,
+  .am-once .am-dot,
+  .am-once .am-orbit,
+  .am-once .am-ltr {
+    animation-iteration-count: 1;
+  }
+  .am-loop .am-bars,
+  .am-loop .am-bar,
+  .am-loop .am-dot,
+  .am-loop .am-orbit,
+  .am-loop .am-ltr {
+    animation-iteration-count: infinite;
+  }
+}
+
+/* Reduced motion: static assembled mark; wordmark simply fades in once. */
+@media (prefers-reduced-motion: reduce) {
+  .am-lockup {
+    animation: am-reduce-fade 400ms var(--ease-out, cubic-bezier(0.25, 0.1, 0.25, 1)) both;
+  }
+}
+
+/* ── Keyframes ──────────────────────────────────────────────────────────── */
+
+/* Bars GROUP: hold → spin 150°+shrink & fade (dissolve) → hidden → reappear
+   tilted and right itself (reassemble) → hold (breathe). */
+@keyframes am-bars-cycle {
+  0%    { opacity: 1; transform: rotate(0deg)   scale(1); }
+  12.5% { opacity: 1; transform: rotate(0deg)   scale(1); }
+  25%   { opacity: 1; transform: rotate(150deg) scale(0.5); }
+  28%   { opacity: 0; transform: rotate(162deg) scale(0.4); }
+  64%   { opacity: 0; transform: rotate(-16deg) scale(0.6); }
+  66%   { opacity: 1; transform: rotate(-16deg) scale(0.72); }
+  78%   { opacity: 1; transform: rotate(0deg)   scale(1); }
+  94%   { opacity: 1; transform: rotate(0deg)   scale(1); }
+  97%   { opacity: 0.85; }
+  100%  { opacity: 1; transform: rotate(0deg)   scale(1); }
+}
+
+/* Bars PER-BAR: full → collapse to dot (dissolve) → stay dot → grow back to
+   full (reassemble) → hold. */
+@keyframes am-bar-morph {
+  0%    { transform: scaleY(1); }
+  12.5% { transform: scaleY(1); }
+  24%   { transform: scaleY(var(--dot-scale)); }
+  66%   { transform: scaleY(var(--dot-scale)); }
+  78%   { transform: scaleY(1); }
+  100%  { transform: scaleY(1); }
+}
+
+/* Orbit GROUP: hidden → grow in (respawn) → rotate 540° (swirl) → collapse to
+   centre + fade (converge) → hidden. */
+@keyframes am-orbit-cycle {
+  0%    { opacity: 0; transform: rotate(0deg)   scale(0.2); }
+  28%   { opacity: 0; transform: rotate(0deg)   scale(0.2); }
+  33%   { opacity: 1; transform: rotate(0deg)   scale(1); }
+  64%   { opacity: 1; transform: rotate(540deg) scale(1); }
+  67%   { opacity: 0; transform: rotate(560deg) scale(0.12); }
+  100%  { opacity: 0; transform: rotate(560deg) scale(0.12); }
+}
+
+/* Orbit dot pulse — gentle breathe (visible only during the swirl). */
+@keyframes am-orbit-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.16); }
+}
+
+/* Red verdict rest-dot: hold visible → shed up-right + fade (dissolve) →
+   hidden → pop in at rest bottom-right (converge) → hold. Units are SVG px. */
+@keyframes am-dot-cycle {
+  0%    { opacity: 1; transform: translate(0, 0)      scale(1); }
+  12.5% { opacity: 1; transform: translate(0, 0)      scale(1); }
+  22%   { opacity: 0; transform: translate(10px, -14px) scale(0.6); }
+  68%   { opacity: 0; transform: translate(0, 0)      scale(0.5); }
+  72%   { opacity: 1; transform: translate(0, 0)      scale(1.25); }
+  75%   { opacity: 1; transform: translate(0, 0)      scale(1); }
+  100%  { opacity: 1; transform: translate(0, 0)      scale(1); }
+}
+
+/* Wordmark letters: hold → fly out right + fade (dissolve) → hidden below →
+   pop up in (reveal) → hold. Per-letter --letter-delay staggers L→R. em units
+   scale with the mark. */
+@keyframes am-letter-pop {
+  0%    { opacity: 1; transform: translate(0, 0); }
+  12.5% { opacity: 1; transform: translate(0, 0); }
+  22%   { opacity: 0; transform: translate(0.6em, 0); }
+  78%   { opacity: 0; transform: translate(0, 0.35em); }
+  90%   { opacity: 1; transform: translate(0, 0); }
+  100%  { opacity: 1; transform: translate(0, 0); }
+}
+
+@keyframes am-reduce-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}

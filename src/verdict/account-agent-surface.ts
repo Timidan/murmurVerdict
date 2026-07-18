@@ -8,10 +8,9 @@ import {
 } from "./agent-identity.js";
 import {
   AgentAlreadyOwnedError,
-  getControllerWalletForAgent,
   linkAgentToAccount,
-  listAccountAgents,
 } from "./auth/accounts.js";
+import { listAccountAgentsWithSetup } from "./auth/account-ownership.js";
 import { agentsRepo } from "./repos/agents-repo.js";
 import {
   AgentSlugSchema,
@@ -31,7 +30,7 @@ export interface AccountAgentSurfaceBase {
 }
 
 export interface AccountAgentWriteClock {
-  now: () => Date;
+  operationInstant: Date;
 }
 
 export interface AccountAgentReadInstant {
@@ -75,8 +74,7 @@ export function createAccountAgentResponse(
   if (!parsed.success) {
     throwInvalidRequest(parsed.error.issues);
   }
-  const operationNow = input.now();
-  const ts = nowIso(() => operationNow);
+  const ts = nowIso(() => input.operationInstant);
   const agentId = input.newAgentId?.() ?? randomUUID();
   try {
     input.db.transaction(() => {
@@ -92,7 +90,7 @@ export function createAccountAgentResponse(
         },
       );
       linkAgentToAccount(input.db, input.accountId, agentId, {
-        linkedAt: operationNow,
+        linkedAt: input.operationInstant,
       });
     })();
   } catch (err) {
@@ -147,36 +145,26 @@ export function listAccountAgentsResponse(
     }>;
   };
 } {
-  const rows = listAccountAgents(input.db, input.accountId);
+  // One joined read in Account Ownership Records replaces the former
+  // per-agent fan-out (agent row + controller wallet + raw payout SQL). The
+  // Surface keeps only response shaping: derive the public controller-wallet
+  // projection against the served-at instant.
+  const rows = listAccountAgentsWithSetup(input.db, input.accountId);
   const readClock = () => input.servedAt;
-  const destRowStmt = input.db.prepare(
-    "SELECT destination_address, destination_address_updated_at FROM agents WHERE agent_id = ?",
-  );
-  const agents = rows.map((row) => {
-    const agent = agentsRepo.byId(input.db, row.agent_id);
-    const controller = getControllerWalletForAgent(input.db, row.agent_id);
-    const dest = destRowStmt.get(row.agent_id) as
-      | {
-          destination_address: string | null;
-          destination_address_updated_at: string | null;
-        }
-      | undefined;
-    return {
-      agent_id: row.agent_id,
-      linked_at: row.created_at,
-      display_slug: agent?.display_slug ?? null,
-      display_name: agent?.display_name ?? null,
-      kind: agent?.kind ?? null,
-      wallet_address: agent?.wallet_address ?? null,
-      chain_id: agent?.chain_id ?? null,
-      controller_wallet: controller
-        ? publicControllerWalletRow(controller, readClock)
-        : null,
-      destination_address: dest?.destination_address ?? null,
-      destination_address_updated_at:
-        dest?.destination_address_updated_at ?? null,
-    };
-  });
+  const agents = rows.map((row) => ({
+    agent_id: row.agent_id,
+    linked_at: row.linked_at,
+    display_slug: row.display_slug,
+    display_name: row.display_name,
+    kind: row.kind,
+    wallet_address: row.wallet_address,
+    chain_id: row.chain_id,
+    controller_wallet: row.controller_wallet
+      ? publicControllerWalletRow(row.controller_wallet, readClock)
+      : null,
+    destination_address: row.destination_address,
+    destination_address_updated_at: row.destination_address_updated_at,
+  }));
   return { status: 200, body: { agents } };
 }
 

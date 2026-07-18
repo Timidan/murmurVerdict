@@ -12,1026 +12,191 @@
 // split-deploy contract.
 const API_URL = (import.meta.env.VITE_VERDICT_API_URL?.trim() || "") as string;
 
-// Current agent taxonomy after removing scraping and public identity
-// onboarding. Keep this in sync with the backend schema in
-// src/verdict/schema.ts:AgentKindSchema.
-export type AgentKind =
-  | "benchmark"
-  // Canonical Privy-owned default — was "casual" pre-Wave-3.
-  | "agent"
-  | "internal_test"
-  // V2 §7.1 attested tier — Olas Service Registry bond + Safe multisig.
-  | "attested";
-
-export interface LeaderboardRow {
-  agent_id: string;
-  display_slug: string;
-  display_name: string;
-  kind: AgentKind;
-  tier: "main" | "provisional";
-  rank: number | null;
-  verdict_score: number | null;
-  verdict_score_lb?: number | null;
-  resolved_calls: number;
-  win_rate: number | null;
-  pending_calls: number;
-  last_resolved_at: string | null;
-}
-
-export interface MetaResponse {
-  schema_version: number;
-  scoring_version: number;
-  strategy_tags: string[];
-  assets: string[];
-  verified_volume_24h: { count: number; since_iso: string };
-  privacy?: {
-    mode: "sealed_fhenix";
-    threshold_network: string;
-    pending_verdicts_private: boolean;
-    public_reveal_after_horizon: boolean;
-  };
-  /** Present when the daemon has a Fhenix chain configured. The Controller
-   *  Wallet binding MUST use this chain_id; the backend enforces equality
-   *  with the Fhenix event chain. */
-  fhenix?: {
-    chain_id: string;
-    chain_id_numeric: number;
-    contract_address: string | null;
-  };
-}
-
-export interface AgentProfile {
-  agent_id: string;
-  display_slug: string;
-  display_name: string;
-  kind: LeaderboardRow["kind"];
-  bio?: string;
-  created_at: string;
-  /** Lowercase 0x+40hex; top-level since P1.5 phase-1. */
-  wallet_address?: string;
-  /** CAIP-2, e.g. eip155:8453. */
-  chain_id?: string;
-}
-
-export interface AgentCallRow {
-  call_id: string;
-  status: string;
-  privacy_mode?: string;
-  commit_hash?: string | null;
-  acceptance_receipt_hash?: string | null;
-  asset_id?: string;
-  side?: "BUY" | "SELL";
-  horizon_hours?: number;
-  confidence?: number;
-  submitted_at?: string;
-  accepted_at: string;
-  outcome: string | null;
-  call_score: number | null;
-  signed_return: string | null;
-  resolved_at: string | null;
-}
-
-export interface FullCall {
-  submission: {
-    call_id: string;
-    agent_id: string;
-    client_order_id: string;
-    privacy_mode?: string;
-    commit_hash?: string | null;
-    asset_id?: string;
-    side?: "BUY" | "SELL";
-    horizon_hours?: number;
-    confidence?: number;
-    submitted_at?: string;
-    accepted_at: string;
-    status: string;
-    rationale?: string | null;
-    strategy_tag?: string | null;
-  };
-  // Wave 4b — receipts subsystem dropped (acceptance_receipt no longer
-  // returned by the daemon). Wave 4b-2 — preflight metadata
-  // (murmur_score / murmur_playbook / risk_flags / market_regime /
-  // data_freshness_seconds) was Santiment-derived and is no longer
-  // emitted by the daemon either.
-  t0: { t0: string; p0: string; feed: string } | null;
-  resolution: {
-    t1: string;
-    p1: string;
-    t1_feed: string;
-    signed_return: string;
-    outcome: string;
-    call_score: number | null;
-    resolved_at: string;
-  } | null;
-  // Sealed-Fhenix lifecycle projection. The daemon emits this sub-object
-  // only when the call's privacy_mode is "sealed_fhenix" (see
-  // src/verdict/api.ts:2254-2278). Pre-reveal it carries only opaque
-  // ciphertext handles + lifecycle timestamps. Post-publish it gains a
-  // `revealed_verdict` sub-object with plaintext binary_index /
-  // confidence_bps. Field names + nullability mirror the daemon
-  // projection verbatim — operator-blind invariant means revealed_verdict
-  // is absent (not null) pre-reveal.
-  fhenix?: {
-    chain_id: number;
-    contract_address: string;
-    onchain_call_id: string;
-    binary_index_ct_hash: string;
-    confidence_ct_hash: string;
-    reveal_open_at: string;
-    reveal_status: "pending" | "revealed" | "invalid" | "missed";
-    invalid_reason: string | null;
-    terminal_at: string | null;
-    revealed_at: string | null;
-    revealed_verdict?: {
-      binary_index: number;
-      confidence_bps: number;
-      confidence: number;
-    };
-  };
-}
-
-// Wave 4b-2 — MarketPreflightSnapshot dropped alongside the Santiment
-// integration. The /v1/market/preflight endpoint no longer exists.
-
-export interface TodayFeedRow {
-  call_id: string;
-  agent_id: string;
-  agent_slug: string;
-  agent_kind: string;
-  privacy_mode: string;
-  commit_hash?: string | null;
-  acceptance_receipt_hash?: string | null;
-  side?: "BUY" | "SELL";
-  asset_id?: string;
-  horizon_hours?: number;
-  confidence?: number;
-  submitted_at?: string;
-  accepted_at: string;
-  status: string;
-  outcome?: string | null;
-  signed_return?: string | null;
-  call_score?: number | null;
-  resolved_at?: string | null;
-  t1_estimate?: string | null;
-}
-
-export interface TodayMover {
-  agent_id: string;
-  agent_slug: string;
-  display_name: string;
-  rank: number | null;
-  verdict_score: number | null;
-  delta_24h_calls: number;
-  delta_24h_wins: number;
-}
-
-export interface TodayFeed {
-  schema_version: 1;
-  served_at: string;
-  accepted_recent: TodayFeedRow[];
-  pending_resolution: TodayFeedRow[];
-  resolved_recent: TodayFeedRow[];
-  movers: TodayMover[];
-  totals: {
-    accepted_24h: number;
-    resolved_24h: number;
-    wins_24h: number;
-    losses_24h: number;
-    void_24h: number;
-  };
-}
-
-/* ── Phase 3b — markets registry + per-(agent, market) grid ─────────────── */
-
-export type MarketStatus = "draft" | "listed" | "frozen" | "retired";
-export type MarketResolutionClass =
-  | "event_binary"
-  | "event_basket"
-  | "price_threshold"
-  | "price_direction"
-  | "range_prediction"
-  | "sports_match"
-  | "ranking_outcome"
-  | "yield_or_savings"
-  | "risk_avoidance";
-export type MarketSupportStatus = "live" | "reserved";
-export type MarketPayoffModel =
-  | "binary"
-  | "categorical"
-  | "scalar"
-  | "range"
-  | "ranking";
-export type MarketSettlementModel =
-  | "price_oracle"
-  | "venue_adapter"
-  | "agent_feed"
-  | "hybrid";
-export type MarketOracleHealth = "ok" | "warn" | "fail";
-
-export interface MarketOracleRef {
-  role: "primary" | "fallback";
-  oracle_id: string;
-  status: MarketStatus | "missing";
-  kind: string | null;
-  adapter: string | null;
-  chain: string | null;
-  asset_id: string | null;
-  asset_match: boolean | null;
-}
-
-export interface MarketOracleSummary {
-  health: MarketOracleHealth;
-  primary: MarketOracleRef;
-  fallback: MarketOracleRef | null;
-}
-
-export interface MarketTaxonomyClass {
-  resolution_class: MarketResolutionClass;
-  label: string;
-  support_status: MarketSupportStatus;
-  payoff_model: MarketPayoffModel;
-  settlement_model: MarketSettlementModel;
-  default_scoring_kind: string;
-  compatible_market_kinds: string[];
-  compatible_market_families: string[];
-  compatible_adapters: string[];
-}
-
-export interface MarketTaxonomyAssignment extends MarketTaxonomyClass {
-  classification_source: "config" | "market_kind" | "fallback";
-}
-
-export interface MarketTaxonomyResponse {
-  version: number;
-  classes: MarketTaxonomyClass[];
-  live_resolution_classes: MarketResolutionClass[];
-  reserved_resolution_classes: MarketResolutionClass[];
-}
-
-export interface MarketRow {
-  market_id: string; // e.g., "eth.1h"
-  asset_id: string; // e.g., "base:ETH:USD"
-  market_kind: string; // "direction_binary"
-  horizon_seconds: number;
-  primary_oracle_id: string;
-  fallback_oracle_id: string | null;
-  void_band: string; // decimal as string
-  status: MarketStatus;
-  market_config_version: number;
-  market_taxonomy?: MarketTaxonomyAssignment;
-  oracles?: MarketOracleSummary;
-  // Backend may include additional fields; preserve them through.
-  [extra: string]: unknown;
-}
-
-// Phase 10 — per-family + cross-family LB row shapes. Keep aligned with
-// src/verdict/leaderboard.ts AgentFamilyRow / AgentCrossFamilyRow.
-export interface AgentFamilyRow {
-  agent_id: string;
-  display_slug: string;
-  display_name: string;
-  kind: LeaderboardRow["kind"];
-  market_family: string;
-  verdict_score: number | null;
-  verdict_score_lb: number | null;
-  resolved_calls: number;
-  pending_calls: number;
-  win_rate: number | null;
-  last_resolved_at: string | null;
-  family_main_tier: boolean;
-  distinct_markets: number;
-}
-
-export interface AgentCrossFamilyRow {
-  agent_id: string;
-  display_slug: string;
-  display_name: string;
-  kind: LeaderboardRow["kind"];
-  cross_family_score: number | null;
-  general_score: number | null;
-  families: Array<{
-    market_family: string;
-    verdict_score: number | null;
-    verdict_score_lb: number | null;
-    resolved_calls: number;
-    qualifies: boolean;
-  }>;
-  qualifying_families: number;
-  available_families: number;
-  coverage_ratio: number;
-  cross_family_main_tier: boolean;
-}
-
-export interface AgentMarketRow {
-  agent_id: string;
-  display_slug: string;
-  display_name: string;
-  kind: AgentKind;
-  market_id: string;
-  verdict_score: number | null;
-  verdict_score_lb: number | null;
-  resolved_calls: number;
-  pending_calls: number;
-  win_rate: number | null;
-  last_resolved_at: string | null;
-  /** resolved_calls >= 20 */
-  market_main_tier: boolean;
-  /** Chronological per-call score series for this market, powering the trend
-   * sparkline. Nulls mark void / oracle_unavailable resolutions; consumers
-   * filter them out before CompactSparkline (which takes number[]), so a null
-   * is a dropped point, not a rendered gap. Optional because older daemon
-   * versions don't project it — consume as `?.filter() ?? []` defensively. */
-  call_scores?: (number | null)[];
-}
-
-export interface AgentGridSummary {
-  agent_id: string;
-  display_slug: string;
-  display_name: string;
-  kind: AgentKind;
-}
-
-/* ── Phase 7a — casual-tier account session + agent list ────────────────── */
-
-/** Response shape for POST /v1/account/session (see src/verdict/routes/account.ts). */
-export interface AccountSession {
-  account_id: string;
-  created: boolean;
-  privy_user_id: string;
-}
-
 /**
- * One row from GET /v1/account/agents. Fields are nullable because the
- * agents bridge may exist before the agent row is fully hydrated, but
- * after Phase 4 the only nullable case in practice is `display_name`.
+ * Normalized API base — trailing slash stripped — for the few call sites that
+ * build a raw URL string by hand rather than going through the typed
+ * `verdictApi.*` methods (SSE EventSource, OG/badge `<img>` src, share links).
+ * When VITE_VERDICT_API_URL is unset this is "" — the empty string, which
+ * makes those URLs RELATIVE so they resolve against the page's own origin (the
+ * split-deploy fallback documented above). Prefer the typed methods for JSON
+ * endpoints; reach for API_BASE only where a bare URL string is unavoidable.
  */
-export interface AccountAgent {
-  agent_id: string;
-  linked_at: string;
-  display_slug: string | null;
-  display_name: string | null;
-  /**
-   * Wave 3 — this is "agent" for accounts created via this flow (the
-   * canonical Privy-owned default). Older legacy bridges may surface
-   * other AgentKind values, or stale literals ("casual") from pre-Wave-3
-   * rows; UI should treat null defensively and let TierBadge's `unknown`
-   * fallback render anything outside the current 4-value enum.
-  */
-  kind: string | null;
-  wallet_address: string | null;
-  chain_id: string | null;
-  controller_wallet: {
-    wallet_address: string;
-    chain_id: string;
-    wallet_kind: "embedded" | "external";
-    provider: string | null;
-    created_at: string;
-    last_attested_at: string;
-    reattestation_due_at: string;
-    reattestation_overdue: boolean;
-    reattestation_interval_seconds: number;
-  } | null;
-  /**
-   * Phase 7c — payout destination + last-change timestamp surfaced on
-   * the account-scoped list so the settings UI can derive the §7.4 24h
-   * cooldown without an extra round-trip. Null on agents that have never
-   * had a destination_address set.
-   */
-  destination_address: string | null;
-  destination_address_updated_at: string | null;
-}
+export const API_BASE = API_URL.replace(/\/$/, "");
 
-/* ── Phase 7b — agent creation + api-key mint request/response shapes ───── */
+// ─────────────────────────────────────────────────────────────────────────────
+// REST wire types.
+//
+// These DTOs are NO LONGER hand-copied here. They live in the repo's shared
+// wire-type modules (src/types/wire-*.ts), imported via the `@shared` alias, so
+// the daemon and the dashboard consume the SAME definitions — exactly the way
+// the SSE channel already shares src/types/events.ts. The daemon pins each of
+// these against its authoritative (zod-inferred / presenter) type at build time
+// in src/verdict/wire-contract-guards.ts, so a daemon field rename becomes a
+// daemon BUILD failure instead of shipping as `undefined` in production.
+//
+// Re-exported below under their historical names so every existing dashboard
+// import site (`import { type LeaderboardRow } from "../api"`) keeps working.
+// ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Request body for POST /v1/account/agents. Validation mirrors the
- * server-side zod schema in src/verdict/routes/account.ts:CreateAgentSchema —
- *   · `display_slug` matches AgentSlugSchema (3–32 chars, lowercase alphanum
- *     segments joined by single dashes)
- *   · `display_name` 1–120 chars (UI clamps to 64 per design guidance)
- *   · `bio` optional, ≤500 chars on the server (UI clamps to 280)
- */
-export interface CreateAgentRequest {
-  display_slug: string;
-  display_name: string;
-  bio?: string;
-}
+export type {
+  WireAgentKind as AgentKind,
+  WireAgentProfile as AgentProfile,
+  WireAgentGridSummary as AgentGridSummary,
+} from "@shared/wire-agent";
 
-/**
- * Response body for POST /v1/account/agents. The handler responds 201 with
- * the freshly-inserted row; the client uses `display_slug` to navigate
- * to the agent's integration page.
- */
-export interface CreateAgentResponse {
-  agent_id: string;
-  display_slug: string;
-  display_name: string;
-  kind: "agent";
-  created_at: string;
-}
+export type {
+  WireLeaderboardRow as LeaderboardRow,
+  WireAgentFamilyRow as AgentFamilyRow,
+  WireAgentCrossFamilyRow as AgentCrossFamilyRow,
+  WireAgentMarketRow as AgentMarketRow,
+} from "@shared/wire-leaderboard";
 
-export interface BindWalletResponse {
-  agent_id: string;
-  display_slug: string;
-  wallet_address: string;
-  chain_id: string;
-  wallet_kind: "embedded" | "external";
-  provider: string | null;
-  created_at: string;
-  last_attested_at: string;
-  reattestation_due_at: string;
-  reattestation_overdue: boolean;
-  reattestation_interval_seconds: number;
-  idempotent_hit: boolean;
-}
+export type {
+  WireAgentCallRow as AgentCallRow,
+  WireFullCall as FullCall,
+  WireMarketCallRow as MarketCallRow,
+} from "@shared/wire-call";
 
-export interface ControllerWalletChallengeResponse {
-  agent_id: string;
-  display_slug: string;
-  wallet_address: string;
-  chain_id: string;
-  wallet_kind: "embedded" | "external";
-  provider: string | null;
-  authorization_issued_at: string;
-  message: string;
-}
+export type {
+  WireTodayFeed as TodayFeed,
+  WireTodayFeedRow as TodayFeedRow,
+  WireTodayMover as TodayMover,
+} from "@shared/wire-feed";
 
-export interface ControllerWalletReattestationChallengeResponse {
-  agent_id: string;
-  display_slug: string;
-  controller_wallet_address: string;
-  controller_chain_id: string;
-  attestation_nonce: string;
-  authorization_issued_at: string;
-  previous_last_attested_at: string;
-  previous_reattestation_due_at: string;
-  reattestation_interval_seconds: number;
-  message: string;
-}
+export type {
+  WireMarketStatus as MarketStatus,
+  WireMarketResolutionClass as MarketResolutionClass,
+  WireMarketSupportStatus as MarketSupportStatus,
+  WireMarketPayoffModel as MarketPayoffModel,
+  WireMarketSettlementModel as MarketSettlementModel,
+  WireMarketOracleHealth as MarketOracleHealth,
+  WireMarketOracleRef as MarketOracleRef,
+  WireMarketOracleSummary as MarketOracleSummary,
+  WireMarketTaxonomyClass as MarketTaxonomyClass,
+  WireMarketTaxonomyAssignment as MarketTaxonomyAssignment,
+  WireMarketTaxonomyResponse as MarketTaxonomyResponse,
+  WireMarketVenuePricePoint as MarketVenuePricePoint,
+  WireMarketVenueSnapshot as MarketVenueSnapshot,
+  WireMarketRow as MarketRow,
+} from "@shared/wire-market";
 
-export interface ControllerWalletReattestationResponse {
-  agent_id: string;
-  display_slug: string;
-  attestation_id: string;
-  controller_wallet: NonNullable<AccountAgent["controller_wallet"]>;
-}
+export type { WireMetaResponse as MetaResponse } from "@shared/wire-meta";
 
-export interface RuntimeKeyPolicy {
-  allowed_market_ids?: string[];
-  max_calls_per_hour?: number;
-  max_calls_per_day?: number;
-  feed_packets?: boolean;
-  notes?: string;
-}
+export type {
+  WireAccountSession as AccountSession,
+  WireAccountAgent as AccountAgent,
+  WireCreateAgentRequest as CreateAgentRequest,
+  WireCreateAgentResponse as CreateAgentResponse,
+  WireBindWalletResponse as BindWalletResponse,
+  WireControllerWalletChallengeResponse as ControllerWalletChallengeResponse,
+  WireControllerWalletReattestationChallengeResponse as ControllerWalletReattestationChallengeResponse,
+  WireControllerWalletReattestationResponse as ControllerWalletReattestationResponse,
+  WireRuntimeKeyPolicy as RuntimeKeyPolicy,
+  WireRuntimeKeyRow as RuntimeKeyRow,
+  WireRuntimeKeyChallengeResponse as RuntimeKeyChallengeResponse,
+  WireRuntimeKeyMintResponse as RuntimeKeyMintResponse,
+  WireMintApiKeyResponse as MintApiKeyResponse,
+  WireApiKeyRow as ApiKeyRow,
+  WireRotateApiKeyResponse as RotateApiKeyResponse,
+  WirePatchDestinationResponse as PatchDestinationResponse,
+  WireDestinationCooldownError as DestinationCooldownError,
+  WireFunnelEventKind as FunnelEventKind,
+  WireAdminRefSender as AdminRefSender,
+} from "@shared/wire-account";
 
-export interface RuntimeKeyRow {
-  runtime_key_id: string;
-  runtime_key_prefix: string;
-  label: string | null;
-  policy: RuntimeKeyPolicy;
-  policy_hash: string;
-  controller_wallet_address: string;
-  controller_chain_id: string;
-  created_at: string;
-  expires_at: string | null;
-  revoked_at: string | null;
-  revoke_reason: string | null;
-}
+export type {
+  WireGatewayAttemptStatus as GatewayAttemptStatus,
+  WireGatewayOperatorAttempt as GatewayOperatorAttempt,
+  WireGatewayOperatorFeedAttempt as GatewayOperatorFeedAttempt,
+  WireGatewayTelemetrySummary as GatewayTelemetrySummary,
+  WireGatewayOperatorSnapshot as GatewayOperatorSnapshot,
+  WireGatewayTickResponse as GatewayTickResponse,
+  WireGatewayRetryResponse as GatewayRetryResponse,
+  WireLiveCanaryStatus as LiveCanaryStatus,
+  WireLiveCanaryName as LiveCanaryName,
+  WireLiveCanaryCheck as LiveCanaryCheck,
+  WireLiveCanarySnapshot as LiveCanarySnapshot,
+  WireFhenixRevealStatus as FhenixRevealStatus,
+  WireFhenixLifecycleRow as FhenixLifecycleRow,
+  WireFhenixLifecycleSnapshot as FhenixLifecycleSnapshot,
+  WireControllerIdentityStatus as ControllerIdentityStatus,
+  WireControllerIdentityRow as ControllerIdentityRow,
+  WireControllerIdentitySnapshot as ControllerIdentitySnapshot,
+  WireOperatorAlertSeverity as OperatorAlertSeverity,
+  WireOperatorAlertStatus as OperatorAlertStatus,
+  WireOperatorAlertDeliveryStatus as OperatorAlertDeliveryStatus,
+  WireOperatorAlert as OperatorAlert,
+  WireOperatorAlertsSnapshot as OperatorAlertsSnapshot,
+  WireOperatorAlertTickResponse as OperatorAlertTickResponse,
+  WireFeedSlaIncidentStatus as FeedSlaIncidentStatus,
+  WireFeedSlaIncident as FeedSlaIncident,
+  WireFeedAvailabilitySummary as FeedAvailabilitySummary,
+  WireFeedAvailabilityProof as FeedAvailabilityProof,
+  WireFeedSlaAdminResponse as FeedSlaAdminResponse,
+  WireFeedSlaTickResponse as FeedSlaTickResponse,
+} from "@shared/wire-operator";
 
-export interface RuntimeKeyChallengeResponse {
-  agent_id: string;
-  display_slug: string;
-  controller_wallet_address: string;
-  controller_chain_id: string;
-  policy_hash: string;
-  authorization_nonce: string;
-  authorization_issued_at: string;
-  expires_at: string | null;
-  message: string;
-}
-
-export interface RuntimeKeyMintResponse {
-  runtime_key_id: string;
-  secret: string;
-  runtime_key_prefix: string;
-  label: string | null;
-  policy_hash: string;
-  created_at: string;
-  expires_at: string | null;
-  warning?: string;
-}
-
-export type GatewayAttemptStatus =
-  | "queued"
-  | "submitted"
-  | "confirmed"
-  | "accepted"
-  | "failed_retryable"
-  | "failed_terminal";
-
-export interface GatewayOperatorAttempt {
-  attempt_id: string;
-  status: GatewayAttemptStatus;
-  account_id: string;
-  agent_id: string;
-  runtime_key_id: string | null;
-  runtime_key_policy_hash: string;
-  chain_id: number;
-  contract_address: string;
-  relayer_address: string;
-  agent_wallet_address: string;
-  market_id: string;
-  market_id_hash: string;
-  market_ref_protocol: string;
-  market_config_version: number;
-  client_order_id: string;
-  client_nonce: string;
-  tx_hash: string | null;
-  submit_log_index: number | null;
-  submit_block_number: number | null;
-  onchain_call_id: string | null;
-  call_id: string | null;
-  attempt_count: number;
-  next_attempt_at: string;
-  last_error: string | null;
-  broadcast_started_at: string | null;
-  broadcast_latency_ms: number | null;
-  receipt_observed_at: string | null;
-  receipt_latency_ms: number | null;
-  latest_block_latency_ms: number | null;
-  receipt_status: "success" | "reverted" | null;
-  receipt_block_number: number | null;
-  latest_block_number: number | null;
-  confirmations_observed: number | null;
-  gas_used: string | null;
-  effective_gas_price_wei: string | null;
-  last_rpc_error: string | null;
-  submitted_at: string;
-  accepted_at: string | null;
-  reveal_open_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GatewayOperatorFeedAttempt {
-  attempt_id: string;
-  status: GatewayAttemptStatus;
-  account_id: string;
-  agent_id: string;
-  runtime_key_id: string | null;
-  runtime_key_policy_hash: string;
-  chain_id: number;
-  contract_address: string;
-  relayer_address: string;
-  agent_wallet_address: string;
-  feed_id: string;
-  feed_id_hash: string;
-  market_id: string | null;
-  market_id_hash: string;
-  packet_kind: string;
-  sequence: number;
-  payload_schema: string;
-  client_order_id: string;
-  client_nonce: string;
-  tx_hash: string | null;
-  submit_log_index: number | null;
-  submit_block_number: number | null;
-  onchain_packet_id: string | null;
-  packet_id: string | null;
-  action_ct_hash: string | null;
-  signal_ct_hash: string | null;
-  attempt_count: number;
-  next_attempt_at: string;
-  last_error: string | null;
-  broadcast_started_at: string | null;
-  broadcast_latency_ms: number | null;
-  receipt_observed_at: string | null;
-  receipt_latency_ms: number | null;
-  latest_block_latency_ms: number | null;
-  receipt_status: "success" | "reverted" | null;
-  receipt_block_number: number | null;
-  latest_block_number: number | null;
-  confirmations_observed: number | null;
-  gas_used: string | null;
-  effective_gas_price_wei: string | null;
-  last_rpc_error: string | null;
-  submitted_at: string;
-  delivery_deadline_at: string | null;
-  accepted_at: string | null;
-  reveal_after: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GatewayTelemetrySummary {
-  avg_broadcast_latency_ms: number | null;
-  avg_receipt_latency_ms: number | null;
-  avg_latest_block_latency_ms: number | null;
-  max_confirmations_observed: number | null;
-  rpc_errors: number;
-  last_receipt_observed_at: string | null;
-}
-
-export interface GatewayOperatorSnapshot {
-  schema_version: number;
-  served_at: string;
-  configured: boolean;
-  config: {
-    chain_id: number;
-    contract_address: string;
-    relayer_address: string;
-    confirmations: number;
-    retry_base_ms: number;
-    retry_max_ms: number;
-    max_attempts: number;
-    stuck_after_ms: number;
-  } | null;
-  queues: {
-    due_for_broadcast: number;
-    submitted_awaiting_confirmation: number;
-    confirmed_awaiting_acceptance: number;
-    stuck: number;
-    stale_before: string;
-  };
-  status_counts: Record<GatewayAttemptStatus, number>;
-  telemetry: GatewayTelemetrySummary;
-  recent_attempts: GatewayOperatorAttempt[];
-  stuck_attempts: GatewayOperatorAttempt[];
-  feed_queues: {
-    due_for_broadcast: number;
-    submitted_awaiting_confirmation: number;
-    confirmed_awaiting_acceptance: number;
-    stuck: number;
-    stale_before: string;
-  };
-  feed_status_counts: Record<GatewayAttemptStatus, number>;
-  feed_telemetry: GatewayTelemetrySummary;
-  feed_recent_attempts: GatewayOperatorFeedAttempt[];
-  feed_stuck_attempts: GatewayOperatorFeedAttempt[];
-}
-
-export interface GatewayTickResponse {
-  schema_version: number;
-  served_at: string;
-  result: {
-    broadcasted: number;
-    confirmed: number;
-    accepted: number;
-    failed: number;
-  };
-  gateway: GatewayOperatorSnapshot;
-}
-
-export interface GatewayRetryResponse {
-  schema_version: number;
-  served_at: string;
-  attempt_id: string;
-  status: GatewayAttemptStatus;
-  tx_hash: string | null;
-  call_id: string | null;
-  next_attempt_at: string;
-  idempotent_hit: boolean;
-}
-
-export type LiveCanaryStatus = "ok" | "fail" | "disabled";
-export type LiveCanaryName = "fhenix_rpc" | "polymarket_gamma";
-
-export interface LiveCanaryCheck {
-  name: LiveCanaryName;
-  status: LiveCanaryStatus;
-  checked_at: string;
-  latency_ms: number | null;
-  details: Record<string, string | number | boolean | null>;
-  error: string | null;
-}
-
-export interface LiveCanarySnapshot {
-  schema_version: number;
-  served_at: string;
-  ok: boolean;
-  checks: LiveCanaryCheck[];
-}
-
-export type FhenixRevealStatus = "pending" | "revealed" | "invalid" | "missed";
-
-export interface FhenixLifecycleRow {
-  call_id: string;
-  chain_id: number;
-  contract_address: string;
-  onchain_call_id: string;
-  reveal_status: FhenixRevealStatus;
-  reveal_open_at: string;
-  revealed_at: string | null;
-  terminal_at: string | null;
-  invalid_reason: string | null;
-  reveal_tx_hash: string | null;
-  reveal_block_number: number | null;
-  agent_id: string;
-  agent_slug: string | null;
-  market_id: string | null;
-  submission_status: string;
-  overdue_grace: boolean;
-  resolution: {
-    outcome: string;
-    call_score: number | null;
-    resolved_at: string | null;
-  } | null;
-}
-
-export interface FhenixLifecycleSnapshot {
-  schema_version: number;
-  served_at: string;
-  configured: {
-    verifier: boolean;
-    watcher: boolean;
-    reveal_grace_seconds: number;
-  };
-  counts: Record<FhenixRevealStatus, number>;
-  queues: {
-    pending_not_open: number;
-    open_pending: number;
-    overdue_grace: number;
-    terminal_failures: number;
-    needs_attention: number;
-    grace_cutoff: string;
-  };
-  cursors: Array<{
-    chain_id: number;
-    contract_address: string;
-    event_name: string;
-    last_block_number: number;
-    updated_at: string;
-  }>;
-  event_counts: Record<string, number>;
-  needs_attention: FhenixLifecycleRow[];
-  recent: FhenixLifecycleRow[];
-}
-
-export type ControllerIdentityStatus = "current" | "due_soon" | "overdue" | "missing_due_at";
-
-export interface ControllerIdentityRow {
-  agent_id: string;
-  account_id: string;
-  agent_slug: string | null;
-  wallet_address: string;
-  chain_id: string;
-  wallet_kind: string;
-  provider: string | null;
-  created_at: string;
-  last_attested_at: string | null;
-  reattestation_due_at: string | null;
-  total_runtime_keys: number;
-  active_runtime_keys: number;
-  revoked_runtime_keys: number;
-  last_runtime_key_created_at: string | null;
-  status: ControllerIdentityStatus;
-  reattestation_overdue: boolean;
-  reattestation_due_soon: boolean;
-}
-
-export interface ControllerIdentitySnapshot {
-  schema_version: number;
-  served_at: string;
-  due_soon_at: string;
-  counts: {
-    controller_wallets: number;
-    overdue: number;
-    due_soon: number;
-    active_runtime_keys: number;
-    needs_attention: number;
-  };
-  needs_attention: ControllerIdentityRow[];
-  rows: ControllerIdentityRow[];
-}
-
-export type OperatorAlertSeverity = "info" | "warning" | "critical";
-export type OperatorAlertStatus = "open" | "resolved";
-export type OperatorAlertDeliveryStatus = "pending" | "delivered" | "failed";
-
-export interface OperatorAlert {
-  alert_id: string;
-  alert_key: string;
-  source: string;
-  kind: string;
-  severity: OperatorAlertSeverity;
-  status: OperatorAlertStatus;
-  title: string;
-  description: string;
-  payload: unknown;
-  first_seen_at: string;
-  last_seen_at: string;
-  occurrence_count: number;
-  resolved_at: string | null;
-  delivery_status: OperatorAlertDeliveryStatus;
-  delivery_attempts: number;
-  next_delivery_at: string | null;
-  last_delivery_at: string | null;
-  last_delivery_status: number | null;
-  last_delivery_error: string | null;
-}
-
-export interface OperatorAlertsSnapshot {
-  schema_version: number;
-  served_at: string;
-  sink_configured: boolean;
-  counts: Record<OperatorAlertStatus, {
-    total: number;
-    critical: number;
-    warning: number;
-    info: number;
-  }>;
-  alerts: OperatorAlert[];
-}
-
-export interface OperatorAlertTickResponse {
-  schema_version: number;
-  scan: {
-    served_at: string;
-    opened_or_seen: number;
-    sources: Array<{
-      source: string;
-      active_alerts: number;
-      resolved_alerts: number;
-    }>;
-  };
-  delivery: {
-    served_at: string;
-    sink_configured: boolean;
-    attempted: number;
-    delivered: number;
-    failed: number;
-  };
-  snapshot: OperatorAlertsSnapshot;
-}
-
-export type FeedSlaIncidentStatus = "open" | "fulfilled_late";
-
-export interface FeedSlaIncident {
-  incident_id: string;
-  feed_id: string;
-  agent_id: string;
-  incident_kind: "missed_packet";
-  status: FeedSlaIncidentStatus;
-  expected_sequence: number;
-  expected_delivery_deadline_at: string;
-  detected_at: string;
-  grace_seconds: number;
-  refund_action: "none" | "credit" | "prorated";
-  slash_action: "none" | "reputation" | "stake";
-  fulfilled_packet_id: string | null;
-  fulfilled_at: string | null;
-  details: unknown;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface FeedAvailabilitySummary {
-  proof_version: 1;
-  feed_id: string;
-  health_status: "healthy" | "degraded" | "failing";
-  reliability_score: number | null;
-  scheduled_packets: number;
-  on_time_packets: number;
-  late_packets: number;
-  missed_packets: number;
-  open_missed_packets: number;
-  fulfilled_missed_packets: number;
-  next_expected_sequence: number | null;
-  next_deadline_at: string | null;
-  overdue: boolean;
-  overdue_grace_seconds: number;
-  refund_recommendations: Record<string, number>;
-  slash_recommendations: Record<string, number>;
-  payment_execution_enabled: false;
-  proof_hash: string;
-}
-
-export interface FeedAvailabilityProof extends FeedAvailabilitySummary {
-  generated_at: string;
-  agent_id: string;
-  feed: {
-    status: string;
-    venue: string;
-    delivery_cadence_seconds: number | null;
-    max_latency_seconds: number | null;
-    refund_rule: Record<string, unknown>;
-    slash_rule: Record<string, unknown>;
-  };
-  window: { from: string; to: string };
-  evidence: {
-    delivered_packets: unknown[];
-    missed_packets: unknown[];
-  };
-}
-
-export interface FeedSlaAdminResponse {
-  schema_version: number;
-  served_at: string;
-  summary: {
-    open_incidents: number;
-    refund_recommendations: number;
-    slash_recommendations: number;
-    failing_feeds: number;
-    degraded_feeds: number;
-    payment_execution_enabled: false;
-  };
-  feed_health: FeedAvailabilitySummary[];
-  incidents: FeedSlaIncident[];
-}
-
-export interface FeedSlaTickResponse {
-  schema_version: number;
-  result: {
-    served_at: string;
-    inspected_feeds: number;
-    incidents_opened: number;
-    max_incidents: number;
-  };
-  open_incidents: FeedSlaIncident[];
-}
-
-/**
- * Response body for POST /v1/account/agents/:slug/api-keys.
- *
- * SECURITY: `secret` is the ONE place this plaintext is ever returned by
- * the API. Subsequent reads return only the metadata (api_key_id,
- * created_at, label). UI MUST display this once and warn the user the
- * value is not recoverable.
- */
-export interface MintApiKeyResponse {
-  api_key_id: string;
-  secret: string;
-  created_at: string;
-  warning?: string;
-}
-
-/* ── Phase 7c — api-key list + destination-address + cooldown shapes ────── */
-
-/**
- * One row from GET /v1/account/agents/:slug/api-keys. Metadata only — the
- * plaintext secret is NEVER returned here (one-time mint reveal is the
- * sole source per V2 §7.5). `rotated_at` is null on active keys and an
- * ISO timestamp on soft-deleted ones.
- */
-export interface ApiKeyRow {
-  api_key_id: string;
-  created_at: string;
-  label?: string | null;
-  rotated_at?: string | null;
-}
-
-/**
- * Response body for DELETE /v1/account/api-keys/:key_id. `rotated` is
- * boolean — false only when the key was already rotated (idempotent).
- */
-export interface RotateApiKeyResponse {
-  rotated: boolean;
-}
-
-/**
- * Response body for PATCH /v1/account/agents/:slug/destination-address.
- * Includes `destination_address_updated_at` so the client can start the
- * 24h cooldown countdown immediately on success.
- */
-export interface PatchDestinationResponse {
-  agent_id: string;
-  destination_address: string;
-  destination_address_updated_at: string;
-}
-
-/**
- * 429 body for PATCH /v1/account/agents/:slug/destination-address when
- * the §7.4 cooldown is still active. The handler surfaces
- * `retry_after_seconds` so the UI countdown is exact, not estimated.
- */
-export interface DestinationCooldownError {
-  error: string;
-  code: string;
-  retry_after_seconds: number;
-}
-
-/* ── Phase 7d — onboarding funnel event allowlist ───────────────────────── */
-
-/**
- * Allowlisted funnel-event kinds. Mirrors the server-side
- * FunnelEventKindSchema in src/verdict/routes/account.ts. Anything outside
- * this union → server 400. Keep both lists synced.
- *
- * The `call.*` variants are server-reserved (no client emit site in 7d);
- * they're listed here so a future resolver-side hook can use the same
- * client signature without a type widening.
- */
-export type FunnelEventKind =
-  | "landing.viewed"
-  | "compete.clicked"
-  | "privy.modal_opened"
-  | "privy.signed_in"
-  | "agent.created"
-  | "api_key.minted"
-  | "destination.set"
-  | "call.first_submitted"
-  | "call.first_resolved"
-  | "call.tenth_submitted";
+// Import the aliased names for local use in this module's method signatures.
+import type {
+  WireAgentKind as AgentKind,
+  WireAgentProfile as AgentProfile,
+  WireAgentGridSummary as AgentGridSummary,
+} from "@shared/wire-agent";
+import type {
+  WireLeaderboardRow as LeaderboardRow,
+  WireAgentFamilyRow as AgentFamilyRow,
+  WireAgentCrossFamilyRow as AgentCrossFamilyRow,
+  WireAgentMarketRow as AgentMarketRow,
+} from "@shared/wire-leaderboard";
+import type {
+  WireAgentCallRow as AgentCallRow,
+  WireFullCall as FullCall,
+  WireMarketCallRow as MarketCallRow,
+} from "@shared/wire-call";
+import type { WireTodayFeed as TodayFeed } from "@shared/wire-feed";
+import type {
+  WireMarketRow as MarketRow,
+  WireMarketTaxonomyResponse as MarketTaxonomyResponse,
+} from "@shared/wire-market";
+import type { WireMetaResponse as MetaResponse } from "@shared/wire-meta";
+import type {
+  WireAccountSession as AccountSession,
+  WireAccountAgent as AccountAgent,
+  WireCreateAgentRequest as CreateAgentRequest,
+  WireCreateAgentResponse as CreateAgentResponse,
+  WireBindWalletResponse as BindWalletResponse,
+  WireControllerWalletChallengeResponse as ControllerWalletChallengeResponse,
+  WireControllerWalletReattestationChallengeResponse as ControllerWalletReattestationChallengeResponse,
+  WireControllerWalletReattestationResponse as ControllerWalletReattestationResponse,
+  WireRuntimeKeyPolicy as RuntimeKeyPolicy,
+  WireRuntimeKeyRow as RuntimeKeyRow,
+  WireRuntimeKeyChallengeResponse as RuntimeKeyChallengeResponse,
+  WireRuntimeKeyMintResponse as RuntimeKeyMintResponse,
+  WireMintApiKeyResponse as MintApiKeyResponse,
+  WireApiKeyRow as ApiKeyRow,
+  WireRotateApiKeyResponse as RotateApiKeyResponse,
+  WirePatchDestinationResponse as PatchDestinationResponse,
+  WireFunnelEventKind as FunnelEventKind,
+  WireAdminRefSender as AdminRefSender,
+} from "@shared/wire-account";
+import type {
+  WireGatewayAttemptStatus as GatewayAttemptStatus,
+  WireGatewayOperatorSnapshot as GatewayOperatorSnapshot,
+  WireGatewayTickResponse as GatewayTickResponse,
+  WireGatewayRetryResponse as GatewayRetryResponse,
+  WireLiveCanarySnapshot as LiveCanarySnapshot,
+  WireFhenixRevealStatus as FhenixRevealStatus,
+  WireFhenixLifecycleSnapshot as FhenixLifecycleSnapshot,
+  WireControllerIdentitySnapshot as ControllerIdentitySnapshot,
+  WireOperatorAlertStatus as OperatorAlertStatus,
+  WireOperatorAlertDeliveryStatus as OperatorAlertDeliveryStatus,
+  WireOperatorAlertsSnapshot as OperatorAlertsSnapshot,
+  WireOperatorAlertTickResponse as OperatorAlertTickResponse,
+  WireFeedSlaIncidentStatus as FeedSlaIncidentStatus,
+  WireFeedAvailabilityProof as FeedAvailabilityProof,
+  WireFeedSlaAdminResponse as FeedSlaAdminResponse,
+  WireFeedSlaTickResponse as FeedSlaTickResponse,
+} from "@shared/wire-operator";
 
 // Phase 7a — `get`/`post` accept optional extra headers so account-area
 // callers can attach `Authorization: Bearer <privy_jwt>` without breaking
@@ -1189,6 +354,26 @@ export const verdictApi = {
         last_at: string;
       }>;
     }>(`/v1/refs/top?limit=${limit}`),
+  /**
+   * Admin sender board — full unfiltered list, token-gated. Sent through the
+   * shared client so a rejected token surfaces as ApiError(403) like every
+   * other admin read, rather than a hand-rolled fetch outside ApiError.
+   */
+  adminRefs: (token: string, opts: { limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const q = params.toString();
+    return get<{ senders: AdminRefSender[] }>(
+      `/v1/refs${q ? `?${q}` : ""}`,
+      { "X-Admin-Token": token },
+    );
+  },
+  /** Delete one sender's ref bucket (admin-only). Returns the deleted row count. */
+  adminDeleteRef: (token: string, ref: string) =>
+    del<{ deleted: number }>(
+      `/v1/refs/${encodeURIComponent(ref)}`,
+      { "X-Admin-Token": token },
+    ),
   adminGateway: (
     token: string,
     opts: { status?: GatewayAttemptStatus; limit?: number; stuck_after_sec?: number } = {},
@@ -1322,6 +507,16 @@ export const verdictApi = {
       `/v1/markets${q ? `?${q}` : ""}`,
     );
   },
+  /**
+   * Single market read — same enriched row shape as the list, plus the
+   * live `venue` snapshot on venue-adapter rows. Unknown id → 404
+   * `market_not_found`; malformed id → 400 `schema_invalid`. Both throw
+   * ApiError with the status carried.
+   */
+  market: (market_id: string) =>
+    get<{ market: MarketRow; served_at: string }>(
+      `/v1/markets/${encodeURIComponent(market_id)}`,
+    ),
   marketTaxonomy: () =>
     get<{
       schema_version: number;
@@ -1338,6 +533,35 @@ export const verdictApi = {
     const q = params.toString();
     return get<{ market_id: string; agents: AgentMarketRow[]; served_at: string }>(
       `/v1/markets/${encodeURIComponent(market_id)}/leaderboard${q ? `?${q}` : ""}`,
+    );
+  },
+  /**
+   * Batched per-market top rows for the markets grid — GET /v1/markets/grid.
+   * One request returns each market's ranked top-`limit` rows (default 3),
+   * collapsing the grid's former per-market leaderboard fan-out. `limit` caps
+   * rows PER MARKET. Only markets with scoring calls appear.
+   */
+  marketsGrid: (opts: { limit?: number; tier?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.tier) params.set("tier", opts.tier);
+    const q = params.toString();
+    return get<{
+      markets: Array<{ market_id: string; agents: AgentMarketRow[] }>;
+      served_at: string;
+    }>(`/v1/markets/grid${q ? `?${q}` : ""}`);
+  },
+  /**
+   * Recent calls on one market, newest first. Default limit 50, server
+   * cap 500. Same 404 `market_not_found` / 400 `schema_invalid` contract
+   * as `market`.
+   */
+  marketCalls: (market_id: string, opts: { limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const q = params.toString();
+    return get<{ market_id: string; calls: MarketCallRow[]; served_at: string }>(
+      `/v1/markets/${encodeURIComponent(market_id)}/calls${q ? `?${q}` : ""}`,
     );
   },
   // Phase 10 — family + cross-family LBs.
@@ -1610,9 +834,27 @@ export async function fetchMarkets(
   return r.markets;
 }
 
-export async function fetchMarketTaxonomy(): Promise<MarketTaxonomyResponse> {
-  const r = await verdictApi.marketTaxonomy();
-  return r.taxonomy;
+/**
+ * Single market read — GET /v1/markets/:market_id. Venue-adapter rows carry
+ * the live `venue` odds/volume snapshot (60s server-side TTL); native rows
+ * never have a `venue` key. Throws ApiError(404) on unknown ids
+ * (`market_not_found`) and ApiError(400) on malformed ids (`schema_invalid`).
+ */
+export async function fetchMarket(market_id: string): Promise<MarketRow> {
+  const r = await verdictApi.market(market_id);
+  return r.market;
+}
+
+/**
+ * Recent calls on one market, newest first — GET /v1/markets/:id/calls.
+ * Same ApiError 404/400 contract as fetchMarket.
+ */
+export async function fetchMarketCalls(
+  market_id: string,
+  opts: { limit?: number } = {},
+): Promise<MarketCallRow[]> {
+  const r = await verdictApi.marketCalls(market_id, opts);
+  return r.calls;
 }
 
 export async function fetchMarketLeaderboard(
@@ -1621,6 +863,19 @@ export async function fetchMarketLeaderboard(
 ): Promise<{ market_id: string; agents: AgentMarketRow[] }> {
   const r = await verdictApi.marketLeaderboard(market_id, opts);
   return { market_id: r.market_id, agents: r.agents };
+}
+
+/**
+ * Batched markets-grid leaderboard — GET /v1/markets/grid. Returns each
+ * market's ranked top-`limit` rows (default 3) in ONE request, replacing the
+ * grid's former per-market fan-out. Markets with no scoring calls are omitted;
+ * the grid defaults them to an empty top-3.
+ */
+export async function fetchMarketsGrid(
+  opts: { limit?: number; tier?: string } = {},
+): Promise<Array<{ market_id: string; agents: AgentMarketRow[] }>> {
+  const r = await verdictApi.marketsGrid(opts);
+  return r.markets;
 }
 
 export async function fetchAgentGrid(

@@ -7,6 +7,10 @@ import {
 } from "viem";
 import { PolymarketGammaClient } from "../markets/polymarket-gamma/client.js";
 import { conditionIdForMarketConfig } from "../verdict/market-adapter-config.js";
+import {
+  parseBooleanToken,
+  resolvePolymarketGammaEnabled,
+} from "../verdict/env-grammar.js";
 import { marketsRepo } from "../verdict/repos/market-registry-repo.js";
 import { nowIso } from "../verdict/time.js";
 import {
@@ -343,8 +347,8 @@ export function loadLiveCanaryConfig(
     "FHENIX_CANARY_ENABLED",
     Boolean(env.FHENIX_RPC_URL?.trim() && env.FHENIX_CHAIN_ID?.trim()),
   );
-  const polymarketGammaEnabled = opts.polymarketGammaEnabled ??
-    enabledFromEnv(env, "MURMUR_POLYMARKET_GAMMA_ENABLED", false);
+  const polymarketGammaEnabled =
+    opts.polymarketGammaEnabled ?? resolvePolymarketGammaEnabled(env);
   const polymarketEnabled = enabledFromEnv(
     env,
     "POLYMARKET_CANARY_ENABLED",
@@ -427,16 +431,15 @@ function enabledFromEnv(
   name: string,
   defaultValue: boolean,
 ): boolean {
-  const raw = env[name]?.trim().toLowerCase();
-  if (raw === "true" || raw === "1" || raw === "yes") return true;
-  if (raw === "false" || raw === "0" || raw === "no") return false;
-  if (raw) {
+  if (!env[name]?.trim()) return defaultValue;
+  const value = parseBooleanToken(env[name], { yesNo: true });
+  if (value === undefined) {
     throw new LiveCanaryConfigError(
       name,
       "must be one of true, false, 1, 0, yes, or no",
     );
   }
-  return defaultValue;
+  return value;
 }
 
 function parseOptionalPositiveInteger(

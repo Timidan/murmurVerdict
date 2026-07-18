@@ -76,11 +76,15 @@ export function AgentOnboardPage() {
   const [strandedSlug, setStrandedSlug] = useState<string | null>(null);
 
   // Redirect to login when Privy is in a stable signed-out state.
+  // AccountShell's AccountGuard normally blocks this page from mounting
+  // unauthenticated, so this is defense-in-depth — clean path form (no
+  // stacked `#/account/login` hash on a `/agent/onboard` path), replace()
+  // so the guarded URL doesn't linger in history.
   useEffect(() => {
     if (!account.ready) return;
     if (account.isAuthenticated) return;
     const next = encodeURIComponent("/agent/onboard");
-    window.location.hash = `#/account/login?next=${next}`;
+    window.location.replace(`/account/login?next=${next}`);
   }, [account.ready, account.isAuthenticated]);
 
   // Fetch the daemon's configured Fhenix chain id once. The bind/mint
@@ -263,10 +267,11 @@ export function AgentOnboardPage() {
   const onModalDone = useCallback(() => {
     setMinted(null);
     setMintedSlug(null);
-    // Refresh the cached agent list so #/account shows the new agent
-    // immediately after the modal closes.
+    // Refresh the cached agent list so /account shows the new agent
+    // immediately after the modal closes. Clean path — assigning a hash
+    // here would stack `#/account` onto the `/agent/onboard` path.
     void account.refreshAgents();
-    window.location.hash = "#/account";
+    window.location.assign("/account");
   }, [account]);
 
   if (!account.configured) {
@@ -307,7 +312,7 @@ export function AgentOnboardPage() {
             "border bg-[var(--color-bg)] ck-mono text-sm px-3 py-2 " +
             (slug.length === 0 || slugValid
               ? "border-[var(--color-border-vis)]"
-              : "border-[var(--color-accent)]")
+              : "border-[var(--color-accent-ink)]")
           }
           aria-invalid={slug.length > 0 && !slugValid}
         />
@@ -340,19 +345,24 @@ export function AgentOnboardPage() {
         >
           {inFlight ? phaseLabel(phase) : "Create agent"}
         </button>
+        <span className="ck-dim text-xs">
+          Your wallet will ask for two signature approvals: the first binds it
+          as this agent's controller, the second authorizes the agent's
+          runtime key.
+        </span>
         {!embeddedWallet && !inFlight && (
           <span className="ck-dim text-xs">Setting up your signing key…</span>
         )}
         {error && <span className="ck-neg text-xs">{error}</span>}
         {strandedSlug && (
-          <div className="border border-[var(--color-accent)] p-3 ck-mono text-xs flex flex-col gap-2 mt-1">
+          <div className="border border-[var(--color-accent-ink)] p-3 ck-mono text-xs flex flex-col gap-2 mt-1">
             <span className="ck-neg">
               We created{" "}
               <span className="ck-pos">{strandedSlug}</span> but couldn't
               finish setup. Continue below to avoid duplicates.
             </span>
             <a
-              href={`#/account/agent/${encodeURIComponent(strandedSlug)}/wallet`}
+              href={`/account/agent/${encodeURIComponent(strandedSlug)}/wallet`}
               className="ck-pos no-underline hover:underline self-start"
             >
               Continue setup →
@@ -379,7 +389,7 @@ export function AgentOnboardPage() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
           <span>

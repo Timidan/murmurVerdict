@@ -59,6 +59,39 @@ export function publicOpenApiPaths(): OpenApiPathMap {
         },
       },
     },
+    "/v1/markets/{market_id}": {
+      get: {
+        tags: ["leaderboard"],
+        summary: "Fetch one market registry row.",
+        description:
+          "Same row shape as /v1/markets. Venue rows (adapter_id=polymarket-gamma) carry a `venue` live snapshot: outcome prices, volume, liquidity (nullable when the venue is unreachable) plus end_date/url from the stored config.",
+        parameters: [
+          { name: "market_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          "200": { description: "Market row + served_at" },
+          "400": { description: "Invalid market_id" },
+          "404": { description: "Unknown market" },
+        },
+      },
+    },
+    "/v1/markets/{market_id}/calls": {
+      get: {
+        tags: ["calls"],
+        summary: "Recent calls on one market (newest first).",
+        description:
+          "Operator-blind projection: pending sealed calls expose existence, timestamps, and agent identity only; resolved calls add outcome/score fields.",
+        parameters: [
+          { name: "market_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 50 } },
+        ],
+        responses: {
+          "200": { description: "Calls list + served_at" },
+          "400": { description: "Invalid market_id" },
+          "404": { description: "Unknown market" },
+        },
+      },
+    },
     "/v1/markets/{market_id}/leaderboard": {
       get: {
         tags: ["leaderboard"],

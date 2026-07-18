@@ -22,16 +22,6 @@ export interface CallRowFields {
   /** Wave 4b — receipts subsystem dropped. Field accepted for back-compat
    *  with callers that still pass it; the projection ignores any value. */
   acceptance_receipt_hash?: string | null;
-  // Historical plaintext columns. Under sealed Fhenix these
-  // are NULL on every row; the projection no longer surfaces them, but the
-  // shape is kept so SQL callers can still forward arbitrary row payloads
-  // without rewriting their type cast at every call site.
-  side?: string | null;
-  asset_id?: string | null;
-  horizon_hours?: number | null;
-  confidence?: number | null;
-  rationale?: string | null;
-  strategy_tag?: string | null;
   outcome?: string | null;
   call_score?: number | null;
   signed_return?: string | null;
@@ -50,34 +40,11 @@ export interface PublicCallProjection {
    *  the public projection for one release so already-deployed dashboards
    *  don't crash on missing keys; safe to drop after Wave 5. */
   acceptance_receipt_hash: string | null;
-  // Under sealed Fhenix the projection never populates these while pending.
-  // Fields kept on the interface so already-deployed consumers that
-  // read `projected.side` etc. compile cleanly (the read is undefined).
-  side?: string;
-  asset_id?: string;
-  horizon_hours?: number;
-  confidence?: number;
-  rationale?: string;
-  strategy_tag?: string;
   outcome?: string | null;
   call_score?: number | null;
   signed_return?: string | null;
   resolved_at?: string | null;
   submitted_at?: string;
-}
-
-/**
- * Under sealed Fhenix, every pending submission is operator-blind and
- * plaintext is never surfaced through public projections. This helper is
- * retained as a stub for back-compat with consumers that still call it,
- * but the answer is always `false`.
- */
-export function shouldExposePlaintext(
-  _privacy_mode: string | null | undefined,
-  _status: string,
-  _reveal_hash_valid?: number | boolean | null,
-): boolean {
-  return false;
 }
 
 /**

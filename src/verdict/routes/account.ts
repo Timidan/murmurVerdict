@@ -41,7 +41,7 @@ import type {
   AccountIdAdapter,
   ControllerWalletReattestationIdAdapter,
 } from "../auth/accounts.js";
-import type { AccountAuthVerifier } from "../account-route-auth.js";
+import { bindRequireAccount, type AccountAuthVerifier } from "../account-route-auth.js";
 import type { ControllerWalletAuthorizationNonceAdapter } from "../controller-wallet-authorization.js";
 import type { UsageEventIdAdapter } from "../usage-event.js";
 
@@ -95,44 +95,50 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     funnelEventLimiter,
   } = accountRouteLimiters();
 
-  router.use(accountSessionRouter({
-    accountAuth,
-    db,
+  // Bind Account Route Auth ONCE for this router: the db handle, Privy
+  // verifier, Account ID Adapter, and account-resolution clock are captured
+  // here so every sub-router handler depends only on the request. This is the
+  // shared router-construction closure — the Account ID Adapter lives here (it
+  // only ever feeds account creation via auth), while the remaining ID
+  // Adapters stay threaded to their owning sub-routers so each Records module
+  // keeps its own production default intact.
+  const requireAccount = bindRequireAccount(db, accountAuth, {
     newAccountId,
+    now,
+  });
+
+  router.use(accountSessionRouter({
+    requireAccount,
     sessionLimiter,
     json,
-    now,
   }));
 
   router.use(accountAgentsRouter({
-    accountAuth,
+    requireAccount,
     db,
     createAgentLimiter,
     json,
     listAgentsLimiter,
-    newAccountId,
     newAgentId,
     now,
   }));
 
   router.use(accountControllerWalletRouter({
-    accountAuth,
+    requireAccount,
     db,
     destAddrLimiter,
     json,
-    newAccountId,
     newAuthorizationNonce,
     newReattestationId,
     now,
   }));
 
   router.use(accountRuntimeKeyRouter({
-    accountAuth,
+    requireAccount,
     db,
     json,
     listAgentsLimiter,
     mintKeyLimiter,
-    newAccountId,
     newAuthorizationNonce,
     newRuntimeKeyId,
     newRuntimeKeySecret,
@@ -141,12 +147,11 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   }));
 
   router.use(accountApiKeyRouter({
-    accountAuth,
+    requireAccount,
     db,
     json,
     listAgentsLimiter,
     mintKeyLimiter,
-    newAccountId,
     newApiKeyId,
     newApiKeySecret,
     now,
@@ -154,22 +159,20 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   }));
 
   router.use(accountDestinationRouter({
-    accountAuth,
+    requireAccount,
     db,
     destinationCooldownMs,
     destAddrLimiter,
     json,
-    newAccountId,
     newUsageEventId,
     now,
   }));
 
   router.use(accountFunnelEventsRouter({
-    accountAuth,
+    requireAccount,
     db,
     funnelEventLimiter,
     json,
-    newAccountId,
     newUsageEventId,
     now,
   }));

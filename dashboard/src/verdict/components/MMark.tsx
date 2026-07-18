@@ -65,7 +65,17 @@ export function MMark({
       style={{ display: "inline-block", verticalAlign: "middle" }}
     >
       {BARS.map((b, i) => (
-        <rect key={i} x={b.x} y={b.y} width={b.w} height={b.h} fill="currentColor" />
+        // rx = w/2 renders each bar as a capsule — the asset-pack bars have
+        // fully rounded ends, not square corners.
+        <rect
+          key={i}
+          x={b.x}
+          y={b.y}
+          width={b.w}
+          height={b.h}
+          rx={b.w / 2}
+          fill="currentColor"
+        />
       ))}
       {showDot && (
         <rect
@@ -73,7 +83,7 @@ export function MMark({
           y={DOT.y}
           width={DOT.size}
           height={DOT.size}
-          fill="var(--color-accent)"
+          fill="var(--color-brand-mark)"
         />
       )}
     </svg>

@@ -26,9 +26,12 @@ export interface T0AnchorRow {
 export interface ResolutionWriteInput {
   call_id: string;
   t1: string;
-  p1: string;
-  t1_feed: string;
-  signed_return: string;
+  // p1 / t1_feed / signed_return are native-price price-anchor evidence and are
+  // NULL for non-native (adapter) and oracle-unavailable resolutions, which
+  // have no price feed to record (migration 055).
+  p1: string | null;
+  t1_feed: string | null;
+  signed_return: string | null;
   outcome: Outcome;
   call_score: number | null;
   resolved_at: string;
@@ -57,9 +60,11 @@ export interface FullCallResolutionView {
   resolution:
     | {
         t1: string;
-        p1: string;
-        t1_feed: string;
-        signed_return: string;
+        // Native-price price-anchor evidence; NULL for adapter /
+        // oracle-unavailable resolutions (migration 055).
+        p1: string | null;
+        t1_feed: string | null;
+        signed_return: string | null;
         outcome: string;
         call_score: number | null;
         resolved_at: string;

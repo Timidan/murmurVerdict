@@ -37,9 +37,10 @@ import {
 } from "./fhenix-gateway-runtime.js";
 import { fhenixGatewayTxRepo } from "../verdict/repos/fhenix-gateway-tx-repo.js";
 import { fhenixGatewayFeedPacketTxRepo } from "../verdict/repos/fhenix-gateway-feed-packet-tx-repo.js";
-import type {
-  FhenixGatewayTxStatus,
-  GatewayAttemptLifecycleRow,
+import {
+  isBroadcastableStatus,
+  type FhenixGatewayTxStatus,
+  type GatewayAttemptLifecycleRow,
 } from "../verdict/repos/fhenix-gateway-attempt-lifecycle.js";
 import {
   type AgentSecurityEventIdAdapter,
@@ -462,14 +463,15 @@ export class FhenixGatewayBroadcaster {
       this.db,
       nowIso(this.now()),
     )) {
-      const before = attempt.attempt_count;
-      await broadcastGatewayAttempt(kind, {
+      const result = await broadcastGatewayAttempt(kind, {
         ...this.broadcastConfig(),
         attemptId: attempt.attempt_id,
       });
-      const after = kind.lifecycle.byId(this.db, attempt.attempt_id);
-      if (after?.status === "submitted" && after.attempt_count > before) counters.broadcasted++;
-      if (after?.status === "failed_terminal") counters.failed++;
+      // The machine reports the transition it performed; a fresh on-chain
+      // write ("submitted") counts as a broadcast, a "reconciled" recovery
+      // does not (no new write landed). Terminal outcomes count as failures.
+      if (result.kind === "submitted") counters.broadcasted++;
+      if (result.kind === "terminal_failure") counters.failed++;
     }
     for (const attempt of kind.lifecycle.listSubmittedForConfirmation(this.db)) {
       const confirmed = await confirmGatewayAttempt(kind, {
@@ -541,7 +543,7 @@ export class FhenixGatewayBroadcaster {
   ): Promise<GatewaySubmitResult | GatewayFeedPacketSubmitResult | null> {
     const attempt = kind.lifecycle.byId(this.db, attemptId);
     if (!attempt) return null;
-    if (!["queued", "failed_retryable"].includes(attempt.status)) {
+    if (!isBroadcastableStatus(attempt.status)) {
       throw new VerdictError(
         kind.retryConflictMessage(attempt.status),
         ERROR_CODES.schema_invalid,
@@ -591,11 +593,7 @@ export class FhenixGatewayBroadcaster {
     });
     const row = kind.lifecycle.byId(this.db, attempt.attempt_id);
     if (!row) {
-      throw new Error(
-        kind.label === "feed_packet"
-          ? `gateway feed attempt missing after retry: ${attempt.attempt_id}`
-          : `gateway attempt missing after retry: ${attempt.attempt_id}`,
-      );
+      throw new Error(kind.missingAfterRetryMessage(attempt.attempt_id));
     }
     return kind.presentResult(this.db, row, false);
   }

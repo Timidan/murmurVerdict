@@ -1,27 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  fetchMarket,
+  fetchMarketCalls,
   fetchMarketLeaderboard,
-  fetchMarkets,
   ApiError,
   type AgentMarketRow,
+  type MarketCallRow,
   type MarketRow,
   type MarketOracleRef,
   type MarketOracleSummary,
+  type MarketVenueSnapshot,
 } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
+import { ErrorState } from "../components/compact/ErrorState.js";
+import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
 import { useStream } from "../hooks/useStream.js";
+import { mergeMarketAgentRow } from "../hooks/stream-merge.js";
+import { marketDisplayName, parseMarketConfig } from "../lib/market-meta.js";
+import { formatScore } from "../lib/score-format.js";
+import { isTerminalFailureStatus } from "@shared/wire-call-status";
 
 /**
- * COMPACT per-market detail. Single-screen ladder with a live sidecar tape
- * and a metrics ribbon. All numbers mono, no card chrome, sub-row shows
- * verdict_lb under the headline verdict score.
+ * COMPACT per-market detail. Single-screen ladder with a live sidecar tape,
+ * a sealed-verdicts feed, and a metrics ribbon. Venue markets add live
+ * odds on the outcome chips + a vol cell from the venue snapshot (60s
+ * poll). All numbers mono, no card chrome, sub-row shows verdict_lb under
+ * the headline verdict score.
  */
 export function MarketDetailPage({ marketId }: { marketId: string }) {
   const [market, setMarket] = useState<MarketRow | null>(null);
   const [agents, setAgents] = useState<AgentMarketRow[] | null>(null);
+  const [calls, setCalls] = useState<MarketCallRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const stream = useStream();
@@ -41,15 +53,7 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
     if (!evt) return;
     setAgents((prev) => {
       const byAgent = new Map((prev ?? []).map((r) => [r.agent_id, r]));
-      return evt.agents.map((a) => {
-        const previous = byAgent.get(a.agent_id);
-        return {
-          ...a,
-          verdict_score_lb: previous?.verdict_score_lb ?? null,
-          last_resolved_at: previous?.last_resolved_at ?? null,
-          call_scores: previous?.call_scores,
-        };
-      });
+      return evt.agents.map((a) => mergeMarketAgentRow(a, byAgent.get(a.agent_id)));
     });
   }, [stream.markets, marketId]);
 
@@ -57,26 +61,51 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
     let cancel = false;
     setMarket(null);
     setAgents(null);
+    setCalls(null);
     setError(null);
     setNotFound(false);
 
+    // "No such market" from the read surfaces: 404 market_not_found for
+    // well-formed unknown ids, 400 schema_invalid for malformed ones
+    // (e.g. a truncated 0x hash). Both mean the same thing to a viewer,
+    // so both route to the NotFound render instead of the error line.
+    const missing = (e: unknown) =>
+      e instanceof ApiError && (e.status === 404 || e.status === 400);
+
     Promise.all([
       fetchMarketLeaderboard(marketId, { limit: 50 }).catch((e: unknown) => {
-        if (e instanceof ApiError && e.status === 404) {
+        if (missing(e)) {
           if (!cancel) setNotFound(true);
           return null;
         }
         throw e;
       }),
-      fetchMarkets().catch(() => [] as MarketRow[]),
+      fetchMarket(marketId).catch((e: unknown) => {
+        if (missing(e)) {
+          if (!cancel) setNotFound(true);
+          return null;
+        }
+        throw e;
+      }),
+      // The verdicts feed is NON-CRITICAL chrome. A 404/400 still means "no
+      // such market" (handled alongside the sibling reads), but any OTHER
+      // failure — 500, aborted request, network blip — must not throw out of
+      // Promise.all and collapse the whole page into the error state. Swallow
+      // it to null so market + ladder still render and the feed panel falls
+      // back to its own empty state.
+      fetchMarketCalls(marketId, { limit: 20 }).catch((e: unknown) => {
+        if (missing(e) && !cancel) setNotFound(true);
+        return null;
+      }),
     ])
-      .then(([lb, all]) => {
+      .then(([lb, m, callRows]) => {
         if (cancel) return;
-        const m = all.find((x) => x.market_id === marketId) ?? null;
         setMarket(m);
         if (lb) setAgents(lb.agents);
-        else if (!m) setNotFound(true);
-        else setAgents([]);
+        else if (m) setAgents([]);
+        // null callRows = feed fetch failed (or missing market): show the
+        // feed's empty state, not a perpetual [loading…].
+        setCalls(callRows ?? []);
       })
       .catch((e: Error) => {
         if (!cancel) setError(e.message);
@@ -87,6 +116,62 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
     };
   }, [marketId]);
 
+  // Venue prices carry a 60s server-side TTL — re-poll the single market
+  // while mounted so odds/volume stay fresh without a reload. Failures
+  // (and late responses after unmount / market change) silently keep the
+  // last-rendered data; the interval is torn down on unmount, marketId
+  // change, or once the page has fallen into notFound/error.
+  useEffect(() => {
+    if (notFound || error) return;
+    let cancel = false;
+    const id = setInterval(() => {
+      fetchMarket(marketId)
+        .then((m) => {
+          if (!cancel) setMarket(m);
+        })
+        .catch(() => {
+          /* keep last data — no error flash */
+        });
+    }, 60_000);
+    return () => {
+      cancel = true;
+      clearInterval(id);
+    };
+  }, [marketId, notFound, error]);
+
+  const cfg = useMemo(() => (market ? parseMarketConfig(market) : null), [market]);
+  const isVenue = isVenueMarket(market);
+  // Live venue odds/volume snapshot — venue-adapter rows only. Gamma-down
+  // still delivers the skeleton with null prices/volume/liquidity.
+  const venue = (isVenue ? market?.venue : null) ?? null;
+
+  // Shared 30s clock. It drives the venue countdown AND the verdicts-feed
+  // time-ago labels — the feed reads nowMs on EVERY market (native ones
+  // included), so the ticker must run whenever the countdown needs it (venue +
+  // endDate) OR the feed has ≥1 row. One interval only: a single effect gated
+  // on the union condition, so a native-market feed no longer freezes at its
+  // first-render timestamp and the countdown path is unchanged.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const hasFeedRows = (calls?.length ?? 0) > 0;
+  const needsCountdownTick = isVenue && Boolean(cfg?.endDate);
+  useEffect(() => {
+    if (!needsCountdownTick && !hasFeedRows) return;
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [needsCountdownTick, hasFeedRows]);
+
+  // Venue markets title the tab with the human question (fallback: market id);
+  // restore whatever title was there before on unmount / market change.
+  useEffect(() => {
+    if (!market || !isVenueMarket(market)) return;
+    const prev = document.title;
+    const question = parseMarketConfig(market)?.question;
+    document.title = `${question ?? market.market_id} · murmur`;
+    return () => {
+      document.title = prev;
+    };
+  }, [market]);
+
   const horizon = market ? formatHorizon(market.horizon_seconds) : "—";
   const assetSlug = market ? shortAssetSlug(market.asset_id) : "—";
   const taxonomy = market?.market_taxonomy ?? null;
@@ -96,29 +181,87 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
     : 0;
   const leader = agents && agents.length > 0 ? agents[0] : null;
 
+  const endsLabel = cfg?.endDate ? formatCountdown(cfg.endDate, nowMs) : null;
+  const endsTitle = cfg?.endDate ? formatUtcTitle(cfg.endDate) : undefined;
+  // Venue heading: question > humanized slug > (truncated) market id.
+  let heading: string | null = null;
+  if (market && isVenue) {
+    const name = marketDisplayName(market);
+    heading = name === market.market_id ? midTruncateId(name) : name;
+  }
+
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
           <span>
             markets <span className="ck-dim mx-1">/</span>
-            <span className="ck-pos">{marketId}</span>
+            <span className="ck-pos" title={marketId}>
+              {midTruncateId(marketId)}
+            </span>
           </span>
         }
       />
 
       {error && (
-        <div className="px-2 py-2 ck-mono ck-neg">[err] {error}</div>
+        <ErrorState kind="error" what="market" id={marketId} detail={error} />
       )}
-      {notFound && <NotFound marketId={marketId} />}
+      {notFound && <ErrorState kind="not_found" what="market" id={marketId} />}
 
       {!error && !notFound && (
         <>
-          {/* RIBBON ──────────────────────────────────────── */}
-          <section className="grid grid-cols-2 md:grid-cols-8 border-b border-[var(--color-border)]">
-            <RCell label="market" value={marketId} />
-            <RCell label="asset" value={assetSlug.toUpperCase()} />
-            <RCell label="hzn" value={horizon} />
+          {/* HEADING — venue markets lead with the human question ───────── */}
+          {heading !== null && (
+            <section className="px-2 py-2 border-b border-[var(--color-border)]">
+              <h1
+                className="ck-mono m-0"
+                style={{
+                  fontSize: 20,
+                  fontWeight: 700,
+                  lineHeight: 1.3,
+                  color: "var(--color-display)",
+                  textWrap: "balance",
+                }}
+                title={marketId}
+              >
+                {heading}
+              </h1>
+            </section>
+          )}
+
+          {/* RIBBON — venue markets get one extra cell (vol) ─────────────── */}
+          <section
+            className={
+              "grid grid-cols-2 border-b border-[var(--color-border)] " +
+              (isVenue ? "md:grid-cols-9" : "md:grid-cols-8")
+            }
+          >
+            <RCell label="market" value={midTruncateId(marketId)} title={marketId} />
+            {isVenue ? (
+              <VenueCell url={cfg?.gamma_url} venue={venueName(market)} />
+            ) : (
+              <RCell label="asset" value={assetSlug.toUpperCase()} />
+            )}
+            {isVenue ? (
+              <RCell
+                label="ends"
+                value={endsLabel ?? "—"}
+                title={endsTitle}
+                tone={endsLabel === "ended" ? "dim" : "default"}
+              />
+            ) : (
+              <RCell label="hzn" value={horizon} />
+            )}
+            {/* Venue traded volume — the cell renders even while the snapshot
+                is null so the ribbon doesn't jump when data arrives. */}
+            {isVenue && (
+              <RCell
+                label="vol"
+                value={venue?.volume != null ? formatCompactUsd(venue.volume) : "—"}
+                tone={venue?.volume != null ? "default" : "dim"}
+                title={venueVolTitle(venue)}
+              />
+            )}
             <RCell label="status" value={market?.status ?? "—"} tone="dim" />
             <RCell label="agents" value={agents?.length ?? "—"} />
             <RCell label="main" value={mainCount} />
@@ -130,12 +273,34 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
             />
           </section>
 
+          {/* OUTCOMES — venue names + live odds when the snapshot has prices;
+              Gamma-down (null prices) leaves the chips name-only. ─────────── */}
+          {isVenue && cfg?.outcomes && cfg.outcomes.length > 0 && (
+            <section className="flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-[var(--color-border)]">
+              <span className="ck-label mr-1">outcomes</span>
+              {cfg.outcomes.map((o, i) => {
+                const odds = venueOddsFor(venue, o);
+                return (
+                  <span
+                    key={`${i}-${o}`}
+                    className="ck-mono border border-[var(--color-border-vis)] px-2 py-[1px]"
+                    style={{ fontSize: 13, fontWeight: 700 }}
+                    title={odds?.title}
+                  >
+                    {o.toLowerCase()}
+                    {odds !== null && <span className="ck-dim"> {odds.pct}%</span>}
+                  </span>
+                );
+              })}
+            </section>
+          )}
+
           {/* META FACTS ─────────────────────────────────── */}
           <details className="border-b border-[var(--color-border)]">
             <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
               market config
             </summary>
-            <div className="grid grid-cols-2 md:grid-cols-8 border-t border-[var(--color-border)]">
+            <div className="details-fade grid grid-cols-2 md:grid-cols-8 border-t border-[var(--color-border)]">
               <RCell
                 label="class"
                 value={taxonomy?.label ?? market?.market_kind ?? "—"}
@@ -181,23 +346,36 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
               title="agent ladder"
               meta={agents ? `${agents.length}` : ""}
               actions={
-                <a href="#/" className="ck-btn">
+                <a href="#/dashboard" className="ck-btn ck-btn-bracket">
                   all markets
                 </a>
               }
               className="lg:border-r-0"
             >
-              {agents === null && (
-                <div className="px-2 py-2 ck-mono ck-dim">[loading…]</div>
-              )}
+              {agents === null && <PanelSkeleton rows={6} />}
               {agents !== null && agents.length === 0 && (
                 <div className="px-2 py-2 ck-mono ck-dim">[no agents have resolved a call here yet]</div>
               )}
               {agents !== null && agents.length > 0 && <Ladder rows={agents} />}
             </Panel>
-            <Panel title="live tape">
-              <CompactLiveFeed limit={60} />
-            </Panel>
+            {/* RIGHT COLUMN — sealed-verdicts feed above the live tape. */}
+            <div className="flex flex-col min-h-0">
+              <Panel
+                title="verdicts · recent"
+                meta={calls ? `${calls.length}` : ""}
+              >
+                {calls === null && <PanelSkeleton rows={5} />}
+                {calls !== null && calls.length === 0 && (
+                  <div className="px-2 py-2 ck-mono ck-dim">[no verdicts sealed here yet]</div>
+                )}
+                {calls !== null && calls.length > 0 && (
+                  <VerdictsFeed rows={calls} nowMs={nowMs} />
+                )}
+              </Panel>
+              <Panel title="live tape" className="flex-1">
+                <CompactLiveFeed limit={60} marketId={marketId} />
+              </Panel>
+            </div>
           </main>
         </>
       )}
@@ -221,7 +399,7 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
       {rows.map((r, i) => (
         <li
           key={r.agent_id}
-          className="grid grid-cols-[28px_1fr_56px_44px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
+          className="grid grid-cols-[28px_1fr_56px_44px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           <a href={`#/agents/${r.display_slug}`} className="contents no-underline">
             <span className="ck-mono ck-dim">{String(i + 1).padStart(2, "0")}</span>
@@ -267,14 +445,110 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
   );
 }
 
+/**
+ * Sealed-verdicts feed — one row per call: agent slug (ladder-style link),
+ * lifecycle tag, time-ago. Pending rows are operator-blind on this wire
+ * (existence + timestamps + agent only), so the row deliberately carries no
+ * side/confidence. Newest first from the API; capped at 20, no pagination.
+ */
+function VerdictsFeed({ rows, nowMs }: { rows: MarketCallRow[]; nowMs: number }) {
+  return (
+    <ul className="m-0 p-0 list-none">
+      {rows.slice(0, 20).map((c) => {
+        const tag = verdictStatusTag(c.status, c.resolved_at);
+        return (
+          <li
+            key={c.call_id}
+            className="flex items-center gap-1.5 px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          >
+            {c.agent_slug ? (
+              <a
+                href={`#/agents/${c.agent_slug}`}
+                className="ck-mono ck-pos truncate min-w-0 no-underline hover:underline"
+                title={c.display_name}
+              >
+                {c.agent_slug}
+              </a>
+            ) : (
+              <span className="ck-mono ck-pos truncate min-w-0" title={c.display_name}>
+                {c.display_name}
+              </span>
+            )}
+            <span className={"ck-label flex-none " + (tag.sealed ? "ck-pos" : "ck-dim")}>
+              {tag.label}
+            </span>
+            <span className="ck-mono ck-dim ml-auto flex-none whitespace-nowrap">
+              {formatTimeAgo(c.submitted_at ?? c.accepted_at, nowMs)}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * Settled, scored-or-void terminal states. The market-calls wire carries the
+ * RAW CallStatus enum (src/verdict/schema.ts CallStatusSchema), passed
+ * untransformed by projectCallRow — so this feed must map it, never render it
+ * literally. A call is SEALED (operator-blind: pos tone, "·sealed") while it is
+ * unresolved AND terminal in neither this set NOR the shared terminal-failure
+ * set — i.e. submitted / preflighted / accepted / pending_t0 / pending_t1 /
+ * disputed. The reveal-failed / rejected terminals are the SHARED
+ * isTerminalFailureStatus set (@shared/wire-call-status), which the daemon
+ * guard pins to CallStatus, so they are derived rather than re-listed here.
+ * `void` is kept as a defensive legacy status literal (not in CallStatus).
+ */
+const SETTLED_TERMINAL_STATES: ReadonlySet<string> = new Set([
+  "resolved",
+  "re_resolved",
+  "void",
+]);
+
+/** True for any terminal (non-sealed) call status — settled/void OR a shared
+ *  terminal reveal/rejection failure. */
+function isTerminalCallState(status: string): boolean {
+  return SETTLED_TERMINAL_STATES.has(status) || isTerminalFailureStatus(status);
+}
+
+/** Safe, dim display label per settled terminal state — keeps a raw enum from
+ *  ever reaching the UI. `void` reads "·void"; resolved/re_resolved read
+ *  "·resolved". Reveal-failed / rejected terminals are labelled "·void" in
+ *  {@link verdictStatusTag}. Unlisted terminals fall back to "·resolved". */
+const SETTLED_TERMINAL_LABELS: Record<string, string> = {
+  resolved: "·resolved",
+  re_resolved: "·resolved",
+  void: "·void",
+};
+
+/**
+ * Map a feed row's lifecycle to a display tag. Unresolved-non-terminal →
+ * "·sealed" (pos). A present `resolved_at`, or any terminal status → a safe
+ * dim label; reveal/rejection failures read "·void" (no valid verdict); an
+ * unexpected terminal falls back to "·resolved". Never emits a raw enum value.
+ */
+function verdictStatusTag(
+  status: string,
+  resolvedAt: string | null | undefined,
+): { label: string; sealed: boolean } {
+  const terminal =
+    (resolvedAt ?? null) !== null || isTerminalCallState(status);
+  if (!terminal) return { label: "·sealed", sealed: true };
+  if (isTerminalFailureStatus(status)) return { label: "·void", sealed: false };
+  return { label: SETTLED_TERMINAL_LABELS[status] ?? "·resolved", sealed: false };
+}
+
 function RCell({
   label,
   value,
   tone = "default",
+  title,
 }: {
   label: string;
   value: number | string;
   tone?: "pos" | "neg" | "dim" | "default";
+  /** Hover text override — defaults to the rendered value (e.g. full id behind a truncated one). */
+  title?: string;
 }) {
   const toneClass =
     tone === "pos" ? "ck-pos" : tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
@@ -284,7 +558,7 @@ function RCell({
       <span
         className={"ck-mono truncate " + toneClass}
         style={{ fontSize: 13, fontWeight: 700 }}
-        title={String(value)}
+        title={title ?? String(value)}
       >
         {value}
       </span>
@@ -292,27 +566,34 @@ function RCell({
   );
 }
 
-function NotFound({ marketId }: { marketId: string }) {
+/** Ribbon cell for the venue-adapter source — external link out to the venue's
+ *  own event page when the config carries one. */
+function VenueCell({ url, venue }: { url: string | undefined; venue: string }) {
   return (
-    <div className="px-2 py-3 ck-mono">
-      <div className="ck-label ck-dim mb-1">404</div>
-      <div className="ck-pos" style={{ fontSize: 14, fontWeight: 700 }}>
-        market not found
-      </div>
-      <p className="ck-mono ck-dim mt-1 leading-tight">
-        No market is registered under <span className="ck-pos">{marketId}</span>. It may be retired or stale.
-      </p>
-      <a href="#/launch" className="ck-btn mt-2 inline-flex">
-        ← back to install
-      </a>
+    <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5 min-w-0">
+      <span className="ck-label">venue</span>
+      {url ? (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="ck-mono ck-pos truncate no-underline hover:underline"
+          style={{ fontSize: 13, fontWeight: 700 }}
+          title={url}
+        >
+          {venue} ↗
+        </a>
+      ) : (
+        <span
+          className="ck-mono ck-pos truncate"
+          style={{ fontSize: 13, fontWeight: 700 }}
+          title={venue}
+        >
+          {venue}
+        </span>
+      )}
     </div>
   );
-}
-
-function formatScore(s: number | null): string {
-  if (s === null || s === undefined) return "—";
-  const sign = s >= 0 ? "+" : "−";
-  return `${sign}${Math.round(Math.abs(s) * 1000)}`;
 }
 
 function formatHorizon(seconds: number): string {
@@ -355,4 +636,119 @@ function shortAssetSlug(asset_id: string): string {
   const parts = asset_id.split(":");
   const sym = parts.length >= 2 ? parts[1] : asset_id;
   return (sym ?? asset_id).toLowerCase();
+}
+
+/** Venue-adapter detection — settlement model first, adapter/family fields as
+ *  fallback. Never string-matches on the market id shape. */
+function isVenueMarket(m: MarketRow | null): boolean {
+  if (!m) return false;
+  if (m.market_taxonomy?.settlement_model === "venue_adapter") return true;
+  const adapter = m["adapter_id"];
+  if (typeof adapter === "string" && adapter.length > 0 && adapter !== "native-price") {
+    return true;
+  }
+  const family = m["market_family"];
+  return typeof family === "string" && family.startsWith("prediction-market");
+}
+
+/** Venue label from the adapter id: "polymarket-gamma" → "polymarket". */
+function venueName(m: MarketRow | null): string {
+  const adapter = m?.["adapter_id"];
+  if (typeof adapter === "string" && adapter.length > 0) {
+    return adapter.split("-")[0] ?? adapter;
+  }
+  return "venue";
+}
+
+/** Middle-truncate long ids (0x… hashes) to `0x0c4c…457f`; ids of 20 chars or
+ *  fewer (all native ids) pass through untouched. */
+function midTruncateId(id: string): string {
+  if (id.length <= 20) return id;
+  return `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
+/** Compact countdown to an ISO close: `6d 14h` / `14h 02m` / `42m` / `ended`. */
+function formatCountdown(endDate: string, nowMs: number): string | null {
+  const end = Date.parse(endDate);
+  if (!Number.isFinite(end)) return null;
+  const ms = end - nowMs;
+  if (ms <= 0) return "ended";
+  const totalMinutes = Math.floor(ms / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days >= 1) return `${days}d ${hours}h`;
+  if (totalMinutes >= 60) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  return `${Math.max(1, minutes)}m`;
+}
+
+/** Absolute UTC close for hover titles: "2026-07-20 00:00 UTC". */
+function formatUtcTitle(endDate: string): string | undefined {
+  const t = Date.parse(endDate);
+  if (!Number.isFinite(t)) return undefined;
+  return `${new Date(t).toISOString().replace("T", " ").slice(0, 16)} UTC`;
+}
+
+/**
+ * Live odds for one outcome chip. Returns null when the venue snapshot is
+ * absent, Gamma is down (prices null), or the outcome has no price point —
+ * the chip then stays name-only. Prices arrive as 0..1 numbers from the
+ * daemon; coerce defensively in case the wire ever carries decimal strings.
+ */
+function venueOddsFor(
+  venue: MarketVenueSnapshot | null,
+  outcome: string,
+): { pct: number; title: string } | null {
+  if (!venue?.prices) return null;
+  const hit = venue.prices.find(
+    (p) => p.outcome.toLowerCase() === outcome.toLowerCase(),
+  );
+  if (!hit) return null;
+  const n = typeof hit.price === "number" ? hit.price : Number(hit.price);
+  if (!Number.isFinite(n)) return null;
+  const asOf = venue.fetched_at
+    ? ` · as of ${formatUtcTitle(venue.fetched_at) ?? venue.fetched_at}`
+    : "";
+  return { pct: Math.round(n * 100), title: `${hit.price}${asOf}` };
+}
+
+/** Hover title for the vol cell — exact volume, plus liquidity when known:
+ *  "$132,371,731.97 · liquidity $8,078,826.91". */
+function venueVolTitle(venue: MarketVenueSnapshot | null): string | undefined {
+  if (venue?.volume == null) return undefined;
+  const usd = (n: number) =>
+    `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  return venue.liquidity == null
+    ? usd(venue.volume)
+    : `${usd(venue.volume)} · liquidity ${usd(venue.liquidity)}`;
+}
+
+/** Compact USD for the ribbon: $1.2m / $340k / $85 — one decimal only while
+ *  the leading quotient is a single digit. */
+function formatCompactUsd(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  const unit = (v: number, suffix: string) => {
+    const r = Math.abs(v) < 10 ? Math.round(v * 10) / 10 : Math.round(v);
+    return `$${r}${suffix}`;
+  };
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return unit(n / 1e9, "b");
+  if (abs >= 1e6) return unit(n / 1e6, "m");
+  if (abs >= 1e3) return unit(n / 1e3, "k");
+  return `$${Math.round(n)}`;
+}
+
+/** Compact relative timestamp for feed rows: 45s ago / 12m ago / 2h ago /
+ *  3d ago. */
+function formatTimeAgo(iso: string | undefined, nowMs: number): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "—";
+  const s = Math.max(0, Math.floor((nowMs - t) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }

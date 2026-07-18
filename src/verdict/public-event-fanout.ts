@@ -23,6 +23,7 @@ import {
   type FullCallResolutionView,
 } from "./repos/resolution-repo.js";
 import { publicResolutionOutcomeEvidence } from "./resolution-outcome-evidence.js";
+import { projectPublicResolvedCallFields } from "./sealed-call-public-projection.js";
 import type { LeaderboardRow } from "./schema.js";
 import { nowIso } from "./time.js";
 
@@ -143,25 +144,24 @@ export function publicResolvedCallEvent(
   input: ResolvedCallFanoutInput,
 ): CallResolvedEvent | null {
   if (!input.full.resolution) return null;
-  const adapterId = input.full.submission.adapter_id ?? "native-price";
-  const marketFamily =
-    input.full.submission.market_family ?? "financial-direction";
-  const marketId = input.full.submission.market_id;
-  const isNativePrice = adapterId === "native-price";
+  // Resolved-side public fields (outcome / call_score / native-price
+  // signed_return gate / resolved_at / adapter + market-family defaults /
+  // market_id) come from the SINGLE OWNER in the projection module, so this
+  // SSE/webhook shape can't drift from the REST/RSS row projections.
   return {
     type: "call.resolved",
     call_id: input.full.submission.call_id,
     agent_id: input.agent.agent_id,
     agent_slug: input.agent.display_slug,
-    outcome: input.full.resolution.outcome,
-    ...(isNativePrice
-      ? { signed_return: input.full.resolution.signed_return }
-      : {}),
-    call_score: input.full.resolution.call_score ?? null,
-    resolved_at: input.full.resolution.resolved_at,
-    adapter_id: adapterId,
-    market_family: marketFamily,
-    ...(marketId ? { market_id: marketId } : {}),
+    ...projectPublicResolvedCallFields({
+      adapter_id: input.full.submission.adapter_id,
+      market_family: input.full.submission.market_family,
+      market_id: input.full.submission.market_id,
+      outcome: input.full.resolution.outcome,
+      call_score: input.full.resolution.call_score,
+      signed_return: input.full.resolution.signed_return,
+      resolved_at: input.full.resolution.resolved_at,
+    }),
     ...publicResolutionOutcomeEvidence(input.full.resolution),
   };
 }

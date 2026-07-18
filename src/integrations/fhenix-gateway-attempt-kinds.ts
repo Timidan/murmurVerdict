@@ -102,6 +102,8 @@ export function sealedCallAttemptKind(
     },
     retryConflictMessage: (status) =>
       `cannot retry gateway attempt in status=${status}`,
+    missingAfterRetryMessage: (attemptId) =>
+      `gateway attempt missing after retry: ${attemptId}`,
     retryAuditPayload: (attempt, ctx) => ({
       attempt_id: attempt.attempt_id,
       attempt_type: "sealed_call",
@@ -182,6 +184,8 @@ export function feedPacketAttemptKind(
     },
     retryConflictMessage: (status) =>
       `cannot retry gateway feed attempt in status=${status}`,
+    missingAfterRetryMessage: (attemptId) =>
+      `gateway feed attempt missing after retry: ${attemptId}`,
     retryAuditPayload: (attempt, ctx) => ({
       attempt_id: attempt.attempt_id,
       attempt_type: "feed_packet",

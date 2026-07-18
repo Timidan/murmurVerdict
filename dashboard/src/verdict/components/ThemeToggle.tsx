@@ -49,7 +49,7 @@ export function ThemeToggle() {
       onClick={flip}
       aria-pressed={theme === "paper"}
       aria-label={`Switch to ${label} mode`}
-      className="px-2 ck-label border-l border-[var(--color-border)] hover:text-[var(--color-display)] h-full flex items-center cursor-pointer"
+      className="mmr-nav-link mmr-theme-toggle press-feedback"
     >
       <span aria-hidden className="mr-1">
         {theme === "paper" ? "◐" : "◑"}

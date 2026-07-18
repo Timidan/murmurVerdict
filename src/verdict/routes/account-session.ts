@@ -1,25 +1,20 @@
 import { Router, type RequestHandler } from "express";
-import type Database from "better-sqlite3";
 import {
   accountSessionResponse,
   sendAccountSessionJsonResponse,
 } from "../account-session-surface.js";
-import { requireAccount, type AccountAuthVerifier } from "../account-route-auth.js";
-import type { AccountIdAdapter } from "../auth/accounts.js";
+import type { RequireAccount } from "../account-route-auth.js";
 import { asyncHandler } from "./async-handler.js";
 
 export interface AccountSessionRouterDeps {
-  accountAuth?: AccountAuthVerifier;
-  db: Database.Database;
+  requireAccount: RequireAccount;
   sessionLimiter: RequestHandler;
   json: RequestHandler;
-  newAccountId?: AccountIdAdapter;
-  now: () => Date;
 }
 
 export function accountSessionRouter(deps: AccountSessionRouterDeps): Router {
   const router = Router();
-  const { accountAuth, db, sessionLimiter, json, newAccountId, now } = deps;
+  const { requireAccount, sessionLimiter, json } = deps;
 
   // POST /v1/account/session - exchange Privy JWT for an internal session.
   // Returns { account_id, created } so the dashboard can branch on first-time
@@ -30,10 +25,8 @@ export function accountSessionRouter(deps: AccountSessionRouterDeps): Router {
     sessionLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
+      const resolved = await requireAccount(req, {
         message: "invalid or missing Privy bearer token",
-        newAccountId,
-        now,
       });
       sendAccountSessionJsonResponse(res, accountSessionResponse(resolved));
     }),

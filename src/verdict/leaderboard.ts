@@ -5,10 +5,11 @@ import {
   LeaderboardTier,
   MIN_RESOLVED_CALLS_FOR_MARKETPLACE_TIER,
 } from "./schema.js";
+import { leaderboardCallSummary } from "./leaderboard-call-summary.js";
 import {
-  leaderboardCallSummary,
+  queryLeaderboardCallFacts,
   type LeaderboardCallFact,
-} from "./leaderboard-call-summary.js";
+} from "./leaderboard-call-facts.js";
 import {
   DEFAULT_KINDS,
   publicRankedLeaderboardRows,
@@ -22,10 +23,13 @@ export type { LeaderboardOptions } from "./leaderboard-shared.js";
 export {
   getAgentMarketGrid,
   getLeaderboardForMarket,
+  getLeaderboardForMarkets,
 } from "./leaderboard-markets.js";
 export type {
   AgentMarketRow,
+  MarketGridEntry,
   MarketLeaderboardOptions,
+  MarketsGridOptions,
 } from "./leaderboard-markets.js";
 export {
   getCrossFamilyLeaderboard,
@@ -72,29 +76,9 @@ function computeLeaderboardRows(
 ): ComputedLeaderboardRow[] {
   const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
 
-  const placeholders = includeKinds.map(() => "?").join(",");
-  const rows = db
-    .prepare(
-      `SELECT a.agent_id, a.display_slug, a.display_name, a.kind,
-              s.call_id, s.status,
-              r.outcome, r.call_score, r.resolved_at
-       FROM agents a
-       JOIN submissions s ON s.agent_id = a.agent_id
-       LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
-       WHERE a.kind IN (${placeholders})
-       ORDER BY a.agent_id, s.accepted_at`,
-    )
-    .all(...includeKinds) as Array<{
-    agent_id: string;
-    display_slug: string;
-    display_name: string;
-    kind: AgentKind;
-    call_id: string;
-    status: string;
-    outcome: string | null;
-    call_score: number | null;
-    resolved_at: string | null;
-  }>;
+  // Read shared scoring facts from the leaderboard-call-facts seam; this Module
+  // keeps its own global projection (lower-bound sort, marketplace tier).
+  const rows = queryLeaderboardCallFacts(db, { kind: "global", includeKinds });
 
   type Agg = {
     agent_id: string;

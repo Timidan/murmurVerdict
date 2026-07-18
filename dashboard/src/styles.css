@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 
 /* Fonts loaded via Google Fonts in dashboard/index.html.
    Doto requires the variable axis served by Google Fonts; no fontsource
@@ -17,9 +16,9 @@
      - Space Grotesk: UI / body
      - Space Mono: labels, data, ALL CAPS chrome
 
-   Single chromatic accent: #FD3C3C (brand red, sampled from asset pack).
-   Was #D71921 (Nothing red) — corrected 2026-05-16 per
-   docs/specs/2026-05-16-paper-mode-and-mark-design.md §3.2.
+   Single UI accent: #C87367 (muted verdict terracotta).
+   Official logo marks retain the asset-pack red through
+   --color-brand-mark: #FD3C3C and must not inherit the UI accent.
    Canvas: pure #000 (OLED). Override of "no pure black" rule —
    intentional brand choice per V14_HANDOFF.md §3.
    ──────────────────────────────────────────────────────────────────────── */
@@ -29,6 +28,12 @@
   --font-sans: "Space Grotesk", "DM Sans", system-ui, -apple-system, sans-serif;
   --font-mono: "Space Mono", "JetBrains Mono", "SF Mono", ui-monospace, monospace;
   --font-display: "Doto", "Space Mono", monospace;
+
+  /* Canonical navigation language, inherited from the cinematic landing. */
+  --nav-font-size: 0.72rem;
+  --nav-link-gap: 32px;
+  --nav-hit-area: 44px;
+  --nav-ease: cubic-bezier(0.25, 1, 0.5, 1);
 
   /* Surfaces (dark — flagship). Lifted off pure #000 on 2026-05-31 to reduce
      chromatic vibration of brand red on the canvas and give the surface→raised
@@ -42,15 +47,24 @@
   --color-border: #262626;
   --color-border-vis: #363636;
 
-  /* Text scale (4 levels per Nothing discipline) */
-  --color-disabled: #666666;
+  /* Text scale (4 levels per Nothing discipline).
+     --color-disabled is AA-safe as real text (5.73:1 on bg, 4.77:1 on
+     raised) — the tier carries empty states, hints, timestamps, i.e.
+     actual copy, not just disabled chrome. */
+  --color-disabled: #8A8A8A;
   --color-secondary: #999999;
   --color-primary: #E8E8E8;
   --color-display: #FFFFFF;
 
-  /* Single accent — brand red (asset pack `#FD3C3C`). */
-  --color-accent: #FD3C3C;
-  --color-accent-tint: rgba(253, 60, 60, 0.15);
+  /* The approved logo dot stays pinned even when the interface palette moves. */
+  --color-brand-mark: #FD3C3C;
+
+  /* Muted UI event color. Black ink on this fill is 5.75:1. */
+  --color-accent: #C87367;
+  /* Text/border-safe accent. Darkened separately on paper below. */
+  --color-accent-ink: #C87367;
+  --color-accent-tint: rgba(200, 115, 103, 0.15);
+  --color-on-accent: #0A0A0A;
 
   /* Modal/overlay scrim — derived per-theme so paper mode never blacks out. */
   --color-scrim: rgba(0, 0, 0, 0.8);
@@ -59,8 +73,10 @@
   --color-success: #4A9E5C;
   --color-warning: #D4A843;
 
-  /* Motion: subtle ease-out only. No spring, no bounce. */
+  /* Motion: subtle ease-out only. No spring, no bounce.
+     --dur-fast is the single hover/color transition duration. */
   --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --dur-fast: 120ms;
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -76,14 +92,18 @@
   --color-raised: #EAE3D3;
   --color-border: #D8D2C8;
   --color-border-vis: #B8AE99;
-  --color-disabled: #A39A85;
+  /* AA-safe as real text (5.33:1 on bg) — the tier carries empty states,
+     hints, timestamps, i.e. actual copy. */
+  --color-disabled: #6F6754;
   --color-secondary: #6B6453;
   --color-primary: #1F1B14;
   --color-display: #0A0A0A;
 
-  /* Accent is brand-red in both themes. Pinned for emphasis. */
-  --color-accent: #FD3C3C;
-  --color-accent-tint: rgba(253, 60, 60, 0.15);
+  /* The fill/graphic accent stays shared; paper text and thin borders use
+     the darker ink token for AA across every paper surface. */
+  --color-accent: #C87367;
+  --color-accent-ink: #A64843;
+  --color-accent-tint: rgba(200, 115, 103, 0.15);
 
   /* Paper-mode scrim — ink wash, slightly less opaque than dark
      (paper has lower native contrast so 70% reads as full dim). */
@@ -113,7 +133,7 @@
   --popover: var(--color-raised);
   --popover-foreground: var(--color-primary);
   --primary: var(--color-accent);
-  --primary-foreground: var(--color-display);
+  --primary-foreground: var(--color-on-accent);
   --secondary: var(--color-raised);
   --secondary-foreground: var(--color-primary);
   --muted: var(--color-surface);
@@ -121,10 +141,10 @@
   --accent: var(--color-raised);
   --accent-foreground: var(--color-primary);
   --destructive: var(--color-accent);
-  --destructive-foreground: var(--color-display);
+  --destructive-foreground: var(--color-on-accent);
   --border: var(--color-border);
   --input: var(--color-border);
-  --ring: var(--color-accent);
+  --ring: var(--color-accent-ink);
   --radius: 0.5rem;
   --chart-1: var(--color-accent);
   --chart-2: var(--color-display);
@@ -134,11 +154,11 @@
   --sidebar: var(--color-surface);
   --sidebar-foreground: var(--color-primary);
   --sidebar-primary: var(--color-accent);
-  --sidebar-primary-foreground: var(--color-display);
+  --sidebar-primary-foreground: var(--color-on-accent);
   --sidebar-accent: var(--color-raised);
   --sidebar-accent-foreground: var(--color-primary);
   --sidebar-border: var(--color-border);
-  --sidebar-ring: var(--color-accent);
+  --sidebar-ring: var(--color-accent-ink);
 }
 
 @theme {
@@ -150,7 +170,7 @@
   --color-popover-foreground: var(--popover-foreground);
   /* NOTE: --color-primary, --color-secondary, --color-accent, --color-border
      are NOT mapped here because Nothing's @theme block above already defines
-     them with brand semantics (--color-accent=#FD3C3C brand red, etc.). The
+     them with brand semantics (--color-accent=#C87367 UI event red, etc.). The
      shadcn dashboard-4 block uses these Tailwind utility names — they resolve
      to Nothing's brand values when used inside that block. If a future block
      needs shadcn-specific hover/muted variants, scope the override in a
@@ -206,7 +226,7 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: 2px solid var(--color-accent-ink);
     outline-offset: 2px;
     border-radius: 0;
   }
@@ -283,6 +303,64 @@
 .press-feedback:active { transform: translateY(1px); }
 
 /* ────────────────────────────────────────────────────────────────────────────
+   Entrances — entry-only motion via @starting-style (plans/005–009). All
+   opacity/transform, all var(--ease-out), no exit animation (conditional
+   renders unmount instantly by design). Reduced motion keeps the opacity
+   feedback and drops movement/scale.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.modal-enter {
+  transition: opacity 200ms var(--ease-out);
+}
+.modal-enter-panel {
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+  transform-origin: center;
+}
+.drawer-enter-backdrop {
+  transition: opacity 220ms var(--ease-out);
+}
+.drawer-enter-panel {
+  transition: transform 220ms var(--ease-out), opacity 220ms var(--ease-out);
+}
+.confirm-enter {
+  transition: opacity 140ms var(--ease-out);
+}
+.snippet-fade {
+  transition: opacity 120ms var(--ease-out);
+}
+.counter-tick {
+  transition: opacity 160ms var(--ease-out);
+}
+@starting-style {
+  .modal-enter { opacity: 0; }
+  .modal-enter-panel { opacity: 0; transform: scale(0.97); }
+  .drawer-enter-backdrop { opacity: 0; }
+  .drawer-enter-panel { transform: translateX(100%); }
+  .confirm-enter { opacity: 0; }
+  .snippet-fade { opacity: 0; }
+  .counter-tick { opacity: 0.7; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal-enter-panel { transition-property: opacity; transform: none; }
+  .drawer-enter-panel { transition-property: opacity; transform: none; }
+  @starting-style {
+    .drawer-enter-panel { opacity: 0; }
+  }
+}
+
+/* Disclosure (<details>) content — fade the revealed body in. A keyframe,
+   not @starting-style: closed <details> content stays in the DOM
+   (content-visibility), so a transition would fire only on the first open.
+   Opacity-only, so it stays on under reduced motion (gentler, not zero —
+   same treatment as snippet-fade). */
+@keyframes details-fade {
+  from { opacity: 0; }
+}
+details[open] > .details-fade {
+  animation: details-fade 120ms var(--ease-out) both;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
    Brand pattern — paper-mode only. Applied to marketing surfaces
    (recruiters, share, spec). Asset: public/brand/pattern-paper.webp
    (160x160 tile). Subtle: ~50% opacity layer on top of bg.
@@ -308,16 +386,17 @@
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Formula tooltip — hover/focus only, no JS. Used on stat-cell headers to
-   reveal the formula behind a metric (V14 decision #7).
+   Formula tooltip — reduced-motion gate only. The hover/focus reveal itself
+   lives in FormulaTip.tsx as Tailwind arbitrary variants
+   ([&:hover_.formula-tip]:…); this block just neutralizes the 4px slide for
+   reduced-motion users while keeping the opacity fade.
    ──────────────────────────────────────────────────────────────────────── */
-
-.formula-tip:hover .formula-tip__pop,
-.formula-tip:focus-within .formula-tip__pop {
-  opacity: 1;
-}
 @media (prefers-reduced-motion: reduce) {
-  .formula-tip__pop { transition: none; }
+  .formula-tip {
+    translate: none;
+    transform: none;
+    transition-property: opacity;
+  }
 }
 
 /* ────────────────────────────────────────────────────────────────────────────

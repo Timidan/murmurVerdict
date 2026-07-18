@@ -21,9 +21,10 @@ import type {
   ReconciliationConfig,
   ReconciliationResult,
 } from "./fhenix-gateway-reconciliation.js";
-import type {
-  GatewayAttemptLifecycle,
-  GatewayAttemptLifecycleRow,
+import {
+  isBroadcastableStatus,
+  type GatewayAttemptLifecycle,
+  type GatewayAttemptLifecycleRow,
 } from "../verdict/repos/fhenix-gateway-attempt-lifecycle.js";
 import type {
   GatewayFeedPacketSubmitResult,
@@ -83,6 +84,9 @@ export interface GatewayAttemptKind<
   };
   /** Operator-retry conflict message for non-retryable statuses. */
   retryConflictMessage(status: string): string;
+  /** Error thrown when a row vanishes between a retry broadcast and its
+   *  presenter re-read — worded per lane so it stops branching in retryKind. */
+  missingAfterRetryMessage(attemptId: string): string;
   /** Full `admin_fhenix_gateway_retry` audit payload, in this lane's exact
    *  historical key order (payloads are persisted as JSON text). */
   retryAuditPayload(
@@ -117,15 +121,39 @@ export interface GatewayBroadcastConfig {
   now: () => Date;
 }
 
+/**
+ * The transition a single {@link broadcastGatewayAttempt} tick performed —
+ * surfaced so callers switch on the outcome instead of re-reading the row and
+ * inferring the transition from status strings + attempt_count deltas:
+ *  - `submitted`             — a new on-chain write landed (attempt_count++).
+ *  - `reconciled`            — a prior landed-but-unrecorded tx was recovered.
+ *  - `retryable_failure`     — the broadcast failed but may be retried.
+ *  - `terminal_failure`      — the row exhausted retries / was revoked / etc.
+ *  - `reconciliation_failure`— the pre-retry reconcile read failed (no write).
+ *  - `skipped`              — nothing to do (row gone, not broadcastable, or
+ *                              lost the claim race to another writer).
+ */
+export type GatewayBroadcastResult = {
+  kind:
+    | "submitted"
+    | "reconciled"
+    | "retryable_failure"
+    | "terminal_failure"
+    | "reconciliation_failure"
+    | "skipped";
+};
+
 export async function broadcastGatewayAttempt<
   Row extends GatewayAttemptLifecycleRow,
   Event,
 >(
   kind: GatewayAttemptKind<Row, Event>,
   config: GatewayBroadcastConfig & { attemptId: string },
-): Promise<void> {
+): Promise<GatewayBroadcastResult> {
   const attempt = kind.lifecycle.byId(config.db, config.attemptId);
-  if (!attempt || !["queued", "failed_retryable"].includes(attempt.status)) return;
+  if (!attempt || !isBroadcastableStatus(attempt.status)) {
+    return { kind: "skipped" };
+  }
   const runtimeKeyCheckedAt = config.now();
   if (
     attempt.runtime_key_id &&
@@ -139,7 +167,7 @@ export async function broadcastGatewayAttempt<
       last_error: kind.terminal.runtimeKeyRevoked,
       updated_at: nowIso(runtimeKeyCheckedAt),
     });
-    return;
+    return { kind: "terminal_failure" };
   }
   // Reconcile before retrying. A prior writeContract may have landed even
   // though its receipt was lost to a timeout — without this step the next
@@ -172,7 +200,7 @@ export async function broadcastGatewayAttempt<
           ),
           updated_at: nowIso(config.now()),
         });
-        return;
+        return { kind: "reconciled" };
       }
     } catch (err) {
       // Reconciliation failure (e.g. RPC dropped). Surface as a clear
@@ -184,7 +212,7 @@ export async function broadcastGatewayAttempt<
         next_attempt_at: nextRetryAt(config, attempt.attempt_count + 1),
         updated_at: nowIso(config.now()),
       });
-      return;
+      return { kind: "reconciliation_failure" };
     }
   }
   if (attempt.attempt_count >= config.maxAttempts) {
@@ -193,7 +221,7 @@ export async function broadcastGatewayAttempt<
       last_error: kind.terminal.maxAttemptsExceeded(config.maxAttempts),
       updated_at: nowIso(config.now()),
     });
-    return;
+    return { kind: "terminal_failure" };
   }
   const broadcastStartedAt = nowIso(config.now());
   // Claim the row atomically. If another writer already claimed it, abort.
@@ -205,7 +233,7 @@ export async function broadcastGatewayAttempt<
     updated_at: broadcastStartedAt,
     token: claimToken,
   });
-  if (!claimed) return;
+  if (!claimed) return { kind: "skipped" };
   try {
     const write = kind.contractWrite(
       attempt,
@@ -229,6 +257,7 @@ export async function broadcastGatewayAttempt<
       broadcast_latency_ms: latencyMs,
       claim_token: claimToken,
     });
+    return { kind: "submitted" };
   } catch (err) {
     kind.lifecycle.markRetryableFailure(config.db, {
       attempt_id: attempt.attempt_id,
@@ -239,6 +268,7 @@ export async function broadcastGatewayAttempt<
       broadcast_latency_ms: null,
       claim_token: claimToken,
     });
+    return { kind: "retryable_failure" };
   }
 }
 

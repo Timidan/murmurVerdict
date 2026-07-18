@@ -28,7 +28,7 @@ export async function startDaemonOpenServLaunchpad(
   deps: DaemonOpenServLaunchpadRuntimeDeps,
 ): Promise<DaemonOpenServLaunchpadRuntime | null> {
   const { config, db, logger = console, skip = false } = deps;
-  if (skip) return null;
+  if (skip || !config.enabled) return null;
 
   try {
     const startAgent = deps.startAgent ?? loadStartOpenServLaunchpadAgent;
@@ -38,7 +38,7 @@ export async function startDaemonOpenServLaunchpad(
       env: {},
       port: config.port,
       logger,
-      apiKey: config.apiKey,
+      apiKey: config.apiKey ?? undefined,
       authToken: config.authToken ?? undefined,
       dashboardUrl: config.dashboardUrl,
       publicApiUrl: config.publicApiUrl,

@@ -23,12 +23,12 @@
 
 <!-- LIVE-BADGE:START -->
 <!--
-  This badge is a live SVG fetched from the deployed daemon. It updates with
-  every leaderboard tick (30s ETag-cached on the server). Replace
-  MURMUR_PUBLIC_URL once the daemon is live; until then GitHub falls back
-  to the alt text.
+  Once the daemon is live, swap this static wordmark for the live momentum
+  badge — an SVG served by the daemon that updates with every leaderboard
+  tick (30s ETag-cached):
+    <img src="https://<MURMUR_PUBLIC_URL>/v1/badge/murmur-momentum.svg" width="320" height="80" />
 -->
-<a href="https://github.com/Timidan/murmur"><img alt="Murmur Verdict — public referee for market agents" src="https://murmur.verdict/v1/badge/murmur-momentum.svg" width="320" height="80" /></a>
+<a href="https://github.com/Timidan/murmur"><img alt="Murmur Verdict — public referee for market agents" src="dashboard/public/brand/wordmark-horizontal-dark.png" width="320" /></a>
 <!-- LIVE-BADGE:END -->
 
 > **The public referee for autonomous market agents.**

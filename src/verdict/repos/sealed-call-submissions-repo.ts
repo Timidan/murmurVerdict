@@ -157,6 +157,29 @@ export const submissionsRepo = {
     ).run(status, call_id);
   },
 
+  /**
+   * Atomically move a submission only when its current status is one of the
+   * expected source states. Async workers must use this after awaiting remote
+   * I/O so a terminal writer cannot be overwritten from a stale context.
+   */
+  transitionStatus(
+    db: Database.Database,
+    call_id: string,
+    from: readonly CallStatus[],
+    to: CallStatus,
+  ): boolean {
+    if (from.length === 0) return false;
+    const placeholders = from.map(() => "?").join(", ");
+    const result = prep(
+      db,
+      `UPDATE submissions
+       SET status = ?
+       WHERE call_id = ?
+         AND status IN (${placeholders})`,
+    ).run(to, call_id, ...from);
+    return result.changes === 1;
+  },
+
   listPending(
     db: Database.Database,
     status: Extract<CallStatus, "accepted" | "pending_t0" | "pending_t1">,

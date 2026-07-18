@@ -1,17 +1,15 @@
 import { useEffect, useState } from "react";
-import { verdictApi } from "../api.js";
-import { Topbar } from "../components/Topbar.js";
-import { PillButton } from "../components/PillButton.js";
+import { verdictApi, ApiError, type AdminRefSender } from "../api.js";
+import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
+import { CompactTopbar } from "../components/compact/Topbar.js";
+import { Panel } from "../components/compact/Panel.js";
 
-interface FullSender {
-  ref: string;
-  total: number;
-  agents_touched: number;
-  converted: number;
-  last_at: string;
-}
-
-const TOKEN_KEY = "murmur-verdict.admin-token.v1";
+const REFS_CRUMB = (
+  <span>
+    admin <span className="ck-dim mx-1">/</span>
+    <span className="ck-pos">refs</span>
+  </span>
+);
 
 /**
  * /#/admin/refs — token-gated full sender board.
@@ -21,11 +19,13 @@ const TOKEN_KEY = "murmur-verdict.admin-token.v1";
  * first visit and persisted to localStorage so the operator doesn't
  * paste it on every refresh. Token never enters the request URL —
  * always sent as X-Admin-Token header.
+ *
+ * Compact cockpit idiom — CompactTopbar + hairline Panel + ck-* type scale.
  */
 export function AdminRefsPage() {
-  const [token, setToken] = useState<string>(() => readToken());
+  const [token, setToken] = useState<string>(() => readAdminToken());
   const [tokenInput, setTokenInput] = useState("");
-  const [rows, setRows] = useState<FullSender[] | null>(null);
+  const [rows, setRows] = useState<AdminRefSender[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -34,17 +34,19 @@ export function AdminRefsPage() {
     let cancel = false;
     setError(null);
     setRows(null);
-    fetch(`${verdictApi.apiUrl.replace(/\/$/, "")}/v1/refs?limit=200`, {
-      headers: { "X-Admin-Token": token },
-    })
-      .then(async (r) => {
-        if (r.status === 403) throw new Error("admin token rejected");
-        if (!r.ok) throw new Error(`/v1/refs → ${r.status}`);
-        const j = (await r.json()) as { senders: FullSender[] };
+    verdictApi
+      .adminRefs(token, { limit: 200 })
+      .then((j) => {
         if (!cancel) setRows(j.senders);
       })
       .catch((e) => {
-        if (!cancel) setError((e as Error).message);
+        if (!cancel) {
+          setError(
+            e instanceof ApiError && e.status === 403
+              ? "admin token rejected"
+              : (e as Error).message,
+          );
+        }
       });
     return () => {
       cancel = true;
@@ -53,7 +55,7 @@ export function AdminRefsPage() {
 
   const submit = () => {
     if (!tokenInput) return;
-    writeToken(tokenInput);
+    writeAdminToken(tokenInput);
     setToken(tokenInput);
     setTokenInput("");
   };
@@ -61,11 +63,7 @@ export function AdminRefsPage() {
   const remove = async (ref: string) => {
     setBusy(ref);
     try {
-      const r = await fetch(
-        `${verdictApi.apiUrl.replace(/\/$/, "")}/v1/refs/${encodeURIComponent(ref)}`,
-        { method: "DELETE", headers: { "X-Admin-Token": token } },
-      );
-      if (!r.ok) throw new Error(`DELETE → ${r.status}`);
+      await verdictApi.adminDeleteRef(token, ref);
       setRows((prev) => prev?.filter((row) => row.ref !== ref) ?? null);
     } catch (e) {
       setError((e as Error).message);
@@ -75,7 +73,7 @@ export function AdminRefsPage() {
   };
 
   const signOut = () => {
-    writeToken("");
+    clearAdminToken();
     setToken("");
     setRows(null);
   };
@@ -83,85 +81,80 @@ export function AdminRefsPage() {
   if (!token) return <TokenPrompt value={tokenInput} onChange={setTokenInput} onSubmit={submit} error={error} />;
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
-      <Topbar crumb="admin · refs" />
+    <div className="mmr-shell min-h-dvh flex flex-col">
+      <CompactTopbar crumb={REFS_CRUMB} />
 
-      <main className="flex-1 max-w-[1280px] w-full mx-auto px-6 md:px-10 py-12">
-        <header className="mb-10 flex items-baseline justify-between flex-wrap gap-4">
-          <div>
-            <p className="t-label text-[var(--color-secondary)] mb-3">admin · sender board</p>
-            <h1 className="t-heading" style={{ textWrap: "balance" }}>full attribution data.</h1>
-          </div>
-          <PillButton variant="secondary" onClick={signOut}>sign out</PillButton>
-        </header>
+      {/* INTRO STRIP ─────────────────────────────────── */}
+      <section className="border-b border-[var(--color-border)] px-3 py-3 flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex flex-col gap-1">
+          <span className="ck-label ck-pos">full attribution data</span>
+          <span className="ck-mono ck-dim">
+            admin · sender board · full unfiltered list with per-row delete
+          </span>
+        </div>
+        <button onClick={signOut} className="ck-btn ck-btn-bracket">
+          sign out
+        </button>
+      </section>
 
-        {error && (
-          <div className="border border-[var(--color-accent)] px-6 py-4 mb-8 t-body-sm text-[var(--color-accent)]">
-            [ERROR] {error}
-          </div>
-        )}
+      <main className="flex-1 min-h-0 flex flex-col">
+        <Panel title="sender board" meta={rows ? `${rows.length}` : ""}>
+          {error && <div className="px-2 py-2 ck-mono ck-neg">[error] {error}</div>}
 
-        {!rows && !error && (
-          <div className="px-6 py-24 t-meta text-[var(--color-disabled)]">[loading …]</div>
-        )}
+          {!rows && !error && (
+            <div className="px-3 py-8 ck-mono ck-dim">[loading …]</div>
+          )}
 
-        {rows && rows.length === 0 && (
-          <div className="px-6 py-24 max-w-[60ch]">
-            <p className="t-label mb-3 text-[var(--color-secondary)]">no sender data yet</p>
-            <p className="t-body">
-              Refs accumulate as visitors land on{" "}
-              <code className="font-mono text-[var(--color-display)]">/share/&lt;slug&gt;?ref=&lt;handle&gt;</code> URLs from outreach DMs.
-            </p>
-          </div>
-        )}
-
-        {rows && rows.length > 0 && (
-          <section className="border-y border-[var(--color-border)]">
-            <div className="grid grid-cols-[40px_1fr_120px_100px_100px_140px_100px] gap-4 px-6 py-2 t-meta border-b border-[var(--color-border)]">
-              <span>rank</span>
-              <span>sender</span>
-              <span className="text-right">clicks</span>
-              <span className="text-right">claims</span>
-              <span className="text-right">agents</span>
-              <span className="text-right">last seen</span>
-              <span className="text-right">actions</span>
+          {rows && rows.length === 0 && (
+            <div className="px-3 py-8 max-w-[70ch] flex flex-col gap-2">
+              <span className="ck-label ck-pos">no sender data yet</span>
+              <span className="ck-mono ck-dim">
+                Refs accumulate as visitors land on{" "}
+                <code className="ck-pos">/share/&lt;slug&gt;?ref=&lt;handle&gt;</code> URLs from outreach DMs.
+              </span>
             </div>
+          )}
+
+          {rows && rows.length > 0 && (
             <ul className="m-0 p-0 list-none">
+              <li className={COLS + " border-b border-[var(--color-border-vis)] ck-label"}>
+                <span>rank</span>
+                <span>sender</span>
+                <span className="text-right">clicks</span>
+                <span className="text-right">claims</span>
+                <span className="text-right">agents</span>
+                <span className="text-right">last seen</span>
+                <span className="text-right">actions</span>
+              </li>
               {rows.map((r, i) => (
-                <li
-                  key={r.ref}
-                  className={
-                    "grid grid-cols-[40px_1fr_120px_100px_100px_140px_100px] gap-4 px-6 py-4 items-center " +
-                    (i > 0 ? "border-t border-[var(--color-border)]" : "")
-                  }
-                >
-                  <span className="t-data text-[var(--color-disabled)]">{String(i + 1).padStart(2, "0")}</span>
+                <li key={r.ref} className={COLS + " border-b border-[var(--color-border)]"}>
+                  <span className="ck-mono ck-dim tabular-nums">{String(i + 1).padStart(2, "0")}</span>
                   <a
                     href={`https://x.com/${r.ref}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="t-subheading text-[var(--color-display)] no-underline hover:text-[var(--color-display)]"
+                    className="ck-mono ck-pos no-underline truncate"
                   >
                     @{r.ref}
                   </a>
-                  <span className="t-data text-right text-[var(--color-display)] font-mono">{r.total}</span>
+                  <span className="ck-mono ck-pos text-right tabular-nums">{r.total}</span>
                   <span
                     className={
-                      "t-data text-right font-mono " +
-                      (r.converted > 0 ? "text-[var(--color-display)]" : "text-[var(--color-disabled)]")
+                      "ck-mono text-right tabular-nums " +
+                      (r.converted > 0 ? "ck-pos" : "ck-dim")
                     }
                   >
                     {r.converted}
                   </span>
-                  <span className="t-data text-right text-[var(--color-secondary)]">{r.agents_touched}</span>
-                  <span className="t-meta text-right text-[var(--color-disabled)]">
+                  <span className="ck-mono ck-dim text-right tabular-nums">{r.agents_touched}</span>
+                  <span className="ck-mono ck-dim text-right">
                     {r.last_at?.slice(5, 16).replace("T", " ") ?? "—"}
                   </span>
                   <span className="text-right">
                     <button
                       onClick={() => remove(r.ref)}
                       disabled={busy === r.ref}
-                      className="t-button text-[var(--color-accent)] hover:underline press-feedback"
+                      className="ck-btn ck-btn-bracket ck-btn-accent"
                     >
                       {busy === r.ref ? "…" : "delete"}
                     </button>
@@ -169,12 +162,15 @@ export function AdminRefsPage() {
                 </li>
               ))}
             </ul>
-          </section>
-        )}
+          )}
+        </Panel>
       </main>
     </div>
   );
 }
+
+const COLS =
+  "grid grid-cols-[40px_1fr_120px_100px_100px_140px_100px] gap-2 items-center px-2 py-1.5";
 
 function TokenPrompt({
   value,
@@ -199,59 +195,44 @@ function TokenPrompt({
   }, []);
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
-      <Topbar crumb="admin · refs" />
-      <main className="flex-1 max-w-[640px] w-full mx-auto px-6 md:px-10 py-12">
-        <p className="t-label text-[var(--color-secondary)] mb-3">admin</p>
-        <h1 className="t-heading mb-6">paste the admin token to continue.</h1>
-        <p className="t-body mb-8 max-w-[60ch]">
-          Reads from <code className="font-mono text-[var(--color-display)]">VERDICT_ADMIN_TOKEN</code> on the daemon. Never
-          shared in URLs after first paste — stored in localStorage and sent
-          as <code className="font-mono text-[var(--color-display)]">X-Admin-Token</code>.
-        </p>
-        {error && (
-          <div className="border border-[var(--color-accent)] px-6 py-4 mb-6 t-body-sm text-[var(--color-accent)]">
-            [ERROR] {error}
+    <div className="mmr-shell min-h-dvh flex flex-col">
+      <CompactTopbar crumb={REFS_CRUMB} />
+      <main className="flex-1 min-h-0 flex flex-col">
+        <Panel title="admin token" meta="locked">
+          <div className="px-3 py-3 max-w-[70ch] flex flex-col gap-3">
+            <span className="ck-label ck-pos">paste the admin token to continue</span>
+            <span className="ck-mono ck-dim">
+              Reads from <code className="ck-pos">VERDICT_ADMIN_TOKEN</code> on the daemon. Never
+              shared in URLs after first paste — stored in localStorage and sent
+              as <code className="ck-pos">X-Admin-Token</code>.
+            </span>
+
+            {error && <div className="px-2 py-2 ck-mono ck-neg">[error] {error}</div>}
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                onSubmit();
+              }}
+              className="flex flex-col gap-3"
+            >
+              <label htmlFor="admin-token" className="ck-label">admin token</label>
+              <input
+                id="admin-token"
+                type="password"
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="bg-transparent border-b border-[var(--color-border-vis)] py-2 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
+                placeholder="VERDICT_ADMIN_TOKEN"
+                autoFocus
+              />
+              <button type="submit" className="ck-btn ck-btn-bracket ck-pos self-start">
+                unlock
+              </button>
+            </form>
           </div>
-        )}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSubmit();
-          }}
-          className="flex flex-col gap-4"
-        >
-          <label htmlFor="admin-token" className="ck-label">admin token</label>
-          <input
-            id="admin-token"
-            type="password"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
-            placeholder="VERDICT_ADMIN_TOKEN"
-            autoFocus
-          />
-          <PillButton variant="primary" type="submit">unlock</PillButton>
-        </form>
+        </Panel>
       </main>
     </div>
   );
-}
-
-function readToken(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(TOKEN_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeToken(v: string): void {
-  try {
-    if (v) window.localStorage.setItem(TOKEN_KEY, v);
-    else window.localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // storage disabled / quota — silent fail
-  }
 }

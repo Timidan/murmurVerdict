@@ -1,6 +1,9 @@
 import { Router } from "express";
 
-import { createNanopayPaymentGate } from "../nanopay-payment-gate.js";
+import {
+  createNanopayPaymentGate,
+  type NanopayGatewayFactory,
+} from "../nanopay-payment-gate.js";
 import type { NanopayRouterDeps } from "../nanopay-types.js";
 import { asyncHandler } from "./async-handler.js";
 
@@ -13,48 +16,37 @@ export type {
  * Wave L.A Phase 1 — Nanopayments HTTP route (SDK-pivot edition).
  *
  * Mounts `POST /v2/nanopay/infer/:pipelineId` on the daemon. The
- * `@circle-fin/x402-batching/server` middleware handles:
- *   - 402 challenge generation with correct x402 V2 headers (Base64-
- *     encoded JSON per spec).
- *   - EIP-3009 signature verification against the correct
- *     `GatewayWalletBatched` domain (NOT the USDC token contract).
- *   - Circle `/v1/x402/settle` call with the SDK's canonical
- *     PaymentRequirements + PaymentPayload shapes.
- *   - Populating `req.payment = {verified, payer, amount, network,
- *     transaction}` on successful settlement.
- *
- * Murmur's handler runs ONLY after the middleware has settled the
- * payment. Responsibilities:
+ * `@circle-fin/x402-batching/server` owns canonical requirement discovery,
+ * verification, settlement, and 402 challenge encoding. Murmur deliberately
+ * orchestrates those SDK operations separately so persistence can sit between
+ * verification and settlement. Responsibilities:
  *   1. Look up the pipeline + the latest sealed-Fhenix anchored call.
  *   2. Compute the EIP-712 `requestSignalId` binding hash.
- *   3. Insert a `nanopay_receipts` row (status='settled' directly,
- *      since the middleware has already settled). Replay protection
- *      via the prefix UNIQUE index — concurrent identical payments
- *      hit `SQLITE_CONSTRAINT_UNIQUE` and we re-read + serve cached.
- *   4. Return the signal + full single-stream binding.
+ *   3. Verify the signed payment with Circle without settling it yet.
+ *   4. Insert a durable `nanopay_receipts` row in `settling` state.
+ *   5. Settle through Circle, then conditionally transition that same
+ *      row to `settled` before serving the bound signal.
  *
- * Phase 1 is a TESTNET MVP. The original design specified a
- * `settling_intent` state-machine row written BEFORE Circle settle.
- * The SDK middleware does verify+settle in one shot so that ordering
- * isn't possible without dropping the middleware. Deviation:
- *
- *   - Receipts go directly to `settled` (no intermediate `settling`).
- *   - Crash recovery is Circle-side: if the daemon crashes between
- *     SDK middleware completing settle and Murmur inserting the row,
- *     Phase 3 reconciler queries Circle's `/v1/x402/transfers` to
- *     reconstruct missed receipts.
- *
- * If a tighter crash story is required in a later phase, swap to
- * `BatchFacilitatorClient.verify(...)` then `settle(...)` directly
- * (without the middleware) and write a `settling_intent` row between
- * the two.
+ * The no-payment branch still delegates to the SDK middleware so the
+ * canonical x402 V2 challenge stays SDK-owned. Signed requests use the
+ * SDK's public facilitator methods separately, creating the durable
+ * insertion point between `verify` and `settle`. A transport-unknown
+ * settlement remains `settling` and is never blindly retried; the
+ * production reconciler remains a separate operational phase.
  *
  * Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
  */
 
-export function createNanopayRouter(deps: NanopayRouterDeps): Router {
+export function createNanopayRouter(
+  deps: NanopayRouterDeps,
+  // Router-construction Adapter (NOT settlement-domain data on
+  // NanopayRouterDeps): the Circle facilitator factory. Defaults to the real
+  // SDK facade; a fake here lets an end-to-end paid-inference test run through
+  // startDaemon without touching Circle.
+  gatewayFactory?: NanopayGatewayFactory,
+): Router {
   const router = Router();
-  const paymentGate = createNanopayPaymentGate(deps);
+  const paymentGate = createNanopayPaymentGate(deps, gatewayFactory);
 
   router.post(
     "/v2/nanopay/infer/:pipelineId",
@@ -66,5 +58,7 @@ export function createNanopayRouter(deps: NanopayRouterDeps): Router {
   return router;
 }
 
-export const nanopayRouter = (deps: NanopayRouterDeps): Router =>
-  createNanopayRouter(deps);
+export const nanopayRouter = (
+  deps: NanopayRouterDeps,
+  gatewayFactory?: NanopayGatewayFactory,
+): Router => createNanopayRouter(deps, gatewayFactory);

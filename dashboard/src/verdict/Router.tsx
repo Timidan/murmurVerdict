@@ -1,4 +1,5 @@
 import { useEffect, useState, lazy, Suspense } from "react";
+import { parseLocation } from "./route.js";
 
 const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ default: m.TodayPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
@@ -42,6 +43,9 @@ const AccountShell = lazy(() => import("./auth/AccountShell.js").then((m) => ({ 
 const LandingPage = lazy(() =>
   import("./pages/LandingPage.js").then((m) => ({ default: m.LandingPage })),
 );
+const AnimatedLandingPage = lazy(() =>
+  import("./pages/AnimatedLandingPage.js").then((m) => ({ default: m.AnimatedLandingPage })),
+);
 const LeaderboardPage = lazy(() =>
   import("./pages/LeaderboardPage.js").then((m) => ({ default: m.LeaderboardPage })),
 );
@@ -53,6 +57,14 @@ const MarketDetailPage = lazy(() =>
 );
 const AgentPage = lazy(() =>
   import("./pages/AgentPage.js").then((m) => ({ default: m.AgentPage })),
+);
+// Dev/review-only surface for the AnimatedMark logo (route: /logo).
+const LogoDemoPage = lazy(() =>
+  import("./pages/LogoDemoPage.js").then((m) => ({ default: m.LogoDemoPage })),
+);
+// Real 404 — parseLocation's fallback for unknown URLs (route: not_found).
+const NotFoundPage = lazy(() =>
+  import("./pages/NotFoundPage.js").then((m) => ({ default: m.NotFoundPage })),
 );
 
 /**
@@ -74,126 +86,37 @@ function parseNext(hash: string): string | null {
   return n && n.length > 0 ? n : null;
 }
 
-interface ParsedRoute {
-  name:
-    | "landing"
-    | "leaderboard"
-    | "today"
-    | "agent"
-    | "agent_calls"
-    | "call"
-    | "launch"
-    | "share"
-    | "recruiters"
-    | "admin_refs"
-    | "admin_gateway"
-    | "admin_overview"
-    | "market"
-    | "account"
-    | "account_login"
-    | "account_agent_settings"
-    | "account_agent_integrate"
-    | "agent_onboard"
-    | "spec";
-  params?: Record<string, string>;
-}
-
-function parseHash(hash: string): ParsedRoute {
-  const raw = (hash || "#/").replace(/^#/, "");
-  // Hash routes can carry their own query string (e.g.
-  // `#/share/cred?ref=timidan` or `#/admin/refs?token=...`). Strip it before
-  // pattern-matching so the slug capture doesn't pick up `?ref=…` etc.
-  const qIdx = raw.indexOf("?");
-  const path = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
-  if (path === "/" || path === "") return { name: "landing" };
-  if (path === "/today") return { name: "today" };
-  if (path === "/leaderboard") return { name: "leaderboard" };
-  if (path === "/landing") return { name: "landing" };
-  if (path === "/launch") return { name: "launch" };
-  if (path === "/recruiters") return { name: "recruiters" };
-  if (path === "/admin/refs") return { name: "admin_refs" };
-  if (path === "/admin/gateway") return { name: "admin_gateway" };
-  if (path === "/admin/overview") return { name: "admin_overview" };
-  if (path === "/spec") return { name: "spec" };
-  // Phase 7a — account area. `?next=` is parsed below via parseNext()
-  // so deep links like #/account/login?next=/account survive sign-in.
-  if (path === "/account") return { name: "account" };
-  if (path === "/account/login") return { name: "account_login" };
-  // New-agent onboarding — slug input + in-browser signing flow that
-  // chains create-agent → controller-wallet bind → runtime-key mint.
-  // The human gives their bot one credential: MURMUR_RUNTIME_KEY. Privy
-  // stays browser-side. Auth-gated by the page itself (redirects to
-  // /account/login when
-  // unauth'd).
-  if (path === "/agent/onboard") return { name: "agent_onboard" };
-  // Phase 7d — integration / snippet view. Matched BEFORE the settings
-  // regex because /payout|/keys is the only tab set we want to fold into
-  // settings; /integrate is its own page so the URL is bookmark-stable
-  // and analytics can attribute funnel emits cleanly.
-  const agentIntegrateMatch = /^\/account\/agent\/([^/]+)\/integrate$/.exec(path);
-  if (agentIntegrateMatch) {
-    return {
-      name: "account_agent_integrate",
-      params: { slug: agentIntegrateMatch[1] },
-    };
-  }
-  // Per-agent settings, with /payout (default) and /keys sub-tabs. The
-  // trailing tab segment is optional so #/account/agent/foo alone still
-  // resolves to the payout tab. An agent named "new" reaches its
-  // settings normally; there's no creation-route collision anymore now
-  // that the AgentNewPage form was removed in favor of #/agent/onboard.
-  const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|wallet|runtime|keys))?$/.exec(path);
-  if (agentSettingsMatch) {
-    return {
-      name: "account_agent_settings",
-      params: {
-        slug: agentSettingsMatch[1],
-        tab: agentSettingsMatch[2] ?? "payout",
-      },
-    };
-  }
-  const shareMatch = /^\/share\/([^/]+)$/.exec(path);
-  if (shareMatch) return { name: "share", params: { slug: shareMatch[1] } };
-  const marketMatch = /^\/markets\/(.+)$/.exec(path);
-  if (marketMatch) {
-    // Codex audit: decodeURIComponent throws on malformed percent
-    // sequences (e.g. "%E0%A4%A"). Fall through to landing instead of
-    // crashing the whole route resolver.
-    let market_id: string;
-    try {
-      market_id = decodeURIComponent(marketMatch[1]);
-    } catch {
-      return { name: "landing" };
-    }
-    return { name: "market", params: { market_id } };
-  }
-  const callMatch = /^\/calls\/(.+)$/.exec(path);
-  if (callMatch) return { name: "call", params: { call_id: callMatch[1] } };
-  // Wave 1 — /agents/:slug/claim route deleted alongside ClaimPage.
-  const agentCalls = /^\/agents\/([^/]+)\/calls$/.exec(path);
-  if (agentCalls) return { name: "agent_calls", params: { slug: agentCalls[1] } };
-  const agent = /^\/agents\/([^/]+)$/.exec(path);
-  if (agent) return { name: "agent", params: { slug: agent[1] } };
-  return { name: "landing" };
-}
-
 export function VerdictRouter() {
-  const [hash, setHash] = useState(window.location.hash);
+  const [locationKey, setLocationKey] = useState(
+    `${window.location.pathname}${window.location.search}${window.location.hash}`,
+  );
   useEffect(() => {
-    const onHash = () => {
-      setHash(window.location.hash);
+    const onLocation = () => {
+      setLocationKey(`${window.location.pathname}${window.location.search}${window.location.hash}`);
       window.scrollTo(0, 0);
     };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener("hashchange", onLocation);
+    window.addEventListener("popstate", onLocation);
+    return () => {
+      window.removeEventListener("hashchange", onLocation);
+      window.removeEventListener("popstate", onLocation);
+    };
   }, []);
 
-  const route = parseHash(hash);
-  const next = parseNext(hash);
+  void locationKey;
+  const route = parseLocation(window.location);
+  const next = parseNext(window.location.hash || window.location.search);
 
   return (
-    <Suspense fallback={<div className="min-h-dvh bg-[var(--color-bg)]" />}>
-      {route.name === "landing" && <LandingPage />}
+    <Suspense
+      fallback={
+        <div className="mmr-shell min-h-dvh bg-[var(--color-bg)] flex items-center justify-center">
+          <span className="ck-mono ck-dim text-xs">loading…</span>
+        </div>
+      }
+    >
+      {route.name === "landing" && <AnimatedLandingPage />}
+      {route.name === "dashboard" && <LandingPage />}
       {route.name === "leaderboard" && <LeaderboardPage />}
       {route.name === "today" && <TodayPage />}
       {route.name === "agent" && <AgentPage slug={route.params!.slug} />}
@@ -227,6 +150,8 @@ export function VerdictRouter() {
         </AccountShell>
       )}
       {route.name === "spec" && <SpecPage />}
+      {route.name === "logo" && <LogoDemoPage />}
+      {route.name === "not_found" && <NotFoundPage path={route.params?.path} />}
     </Suspense>
   );
 }

@@ -2,7 +2,9 @@
 
 Each row maps a Lean theorem to the Solidity functions whose `step`
 arm is closed by its case-bash, plus the single most critical Solidity
-line that the proof rests on. Functions cover the externally-callable
+line mirrored by the handwritten model. This is a review map, not a
+mechanical Solidity-to-Lean linkage: changing Solidity alone cannot make
+`lake build` fail. Functions cover the externally-callable
 state-mutating surface only — view-only externals (`getCall`,
 `getFeedPacket`, `callRevealOpenAt`, `*Handle`) and `private` helpers
 are not entry points and are excluded.
@@ -45,11 +47,12 @@ For each invariant claim, the verification workflow is:
    - is an induction over `Reachable` / `ReachableWF` that calls a
      per-step preservation lemma which itself case-bashes all 21
      escrow constructors (E1, E2).
-3. **Confirm the critical-line citation is load-bearing.** Mutate
-   exactly that line in the contract (e.g. change `!=` to `==`, drop
-   the revert) and re-run `lake build`. The proof should break. If it
-   compiles unchanged, the citation is mis-attributed and the proof
-   covers a different invariant than claimed.
+3. **Confirm the critical-line citation is load-bearing in the model.**
+   Compare the cited Solidity line to its corresponding `step` guard or
+   update, then mutate that Lean transition (e.g. invert the guard or
+   remove the state update) and re-run `lake build`. A Solidity-only
+   mutation will not affect this handwritten Lean project; reviewers must
+   re-check and update the translation whenever Solidity changes.
 4. **Cross-reference axioms.** Run `grep -rn "^axiom "
    contracts/proofs/MurmurFV/MurmurFV/` — exactly 2 declarations
    (`NoDonation`, `BlockTimeMonotone`). They are currently unused
@@ -64,3 +67,14 @@ For each invariant claim, the verification workflow is:
    soundness, gas/calldata bounds, MEV / front-running, and the
    `marketDataCutoff` field are explicitly NOT proven — see
    `README.md` § "What this does NOT prove".
+
+## Known abstraction gap
+
+`MurmurEscrow.requestCount` and its increment are not represented in the
+Lean escrow state. The model instead accepts `requestId` directly and requires
+that slot to be empty. Consequently, repeated Solidity requests with the same
+buyer/pipeline/client nonce but successive counters are distinct reachable
+requests on-chain, while the abstraction cannot express that derivation. The
+six current invariants do not depend on the counter formula, but the model
+under-approximates request-creation traces and must not be cited as a proof of
+request-ID derivation or counter behavior.

@@ -114,13 +114,41 @@ export class FhenixEventIngestor {
   async tick(): Promise<FhenixIngestTickResult> {
     const valid = await this.indexEvent("VerdictRevealed", VERDICT_REVEALED_EVENT);
     const invalid = await this.indexEvent("VerdictRevealInvalid", VERDICT_REVEAL_INVALID_EVENT);
+    const replayedValid = await this.attachIndexedEvents("VerdictRevealed");
+    const replayedInvalid = await this.attachIndexedEvents("VerdictRevealInvalid");
     const missed = this.markMissedReveals();
     return {
       indexed: valid.indexed + invalid.indexed,
-      valid_reveals_attached: valid.attached,
-      invalid_reveals_attached: invalid.attached,
+      valid_reveals_attached: valid.attached + replayedValid,
+      invalid_reveals_attached: invalid.attached + replayedInvalid,
       missed_reveals_marked: missed,
     };
+  }
+
+  private async attachIndexedEvents(
+    eventName: "VerdictRevealed" | "VerdictRevealInvalid",
+  ): Promise<number> {
+    const events = fhenixEventsRepo.listAttachableEvents(this.db, {
+      chain_id: this.chainId,
+      contract_address: this.contractAddress,
+      event_name: eventName,
+    });
+    let attached = 0;
+    for (const event of events) {
+      const log: FhenixLog = {
+        args: event.payload,
+        transactionHash: event.tx_hash as Hex,
+        logIndex: event.log_index,
+        blockNumber: BigInt(event.block_number),
+        blockHash: event.block_hash as Hex | null,
+      };
+      if (eventName === "VerdictRevealed") {
+        if (await this.attachValidReveal(log, event.block_number)) attached++;
+      } else if (await this.attachInvalidReveal(log, event.block_number)) {
+        attached++;
+      }
+    }
+    return attached;
   }
 
   private async indexEvent(

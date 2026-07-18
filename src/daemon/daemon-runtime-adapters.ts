@@ -18,6 +18,7 @@ import {
   loadDaemonNanopayRuntime,
   type DaemonNanopayRuntime,
 } from "./nanopay-runtime.js";
+import type { NanopayGatewayFactory } from "../verdict/nanopay-payment-gate.js";
 import {
   loadDaemonOracleRuntime,
 } from "./oracle-runtime.js";
@@ -48,6 +49,10 @@ export interface LoadDaemonRuntimeAdaptersDeps {
   liveCanaryEnv: NodeJS.ProcessEnv;
   gatewayFeedPacketId?: FeedPacketIdAdapter;
   gatewaySealedCallId?: SealedCallIdAdapter;
+  /** Circle facilitator factory Adapter for the nanopay route; defaults to
+   *  the real SDK facade. Injected here so a full-daemon paid-inference test
+   *  can drive preflight → verify → settle → replay against a fake. */
+  nanopayGatewayFactory?: NanopayGatewayFactory;
   logger?: Pick<Console, "log" | "warn">;
   now: () => Date;
   schemaVersion: number;
@@ -82,9 +87,11 @@ export async function loadDaemonRuntimeAdapters(
     config: config.nanopayRuntime,
     logger,
     now,
+    gatewayFactory: deps.nanopayGatewayFactory,
   });
   const webhookDispatcher = startWebhookDispatcher(db, events, {
     now,
+    urlPolicy: config.webhookUrlPolicy,
   });
   const observability = loadOperatorObservabilityRuntime(db, schemaVersion, {
     config: loadOperatorObservabilityRuntimeConfig(db, schemaVersion, liveCanaryEnv, {

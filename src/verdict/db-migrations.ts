@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
+export const LATEST_DB_MIGRATION_VERSION = 55 as const;
+
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_meta (
@@ -998,11 +1000,28 @@ export function applyMigrations(db: Database.Database): void {
       db,
       MIGRATION_054,
       () => {
+        // Intermediate step: 055 follows in this same applyMigrations pass.
+        // Persist 54 here (not LATEST) so a crash between 054 and 055 leaves
+        // an honest schema_version that re-runs 055 on the next boot.
         set.run("schema_version", "54");
       },
       ["agent_controller_wallets", "agent_controller_wallets_v054"],
     );
     v = 54;
+  }
+  if (v < 55) {
+    // Migration 055 — widen t1_resolutions price-anchor evidence to nullable
+    // so non-native / oracle-unavailable resolutions stop fabricating p1 /
+    // t1_feed / signed_return. See MIGRATION_055_... for the rationale.
+    applyTableRebuildMigration(
+      db,
+      MIGRATION_055_T1_RESOLUTIONS_NULLABLE_EVIDENCE,
+      () => {
+        set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+      },
+      ["t1_resolutions", "t1_resolutions_v055"],
+    );
+    v = 55;
   }
 }
 
@@ -2767,6 +2786,43 @@ const MIGRATION_054 = `
     ON agent_controller_wallets(wallet_address, chain_id);
   CREATE INDEX IF NOT EXISTS idx_agent_controller_wallets_reattestation_due
     ON agent_controller_wallets(reattestation_due_at);
+`;
+
+// ─── Migration 055 — honest resolution evidence ─────────────────────────────
+// p1 / t1_feed / signed_return are native-price price-anchoring evidence and
+// were NOT NULL. That forced the non-native paths to fabricate values: the
+// adapter path stuffed call_score into p1 and the adapter name into t1_feed,
+// and the oracle-unavailable path stamped a placeholder "chainlink:base:ETH-USD"
+// feed. Widen the three columns to nullable so non-native + oracle-unavailable
+// resolutions store NULL evidence honestly. Existing rows are copied verbatim —
+// settlement history is never rewritten; only new writes use NULL. No indexes
+// exist on t1_resolutions, so none need recreating.
+const MIGRATION_055_T1_RESOLUTIONS_NULLABLE_EVIDENCE = `
+  DROP TABLE IF EXISTS t1_resolutions_v055;
+  CREATE TABLE t1_resolutions_v055 (
+    call_id               TEXT PRIMARY KEY REFERENCES submissions(call_id) ON DELETE CASCADE,
+    t1                    TEXT NOT NULL,
+    p1                    TEXT,
+    t1_feed               TEXT,
+    signed_return         TEXT,
+    outcome               TEXT NOT NULL CHECK (outcome IN ('win','loss','void','oracle_unavailable')),
+    call_score            REAL,
+    resolved_at           TEXT NOT NULL,
+    resolved_outcome_json TEXT,
+    payout_vector_json    TEXT
+  );
+
+  INSERT INTO t1_resolutions_v055 (
+    call_id, t1, p1, t1_feed, signed_return, outcome, call_score, resolved_at,
+    resolved_outcome_json, payout_vector_json
+  )
+  SELECT
+    call_id, t1, p1, t1_feed, signed_return, outcome, call_score, resolved_at,
+    resolved_outcome_json, payout_vector_json
+  FROM t1_resolutions;
+
+  DROP TABLE t1_resolutions;
+  ALTER TABLE t1_resolutions_v055 RENAME TO t1_resolutions;
 `;
 
 // ─── Migration 034 — local-FHE retreat ──────────────────────────────────────

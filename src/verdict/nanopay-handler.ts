@@ -9,8 +9,8 @@ import {
 } from "./nanopay-settlement-surface.js";
 
 /**
- * Runs AFTER the SDK middleware has verified + settled the payment.
- * `req.payment` carries `{verified, payer, amount, network, transaction}`.
+ * Runs after the durable payment gate has verified, persisted, settled, and
+ * finalized the receipt. `req.payment.receiptId` identifies that exact row.
  */
 export async function handleNanopayAfterPayment(
   req: Request & PaymentRequest,

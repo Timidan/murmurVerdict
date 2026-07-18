@@ -24,17 +24,10 @@ export interface PublicSealedRssCallRow extends PublicRssCallRowBase {
   is_sealed_scrubbed: true;
 }
 
-export interface PublicPlaintextRssCallRow extends PublicRssCallRowBase {
-  is_sealed_scrubbed?: false;
-  asset_id: string;
-  side: "BUY" | "SELL";
-  horizon_hours: number;
-  confidence: number;
-}
-
-export type PublicRssCallRow =
-  | PublicSealedRssCallRow
-  | PublicPlaintextRssCallRow;
+// There is no plaintext submission mode — every row is operator-blind and
+// sealed-scrubbed. `publicRssCallRow` (the sole constructor) always sets
+// `is_sealed_scrubbed: true`, so the RSS feed only ever renders sealed items.
+export type PublicRssCallRow = PublicSealedRssCallRow;
 
 export function rssEmpty(slug: string, reason: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -57,32 +50,11 @@ export function rssAgentFeed(
       const itemLink = links.call(r.call_id);
       const isResolved = r.outcome !== null && r.resolved_at !== null;
       const titleAction = isResolved ? r.outcome!.toUpperCase() : "PENDING";
-      if (r.is_sealed_scrubbed) {
-        const title = `[SEALED] ${titleAction}`;
-        const description = isResolved
-          ? `sealed call · outcome ${r.outcome} · score ${r.call_score?.toFixed(3) ?? "—"}`
-          : `sealed call · pending reveal/resolution`;
-        const pubDate = new Date(r.resolved_at ?? r.accepted_at).toUTCString();
-        return `    <item>
-      <title>${xmlEscape(title)}</title>
-      <link>${xmlEscape(itemLink)}</link>
-      <guid isPermaLink="false">murmur:${xmlEscape(r.call_id)}</guid>
-      <pubDate>${pubDate}</pubDate>
-      <description>${xmlEscape(description)}</description>
-    </item>`;
-      }
-      const adapterId = r.adapter_id ?? "native-price";
-      const isNativePrice = adapterId === "native-price";
-      const subjectAsset = r.asset_id.split(":").pop() ?? r.asset_id;
-      const title = `${r.side} ${subjectAsset} ${r.horizon_hours}h · ${titleAction}`;
-      const pubDate = new Date(r.resolved_at ?? r.accepted_at).toUTCString();
-      const returnSegment =
-        isResolved && isNativePrice
-          ? ` · signed_return ${r.signed_return ?? "—"}`
-          : "";
+      const title = `[SEALED] ${titleAction}`;
       const description = isResolved
-        ? `${r.side} ${subjectAsset} ${r.horizon_hours}h @ ${(r.confidence * 100).toFixed(0)}% conf · outcome ${r.outcome}${returnSegment} · score ${r.call_score?.toFixed(3) ?? "—"}`
-        : `${r.side} ${subjectAsset} ${r.horizon_hours}h @ ${(r.confidence * 100).toFixed(0)}% conf · pending t1`;
+        ? `sealed call · outcome ${r.outcome} · score ${r.call_score?.toFixed(3) ?? "—"}`
+        : `sealed call · pending reveal/resolution`;
+      const pubDate = new Date(r.resolved_at ?? r.accepted_at).toUTCString();
       return `    <item>
       <title>${xmlEscape(title)}</title>
       <link>${xmlEscape(itemLink)}</link>

@@ -418,6 +418,55 @@ export const feedPacketsRepo = {
     return row?.next_sequence ?? 1;
   },
 
+  firstUnaccountedSequence(
+    db: Database.Database,
+    feed_id: string,
+  ): number {
+    const row = prep(
+      db,
+      `WITH covered(sequence) AS (
+         SELECT sequence
+         FROM feed_packets
+         WHERE feed_id = @feed_id
+         UNION
+         SELECT expected_sequence
+         FROM feed_sla_incidents
+         WHERE feed_id = @feed_id
+       ), candidates(sequence) AS (
+         SELECT 1
+         WHERE NOT EXISTS (
+           SELECT 1 FROM covered WHERE sequence = 1
+         )
+         UNION ALL
+         SELECT current.sequence + 1
+         FROM covered AS current
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM covered AS following
+           WHERE following.sequence = current.sequence + 1
+         )
+       )
+       SELECT MIN(sequence) AS sequence
+       FROM candidates`,
+    ).get({ feed_id }) as { sequence: number | null } | undefined;
+    return row?.sequence ?? 1;
+  },
+
+  byFeedSequence(
+    db: Database.Database,
+    feed_id: string,
+    sequence: number,
+  ): FeedPacketRow | null {
+    return (
+      (prep(
+        db,
+        `SELECT * FROM feed_packets
+         WHERE feed_id = ? AND sequence = ?
+         LIMIT 1`,
+      ).get(feed_id, sequence) as FeedPacketRow | undefined) ?? null
+    );
+  },
+
   latestForFeed(db: Database.Database, feed_id: string): FeedPacketRow | null {
     return (
       (prep(

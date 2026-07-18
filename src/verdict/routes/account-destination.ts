@@ -4,18 +4,16 @@ import {
   sendAccountDestinationJsonResponse,
   setAccountDestinationAddressResponse,
 } from "../account-destination-surface.js";
-import { requireAccount, type AccountAuthVerifier } from "../account-route-auth.js";
-import type { AccountIdAdapter } from "../auth/accounts.js";
+import type { RequireAccount } from "../account-route-auth.js";
 import type { UsageEventIdAdapter } from "../usage-event.js";
 import { asyncHandler } from "./async-handler.js";
 
 export interface AccountDestinationRouterDeps {
-  accountAuth?: AccountAuthVerifier;
+  requireAccount: RequireAccount;
   db: Database.Database;
   destinationCooldownMs?: number;
   destAddrLimiter: RequestHandler;
   json: RequestHandler;
-  newAccountId?: AccountIdAdapter;
   newUsageEventId?: UsageEventIdAdapter;
   now: () => Date;
 }
@@ -23,12 +21,11 @@ export interface AccountDestinationRouterDeps {
 export function accountDestinationRouter(deps: AccountDestinationRouterDeps): Router {
   const router = Router();
   const {
-    accountAuth,
+    requireAccount,
     db,
     destinationCooldownMs,
     destAddrLimiter,
     json,
-    newAccountId,
     newUsageEventId,
     now,
   } = deps;
@@ -38,10 +35,7 @@ export function accountDestinationRouter(deps: AccountDestinationRouterDeps): Ro
     destAddrLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountDestinationJsonResponse(res, setAccountDestinationAddressResponse({
         db,
         accountId: resolved.account_id,
@@ -49,7 +43,7 @@ export function accountDestinationRouter(deps: AccountDestinationRouterDeps): Ro
         body: req.body,
         ...(destinationCooldownMs !== undefined ? { destinationCooldownMs } : {}),
         newUsageEventId,
-        now,
+        operationInstant: now(),
       }));
     }),
   );

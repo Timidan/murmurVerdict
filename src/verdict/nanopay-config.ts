@@ -1,4 +1,5 @@
 import type { PipelineInfo } from "./nanopay-types.js";
+import { parseBooleanToken } from "./env-grammar.js";
 
 export interface NanopayPipelineAgentBinding {
   agentId: string;
@@ -175,14 +176,15 @@ function parseBooleanFlag(
   fallback: boolean,
   key: string,
 ): boolean {
-  const normalized = raw?.trim().toLowerCase();
-  if (!normalized) return fallback;
-  if (normalized === "true" || normalized === "1") return true;
-  if (normalized === "false" || normalized === "0") return false;
-  throw new NanopayRuntimeConfigError(
-    key,
-    "must be one of true, false, 1, or 0",
-  );
+  if (!raw?.trim()) return fallback;
+  const value = parseBooleanToken(raw);
+  if (value === undefined) {
+    throw new NanopayRuntimeConfigError(
+      key,
+      "must be one of true, false, 1, or 0",
+    );
+  }
+  return value;
 }
 
 function parseNetwork(raw: string | undefined): "testnet" | "mainnet" {

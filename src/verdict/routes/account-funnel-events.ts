@@ -4,17 +4,15 @@ import {
   emitAccountFunnelEventResponse,
   sendAccountFunnelEmptyResponse,
 } from "../account-funnel-surface.js";
-import { requireAccount, type AccountAuthVerifier } from "../account-route-auth.js";
-import type { AccountIdAdapter } from "../auth/accounts.js";
+import type { RequireAccount } from "../account-route-auth.js";
 import type { UsageEventIdAdapter } from "../usage-event.js";
 import { asyncHandler } from "./async-handler.js";
 
 export interface AccountFunnelEventsRouterDeps {
-  accountAuth?: AccountAuthVerifier;
+  requireAccount: RequireAccount;
   db: Database.Database;
   funnelEventLimiter: RequestHandler;
   json: RequestHandler;
-  newAccountId?: AccountIdAdapter;
   newUsageEventId?: UsageEventIdAdapter;
   now: () => Date;
 }
@@ -24,11 +22,10 @@ export function accountFunnelEventsRouter(
 ): Router {
   const router = Router();
   const {
-    accountAuth,
+    requireAccount,
     db,
     funnelEventLimiter,
     json,
-    newAccountId,
     newUsageEventId,
     now,
   } = deps;
@@ -54,16 +51,13 @@ export function accountFunnelEventsRouter(
     funnelEventLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountFunnelEmptyResponse(res, emitAccountFunnelEventResponse({
         db,
         accountId: resolved.account_id,
         body: req.body,
         newUsageEventId,
-        now,
+        operationInstant: now(),
       }));
     }),
   );

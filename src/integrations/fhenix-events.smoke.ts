@@ -1,13 +1,12 @@
 import { strict as assert } from "node:assert";
 import {
   encodeAbiParameters,
-  keccak256,
   padHex,
   parseAbiParameters,
-  toBytes,
   type Address,
   type Hex,
 } from "viem";
+import { SEALED_CALL_SUBMITTED_TOPIC } from "./fhenix-event-primitives.js";
 import {
   FhenixEventVerificationError,
   ViemFhenixEventVerifier,
@@ -42,11 +41,7 @@ const revealOpenAt = "2026-05-14T13:00:00Z";
 const binaryIndexCtHash = ("0x" + "55".repeat(32)) as Hex;
 const confidenceCtHash = ("0x" + "66".repeat(32)) as Hex;
 const clientNonce = ("0x" + "77".repeat(32)) as Hex;
-const eventTopic = keccak256(
-  toBytes(
-    "SealedCallSubmitted(bytes32,address,bytes32,uint64,uint64,bytes32,bytes32,bytes32)",
-  ),
-);
+const eventTopic = SEALED_CALL_SUBMITTED_TOPIC;
 const encodedData = encodeAbiParameters(
   parseAbiParameters("uint64,uint64,bytes32,bytes32,bytes32"),
   [

@@ -1,9 +1,10 @@
 import type Database from "better-sqlite3";
 import type { AgentKind } from "./schema.js";
+import { leaderboardCallSummary } from "./leaderboard-call-summary.js";
 import {
-  leaderboardCallSummary,
+  queryLeaderboardCallFacts,
   type LeaderboardCallFact,
-} from "./leaderboard-call-summary.js";
+} from "./leaderboard-call-facts.js";
 import {
   DEFAULT_KINDS,
   meetsMainTierThreshold,
@@ -42,33 +43,14 @@ export function getLeaderboardForFamily(
 ): AgentFamilyRow[] {
   const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
   const limit = opts.limit ?? 200;
-  const placeholders = includeKinds.map(() => "?").join(",");
 
-  const rows = db
-    .prepare(
-      `SELECT a.agent_id, a.display_slug, a.display_name, a.kind,
-              s.call_id, s.status, s.market_id, s.market_family,
-              r.outcome, r.call_score, r.resolved_at
-       FROM agents a
-       JOIN submissions s ON s.agent_id = a.agent_id
-       LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
-       WHERE a.kind IN (${placeholders})
-         AND s.market_family = ?
-       ORDER BY a.agent_id, s.accepted_at`,
-    )
-    .all(...includeKinds, opts.market_family) as Array<{
-    agent_id: string;
-    display_slug: string;
-    display_name: string;
-    kind: AgentKind;
-    call_id: string;
-    status: string;
-    market_id: string | null;
-    market_family: string;
-    outcome: string | null;
-    call_score: number | null;
-    resolved_at: string | null;
-  }>;
+  // Shared scoring facts scoped to one market_family; this Module adds its own
+  // distinct-market count and family-tier projection.
+  const rows = queryLeaderboardCallFacts(db, {
+    kind: "family",
+    includeKinds,
+    market_family: opts.market_family,
+  });
 
   type Agg = {
     agent_id: string;
@@ -164,31 +146,13 @@ export function getCrossFamilyLeaderboard(
 ): AgentCrossFamilyRow[] {
   const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
   const limit = opts.limit ?? 200;
-  const placeholders = includeKinds.map(() => "?").join(",");
 
-  const rows = db
-    .prepare(
-      `SELECT a.agent_id, a.display_slug, a.display_name, a.kind,
-              s.call_id, s.status, s.market_family,
-              r.outcome, r.call_score
-       FROM agents a
-       JOIN submissions s ON s.agent_id = a.agent_id
-       LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
-       WHERE a.kind IN (${placeholders})
-         AND s.market_family IS NOT NULL
-       ORDER BY a.agent_id, s.market_family, s.accepted_at`,
-    )
-    .all(...includeKinds) as Array<{
-    agent_id: string;
-    display_slug: string;
-    display_name: string;
-    kind: AgentKind;
-    call_id: string;
-    status: string;
-    market_family: string;
-    outcome: string | null;
-    call_score: number | null;
-  }>;
+  // Shared scoring facts across every family; this Module regroups per agent
+  // per family and does the cross-family averaging projection.
+  const rows = queryLeaderboardCallFacts(db, {
+    kind: "cross_family",
+    includeKinds,
+  });
 
   type FamilyAgg = { calls: LeaderboardCallFact[] };
   type Agg = {
@@ -200,6 +164,9 @@ export function getCrossFamilyLeaderboard(
   };
   const byAgent = new Map<string, Agg>();
   for (const row of rows) {
+    // The cross_family scope filters market_family IS NOT NULL in SQL; this
+    // guard narrows the nullable fact column for the family group key.
+    if (row.market_family === null) continue;
     let a = byAgent.get(row.agent_id);
     if (!a) {
       a = {

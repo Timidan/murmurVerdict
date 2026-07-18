@@ -2,7 +2,7 @@
 //
 // Wraps the underlying `@privy-io/react-auth` <PrivyProvider> with:
 //   1) Env-driven `appId` (read from VITE_PRIVY_APP_ID).
-//   2) Nothing-design styling defaults (dark theme, brand accent #FD3C3C).
+//   2) Nothing-design styling defaults (dark theme, muted UI event accent).
 //   3) Login methods scoped to email + Google + wallet (per UX spec §2 step-b).
 //   4) `embeddedWallets.createOnLogin = "users-without-wallets"` — every
 //      signed-in user ends up with at least one wallet (auto-created if
@@ -14,19 +14,39 @@
 // the children inside an inert wrapper and `useAccount()` surfaces a clear
 // "Privy not configured" state on routes that need auth.
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { PrivyProvider as VendorPrivyProvider } from "@privy-io/react-auth";
+import { PRIVY_APP_ID, isPrivyConfigured, privyAppId } from "./privy-config.js";
 
-const PRIVY_APP_ID = (import.meta.env.VITE_PRIVY_APP_ID?.trim() || "") as string;
+// Re-exported from the vendor-free leaf module so existing importers keep
+// working, while public-route code (useFunnelEmit) imports them straight from
+// ./privy-config.js to avoid pulling the Privy SDK into the public chunk.
+export { isPrivyConfigured, privyAppId };
 
-/** True iff a non-empty VITE_PRIVY_APP_ID was provided at build time. */
-export function isPrivyConfigured(): boolean {
-  return PRIVY_APP_ID.length > 0;
-}
+// Dev-only "unconfigured" warning, latched so it fires at most ONCE per tab
+// session. Two layers: the module flag stops repeats within a page load
+// (the provider re-renders on every route change inside the account area,
+// and StrictMode + Suspense re-reveals re-run renders/effects), and
+// sessionStorage stops repeats across full page loads (clean-path guard
+// redirects are full navigations). Previously this warn lived in the
+// render body and fired 4–12× per route.
+const WARNED_STORAGE_KEY = "murmur_privy_unconfigured_warned";
+let warnedUnconfigured = false;
 
-/** The resolved Privy app id, or empty string when unset. */
-export function privyAppId(): string {
-  return PRIVY_APP_ID;
+function warnUnconfiguredOnce(): void {
+  if (warnedUnconfigured) return;
+  warnedUnconfigured = true;
+  try {
+    if (window.sessionStorage.getItem(WARNED_STORAGE_KEY) === "1") return;
+    window.sessionStorage.setItem(WARNED_STORAGE_KEY, "1");
+  } catch {
+    // sessionStorage unavailable (privacy mode etc.) — the module flag
+    // still caps this at one warning per page load.
+  }
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[PrivyProvider] VITE_PRIVY_APP_ID is unset. Auth-gated routes will render in unconfigured state.",
+  );
 }
 
 interface PrivyProviderProps {
@@ -34,25 +54,28 @@ interface PrivyProviderProps {
 }
 
 /**
- * Top-level Privy provider. Mount once in main.tsx. When VITE_PRIVY_APP_ID
- * is missing in dev/preview, this renders children without the Privy
- * context — auth-gated pages still render their shells, but `useAccount()`
- * returns `{ configured: false }` so they can surface a clear error.
+ * Top-level Privy provider. Mounted once per account-area session by
+ * AccountShell (lazy-loaded from the Router — public routes never pull the
+ * SDK). When VITE_PRIVY_APP_ID is missing in dev/preview, this renders
+ * children without the Privy context — auth-gated pages still render their
+ * shells, but `useAccount()` returns `{ configured: false }` so they can
+ * surface a clear error.
  *
  * The intentional non-throw posture is so the public routes (landing,
  * leaderboard, today, claim flows that don't depend on Privy) keep working
  * in CI builds and offline dev where Privy creds aren't around.
  */
 export function PrivyProvider({ children }: PrivyProviderProps) {
-  if (!isPrivyConfigured()) {
-    if (import.meta.env.DEV) {
-      // Dev-only warning. Quiet in prod — the LoginPage surfaces a clear
-      // user-facing error already, no need to spam the console.
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[PrivyProvider] VITE_PRIVY_APP_ID is unset. Auth-gated routes will render in unconfigured state.",
-      );
-    }
+  const configured = isPrivyConfigured();
+
+  // Dev-only warning, in an effect (not the render body) so renders stay
+  // pure. Quiet in prod — the LoginPage surfaces a clear user-facing
+  // error already, no need to spam the console.
+  useEffect(() => {
+    if (!configured && import.meta.env.DEV) warnUnconfiguredOnce();
+  }, [configured]);
+
+  if (!configured) {
     return <>{children}</>;
   }
   return (
@@ -62,7 +85,7 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
         loginMethods: ["email", "google", "wallet"],
         appearance: {
           theme: "dark",
-          accentColor: "#FD3C3C",
+          accentColor: "#C87367",
           showWalletLoginFirst: false,
         },
         embeddedWallets: {

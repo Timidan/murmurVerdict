@@ -7,20 +7,16 @@ import {
   reattestControllerWalletResponse,
   sendAccountControllerWalletJsonResponse,
 } from "../account-controller-wallet-surface.js";
-import type {
-  AccountIdAdapter,
-  ControllerWalletReattestationIdAdapter,
-} from "../auth/accounts.js";
-import { requireAccount, type AccountAuthVerifier } from "../account-route-auth.js";
+import type { ControllerWalletReattestationIdAdapter } from "../auth/accounts.js";
+import type { RequireAccount } from "../account-route-auth.js";
 import type { ControllerWalletAuthorizationNonceAdapter } from "../controller-wallet-authorization.js";
 import { asyncHandler } from "./async-handler.js";
 
 export interface AccountControllerWalletRouterDeps {
-  accountAuth?: AccountAuthVerifier;
+  requireAccount: RequireAccount;
   db: Database.Database;
   destAddrLimiter: RequestHandler;
   json: RequestHandler;
-  newAccountId?: AccountIdAdapter;
   newAuthorizationNonce?: ControllerWalletAuthorizationNonceAdapter;
   newReattestationId?: ControllerWalletReattestationIdAdapter;
   now: () => Date;
@@ -31,11 +27,10 @@ export function accountControllerWalletRouter(
 ): Router {
   const router = Router();
   const {
-    accountAuth,
+    requireAccount,
     db,
     destAddrLimiter,
     json,
-    newAccountId,
     newAuthorizationNonce,
     newReattestationId,
     now,
@@ -46,16 +41,13 @@ export function accountControllerWalletRouter(
     destAddrLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountControllerWalletJsonResponse(res, controllerWalletChallengeResponse({
         db,
         accountId: resolved.account_id,
         slug: String(req.params.slug ?? ""),
         body: req.body,
-        now,
+        operationInstant: now(),
       }));
     }),
   );
@@ -65,16 +57,13 @@ export function accountControllerWalletRouter(
     destAddrLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountControllerWalletJsonResponse(res, await bindControllerWalletResponse({
         db,
         accountId: resolved.account_id,
         slug: String(req.params.slug ?? ""),
         body: req.body,
-        now,
+        operationInstant: now(),
       }));
     }),
   );
@@ -84,17 +73,14 @@ export function accountControllerWalletRouter(
     destAddrLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountControllerWalletJsonResponse(res, controllerWalletReattestationChallengeResponse({
         db,
         accountId: resolved.account_id,
         slug: String(req.params.slug ?? ""),
         body: req.body,
         newAuthorizationNonce,
-        now,
+        operationInstant: now(),
       }));
     }),
   );
@@ -104,17 +90,14 @@ export function accountControllerWalletRouter(
     destAddrLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountControllerWalletJsonResponse(res, await reattestControllerWalletResponse({
         db,
         accountId: resolved.account_id,
         slug: String(req.params.slug ?? ""),
         body: req.body,
         newReattestationId,
-        now,
+        operationInstant: now(),
       }));
     }),
   );

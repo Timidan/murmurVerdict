@@ -6,17 +6,15 @@ import {
   listAccountAgentsResponse,
   sendAccountAgentJsonResponse,
 } from "../account-agent-surface.js";
-import { requireAccount, type AccountAuthVerifier } from "../account-route-auth.js";
-import type { AccountIdAdapter } from "../auth/accounts.js";
+import type { RequireAccount } from "../account-route-auth.js";
 import { asyncHandler } from "./async-handler.js";
 
 export interface AccountAgentsRouterDeps {
-  accountAuth?: AccountAuthVerifier;
+  requireAccount: RequireAccount;
   db: Database.Database;
   createAgentLimiter: RequestHandler;
   listAgentsLimiter: RequestHandler;
   json: RequestHandler;
-  newAccountId?: AccountIdAdapter;
   newAgentId?: AccountAgentIdAdapter;
   now: () => Date;
 }
@@ -24,12 +22,11 @@ export interface AccountAgentsRouterDeps {
 export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
   const router = Router();
   const {
-    accountAuth,
+    requireAccount,
     db,
     createAgentLimiter,
     listAgentsLimiter,
     json,
-    newAccountId,
     newAgentId,
     now,
   } = deps;
@@ -41,16 +38,13 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
     createAgentLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountAgentJsonResponse(res, createAccountAgentResponse({
         db,
         accountId: resolved.account_id,
         body: req.body,
         newAgentId,
-        now,
+        operationInstant: now(),
       }));
     }),
   );
@@ -64,10 +58,7 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
     "/v1/account/agents",
     listAgentsLimiter,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountAgentJsonResponse(res, listAccountAgentsResponse({
         db,
         accountId: resolved.account_id,

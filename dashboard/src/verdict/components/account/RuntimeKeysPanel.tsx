@@ -80,14 +80,11 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
   async function mint() {
     setError(null);
-    if (!canMint || !cw) {
-      setError(
-        cw?.reattestation_overdue
-          ? "× controller wallet re-attestation is overdue — re-attest first"
-          : "× bind a controller wallet first (wallet tab)",
-      );
-      return;
-    }
+    // TS-narrowing guard only — unreachable via UI. The mint button renders
+    // whenever a controller wallet is bound but stays disabled while
+    // `!canMint` (re-attestation overdue), with the overdue warning + link
+    // above explaining why; unbound agents get the wallet deep-link instead.
+    if (!canMint || !cw) return;
     if (!controllerWalletConnected) {
       setError(
         "× connect the bound controller wallet in Privy before signing the runtime-key authorization",
@@ -117,7 +114,9 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       });
       setMinted(result);
     } catch (e) {
-      setError((e as Error)?.message ?? "mint failed");
+      // Frame the raw daemon detail in plain words — operators are devs,
+      // the detail is useful, but the failure should read as a sentence.
+      setError(`mint failed — ${(e as Error)?.message ?? "unknown error"}`);
     } finally {
       setBusy("idle");
     }
@@ -127,6 +126,11 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     setConfirmId(id);
     if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
     confirmTimerRef.current = setTimeout(() => setConfirmId(null), CONFIRM_TIMEOUT_MS);
+  }
+
+  function cancelRevoke() {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmId(null);
   }
 
   async function confirmRevoke(id: string) {
@@ -142,7 +146,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       setConfirmId(null);
       await refresh();
     } catch (e) {
-      setError((e as Error)?.message ?? "revoke failed");
+      setError(`revoke failed — ${(e as Error)?.message ?? "unknown error"}`);
     } finally {
       setBusy("idle");
     }
@@ -173,14 +177,14 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       {cw?.reattestation_overdue && (
         <p
           className="ck-mono text-[11px]"
-          style={{ color: "var(--color-accent)" }}
+          style={{ color: "var(--color-accent-ink)" }}
         >
           × controller wallet re-attestation overdue — the daemon will
           reject mint with 409 until you sign a fresh attestation.{" "}
           <a
             href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
             className="underline underline-offset-2"
-            style={{ color: "var(--color-accent)" }}
+            style={{ color: "var(--color-accent-ink)" }}
           >
             re-attest now →
           </a>
@@ -228,21 +232,31 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
                   {revoked ? (
                     <span className="ck-dim text-[10px]">revoked</span>
                   ) : confirmId === k.runtime_key_id ? (
-                    <button
-                      className="ck-btn"
-                      style={{ color: "var(--color-accent)" }}
-                      onClick={() => void confirmRevoke(k.runtime_key_id)}
-                      disabled={busy === "revoking"}
-                    >
-                      {busy === "revoking" ? "…" : "[ confirm ]"}
-                    </button>
+                    <span className="confirm-enter inline-flex items-center gap-2">
+                      <button
+                        className="ck-btn ck-btn-bracket"
+                        style={{ color: "var(--color-accent-ink)" }}
+                        onClick={() => void confirmRevoke(k.runtime_key_id)}
+                        disabled={busy === "revoking"}
+                      >
+                        {busy === "revoking" ? "…" : "confirm"}
+                      </button>
+                      <button
+                        className="ck-btn ck-btn-bracket"
+                        onClick={cancelRevoke}
+                        disabled={busy === "revoking"}
+                        aria-label="cancel revoke"
+                      >
+                        ×
+                      </button>
+                    </span>
                   ) : (
                     <button
-                      className="ck-btn"
+                      className="ck-btn ck-btn-bracket"
                       onClick={() => requestRevoke(k.runtime_key_id)}
                       disabled={busy !== "idle"}
                     >
-                      [ revoke ]
+                      revoke
                     </button>
                   )}
                 </span>
@@ -252,20 +266,38 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
         </ul>
       )}
 
-      {cw && !cw.reattestation_overdue && (
+      {confirmId && (
+        <p
+          className="ck-mono text-[10px]"
+          style={{ color: "var(--color-accent-ink)" }}
+        >
+          revoke{" "}
+          {keys.find((k) => k.runtime_key_id === confirmId)?.runtime_key_prefix ??
+            "this key"}
+          ? the agent stops authenticating immediately — its next call 401s.
+          mint a new key to resume.
+        </p>
+      )}
+
+      {cw && (
         <button
-          className="ck-btn-primary self-start"
+          className="ck-btn ck-btn-bracket ck-pos self-start disabled:opacity-40 disabled:cursor-not-allowed"
           onClick={mint}
           disabled={busy !== "idle" || !canMint}
+          title={
+            cw.reattestation_overdue
+              ? "re-attestation overdue — re-attest in the wallet tab to mint"
+              : undefined
+          }
         >
-          {busy === "idle" ? "[ + mint runtime key ]" : busyLabel(busy)}
+          {busy === "idle" ? "+ mint runtime key" : busyLabel(busy)}
         </button>
       )}
 
       {error && (
         <p
           className="ck-mono text-[11px]"
-          style={{ color: "var(--color-accent)" }}
+          style={{ color: "var(--color-accent-ink)" }}
         >
           × {error}
         </p>

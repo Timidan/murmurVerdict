@@ -42,6 +42,11 @@ Out of scope per spec §4 / §10:
 - `marketDataCutoff`: stored by `commitSignal` in Solidity but not
   modelled in `InferenceRequest` — it's input-freshness metadata and
   doesn't participate in any of E1/E2.
+- `requestCount` and request-ID derivation: the model receives an abstract
+  fresh request ID instead of reproducing Solidity's per-pipeline counter.
+  See `InvariantMap.md` for the resulting trace under-approximation.
+- Mechanical correspondence to Solidity: this is a reviewed hand-translation;
+  Solidity changes do not automatically invalidate or rebuild the Lean model.
 
 ## Install + build (Lean 4.29.1 via elan)
 

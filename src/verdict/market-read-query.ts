@@ -24,6 +24,10 @@ export interface MarketLeaderboardReadQuery {
   tier?: MarketReadTier;
 }
 
+export interface MarketCallsReadQuery {
+  limit: number;
+}
+
 const ALLOWED_MARKET_STATUSES: ReadonlyArray<RegistryStatus> = [
   "draft",
   "listed",
@@ -47,6 +51,17 @@ export function marketLeaderboardReadQuery(
   return {
     limit: boundedIntegerQuery(query?.limit, { fallback: 20, max: 100 }),
     ...(tier ? { tier } : {}),
+  };
+}
+
+// Default/cap mirror the sibling public calls feed (publicAgentCallsQuery
+// in public-agent-query.ts) so /v1/markets/:id/calls pages identically to
+// /v1/agents/:slug/calls.
+export function marketCallsReadQuery(
+  query: MarketReadQueryInput | undefined,
+): MarketCallsReadQuery {
+  return {
+    limit: boundedIntegerQuery(query?.limit, { fallback: 50, max: 500 }),
   };
 }
 

@@ -39,7 +39,7 @@ export interface AccountControllerWalletSurfaceBase {
 }
 
 export interface AccountControllerWalletOperationClock {
-  now: () => Date;
+  operationInstant: Date;
 }
 
 export interface AccountControllerWalletJsonResponse {
@@ -93,7 +93,7 @@ export function controllerWalletChallengeResponse(
     chainId: parsed.data.chain_id,
     walletKind: parsed.data.wallet_kind,
     provider: parsed.data.provider,
-    now: input.now,
+    now: () => input.operationInstant,
   });
   return {
     status: 200,
@@ -129,8 +129,7 @@ export async function bindControllerWalletResponse(
   if (!parsed.success) {
     throwInvalidRequest(parsed.error.issues);
   }
-  const operationNow = input.now();
-  const operationClock = () => operationNow;
+  const operationClock = () => input.operationInstant;
   assertFreshAuthorization(parsed.data.authorization_issued_at, operationClock);
   const authorization = makeControllerWalletBindingAuthorization({
     agentSlug: agent.display_slug,
@@ -165,7 +164,7 @@ export async function bindControllerWalletResponse(
       provider: authorization.provider ?? undefined,
       binding_message: authorization.message,
       binding_signature: parsed.data.signature,
-      createdAt: operationNow,
+      createdAt: input.operationInstant,
     });
   } catch (err) {
     if (err instanceof ControllerWalletBindingError) {
@@ -218,8 +217,7 @@ export function controllerWalletReattestationChallengeResponse(
   if (!parsed.success) {
     throwInvalidRequest(parsed.error.issues);
   }
-  const operationNow = input.now();
-  const operationClock = () => operationNow;
+  const operationClock = () => input.operationInstant;
   const authorization = makeControllerWalletReattestationAuthorization({
     agentSlug: agent.display_slug,
     controllerWalletAddress: controller.wallet_address,
@@ -228,7 +226,7 @@ export function controllerWalletReattestationChallengeResponse(
     now: operationClock,
   });
   const status = controllerWalletAttestationStatus(controller, {
-    checkedAt: operationNow,
+    checkedAt: input.operationInstant,
   });
   return {
     status: 200,
@@ -273,8 +271,7 @@ export async function reattestControllerWalletResponse(
   if (!parsed.success) {
     throwInvalidRequest(parsed.error.issues);
   }
-  const operationNow = input.now();
-  const operationClock = () => operationNow;
+  const operationClock = () => input.operationInstant;
   assertFreshAuthorization(parsed.data.authorization_issued_at, operationClock);
   const authorization = makeControllerWalletReattestationAuthorization({
     agentSlug: agent.display_slug,
@@ -307,7 +304,7 @@ export async function reattestControllerWalletResponse(
       attestation_nonce: parsed.data.attestation_nonce,
       attestation_message: authorization.message,
       attestation_signature: parsed.data.signature,
-      attestedAt: operationNow,
+      attestedAt: input.operationInstant,
       newReattestationId: input.newReattestationId,
     });
   } catch (err) {

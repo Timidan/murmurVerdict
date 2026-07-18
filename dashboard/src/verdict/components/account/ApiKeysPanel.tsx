@@ -179,7 +179,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
       {error && (
         <div
           className="px-3 py-2 ck-mono border-b border-[var(--color-border)]"
-          style={{ color: "var(--color-accent)" }}
+          style={{ color: "var(--color-accent-ink)" }}
           role="alert"
         >
           {error}
@@ -210,32 +210,32 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
                 {rotatingId === k.api_key_id ? (
                   <span className="ck-mono ck-dim text-[10px]">rotating…</span>
                 ) : confirmId === k.api_key_id ? (
-                  <>
+                  <span className="confirm-enter inline-flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => void doRotate(k.api_key_id)}
-                      className="ck-btn ck-btn-accent"
+                      className="ck-btn ck-btn-bracket ck-btn-accent"
                       aria-label={`confirm rotate ${k.api_key_id}`}
                     >
-                      [ confirm ]
+                      confirm
                     </button>
                     <button
                       type="button"
                       onClick={cancelConfirm}
-                      className="ck-btn"
+                      className="ck-btn ck-btn-bracket"
                       aria-label="cancel rotate"
                     >
-                      [ × ]
+                      ×
                     </button>
-                  </>
+                  </span>
                 ) : (
                   <button
                     type="button"
                     onClick={() => armConfirm(k.api_key_id)}
-                    className="ck-btn"
+                    className="ck-btn ck-btn-bracket"
                     aria-label={`rotate ${k.api_key_id}`}
                   >
-                    [ rotate ]
+                    rotate
                   </button>
                 )}
               </div>
@@ -247,7 +247,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
       {confirmId && (
         <p
           className="px-3 py-2 ck-mono text-[10px] border-t border-[var(--color-border)]"
-          style={{ color: "var(--color-accent)" }}
+          style={{ color: "var(--color-accent-ink)" }}
         >
           rotate api_key {confirmId.slice(0, 12)}? old keys 401 within 1s.
         </p>
@@ -258,7 +258,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
           <summary className="px-3 py-2 ck-label ck-dim cursor-pointer select-none">
             rotated · {rotated.length}
           </summary>
-          <ul className="divide-y divide-[var(--color-border)]">
+          <ul className="details-fade divide-y divide-[var(--color-border)]">
             {rotated.map((k) => (
               <li
                 key={k.api_key_id}
@@ -284,16 +284,16 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
           type="button"
           disabled={minting}
           onClick={() => void doMint()}
-          className="ck-btn ck-pos disabled:opacity-40 disabled:cursor-not-allowed"
+          className="ck-btn ck-btn-bracket ck-pos disabled:opacity-40 disabled:cursor-not-allowed"
           aria-label="mint new key"
         >
-          [ + mint new key ]
+          + mint new key
         </button>
         {minting && <span className="ck-mono ck-dim text-[10px]">working…</span>}
         {mintError && (
           <span
             className="ck-mono text-[10px]"
-            style={{ color: "var(--color-accent)" }}
+            style={{ color: "var(--color-accent-ink)" }}
           >
             {mintError}
           </span>

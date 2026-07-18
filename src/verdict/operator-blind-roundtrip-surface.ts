@@ -1,5 +1,10 @@
 import { keccak256, toHex, type Hex } from "viem";
 
+import {
+  CofheNormalizeError,
+  normalizeCofheBytesHex,
+  normalizeCofheCtHashToHex32,
+} from "../integrations/fhenix-gateway-cofhe-normalize.js";
 import { OPERATOR_BLIND_FIXTURE_MARKET_ID } from "./operator-blind-fixture-surface.js";
 
 export const OPERATOR_BLIND_ROUNDTRIP_CHAIN_ID = 84532;
@@ -161,45 +166,33 @@ export function findOperatorBlindNumericLeaf(
   return null;
 }
 
+// The CoFHE hex-normalization primitives live in the gateway family
+// (fhenix-gateway-cofhe-normalize). These thin wrappers preserve this release
+// gate's typed error surface (OperatorBlindRoundtripError, phase "encrypt")
+// by retagging CofheNormalizeError, so the A1/A2/A3 assertions keep their
+// contract while production no longer depends on this test surface.
 export function normalizeOperatorBlindCtHashToHex32(
   value: unknown,
   label: string,
 ): Hex {
-  let hex: string;
-  if (typeof value === "bigint") {
-    hex = value.toString(16);
-  } else if (typeof value === "number") {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      fail("encrypt", `${label}.ctHash is not a safe non-negative integer`, value);
-    }
-    hex = BigInt(value).toString(16);
-  } else if (typeof value === "string") {
-    hex = value.startsWith("0x") ? value.slice(2) : BigInt(value).toString(16);
-  } else {
-    fail("encrypt", `${label}.ctHash has unsupported type ${typeof value}`);
+  try {
+    return normalizeCofheCtHashToHex32(value, label);
+  } catch (err) {
+    if (err instanceof CofheNormalizeError) fail("encrypt", err.detail, err.excerpt);
+    throw err;
   }
-  const out = `0x${hex.padStart(64, "0")}`.toLowerCase();
-  if (!/^0x[0-9a-f]{64}$/.test(out)) {
-    fail("encrypt", `${label}.ctHash did not normalize to bytes32`, {
-      value,
-      normalized: out,
-    });
-  }
-  return out as Hex;
 }
 
 export function normalizeOperatorBlindBytesHex(
   value: unknown,
   label: string,
 ): Hex {
-  if (typeof value !== "string") {
-    fail("encrypt", `${label}.signature must be a hex string`, value);
+  try {
+    return normalizeCofheBytesHex(value, label);
+  } catch (err) {
+    if (err instanceof CofheNormalizeError) fail("encrypt", err.detail, err.excerpt);
+    throw err;
   }
-  const out = value.startsWith("0x") ? value : `0x${value}`;
-  if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(out)) {
-    fail("encrypt", `${label}.signature is not even-length hex`, out);
-  }
-  return out as Hex;
 }
 
 export function requireOperatorBlindHex32(

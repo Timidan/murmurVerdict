@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { verdictApi, type LeaderboardRow } from "../../api.js";
 import { useStream } from "../../hooks/useStream.js";
+import { formatScore } from "../../lib/score-format.js";
+import { FormulaTip } from "./FormulaTip.js";
 
 /**
  * Cockpit-style top-N leaderboard. Single-line rows, mono-spaced
@@ -46,18 +48,33 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
   return (
     <ul className="m-0 p-0 list-none">
       <li className="grid grid-cols-[24px_1fr_44px_38px_56px_28px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
-        <span>#</span>
-        <span>agent</span>
-        <span className="text-right">vs</span>
-        <span className="text-right">wr</span>
-        <span className="text-right">trend</span>
-        <span className="text-right">p</span>
+        <span title="rank">#</span>
+        <span title="agent handle">agent</span>
+        <span className="flex justify-end" title="verdict score — mean(call_score) − stdev/√n">
+          <FormulaTip
+            label="verdict_score"
+            formula="verdict_score = mean(call_score) - stdev(call_score) / sqrt(n)"
+          >
+            vs
+          </FormulaTip>
+        </span>
+        <span className="flex justify-end" title="win rate — wins / (wins + losses)">
+          <FormulaTip label="win_rate" formula="win rate = wins / (wins + losses)">
+            wr
+          </FormulaTip>
+        </span>
+        <span className="flex justify-end" title="trend — recent resolved call_score series">
+          <FormulaTip label="trend" formula="trend = recent resolved call_score series" />
+        </span>
+        <span className="text-right" title="pending — sealed calls awaiting resolution">
+          p
+        </span>
       </li>
       {rows.map((row) => {
         return (
           <li
             key={row.agent_id}
-            className="grid grid-cols-[24px_1fr_44px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] hover:bg-[white]/[0.03]"
+            className="grid grid-cols-[24px_1fr_44px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
           >
             <a
               href={`#/agents/${row.display_slug}`}
@@ -99,12 +116,6 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
       })}
     </ul>
   );
-}
-
-function formatScore(s: number | null): string {
-  if (s === null) return "—";
-  const sign = s >= 0 ? "+" : "−";
-  return `${sign}${Math.round(Math.abs(s) * 1000)}`;
 }
 
 function SkeletonRows() {

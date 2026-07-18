@@ -9,6 +9,7 @@ import type {
   PolymarketMarketRegistrationGammaAdapter,
 } from "../verdict/polymarket-market-registration.js";
 import type { SealedCallIdAdapter } from "../verdict/sealed-call-acceptance.js";
+import type { NanopayGatewayFactory } from "../verdict/nanopay-payment-gate.js";
 import { SCHEMA_VERSION } from "../verdict/schema.js";
 import { loadDaemonRuntimeConfig } from "./daemon-config.js";
 import { createDaemonHttpSurface } from "./daemon-http.js";
@@ -67,6 +68,10 @@ export interface DaemonOpts {
   newOperatorAlertId?: OperatorAlertIdAdapter;
   /** Sealed Call ID Adapter; default uses random UUIDs inside acceptance. */
   newSealedCallId?: SealedCallIdAdapter;
+  /** Circle facilitator factory Adapter for the nanopay route; default is the
+   *  real SDK facade. Inject a fake to drive an end-to-end paid-inference test
+   *  (preflight → verify → settle → replay) through startDaemon. */
+  nanopayGatewayFactory?: NanopayGatewayFactory;
 }
 
 export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> {
@@ -94,6 +99,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       db,
       gatewayFeedPacketId: opts.newFeedPacketId,
       gatewaySealedCallId: opts.newSealedCallId,
+      nanopayGatewayFactory: opts.nanopayGatewayFactory,
       liveCanaryEnv: env,
       logger,
       now,
@@ -177,6 +183,15 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
     logger.log(
       `[daemon] verdict listening on :${httpServerRuntime.port} (resolver=${config.resolverTickSec}s)`,
     );
+
+    if (!config.privyAuth.appId) {
+      logger.warn(
+        "[daemon] PRIVY_APP_ID/PRIVY_APP_SECRET unset — account sign-in and " +
+          "agent onboarding are DISABLED (Privy bearer auth fails closed). " +
+          "Public reads still work, but no first user can create an account. " +
+          "Set both vars (and VITE_PRIVY_APP_ID in the dashboard build) before launch.",
+      );
+    }
 
     return { port: httpServerRuntime.port, close: lifecycle.close };
   } catch (err) {

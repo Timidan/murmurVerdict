@@ -112,6 +112,16 @@ export class Resolver {
           log: this.log,
         })) {
           oracleUnavailable++;
+          // Fanout consistency: a markOracleUnavailable write IS a terminal
+          // resolution (submission → resolved + a t1_resolutions row), so it
+          // must fire the resolved fanout just like the t1 success/adapter
+          // paths. Previously these t0/policy-fail sites skipped onResolved,
+          // so SSE `call.resolved` / webhooks never fired for them.
+          try {
+            await this.onResolved(ctx.call_id);
+          } catch {
+            // terminal state already persisted
+          }
         }
         continue;
       }
@@ -122,9 +132,12 @@ export class Resolver {
       // and move the call straight into pending_t1 so the t1 loop picks it
       // up next tick.
       if (policy === null) {
-        if (ctx.status === "accepted" || ctx.status === "pending_t0") {
-          submissionsRepo.setStatus(this.db, ctx.call_id, "pending_t1");
-        }
+        submissionsRepo.transitionStatus(
+          this.db,
+          ctx.call_id,
+          ["accepted", "pending_t0"],
+          "pending_t1",
+        );
         this.log({
           kind: "still_pending",
           call_id: ctx.call_id,
@@ -143,8 +156,18 @@ export class Resolver {
       if (outcome.kind === "anchored") {
         // T0 anchor + status change must commit atomically: a crash between
         // the two leaves submissions stuck in pending_t0 with the anchor row
-        // already written, breaking the resolver's two-phase invariant.
+        // already written, breaking the resolver's two-phase invariant. The
+        // status transition is also a compare-and-swap: an invalid/missed
+        // reveal may terminalize the call while the oracle request is in
+        // flight, and that terminal status must never be resurrected.
         const t0AnchorTx = this.db.transaction(() => {
+          const transitioned = submissionsRepo.transitionStatus(
+            this.db,
+            ctx.call_id,
+            ["accepted", "pending_t0"],
+            "pending_t1",
+          );
+          if (!transitioned) return false;
           anchorsRepo.setT0(this.db, {
             call_id: ctx.call_id,
             t0: outcome.observation.feed_timestamp,
@@ -153,9 +176,9 @@ export class Resolver {
             source_id: outcome.observation.source_id,
             anchored_at: this.nowIso(),
           });
-          submissionsRepo.setStatus(this.db, ctx.call_id, "pending_t1");
+          return true;
         });
-        t0AnchorTx();
+        if (!t0AnchorTx()) continue;
         anchored++;
         this.log({
           kind: "anchored_t0",
@@ -172,10 +195,25 @@ export class Resolver {
           log: this.log,
         })) {
           oracleUnavailable++;
+          // Fanout consistency: a markOracleUnavailable write IS a terminal
+          // resolution (submission → resolved + a t1_resolutions row), so it
+          // must fire the resolved fanout just like the t1 success/adapter
+          // paths. Previously these t0/policy-fail sites skipped onResolved,
+          // so SSE `call.resolved` / webhooks never fired for them.
+          try {
+            await this.onResolved(ctx.call_id);
+          } catch {
+            // terminal state already persisted
+          }
         }
       } else {
         if (ctx.status === "accepted") {
-          submissionsRepo.setStatus(this.db, ctx.call_id, "pending_t0");
+          submissionsRepo.transitionStatus(
+            this.db,
+            ctx.call_id,
+            ["accepted"],
+            "pending_t0",
+          );
         }
         this.log({
           kind: "still_pending",
@@ -222,6 +260,16 @@ export class Resolver {
           log: this.log,
         })) {
           oracleUnavailable++;
+          // Fanout consistency: a markOracleUnavailable write IS a terminal
+          // resolution (submission → resolved + a t1_resolutions row), so it
+          // must fire the resolved fanout just like the t1 success/adapter
+          // paths. Previously these t0/policy-fail sites skipped onResolved,
+          // so SSE `call.resolved` / webhooks never fired for them.
+          try {
+            await this.onResolved(ctx.call_id);
+          } catch {
+            // terminal state already persisted
+          }
         }
         continue;
       }

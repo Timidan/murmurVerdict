@@ -240,7 +240,7 @@ export function DestinationAddressForm({
           {inlineError && (
             <span
               className="ck-mono text-[10px]"
-              style={{ color: "var(--color-accent)" }}
+              style={{ color: "var(--color-accent-ink)" }}
             >
               × {inlineError}
             </span>
@@ -251,7 +251,7 @@ export function DestinationAddressForm({
         {cooldownActive && (
           <p
             className="ck-mono text-[10px]"
-            style={{ color: "var(--color-accent)" }}
+            style={{ color: "var(--color-accent-ink)" }}
             aria-live="polite"
           >
             next change allowed in {formatDuration(remaining)}
@@ -265,7 +265,7 @@ export function DestinationAddressForm({
         {serverError && (
           <div
             className="ck-frame-strong px-3 py-2 ck-mono"
-            style={{ color: "var(--color-accent)" }}
+            style={{ color: "var(--color-accent-ink)" }}
             role="alert"
           >
             {serverError}
@@ -276,10 +276,10 @@ export function DestinationAddressForm({
           <button
             type="submit"
             disabled={!canSubmit}
-            className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+            className="ck-btn ck-btn-bracket ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
             aria-label="update address"
           >
-            [ update address → ]
+            update address →
           </button>
           {submitting && <span className="ck-mono ck-dim text-[10px]">working…</span>}
         </div>

@@ -176,44 +176,34 @@ try {
     assert.equal(names.some((name) => name.includes("gateway")), false);
   });
 
-  await check("explicit runtime disable fails before SDK startup", async () => {
+  await check("explicit runtime disable skips SDK startup", async () => {
     launchpadLogs.length = 0;
     launchpadWarnings.length = 0;
-    await assert.rejects(
-      () =>
-        startLaunchpadOpenServAgent({
-          db,
-          enabled: false,
-          apiKey: "configured-api-key",
-          logger: launchpadLogger,
-          now,
-        }),
-      (err) =>
-        err instanceof OpenServLaunchpadConfigError &&
-        err.key === "OPENSERV_LAUNCHPAD_ENABLED",
-    );
+    const disabled = await startLaunchpadOpenServAgent({
+      db,
+      enabled: false,
+      apiKey: "configured-api-key",
+      logger: launchpadLogger,
+      now,
+    });
+    assert.equal(disabled, null);
     assert.equal(launchpadLogs.length, 0);
     assert.equal(launchpadWarnings.length, 0);
   });
 
-  await check("env-backed runtime disable fails before SDK startup", async () => {
+  await check("env-backed runtime disable skips SDK startup", async () => {
     launchpadLogs.length = 0;
     launchpadWarnings.length = 0;
-    await assert.rejects(
-      () =>
-        startLaunchpadOpenServAgent({
-          db,
-          env: {
-            OPENSERV_API_KEY: "configured-api-key",
-            OPENSERV_LAUNCHPAD_ENABLED: "FALSE",
-          },
-          logger: launchpadLogger,
-          now,
-        }),
-      (err) =>
-        err instanceof OpenServLaunchpadConfigError &&
-        err.key === "OPENSERV_LAUNCHPAD_ENABLED",
-    );
+    const disabled = await startLaunchpadOpenServAgent({
+      db,
+      env: {
+        OPENSERV_API_KEY: "configured-api-key",
+        OPENSERV_LAUNCHPAD_ENABLED: "FALSE",
+      },
+      logger: launchpadLogger,
+      now,
+    });
+    assert.equal(disabled, null);
     assert.equal(launchpadLogs.length, 0);
     assert.equal(launchpadWarnings.length, 0);
   });
@@ -235,12 +225,22 @@ try {
     );
   });
 
-  await check("missing OpenServ API key fails before SDK startup", async () => {
+  await check("missing OpenServ API key leaves optional runtime disabled", async () => {
+    const disabled = await startLaunchpadOpenServAgent({
+      db,
+      env: {},
+      logger: launchpadLogger,
+      now,
+    });
+    assert.equal(disabled, null);
+  });
+
+  await check("explicitly enabled OpenServ requires an API key", async () => {
     await assert.rejects(
       () =>
         startLaunchpadOpenServAgent({
           db,
-          env: {},
+          env: { OPENSERV_LAUNCHPAD_ENABLED: "true" },
           logger: launchpadLogger,
           now,
         }),

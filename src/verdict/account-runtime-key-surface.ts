@@ -34,7 +34,7 @@ export interface AccountRuntimeKeySurfaceBase {
 }
 
 export interface AccountRuntimeKeyWriteClock {
-  now: () => Date;
+  operationInstant: Date;
 }
 
 export interface AccountRuntimeKeyJsonResponse {
@@ -115,7 +115,7 @@ export function runtimeKeyChallengeResponse(
     policy: parsed.data.policy,
     expiresAt: parsed.data.expires_at,
     newAuthorizationNonce: input.newAuthorizationNonce,
-    now: input.now,
+    now: () => input.operationInstant,
   });
   return {
     status: 200,
@@ -158,10 +158,9 @@ export async function mintAccountRuntimeKeyResponse(
     agent.agent_id,
     "bind a controller wallet before minting runtime keys",
   );
-  const operationNow = input.now();
-  const operationClock = () => operationNow;
+  const operationClock = () => input.operationInstant;
   const attestation = controllerWalletAttestationStatus(controller, {
-    checkedAt: operationNow,
+    checkedAt: input.operationInstant,
   });
   if (attestation.reattestation_overdue) {
     throw new VerdictError(
@@ -218,7 +217,7 @@ export async function mintAccountRuntimeKeyResponse(
       authorization_message: authorization.message,
       authorization_signature: parsed.data.signature,
       expires_at: authorization.expires_at,
-      createdAt: operationNow,
+      createdAt: input.operationInstant,
       newRuntimeKeyId: input.newRuntimeKeyId,
       newRuntimeKeySecret: input.newRuntimeKeySecret,
     });
@@ -265,7 +264,7 @@ export function revokeAccountRuntimeKeyResponse(
     account_id: input.accountId,
     runtime_key_id: input.keyId,
     reason: parsed.data.reason,
-    revokedAt: input.now(),
+    revokedAt: input.operationInstant,
   });
   return { status: 200, body: { revoked } };
 }

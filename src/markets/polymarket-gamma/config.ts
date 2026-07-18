@@ -14,6 +14,8 @@ export const marketConfigSchema = z
   .object({
     conditionId: z.string().regex(POLYMARKET_CONDITION_ID_REGEX),
     questionID: z.string().regex(POLYMARKET_CONDITION_ID_REGEX).optional(),
+    /** Human question text from Gamma (e.g. "Will Argentina win…?"). */
+    question: z.string().optional(),
     slug: z.string().min(1),
     outcomes: z.array(z.string()).length(2),
     endDate: z.string().nullable(),
@@ -31,7 +33,10 @@ export interface PolymarketGammaMarketConfigInput {
   snapshot: Pick<
     GammaMarketSnapshot,
     "slug" | "outcomes" | "endDate" | "umaBond" | "resolvedBy"
-  >;
+  > & {
+    /** Gamma forward-compat field; projected into config when present. */
+    readonly question?: unknown;
+  };
   resolutionClass?: ResolutionClass;
 }
 
@@ -41,8 +46,10 @@ export function polymarketGammaMarketConfig(
   const slug = typeof input.snapshot.slug === "string" && input.snapshot.slug.length > 0
     ? input.snapshot.slug
     : input.conditionId.slice(0, 10);
+  const question = input.snapshot.question;
   return {
     conditionId: input.conditionId,
+    ...(typeof question === "string" && question.length > 0 ? { question } : {}),
     slug,
     outcomes: gammaOutcomeLabelsForConfig(input.snapshot.outcomes),
     endDate: typeof input.snapshot.endDate === "string"
@@ -70,6 +77,7 @@ export function publicPolymarketGammaMarketConfigSummary(
 ): Record<string, unknown> {
   return {
     ...(typeof config.conditionId === "string" ? { conditionId: config.conditionId } : {}),
+    ...(typeof config.question === "string" ? { question: config.question } : {}),
     ...(typeof config.slug === "string" ? { slug: config.slug } : {}),
     ...(Array.isArray(config.outcomes) ? { outcomes: config.outcomes } : {}),
     ...(typeof config.endDate === "string" ? { endDate: config.endDate } : {}),

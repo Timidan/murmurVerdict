@@ -21,7 +21,7 @@ export function Panel({ title, meta, actions, children, className }: PanelProps)
   return (
     <section className={"ck-frame flex flex-col min-h-0 " + (className ?? "")}>
       <div className="ck-header">
-        <span className="ck-label ck-pos">{title}</span>
+        <h2 className="ck-label ck-pos">{title}</h2>
         <span className="flex items-center gap-2">
           {actions}
           {meta && <span className="ck-mono ck-dim">{meta}</span>}

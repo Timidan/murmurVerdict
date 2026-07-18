@@ -147,9 +147,13 @@ export async function resolveRevealedAdapter(input: {
     const written = resolutionsRepo.setResolution(input.db, {
       call_id: input.ctx.call_id,
       t1: resolvedAtIso,
-      p1: score.call_score === null ? "0" : String(score.call_score),
-      t1_feed: adapter.name,
-      signed_return: "0",
+      // Adapter markets have no price feed: p1 / t1_feed / signed_return are
+      // native-price-only evidence and are NULL here (migration 055). The
+      // score lives in its own column; the adapter identity + observation are
+      // carried by outcomeEvidence and the usage event.
+      p1: null,
+      t1_feed: null,
+      signed_return: null,
       outcome,
       call_score: score.call_score,
       resolved_at: now,

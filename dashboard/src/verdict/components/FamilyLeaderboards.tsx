@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { verdictApi, type AgentFamilyRow, type AgentCrossFamilyRow } from "../api.js";
+import { formatScore } from "../lib/score-format.js";
 
 type View = "cross" | { family: string };
 
@@ -170,9 +171,7 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
             {r.display_slug}
           </a>
           <span className="ck-dim">
-            {r.general_score !== null
-              ? r.general_score.toFixed(3)
-              : "—"}
+            {formatScore(r.general_score)}
           </span>
           <span className="ck-dim">
             {Math.round(r.coverage_ratio * 100)}% cov
@@ -203,7 +202,7 @@ function FamilyRows({ rows }: { rows: AgentFamilyRow[] }) {
             {r.display_slug}
           </a>
           <span className="ck-dim">
-            {r.verdict_score !== null ? r.verdict_score.toFixed(3) : "—"}
+            {formatScore(r.verdict_score)}
           </span>
           <span className="ck-dim">{r.resolved_calls} res</span>
         </li>

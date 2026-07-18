@@ -45,9 +45,9 @@ export function FormulaTip({
         className={
           "formula-tip pointer-events-none absolute right-0 top-full z-50 mt-1 " +
           "w-max max-w-[240px] translate-y-1 border border-[var(--color-border-vis)] " +
-          "bg-[var(--color-secondary)] px-2 py-1 ck-mono text-[10px] leading-snug " +
-          "text-[var(--color-display)] opacity-0 transition-[opacity,transform] " +
-          "duration-100"
+          "bg-[var(--color-raised)] px-2 py-1 ck-mono text-[10px] leading-snug " +
+          "text-[var(--color-primary)] opacity-0 transition-[opacity,transform] " +
+          "duration-[140ms] ease-out"
         }
       >
         {formula}

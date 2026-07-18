@@ -40,25 +40,30 @@ Two themes share the same CSS-variable surface. Dark is the default. Paper is ac
 
 | Var | Dark | Paper | Use |
 |---|---|---|---|
-| `--color-bg` | `#000000` | `#FCF9F2` | Canvas |
-| `--color-surface` | `#111111` | `#F4EFE5` | Card/panel surface (rare) |
-| `--color-raised` | `#1A1A1A` | `#EAE3D3` | Raised surface (rarer) |
-| `--color-border` | `#222222` | `#D8D2C8` | Hairline divider |
-| `--color-border-vis` | `#333333` | `#B8AE99` | Visible/interactive border |
-| `--color-disabled` | `#666666` | `#A39A85` | Disabled, timestamps, hints |
+| `--color-bg` | `#0A0A0A` | `#FCF9F2` | Canvas |
+| `--color-surface` | `#161616` | `#F4EFE5` | Card/panel surface (rare) |
+| `--color-raised` | `#1F1F1F` | `#EAE3D3` | Raised surface (rarer) |
+| `--color-border` | `#262626` | `#D8D2C8` | Hairline divider |
+| `--color-border-vis` | `#363636` | `#B8AE99` | Visible/interactive border |
+| `--color-disabled` | `#8A8A8A` | `#6F6754` | Disabled, timestamps, hints |
 | `--color-secondary` | `#999999` | `#6B6453` | Labels, captions, metadata |
 | `--color-primary` | `#E8E8E8` | `#1F1B14` | Body text |
 | `--color-display` | `#FFFFFF` | `#0A0A0A` | Hero numerals, the ONE thing per screen |
-| `--color-accent` | `#FD3C3C` | `#FD3C3C` | **Single chromatic accent — brand red.** Pinned in both modes. Interrupt only. |
-| `--color-accent-tint` | `rgba(253, 60, 60, 0.15)` | `rgba(253, 60, 60, 0.15)` | Selection highlight (same in both themes — verified against `dashboard/src/styles.css`) |
+| `--color-brand-mark` | `#FD3C3C` | `#FD3C3C` | Immutable approved logo-dot red; never follows UI palette changes |
+| `--color-accent` | `#C87367` | `#C87367` | **Single chromatic UI event accent.** Muted terracotta, pinned in both modes. |
+| `--color-accent-ink` | `#C87367` | `#A64843` | Text and thin-border red; paper value remains AA across every paper surface |
+| `--color-accent-tint` | `rgba(200, 115, 103, 0.15)` | `rgba(200, 115, 103, 0.15)` | Selection and low-emphasis event tint |
+| `--color-on-accent` | `#0A0A0A` | `#0A0A0A` | Fixed dark ink on accent fills; never resolves to paper cream |
 | `--color-success` | `#4A9E5C` | `#2E6F3D` | Win outcome, healthy oracle (data-encoding only) |
 | `--color-warning` | `#D4A843` | `#8A6A1F` | Stale-but-acceptable, void band (data-encoding only) |
 
-Dark uses pure `#000` (OLED canvas — intentional brand override of "no pure black"). Paper uses cream `#FCF9F2` sampled from the approved asset pack.
+Dark uses a near-black `#0A0A0A` (OLED-friendly canvas). Paper uses cream `#FCF9F2` sampled from the approved asset pack.
 
 **Hierarchy rule:** max 4 text levels per screen, drawn from `disabled / secondary / primary / display`. Red is not part of the hierarchy — if nothing is urgent, no red on screen.
 
-**Brand red migration (2026-05-16):** the accent was previously `#D71921` (Nothing red). It moved to `#FD3C3C` (brand red, sampled from the approved Murmur Verdict asset pack). Bold/calm variants used to carry their own accent overrides but the variants are gone — the rebrand is now the only accent path.
+**Active state ink:** active toggles/tabs (`.ck-btn-active`) render in `--color-display` ink, not red — red stays reserved for urgency/interrupt.
+
+**UI red refinement (2026-07-18):** interface events moved from the asset-pack `#FD3C3C` to the calmer `#C87367`, with fixed `#0A0A0A` ink on fills. Official wordmarks, favicons, and animated mark dots remain pinned to their approved `#FD3C3C`; the UI palette never recolors a logo.
 
 ### 2.3 Spacing
 
@@ -74,12 +79,13 @@ The only animation primitive on the compact shell is `nothing-breathe` — a 1.6
 
 ### 2.5 Compact shell styles
 
-When the page sits inside `.compact-shell`, overrides at `dashboard/src/verdict/styles/compact.css`:
+When the page sits inside `.mmr-shell`, overrides at `dashboard/src/verdict/styles/compact.css`:
 
 | Class | Effect |
 |---|---|
-| `.compact-shell` | 11px base, 1.35 line-height, 0.02em letter-spacing, mono everywhere |
-| `.ck-label` | 9px, 700 weight, 0.1em tracking, ALL CAPS, `--color-secondary` |
+| `.mmr-shell` | 11px base, 1.35 line-height, 0.02em letter-spacing, mono everywhere |
+| `.ck-label` | 13px, 700 weight, 0.04em tracking, `--color-secondary` |
+| `.mmr-nav-link` | Canonical landing-derived nav action: Space Mono 0.72rem/400, 44px target, 32px group gap, unboxed with intent underline |
 | `.ck-num-lg` | 22px Doto-mono, tabular-nums, `--color-display` |
 | `.ck-mono` | 11px tabular-nums |
 | `.ck-pos` / `.ck-neg` / `.ck-dim` | display / accent / disabled tones |
@@ -130,7 +136,7 @@ Lives at `dashboard/src/verdict/components/compact/`.
 
 | Component | Purpose | Used by |
 |---|---|---|
-| `CompactTopbar` | 26px-tall chrome — 4 LED dots, system name, UTC clock, terminal nav | every compact page |
+| `CompactTopbar` | 64px shared chrome — MMark, context crumb, landing-canonical unboxed nav, UTC clock, theme, live status | every compact page |
 | `Panel` | Hairline-framed labeled region with header strip | leaderboard, live tape, markets matrix panels |
 | `CompactMiniLB` | Top-N leaderboard rendered as `ck-row` grid with sparklines | landing |
 | `CompactLiveFeed` | Tape of recent SSE events | landing |
@@ -138,14 +144,13 @@ Lives at `dashboard/src/verdict/components/compact/`.
 | `MetricCell` | Single stat cell (label + value) for ribbon strips | many |
 | `Sparkline` | 30-day score trend SVG, no axes, hairline | leaderboard rows |
 
-### 4.2 Generic (used outside compact-shell utility pages)
+### 4.2 Generic (used outside mmr-shell utility pages)
 
 Lives at `dashboard/src/verdict/components/`.
 
 | Component | Purpose |
 |---|---|
 | `OutcomeChip` | win/loss/void/oracle_unavailable status pill |
-| `PillButton` | Rounded CTA used by share and account flows |
 | `Topbar` | Generic dashboard topbar used by utility pages outside the compact shell |
 | `LiveCounter` | Big animated counter |
 | `LiveTape` | Generic SSE tape component |
@@ -164,7 +169,6 @@ Lives at `dashboard/src/verdict/components/`.
 | `AgentCardGrid` | Card grid of top agents |
 | `FamilyLeaderboards` | Per-family (kind) leaderboard rollup used by the landing page |
 | `FheStatusPanel` | Reads `/v1/meta`; renders sealed-Fhenix posture (chain, contract) |
-| `MobileNavDrawer` | Hamburger overlay nav for the compact topbar on viewports < 768px |
 | `TierBadge` | Tier pill (main / provisional) on leaderboard rows + agent ribbons |
 | `ThemeToggle` | Dark ↔ paper theme switch in topbar |
 | `Splash` | Cold-load mark splash (gated by a single rAF) |
@@ -206,7 +210,9 @@ the retired receipts subsystem no longer has a standalone verify endpoint.
 
 ### 5.3 Today (`#/today`) — `TodayPage.tsx`
 
-3-column live tape: PENDING / RESOLVED 24H / ACCEPTED 24H. Stats ribbon header. Each row links to `#/calls/:call_id`.
+3-column live tape: PENDING / RESOLVED 24H / ACCEPTED 24H. Each row links to `#/calls/:call_id`. The page subscribes to `useStream` — every `call.accepted` / `call.resolved` event refetches the feed so the three panels stay live.
+
+Open item: a stats-ribbon header (aggregate counts across the three panels) is planned but not currently rendered.
 
 ### 5.4 Launch (`#/launch`) — `LaunchPage.tsx`
 

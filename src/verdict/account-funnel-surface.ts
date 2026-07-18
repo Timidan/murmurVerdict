@@ -42,7 +42,7 @@ export interface AccountFunnelSurfaceBase {
 }
 
 export interface AccountFunnelWriteClock {
-  now: () => Date;
+  operationInstant: Date;
 }
 
 export interface AccountFunnelEvidenceAdapters {
@@ -87,7 +87,7 @@ export function emitAccountFunnelEventResponse(
       kind: parsed.data.kind,
       attributes,
       newUsageEventId: input.newUsageEventId,
-      occurredAt: input.now(),
+      occurredAt: input.operationInstant,
     }),
   );
   return { status: 204 };

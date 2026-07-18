@@ -1,6 +1,11 @@
 import { parseAbi, type AbiEvent, type Address, type Hex } from "viem";
 
-export const MURMUR_SEALED_VERDICTS_GATEWAY_ABI = parseAbi([
+import {
+  FEED_PACKET_SUBMITTED_EVENT,
+  SEALED_CALL_SUBMITTED_EVENT,
+} from "./fhenix-event-primitives.js";
+
+const MURMUR_SEALED_VERDICTS_GATEWAY_FUNCTIONS_ABI = parseAbi([
   "function submitSealedFor(address agent,bytes32 marketId,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) binaryIndexInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) confidenceInput,bytes32 clientNonce) returns (bytes32)",
   "function submitFeedPacketFor(address agent,bytes32 feedId,bytes32 marketId,uint64 revealAfter,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) actionInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) signalInput,bytes32 clientNonce) returns (bytes32)",
   // View accessors used by the reconciliation path
@@ -9,12 +14,19 @@ export const MURMUR_SEALED_VERDICTS_GATEWAY_ABI = parseAbi([
   // the reconciler treats as "no on-chain state → safe to retry".
   "function getCall(bytes32 callId) view returns (address agent, bytes32 marketId, uint64 acceptedAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, uint8 revealedBinaryIndex, uint16 revealedConfidenceBps, uint8 state)",
   "function getFeedPacket(bytes32 packetId) view returns (address agent, bytes32 feedId, bytes32 marketId, uint64 acceptedAt, uint64 revealAfter, bytes32 actionCtHash, bytes32 signalCtHash, uint8 revealedAction, uint16 revealedSignalBps, uint8 state)",
-  // Submit events — recovered via getLogs filtered on the indexed id when
-  // the writeContract receipt was lost (timeout race). Keep these in lockstep
-  // with contracts/src/MurmurSealedVerdicts.sol:88 / :118.
-  "event SealedCallSubmitted(bytes32 indexed callId, address indexed agent, bytes32 indexed marketId, uint64 acceptedAt, uint64 revealOpenAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bytes32 clientNonce)",
-  "event FeedPacketSubmitted(bytes32 indexed packetId, address indexed agent, bytes32 indexed feedId, bytes32 marketId, uint64 acceptedAt, uint64 revealAfter, bytes32 actionCtHash, bytes32 signalCtHash, bytes32 clientNonce)",
 ]);
+
+// The Murmur Gateway ABI is the function surface plus the two submit events,
+// which are recovered via getLogs filtered on the indexed id when the
+// writeContract receipt was lost (timeout race). The event items are imported
+// from fhenix-event-primitives.ts (the single declaration shared with the
+// verifier primitive and the smokes) rather than re-stated here, so there is no
+// signature to keep "in lockstep".
+export const MURMUR_SEALED_VERDICTS_GATEWAY_ABI = [
+  ...MURMUR_SEALED_VERDICTS_GATEWAY_FUNCTIONS_ABI,
+  SEALED_CALL_SUBMITTED_EVENT,
+  FEED_PACKET_SUBMITTED_EVENT,
+] as const;
 
 export interface FhenixGatewayClient {
   getChainId: () => Promise<number>;

@@ -20,14 +20,20 @@ export function deriveFeedRevealAfter(
   requested: string | undefined,
   now: Date,
 ): string {
-  if (requested) return stripIsoMillis(requested);
   const policy = parseFeedJsonObjectStrict(
     feed.reveal_policy_json,
     "feed.reveal_policy_json",
   );
   if (policy.kind === "fixed_delay" && typeof policy.delay_seconds === "number") {
-    return isoFromMs(now.getTime() + policy.delay_seconds * 1000);
+    const policyMinimumMs = now.getTime() + policy.delay_seconds * 1000;
+    if (!requested) return isoFromMs(policyMinimumMs);
+
+    const normalizedRequested = stripIsoMillis(requested);
+    const requestedMs = Date.parse(normalizedRequested);
+    if (!Number.isFinite(requestedMs)) return normalizedRequested;
+    return isoFromMs(Math.max(requestedMs, policyMinimumMs));
   }
+  if (requested) return stripIsoMillis(requested);
   const delaySeconds = Math.max(
     60,
     feed.max_latency_seconds ?? feed.delivery_cadence_seconds ?? 3600,
@@ -132,5 +138,7 @@ function feedSlashAction(rule: Record<string, unknown>): FeedSlashAction {
 }
 
 function stripIsoMillis(value: string): string {
-  return new Date(value).toISOString().replace(/\.\d+Z$/, "Z");
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) return value;
+  return new Date(milliseconds).toISOString().replace(/\.\d+Z$/, "Z");
 }

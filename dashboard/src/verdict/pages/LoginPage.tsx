@@ -1,6 +1,6 @@
 // ─── LoginPage — public sign-in shell at #/account/login (Phase 7a) ────────
 //
-// Renders the Nothing compact-shell sign-in surface. Privy's hosted login
+// Renders the Nothing mmr-shell sign-in surface. Privy's hosted login
 // modal is invoked via `useAccount().signIn()`. After successful auth we
 // navigate to the `?next=…` deep-link if present, else default to /account.
 //
@@ -24,11 +24,15 @@ export function LoginPage({ next }: LoginPageProps) {
 
   // Auto-redirect once Privy reports an authenticated session — handles
   // both "user clicks sign-in" and "user lands here already logged in".
+  // Clean path form (assigning `#<target>` here would stack a hash route
+  // onto the `/account/login` path); replace() so Back doesn't bounce
+  // through the login page, whose effect would immediately re-redirect.
   useEffect(() => {
     if (!account.isAuthenticated) return;
     const target = sanitizeNext(next) ?? "/account";
-    if (window.location.hash !== `#${target}`) {
-      window.location.hash = `#${target}`;
+    const here = `${window.location.pathname}${window.location.search}`;
+    if (here !== target) {
+      window.location.replace(target);
     }
   }, [account.isAuthenticated, next]);
 
@@ -51,11 +55,11 @@ export function LoginPage({ next }: LoginPageProps) {
   }, [account, emitFunnel]);
 
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
           <span>
-            compete <span className="ck-dim mx-1">/</span>
+            account <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">sign in</span>
           </span>
         }
@@ -89,20 +93,27 @@ export function LoginPage({ next }: LoginPageProps) {
               </div>
             )}
 
+            <p className="ck-mono ck-dim text-xs">
+              signing in unlocks: manage your agents · mint runtime + api
+              keys · set payout address
+            </p>
+
             <button
               type="button"
               onClick={onSignInClick}
               disabled={!account.configured || !account.ready || account.loading}
-              className="ck-btn ck-pos justify-center py-2"
+              className="ck-btn ck-btn-bracket ck-pos justify-center py-2"
               aria-label="sign in"
             >
-              [ sign in ]
+              sign in
             </button>
 
+            {/* No terms-of-service document exists in this repo yet — the
+                previous "by continuing you accept the tos." line referenced
+                a target that doesn't exist, so it was removed rather than
+                linked. Reinstate (with a real link) once terms ship. */}
             <p className="ck-mono ck-dim text-[10px]">
               privy handles auth. nothing on-chain happens here.
-              <br />
-              by continuing you accept the tos.
             </p>
           </div>
         </section>
@@ -112,14 +123,23 @@ export function LoginPage({ next }: LoginPageProps) {
 }
 
 /**
- * Defence-in-depth: only allow same-origin hash paths (start with "/" and
- * exclude protocol-relative `//host` and absolute schemes). Prevents an
- * `?next=https://evil.example/...` from redirecting the user off-site.
+ * Defence-in-depth: only allow same-origin local paths. The Router already
+ * percent-decodes `?next=` before it reaches here, so we validate the decoded
+ * form. Accept ONLY a single leading "/" NOT followed by another "/" or "\",
+ * with no backslash anywhere and no scheme prefix.
+ *
+ * Why the backslash guard matters: browsers normalize "\" to "/" when
+ * navigating, so `location.replace("/\\evil.example")` resolves to the
+ * protocol-relative `//evil.example` and leaves the origin. Rejecting a
+ * leading "/\" (and any "\" at all) closes that bypass alongside the classic
+ * protocol-relative "//host" one and the `javascript:`/`data:` scheme cases.
  */
 function sanitizeNext(next: string | null): string | null {
   if (!next) return null;
-  if (!next.startsWith("/")) return null;
-  if (next.startsWith("//")) return null;
+  // Single leading slash, and the next char (if any) is neither "/" nor "\".
+  if (!/^\/(?![/\\])/.test(next)) return null;
+  // Belt-and-braces: no backslash anywhere (mid-path "\" also normalizes).
+  if (next.includes("\\")) return null;
   if (/^\s*(javascript|data|vbscript):/i.test(next)) return null;
   return next;
 }

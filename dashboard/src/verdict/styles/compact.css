@@ -1,112 +1,202 @@
 /* ────────────────────────────────────────────────────────────────────────────
    Murmur Verdict — COMPACT (cockpit-mode) overrides.
-   Scoped to elements under .compact-shell. Bloomberg-terminal data density:
+   Scoped to elements under .mmr-shell. Bloomberg-terminal data density:
    tiny paddings, ALL CAPS Space Mono everywhere, 1px hairlines, no rounding.
    Imported by main.tsx so the override is available globally; selectors are
-   guarded with .compact-shell so the default Nothing pages stay untouched.
+   guarded with .mmr-shell so the default Nothing pages stay untouched.
    ──────────────────────────────────────────────────────────────────────── */
 
-.compact-shell {
+.mmr-shell {
   font-family: var(--font-mono);
-  font-size: 13px;
+  /* Type scale bumped toward the (larger) marketing t-* scale — the compact
+     cockpit reads at a more comfortable size app-wide while keeping the
+     terminal idiom. Base 13px -> 15px; ck-* sizes below scaled to match. */
+  font-size: 15px;
   line-height: 1.4;
   letter-spacing: 0.02em;
   color: var(--color-primary);
   background: var(--color-bg);
 }
 
-.compact-shell .ck-cell {
+.mmr-shell .ck-cell {
   padding: 4px 6px;
   border-bottom: 1px solid var(--color-border);
   border-right: 1px solid var(--color-border);
 }
 
-.compact-shell .ck-row {
+.mmr-shell .ck-row {
   display: grid;
   align-items: center;
   border-bottom: 1px solid var(--color-border);
   font-variant-numeric: tabular-nums;
 }
 
-.compact-shell .ck-row:hover {
+.mmr-shell .ck-row:hover {
   background: color-mix(in srgb, var(--color-primary), transparent 97%);
 }
 
-.compact-shell .ck-label {
+/* Reusable ink-tinted hover haze — theme-correct replacement for the old
+   Tailwind white/3% hover utility (white haze on cream in paper mode). */
+.ck-hoverable:hover {
+  background: color-mix(in srgb, var(--color-primary), transparent 97%);
+}
+
+.mmr-shell .ck-label {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.25;
   letter-spacing: 0.04em;
   color: var(--color-secondary);
 }
 
-.compact-shell .ck-num {
+.mmr-shell .ck-num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 13px;
+  font-size: 15px;
   letter-spacing: 0;
 }
 
-.compact-shell .ck-num-lg {
+.mmr-shell .ck-num-lg {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 26px;
+  font-size: 30px;
   letter-spacing: -0.02em;
   line-height: 1;
   font-weight: 700;
   color: var(--color-display);
 }
 
-.compact-shell .ck-mono {
+.mmr-shell .ck-mono {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
 
-.compact-shell .ck-pos {
+.mmr-shell .ck-pos {
   color: var(--color-display);
 }
 
-.compact-shell .ck-neg {
-  color: var(--color-accent);
+.mmr-shell .ck-neg {
+  color: var(--color-accent-ink);
 }
 
-.compact-shell .ck-dim {
+.mmr-shell .ck-dim {
   color: var(--color-disabled);
 }
 
+/* Canonical navigation — shared with the cinematic landing header.
+   This is deliberately separate from ck-label / ck-btn: those classes carry
+   dense data and operational controls, while navigation stays quiet, regular
+   weight, unboxed, and spatially separated. */
+.mmr-shell .mmr-topbar-meta,
+.mmr-shell .mmr-topbar-crumb,
+.mmr-shell .mmr-nav-link {
+  font-family: var(--font-mono);
+  font-size: var(--nav-font-size);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.mmr-shell .mmr-topbar-crumb {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.mmr-shell .mmr-nav-cluster {
+  gap: var(--nav-link-gap);
+}
+
+.mmr-shell .mmr-nav-link {
+  position: relative;
+  min-height: var(--nav-hit-area);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-secondary);
+  font-weight: 400;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms var(--nav-ease);
+}
+
+.mmr-shell .mmr-nav-link::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 8px;
+  left: 0;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 220ms var(--nav-ease);
+}
+
+.mmr-shell .mmr-nav-link:hover,
+.mmr-shell .mmr-nav-link:focus-visible,
+.mmr-shell .mmr-nav-link[aria-current="page"] {
+  color: var(--color-display);
+}
+
+.mmr-shell .mmr-nav-link:hover::after,
+.mmr-shell .mmr-nav-link:focus-visible::after,
+.mmr-shell .mmr-nav-link[aria-current="page"]::after {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+
+.mmr-shell .mmr-nav-link--mobile {
+  min-height: 48px;
+  align-self: flex-start;
+}
+
+.mmr-shell .mmr-theme-toggle {
+  gap: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mmr-shell .mmr-nav-link,
+  .mmr-shell .mmr-nav-link::after {
+    transition: none;
+  }
+}
+
 /* Live status dot — only animation allowed in COMPACT. */
-.compact-shell .ck-dot {
+.mmr-shell .ck-dot {
   display: inline-block;
   width: 5px;
   height: 5px;
   background: var(--color-accent);
   vertical-align: middle;
 }
-.compact-shell .ck-dot-ok {
+.mmr-shell .ck-dot-ok {
   background: var(--color-success);
 }
-.compact-shell .ck-dot-stale {
+.mmr-shell .ck-dot-stale {
   background: var(--color-accent);
 }
 @media (prefers-reduced-motion: no-preference) {
-  .compact-shell .ck-dot-live {
+  .mmr-shell .ck-dot-live {
     animation: nothing-breathe 1.6s var(--ease-out) infinite;
   }
 }
 
 /* Terminal-style frame: hairline borders, no radius. */
-.compact-shell .ck-frame {
+.mmr-shell .ck-frame {
   border: 1px solid var(--color-border);
 }
 
-.compact-shell .ck-frame-strong {
+.mmr-shell .ck-frame-strong {
   border: 1px solid var(--color-border-vis);
 }
 
 /* Header strip on each panel. */
-.compact-shell .ck-header {
+.mmr-shell .ck-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -115,68 +205,144 @@
   background: var(--color-surface);
 }
 
-.compact-shell .ck-btn {
+.mmr-shell .ck-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 12px;
+  font-size: 14px;
   letter-spacing: 0.03em;
   color: var(--color-primary);
   border: 1px solid var(--color-border-vis);
   background: transparent;
   cursor: pointer;
-  transition: color 120ms var(--ease-out), border-color 120ms var(--ease-out);
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
-.compact-shell .ck-btn:hover {
+.mmr-shell .ck-btn:hover {
   color: var(--color-display);
   border-color: var(--color-display);
 }
-.compact-shell .ck-btn:active {
+.mmr-shell .ck-btn:active {
   transform: translateY(1px);
 }
 
-.compact-shell .ck-btn-active {
+.mmr-shell .ck-btn-active {
   color: var(--color-bg);
   background: var(--color-display);
   border-color: var(--color-display);
 }
 
-.compact-shell .ck-btn-accent {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
+.mmr-shell .ck-btn-accent {
+  color: var(--color-accent-ink);
+  border-color: var(--color-accent-ink);
 }
-.compact-shell .ck-btn-accent:hover {
-  color: var(--color-display);
+.mmr-shell .ck-btn-accent:hover {
+  color: var(--color-on-accent);
   background: var(--color-accent);
-  border-color: var(--color-accent);
+  border-color: var(--color-accent-ink);
+}
+
+/* Bracket button — the [ ] glyphs ARE the frame; there is no box border.
+   Pilot for the site-wide button restyle. Apply alongside `ck-btn` and
+   pass a PLAIN label (no literal brackets) — the brackets are supplied as
+   pseudo-elements so the pattern drops onto any button uniformly. */
+.mmr-shell .ck-btn-bracket {
+  border: 0;
+  background: transparent;
+  /* No box, so no horizontal box-padding — the brackets hug the label.
+     Keep a little vertical room for the click target. */
+  padding: 4px 0;
+  gap: 0.5ch;
+}
+.mmr-shell .ck-btn-bracket::before {
+  content: "[";
+}
+.mmr-shell .ck-btn-bracket::after {
+  content: "]";
+}
+/* Dimmed brackets: the [ ] carry the SAME muted color the box border used
+   to have (--color-border-vis), so the glyphs literally read as the frame
+   while the label keeps its full ink. */
+.mmr-shell .ck-btn-bracket::before,
+.mmr-shell .ck-btn-bracket::after {
+  color: var(--color-border-vis);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-btn-bracket:hover {
+  /* Only the glyph/label color shifts on hover — there is no border to move. */
+  border-color: transparent;
+}
+/* On hover the whole button (label + brackets) brightens to white — the
+   "this is clickable" cue. The :not(.ck-btn-accent) bump also lets this win
+   over the red active-toggle color below (higher specificity), so hovering a
+   chosen toggle still flashes white. Destructive accent buttons are excluded
+   and keep their red on hover. */
+.mmr-shell .ck-btn-bracket:not(.ck-btn-accent):hover,
+.mmr-shell .ck-btn-bracket:not(.ck-btn-accent):hover::before,
+.mmr-shell .ck-btn-bracket:not(.ck-btn-accent):hover::after {
+  color: var(--color-display);
+}
+.mmr-shell .ck-btn-bracket:disabled {
+  color: var(--color-secondary);
+  cursor: not-allowed;
+}
+
+/* Bracket toggle — active/chosen state. The box/fill is gone, so a chosen
+   segment reads as full display ink (white/black) frame + label against the
+   faint dim-bracket inactive segments: selected = full ink; red stays
+   reserved for urgency ("color is an event"). Hover-overrides-to-display
+   (rule above) becomes a no-op here, which is fine.
+   Composes with the ck-btn-active toggles (leaderboard tier/sort, snippet
+   pickers). */
+.mmr-shell .ck-btn-bracket.ck-btn-active {
+  color: var(--color-display);
+  background: transparent;
+  border-color: transparent;
+}
+.mmr-shell .ck-btn-bracket.ck-btn-active::before,
+.mmr-shell .ck-btn-bracket.ck-btn-active::after {
+  color: var(--color-display);
+}
+
+/* Bracket accent — destructive / accent CTAs keep their red ink on both the
+   label and the brackets, but drop the box and the hover-fill so they stay
+   borderless like every other bracket button. */
+.mmr-shell .ck-btn-bracket.ck-btn-accent,
+.mmr-shell .ck-btn-bracket.ck-btn-accent:hover {
+  color: var(--color-accent-ink);
+  background: transparent;
+  border-color: transparent;
+}
+.mmr-shell .ck-btn-bracket.ck-btn-accent::before,
+.mmr-shell .ck-btn-bracket.ck-btn-accent::after {
+  color: var(--color-accent-ink);
 }
 
 /* Tight scrollbar styling for inner panels (webkit). */
-.compact-shell .ck-scroll::-webkit-scrollbar {
+.mmr-shell .ck-scroll::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-.compact-shell .ck-scroll::-webkit-scrollbar-thumb {
+.mmr-shell .ck-scroll::-webkit-scrollbar-thumb {
   background: var(--color-border-vis);
 }
-.compact-shell .ck-scroll::-webkit-scrollbar-track {
+.mmr-shell .ck-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
 /* Sub-row indent for nested table rows. */
-.compact-shell .ck-subrow {
+.mmr-shell .ck-subrow {
   padding-left: 18px;
   color: var(--color-secondary);
   border-bottom: 1px dashed var(--color-border);
 }
 
 /* Pre / code inside compact: zero padding, tighter line-height. */
-.compact-shell pre,
-.compact-shell code {
+.mmr-shell pre,
+.mmr-shell code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.45;
 }

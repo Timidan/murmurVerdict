@@ -42,6 +42,8 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
   // write, surface an explicit manual-copy hint instead.
   const [copyFallback, setCopyFallback] = useState<"raw" | "env" | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const firstCopyRef = useRef<HTMLButtonElement | null>(null);
 
   // Lock body scroll while the modal is open so the user can't accidentally
   // scroll past + lose the key behind a stale rerender.
@@ -70,6 +72,38 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
+
+  // Focus lifecycle — same pattern as compact/MobileNav: move focus into
+  // the dialog on mount (first copy button, panel as fallback) and return
+  // it to the previously-focused element on unmount. Escape stays blocked
+  // (effect above) — only the focus handling is added here.
+  useEffect(() => {
+    const prevFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    (firstCopyRef.current ?? panelRef.current)?.focus();
+    return () => {
+      prevFocus?.focus();
+    };
+  }, []);
+
+  // Lightweight focus trap — keep Tab / Shift+Tab within the dialog
+  // (ported from compact/MobileNav).
+  const onPanelKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "Tab" || !panelRef.current) return;
+    const focusables = panelRef.current.querySelectorAll<HTMLElement>(
+      "a[href], button:not([disabled]), input:not([disabled])",
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   const copyToClipboard = useCallback(async (text: string, which: "raw" | "env") => {
     // Codex P2 fix — gate "copied" feedback on an actual successful write.
@@ -103,9 +137,14 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
       role="dialog"
       aria-modal="true"
       aria-labelledby="mint-modal-title"
-      className="fixed inset-0 z-50 grid place-items-center bg-[var(--color-scrim)] px-3"
+      className="modal-enter fixed inset-0 z-50 grid place-items-center bg-[var(--color-scrim)] px-3"
     >
-      <div className="ck-frame-strong w-full max-w-[560px] bg-[var(--color-bg)]">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        onKeyDown={onPanelKeyDown}
+        className="modal-enter-panel ck-frame-strong w-full max-w-[560px] bg-[var(--color-bg)]"
+      >
         <div className="ck-header">
           <span id="mint-modal-title" className="ck-label ck-neg">
             ⚠ api key · one-time reveal
@@ -116,7 +155,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
         <div className="px-4 py-4 flex flex-col gap-3">
           <p
             className="ck-mono ck-neg leading-relaxed"
-            style={{ color: "var(--color-accent)" }}
+            style={{ color: "var(--color-accent-ink)" }}
           >
             ⚠ key revealed once — copy it now.
           </p>
@@ -135,25 +174,26 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
 
           <div className="grid grid-cols-2 gap-2">
             <button
+              ref={firstCopyRef}
               type="button"
               onClick={() => void copyToClipboard(result.secret, "raw")}
-              className="ck-btn ck-btn-accent justify-center"
+              className="ck-btn ck-btn-bracket ck-btn-accent justify-center"
               aria-label="copy key"
             >
-              [ copy key ]
+              copy key
             </button>
             <button
               type="button"
               onClick={() => void copyToClipboard(envLine, "env")}
-              className="ck-btn justify-center"
+              className="ck-btn ck-btn-bracket justify-center"
               aria-label="copy as .env line"
             >
-              [ copy as .env line ]
+              copy as .env line
             </button>
           </div>
 
           {copiedAt && (
-            <p className="ck-mono ck-pos text-[10px]" aria-live="polite">
+            <p className="confirm-enter ck-mono ck-pos text-[10px]" aria-live="polite">
               copied {copiedAt === "env" ? ".env line" : "key"} · 3s
             </p>
           )}
@@ -161,7 +201,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
           {copyFallback && (
             <p
               className="ck-mono text-[10px]"
-              style={{ color: "var(--color-accent)" }}
+              style={{ color: "var(--color-accent-ink)" }}
               aria-live="polite"
             >
               × clipboard blocked — triple-click the key above and Cmd-C / Ctrl-C.
@@ -191,10 +231,10 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               type="button"
               onClick={onDone}
               disabled={!saved}
-              className="ck-btn ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+              className="ck-btn ck-btn-bracket ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
               aria-label="done"
             >
-              [ done → ]
+              done →
             </button>
           </div>
         </div>

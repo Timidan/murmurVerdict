@@ -13,65 +13,18 @@ import {
   sendDeleteWebhookSubscriptionResponse,
   sendWebhookSubscriptionJsonResponse,
 } from "../webhook-subscription.js";
-import { resolveAccountForClaims } from "../auth/account-ownership.js";
-import { verifyApiKey } from "../auth/api-keys.js";
-import { verifyPrivyBearer, type PrivyAuthVerifier } from "../auth/privy.js";
+import { type PrivyAuthVerifier } from "../auth/privy.js";
+import {
+  authenticateWebhookAccount,
+  type WebhookAuthIdentity,
+} from "../auth/webhook-account-auth.js";
 import { ERROR_CODES, VerdictError } from "../schema.js";
 import { asyncHandler } from "./async-handler.js";
 
-export interface WebhookAuthIdentity {
-  account_id: string;
-  auth_mode: "privy" | "api_key";
-}
+export type { WebhookAuthIdentity };
 
 interface WebhookAuthedRequest extends Request {
   verdictAuth?: WebhookAuthIdentity;
-}
-
-/**
- * FOLLOW-UP 1 review fix — account-only auth helper for POST /v1/webhooks.
- *
- * The shared `dispatchAuth` resolves `X-Murmur-Agent-Slug` at auth time
- * and returns distinguishable 404 (unknown_agent) vs 403
- * (agent_not_owned_by_account) outcomes. That split lets a holder of any
- * valid Privy bearer probe whether a target slug exists. The webhook
- * route doesn't need an auth-time agent binding — it carries
- * `body.agent_slug` and enforces ownership in the handler. So we
- * authenticate the ACCOUNT here, ignore every slug header, and let
- * `registerWebhookSubscription` collapse unknown / unowned slugs into a
- * single uniform 403.
- */
-/**
- * Account-only auth for POST /v1/webhooks. Exported with the `__` prefix
- * (same convention as the dispatcher's `__resolveCasualIdentity`) so the
- * route-auth smoke can drive every branch without minting a real Privy
- * token; not part of the public surface.
- */
-export async function __authenticateWebhookAccount(
-  req: Request,
-  deps: { db: Database.Database; privyAuth?: PrivyAuthVerifier },
-): Promise<WebhookAuthIdentity | null> {
-  const claims = await verifyPrivyBearer(req, deps.privyAuth);
-  if (claims) {
-    // READ-only: a verified bearer with no Murmur account is NOT created
-    // here — the caller must complete /v1/account/session first. Fall
-    // through to api-key tier rather than 401 so a client sending both
-    // creds still succeeds.
-    const { account_id } = resolveAccountForClaims(deps.db, claims, { mode: "read" });
-    if (account_id) {
-      return { account_id, auth_mode: "privy" };
-    }
-  }
-
-  const apiKey = req.header("X-Murmur-Api-Key");
-  if (apiKey) {
-    const accountKey = verifyApiKey(deps.db, apiKey);
-    if (accountKey) {
-      return { account_id: accountKey.account_id, auth_mode: "api_key" };
-    }
-  }
-
-  return null;
 }
 
 export interface WebhookRouterDeps {
@@ -120,7 +73,7 @@ export function webhookRouter(deps: WebhookRouterDeps): Router {
   // the account.
   const requireWebhookAuth: RequestHandler = asyncHandler(
     async (req: WebhookAuthedRequest, _res, next) => {
-      const authResult = await __authenticateWebhookAccount(req, {
+      const authResult = await authenticateWebhookAccount(req, {
         db: deps.db,
         privyAuth: deps.privyAuth,
       });

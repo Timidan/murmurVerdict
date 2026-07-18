@@ -21,21 +21,80 @@
  *      fhenixGatewayTxRepo.markReconciledSubmitted().
  */
 
-import { encodePacked, getAbiItem, keccak256, type AbiEvent, type Address, type Hex } from "viem";
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
+  type AbiEvent,
+  type Address,
+  type Hex,
+} from "viem";
 
+import {
+  FEED_PACKET_SUBMITTED_EVENT,
+  SEALED_CALL_SUBMITTED_EVENT,
+} from "./fhenix-event-primitives.js";
 import {
   MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
   type FhenixGatewayClient,
 } from "./fhenix-gateway-contract.js";
+import {
+  computeFeedPacketId,
+  computeSealedCallId,
+  type FeedPacketReconciliationKey,
+  type SealedCallReconciliationKey,
+} from "./fhenix-gateway-contract-ids.js";
 
-const SEALED_CALL_SUBMITTED_EVENT = getAbiItem({
-  abi: MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
-  name: "SealedCallSubmitted",
-}) as AbiEvent;
-const FEED_PACKET_SUBMITTED_EVENT = getAbiItem({
-  abi: MURMUR_SEALED_VERDICTS_GATEWAY_ABI,
-  name: "FeedPacketSubmitted",
-}) as AbiEvent;
+// The deterministic id derivations and their key shapes live in the dedicated
+// contract-id module; re-exported here so existing reconciliation importers
+// keep a single entry point.
+export {
+  computeFeedPacketId,
+  computeSealedCallId,
+} from "./fhenix-gateway-contract-ids.js";
+export type {
+  FeedPacketReconciliationKey,
+  SealedCallReconciliationKey,
+} from "./fhenix-gateway-contract-ids.js";
+
+/**
+ * A `getCall` / `getFeedPacket` revert (CallNotFound / PacketNotFound) is a
+ * PROVEN negative: the node executed the read and the contract reported the id
+ * does not exist, so it is safe to broadcast. Any OTHER failure — an RPC
+ * transport drop, a timeout, a malformed response — is INDETERMINATE: the
+ * prior write may in fact have landed, and treating it as "not found" would
+ * broadcast a duplicate. This classifier is deliberately safe-by-default: only
+ * a positively-identified contract revert returns true; everything else is
+ * indeterminate and the caller rethrows so the attempt stays retryable WITHOUT
+ * re-broadcasting.
+ */
+const REVERT_ERROR_NAMES = new Set([
+  "ContractFunctionRevertedError",
+  "ContractFunctionZeroDataError",
+]);
+
+export function isProvenContractRevert(err: unknown): boolean {
+  if (err instanceof BaseError) {
+    const revert = err.walk(
+      (e) =>
+        e instanceof ContractFunctionRevertedError ||
+        e instanceof ContractFunctionZeroDataError,
+    );
+    if (revert) return true;
+  }
+  // Fallback for gateway-client adapters (and test fakes) that surface a
+  // revert without extending viem's BaseError: they tag the emulated revert
+  // class on `.name` anywhere in the cause chain.
+  let cur: unknown = err;
+  const seen = new Set<unknown>();
+  while (cur != null && !seen.has(cur)) {
+    seen.add(cur);
+    const name = (cur as { name?: unknown }).name;
+    if (typeof name === "string" && REVERT_ERROR_NAMES.has(name)) return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 export interface ReconciliationConfig {
   client: FhenixGatewayClient;
@@ -48,62 +107,10 @@ export interface ReconciliationConfig {
   reconcileFromBlock: number;
 }
 
-export interface SealedCallReconciliationKey {
-  agentWalletAddress: string;
-  marketIdHash: string;
-  clientNonce: string;
-}
-
-export interface FeedPacketReconciliationKey {
-  agentWalletAddress: string;
-  feedIdHash: string;
-  marketIdHash: string;
-  clientNonce: string;
-}
-
 export interface ReconciliationResult {
   txHash: string;
   logIndex: number;
   blockNumber: number;
-}
-
-export function computeSealedCallId(
-  chainId: number,
-  contractAddress: string,
-  key: SealedCallReconciliationKey,
-): Hex {
-  return keccak256(
-    encodePacked(
-      ["uint256", "address", "address", "bytes32", "bytes32"],
-      [
-        BigInt(chainId),
-        contractAddress as Address,
-        key.agentWalletAddress as Address,
-        key.marketIdHash as Hex,
-        key.clientNonce as Hex,
-      ],
-    ),
-  );
-}
-
-export function computeFeedPacketId(
-  chainId: number,
-  contractAddress: string,
-  key: FeedPacketReconciliationKey,
-): Hex {
-  return keccak256(
-    encodePacked(
-      ["uint256", "address", "address", "bytes32", "bytes32", "bytes32"],
-      [
-        BigInt(chainId),
-        contractAddress as Address,
-        key.agentWalletAddress as Address,
-        key.feedIdHash as Hex,
-        key.marketIdHash as Hex,
-        key.clientNonce as Hex,
-      ],
-    ),
-  );
 }
 
 /**
@@ -111,7 +118,11 @@ export function computeFeedPacketId(
  * already accepted it; null otherwise.
  *
  * Failure modes:
- *  - readContract revert (CallNotFound) → returns null. Safe to retry.
+ *  - readContract PROVEN revert (CallNotFound) → returns null. Safe to
+ *    broadcast a fresh write.
+ *  - readContract indeterminate failure (RPC drop / timeout) → THROWS, so the
+ *    caller keeps the row retryable WITHOUT broadcasting (the prior write may
+ *    have landed).
  *  - readContract succeeds but getLogs fails / returns no rows → THROWS.
  *    The caller should keep the row retryable with a clear last_rpc_error
  *    rather than marking submitted without a tx_hash.
@@ -133,10 +144,9 @@ export async function reconcileSealedCallSubmit(
       functionName: "getCall",
       args: [callId],
     });
-  } catch {
-    // CallNotFound (or any other revert) — contract has no record. Caller
-    // should proceed with a normal write.
-    return null;
+  } catch (err) {
+    if (isProvenContractRevert(err)) return null; // CallNotFound — safe to broadcast.
+    throw err; // Indeterminate RPC failure — do NOT broadcast; stay retryable.
   }
   return findSubmitEvent(config, SEALED_CALL_SUBMITTED_EVENT, { callId });
 }
@@ -158,8 +168,9 @@ export async function reconcileFeedPacketSubmit(
       functionName: "getFeedPacket",
       args: [packetId],
     });
-  } catch {
-    return null;
+  } catch (err) {
+    if (isProvenContractRevert(err)) return null; // PacketNotFound — safe to broadcast.
+    throw err; // Indeterminate RPC failure — do NOT broadcast; stay retryable.
   }
   return findSubmitEvent(config, FEED_PACKET_SUBMITTED_EVENT, { packetId });
 }

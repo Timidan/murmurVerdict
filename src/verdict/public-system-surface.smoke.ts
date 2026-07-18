@@ -169,11 +169,11 @@ try {
   });
   assert.equal(oracleFailure.status, 503);
   assert.equal(oracleFailure.body.oracle.status, "fail");
-  assert.equal(oracleFailure.body.oracle.error, "oracle unavailable");
+  assert.equal(oracleFailure.body.oracle.error, "oracle_probe_failed");
   const oracleFailureRes = new FakeJsonResponse();
   sendPublicSystemJsonResponse(oracleFailureRes, oracleFailure);
   assert.equal(oracleFailureRes.statusCode, 503);
-  assert.equal((oracleFailureRes.body as typeof oracleFailure.body).oracle.error, "oracle unavailable");
+  assert.equal((oracleFailureRes.body as typeof oracleFailure.body).oracle.error, "oracle_probe_failed");
 
   const canaryFailure = await publicReadinessSurface({
     db,
@@ -183,6 +183,20 @@ try {
   });
   assert.equal(canaryFailure.status, 503);
   assert.equal(canaryFailure.body.canaries.ok, false);
+  assert.equal(canaryFailure.body.canaries.checks[0]?.error, "canary_probe_failed");
+  assert.equal(
+    JSON.stringify(canaryFailure.body).includes("SUPERSECRET"),
+    false,
+    "public readiness must not expose provider URLs or credentials from canary errors",
+  );
+
+  const secretOracleFailure = await publicReadinessSurface({
+    db,
+    now,
+    oracleProbe: async () => "request failed: https://provider.invalid/SUPERSECRET",
+  });
+  assert.equal(secretOracleFailure.body.oracle.error, "oracle_probe_failed");
+  assert.equal(JSON.stringify(secretOracleFailure.body).includes("SUPERSECRET"), false);
 
   agentsRepo.insert(db, {
     agent_id: agentId,
@@ -279,7 +293,7 @@ function canaries(ok: boolean): LiveCanaryProvider {
         checked_at: "2026-06-12T09:29:00Z",
         latency_ms: ok ? 12 : null,
         details: {},
-        error: ok ? null : "canary failed",
+        error: ok ? null : "request failed: http://127.0.0.1:1/SUPERSECRET",
       },
     ],
   };

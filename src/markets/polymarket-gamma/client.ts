@@ -294,13 +294,23 @@ export class PolymarketGammaClient {
       return { kind: "transient", error: "schema_drift:envelope" };
     }
     if (candidates.length === 0) return { kind: "not_found" };
-    const snapshot = candidates[0];
-    if (
-      snapshot === null ||
-      typeof snapshot !== "object" ||
-      typeof (snapshot as { conditionId?: unknown }).conditionId !== "string"
-    ) {
+    const snapshots = candidates.filter(
+      (candidate): candidate is GammaMarketSnapshot =>
+        candidate !== null &&
+        typeof candidate === "object" &&
+        typeof (candidate as { conditionId?: unknown }).conditionId === "string",
+    );
+    if (snapshots.length === 0) {
       return { kind: "transient", error: "schema_drift:missing_conditionId" };
+    }
+    // Never trust the server-side filter or response ordering. Accepting a
+    // different condition here would turn an unrelated market result into a
+    // terminal verdict and corrupt scoring.
+    const snapshot = snapshots.find(
+      (candidate) => candidate.conditionId.toLowerCase() === conditionId,
+    );
+    if (!snapshot) {
+      return { kind: "transient", error: "schema_drift:condition_id_mismatch" };
     }
     return { kind: "ok", snapshot: snapshot as GammaMarketSnapshot };
   }

@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
-import { CompactMiniLB } from "../components/compact/MiniLB.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { CompactMarketsGrid } from "../components/compact/MarketsGrid.js";
 import { useStream } from "../hooks/useStream.js";
@@ -17,7 +16,7 @@ import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
  * No hero, no marketing copy, no rounded corners.
  */
 export function LandingPage() {
-  const { stats } = useStream();
+  const { stats, status } = useStream();
   const emitFunnel = useFunnelEmit();
 
   // Phase 7d — funnel pageview. Best-effort: only fires when Privy is
@@ -28,7 +27,7 @@ export function LandingPage() {
   }, [emitFunnel]);
 
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar crumb="home / overview" />
 
       {/* LIVE COUNTER ─────────────────────────────────────────────
@@ -42,24 +41,22 @@ export function LandingPage() {
         sublabel={
           stats
             ? `acc ${stats.accepted_24h} · win ${stats.wins_24h} · loss ${stats.losses_24h} · void ${stats.void_24h}`
-            : "awaiting first tick"
+            : // No stats yet: don't imply the daemon is up and quiet when the
+              // stream is actually down. "awaiting first tick" is honest only
+              // while connecting/open; a dead socket gets an honest sublabel.
+              status === "closed"
+              ? "stream offline"
+              : status === "reconnecting"
+                ? "reconnecting…"
+                : "awaiting first tick"
         }
       />
 
-      {/* MAIN GRID ────────────────────────────────────────────── */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1.2fr)] min-h-0">
-        <Panel
-          title="leaderboard · 30d"
-          meta="top 5"
-          actions={
-            <a href="#/leaderboard" className="ck-btn">
-              full
-            </a>
-          }
-          className="lg:border-r-0"
-        >
-          <CompactMiniLB limit={5} />
-        </Panel>
+      {/* MAIN GRID ──────────────────────────────────────────────
+          V15 — the leaderboard panel moved out (it has its own page,
+          linked from the topbar). Live tape left, markets matrix right
+          with the extra room + its rich filter bar. */}
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.9fr)] min-h-0">
         <Panel
           title="live tape"
           meta={
@@ -75,7 +72,7 @@ export function LandingPage() {
           title="markets matrix"
           actions={
             <span className="flex items-center gap-1">
-              <a href="#/launch" className="ck-btn">
+              <a href="#/install" className="ck-btn ck-btn-bracket">
                 install
               </a>
               {/* Phase 7d — primary "compete" CTA. The ?ref=landing-cta
@@ -91,7 +88,7 @@ export function LandingPage() {
                   through the login flow. */}
               <a
                 href="#/account?ref=landing-cta"
-                className="ck-btn ck-pos"
+                className="ck-btn ck-btn-bracket ck-pos"
                 onClick={() => {
                   try {
                     window.localStorage.setItem(
@@ -122,10 +119,6 @@ export function LandingPage() {
         </span>
         <span className="ck-dim">·</span>
         <span>base</span>
-        <span className="ck-dim">·</span>
-        <a href="#/spec" className="ck-mono ck-dim hover:ck-pos no-underline">
-          spec
-        </a>
         <span className="ck-dim">·</span>
         <a
           href="https://github.com/Timidan/murmur"
@@ -170,7 +163,13 @@ function LiveCounter({
         aria-label={`${label}: ${value ?? "loading"}`}
         style={{ fontSize: "clamp(48px, 8vw, 96px)" }}
       >
-        {value === null ? "—" : value.toLocaleString("en-US")}
+        {value === null ? (
+          "—"
+        ) : (
+          <span key={value} className="counter-tick">
+            {value.toLocaleString("en-US")}
+          </span>
+        )}
       </div>
     </section>
   );

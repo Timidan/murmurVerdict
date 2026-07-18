@@ -1,18 +1,15 @@
 /**
  * Wave L.A — Circle Gateway integration via @circle-fin/x402-batching.
  *
- * Thin facade over the published SDK. The SDK provides:
- *   - `createGatewayMiddleware(config)` — Express middleware that
- *     handles 402 challenge + EIP-3009 sig verification + Circle
- *     /v1/x402/settle in one shot, populating `req.payment` with
- *     `{verified, payer, amount, network, transaction}` on success.
- *   - `BatchFacilitatorClient` — REST client for finer-grained
- *     `verify()` / `settle()` / `getSupported()` calls (Phase 3
- *     reconciler will use this).
+ * Thin facade over the published SDK. The no-payment branch uses
+ * `createGatewayMiddleware(config)` for canonical x402 challenges. Signed
+ * requests use `BatchFacilitatorClient`'s `getSupported()`, `verify()`, and
+ * `settle()` separately so Murmur can durably record a settlement intent
+ * between verification and the irreversible settle call.
  *   - Type-safe canonical types: `PaymentPayload`, `PaymentRequirements`.
  *
- * Phase 1 ships only the middleware-based path. Phase 3 will use
- * `BatchFacilitatorClient` for reconciliation lookups.
+ * This module deliberately does not infer settlement after a transport
+ * error. Authoritative reconciliation remains a separate operational path.
  *
  * Pivot rationale (codex audit 2026-05-23): the previous hand-rolled
  * client was repeatedly catching wire-format mismatches — wrong
@@ -23,7 +20,8 @@
  * Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
  */
 import type { RequestHandler } from "express";
-import { keccak256, toHex } from "viem";
+
+import { canonicalHash } from "../receipts/canonical.js";
 
 export interface GatewayMiddlewareConfig {
   sellerAddress: string;
@@ -34,6 +32,42 @@ export interface GatewayMiddlewareConfig {
 
 export interface GatewayMiddleware {
   require(price: string): RequestHandler;
+  paymentRequirements(
+    amountAtoms: string,
+    network: string,
+  ): Promise<GatewayPaymentRequirements | null>;
+  verify(
+    paymentPayload: unknown,
+    paymentRequirements: GatewayPaymentRequirements,
+  ): Promise<GatewayVerifyResponse>;
+  settle(
+    paymentPayload: unknown,
+    paymentRequirements: GatewayPaymentRequirements,
+  ): Promise<GatewaySettleResponse>;
+}
+
+export interface GatewayPaymentRequirements {
+  scheme: string;
+  network: string;
+  asset: string;
+  amount: string;
+  payTo: string;
+  maxTimeoutSeconds: number;
+  extra?: Record<string, unknown>;
+}
+
+export interface GatewayVerifyResponse {
+  valid: boolean;
+  payer?: string;
+  error?: string;
+}
+
+export interface GatewaySettleResponse {
+  success: boolean;
+  payer?: string;
+  transaction?: string;
+  network?: string;
+  error?: string;
 }
 
 export interface PaymentRequest {
@@ -43,11 +77,47 @@ export interface PaymentRequest {
     amount?: string;
     network?: string;
     transaction?: string;
+    /** Durable local receipt created before Circle settlement. */
+    receiptId?: number;
+    /** True when no new settlement was attempted and a cached receipt was used. */
+    replayed?: boolean;
   };
 }
 
+interface CircleSupportedKind {
+  scheme: string;
+  network: string;
+  extra?: {
+    verifyingContract?: string;
+    assets?: Array<{ symbol?: string; address?: string }>;
+    [key: string]: unknown;
+  };
+}
+
+interface CircleFacilitatorClient {
+  getSupported(): Promise<{ kinds: CircleSupportedKind[] }>;
+  verify(
+    paymentPayload: unknown,
+    paymentRequirements: GatewayPaymentRequirements,
+  ): Promise<{ isValid: boolean; invalidReason?: string; payer?: string }>;
+  settle(
+    paymentPayload: unknown,
+    paymentRequirements: GatewayPaymentRequirements,
+  ): Promise<{
+    success: boolean;
+    errorReason?: string;
+    payer?: string;
+    transaction?: string;
+    network?: string;
+  }>;
+}
+
 interface CircleGatewayServerModule {
-  createGatewayMiddleware(config: GatewayMiddlewareConfig): GatewayMiddleware;
+  createGatewayMiddleware(config: GatewayMiddlewareConfig): {
+    require(price: string): RequestHandler;
+  };
+  BatchFacilitatorClient: new (config: { url?: string }) => CircleFacilitatorClient;
+  GATEWAY_AUTH_VALIDITY_WINDOW_SECONDS: number;
 }
 
 let gatewayServerModule: Promise<CircleGatewayServerModule> | null = null;
@@ -63,6 +133,16 @@ export function createGatewayMiddleware(
   config: GatewayMiddlewareConfig,
 ): GatewayMiddleware {
   const requiredByPrice = new Map<string, Promise<RequestHandler>>();
+  let facilitator: Promise<CircleFacilitatorClient> | null = null;
+  let supportedKinds: Promise<CircleSupportedKind[]> | null = null;
+
+  const loadFacilitator = async (): Promise<CircleFacilitatorClient> => {
+    facilitator ??= loadCircleGatewayServer().then(
+      (sdk) => new sdk.BatchFacilitatorClient({ url: config.facilitatorUrl }),
+    );
+    return facilitator;
+  };
+
   return {
     require(price: string): RequestHandler {
       return async (req, res, next) => {
@@ -81,6 +161,71 @@ export function createGatewayMiddleware(
         }
       };
     },
+    async paymentRequirements(
+      amountAtoms: string,
+      network: string,
+    ): Promise<GatewayPaymentRequirements | null> {
+      if (!/^\d+$/.test(amountAtoms) || BigInt(amountAtoms) <= 0n) {
+        throw new Error(`invalid USDC atom amount: ${amountAtoms}`);
+      }
+      if (config.networks && !config.networks.includes(network)) {
+        return null;
+      }
+      const sdk = await loadCircleGatewayServer();
+      supportedKinds ??= loadFacilitator().then((client) =>
+        client.getSupported().then((result) => result.kinds),
+      );
+      const kinds = await supportedKinds;
+      const kind = kinds.find(
+        (candidate) =>
+          candidate.network === network &&
+          candidate.scheme === "exact" &&
+          typeof candidate.extra?.verifyingContract === "string",
+      );
+      const usdc = kind?.extra?.assets?.find(
+        (asset) => asset.symbol?.toUpperCase() === "USDC",
+      );
+      if (!kind || !usdc?.address || !kind.extra?.verifyingContract) {
+        return null;
+      }
+      return {
+        scheme: "exact",
+        network,
+        asset: usdc.address,
+        amount: amountAtoms,
+        payTo: config.sellerAddress,
+        maxTimeoutSeconds: sdk.GATEWAY_AUTH_VALIDITY_WINDOW_SECONDS,
+        extra: {
+          name: "GatewayWalletBatched",
+          version: "1",
+          verifyingContract: kind.extra.verifyingContract,
+        },
+      };
+    },
+    async verify(paymentPayload, paymentRequirements) {
+      const result = await (await loadFacilitator()).verify(
+        paymentPayload,
+        paymentRequirements,
+      );
+      return {
+        valid: result.isValid,
+        ...(result.payer ? { payer: result.payer } : {}),
+        ...(result.invalidReason ? { error: result.invalidReason } : {}),
+      };
+    },
+    async settle(paymentPayload, paymentRequirements) {
+      const result = await (await loadFacilitator()).settle(
+        paymentPayload,
+        paymentRequirements,
+      );
+      return {
+        success: result.success,
+        ...(result.payer ? { payer: result.payer } : {}),
+        ...(result.transaction ? { transaction: result.transaction } : {}),
+        ...(result.network ? { network: result.network } : {}),
+        ...(result.errorReason ? { error: result.errorReason } : {}),
+      };
+    },
   };
 }
 
@@ -88,48 +233,22 @@ export const DEFAULT_TESTNET_FACILITATOR_URL = "https://gateway-api-testnet.circ
 export const DEFAULT_MAINNET_FACILITATOR_URL = "https://gateway-api.circle.com";
 
 /**
- * Deterministic JSON canonicalization: sorted keys, no whitespace.
- * Stable across daemon restarts and JS implementations. Used as the
- * input to `paymentPayloadHash` / `paymentRequirementsHash` so the
- * composite idempotency key doesn't shift when an object is reordered
- * client-side.
- *
- * NOT a general canonicalization (doesn't normalize numbers, doesn't
- * RFC 8785), but sufficient for our hash-as-fingerprint use case
- * because callers control both sides.
- */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  const keys = Object.keys(value as Record<string, unknown>).sort();
-  return `{${keys
-    .map(
-      (k) =>
-        `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`,
-    )
-    .join(",")}}`;
-}
-
-/**
- * Compute keccak256(canonicalJson(requirements)) — used as the
- * `payment_requirements_hash` column of `nanopay_receipts` for
- * post-settle duplicate detection (if the SDK middleware ever lets
- * the same payment through twice — shouldn't happen in normal
- * operation; the UNIQUE constraint catches it as defense-in-depth).
+ * Compute keccak256(canonicalize(requirements)) — used as the
+ * `payment_requirements_hash` column of `nanopay_receipts` for post-settle
+ * duplicate detection. Uses the single strict canonical-JSON encoder
+ * (src/receipts/canonical.ts) so payment-hash pre-images share one definition
+ * with every other hash pre-image in the codebase (a looser second encoder
+ * risked hashing the same logical value differently).
  */
 export function paymentRequirementsHash(requirements: unknown): `0x${string}` {
-  return keccak256(toHex(canonicalJson(requirements)));
+  return canonicalHash(requirements);
 }
 
 /**
- * Compute keccak256(canonicalJson(payload)) — same purpose as
- * `paymentRequirementsHash`, used on the payload side of the
- * composite idempotency key.
+ * Compute keccak256(canonicalize(payload)) — same purpose as
+ * `paymentRequirementsHash`, on the payload side of the composite
+ * idempotency key.
  */
 export function paymentPayloadHash(payload: unknown): `0x${string}` {
-  return keccak256(toHex(canonicalJson(payload)));
+  return canonicalHash(payload);
 }

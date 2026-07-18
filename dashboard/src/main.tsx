@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./verdict/styles/compact.css";
+import "./verdict/styles/animated-mark.css";
 import { VerdictRouter } from "./verdict/Router.js";
 import { Splash } from "./verdict/components/Splash.js";
 

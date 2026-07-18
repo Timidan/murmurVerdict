@@ -30,13 +30,16 @@ import { randomUUID } from "node:crypto";
 
 import {
   encodeAbiParameters,
-  keccak256,
   padHex,
   parseAbiParameters,
-  toBytes,
   type Address,
   type Hex,
 } from "viem";
+
+import {
+  FEED_PACKET_SUBMITTED_TOPIC,
+  SEALED_CALL_SUBMITTED_TOPIC,
+} from "./fhenix-event-primitives.js";
 
 import {
   fhenixGatewayFeedPacketTxRepo,
@@ -60,7 +63,7 @@ import type {
 import {
   computeFeedPacketId,
   computeSealedCallId,
-} from "./fhenix-gateway-reconciliation.js";
+} from "./fhenix-gateway-contract-ids.js";
 
 function check(name: string, fn: () => void | Promise<void>): Promise<void> {
   return Promise.resolve(fn()).then(
@@ -452,11 +455,7 @@ async function main(): Promise<void> {
       let writeContractCalls = 0;
       let readContractCalls = 0;
       let getLogsCalls = 0;
-      const sealedCallEventTopic = keccak256(
-        toBytes(
-          "SealedCallSubmitted(bytes32,address,bytes32,uint64,uint64,bytes32,bytes32,bytes32)",
-        ),
-      );
+      const sealedCallEventTopic = SEALED_CALL_SUBMITTED_TOPIC;
       const fakeClient: FhenixGatewayClient = {
         getChainId: async () => chainId,
         getBlockNumber: async () => landedBlock + 5n,
@@ -626,11 +625,7 @@ async function main(): Promise<void> {
       let writeContractCalls = 0;
       let readContractCalls = 0;
       let getLogsCalls = 0;
-      const feedPacketEventTopic = keccak256(
-        toBytes(
-          "FeedPacketSubmitted(bytes32,address,bytes32,bytes32,uint64,uint64,bytes32,bytes32,bytes32)",
-        ),
-      );
+      const feedPacketEventTopic = FEED_PACKET_SUBMITTED_TOPIC;
       const fakeClient: FhenixGatewayClient = {
         getChainId: async () => chainId,
         getBlockNumber: async () => landedBlock + 5n,

@@ -20,6 +20,7 @@ try {
   process.stdout.write("murmur nanopay settlement surface smoke\n");
   const db = openDb({ path: dbPath });
   const pipelineId = `0x${"1".repeat(64)}`;
+  const otherPipelineId = `0x${"b".repeat(64)}`;
   const sellerAddress = `0x${"2".repeat(40)}` as `0x${string}`;
   const now = () => new Date("2026-06-12T10:05:00Z");
   const logger = {
@@ -52,11 +53,11 @@ try {
     sellerAddress,
     now,
     resolvePipeline: (id) =>
-      id === pipelineId
+      id === pipelineId || id === otherPipelineId
         ? { priceAtoms: "1000", recipient: sellerAddress, chainId: 84532 }
         : null,
     resolveLatestSealedCall: (id) =>
-      id === pipelineId
+      id === pipelineId || id === otherPipelineId
         ? { anchor, revealArtifact: { verdict: "UP", confidence: 0.72 } }
         : null,
   };
@@ -116,7 +117,7 @@ try {
   assert.deepEqual(
     nanopaySettlementResponse({
       deps,
-      pipelineId: `0x${"b".repeat(64)}`,
+      pipelineId: `0x${"c".repeat(64)}`,
       payment,
       now,
       logger,
@@ -125,7 +126,7 @@ try {
       status: 404,
       body: {
         error: "PipelineNotFound",
-        pipelineId: `0x${"b".repeat(64)}`,
+        pipelineId: `0x${"c".repeat(64)}`,
       },
     },
   );
@@ -197,6 +198,69 @@ try {
   sendNanopaySettlementJsonResponse(replayTarget, replay);
   assert.equal(replayTarget.statusCode, 200);
   assert.equal(replayTarget.body, replay.body);
+
+  for (const conflict of [
+    {
+      label: "pipeline",
+      deps,
+      pipelineId: otherPipelineId,
+      payment,
+    },
+    {
+      label: "payment payload",
+      deps,
+      pipelineId,
+      payment: { ...payment, amount: "2000" },
+    },
+    {
+      label: "payment requirements",
+      deps: {
+        ...deps,
+        sellerAddress: `0x${"d".repeat(40)}` as `0x${string}`,
+      },
+      pipelineId,
+      payment,
+    },
+  ]) {
+    const response = nanopaySettlementResponse({
+      deps: conflict.deps,
+      pipelineId: conflict.pipelineId,
+      payment: conflict.payment,
+      now,
+      logger,
+    });
+    assert.deepEqual(
+      response,
+      {
+        status: 409,
+        body: {
+          error: "PaymentReplayConflict",
+          message: "Payment handle was already used with different payment data",
+        },
+      },
+      `${conflict.label} collision must not return another payment's binding`,
+    );
+  }
+
+  const replayAfterPipelineRemoval = nanopaySettlementResponse({
+    deps: {
+      ...deps,
+      resolvePipeline: () => null,
+      resolveLatestSealedCall: () => null,
+    },
+    pipelineId,
+    payment,
+    now,
+    logger,
+  });
+  assert.equal(replayAfterPipelineRemoval.status, 200);
+  assert.deepEqual(replayAfterPipelineRemoval.body, replay.body);
+
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS count FROM nanopay_receipts").get() as { count: number })
+      .count,
+    1,
+  );
 
   assert.ok(logger.errors.length >= 4);
   db.close();

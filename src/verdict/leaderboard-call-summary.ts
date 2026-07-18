@@ -1,11 +1,13 @@
 import { computeVerdictScore } from "./scoring.js";
+import {
+  isPendingLeaderboardStatus,
+  type LeaderboardCallFact,
+} from "./leaderboard-call-facts.js";
 
-export interface LeaderboardCallFact {
-  status: string;
-  outcome: string | null;
-  call_score: number | null;
-  resolved_at?: string | null;
-}
+// The scoring-facts row shape and status vocabulary now live in the
+// leaderboard-call-facts Module; re-exported here so existing consumers of the
+// summary seam keep importing the fact type from one place.
+export type { LeaderboardCallFact } from "./leaderboard-call-facts.js";
 
 export interface LeaderboardCallSummary {
   verdict_score: number | null;
@@ -65,12 +67,4 @@ export function leaderboardCallSummary(
     last_resolved_at,
     call_scores,
   };
-}
-
-function isPendingLeaderboardStatus(status: string): boolean {
-  return (
-    status === "accepted" ||
-    status === "pending_t0" ||
-    status === "pending_t1"
-  );
 }

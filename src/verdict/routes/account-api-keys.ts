@@ -6,17 +6,15 @@ import {
   rotateAccountApiKeyResponse,
   sendAccountApiKeyJsonResponse,
 } from "../account-api-key-surface.js";
-import { requireAccount, type AccountAuthVerifier } from "../account-route-auth.js";
-import type { AccountIdAdapter } from "../auth/accounts.js";
+import type { RequireAccount } from "../account-route-auth.js";
 import { asyncHandler } from "./async-handler.js";
 
 export interface AccountApiKeyRouterDeps {
-  accountAuth?: AccountAuthVerifier;
+  requireAccount: RequireAccount;
   db: Database.Database;
   json: RequestHandler;
   listAgentsLimiter: RequestHandler;
   mintKeyLimiter: RequestHandler;
-  newAccountId?: AccountIdAdapter;
   newApiKeyId?: () => string;
   newApiKeySecret?: () => string;
   now: () => Date;
@@ -26,12 +24,11 @@ export interface AccountApiKeyRouterDeps {
 export function accountApiKeyRouter(deps: AccountApiKeyRouterDeps): Router {
   const router = Router();
   const {
-    accountAuth,
+    requireAccount,
     db,
     json,
     listAgentsLimiter,
     mintKeyLimiter,
-    newAccountId,
     newApiKeyId,
     newApiKeySecret,
     now,
@@ -42,10 +39,7 @@ export function accountApiKeyRouter(deps: AccountApiKeyRouterDeps): Router {
     "/v1/account/agents/:slug/api-keys",
     listAgentsLimiter,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountApiKeyJsonResponse(res, listAgentApiKeysResponse({
         db,
         accountId: resolved.account_id,
@@ -59,10 +53,7 @@ export function accountApiKeyRouter(deps: AccountApiKeyRouterDeps): Router {
     mintKeyLimiter,
     json,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountApiKeyJsonResponse(res, mintAgentApiKeyResponse({
         db,
         accountId: resolved.account_id,
@@ -70,7 +61,7 @@ export function accountApiKeyRouter(deps: AccountApiKeyRouterDeps): Router {
         body: req.body,
         newApiKeyId,
         newApiKeySecret,
-        now,
+        operationInstant: now(),
       }));
     }),
   );
@@ -79,15 +70,12 @@ export function accountApiKeyRouter(deps: AccountApiKeyRouterDeps): Router {
     "/v1/account/api-keys/:key_id",
     rotateKeyLimiter,
     asyncHandler(async (req, res) => {
-      const resolved = await requireAccount(req, db, accountAuth, {
-        newAccountId,
-        now,
-      });
+      const resolved = await requireAccount(req);
       sendAccountApiKeyJsonResponse(res, rotateAccountApiKeyResponse({
         db,
         accountId: resolved.account_id,
         keyId: String(req.params.key_id ?? ""),
-        now,
+        operationInstant: now(),
       }));
     }),
   );

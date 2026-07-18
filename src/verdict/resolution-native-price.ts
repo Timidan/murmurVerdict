@@ -2,7 +2,6 @@ import type Database from "better-sqlite3";
 
 import {
   AssetId,
-  HorizonHours,
   Outcome,
   Side,
 } from "./schema.js";
@@ -18,7 +17,6 @@ import {
 } from "./scoring.js";
 import {
   getAdapterForMarket,
-  legacyHorizonHoursForMarket,
   voidBandFloat,
 } from "./markets.js";
 import { parseStoredCommitment } from "./sealed-call-commitment.js";
@@ -153,10 +151,8 @@ export async function resolveRevealedNativePrice(input: {
 
   const signedReturn = computeSignedReturn(side, input.t0row.p0, input.obs.price);
   const outcome = outcomeFromSignedReturn(signedReturn, voidBand);
-  const horizonHours = legacyHorizonHoursForMarket(marketRow) as HorizonHours;
   const score = scoreCall({
     asset_id: marketRow.asset_id as AssetId,
-    horizon_hours: horizonHours,
     horizon_seconds: marketRow.horizon_seconds,
     confidence: commitment.confidence,
     signed_return: signedReturn,

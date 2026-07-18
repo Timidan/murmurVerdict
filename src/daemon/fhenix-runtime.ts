@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { parseBooleanToken } from "../verdict/env-grammar.js";
 import {
   loadFhenixEventVerifierConfig,
   ViemFhenixEventVerifier,
@@ -162,12 +163,13 @@ function parseBooleanFlag(
   fallback: boolean,
   key: string,
 ): boolean {
-  const normalized = raw?.trim().toLowerCase();
-  if (!normalized) return fallback;
-  if (normalized === "true" || normalized === "1") return true;
-  if (normalized === "false" || normalized === "0") return false;
-  throw new FhenixRuntimeConfigError(
-    key,
-    "must be one of true, false, 1, or 0",
-  );
+  if (!raw?.trim()) return fallback;
+  const value = parseBooleanToken(raw);
+  if (value === undefined) {
+    throw new FhenixRuntimeConfigError(
+      key,
+      "must be one of true, false, 1, or 0",
+    );
+  }
+  return value;
 }

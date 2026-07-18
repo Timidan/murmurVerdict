@@ -2,7 +2,6 @@ import {
   AssetId,
   CONFIDENCE_MAX,
   CONFIDENCE_MIN,
-  HorizonHours,
   Outcome,
   SCORING_VERSION,
   Side,
@@ -56,18 +55,6 @@ export function expectedVolatilityBySeconds(
   return 0.012;
 }
 
-/**
- * Back-compat surface: keep the (asset_id, horizon_hours) signature for any
- * legacy caller. Internally forwards to expectedVolatilityBySeconds via
- * `horizon_hours * 3600`. Phase 2e canonical scoring uses seconds.
- */
-export function expectedVolatility(
-  asset_id: AssetId,
-  horizon_hours: HorizonHours,
-): number {
-  return expectedVolatilityBySeconds(asset_id, horizon_hours * 3600);
-}
-
 // ─── Signed return ───────────────────────────────────────────────────────────
 // r = ln(p1/p0) for BUY; -ln(p1/p0) for SELL.
 
@@ -116,14 +103,13 @@ export function outcomeFromSignedReturn(
 
 export interface CallScoreInput {
   asset_id: AssetId;
-  horizon_hours: HorizonHours;
   /**
-   * Phase 2e: canonical horizon for scoring. When present this overrides
-   * `horizon_hours * 3600` (sub-hour precision). When absent (legacy
-   * callers) we fall back to `horizon_hours * 3600` so 1h/4h/24h/7d
-   * inputs produce byte-identical results to pre-Phase-2e scoring.
+   * Canonical horizon for scoring (Phase 2e). Any positive number of seconds
+   * is accepted; `expectedVolatilityBySeconds` interpolates to the nearest
+   * calibrated bucket, so markets are NOT restricted to the legacy
+   * {1h,4h,24h,7d} set. Must be > 0.
    */
-  horizon_seconds?: number;
+  horizon_seconds: number;
   confidence: number;
   signed_return: number;
   outcome: Outcome;
@@ -143,11 +129,13 @@ export interface CallScoreBreakdown {
 }
 
 export function scoreCall(input: CallScoreInput): CallScoreBreakdown {
-  // Phase 2e: scoring keys on canonical horizon_seconds. When the caller
-  // doesn't pass it (legacy code paths), fall back to `horizon_hours * 3600`
-  // so 1h/4h/24h/7d inputs reproduce the pre-Phase-2e numbers exactly.
-  const seconds =
-    input.horizon_seconds ?? input.horizon_hours * 3600;
+  // Phase 2e: scoring keys on canonical horizon_seconds. Any positive horizon
+  // is valid; the volatility table interpolates to the nearest bucket. A
+  // non-positive horizon is a caller bug, not a resolvable market.
+  const seconds = input.horizon_seconds;
+  if (!(seconds > 0)) {
+    throw new Error(`scoreCall: horizon_seconds must be > 0, got ${seconds}`);
+  }
   const ev = expectedVolatilityBySeconds(input.asset_id, seconds);
   // baseline 4h = 14400s; precision-preserving for sub-hour markets.
   const hzn = Math.min(Math.sqrt(seconds / 14400), 3);

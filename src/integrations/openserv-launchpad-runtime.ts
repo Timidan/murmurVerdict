@@ -20,16 +20,16 @@ export async function startLaunchpadOpenServAgent(
 ): Promise<OpenServAgent | null> {
   const env = params.env ?? process.env;
   const logger = params.logger ?? console;
-  const enabled = params.enabled ?? enabledFromEnv(env.OPENSERV_LAUNCHPAD_ENABLED);
+  const apiKey = params.apiKey ?? env.OPENSERV_API_KEY?.trim();
+  const enabled = params.enabled ?? enabledFromEnv(
+    env.OPENSERV_LAUNCHPAD_ENABLED,
+    Boolean(apiKey),
+  );
   if (!enabled) {
-    throw new OpenServLaunchpadConfigError(
-      "OPENSERV_LAUNCHPAD_ENABLED",
-      "OpenServ Launchpad is required and cannot be disabled",
-    );
+    return null;
   }
   if (singleton) return singleton;
 
-  const apiKey = params.apiKey ?? env.OPENSERV_API_KEY?.trim();
   const authToken = params.authToken ?? env.OPENSERV_AUTH_TOKEN?.trim();
   if (!apiKey) {
     throw new OpenServLaunchpadConfigError(
@@ -77,9 +77,9 @@ export async function stopLaunchpadOpenServAgent(): Promise<void> {
   await agent.stop();
 }
 
-function enabledFromEnv(raw: string | undefined): boolean {
+function enabledFromEnv(raw: string | undefined, fallback: boolean): boolean {
   const normalized = raw?.trim().toLowerCase();
-  if (!normalized) return true;
+  if (!normalized) return fallback;
   if (normalized === "true" || normalized === "1" || normalized === "yes") {
     return true;
   }

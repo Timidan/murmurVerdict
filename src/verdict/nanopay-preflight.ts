@@ -71,6 +71,15 @@ export function nanopayPreflightResponse(input: {
  */
 export function preflightServable(deps: NanopayRouterDeps) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Signed requests need the durable payment gate's receipt lookup before
+    // mutable catalog checks. That lets an already-settled authorization
+    // replay its stored response after a pipeline is retired, while new
+    // signed payments are still preflighted inside processDurableNanopay
+    // before Circle settlement.
+    if (req.headers?.["payment-signature"] !== undefined) {
+      next();
+      return;
+    }
     const result = nanopayPreflightResponse({
       deps,
       pipelineId: extractPipelineId(req),

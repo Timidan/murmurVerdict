@@ -6,15 +6,9 @@ import { keccak256, toHex } from "viem";
  * Circle's `transaction` UUID isn't 32 bytes; we keccak256 it to get
  * a stable bytes32 we can put in the binding's `eip3009Nonce` slot.
  *
- * Note: the binding-field name `eip3009Nonce` is a misnomer in the
- * SDK-pivot flow — we don't see the raw EIP-3009 nonce because the
- * SDK middleware consumed + verified it before our handler runs.
- * Callers should treat this as a "settlement-handle digest" tying
- * the binding to Circle's transaction UUID rather than to the
- * buyer's signed nonce. Phase 1b (v52) renamed the schema column
- * from `eip3009_nonce` to `payment_handle`; the binding-wire field
- * name keeps the legacy `eip3009Nonce` slot for buyer-side backwards
- * compat until Phase 2 versions the wire shape.
+ * This helper remains for legacy already-settled receipt imports. The live
+ * durable rail now captures and binds the actual EIP-3009 nonce before
+ * settlement, so new receipts do not use this UUID digest.
  */
 export function transactionUuidToBytes32(uuid: string): `0x${string}` {
   return keccak256(toHex(uuid));

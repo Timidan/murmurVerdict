@@ -8,8 +8,9 @@ import {
   type LiveCanarySnapshot,
   type OperatorAlertsSnapshot,
 } from "../api.js";
-import { PillButton } from "../components/PillButton.js";
-import { Topbar } from "../components/Topbar.js";
+import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
+import { CompactTopbar } from "../components/compact/Topbar.js";
+import { Panel } from "../components/compact/Panel.js";
 
 /**
  * /admin/overview — the operator health cockpit. One tier above the
@@ -19,15 +20,14 @@ import { Topbar } from "../components/Topbar.js";
  * with an overall status banner, linking into #/admin/gateway for the deep
  * per-attempt tables. Token-gated like the gateway page and sharing the same
  * admin-token storage key, so a token entered on either page carries over.
+ * That storage key + read/write/clear now live in the shared admin-session
+ * module, so this page never touches localStorage directly.
  */
-
-// Shared with AdminGatewayPage so an unlocked token works across both consoles.
-const TOKEN_KEY = "murmur-verdict.admin-token.v1";
 
 type Health = "nominal" | "warn" | "attention" | "unknown";
 
 export function AdminOverviewPage() {
-  const [token, setToken] = useState<string>(() => readToken());
+  const [token, setToken] = useState<string>(() => readAdminToken());
   const [tokenInput, setTokenInput] = useState("");
   const [gateway, setGateway] = useState<GatewayOperatorSnapshot | null>(null);
   const [lifecycle, setLifecycle] = useState<FhenixLifecycleSnapshot | null>(null);
@@ -73,13 +73,13 @@ export function AdminOverviewPage() {
 
   const submitToken = () => {
     if (!tokenInput) return;
-    writeToken(tokenInput);
+    writeAdminToken(tokenInput);
     setToken(tokenInput);
     setTokenInput("");
   };
 
   const signOut = () => {
-    writeToken("");
+    clearAdminToken();
     setToken("");
     setGateway(null);
     setLifecycle(null);
@@ -136,47 +136,64 @@ export function AdminOverviewPage() {
   const overall = overallHealth(cards.map((c) => c.health));
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
-      <Topbar crumb="admin · overview" />
-      <main className="flex-1 max-w-[1380px] w-full mx-auto px-6 md:px-10 py-12">
-        <header className="mb-10 flex items-end justify-between flex-wrap gap-4">
-          <div>
-            <p className="t-label text-[var(--color-secondary)] mb-3">admin · overview</p>
-            <h1 className="t-heading" style={{ textWrap: "balance" }}>operator health.</h1>
-          </div>
-          <div className="flex items-center gap-3">
-            <PillButton variant="secondary" onClick={() => void load()} disabled={busy !== null}>
-              {busy === "load" ? "loading" : "refresh"}
-            </PillButton>
-            <PillButton variant="primary" onClick={runChecks} disabled={busy !== null}>
-              {busy === "checks" ? "running" : "run live checks"}
-            </PillButton>
-            <a href="#/admin/gateway">
-              <PillButton variant="secondary">gateway →</PillButton>
-            </a>
-            <PillButton variant="secondary" onClick={signOut}>sign out</PillButton>
-          </div>
-        </header>
+    <div className="mmr-shell min-h-dvh flex flex-col">
+      <CompactTopbar
+        crumb={
+          <span>
+            admin <span className="ck-dim mx-1">/</span>
+            <span className="ck-pos">overview</span>
+          </span>
+        }
+      />
 
+      {/* CONTROL STRIP ───────────────────────────────── */}
+      <section className="border-b border-[var(--color-border)] px-3 py-2 flex items-center justify-between flex-wrap gap-2">
+        <span className="ck-label ck-pos">operator health</span>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            className="ck-btn ck-btn-bracket"
+            onClick={() => void load()}
+            disabled={busy !== null}
+          >
+            {busy === "load" ? "loading" : "refresh"}
+          </button>
+          <button
+            className="ck-btn ck-btn-bracket ck-pos"
+            onClick={runChecks}
+            disabled={busy !== null}
+          >
+            {busy === "checks" ? "running" : "run live checks"}
+          </button>
+          <a href="#/admin/gateway" className="ck-btn ck-btn-bracket">
+            gateway →
+          </a>
+          <button className="ck-btn ck-btn-bracket" onClick={signOut}>
+            sign out
+          </button>
+        </div>
+      </section>
+
+      <main className="flex-1 min-h-0 flex flex-col">
         {error && (
-          <div className="border border-[var(--color-accent)] px-6 py-4 mb-8 t-body-sm text-[var(--color-accent)]">
+          <div className="border-b border-[var(--color-border)] px-3 py-2 ck-mono ck-neg">
             [ERROR] {error}
           </div>
         )}
 
         {!loaded && !error && (
-          <div className="px-6 py-24 t-meta text-[var(--color-disabled)]">[loading …]</div>
+          <div className="px-3 py-8 ck-mono ck-dim">[loading …]</div>
         )}
 
+        {loaded && <StatusBanner health={overall} cards={cards} />}
+
         {loaded && (
-          <div className="space-y-8">
-            <StatusBanner health={overall} cards={cards} />
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-[var(--color-border)] border border-[var(--color-border)]">
+          <Panel title="health cards" meta={`${cards.length}`}>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-[var(--color-border)]">
               {cards.map((card) => (
                 <HealthCard key={card.title} card={card} />
               ))}
             </div>
-          </div>
+          </Panel>
         )}
       </main>
     </div>
@@ -370,34 +387,34 @@ function StatusBanner({ health, cards }: { health: Health; cards: OverviewCard[]
         ? warn.map((c) => `${c.title}: ${c.status}`).join("  ·  ")
         : "gateway, reveals, canaries, alerts, wallets, and feeds are healthy.";
   return (
-    <div className="border border-[var(--color-border)] px-6 py-5 flex items-center gap-4 flex-wrap">
+    <div className="border-b border-[var(--color-border)] px-3 py-2 flex items-center gap-3 flex-wrap">
       <HealthDot health={health} />
-      <span className={`t-subheading ${healthTextClass(health)}`}>{label}</span>
-      <span className="t-meta text-[var(--color-secondary)]">{detail}</span>
+      <span className={`ck-label ${healthTextClass(health)}`}>{label}</span>
+      <span className="ck-mono ck-dim">{detail}</span>
     </div>
   );
 }
 
 function HealthCard({ card }: { card: OverviewCard }) {
   const body = (
-    <div className="bg-[var(--color-bg)] px-6 py-5 h-full flex flex-col gap-4 transition-colors hover:bg-[var(--color-surface)]">
+    <div className="bg-[var(--color-bg)] px-4 py-3 h-full flex flex-col gap-3 transition-colors duration-[var(--dur-fast)] ease-out hover:bg-[var(--color-surface)]">
       <div className="flex items-center justify-between gap-3">
-        <span className="t-meta text-[var(--color-secondary)]">{card.title}</span>
+        <span className="ck-label">{card.title}</span>
         <HealthDot health={card.health} />
       </div>
-      <div className={`t-data text-2xl ${healthTextClass(card.health)}`}>{card.status}</div>
+      <div className={`ck-mono text-2xl tabular-nums ${healthTextClass(card.health)}`}>{card.status}</div>
       {card.stats.length > 0 && (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3 mt-auto pt-2">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2 mt-auto pt-2">
           {card.stats.map((s) => (
             <div key={s.label} className="flex items-baseline justify-between gap-2">
-              <span className="t-meta text-[var(--color-secondary)]">{s.label}</span>
-              <span className={`t-data ${statToneClass(s.tone)}`}>{s.value}</span>
+              <span className="ck-label">{s.label}</span>
+              <span className={`ck-mono tabular-nums ${statToneClass(s.tone)}`}>{s.value}</span>
             </div>
           ))}
         </div>
       )}
       {card.href && (
-        <span className="t-meta text-[var(--color-disabled)] mt-1">details →</span>
+        <span className="ck-mono ck-dim mt-1">details →</span>
       )}
     </div>
   );
@@ -422,16 +439,16 @@ function HealthDot({ health }: { health: Health }) {
 }
 
 function healthTextClass(health: Health): string {
-  if (health === "attention") return "text-[var(--color-accent)]";
-  if (health === "warn") return "text-[var(--color-secondary)]";
-  if (health === "nominal") return "text-[var(--color-display)]";
-  return "text-[var(--color-disabled)]";
+  if (health === "attention") return "ck-neg";
+  if (health === "warn") return "ck-dim";
+  if (health === "nominal") return "ck-pos";
+  return "ck-dim";
 }
 
 function statToneClass(tone: CardStat["tone"]): string {
-  if (tone === "neg") return "text-[var(--color-accent)]";
-  if (tone === "pos") return "text-[var(--color-display)]";
-  return "text-[var(--color-secondary)]";
+  if (tone === "neg") return "ck-neg";
+  if (tone === "pos") return "ck-pos";
+  return "ck-dim";
 }
 
 function TokenPrompt({
@@ -455,53 +472,51 @@ function TokenPrompt({
   }, []);
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[var(--color-bg)] text-[var(--color-primary)]">
-      <Topbar crumb="admin · overview" />
-      <main className="flex-1 max-w-[640px] w-full mx-auto px-6 md:px-10 py-12">
-        <p className="t-label text-[var(--color-secondary)] mb-3">admin</p>
-        <h1 className="t-heading mb-6">operator token.</h1>
-        {error && (
-          <div className="border border-[var(--color-accent)] px-6 py-4 mb-6 t-body-sm text-[var(--color-accent)]">
-            [ERROR] {error}
+    <div className="mmr-shell min-h-dvh flex flex-col">
+      <CompactTopbar
+        crumb={
+          <span>
+            admin <span className="ck-dim mx-1">/</span>
+            <span className="ck-pos">overview</span>
+          </span>
+        }
+      />
+      <main className="flex-1 flex items-center justify-center px-4">
+        <section className="ck-frame w-full max-w-[480px]">
+          <div className="ck-header">
+            <span className="ck-label ck-pos">operator token</span>
+            <span className="ck-mono ck-dim">admin</span>
           </div>
-        )}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSubmit();
-          }}
-          className="flex flex-col gap-4"
-        >
-          <label htmlFor="admin-overview-token" className="ck-label">admin token</label>
-          <input
-            id="admin-overview-token"
-            type="password"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="bg-transparent border-b border-[var(--color-border-vis)] py-2 t-body font-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
-            placeholder="VERDICT_ADMIN_TOKEN"
-            autoFocus
-          />
-          <PillButton variant="primary" type="submit">unlock</PillButton>
-        </form>
+          <div className="px-4 py-6 flex flex-col gap-4">
+            {error && (
+              <div className="ck-frame-strong px-3 py-2 ck-mono ck-neg">
+                [ERROR] {error}
+              </div>
+            )}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                onSubmit();
+              }}
+              className="flex flex-col gap-4"
+            >
+              <label htmlFor="admin-overview-token" className="ck-label">admin token</label>
+              <input
+                id="admin-overview-token"
+                type="password"
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="border bg-[var(--color-bg)] border-[var(--color-border-vis)] px-3 py-2 ck-mono text-[var(--color-display)] focus:outline-none focus:border-[var(--color-display)]"
+                placeholder="VERDICT_ADMIN_TOKEN"
+                autoFocus
+              />
+              <button type="submit" className="ck-btn ck-btn-bracket ck-pos justify-center py-2">
+                unlock
+              </button>
+            </form>
+          </div>
+        </section>
       </main>
     </div>
   );
-}
-
-function readToken(): string {
-  try {
-    return window.localStorage.getItem(TOKEN_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeToken(value: string): void {
-  try {
-    if (value) window.localStorage.setItem(TOKEN_KEY, value);
-    else window.localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // storage disabled
-  }
 }

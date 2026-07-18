@@ -166,7 +166,9 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
         signature,
       });
     } catch (e) {
-      setError((e as Error)?.message ?? "bind failed");
+      // Frame the raw daemon detail in plain words — operators are devs,
+      // the detail is useful, but the failure should read as a sentence.
+      setError(`bind failed — ${(e as Error)?.message ?? "unknown error"}`);
       setBusy("idle");
       return;
     }
@@ -223,7 +225,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
         signature,
       });
     } catch (e) {
-      setError((e as Error)?.message ?? "re-attest failed");
+      setError(`re-attest failed — ${(e as Error)?.message ?? "unknown error"}`);
       setBusy("idle");
       return;
     }
@@ -255,11 +257,11 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
             embedded wallet — no MetaMask, no gas.
           </p>
           <button
-            className="ck-btn self-start"
+            className="ck-btn ck-btn-bracket self-start"
             onClick={bind}
             disabled={busy !== "idle" || !ready}
           >
-            {busy === "idle" ? "[ bind controller wallet ]" : busyLabel(busy)}
+            {busy === "idle" ? "bind controller wallet" : busyLabel(busy)}
           </button>
         </>
       )}
@@ -286,32 +288,32 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
           />
           {daemonChainId && cw.chain_id !== daemonChainId && (
             <>
-              <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent)" }}>
+              <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent-ink)" }}>
                 × wrong chain. this controller is bound to {cw.chain_id} but the
                 daemon is on {daemonChainId}. runtime-key submissions will be
                 rejected by the gateway. re-bind on the daemon chain to recover.
               </p>
               <button
-                className="ck-btn self-start"
+                className="ck-btn ck-btn-bracket self-start"
                 onClick={bind}
                 disabled={busy !== "idle" || !ready}
               >
-                {busy === "idle" ? "[ rebind on " + daemonChainId + " ]" : busyLabel(busy)}
+                {busy === "idle" ? "rebind on " + daemonChainId : busyLabel(busy)}
               </button>
             </>
           )}
           {state === "overdue" && (
             <>
-              <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent)" }}>
+              <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent-ink)" }}>
                 × re-attestation overdue. sign a fresh attestation message to
                 keep runtime-key minting available.
               </p>
               <button
-                className="ck-btn self-start"
+                className="ck-btn ck-btn-bracket self-start"
                 onClick={reattest}
                 disabled={busy !== "idle" || !ready}
               >
-                {busy === "idle" ? "[ re-attest now ]" : busyLabel(busy)}
+                {busy === "idle" ? "re-attest now" : busyLabel(busy)}
               </button>
             </>
           )}
@@ -319,7 +321,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       )}
 
       {error && (
-        <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent)" }}>
+        <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent-ink)" }}>
           × {error}
         </p>
       )}

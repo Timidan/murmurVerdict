@@ -154,3 +154,15 @@ data/*.db-shm
 
 # Brand-mark geometry build artifacts (regeneratable from asset PNGs)
 dashboard/docs/specs/*-geometry.json
+
+# Local screen recordings / demo captures — never repo content
+/*.mkv
+
+# Stray asset-pack export at repo root (canonical wordmark is tracked at
+# dashboard/public/brand/wordmark-horizontal-dark.png)
+/05_murmur-verdict__wordmark-horizontal__dark.png
+
+# Timeline-lab photo originals — large re-fetchable CC sources; provenance
+# and licenses live in timeline-lab/assets/sources.json, the graded
+# derivatives are tracked
+dashboard/public/landing/timeline-lab/assets/raw/

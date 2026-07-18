@@ -46,22 +46,25 @@ export function runFeedSlaTick(
     inspectedFeeds++;
     const cadence = feed.delivery_cadence_seconds;
     if (!cadence || cadence < 60) continue;
-    const latest = feedPacketsRepo.latestForFeed(db, feed.feed_id);
-    const baseMs = Date.parse(latest?.accepted_at ?? feed.created_at);
-    if (!Number.isFinite(baseMs)) continue;
-
     const policy = feedSlaPolicy(feed);
-    let expectedSequence = (latest?.sequence ?? 0) + 1;
-    let deadlineMs = baseMs + cadence * 1_000;
 
-    while (
-      deadlineMs + policy.grace_seconds * 1_000 <= nowMs &&
-      incidentsOpened < maxIncidents
-    ) {
-      if (feedSlaIncidentsRepo.byFeedSequence(db, feed.feed_id, expectedSequence)) {
-        expectedSequence++;
-        deadlineMs += cadence * 1_000;
-        continue;
+    while (incidentsOpened < maxIncidents) {
+      const expectedSequence = feedPacketsRepo.firstUnaccountedSequence(
+        db,
+        feed.feed_id,
+      );
+      const deadlineMs = expectedSequenceDeadlineMs(
+        db,
+        feed.feed_id,
+        feed.created_at,
+        expectedSequence,
+        cadence,
+      );
+      if (
+        deadlineMs === null ||
+        deadlineMs + policy.grace_seconds * 1_000 > nowMs
+      ) {
+        break;
       }
       const expectedDeadline = stripIso(new Date(deadlineMs));
       const created = feedSlaIncidentsRepo.insertMissed(db, {
@@ -86,8 +89,7 @@ export function runFeedSlaTick(
         updated_at: servedAt,
       });
       if (created) incidentsOpened++;
-      expectedSequence++;
-      deadlineMs += cadence * 1_000;
+      else break;
     }
   }
 
@@ -97,6 +99,40 @@ export function runFeedSlaTick(
     incidents_opened: incidentsOpened,
     max_incidents: maxIncidents,
   };
+}
+
+function expectedSequenceDeadlineMs(
+  db: Database.Database,
+  feedId: string,
+  feedCreatedAt: string,
+  expectedSequence: number,
+  cadenceSeconds: number,
+): number | null {
+  let baseMs: number;
+  if (expectedSequence === 1) {
+    baseMs = Date.parse(feedCreatedAt);
+  } else {
+    const previousSequence = expectedSequence - 1;
+    const previousPacket = feedPacketsRepo.byFeedSequence(
+      db,
+      feedId,
+      previousSequence,
+    );
+    if (previousPacket) {
+      baseMs = Date.parse(previousPacket.accepted_at);
+    } else {
+      const previousIncident = feedSlaIncidentsRepo.byFeedSequence(
+        db,
+        feedId,
+        previousSequence,
+      );
+      baseMs = previousIncident
+        ? Date.parse(previousIncident.expected_delivery_deadline_at)
+        : Date.parse(feedCreatedAt) +
+          cadenceSeconds * 1_000 * Math.max(0, expectedSequence - 1);
+    }
+  }
+  return Number.isFinite(baseMs) ? baseMs + cadenceSeconds * 1_000 : null;
 }
 
 function stripIso(date: Date): string {

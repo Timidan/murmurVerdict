@@ -27,6 +27,15 @@ const fakeGatewayFactory: NanopayGatewayFactory = (config) => {
         next();
       }) as ReturnType<ReturnType<NanopayGatewayFactory>["require"]>;
     },
+    async paymentRequirements() {
+      return null;
+    },
+    async verify() {
+      return { valid: false };
+    },
+    async settle() {
+      return { success: false };
+    },
   };
 };
 
@@ -64,8 +73,8 @@ assert.equal(capturedConfigs[0]?.facilitatorUrl, DEFAULT_MAINNET_FACILITATOR_URL
 assert.equal(capturedConfigs[0]?.description, "Murmur per-call paid inference");
 
 let nextCalled = false;
-mainnetGate.requirePayment(
-  {} as Request,
+await mainnetGate.requirePayment(
+  { headers: {} } as Request,
   {} as Response,
   () => {
     nextCalled = true;
