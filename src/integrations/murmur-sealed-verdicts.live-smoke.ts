@@ -64,13 +64,11 @@ import { baseSepolia } from "viem/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
-import type { Permit } from "@cofhe/sdk/permits";
 import { loadDeployment } from "./deployments.js";
 
 const CHAIN_ID = 84532;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_MS = 5_000;
-const THRESHOLD_NETWORK_URL = "https://testnet-cofhe-tn.fhenix.zone";
 
 const rpc = process.env.FHENIX_RPC_URL || process.env.BASE_RPC_URL;
 if (!rpc) throw new Error("FHENIX_RPC_URL or BASE_RPC_URL must be set");
@@ -103,65 +101,6 @@ const ABI = parseAbi([
   "event VerdictRevealed(bytes32 indexed callId, address indexed agent, bytes32 indexed marketId, uint8 binaryIndex, uint16 confidenceBps, uint64 revealedAt)",
 ]);
 
-/** Calls the threshold network /decrypt endpoint directly to get both the plaintext and signature.
- *  The cofhejs.decrypt() API discards the signature, but publishReveal needs it.
- */
-async function fetchDecryptWithSignature(
-  ctHashBigint: bigint,
-  permission: Permit,
-): Promise<{ decrypted: bigint; signature: Hex }> {
-  const ct_tempkey = ctHashBigint.toString(16).padStart(64, "0");
-  const body = JSON.stringify({
-    ct_tempkey,
-    host_chain_id: CHAIN_ID,
-    permit: permission,
-  });
-  const res = await fetch(`${THRESHOLD_NETWORK_URL}/decrypt`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-  });
-  const data = await res.json() as {
-    decrypted?: number[];
-    signature?: string;
-    encryption_type?: number;
-    error_message?: string;
-  };
-  if (data.error_message) throw new Error(`Threshold /decrypt error: ${data.error_message}`);
-  if (!data.decrypted || !data.signature) {
-    throw new Error(`Threshold /decrypt missing fields: ${JSON.stringify(data)}`);
-  }
-  // Convert decrypted byte array (big-endian) to bigint
-  const decrypted = BigInt("0x" + Buffer.from(data.decrypted).toString("hex") || "0");
-  const signature = data.signature.startsWith("0x") ? data.signature as Hex : `0x${data.signature}` as Hex;
-  return { decrypted, signature };
-}
-
-async function pollDecrypt(
-  label: string,
-  ctHashBigint: bigint,
-  permission: Permit,
-): Promise<{ decrypted: bigint; signature: Hex }> {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let attempt = 0;
-  while (Date.now() < deadline) {
-    attempt++;
-    try {
-      const result = await fetchDecryptWithSignature(ctHashBigint, permission);
-      if (result.signature && result.signature !== "0x" && result.signature.length > 4) {
-        console.log(`[smoke] ${label} decrypted after ${attempt} poll(s)`);
-        return result;
-      }
-      console.log(`[smoke] polling ${label} (attempt=${attempt}, no signature yet)…`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.log(`[smoke] polling ${label} (attempt=${attempt}, ${msg})…`);
-    }
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-  }
-  throw new Error(`Timed out waiting for ${label} after ${attempt} attempts`);
-}
-
 async function main() {
   const startMs = Date.now();
   console.log("[smoke] starting");
@@ -188,12 +127,11 @@ async function main() {
   const cofheClient = createCofheClient(cofheConfig);
   await cofheClient.connect(publicClient as never, walletClient as never);
 
-  // Get the permission struct needed for threshold network calls
+  // Self-permit, signed by the relayer, authorizing decryptForTx below.
   const selfPermit = await cofheClient.permits.createSelf({
     type: "self",
     issuer: account.address,
   });
-  const permission: Permit = selfPermit as unknown as Permit;
 
   // Step 2 (continued) — encrypt binaryIndex=0 (euint8) and confidenceBps=7500 (euint16)
   console.log(`[smoke] encrypting inputs via @cofhe/sdk`);
@@ -285,14 +223,43 @@ async function main() {
   const confCtHashBigint = BigInt(confidenceCtHash);
   console.log(`[smoke] ctHashes: bin=${binaryIndexCtHash} conf=${confidenceCtHash}`);
 
-  // Step 6 — poll threshold network for decrypted values + signatures
-  // After openReveal calls FHE.allowPublic, the oracle calls publishDecryptResult on-chain.
-  // We call the threshold network /decrypt endpoint directly to get both the plaintext AND
-  // the threshold-network signature required by publishReveal.
-  console.log(`[smoke] polling threshold network for decrypt results (timeout=${POLL_TIMEOUT_MS / 1000}s)`);
+  // Step 6 — decrypt via the SDK's v2 `decryptForTx` path. It returns the
+  // threshold-network signature in the exact form `FHE.verifyDecryptResult`
+  // (and thus `publishReveal`) accepts on-chain. The older hand-rolled v1
+  // `/decrypt` signature is rejected by the current CoFHE verifier
+  // (`InvalidSignature`, 0x8baa579f). `openReveal` already called
+  // `FHE.allowPublic`; the threshold network needs ~5-30s to observe it, so
+  // retry transient errors. Mirrors tools/operator-blind-roundtrip.ts.
+  console.log(`[smoke] decrypting via @cofhe/sdk decryptForTx (timeout=${POLL_TIMEOUT_MS / 1000}s)`);
+  const decryptForTxWithRetry = async (
+    label: string,
+    ctHash: bigint,
+  ): Promise<{ decrypted: bigint; signature: Hex }> => {
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+      attempt++;
+      try {
+        const r = await cofheClient
+          .decryptForTx(ctHash)
+          .withPermit(selfPermit as never)
+          .execute();
+        console.log(`[smoke] ${label} decrypted after ${attempt} attempt(s)`);
+        return { decrypted: r.decryptedValue, signature: r.signature as Hex };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (Date.now() + POLL_INTERVAL_MS > deadline) {
+          throw new Error(`${label} timed out after ${attempt} attempt(s): ${msg}`);
+        }
+        console.log(`[smoke] polling ${label} (attempt=${attempt}, ${msg})…`);
+        await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
+      }
+    }
+    throw new Error(`${label} timed out after ${attempt} attempts`);
+  };
 
-  const binDecrypt = await pollDecrypt("binaryIndex decrypt", binCtHashBigint, permission);
-  const confDecrypt = await pollDecrypt("confidenceBps decrypt", confCtHashBigint, permission);
+  const binDecrypt = await decryptForTxWithRetry("binaryIndex decrypt", binCtHashBigint);
+  const confDecrypt = await decryptForTxWithRetry("confidenceBps decrypt", confCtHashBigint);
 
   console.log(`[smoke] decrypted: binaryIndex=${binDecrypt.decrypted} confidenceBps=${confDecrypt.decrypted}`);
   assert.equal(Number(binDecrypt.decrypted), 0, "binaryIndex plaintext mismatch");
