@@ -123,6 +123,14 @@ export interface PrivyAuthConfig {
 export interface PrivyAuthVerifier {
   isEnabled(): boolean;
   verify(authToken: string): Promise<PrivyClaims | null>;
+  /**
+   * Best-effort profile hydration for account CREATION only. Looks up the
+   * Privy user's linked accounts to derive an email + primary login method
+   * the access token never carries. NEVER throws — returns `{}` when Privy
+   * is disabled, the client can't be built, or the lookup fails, so callers
+   * can treat it as a pure enrichment with no failure mode.
+   */
+  hydrateProfile(userId: string): Promise<{ email?: string; primary_login_method?: string }>;
 }
 
 /**
@@ -290,6 +298,30 @@ export function createPrivyAuthVerifier(
         // throws InvalidAuthTokenError — we treat all failures uniformly so we
         // never leak which check failed (timing/error-shape side channel).
         return null;
+      }
+    },
+    async hydrateProfile(userId) {
+      if (!enabled()) return {};
+      const c = await getClient();
+      if (!c) return {};
+      try {
+        const user = await c.users()._get(userId);
+        const accounts = user.linked_accounts ?? [];
+        if (accounts.length === 0) return {};
+        const primary = [...accounts].sort(
+          (a, b) => (a.first_verified_at ?? a.verified_at) - (b.first_verified_at ?? b.verified_at),
+        )[0];
+        const emailAcct = accounts.find((a) => a.type === "email");
+        const email =
+          (emailAcct && "address" in emailAcct ? emailAcct.address : undefined) ??
+          accounts.map((a) => ("email" in a ? (a as { email?: string }).email : null)).find(Boolean) ??
+          undefined;
+        const out: { email?: string; primary_login_method?: string } = {};
+        if (email) out.email = email;
+        if (primary?.type) out.primary_login_method = primary.type;
+        return out;
+      } catch {
+        return {};
       }
     },
   };

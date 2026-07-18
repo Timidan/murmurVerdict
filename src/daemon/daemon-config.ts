@@ -7,6 +7,10 @@ import {
 } from "../verdict/public-origin.js";
 import { resolveVerdictDbPath } from "../verdict/db-bootstrap.js";
 import {
+  parseBooleanToken,
+  resolvePolymarketGammaEnabled,
+} from "../verdict/env-grammar.js";
+import {
   DEFAULT_FHENIX_REVEAL_GRACE_SEC,
   type OperatorFhenixLifecycleQueryDefaults,
 } from "../verdict/operator-fhenix-lifecycle-query.js";
@@ -42,6 +46,8 @@ export type DashboardCorsConfig =
 
 export interface DaemonRuntimeConfig {
   port: number;
+  /** Number of reverse-proxy hops Express may trust for req.ip. Zero is safe for direct exposure. */
+  trustProxyHops: number;
   dbPath: string;
   adminToken: string;
   publicOrigin: MurmurPublicOrigin;
@@ -54,6 +60,13 @@ export interface DaemonRuntimeConfig {
   oracleRuntime: DaemonOracleRuntimeConfig;
   operatorAlertSink: OperatorAlertSinkConfig;
   privyAuth: PrivyAuthConfig;
+  /**
+   * Signing secret for the inbound Privy `user.transferred_account` webhook
+   * (dashboard endpoint secret, `whsec_...`). `null` disables the receiver
+   * (route answers 503). When set, PRIVY_APP_ID + PRIVY_APP_SECRET are
+   * required — the verifier needs the Privy client to check the svix signature.
+   */
+  privyWebhookSigningSecret: string | null;
   openServLaunchpad: OpenServLaunchpadRuntimeConfig;
   webhookUrlPolicy: WebhookUrlPolicy;
   operatorFhenixLifecycleQueryDefaults: OperatorFhenixLifecycleQueryDefaults;
@@ -61,8 +74,9 @@ export interface DaemonRuntimeConfig {
 }
 
 export interface OpenServLaunchpadRuntimeConfig {
+  enabled: boolean;
   port: number;
-  apiKey: string;
+  apiKey: string | null;
   authToken: string | null;
   dashboardUrl: string;
   publicApiUrl: string;
@@ -123,9 +137,17 @@ export function loadDaemonRuntimeConfig(
   );
   const publicOrigin = loadMurmurPublicOrigin(env);
   const fhenixRuntime = loadFhenixRuntimeConfig(env);
+  const privyAuth = loadPrivyAuthConfig(env);
 
   return {
     port,
+    trustProxyHops: parseIntegerRange(
+      env.MURMUR_TRUST_PROXY_HOPS,
+      0,
+      "MURMUR_TRUST_PROXY_HOPS",
+      0,
+      10,
+    ),
     dbPath: resolveVerdictDbPath(env, overrides.dbPath),
     adminToken: env.VERDICT_ADMIN_TOKEN ?? "",
     publicOrigin,
@@ -136,11 +158,11 @@ export function loadDaemonRuntimeConfig(
       false,
       "MURMUR_REQUIRE_LIVE_CANARIES",
     ),
-    polymarketGammaEnabled: parseBooleanFlag(
-      env.MURMUR_POLYMARKET_GAMMA_ENABLED,
-      false,
-      "MURMUR_POLYMARKET_GAMMA_ENABLED",
-    ),
+    // Default ON: Gamma is a public key-less API, the sync ticker no-ops with
+    // zero Polymarket markets, and the resolver needs this adapter registered
+    // for any admin-registered polymarket market to resolve. Set =false to opt
+    // out explicitly.
+    polymarketGammaEnabled: resolvePolymarketGammaEnabled(env),
     fhenixRuntime,
     nanopayRuntime: loadDaemonNanopayRuntimeConfig({
       env,
@@ -149,7 +171,8 @@ export function loadDaemonRuntimeConfig(
     }),
     oracleRuntime: loadDaemonOracleRuntimeConfig(env),
     operatorAlertSink: loadOperatorAlertSinkConfig(env),
-    privyAuth: loadPrivyAuthConfig(env),
+    privyAuth,
+    privyWebhookSigningSecret: loadPrivyWebhookSigningSecret(env, privyAuth),
     openServLaunchpad: loadOpenServLaunchpadRuntimeConfig(env, publicOrigin),
     webhookUrlPolicy: loadWebhookUrlPolicy(env),
     operatorFhenixLifecycleQueryDefaults: {
@@ -180,22 +203,17 @@ function loadOpenServLaunchpadRuntimeConfig(
   const apiKey = nonEmpty(env.OPENSERV_API_KEY);
   const configuredEnabled = parseBooleanFlag(
     env.OPENSERV_LAUNCHPAD_ENABLED,
-    true,
+    Boolean(apiKey),
     "OPENSERV_LAUNCHPAD_ENABLED",
   );
-  if (!configuredEnabled) {
-    throw new DaemonConfigError(
-      "OPENSERV_LAUNCHPAD_ENABLED",
-      "OpenServ Launchpad is required daemon infrastructure and cannot be disabled",
-    );
-  }
-  if (!apiKey) {
+  if (configuredEnabled && !apiKey) {
     throw new DaemonConfigError(
       "OPENSERV_API_KEY",
-      "OpenServ Launchpad is required daemon infrastructure; set OPENSERV_API_KEY",
+      "is required when OPENSERV_LAUNCHPAD_ENABLED is true",
     );
   }
   return {
+    enabled: configuredEnabled,
     port: parsePort(env.OPENSERV_LAUNCHPAD_PORT, 7378, "OPENSERV_LAUNCHPAD_PORT"),
     apiKey,
     authToken: nonEmpty(env.OPENSERV_AUTH_TOKEN),
@@ -205,6 +223,32 @@ function loadOpenServLaunchpadRuntimeConfig(
     launchpadProjectId: nonEmpty(env.OPENSERV_LAUNCHPAD_PROJECT_ID),
     launchpadProjectUrl: nonEmpty(env.OPENSERV_LAUNCHPAD_PROJECT_URL),
   };
+}
+
+function loadPrivyWebhookSigningSecret(
+  env: NodeJS.ProcessEnv,
+  privyAuth: PrivyAuthConfig,
+): string | null {
+  // NOTE: the env var is PRIVY_WEBHOOK_SIGNING_SECRET (not ...KEY). Pass the
+  // dashboard endpoint secret (`whsec_...`) through unchanged — the SDK
+  // strips/decodes it.
+  const secret = nonEmpty(env.PRIVY_WEBHOOK_SIGNING_SECRET);
+  if (!secret) return null;
+  // Fail loud rather than pretend the receiver is enabled: without the Privy
+  // client (APP_ID + APP_SECRET) the svix signature cannot be verified.
+  if (!privyAuth.appId) {
+    throw new DaemonConfigError(
+      "PRIVY_APP_ID",
+      "is required when PRIVY_WEBHOOK_SIGNING_SECRET is set (the transfer webhook verifier needs the Privy client)",
+    );
+  }
+  if (!privyAuth.appSecret) {
+    throw new DaemonConfigError(
+      "PRIVY_APP_SECRET",
+      "is required when PRIVY_WEBHOOK_SIGNING_SECRET is set (the transfer webhook verifier needs the Privy client)",
+    );
+  }
+  return secret;
 }
 
 function parseDashboardCors(raw: string | undefined): DashboardCorsConfig {
@@ -285,9 +329,10 @@ function parseBooleanFlag(
   fallback: boolean,
   key: string,
 ): boolean {
-  const normalized = raw?.trim().toLowerCase();
-  if (!normalized) return fallback;
-  if (normalized === "true" || normalized === "1") return true;
-  if (normalized === "false" || normalized === "0") return false;
-  throw new DaemonConfigError(key, "must be one of true, false, 1, or 0");
+  if (!raw?.trim()) return fallback;
+  const value = parseBooleanToken(raw);
+  if (value === undefined) {
+    throw new DaemonConfigError(key, "must be one of true, false, 1, or 0");
+  }
+  return value;
 }

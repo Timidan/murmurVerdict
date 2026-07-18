@@ -1,5 +1,6 @@
 export {
   getOrCreateAccount,
+  backfillAccountProfile,
   getAccountById,
   getAccountByPrivyUserId,
   resolveAccountForClaims,

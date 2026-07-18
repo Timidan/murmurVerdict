@@ -18,6 +18,7 @@ import { useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { TierBadge } from "../components/TierBadge.js";
 import { FheStatusPanel } from "../components/FheStatusPanel.js";
+import { LinkedLoginsPanel } from "../components/account/LinkedLoginsPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import type { AccountAgent, AgentKind } from "../api.js";
@@ -51,6 +52,15 @@ export function AccountPage() {
     const next = encodeURIComponent("/account");
     window.location.hash = `#/account/login?next=${next}`;
   }, [account.ready, account.isAuthenticated]);
+
+  // Re-pull the owned-agent list on every authenticated mount. useAccount's
+  // bootstrap fetches once per login; landing here after onboarding — or after
+  // any reload — must reflect current state, so refetch defensively instead of
+  // trusting the cached array. refreshAgents is a stable useCallback.
+  useEffect(() => {
+    if (account.isAuthenticated) void account.refreshAgents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account.isAuthenticated]);
 
   // Phase 7d — fire compete.clicked only when the user actually arrived
   // from the landing-page CTA. Two paths converge here:
@@ -105,7 +115,7 @@ export function AccountPage() {
   }
 
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
           <span>
@@ -127,13 +137,13 @@ export function AccountPage() {
             <span className="ck-label ck-pos">your agents</span>
             <span className="flex items-center gap-3">
               <span className="ck-mono ck-dim">{account.agents.length} owned</span>
-              <a href="#/agent/onboard" className="ck-btn ck-pos">
-                [ + add agent ]
+              <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
+                + add agent
               </a>
               <button
                 type="button"
                 onClick={() => void account.signOut()}
-                className="ck-btn"
+                className="ck-btn ck-btn-bracket"
               >
                 sign out
               </button>
@@ -154,6 +164,7 @@ export function AccountPage() {
             <AgentList agents={account.agents} />
           )}
         </section>
+        <LinkedLoginsPanel />
         <FheStatusPanel />
       </main>
     </div>
@@ -185,8 +196,8 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
             </div>
             <ReattestChip controllerWallet={a.controller_wallet} walletHref={walletHref} />
             <TierBadge kind={(a.kind as AgentKind | null) ?? "agent"} />
-            <a href={settingsHref} className="ck-btn">
-              [ view ]
+            <a href={settingsHref} className="ck-btn ck-btn-bracket">
+              view
             </a>
           </li>
         );
@@ -257,12 +268,12 @@ function EmptyState() {
     <div className="px-4 py-8 flex flex-col items-start gap-3">
       <p className="ck-mono ck-dim">no agents yet.</p>
       <p className="ck-mono ck-dim text-[10px] max-w-[40ch]">
-        each agent self-onboards under your profile. copy your access token
-        from the next page, give it to your bot, and the bot picks its own
-        slug, name, and bio. takes about a minute.
+        pick a handle for your agent on the next page, approve two wallet
+        signatures, and copy the one-time runtime key into your bot.
+        takes about a minute.
       </p>
-      <a href="#/agent/onboard" className="ck-btn ck-pos">
-        [ + add agent ]
+      <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
+        + add agent
       </a>
     </div>
   );
@@ -288,7 +299,7 @@ function SkeletonRows() {
 
 function LoadingShell() {
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar crumb={<span className="ck-pos">account</span>} />
       <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
         <SkeletonRows />
@@ -299,7 +310,7 @@ function LoadingShell() {
 
 function ConfigErrorShell() {
   return (
-    <div className="compact-shell min-h-dvh flex flex-col">
+    <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar crumb={<span className="ck-neg">account · unconfigured</span>} />
       <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">

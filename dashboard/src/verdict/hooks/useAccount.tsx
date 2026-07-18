@@ -27,7 +27,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { usePrivy, getAccessToken } from "@privy-io/react-auth";
+import {
+  usePrivy,
+  getAccessToken,
+  type LinkedAccountWithMetadata,
+} from "@privy-io/react-auth";
 import { verdictApi, type AccountAgent, type AccountSession } from "../api.js";
 import { isPrivyConfigured } from "../auth/PrivyProvider.js";
 import { useFunnelEmit } from "./useFunnelEmit.js";
@@ -51,6 +55,13 @@ export interface UseAccountResult {
   userId: string | null;
   /** Best-effort email surfaced by Privy on the user object. */
   email: string | null;
+  /**
+   * Every account linked to this Privy user, camelCase
+   * `LinkedAccountWithMetadata[]`. Includes login identities (email, OAuth,
+   * external wallets) as well as non-login entries (embedded/smart wallets,
+   * passkey, phone) — consumers filter to what they need. Empty when unauthed.
+   */
+  readonly linkedAccounts: readonly LinkedAccountWithMetadata[];
   /** Trigger Privy's hosted login modal. */
   signIn: () => void;
   /** Sign out of Privy + clear local agent cache. */
@@ -117,8 +128,12 @@ function useAccountState(): UseAccountResult {
       return;
     }
     const did = privy.user?.id ?? "anon";
+    // Skip only when a PRIOR attempt fully SUCCEEDED — the latch is set at the
+    // end of the async block below, after setAgents commits. Setting it HERE
+    // (before the fetch) was the bug: React StrictMode runs setup→cleanup→setup
+    // in dev, so the first attempt got cancelled, the second saw the latch and
+    // bailed, and `agents` stayed [] forever with no retry path.
     if (bootstrappedRef.current === did) return;
-    bootstrappedRef.current = did;
 
     let cancelled = false;
     (async () => {
@@ -164,6 +179,11 @@ function useAccountState(): UseAccountResult {
         const { agents: rows } = await verdictApi.getAccountAgents(token);
         if (cancelled) return;
         setAgents(rows);
+        // Latch this DID as bootstrapped ONLY here — after the agents fetch
+        // has actually committed and this attempt was not cancelled. A
+        // StrictMode-cancelled first pass therefore leaves the latch unset,
+        // so the second pass retries and populates the list.
+        bootstrappedRef.current = did;
       } catch (e) {
         if (!cancelled) setError((e as Error).message ?? "session_failed");
       } finally {
@@ -190,19 +210,18 @@ function useAccountState(): UseAccountResult {
   }, [configured, privy]);
 
   const email = useMemo<string | null>(() => {
-    // Privy's user shape carries linked accounts; email may live on a
-    // `linked_accounts` entry of type 'email' OR on `email.address` for
-    // the email-OTP flow. We surface the first one we find.
-    const u = privy.user as unknown as {
-      email?: { address?: string };
-      linked_accounts?: Array<{ type?: string; address?: string; email?: string }>;
-    } | null;
+    // The React SDK exposes camelCase state: a top-level `email.address` for
+    // the email-OTP flow, and `linkedAccounts` (LinkedAccountWithMetadata[])
+    // for everything else. The prior code read snake_case `linked_accounts`
+    // off a hand-cast shape — a field the React SDK never populates — so this
+    // always returned null for OAuth-only sign-ins. Prefer the direct email,
+    // else scan linked accounts for an email- or google_oauth-type identity.
+    const u = privy.user;
     if (!u) return null;
     if (u.email?.address) return u.email.address;
-    const linked = u.linked_accounts ?? [];
-    for (const acct of linked) {
-      if (acct?.type === "email" && typeof acct.address === "string") return acct.address;
-      if (acct?.type === "google_oauth" && typeof acct.email === "string") return acct.email;
+    for (const acct of u.linkedAccounts) {
+      if (acct.type === "email" && typeof acct.address === "string") return acct.address;
+      if (acct.type === "google_oauth" && typeof acct.email === "string") return acct.email;
     }
     return null;
   }, [privy.user]);
@@ -217,6 +236,7 @@ function useAccountState(): UseAccountResult {
     error,
     userId: privy.user?.id ?? null,
     email,
+    linkedAccounts: privy.user?.linkedAccounts ?? [],
     signIn,
     signOut,
     refreshAgents: fetchAgents,

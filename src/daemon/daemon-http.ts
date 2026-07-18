@@ -26,6 +26,9 @@ import type {
   PolymarketMarketRegistrationGammaAdapter,
 } from "../verdict/polymarket-market-registration.js";
 import { accountRouter } from "../verdict/routes/account.js";
+import { privyWebhookRouter } from "../verdict/routes/privy-webhooks.js";
+import { createPrivyWebhookVerifier } from "../verdict/auth/privy-webhook-verify.js";
+import { reparentAccount } from "../verdict/auth/account-reparent.js";
 import type { ControllerWalletAuthorizationNonceAdapter } from "../verdict/controller-wallet-authorization.js";
 import type { UsageEventIdAdapter } from "../verdict/usage-event.js";
 import type { DaemonRuntimeConfig } from "./daemon-config.js";
@@ -71,7 +74,10 @@ export function createDaemonHttpSurface(
   deps: DaemonHttpSurfaceDeps,
 ): Express {
   const app = express();
-  app.set("trust proxy", 1);
+  // Never trust X-Forwarded-For on the directly exposed default topology.
+  // Operators behind a known proxy can opt into the exact hop count; making
+  // this explicit prevents callers from rotating forged IPs around rate limits.
+  app.set("trust proxy", deps.config.trustProxyHops || false);
 
   if (deps.config.dashboardCors.kind === "any") {
     app.use(cors());
@@ -83,6 +89,24 @@ export function createDaemonHttpSurface(
       }),
     );
   }
+
+  // Mount the inbound Privy transfer receiver FIRST: it installs a route-scoped
+  // raw-body parser on POST /v1/privy/webhooks so the svix signature verifies
+  // against the exact bytes Privy signed. The account router below installs a
+  // JSON body parser that would otherwise consume the body first. The receiver
+  // fail-closes to 503 when PRIVY_WEBHOOK_SIGNING_SECRET is unset.
+  app.use(
+    privyWebhookRouter({
+      db: deps.db,
+      verifier: createPrivyWebhookVerifier({
+        appId: deps.config.privyAuth.appId,
+        appSecret: deps.config.privyAuth.appSecret,
+        signingSecret: deps.config.privyWebhookSigningSecret,
+      }),
+      reparent: reparentAccount,
+      logger: deps.logger,
+    }),
+  );
 
   app.use(
     createVerdictRouter({
@@ -113,6 +137,11 @@ export function createDaemonHttpSurface(
       webhookUrlPolicy: deps.config.webhookUrlPolicy,
       operatorFhenixLifecycleQueryDefaults:
         deps.config.operatorFhenixLifecycleQueryDefaults,
+      // Forward the parsed Gamma kill switch so an env injected via
+      // startDaemon({ env }) reaches the market read surface. `env` stays {}
+      // to keep the router isolated from ambient process.env for every other
+      // derivation (all of which are passed explicitly above).
+      polymarketGammaEnabled: deps.config.polymarketGammaEnabled,
       env: {},
       now: deps.now,
     }),

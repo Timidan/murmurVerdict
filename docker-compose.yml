@@ -46,6 +46,7 @@ services:
       #     `docker compose up` emits links the host can hit.
       MURMUR_DASHBOARD_URL: "${MURMUR_DASHBOARD_URL:-}"
       MURMUR_PUBLIC_URL: "${MURMUR_PUBLIC_URL:-http://localhost:8080}"
+      MURMUR_TRUST_PROXY_HOPS: "${MURMUR_TRUST_PROXY_HOPS:-0}"
       WEBHOOK_ALLOW_HTTP: "${WEBHOOK_ALLOW_HTTP:-}"
       BASE_MAINNET_RPC_URL: "${BASE_MAINNET_RPC_URL:-}"
       CHAINLINK_BASE_ETH_USD_ADDRESS: "${CHAINLINK_BASE_ETH_USD_ADDRESS:-}"
@@ -86,6 +87,7 @@ services:
       PRIVY_APP_ID: "${PRIVY_APP_ID:-}"
       PRIVY_APP_SECRET: "${PRIVY_APP_SECRET:-}"
       PRIVY_VERIFICATION_KEY: "${PRIVY_VERIFICATION_KEY:-}"
+      PRIVY_WEBHOOK_SIGNING_SECRET: "${PRIVY_WEBHOOK_SIGNING_SECRET:-}"
     volumes:
       - verdict_data:/app/data
     healthcheck:
