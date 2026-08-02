@@ -23,6 +23,7 @@ contract MurmurSealedVerdictsTest is Test {
     CofheClient internal agentClient;
     CofheClient internal relayerClient;
     MockTaskManager internal mockTaskManager;
+    MockACL internal mockAcl;
 
     address internal constant ZK_VERIFIER_ADDRESS = 0x0000000000000000000000000000000000005001;
     address internal constant THRESHOLD_NETWORK_ADDRESS =
@@ -84,6 +85,145 @@ contract MurmurSealedVerdictsTest is Test {
 
         sealedVerdicts.setRelayer(relayer, false);
         assertFalse(sealedVerdicts.relayers(relayer));
+    }
+
+    // ─── Flow 2 — paid private decrypt-grant (grant-only v1) ────────────────
+
+    address internal constant GRANTOR = address(0x6EA47);
+    address internal constant SUBSCRIBER = address(0x50B);
+    address internal constant OTHER = address(0x07E5);
+
+    function test_setGrantorIsOwnerGatedAndRejectsZero() public {
+        vm.prank(agentClient.account());
+        vm.expectRevert(MurmurSealedVerdicts.NotOwner.selector);
+        sealedVerdicts.setGrantor(GRANTOR, true);
+
+        vm.expectRevert(MurmurSealedVerdicts.ZeroGrantor.selector);
+        sealedVerdicts.setGrantor(address(0), true);
+
+        sealedVerdicts.setGrantor(GRANTOR, true);
+        assertTrue(sealedVerdicts.grantors(GRANTOR));
+        sealedVerdicts.setGrantor(GRANTOR, false);
+        assertFalse(sealedVerdicts.grantors(GRANTOR));
+    }
+
+    function test_grantDecryptAccessAllowsSubscriberAndPersistsAfterReveal() public {
+        bytes32 callId = _submitBuy72();
+        sealedVerdicts.setGrantor(GRANTOR, true);
+
+        uint256 binaryHandle = uint256(sealedVerdicts.binaryIndexHandle(callId));
+        uint256 confidenceHandle = uint256(sealedVerdicts.confidenceHandle(callId));
+
+        // Pre-grant: the subscriber holds no per-address ACL entry.
+        assertFalse(mockAcl.persistAllowed(binaryHandle, SUBSCRIBER));
+        assertFalse(mockAcl.persistAllowed(confidenceHandle, SUBSCRIBER));
+
+        vm.expectEmit(true, true, false, false, address(sealedVerdicts));
+        emit MurmurSealedVerdicts.DecryptAccessGranted(callId, SUBSCRIBER);
+        vm.prank(GRANTOR);
+        sealedVerdicts.grantDecryptAccess(callId, SUBSCRIBER);
+
+        assertTrue(sealedVerdicts.decryptAccessGranted(callId, SUBSCRIBER));
+        assertTrue(mockAcl.persistAllowed(binaryHandle, SUBSCRIBER));
+        assertTrue(mockAcl.persistAllowed(confidenceHandle, SUBSCRIBER));
+
+        (
+            MurmurSealedVerdicts.CallState state,
+            uint64 revealOpenAt,
+            bytes32 binaryCt,
+            bytes32 confidenceCt,
+            bool alreadyGranted
+        ) = sealedVerdicts.getDecryptAccess(callId, SUBSCRIBER);
+        assertEq(uint8(state), uint8(MurmurSealedVerdicts.CallState.Sealed));
+        assertEq(revealOpenAt, sealedVerdicts.callRevealOpenAt(callId));
+        assertEq(uint256(binaryCt), binaryHandle);
+        assertEq(uint256(confidenceCt), confidenceHandle);
+        assertTrue(alreadyGranted);
+
+        // The persistent grant survives the call's later public reveal — the
+        // subscriber's earlier per-address permission is not revoked by the
+        // global allowPublic added at openReveal.
+        vm.warp(block.timestamp + 1 hours);
+        sealedVerdicts.openReveal(callId);
+        assertTrue(mockAcl.persistAllowed(binaryHandle, SUBSCRIBER));
+        assertTrue(mockAcl.persistAllowed(confidenceHandle, SUBSCRIBER));
+    }
+
+    function test_grantDecryptAccessDeniesUnrelatedHandlesAndOtherCalls() public {
+        bytes32 callA = _submitVerdict(0, 7200, keccak256("grant-call-a"));
+        bytes32 callB = _submitVerdict(1, 6000, keccak256("grant-call-b"));
+        sealedVerdicts.setGrantor(GRANTOR, true);
+
+        vm.prank(GRANTOR);
+        sealedVerdicts.grantDecryptAccess(callA, SUBSCRIBER);
+
+        // Granted only on call A's two handles, for the subscriber only.
+        assertTrue(mockAcl.persistAllowed(uint256(sealedVerdicts.binaryIndexHandle(callA)), SUBSCRIBER));
+        assertFalse(mockAcl.persistAllowed(uint256(sealedVerdicts.binaryIndexHandle(callA)), OTHER));
+        // Unrelated call B's handles stay closed to the subscriber.
+        assertFalse(mockAcl.persistAllowed(uint256(sealedVerdicts.binaryIndexHandle(callB)), SUBSCRIBER));
+        assertFalse(mockAcl.persistAllowed(uint256(sealedVerdicts.confidenceHandle(callB)), SUBSCRIBER));
+
+        (,,,, bool grantedOnB) = sealedVerdicts.getDecryptAccess(callB, SUBSCRIBER);
+        assertFalse(grantedOnB);
+    }
+
+    function test_grantDecryptAccessRevertsAfterRevealOpenAtWhileSealed() public {
+        bytes32 callId = _submitBuy72();
+        sealedVerdicts.setGrantor(GRANTOR, true);
+
+        // The sale window closes at revealOpenAt even before anyone calls
+        // openReveal; the reveal worker's grace period does not extend it.
+        vm.warp(sealedVerdicts.callRevealOpenAt(callId));
+        vm.prank(GRANTOR);
+        vm.expectRevert(MurmurSealedVerdicts.DecryptGrantWindowClosed.selector);
+        sealedVerdicts.grantDecryptAccess(callId, SUBSCRIBER);
+    }
+
+    function test_grantDecryptAccessRevertsOnceRevealOpened() public {
+        bytes32 callId = _submitBuy72();
+        sealedVerdicts.setGrantor(GRANTOR, true);
+
+        vm.warp(block.timestamp + 1 hours);
+        sealedVerdicts.openReveal(callId);
+
+        vm.prank(GRANTOR);
+        vm.expectRevert(MurmurSealedVerdicts.DecryptGrantWindowClosed.selector);
+        sealedVerdicts.grantDecryptAccess(callId, SUBSCRIBER);
+    }
+
+    function test_grantDecryptAccessIsIdempotent() public {
+        bytes32 callId = _submitBuy72();
+        sealedVerdicts.setGrantor(GRANTOR, true);
+
+        vm.startPrank(GRANTOR);
+        sealedVerdicts.grantDecryptAccess(callId, SUBSCRIBER);
+        // Second grant is a no-op that must not revert.
+        sealedVerdicts.grantDecryptAccess(callId, SUBSCRIBER);
+        vm.stopPrank();
+
+        assertTrue(sealedVerdicts.decryptAccessGranted(callId, SUBSCRIBER));
+    }
+
+    function test_grantDecryptAccessOnlyGrantor() public {
+        bytes32 callId = _submitBuy72();
+
+        vm.prank(OTHER);
+        vm.expectRevert(MurmurSealedVerdicts.NotGrantor.selector);
+        sealedVerdicts.grantDecryptAccess(callId, SUBSCRIBER);
+    }
+
+    function test_grantDecryptAccessRejectsZeroSubscriberAndUnknownCall() public {
+        bytes32 callId = _submitBuy72();
+        sealedVerdicts.setGrantor(GRANTOR, true);
+
+        vm.prank(GRANTOR);
+        vm.expectRevert(MurmurSealedVerdicts.ZeroSubscriber.selector);
+        sealedVerdicts.grantDecryptAccess(callId, address(0));
+
+        vm.prank(GRANTOR);
+        vm.expectRevert(MurmurSealedVerdicts.CallNotFound.selector);
+        sealedVerdicts.grantDecryptAccess(keccak256("missing-call"), SUBSCRIBER);
     }
 
     function test_submitSealedForStoresEncryptedVerdictUntilReveal() public {
@@ -493,7 +633,7 @@ contract MurmurSealedVerdictsTest is Test {
         mockTaskManager.initialize(TM_ADMIN);
         mockTaskManager.setLogOps(false);
 
-        MockACL mockAcl = new MockACL();
+        mockAcl = new MockACL();
 
         vm.startPrank(TM_ADMIN);
         mockTaskManager.setACLContract(address(mockAcl));

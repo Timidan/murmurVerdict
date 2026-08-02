@@ -1,34 +1,42 @@
 [
-  {
-    "chainId": 84532,
-    "contractName": "MurmurEscrow",
-    "address": "0x0385ea24f0777ad24b9203548f4916d3ae06e0b3",
-    "deployedAt": "2026-05-17T16:56:02.370Z",
-    "txHash": "0x50871c385ffc4d3c7c4d234662bd757e22cf90b631ca8e64d4e29e0b4fb0a26c",
-    "blockNumber": 41634338
-  },
-  {
-    "chainId": 84532,
-    "contractName": "MurmurSealedVerdicts",
-    "address": "0xe2ee519bfa5e8fcd8b6d6339b123968e23bc00f7",
-    "deployedAt": "2026-05-17T16:55:40.935Z",
-    "txHash": "0x462b15e94ade0e54ec02aa6652ccc7e30483dbbf5339157d17d07042d83f4e0f",
-    "blockNumber": 41634327
-  },
-  {
-    "chainId": 84532,
-    "contractName": "MurmurEscrow",
-    "address": "0x637dc84496ec36fa92010527bdbac2b26e6c3ba7",
-    "deployedAt": "2026-05-23T04:10:08.528Z",
-    "txHash": "0x4d58fbc9da054a14d15e94c2cd5c7d3db79e2233eab520da4b14dddc04b68ee8",
-    "blockNumber": 41870561
-  },
-  {
-    "chainId": 84532,
-    "contractName": "MurmurSealedVerdicts",
-    "address": "0x1b74a4bab1e06ed107780a245c85337ab9decd1a",
-    "deployedAt": "2026-05-23T04:09:59.226Z",
-    "txHash": "0x5423f088308fac696e9f13a439b67492e98baf504e683ccb7927a00fda742fe4",
-    "blockNumber": 41870556
-  }
+ {
+  "chainId": 84532,
+  "contractName": "MurmurEscrow",
+  "address": "0x0385ea24f0777ad24b9203548f4916d3ae06e0b3",
+  "deployedAt": "2026-05-17T16:56:02.370Z",
+  "txHash": "0x50871c385ffc4d3c7c4d234662bd757e22cf90b631ca8e64d4e29e0b4fb0a26c",
+  "blockNumber": 41634338
+ },
+ {
+  "chainId": 84532,
+  "contractName": "MurmurSealedVerdicts",
+  "address": "0xe2ee519bfa5e8fcd8b6d6339b123968e23bc00f7",
+  "deployedAt": "2026-05-17T16:55:40.935Z",
+  "txHash": "0x462b15e94ade0e54ec02aa6652ccc7e30483dbbf5339157d17d07042d83f4e0f",
+  "blockNumber": 41634327
+ },
+ {
+  "chainId": 84532,
+  "contractName": "MurmurEscrow",
+  "address": "0x637dc84496ec36fa92010527bdbac2b26e6c3ba7",
+  "deployedAt": "2026-05-23T04:10:08.528Z",
+  "txHash": "0x4d58fbc9da054a14d15e94c2cd5c7d3db79e2233eab520da4b14dddc04b68ee8",
+  "blockNumber": 41870561
+ },
+ {
+  "chainId": 84532,
+  "contractName": "MurmurSealedVerdicts",
+  "address": "0x1b74a4bab1e06ed107780a245c85337ab9decd1a",
+  "deployedAt": "2026-05-23T04:09:59.226Z",
+  "txHash": "0x5423f088308fac696e9f13a439b67492e98baf504e683ccb7927a00fda742fe4",
+  "blockNumber": 41870556
+ },
+ {
+  "chainId": 84532,
+  "contractName": "MurmurSealedVerdicts",
+  "address": "0x42b6c4de8dac785d8d9103d2c3d9fdb0e7253081",
+  "deployedAt": "2026-07-20T09:56:00.000Z",
+  "txHash": "0xf96cb252c673e0029083cbe7288939b75bd68658fc9cc74d0d4299365ef57fbc",
+  "blockNumber": 44388725
+ }
 ]

@@ -25,6 +25,10 @@ contract MurmurSealedVerdicts {
     error NotRelayer();
     error ZeroRelayer();
     error ZeroAgent();
+    error NotGrantor();
+    error ZeroGrantor();
+    error ZeroSubscriber();
+    error DecryptGrantWindowClosed();
 
     enum CallState {
         None,
@@ -75,6 +79,14 @@ contract MurmurSealedVerdicts {
     address public owner;
     address public pendingOwner;
     mapping(address => bool) public relayers;
+    // Flow 2 (paid private decrypt-grant): keyed EOAs allowed to broker early
+    // private decrypt access to a sealed call's ciphertext handles. Isolated
+    // from `relayers` so the grant signer never inherits submit authority.
+    mapping(address => bool) public grantors;
+    // (callId => subscriber => granted). Not required for FHE correctness — the
+    // ACL lives in CoFHE — but kept on-chain for idempotency, reconciliation,
+    // and incident recovery.
+    mapping(bytes32 => mapping(address => bool)) public decryptAccessGranted;
     mapping(bytes32 => Market) public markets;
     mapping(bytes32 => SealedCall) private calls;
     mapping(bytes32 => SealedFeedPacket) private feedPackets;
@@ -82,6 +94,8 @@ contract MurmurSealedVerdicts {
     event OwnerTransferred(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event RelayerSet(address indexed relayer, bool active);
+    event GrantorSet(address indexed grantor, bool active);
+    event DecryptAccessGranted(bytes32 indexed callId, address indexed subscriber);
     event MarketRegistered(bytes32 indexed marketId, uint64 horizonSeconds, bool active);
     event FixedRevealMarketRegistered(bytes32 indexed marketId, uint64 revealAfter, bool active);
     event MarketActiveSet(bytes32 indexed marketId, bool active);
@@ -154,6 +168,11 @@ contract MurmurSealedVerdicts {
         _;
     }
 
+    modifier onlyGrantor() {
+        if (!grantors[msg.sender]) revert NotGrantor();
+        _;
+    }
+
     constructor() {
         owner = msg.sender;
         emit OwnerTransferred(address(0), msg.sender);
@@ -177,6 +196,63 @@ contract MurmurSealedVerdicts {
         if (relayer == address(0)) revert ZeroRelayer();
         relayers[relayer] = active;
         emit RelayerSet(relayer, active);
+    }
+
+    function setGrantor(address grantor, bool active) external onlyOwner {
+        if (grantor == address(0)) revert ZeroGrantor();
+        grantors[grantor] = active;
+        emit GrantorSet(grantor, active);
+    }
+
+    /// @notice Grant a paying subscriber early private decrypt access to a
+    ///         sealed call's ciphertext handles, before the public reveal.
+    /// @dev Grant-only Flow 2 v1: Murmur brokers this after verifying an
+    ///      off-chain payment. Enforced strictly inside the sale window
+    ///      (state == Sealed && block.timestamp < revealOpenAt) so a grant can
+    ///      never be produced after the value is (or is about to become)
+    ///      public via openReveal. `FHE.allow` is persistent: the subscriber
+    ///      keeps read access across the call's later openReveal/allowPublic
+    ///      and state changes. Idempotent per (callId, subscriber).
+    function grantDecryptAccess(bytes32 callId, address subscriber) external onlyGrantor {
+        SealedCall storage sealedCall = calls[callId];
+        if (sealedCall.state == CallState.None) revert CallNotFound();
+        if (subscriber == address(0)) revert ZeroSubscriber();
+        if (sealedCall.state != CallState.Sealed || block.timestamp >= sealedCall.revealOpenAt) {
+            revert DecryptGrantWindowClosed();
+        }
+
+        if (decryptAccessGranted[callId][subscriber]) return;
+
+        decryptAccessGranted[callId][subscriber] = true;
+        FHE.allow(sealedCall.binaryIndex, subscriber);
+        FHE.allow(sealedCall.confidenceBps, subscriber);
+
+        emit DecryptAccessGranted(callId, subscriber);
+    }
+
+    /// @notice Subscriber-facing view for the paid decrypt-grant flow: the
+    ///         reveal-window state, both ciphertext handles, and whether the
+    ///         given subscriber already holds an early grant.
+    function getDecryptAccess(bytes32 callId, address subscriber)
+        external
+        view
+        returns (
+            CallState state,
+            uint64 revealOpenAt,
+            bytes32 binaryIndexCtHash,
+            bytes32 confidenceCtHash,
+            bool alreadyGranted
+        )
+    {
+        SealedCall storage sealedCall = calls[callId];
+        if (sealedCall.state == CallState.None) revert CallNotFound();
+        return (
+            sealedCall.state,
+            sealedCall.revealOpenAt,
+            FHE.unwrap(sealedCall.binaryIndex),
+            FHE.unwrap(sealedCall.confidenceBps),
+            decryptAccessGranted[callId][subscriber]
+        );
     }
 
     function registerMarket(bytes32 marketId, uint64 horizonSeconds, bool active)
