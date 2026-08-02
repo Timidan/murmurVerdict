@@ -108,10 +108,12 @@ function computeLeaderboardRows(
   for (const a of byAgent.values()) {
     const summary = leaderboardCallSummary(a.calls);
     const reveal = revealReliability.get(a.agent_id) ?? {
-      total: 0,
-      revealed: 0,
-      failed: 0,
+      nonDaemon: 0,
+      daemonFallback: 0,
+      genuineMisses: 0,
     };
+    const revealDenominator =
+      reveal.nonDaemon + reveal.daemonFallback + reveal.genuineMisses;
     // Global board sorts by the lower-bound score so lucky streaks do not
     // outrank steadier agents with stronger confidence-adjusted records.
     const { mainTier, sortKey } = resolveTierAndSort(summary, {
@@ -135,9 +137,13 @@ function computeLeaderboardRows(
       win_rate: summary.win_rate,
       pending_calls: summary.pending_calls,
       last_resolved_at: summary.last_resolved_at,
-      reveal_reliability: reveal.total > 0 ? reveal.revealed / reveal.total : null,
-      agent_reveals: reveal.revealed,
-      daemon_fallback_reveals: 0,
+      // Redefined (Codex review §6): fraction of reveals that did NOT need the
+      // murmur fallback. An invalid decrypted value was still publicly
+      // REVEALED, so it counts as non-withholding, not a miss.
+      reveal_reliability:
+        revealDenominator > 0 ? reveal.nonDaemon / revealDenominator : null,
+      agent_reveals: reveal.nonDaemon,
+      daemon_fallback_reveals: reveal.daemonFallback,
       marketplace_eligible,
       operator_trust_score: null,
       stake_at_risk: null,
@@ -154,32 +160,45 @@ function computeLeaderboardRows(
   });
 }
 
+// Reveal attribution buckets per agent, from the normalized reveal_source
+// column (migration 057). A reveal published by anyone other than the murmur
+// fallback EOA (the agent itself, or an unattributed external sender) is
+// "non-daemon". Rows revealed before migration 057 have NULL reveal_source and
+// are counted as non-daemon (they predate the fallback worker). `missed` is now
+// only ever a manually-established irrecoverable condition.
 function getRevealReliability(
   db: Database.Database,
-): Map<string, { total: number; revealed: number; failed: number }> {
+): Map<
+  string,
+  { nonDaemon: number; daemonFallback: number; genuineMisses: number }
+> {
   const rows = db
     .prepare(
       `SELECT s.agent_id,
-              SUM(CASE WHEN f.reveal_status = 'revealed' THEN 1 ELSE 0 END) AS revealed,
-              SUM(CASE WHEN f.reveal_status IN ('invalid','missed') THEN 1 ELSE 0 END) AS failed,
-              SUM(CASE WHEN f.reveal_status IN ('revealed','invalid','missed') THEN 1 ELSE 0 END) AS total
+              SUM(CASE WHEN f.reveal_status IN ('revealed','invalid')
+                        AND (f.reveal_source IS NULL OR f.reveal_source != 'daemon_fallback')
+                       THEN 1 ELSE 0 END) AS non_daemon,
+              SUM(CASE WHEN f.reveal_status IN ('revealed','invalid')
+                        AND f.reveal_source = 'daemon_fallback'
+                       THEN 1 ELSE 0 END) AS daemon_fallback,
+              SUM(CASE WHEN f.reveal_status = 'missed' THEN 1 ELSE 0 END) AS genuine_misses
        FROM fhenix_sealed_calls f
        JOIN submissions s ON s.call_id = f.call_id
        GROUP BY s.agent_id`,
     )
     .all() as Array<{
       agent_id: string;
-      revealed: number | null;
-      failed: number | null;
-      total: number | null;
+      non_daemon: number | null;
+      daemon_fallback: number | null;
+      genuine_misses: number | null;
     }>;
   return new Map(
     rows.map((row) => [
       row.agent_id,
       {
-        total: row.total ?? 0,
-        revealed: row.revealed ?? 0,
-        failed: row.failed ?? 0,
+        nonDaemon: row.non_daemon ?? 0,
+        daemonFallback: row.daemon_fallback ?? 0,
+        genuineMisses: row.genuine_misses ?? 0,
       },
     ]),
   );

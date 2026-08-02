@@ -28,7 +28,10 @@ export interface WireLeaderboardRow {
   // on every row, but the dashboard also BUILDS partial rows from the SSE delta
   // (hooks/stream-merge.ts), which has no such fields — so they are optional
   // here and the producer guard pins the daemon output via `Conforms`.
-  /** Reserved compatibility field; sealed Fhenix does not use fallbacks. */
+  /** Reveal reliability = non-daemon reveals / (non-daemon + daemon-fallback +
+   *  genuine misses). `agent_reveals` counts reveals published without the
+   *  murmur fallback; `daemon_fallback_reveals` counts reveals the murmur-owned
+   *  fallback worker guaranteed. */
   reveal_reliability?: number | null;
   agent_reveals?: number;
   daemon_fallback_reveals?: number;

@@ -55,7 +55,9 @@ export type ReceiptLog = {
 
 export type ReceiptClient = {
   getChainId: () => Promise<number>;
-  getTransactionReceipt: (args: { hash: Hex }) => Promise<{ logs: readonly ReceiptLog[] }>;
+  getTransactionReceipt: (
+    args: { hash: Hex },
+  ) => Promise<{ logs: readonly ReceiptLog[]; from?: Address }>;
 };
 
 export type FhenixVerificationErrorKind =
@@ -136,12 +138,18 @@ export interface VerifiedVerdictRevealed extends FhenixRevealMetadata {
   agent_wallet: string;
   market_id_hash: string;
   onchain_call_id: string;
+  /** Publish tx `from` (lowercased) — authoritative reveal-attribution sender.
+   *  null only when the RPC receipt omits it. */
+  reveal_sender: string | null;
 }
 
 export interface VerifiedVerdictRevealInvalid extends FhenixInvalidRevealMetadata {
   agent_wallet: string;
   market_id_hash: string;
   onchain_call_id: string;
+  /** Publish tx `from` (lowercased) — authoritative reveal-attribution sender.
+   *  null only when the RPC receipt omits it. */
+  reveal_sender: string | null;
 }
 
 export function fhenixMarketIdForMurmurMarket(marketId: string): string {

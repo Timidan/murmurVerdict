@@ -15,6 +15,14 @@ export interface FhenixSealedCallInsert {
   created_at: string;
 }
 
+// Normalized reveal attribution (migration 057). `reveal_source` is derived
+// from the successful publishReveal tx `from` — see classifyRevealSource in
+// src/verdict/fhenix-reveal-attribution.ts.
+export type FhenixRevealSource =
+  | "agent"
+  | "daemon_fallback"
+  | "unattributed_external";
+
 export interface FhenixRevealInput {
   call_id: string;
   revealed_binary_index: 0 | 1;
@@ -24,6 +32,8 @@ export interface FhenixRevealInput {
   reveal_tx_hash: string;
   reveal_log_index: number;
   reveal_block_number?: number | null;
+  reveal_sender?: string | null;
+  reveal_source?: FhenixRevealSource | null;
 }
 
 export type FhenixRevealStatus = "pending" | "revealed" | "invalid" | "missed";
@@ -37,6 +47,8 @@ export interface FhenixInvalidRevealInput {
   reveal_tx_hash: string;
   reveal_log_index: number;
   reveal_block_number?: number | null;
+  reveal_sender?: string | null;
+  reveal_source?: FhenixRevealSource | null;
 }
 
 export type FhenixSealedCallRow = FhenixSealedCallInsert & {
@@ -52,6 +64,8 @@ export type FhenixSealedCallRow = FhenixSealedCallInsert & {
   revealed_binary_index: number | null;
   revealed_confidence: number | null;
   revealed_confidence_bps: number | null;
+  reveal_sender: string | null;
+  reveal_source: FhenixRevealSource | null;
 };
 
 const SEALED_CALL_COLUMNS = `call_id, chain_id, contract_address, onchain_call_id,
@@ -60,7 +74,8 @@ const SEALED_CALL_COLUMNS = `call_id, chain_id, contract_address, onchain_call_i
        reveal_tx_hash, reveal_log_index, revealed_binary_index,
        revealed_confidence, revealed_confidence_bps,
        reveal_status, invalid_reason, terminal_at,
-       submit_block_number, reveal_block_number`;
+       submit_block_number, reveal_block_number,
+       reveal_sender, reveal_source`;
 
 export const fhenixSealedCallsRepo = {
   insert(db: Database.Database, input: FhenixSealedCallInsert): void {
@@ -129,11 +144,18 @@ export const fhenixSealedCallsRepo = {
            reveal_status = 'revealed',
            invalid_reason = NULL,
            terminal_at = @revealed_at,
-           reveal_block_number = @reveal_block_number
+           reveal_block_number = @reveal_block_number,
+           reveal_sender = @reveal_sender,
+           reveal_source = @reveal_source
        WHERE call_id = @call_id
          AND revealed_at IS NULL
          AND reveal_status = 'pending'`,
-    ).run({ ...input, reveal_block_number: input.reveal_block_number ?? null });
+    ).run({
+      ...input,
+      reveal_block_number: input.reveal_block_number ?? null,
+      reveal_sender: input.reveal_sender ?? null,
+      reveal_source: input.reveal_source ?? null,
+    });
     if (result.changes !== 1) {
       throw new Error(`fhenix reveal attach failed for call_id=${input.call_id}`);
     }
@@ -156,14 +178,63 @@ export const fhenixSealedCallsRepo = {
            reveal_status = 'invalid',
            invalid_reason = @invalid_reason,
            terminal_at = @revealed_at,
-           reveal_block_number = @reveal_block_number
+           reveal_block_number = @reveal_block_number,
+           reveal_sender = @reveal_sender,
+           reveal_source = @reveal_source
        WHERE call_id = @call_id
          AND revealed_at IS NULL
          AND reveal_status = 'pending'`,
-    ).run({ ...input, reveal_block_number: input.reveal_block_number ?? null });
+    ).run({
+      ...input,
+      reveal_block_number: input.reveal_block_number ?? null,
+      reveal_sender: input.reveal_sender ?? null,
+      reveal_source: input.reveal_source ?? null,
+    });
     if (result.changes !== 1) {
       throw new Error(`fhenix invalid reveal attach failed for call_id=${input.call_id}`);
     }
+  },
+
+  // Fallback-worker candidate set: pending calls whose agent grace window has
+  // elapsed at the confirmed safe head. SQLite only NOMINATES candidates — the
+  // worker decides the action from getCall(...) at the safe head (verifying the
+  // stored ct handles), never from these columns. `submissions.status` is NOT
+  // joined here: the public-reveal obligation survives an inconsistent internal
+  // status (Codex review §1).
+  listRevealCandidates(
+    db: Database.Database,
+    input: {
+      chain_id: number;
+      contract_address: string;
+      grace_cutoff_iso: string;
+      limit: number;
+    },
+  ): Array<{
+    call_id: string;
+    onchain_call_id: string;
+    reveal_open_at: string;
+    binary_index_ct_hash: string;
+    confidence_ct_hash: string;
+  }> {
+    return prep(
+      db,
+      `SELECT call_id, onchain_call_id, reveal_open_at,
+              binary_index_ct_hash, confidence_ct_hash
+       FROM fhenix_sealed_calls
+       WHERE chain_id = @chain_id
+         AND lower(contract_address) = lower(@contract_address)
+         AND reveal_status = 'pending'
+         AND revealed_at IS NULL
+         AND reveal_open_at <= @grace_cutoff_iso
+       ORDER BY reveal_open_at
+       LIMIT @limit`,
+    ).all(input) as Array<{
+      call_id: string;
+      onchain_call_id: string;
+      reveal_open_at: string;
+      binary_index_ct_hash: string;
+      confidence_ct_hash: string;
+    }>;
   },
 
   markMissedReveal(

@@ -1,18 +1,22 @@
+import type Database from "better-sqlite3";
 import express from "express";
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { loadDeploymentByAddress } from "./deployments.js";
 import {
   FhenixEventIngestor,
+  FhenixEventIngestorChainMismatchError,
   FhenixEventIngestorConfigError,
   loadFhenixEventIngestorConfig,
 } from "./fhenix-watcher.js";
 import {
   fhenixMarketIdForMurmurMarket,
+  VERDICT_REVEALED_EVENT,
   type FhenixEventVerifier,
   type VerifiedSealedCallSubmitted,
   type VerifiedVerdictRevealInvalid,
@@ -72,6 +76,7 @@ class WatcherSmokeVerifier implements FhenixEventVerifier {
       agent_wallet: input.expected_agent_wallet,
       market_id_hash: fhenixMarketIdForMurmurMarket(input.expected_market_id),
       onchain_call_id: input.onchain_call_id.toLowerCase(),
+      reveal_sender: null,
     };
   }
 
@@ -88,6 +93,7 @@ class WatcherSmokeVerifier implements FhenixEventVerifier {
       agent_wallet: input.expected_agent_wallet,
       market_id_hash: fhenixMarketIdForMurmurMarket(input.expected_market_id),
       onchain_call_id: input.onchain_call_id.toLowerCase(),
+      reveal_sender: null,
     };
   }
 }
@@ -200,6 +206,7 @@ try {
     const onchainReplayCallId = "0x" + "66".repeat(32);
     let replayLogRead = 0;
     const replayClient = {
+      getChainId: async () => chainId,
       getBlockNumber: async () => 10n,
       getLogs: async () => {
         replayLogRead += 1;
@@ -323,6 +330,7 @@ try {
 
   let logRead = 0;
   const client = {
+    getChainId: async () => chainId,
     getBlockNumber: async () => 10n,
     getLogs: async () => {
       logRead += 1;
@@ -344,7 +352,7 @@ try {
     },
   };
 
-  await check("watcher indexes reveal events and marks missed reveals", async () => {
+  await check("watcher indexes reveal events and NO LONGER auto-marks missed reveals", async () => {
     const watcher = new FhenixEventIngestor({
       db,
       verifier,
@@ -360,16 +368,23 @@ try {
     const result = await watcher.tick();
     assert.equal(result.indexed, 1);
     assert.equal(result.valid_reveals_attached, 1);
-    assert.equal(result.missed_reveals_marked, 1);
+    // Migration 057: the watcher never auto-terminalizes as `missed` — a sealed
+    // call is revealable forever, so the fallback worker + operator alerts own
+    // liveness instead of a timer.
+    assert.equal(result.missed_reveals_marked, 0);
 
     const valid = fhenixSealedCallsRepo.byCallId(db, validCallId);
     assert.equal(valid?.reveal_status, "revealed");
     assert.equal(valid?.reveal_block_number, 8);
     assert.ok(submissionsRepo.loadResolverContext(db, validCallId)?.commitment_json);
 
-    const missed = fhenixSealedCallsRepo.byCallId(db, missedCallId);
-    assert.equal(missed?.reveal_status, "missed");
-    assert.equal(submissionsRepo.loadResolverContext(db, missedCallId)?.status, "missed_reveal");
+    // The overdue, unrevealed call stays PENDING (never auto-missed).
+    const stillPending = fhenixSealedCallsRepo.byCallId(db, missedCallId);
+    assert.equal(stillPending?.reveal_status, "pending");
+    assert.notEqual(
+      submissionsRepo.loadResolverContext(db, missedCallId)?.status,
+      "missed_reveal",
+    );
   });
 
   await check("admin lifecycle snapshot exposes reveal monitoring state", async () => {
@@ -397,14 +412,498 @@ try {
         needs_attention?: unknown[];
       };
       assert.equal(body.counts?.revealed, 2);
-      assert.equal(body.counts?.missed, 1);
-      assert.equal(body.queues?.terminal_failures, 1);
+      // No auto-missed anymore: the overdue call is still `pending`, so it shows
+      // up as an overdue-grace queue entry (needs_attention) rather than a
+      // terminal `missed` count.
+      assert.equal(body.counts?.missed ?? 0, 0);
+      assert.equal(body.queues?.terminal_failures, 0);
       assert.equal(body.queues?.needs_attention, 1);
       assert.ok(Array.isArray(body.cursors) && body.cursors.length > 0);
       assert.ok(Array.isArray(body.needs_attention) && body.needs_attention.length === 1);
     } finally {
       await closeServer(server);
     }
+  });
+
+  // ── Watcher start-block / catch-up / gating cases ──────────────────────────
+  const newDb = (): Database.Database =>
+    openDb({ path: join(tmp, `watcher-${randomUUID()}.db`) });
+  const seedAgentInto = (target: Database.Database): void => {
+    agentsRepo.insert(target, {
+      agent_id: agentId,
+      display_slug: "fhenix-watcher-smoke",
+      kind: "agent",
+      display_name: "Fhenix Watcher Smoke",
+      created_at: acceptedAt,
+      wallet_address: wallet,
+      chain_id: `eip155:${chainId}`,
+    });
+  };
+  const seedPendingCallInto = (
+    target: Database.Database,
+    params: {
+      callId: string;
+      onchainCallId: string;
+      contractAddress: string;
+      order: string;
+      hexByte: string;
+    },
+  ): void => {
+    submissionsRepo.acceptSealedFhenixCall(target, {
+      call_id: params.callId,
+      agent_id: agentId,
+      client_order_id: params.order,
+      horizon_seconds: 3600,
+      submitted_at: acceptedAt,
+      accepted_at: acceptedAt,
+      rationale: null,
+      strategy_tag: "momentum",
+      schema_version: 1,
+      scoring_version: 1,
+      dedup_key: `${params.order}:dedup`,
+      commit_hash: "0x" + params.hexByte.repeat(32),
+      commit_scheme: "fhenix-sealed-v1",
+      market_id: "eth.1h",
+      market_config_version: 1,
+      adapter_id: "native-price",
+      market_family: "financial-direction",
+    });
+    fhenixSealedCallsRepo.insert(target, {
+      call_id: params.callId,
+      chain_id: chainId,
+      contract_address: params.contractAddress,
+      onchain_call_id: params.onchainCallId,
+      submit_tx_hash: "0x" + params.hexByte.repeat(32),
+      submit_log_index: 0,
+      binary_index_ct_hash: "0x" + params.hexByte.repeat(32),
+      confidence_ct_hash: "0x" + params.hexByte.repeat(32),
+      reveal_open_at: revealOpenAt,
+      created_at: acceptedAt,
+    });
+    submissionsRepo.setStatus(target, params.callId, "pending_t1");
+  };
+  const readCursor = (
+    target: Database.Database,
+    contract: string,
+    eventName: "VerdictRevealed" | "VerdictRevealInvalid",
+  ): number | null =>
+    fhenixEventsRepo.getCursor(target, {
+      chain_id: chainId,
+      contract_address: contract,
+      event_name: eventName,
+    });
+  const fixedNow = () => new Date("2026-05-14T14:00:00Z");
+  const idleClient = (over: Record<string, unknown>) => ({
+    getChainId: async () => chainId,
+    getBlock: async () => ({ timestamp: 0n }),
+    ...over,
+  });
+
+  await check("watcher config derives start block from the address-matched manifest entry", () => {
+    const manifest = join(tmp, "deployments-derive.json");
+    const sealedAddr = "0x1b74a4bab1e06ed107780a245c85337ab9decd1a";
+    writeFileSync(
+      manifest,
+      JSON.stringify([
+        {
+          chainId,
+          contractName: "MurmurSealedVerdicts",
+          address: sealedAddr,
+          deployedAt: "2026-05-23T04:09:59.226Z",
+          txHash: "0x" + "ab".repeat(32),
+          blockNumber: 41870556,
+        },
+      ]),
+    );
+    const cfg = loadFhenixEventIngestorConfig({
+      FHENIX_RPC_URL: "http://127.0.0.1:8545",
+      FHENIX_CHAIN_ID: String(chainId),
+      FHENIX_SEALED_VERDICTS_ADDRESS: sealedAddr,
+      DEPLOYMENTS_MANIFEST_PATH: manifest,
+    });
+    assert.equal(cfg?.startBlock, 41870556);
+    assert.equal(cfg?.watcherRpcUrl, "http://127.0.0.1:8545");
+
+    // A positive env value stays an explicit override.
+    const overridden = loadFhenixEventIngestorConfig({
+      FHENIX_RPC_URL: "http://127.0.0.1:8545",
+      FHENIX_CHAIN_ID: String(chainId),
+      FHENIX_SEALED_VERDICTS_ADDRESS: sealedAddr,
+      DEPLOYMENTS_MANIFEST_PATH: manifest,
+      FHENIX_EVENT_START_BLOCK: "50000000",
+      FHENIX_WATCHER_RPC_URL: "http://127.0.0.1:9999",
+    });
+    assert.equal(overridden?.startBlock, 50_000_000);
+    assert.equal(overridden?.watcherRpcUrl, "http://127.0.0.1:9999");
+  });
+
+  await check("older-address override picks the matching block, not the latest-by-name", () => {
+    const manifest = join(tmp, "deployments-two.json");
+    const newer = "0x1b74a4bab1e06ed107780a245c85337ab9decd1a";
+    const older = "0xe2ee519bfa5e8fcd8b6d6339b123968e23bc00f7";
+    writeFileSync(
+      manifest,
+      JSON.stringify([
+        {
+          chainId,
+          contractName: "MurmurSealedVerdicts",
+          address: newer,
+          deployedAt: "2026-05-23T04:09:59.226Z",
+          txHash: "0x" + "11".repeat(32),
+          blockNumber: 41870556,
+        },
+        {
+          chainId,
+          contractName: "MurmurSealedVerdicts",
+          address: older,
+          deployedAt: "2026-05-17T16:55:40.935Z",
+          txHash: "0x" + "22".repeat(32),
+          blockNumber: 41634327,
+        },
+      ]),
+    );
+    assert.equal(
+      loadDeploymentByAddress(chainId, "MurmurSealedVerdicts", older, manifest)?.blockNumber,
+      41634327,
+    );
+    assert.equal(
+      loadDeploymentByAddress(chainId, "MurmurSealedVerdicts", newer, manifest)?.blockNumber,
+      41870556,
+    );
+    assert.equal(
+      loadDeploymentByAddress(chainId, "MurmurSealedVerdicts", "0x" + "00".repeat(20), manifest),
+      null,
+    );
+    // Config resolves against the OLDER address → older block, even though the
+    // newer entry is latest-by-name.
+    const cfg = loadFhenixEventIngestorConfig({
+      FHENIX_RPC_URL: "http://127.0.0.1:8545",
+      FHENIX_CHAIN_ID: String(chainId),
+      FHENIX_SEALED_VERDICTS_ADDRESS: older,
+      DEPLOYMENTS_MANIFEST_PATH: manifest,
+    });
+    assert.equal(cfg?.startBlock, 41634327);
+  });
+
+  await check("stale low cursor jumps forward to the derived start block", async () => {
+    const db3 = newDb();
+    const contract = "0x7777777777777777777777777777777777777777";
+    const froms: number[] = [];
+    fhenixEventsRepo.setCursor(db3, {
+      chain_id: chainId,
+      contract_address: contract,
+      event_name: "VerdictRevealed",
+      last_block_number: 10,
+      updated_at: acceptedAt,
+    });
+    const watcher = new FhenixEventIngestor({
+      db: db3,
+      verifier,
+      rpcUrl: "http://127.0.0.1:8545",
+      chainId,
+      contractAddress: contract,
+      startBlock: 5000,
+      confirmations: 0,
+      batchSize: 1000,
+      maxBatchesPerTick: 1,
+      revealGraceSeconds: 1,
+      client: idleClient({
+        getBlockNumber: async () => 6000n,
+        getLogs: async (a: { fromBlock: bigint }) => {
+          froms.push(Number(a.fromBlock));
+          return [];
+        },
+      }) as never,
+      now: fixedNow,
+    });
+    await watcher.tick();
+    assert.ok(
+      froms.length > 0 && froms.every((f) => f >= 5000),
+      `expected all getLogs fromBlock >= 5000, saw ${froms.join(",")}`,
+    );
+    assert.equal(readCursor(db3, contract, "VerdictRevealed"), 5999);
+    db3.close();
+  });
+
+  await check("catch-up processes multiple batches in a single tick", async () => {
+    const db4 = newDb();
+    const contract = "0x8888888888888888888888888888888888888888";
+    let calls = 0;
+    const watcher = new FhenixEventIngestor({
+      db: db4,
+      verifier,
+      rpcUrl: "http://127.0.0.1:8545",
+      chainId,
+      contractAddress: contract,
+      startBlock: 1,
+      confirmations: 0,
+      batchSize: 1000,
+      maxBatchesPerTick: 50,
+      revealGraceSeconds: 1,
+      client: idleClient({
+        getBlockNumber: async () => 3500n,
+        getLogs: async () => {
+          calls += 1;
+          return [];
+        },
+      }) as never,
+      now: fixedNow,
+    });
+    await watcher.tick();
+    assert.equal(readCursor(db4, contract, "VerdictRevealed"), 3500);
+    assert.equal(readCursor(db4, contract, "VerdictRevealInvalid"), 3500);
+    // 4 batches per stream (1-1000..3001-3500) x 2 streams.
+    assert.equal(calls, 8);
+    db4.close();
+  });
+
+  await check("getLogs halves and retries on a range-limit error", async () => {
+    const db5 = newDb();
+    const contract = "0x9999999999999999999999999999999999999999";
+    let calls = 0;
+    const watcher = new FhenixEventIngestor({
+      db: db5,
+      verifier,
+      rpcUrl: "http://127.0.0.1:8545",
+      chainId,
+      contractAddress: contract,
+      startBlock: 1,
+      confirmations: 0,
+      batchSize: 1000,
+      maxBatchesPerTick: 50,
+      revealGraceSeconds: 1,
+      client: idleClient({
+        getBlockNumber: async () => 1000n,
+        getLogs: async (a: { fromBlock: bigint; toBlock: bigint }) => {
+          calls += 1;
+          const width = Number(a.toBlock) - Number(a.fromBlock) + 1;
+          if (width > 500) {
+            const err = new Error(
+              "query exceeded max results; response size too large",
+            ) as Error & { code?: number };
+            err.code = -32701;
+            throw err;
+          }
+          return [];
+        },
+      }) as never,
+      now: fixedNow,
+    });
+    await watcher.tick();
+    assert.equal(readCursor(db5, contract, "VerdictRevealed"), 1000);
+    // per stream: full range (throws) + 2 halves = 3 calls; x2 streams.
+    assert.equal(calls, 6);
+    db5.close();
+  });
+
+  await check("getLogs does NOT halve on a bare -32602 archive rejection", async () => {
+    const db6 = newDb();
+    const contract = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let calls = 0;
+    const watcher = new FhenixEventIngestor({
+      db: db6,
+      verifier,
+      rpcUrl: "http://127.0.0.1:8545",
+      chainId,
+      contractAddress: contract,
+      startBlock: 1,
+      confirmations: 0,
+      batchSize: 1000,
+      maxBatchesPerTick: 50,
+      revealGraceSeconds: 1,
+      client: idleClient({
+        getBlockNumber: async () => 1000n,
+        getLogs: async () => {
+          calls += 1;
+          const err = new Error(
+            "Archive requests require a personal token",
+          ) as Error & { code?: number };
+          err.code = -32602;
+          throw err;
+        },
+      }) as never,
+      now: fixedNow,
+    });
+    // Scan error is swallowed (tick resolves), but the cursor must not advance
+    // and the range must not be halved.
+    await watcher.tick();
+    assert.equal(calls, 2); // one failed getLogs per stream, no halving
+    assert.equal(readCursor(db6, contract, "VerdictRevealed"), null);
+    assert.equal(readCursor(db6, contract, "VerdictRevealInvalid"), null);
+    db6.close();
+  });
+
+  await check("wrong-chain RPC aborts the tick without advancing cursors", async () => {
+    const db7 = newDb();
+    const contract = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let getLogsCalls = 0;
+    fhenixEventsRepo.setCursor(db7, {
+      chain_id: chainId,
+      contract_address: contract,
+      event_name: "VerdictRevealed",
+      last_block_number: 123,
+      updated_at: acceptedAt,
+    });
+    const watcher = new FhenixEventIngestor({
+      db: db7,
+      verifier,
+      rpcUrl: "http://127.0.0.1:8545",
+      chainId,
+      contractAddress: contract,
+      startBlock: 1,
+      confirmations: 0,
+      batchSize: 1000,
+      revealGraceSeconds: 1,
+      client: idleClient({
+        getChainId: async () => 1,
+        getBlockNumber: async () => 1000n,
+        getLogs: async () => {
+          getLogsCalls += 1;
+          return [];
+        },
+      }) as never,
+      now: fixedNow,
+    });
+    await assert.rejects(
+      () => watcher.tick(),
+      (err) =>
+        err instanceof FhenixEventIngestorChainMismatchError &&
+        err.actualChainId === 1 &&
+        err.expectedChainId === chainId,
+    );
+    assert.equal(getLogsCalls, 0);
+    assert.equal(readCursor(db7, contract, "VerdictRevealed"), 123);
+    db7.close();
+  });
+
+  await check("cursor ahead of head is reported and is a no-op", async () => {
+    const db8 = newDb();
+    const contract = "0xcccccccccccccccccccccccccccccccccccccccc";
+    let getLogsCalls = 0;
+    const lines: string[] = [];
+    for (const eventName of ["VerdictRevealed", "VerdictRevealInvalid"] as const) {
+      fhenixEventsRepo.setCursor(db8, {
+        chain_id: chainId,
+        contract_address: contract,
+        event_name: eventName,
+        last_block_number: 5000,
+        updated_at: acceptedAt,
+      });
+    }
+    const watcher = new FhenixEventIngestor({
+      db: db8,
+      verifier,
+      rpcUrl: "http://127.0.0.1:8545",
+      chainId,
+      contractAddress: contract,
+      startBlock: 1,
+      confirmations: 0,
+      batchSize: 1000,
+      revealGraceSeconds: 1,
+      client: idleClient({
+        getBlockNumber: async () => 1000n,
+        getLogs: async () => {
+          getLogsCalls += 1;
+          return [];
+        },
+      }) as never,
+      now: fixedNow,
+      log: (line) => lines.push(line),
+    });
+    const result = await watcher.tick();
+    assert.equal(getLogsCalls, 0);
+    assert.equal(result.indexed, 0);
+    assert.equal(readCursor(db8, contract, "VerdictRevealed"), 5000);
+    assert.ok(
+      lines.some((line) => /ahead of safe head/.test(line)),
+      "expected a cursor-ahead-of-head report line",
+    );
+    db8.close();
+  });
+
+  await check("a reveal in a later unscanned batch is NOT marked missed mid catch-up", async () => {
+    const db9 = newDb();
+    seedAgentInto(db9);
+    const contract = "0xdddddddddddddddddddddddddddddddddddddddd";
+    const callId = randomUUID();
+    const onchain = "0x" + "d1".repeat(32);
+    seedPendingCallInto(db9, {
+      callId,
+      onchainCallId: onchain,
+      contractAddress: contract,
+      order: "watcher-order-latebatch",
+      hexByte: "d1",
+    });
+    const revealBlock = 3000;
+    const watcher = new FhenixEventIngestor({
+      db: db9,
+      verifier,
+      rpcUrl: "http://127.0.0.1:8545",
+      chainId,
+      contractAddress: contract,
+      startBlock: 1,
+      confirmations: 0,
+      batchSize: 1000,
+      maxBatchesPerTick: 1, // one batch/tick so catch-up spans several ticks
+      revealGraceSeconds: 1,
+      client: idleClient({
+        getBlockNumber: async () => 3000n,
+        // Safe-block time is past the reveal deadline: a partial-scan bug would
+        // wrongly mark the overdue call missed.
+        getBlock: async () => ({
+          timestamp: BigInt(Math.floor(Date.parse("2026-05-14T14:00:00Z") / 1000)),
+        }),
+        getLogs: async (a: {
+          event: typeof VERDICT_REVEALED_EVENT;
+          fromBlock: bigint;
+          toBlock: bigint;
+        }) => {
+          const from = Number(a.fromBlock);
+          const to = Number(a.toBlock);
+          if (a.event === VERDICT_REVEALED_EVENT && from <= revealBlock && revealBlock <= to) {
+            return [
+              {
+                args: {
+                  callId: onchain,
+                  binaryIndex: 1,
+                  confidenceBps: 8100,
+                  revealedAt: BigInt(Date.parse(revealOpenAt) / 1000),
+                },
+                transactionHash: "0x" + "d2".repeat(32),
+                logIndex: 0,
+                blockNumber: BigInt(revealBlock),
+                blockHash: "0x" + "d3".repeat(32),
+              },
+            ];
+          }
+          return [];
+        },
+      }) as never,
+      now: fixedNow,
+    });
+
+    // Ticks 1-2 only reach blocks 1000 then 2000 — the reveal at 3000 has not
+    // been scanned, so the overdue call must stay pending, never `missed`.
+    for (let i = 0; i < 2; i += 1) {
+      const r = await watcher.tick();
+      assert.equal(
+        r.missed_reveals_marked,
+        0,
+        `tick ${i + 1} must not terminalize as missed mid catch-up`,
+      );
+      assert.equal(
+        fhenixSealedCallsRepo.byCallId(db9, callId)?.reveal_status,
+        "pending",
+        `tick ${i + 1} must leave the call pending`,
+      );
+    }
+
+    // Tick 3 scans 2001-3000, ingests the reveal, and reaches head.
+    const r3 = await watcher.tick();
+    assert.equal(r3.valid_reveals_attached, 1);
+    assert.equal(r3.missed_reveals_marked, 0);
+    assert.equal(fhenixSealedCallsRepo.byCallId(db9, callId)?.reveal_status, "revealed");
+    db9.close();
   });
 
   db.close();

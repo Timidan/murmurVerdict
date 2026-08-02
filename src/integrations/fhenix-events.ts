@@ -113,7 +113,7 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
   ): Promise<VerifiedSealedCallSubmitted> {
     await this.assertChain(input.chain_id);
     this.assertAllowedContract(input.contract_address);
-    const log = await this.readLog({
+    const { log } = await this.readLog({
       tx_hash: input.submit_tx_hash,
       log_index: input.submit_log_index,
       contract_address: input.contract_address,
@@ -161,7 +161,7 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
   ): Promise<VerifiedVerdictRevealed> {
     await this.assertChain(input.chain_id);
     this.assertAllowedContract(input.contract_address);
-    const log = await this.readLog({
+    const { log, sender } = await this.readLog({
       tx_hash: input.reveal_tx_hash,
       log_index: input.reveal_log_index,
       contract_address: input.contract_address,
@@ -186,6 +186,7 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
       agent_wallet: normalizeAddress(args.agent),
       market_id_hash: lowerHex(args.marketId),
       onchain_call_id: lowerHex(args.callId),
+      reveal_sender: sender,
     };
 
     assertSameHex(verified.onchain_call_id, input.onchain_call_id, "onchain_call_id");
@@ -206,7 +207,7 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
   ): Promise<VerifiedVerdictRevealInvalid> {
     await this.assertChain(input.chain_id);
     this.assertAllowedContract(input.contract_address);
-    const log = await this.readLog({
+    const { log, sender } = await this.readLog({
       tx_hash: input.reveal_tx_hash,
       log_index: input.reveal_log_index,
       contract_address: input.contract_address,
@@ -233,6 +234,7 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
       agent_wallet: normalizeAddress(args.agent),
       market_id_hash: lowerHex(args.marketId),
       onchain_call_id: lowerHex(args.callId),
+      reveal_sender: sender,
     };
 
     assertSameHex(verified.onchain_call_id, input.onchain_call_id, "onchain_call_id");
@@ -282,8 +284,8 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
     tx_hash: string;
     log_index: number;
     contract_address: string;
-  }): Promise<ReceiptLog> {
-    let receipt: { logs: readonly ReceiptLog[] };
+  }): Promise<{ log: ReceiptLog; sender: string | null }> {
+    let receipt: { logs: readonly ReceiptLog[]; from?: Address };
     try {
       receipt = await this.client.getTransactionReceipt({ hash: input.tx_hash as Hex });
     } catch (err) {
@@ -302,7 +304,10 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
       );
     }
     assertSameAddress(log.address, input.contract_address, "contract_address");
-    return log;
+    // receipt.from is the reveal tx sender — the authoritative attribution
+    // signal (publishReveal is permissionless). Lowercased for stable compares.
+    const sender = receipt.from ? normalizeAddress(receipt.from) : null;
+    return { log, sender };
   }
 
   private assertAllowedContract(contractAddress: string): void {

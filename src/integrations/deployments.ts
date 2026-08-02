@@ -102,6 +102,35 @@ export function loadDeployment(
   return entries[0] ?? null;
 }
 
+/// @returns the deployment entry for (chainId, contractName) whose `address`
+///          matches `resolvedAddress` case-insensitively AND carries a
+///          positive blockNumber. Unlike loadDeployment (which returns the
+///          latest-by-name entry regardless of address), this lets a caller
+///          that already resolved a contract address pull the block number
+///          from the SAME manifest entry as that address — so a watcher never
+///          starts scanning from a block that belongs to a different (e.g.
+///          newer) deployment of the same contract name. Returns null when no
+///          such entry exists; the caller decides the fallback.
+export function loadDeploymentByAddress(
+  chainId: number,
+  contractName: string,
+  resolvedAddress: string,
+  path: string = manifestPath(),
+): DeploymentEntry | null {
+  const target = resolvedAddress.trim().toLowerCase();
+  if (!EvmAddressPattern.test(target)) return null;
+  const entries = readManifest(path)
+    .filter(
+      e =>
+        e.chainId === chainId &&
+        e.contractName === contractName &&
+        e.address.toLowerCase() === target &&
+        e.blockNumber > 0,
+    )
+    .sort((a, b) => Date.parse(b.deployedAt) - Date.parse(a.deployedAt));
+  return entries[0] ?? null;
+}
+
 // Single source of truth for resolving the MurmurSealedVerdicts address from
 // env or the deployment manifest. Watcher, gateway, verifier, daemon, canary,
 // and seed tools all share this so the allowlist they enforce can never drift.

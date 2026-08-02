@@ -3,6 +3,7 @@ import { marketsRepo } from "./repos/market-registry-repo.js";
 import { fhenixSealedCallsRepo } from "./repos/fhenix-sealed-calls-repo.js";
 import { submissionsRepo } from "./repos/sealed-call-submissions-repo.js";
 import { usageRepo } from "./repos/usage-events-repo.js";
+import { classifyRevealSource } from "./fhenix-reveal-attribution.js";
 import {
   ERROR_CODES,
   VerdictError,
@@ -39,6 +40,11 @@ export interface FhenixRevealIngestionDeps {
   db: Database.Database;
   verifier: FhenixEventVerifier;
   now: () => Date;
+  /** Configured murmur fallback reveal EOA (lowercased). When the publish tx
+   *  `from` equals this, the reveal is attributed to the daemon fallback.
+   *  Absent (null/undefined) when no reveal worker is configured — reveals are
+   *  then attributed to the agent (controller-wallet match) or external. */
+  daemonRevealSender?: string | null;
 }
 
 export type FhenixRevealIngestionResult =
@@ -154,6 +160,10 @@ export async function attachValidFhenixReveal(
     commitment,
     outcomeLabels,
   });
+  const revealSource = classifyRevealSource(verifiedReveal.reveal_sender, {
+    daemonRevealSender: deps.daemonRevealSender,
+    controllerWallet: revealWallet.wallet_address,
+  });
   const tx = deps.db.transaction(() => {
     fhenixSealedCallsRepo.attachReveal(deps.db, {
       call_id: body.call_id,
@@ -164,11 +174,23 @@ export async function attachValidFhenixReveal(
       reveal_tx_hash: verifiedReveal.reveal_tx_hash,
       reveal_log_index: verifiedReveal.reveal_log_index,
       reveal_block_number: body.reveal_block_number ?? null,
+      reveal_sender: verifiedReveal.reveal_sender,
+      reveal_source: revealSource,
     });
     submissionsRepo.attachRevealedCommitment(deps.db, {
       call_id: body.call_id,
       ...storedCommitment,
     });
+    usageRepo.emit(
+      deps.db,
+      makeRevealUsage(ctx.agent_id, "fhenix_reveal_published", {
+        call_id: body.call_id,
+        tx_hash: verifiedReveal.reveal_tx_hash,
+        sender: verifiedReveal.reveal_sender,
+        source: revealSource,
+        outcome: "revealed",
+      }, deps.now),
+    );
   });
   tx();
 
@@ -263,6 +285,10 @@ export async function attachInvalidFhenixReveal(
     "Fhenix invalid reveal",
   );
 
+  const revealSource = classifyRevealSource(verifiedInvalid.reveal_sender, {
+    daemonRevealSender: deps.daemonRevealSender,
+    controllerWallet: revealWallet.wallet_address,
+  });
   const tx = deps.db.transaction(() => {
     fhenixSealedCallsRepo.attachInvalidReveal(deps.db, {
       call_id: body.call_id,
@@ -273,6 +299,8 @@ export async function attachInvalidFhenixReveal(
       reveal_tx_hash: verifiedInvalid.reveal_tx_hash,
       reveal_log_index: verifiedInvalid.reveal_log_index,
       reveal_block_number: body.reveal_block_number ?? null,
+      reveal_sender: verifiedInvalid.reveal_sender,
+      reveal_source: revealSource,
     });
     submissionsRepo.setStatus(deps.db, body.call_id, "invalid_reveal");
     usageRepo.emit(
@@ -281,6 +309,19 @@ export async function attachInvalidFhenixReveal(
         call_id: body.call_id,
         outcome: "invalid_reveal",
         invalid_reason: verifiedInvalid.invalid_reason,
+      }, deps.now),
+    );
+    // An invalid decrypted value was still PUBLICLY REVEALED — record the
+    // publish attribution so it counts toward disclosure, not withholding
+    // (Codex review §6).
+    usageRepo.emit(
+      deps.db,
+      makeRevealUsage(ctx.agent_id, "fhenix_reveal_published", {
+        call_id: body.call_id,
+        tx_hash: verifiedInvalid.reveal_tx_hash,
+        sender: verifiedInvalid.reveal_sender,
+        source: revealSource,
+        outcome: "invalid_reveal",
       }, deps.now),
     );
   });

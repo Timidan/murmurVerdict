@@ -16,10 +16,11 @@ import { fhenixSealedCallsRepo } from "../verdict/repos/fhenix-sealed-calls-repo
 import {
   attachInvalidFhenixReveal,
   attachValidFhenixReveal,
-  markMissedFhenixReveals,
 } from "../verdict/fhenix-reveal-ingestion.js";
 import { nowIso } from "../verdict/time.js";
 import {
+  loadDeploymentByAddress,
+  manifestPath,
   parseFhenixAddressInput,
   parseFhenixChainIdInput,
   resolveFhenixContractAddress,
@@ -27,6 +28,8 @@ import {
 
 type WatchClient = {
   getBlockNumber: () => Promise<bigint>;
+  getChainId: () => Promise<number>;
+  getBlock?: (args: { blockNumber: bigint }) => Promise<{ timestamp: bigint }>;
   getLogs: (args: {
     address: Address;
     event: typeof VERDICT_REVEALED_EVENT | typeof VERDICT_REVEAL_INVALID_EVENT;
@@ -34,6 +37,18 @@ type WatchClient = {
     toBlock: bigint;
   }) => Promise<readonly FhenixLog[]>;
 };
+
+interface StreamScanResult {
+  indexed: number;
+  attached: number;
+  reachedHead: boolean;
+  error: unknown;
+}
+
+// Bound how far a single tick will chase the chain head so catch-up finishes
+// in minutes (many batches per tick) without a tick running unbounded.
+const DEFAULT_MAX_BATCHES_PER_TICK = 50;
+const DEFAULT_TICK_TIME_BUDGET_MS = 4_000;
 
 type FhenixLog = {
   args: Record<string, unknown>;
@@ -47,12 +62,21 @@ export interface FhenixEventIngestorConfig {
   db: Database.Database;
   verifier: FhenixEventVerifier;
   rpcUrl: string;
+  // Optional dedicated RPC for the watcher's getLogs/head reads. Falls back to
+  // rpcUrl. Lets operators point getLogs at an archive-capable endpoint while
+  // the verifier keeps using FHENIX_RPC_URL for receipt lookups.
+  watcherRpcUrl?: string;
   chainId: number;
   contractAddress: string;
   startBlock?: number;
   confirmations?: number;
   batchSize?: number;
+  maxBatchesPerTick?: number;
+  tickTimeBudgetMs?: number;
   revealGraceSeconds?: number;
+  /** Murmur fallback reveal EOA (lowercased). Threaded into reveal ingestion
+   *  so a publish tx sent by this key is attributed to daemon_fallback. */
+  daemonRevealSender?: string | null;
   client?: WatchClient;
   now: () => Date;
   log?: (line: string) => void;
@@ -80,6 +104,20 @@ export class FhenixEventIngestorConfigError extends Error {
   }
 }
 
+export class FhenixEventIngestorChainMismatchError extends Error {
+  readonly expectedChainId: number;
+  readonly actualChainId: number;
+
+  constructor(expectedChainId: number, actualChainId: number) {
+    super(
+      `fhenix watcher RPC reports chain id ${actualChainId}, expected ${expectedChainId}; aborting tick without advancing cursors`,
+    );
+    this.name = "FhenixEventIngestorChainMismatchError";
+    this.expectedChainId = expectedChainId;
+    this.actualChainId = actualChainId;
+  }
+}
+
 export class FhenixEventIngestor {
   private readonly db: Database.Database;
   private readonly verifier: FhenixEventVerifier;
@@ -88,7 +126,10 @@ export class FhenixEventIngestor {
   private readonly startBlock: number;
   private readonly confirmations: number;
   private readonly batchSize: number;
+  private readonly maxBatchesPerTick: number;
+  private readonly tickTimeBudgetMs: number;
   private readonly revealGraceSeconds: number;
+  private readonly daemonRevealSender: string | null;
   private readonly client: WatchClient;
   private readonly now: () => Date;
   private readonly log: (line: string) => void;
@@ -101,27 +142,106 @@ export class FhenixEventIngestor {
     this.startBlock = Math.max(0, Math.floor(config.startBlock ?? 0));
     this.confirmations = Math.max(0, Math.floor(config.confirmations ?? 2));
     this.batchSize = Math.max(1, Math.min(10_000, Math.floor(config.batchSize ?? 1_000)));
+    this.maxBatchesPerTick = Math.max(
+      1,
+      Math.floor(config.maxBatchesPerTick ?? DEFAULT_MAX_BATCHES_PER_TICK),
+    );
+    this.tickTimeBudgetMs = Math.max(
+      0,
+      Math.floor(config.tickTimeBudgetMs ?? DEFAULT_TICK_TIME_BUDGET_MS),
+    );
     this.revealGraceSeconds = Math.max(0, Math.floor(config.revealGraceSeconds ?? 3_600));
+    this.daemonRevealSender = config.daemonRevealSender
+      ? config.daemonRevealSender.toLowerCase()
+      : null;
     this.client =
       config.client ??
       (createPublicClient({
-        transport: http(config.rpcUrl),
+        transport: http(config.watcherRpcUrl ?? config.rpcUrl),
       }) as unknown as WatchClient);
     this.now = config.now;
     this.log = config.log ?? ((line) => console.log(line));
   }
 
   async tick(): Promise<FhenixIngestTickResult> {
-    const valid = await this.indexEvent("VerdictRevealed", VERDICT_REVEALED_EVENT);
-    const invalid = await this.indexEvent("VerdictRevealInvalid", VERDICT_REVEAL_INVALID_EVENT);
-    const replayedValid = await this.attachIndexedEvents("VerdictRevealed");
-    const replayedInvalid = await this.attachIndexedEvents("VerdictRevealInvalid");
-    const missed = this.markMissedReveals();
+    // Never advance a cursor against the wrong chain: a misconfigured RPC that
+    // returns a different chain's head/logs would otherwise silently corrupt
+    // cursors. Abort the whole tick before any scan work.
+    const observedChainId = Number(await this.client.getChainId());
+    if (!Number.isInteger(observedChainId) || observedChainId !== this.chainId) {
+      throw new FhenixEventIngestorChainMismatchError(this.chainId, observedChainId);
+    }
+
+    // Snapshot the head ONCE per tick so both event streams and the missed-
+    // reveal gate reason about the same safe block.
+    const latest = Number(await this.client.getBlockNumber());
+    const safeHead = latest - this.confirmations;
+    const safeHeadValid = Number.isSafeInteger(safeHead) && safeHead >= 0;
+
+    let indexed = 0;
+    let attachedValid = 0;
+    let attachedInvalid = 0;
+    let validReachedHead = false;
+    let invalidReachedHead = false;
+    let scanError = false;
+
+    if (safeHeadValid) {
+      const valid = await this.indexEventStream(
+        "VerdictRevealed",
+        VERDICT_REVEALED_EVENT,
+        safeHead,
+      );
+      const invalid = await this.indexEventStream(
+        "VerdictRevealInvalid",
+        VERDICT_REVEAL_INVALID_EVENT,
+        safeHead,
+      );
+      indexed = valid.indexed + invalid.indexed;
+      attachedValid = valid.attached;
+      attachedInvalid = invalid.attached;
+      validReachedHead = valid.reachedHead;
+      invalidReachedHead = invalid.reachedHead;
+      scanError = valid.error !== null || invalid.error !== null;
+    }
+
+    let attachError = false;
+    let replayedValid = 0;
+    let replayedInvalid = 0;
+    try {
+      replayedValid = await this.attachIndexedEvents("VerdictRevealed");
+    } catch (err) {
+      attachError = true;
+      this.log(`[fhenix-watcher] VerdictRevealed attach error: ${describeRpcError(err)}`);
+    }
+    try {
+      replayedInvalid = await this.attachIndexedEvents("VerdictRevealInvalid");
+    } catch (err) {
+      attachError = true;
+      this.log(`[fhenix-watcher] VerdictRevealInvalid attach error: ${describeRpcError(err)}`);
+    }
+
+    // NOTE (migration 057): the watcher NO LONGER auto-terminalizes overdue
+    // pending calls as `missed`. A sealed call has no on-chain reveal expiry —
+    // it is revealable forever — so any timer-based `missed` marking could
+    // strand a still-revealable call. The murmur-owned fallback reveal worker
+    // (src/integrations/fhenix-reveal-worker.ts) now guarantees publication and
+    // retries indefinitely; worker-health operator ALERTS (warn → escalate)
+    // replace the old terminal timeout. `missed_reveals_marked` stays in the
+    // result shape for compatibility and is always 0 here; `missed` is now
+    // reserved for a manually-established irrecoverable condition. The unused
+    // scan-completeness flags above are retained because the getLogs scan still
+    // gates cursor advancement.
+    void safeHeadValid;
+    void validReachedHead;
+    void invalidReachedHead;
+    void scanError;
+    void attachError;
+
     return {
-      indexed: valid.indexed + invalid.indexed,
-      valid_reveals_attached: valid.attached + replayedValid,
-      invalid_reveals_attached: invalid.attached + replayedInvalid,
-      missed_reveals_marked: missed,
+      indexed,
+      valid_reveals_attached: attachedValid + replayedValid,
+      invalid_reveals_attached: attachedInvalid + replayedInvalid,
+      missed_reveals_marked: 0,
     };
   }
 
@@ -151,72 +271,128 @@ export class FhenixEventIngestor {
     return attached;
   }
 
-  private async indexEvent(
+  private async indexEventStream(
     eventName: "VerdictRevealed" | "VerdictRevealInvalid",
     event: typeof VERDICT_REVEALED_EVENT | typeof VERDICT_REVEAL_INVALID_EVENT,
-  ): Promise<{ indexed: number; attached: number }> {
-    const latest = Number(await this.client.getBlockNumber());
-    const safeToBlock = latest - this.confirmations;
-    if (!Number.isSafeInteger(safeToBlock) || safeToBlock < 0) {
-      return { indexed: 0, attached: 0 };
-    }
-
-    const cursor = fhenixEventsRepo.getCursor(this.db, {
-      chain_id: this.chainId,
-      contract_address: this.contractAddress,
-      event_name: eventName,
-    });
-    const from = Math.max(this.startBlock, (cursor ?? this.startBlock - 1) + 1);
-    if (from > safeToBlock) return { indexed: 0, attached: 0 };
-
-    const to = Math.min(safeToBlock, from + this.batchSize - 1);
-    const logs = await this.client.getLogs({
-      address: this.contractAddress as Address,
-      event,
-      fromBlock: BigInt(from),
-      toBlock: BigInt(to),
-    });
-
+    safeHead: number,
+  ): Promise<StreamScanResult> {
+    let indexed = 0;
     let attached = 0;
-    for (const log of logs) {
-      if (
-        log.transactionHash === null ||
-        log.logIndex === null ||
-        log.blockNumber === null
-      ) {
-        continue;
+    let batches = 0;
+    let reachedHead = false;
+    const startedAtMs = Date.now();
+
+    try {
+      // Chase the head across MANY batches per tick (bounded) so a stale cursor
+      // catches up in minutes, not one ~batchSize step every tick.
+      while (true) {
+        const cursor = fhenixEventsRepo.getCursor(this.db, {
+          chain_id: this.chainId,
+          contract_address: this.contractAddress,
+          event_name: eventName,
+        });
+        const from = Math.max(this.startBlock, (cursor ?? this.startBlock - 1) + 1);
+        if (from > safeHead) {
+          reachedHead = true;
+          if (cursor !== null && cursor > safeHead) {
+            this.log(
+              `[fhenix-watcher] ${eventName} cursor ${cursor} is ahead of safe head ${safeHead}; no-op this tick`,
+            );
+          }
+          break;
+        }
+
+        const to = Math.min(safeHead, from + this.batchSize - 1);
+        const logs = await this.getLogsRange(event, from, to);
+
+        for (const log of logs) {
+          if (
+            log.transactionHash === null ||
+            log.logIndex === null ||
+            log.blockNumber === null
+          ) {
+            continue;
+          }
+          const blockNumber = numberFromBigint(log.blockNumber, "block_number");
+          fhenixEventsRepo.upsertEvent(this.db, {
+            chain_id: this.chainId,
+            contract_address: this.contractAddress,
+            event_name: eventName,
+            tx_hash: log.transactionHash.toLowerCase(),
+            log_index: log.logIndex,
+            block_number: blockNumber,
+            block_hash: log.blockHash?.toLowerCase() ?? null,
+            payload: log.args,
+            observed_at: nowIso(this.now()),
+          });
+
+          if (eventName === "VerdictRevealed") {
+            if (await this.attachValidReveal(log, blockNumber)) attached++;
+          } else if (await this.attachInvalidReveal(log, blockNumber)) {
+            attached++;
+          }
+        }
+
+        fhenixEventsRepo.setCursor(this.db, {
+          chain_id: this.chainId,
+          contract_address: this.contractAddress,
+          event_name: eventName,
+          last_block_number: to,
+          updated_at: nowIso(this.now()),
+        });
+        indexed += logs.length;
+        batches += 1;
+        if (logs.length > 0) {
+          this.log(
+            `[fhenix-watcher] indexed ${logs.length} ${eventName} logs through block ${to}`,
+          );
+        }
+
+        if (to >= safeHead) {
+          reachedHead = true;
+          break;
+        }
+        if (batches >= this.maxBatchesPerTick) break;
+        if (Date.now() - startedAtMs >= this.tickTimeBudgetMs) break;
       }
-      const blockNumber = numberFromBigint(log.blockNumber, "block_number");
-      fhenixEventsRepo.upsertEvent(this.db, {
-        chain_id: this.chainId,
-        contract_address: this.contractAddress,
-        event_name: eventName,
-        tx_hash: log.transactionHash.toLowerCase(),
-        log_index: log.logIndex,
-        block_number: blockNumber,
-        block_hash: log.blockHash?.toLowerCase() ?? null,
-        payload: log.args,
-        observed_at: nowIso(this.now()),
+    } catch (err) {
+      // A cursor was advanced only for batches that fully completed above, so
+      // no data is lost; report the error so the missed-reveal gate stays shut.
+      this.log(
+        `[fhenix-watcher] ${eventName} scan error before reaching head: ${describeRpcError(err)}`,
+      );
+      return { indexed, attached, reachedHead: false, error: err };
+    }
+
+    return { indexed, attached, reachedHead, error: null };
+  }
+
+  // getLogs for [from, to], halving the range and retrying ONLY when the
+  // provider positively reports a range / response-size limit. A bare -32602
+  // (e.g. archive-token rejection) is rethrown so we never spam-halve it.
+  private async getLogsRange(
+    event: typeof VERDICT_REVEALED_EVENT | typeof VERDICT_REVEAL_INVALID_EVENT,
+    from: number,
+    to: number,
+  ): Promise<FhenixLog[]> {
+    try {
+      const logs = await this.client.getLogs({
+        address: this.contractAddress as Address,
+        event,
+        fromBlock: BigInt(from),
+        toBlock: BigInt(to),
       });
-
-      if (eventName === "VerdictRevealed") {
-        if (await this.attachValidReveal(log, blockNumber)) attached++;
-      } else if (await this.attachInvalidReveal(log, blockNumber)) {
-        attached++;
-      }
+      return [...logs];
+    } catch (err) {
+      if (from >= to || !isRangeLimitError(err)) throw err;
+      const mid = from + Math.floor((to - from) / 2);
+      this.log(
+        `[fhenix-watcher] getLogs range ${from}-${to} hit a provider limit; halving`,
+      );
+      const left = await this.getLogsRange(event, from, mid);
+      const right = await this.getLogsRange(event, mid + 1, to);
+      return [...left, ...right];
     }
-
-    fhenixEventsRepo.setCursor(this.db, {
-      chain_id: this.chainId,
-      contract_address: this.contractAddress,
-      event_name: eventName,
-      last_block_number: to,
-      updated_at: nowIso(this.now()),
-    });
-    if (logs.length > 0) {
-      this.log(`[fhenix-watcher] indexed ${logs.length} ${eventName} logs through block ${to}`);
-    }
-    return { indexed: logs.length, attached };
   }
 
   private async attachValidReveal(log: FhenixLog, blockNumber: number): Promise<boolean> {
@@ -237,6 +413,7 @@ export class FhenixEventIngestor {
       db: this.db,
       verifier: this.verifier,
       now: this.now,
+      daemonRevealSender: this.daemonRevealSender,
     }, {
       call_id: sealed.call_id,
       binary_index: Number(args.binaryIndex) as 0 | 1,
@@ -270,6 +447,7 @@ export class FhenixEventIngestor {
       db: this.db,
       verifier: this.verifier,
       now: this.now,
+      daemonRevealSender: this.daemonRevealSender,
     }, {
       call_id: sealed.call_id,
       binary_index: Number(args.binaryIndex),
@@ -283,15 +461,6 @@ export class FhenixEventIngestor {
     return result.status === 200;
   }
 
-  private markMissedReveals(): number {
-    const cutoff = new Date(this.now().getTime() - this.revealGraceSeconds * 1000);
-    return markMissedFhenixReveals({
-      db: this.db,
-      cutoffIso: nowIso(cutoff),
-      terminalAt: nowIso(this.now()),
-      now: this.now,
-    });
-  }
 }
 
 export function createFhenixEventIngestorFromEnv(
@@ -332,11 +501,13 @@ export function loadFhenixEventIngestorConfig(
   const chainId = chainIdInput.chainId;
   const contractAddress = resolveIngestorContractAddress(env, chainId, opts);
   if (!contractAddress) return null;
+  const watcherRpcUrl = env.FHENIX_WATCHER_RPC_URL?.trim() || rpcUrl;
   return {
     rpcUrl,
+    watcherRpcUrl,
     chainId,
     contractAddress,
-    startBlock: configInt(env, "FHENIX_EVENT_START_BLOCK", 0, { min: 0 }),
+    startBlock: resolveWatcherStartBlock(env, chainId, contractAddress),
     confirmations: configInt(env, "FHENIX_EVENT_CONFIRMATIONS", 2, { min: 0 }),
     batchSize: configInt(env, "FHENIX_EVENT_BATCH_SIZE", 1_000, {
       min: 1,
@@ -346,6 +517,26 @@ export function loadFhenixEventIngestorConfig(
       min: 0,
     }),
   };
+}
+
+// FHENIX_EVENT_START_BLOCK unset OR 0 means "auto-derive from the deployment
+// manifest": use the block number from the manifest entry whose address matches
+// the active contract, so the watcher starts at the contract's deploy block
+// (not chain genesis). A POSITIVE env value is an explicit operator override.
+function resolveWatcherStartBlock(
+  env: NodeJS.ProcessEnv,
+  chainId: number,
+  contractAddress: string,
+): number {
+  const configured = configInt(env, "FHENIX_EVENT_START_BLOCK", 0, { min: 0 });
+  if (configured > 0) return configured;
+  const entry = loadDeploymentByAddress(
+    chainId,
+    "MurmurSealedVerdicts",
+    contractAddress,
+    manifestPath(env),
+  );
+  return entry?.blockNumber ?? 0;
 }
 
 function resolveIngestorContractAddress(
@@ -381,6 +572,43 @@ function numberFromBigint(value: bigint, field: string): number {
     throw new Error(`${field} is outside safe JavaScript range`);
   }
   return n;
+}
+
+// Flatten a (possibly viem/RPC) error into a searchable string across its
+// shortMessage / details / message / numeric code and nested causes.
+function describeRpcError(err: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = err;
+  let depth = 0;
+  while (current !== null && current !== undefined && depth < 5) {
+    if (typeof current === "object") {
+      const e = current as {
+        message?: unknown;
+        shortMessage?: unknown;
+        details?: unknown;
+        code?: unknown;
+        cause?: unknown;
+      };
+      for (const value of [e.shortMessage, e.details, e.message, e.code]) {
+        if (value !== undefined && value !== null) parts.push(String(value));
+      }
+      current = e.cause;
+    } else {
+      parts.push(String(current));
+      break;
+    }
+    depth += 1;
+  }
+  return parts.join(" | ");
+}
+
+// Positively identifies range / response-size limit errors. Deliberately does
+// NOT include a bare -32602 (the archive-token rejection code), so halving is
+// reserved for real range limits and never spams a params/auth rejection.
+const RANGE_LIMIT_PATTERN = /range|too large|max block|response size|-32701/i;
+
+function isRangeLimitError(err: unknown): boolean {
+  return RANGE_LIMIT_PATTERN.test(describeRpcError(err));
 }
 
 function configInt(
