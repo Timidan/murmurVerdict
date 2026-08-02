@@ -81,7 +81,7 @@ export function CompactLiveFeed({
         return (
           <li
             key={rowKey}
-            className={(isInitial ? "" : "tape-row ") + "grid grid-cols-[8px_56px_38px_44px_1fr_64px_30px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)] ck-hoverable"}
+            className={(isInitial ? "" : "tape-row ") + "grid grid-cols-[8px_76px_36px_56px_minmax(0,1fr)_64px_30px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)] ck-hoverable"}
           >
             <span
               className={
@@ -95,11 +95,11 @@ export function CompactLiveFeed({
                   : "bg-[var(--color-display)]")
               }
             />
-            <span className="ck-mono ck-dim">{ts}</span>
-            <span className="ck-label">
+            <span className="ck-mono ck-dim truncate">{ts}</span>
+            <span className="ck-label truncate">
               {isResolved ? "res" : "acc"}
             </span>
-            <span className="ck-mono ck-dim">
+            <span className="ck-mono ck-dim truncate">
               {evt.type === "call.accepted"
                 ? "sealed"
                 : (evt.outcome ?? "—").slice(0, 4)}
@@ -133,7 +133,7 @@ function FeedSkeleton() {
       {[0, 1, 2, 3, 4].map((i) => (
         <li
           key={i}
-          className="grid grid-cols-[8px_56px_38px_44px_1fr_64px_30px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)]"
+          className="grid grid-cols-[8px_76px_36px_56px_minmax(0,1fr)_64px_30px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)]"
         >
           <span className="inline-block w-[5px] h-[5px] bg-[var(--color-border)]" />
           <div className="h-[8px] bg-[var(--color-border)] w-[44px]" />

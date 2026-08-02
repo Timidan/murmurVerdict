@@ -21,6 +21,9 @@ export interface RuntimeKeyMintModalProps {
   result: RuntimeKeyMintResponse;
   /** Agent slug — used in the .env line + prompt fetch. */
   slug: string;
+  /** PoP signing private key (pkcs8 base64), when the key was minted with
+   *  request signing. One-time display, exactly like the bearer secret. */
+  signingPrivateKey?: string | null;
   /** Fires when the user ticks "saved" and clicks DONE. */
   onDone: () => void;
 }
@@ -35,7 +38,7 @@ const TAB_LABEL: Record<MintTab, string> = {
 
 const TAB_ORDER: MintTab[] = ["prompt", "key", "env"];
 
-export function RuntimeKeyMintModal({ result, slug, onDone }: RuntimeKeyMintModalProps) {
+export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }: RuntimeKeyMintModalProps) {
   const [saved, setSaved] = useState(false);
   const [active, setActive] = useState<MintTab>("prompt");
   const [copied, setCopied] = useState(false);
@@ -147,7 +150,14 @@ export function RuntimeKeyMintModal({ result, slug, onDone }: RuntimeKeyMintModa
     };
   }, []);
 
-  const envLine = `MURMUR_RUNTIME_KEY=${result.secret}  # ${slug}`;
+  const envLine = [
+    `MURMUR_RUNTIME_KEY=${result.secret}  # ${slug}`,
+    ...(signingPrivateKey
+      ? [
+          `MURMUR_RUNTIME_KEY_SIGNING_PK=${signingPrivateKey}  # ed25519 pkcs8 base64 — PoP request signing`,
+        ]
+      : []),
+  ].join("\n");
 
   // The text the single [ copy ] button acts on — always the active tab's
   // content. Empty only while the prompt is still resolving.
@@ -182,7 +192,7 @@ export function RuntimeKeyMintModal({ result, slug, onDone }: RuntimeKeyMintModa
 
   return (
     <div
-      className="modal-enter fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      className="modal-enter fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-scrim)] backdrop-blur-sm p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="runtime-key-mint-title"
@@ -193,8 +203,8 @@ export function RuntimeKeyMintModal({ result, slug, onDone }: RuntimeKeyMintModa
         onKeyDown={onPanelKeyDown}
         className="modal-enter-panel ck-frame-strong w-full max-w-[640px] bg-[var(--color-bg)] p-4 flex flex-col gap-3"
       >
-        <header className="flex items-baseline justify-between">
-          <h3 id="runtime-key-mint-title" className="ck-label">
+        <header className="flex items-center justify-between">
+          <h3 id="runtime-key-mint-title" className="ck-title">
             new runtime key
           </h3>
           <span className="ck-mono text-[10px] ck-dim">prefix · {result.runtime_key_prefix}</span>
@@ -283,6 +293,11 @@ export function RuntimeKeyMintModal({ result, slug, onDone }: RuntimeKeyMintModa
             tone={result.expires_at ? "pos" : "dim"}
           />
           <KV k="policy hash" v={result.policy_hash.slice(0, 16) + "…"} title={result.policy_hash} />
+          <KV
+            k="request signing"
+            v={signingPrivateKey ? "on — signing key in .ENV tab (shown once)" : "off (bearer only)"}
+            tone={signingPrivateKey ? "pos" : "dim"}
+          />
           {result.warning && <KV k="note" v={result.warning} tone="neg" />}
         </div>
 

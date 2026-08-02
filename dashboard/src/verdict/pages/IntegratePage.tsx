@@ -259,7 +259,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
 
         <section className="ck-frame">
           <div className="ck-header">
-            <span className="ck-label ck-pos">welcome packet</span>
+            <span className="ck-title">welcome packet</span>
           </div>
           <ul className="divide-y divide-[var(--color-border)]">
             <li>
@@ -317,7 +317,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
 
         <section className="ck-frame">
           <div className="ck-header">
-            <span className="ck-label ck-pos">manage</span>
+            <span className="ck-title">manage</span>
           </div>
           <ul className="divide-y divide-[var(--color-border)]">
             <li>
@@ -481,7 +481,7 @@ function AgentPromptPanel({
   return (
     <section className="ck-frame">
       <div className="ck-header">
-        <span className="ck-label ck-pos">agent prompt</span>
+        <span className="ck-title">agent prompt</span>
         <span className="flex items-center gap-2">
           {copyFallback && (
             <span className="ck-mono text-[10px] ck-dim" aria-live="polite">

@@ -16,11 +16,11 @@
 //   handlers can compose both without special casing Privy.
 
 import type Database from "better-sqlite3";
-import type { Request } from "express";
 import type { AgentKind } from "../schema.js";
 import { ERROR_CODES, VerdictError } from "../schema.js";
 import { agentsRepo } from "../repos/agents-repo.js";
 import {
+  assertAgentCredentialsEnabled,
   getAccountForAgent,
   listAccountAgents,
   resolveAccountForClaims,
@@ -28,7 +28,32 @@ import {
   verifyRuntimeKey,
   type RuntimeKeyVerification,
 } from "./accounts.js";
+import { parseRuntimeKeyGatewayPolicyJson } from "./runtime-key-policy.js";
+import {
+  EMPTY_BODY_SHA256,
+  POP_HEADER_NONCE,
+  POP_HEADER_SIGNATURE,
+  POP_HEADER_TIMESTAMP,
+  signingPubkeyFromPolicy,
+  verifyRuntimeKeyPop,
+} from "./runtime-key-pop.js";
 import { verifyPrivyBearer, type PrivyAuthVerifier, type PrivyClaims } from "./privy.js";
+
+/**
+ * Minimal request contract the dispatcher needs. Express's Request satisfies
+ * it structurally; smoke fakes may supply header() alone. The optional
+ * fields exist for PoP verification — a PoP-bound runtime key FAILS CLOSED
+ * when method/originalUrl are absent, so a header-only fake can still
+ * exercise bearer-only keys but can never accidentally pass a PoP key.
+ */
+export interface AuthRequest {
+  header(name: string): string | undefined;
+  method?: string;
+  originalUrl?: string;
+  /** Lowercase hex sha256 of the raw body bytes, set by the gateway
+   *  router's express.json verify hook. Absent → empty-body hash. */
+  murmurRawBodySha256?: string;
+}
 
 export type AuthTier = "casual";
 
@@ -59,7 +84,15 @@ export interface DispatchAuthDeps {
   allowRuntimeKey?: boolean;
   /** Explicit Privy verifier Adapter. Daemon callers should pass this. */
   privyAuth?: PrivyAuthVerifier;
+  /**
+   * Deployment identifier bound into PoP signing strings. Configured, never
+   * derived from the inbound Host header (proxies rewrite it). Defaults to
+   * "murmur-gateway" for single-deployment installs.
+   */
+  popAudience?: string;
 }
+
+export const DEFAULT_POP_AUDIENCE = "murmur-gateway";
 
 /**
  * Dispatch a request to the highest-priority matching auth tier.
@@ -179,7 +212,7 @@ export function __resolveCasualIdentity(
 }
 
 export async function dispatchAuth(
-  req: Request,
+  req: AuthRequest,
   deps: DispatchAuthDeps,
 ): Promise<AuthIdentity | null> {
   // ─── Mode 1: Authorization: Bearer <privy-token> ─────────────────────
@@ -213,12 +246,43 @@ export async function dispatchAuth(
           403,
         );
       }
+      assertAgentCredentialsEnabled(deps.db, verified.account_id);
+      // PoP enforcement. A key whose controller-signed policy carries
+      // signing_pubkey fails CLOSED on any signature defect — throwing
+      // here (never returning null) is what stops a stolen bearer from
+      // falling through to the weaker API-key mode.
+      const popPubkey = signingPubkeyFromPolicy(
+        parseRuntimeKeyGatewayPolicyJson(verified.policy_json),
+      );
+      if (popPubkey) {
+        if (!req.method || !req.originalUrl) {
+          throw new VerdictError(
+            "route does not supply PoP request context for a PoP-bound runtime key",
+            ERROR_CODES.runtime_key_signature_invalid,
+            401,
+          );
+        }
+        verifyRuntimeKeyPop(deps.db, {
+          runtimeKeyId: verified.runtime_key_id,
+          signingPubkeyHex: popPubkey,
+          audience: deps.popAudience ?? DEFAULT_POP_AUDIENCE,
+          request: {
+            method: req.method,
+            pathAndQuery: req.originalUrl,
+            rawBodySha256: req.murmurRawBodySha256 ?? EMPTY_BODY_SHA256,
+            timestampHeader: req.header(POP_HEADER_TIMESTAMP),
+            nonceHeader: req.header(POP_HEADER_NONCE),
+            signatureHeader: req.header(POP_HEADER_SIGNATURE),
+          },
+          now: verifiedAt,
+        });
+      }
       const out: AuthIdentity = {
         tier: "casual",
         auth_mode: "runtime_key",
         agent_id: verified.agent_id,
         account_id: verified.account_id,
-        runtime_key: verified,
+        runtime_key: { ...verified, signature_verified: Boolean(popPubkey) },
       };
       if (agent) {
         out.agent_kind = agent.kind;
@@ -233,6 +297,7 @@ export async function dispatchAuth(
     // First try the new account-scoped api_keys table.
     const accountKey = verifyAccountApiKey(deps.db, apiKey);
     if (accountKey) {
+      assertAgentCredentialsEnabled(deps.db, accountKey.account_id);
       const agent = agentsRepo.byId(deps.db, accountKey.agent_id);
       const out: AuthIdentity = {
         tier: "casual",

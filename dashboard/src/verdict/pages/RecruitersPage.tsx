@@ -51,7 +51,7 @@ export function RecruitersPage() {
 
       {/* INTRO STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-3 flex flex-col gap-1">
-        <span className="ck-label ck-pos">who&rsquo;s bringing the agents in</span>
+        <span className="ck-title">who&rsquo;s bringing the agents in</span>
         <span className="ck-mono ck-dim">
           every share-page click with a <code className="ck-pos">?ref=</code>{" "}
           param is bucketed by sender · sharers compete on clicks × agents
@@ -147,7 +147,7 @@ function Table({ rows }: { rows: Sender[] }) {
   const max = rows.reduce((m, r) => Math.max(m, r.total), 0) || 1;
   return (
     <ul className="m-0 p-0 list-none">
-      <li className={COLS + " border-b border-[var(--color-border-vis)] ck-label"}>
+      <li className={COLS + " border-b border-[var(--color-border-vis)] ck-colhead"}>
         <span>#</span>
         <span>sender</span>
         <span className="text-right">clicks</span>

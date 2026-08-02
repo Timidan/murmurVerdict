@@ -38,6 +38,7 @@ import {
 } from "@privy-io/react-auth";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { RuntimeKeyMintModal } from "../components/account/RuntimeKeyMintModal.js";
+import { generateRuntimeKeySigningKeypair } from "../lib/runtime-key-signing.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { verdictApi, type RuntimeKeyMintResponse } from "../api.js";
 
@@ -67,6 +68,7 @@ export function AgentOnboardPage() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [minted, setMinted] = useState<RuntimeKeyMintResponse | null>(null);
+  const [mintedSigning, setMintedSigning] = useState<string | null>(null);
   const [mintedSlug, setMintedSlug] = useState<string | null>(null);
   const [daemonChainId, setDaemonChainId] = useState<string | null>(null);
   // When create-agent succeeds but a later step (sign, bind, mint) fails,
@@ -213,13 +215,18 @@ export function AgentOnboardPage() {
         signature: walletSig.signature,
       });
 
-      // 5. Get the runtime-key authorization challenge.
+      // 5. Get the runtime-key authorization challenge. The PoP keypair is
+      // generated first so its public half sits inside the policy the
+      // controller wallet signs (unsupported browsers fail loud here rather
+      // than silently minting a weaker bearer-only key).
       attemptedPhase = "challenging-runtime";
       setPhase("challenging-runtime");
+      const rkSigning = await generateRuntimeKeySigningKeypair();
+      const rkPolicy = { signing_pubkey: rkSigning.publicKeyHex };
       const rkChallenge = await verdictApi.postRuntimeKeyChallenge(
         token,
         slug,
-        {},
+        { policy: rkPolicy },
       );
 
       // 6. Sign the runtime-key authorization.
@@ -234,11 +241,13 @@ export function AgentOnboardPage() {
       attemptedPhase = "minting-runtime";
       setPhase("minting-runtime");
       const result = await verdictApi.postRuntimeKey(token, slug, {
+        policy: rkPolicy,
         authorization_nonce: rkChallenge.authorization_nonce,
         authorization_issued_at: rkChallenge.authorization_issued_at,
         signature: rkSig.signature,
       });
 
+      setMintedSigning(rkSigning.privateKeyPkcs8Base64);
       setMinted(result);
       setMintedSlug(slug);
       setPhase("done");
@@ -380,6 +389,7 @@ export function AgentOnboardPage() {
         <RuntimeKeyMintModal
           result={minted}
           slug={mintedSlug}
+          signingPrivateKey={mintedSigning}
           onDone={onModalDone}
         />
       )}
@@ -399,7 +409,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         }
       />
       <main className="flex-1 max-w-2xl w-full self-center p-4 flex flex-col gap-4">
-        <h1 className="ck-label text-base">Create an agent</h1>
+        <h1 className="ck-title">Create an agent</h1>
         <p className="ck-dim text-sm">
           Pick a handle. We'll generate a secret key your bot will use.
         </p>

@@ -39,6 +39,13 @@ export interface RuntimeKeyVerification {
   controller_wallet_address: string;
   controller_chain_id: string;
   expires_at: string | null;
+  /**
+   * True when the dispatcher verified a murmur-rk-v1 PoP signature for this
+   * request. Set by dispatchAuth AFTER verification, never read from the DB;
+   * bearer-only keys carry false. Persisted onto gateway attempt rows as
+   * auth_proof so acceptance-time audit attribution reflects reality.
+   */
+  signature_verified?: boolean;
 }
 
 export interface VerifyRuntimeKeyInput {

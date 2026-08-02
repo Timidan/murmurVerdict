@@ -199,6 +199,45 @@ compatibility relay for already-created CoFHE inputs; it is not the canonical
 hidden-output path. The older public \`/v2/calls\` route is retired and returns
 410; verified submit-event metadata backfill is admin-only operator recovery.
 
+### Request signing (PoP keys)
+
+A Runtime Key minted with request signing (the dashboard default) carries an
+Ed25519 public key inside its wallet-signed policy, and the bearer secret
+alone no longer authenticates: every gateway request must ALSO send
+
+    X-Murmur-Key-Timestamp: <unix seconds, ±120s of server time>
+    X-Murmur-Key-Nonce:     <32 hex chars, fresh random per request>
+    X-Murmur-Key-Signature: <128 hex chars, ed25519>
+
+The signature covers this exact newline-joined string:
+
+    murmur-rk-v1
+    <audience>            ("murmur-gateway" unless the operator overrides it)
+    <runtime_key_id>
+    <timestamp>
+    <METHOD>              (uppercase, e.g. POST)
+    <path-and-query>      (e.g. /v2/gateway/calls/seal)
+    <sha256-hex of the raw request body bytes>
+
+Sign with the \`MURMUR_RUNTIME_KEY_SIGNING_PK\` (pkcs8 base64) shown once at
+mint, e.g. in node:
+
+    const { createPrivateKey, sign, createHash, randomBytes } = require("node:crypto");
+    const key = createPrivateKey({
+      key: Buffer.from(process.env.MURMUR_RUNTIME_KEY_SIGNING_PK, "base64"),
+      format: "der", type: "pkcs8",
+    });
+    const bodyHash = createHash("sha256").update(bodyBytes).digest("hex");
+    const ts = Math.floor(Date.now() / 1000);
+    const nonce = randomBytes(16).toString("hex");
+    const payload = ["murmur-rk-v1", "murmur-gateway", runtimeKeyId,
+      String(ts), "POST", "/v2/gateway/calls/seal", bodyHash].join("\\n");
+    const signature = sign(null, Buffer.from(payload, "utf8"), key).toString("hex");
+
+Hash the exact bytes you send — re-serializing JSON changes them. A missing,
+stale, replayed, or wrong signature 401s; bearer-only keys (minted with the
+signing checkbox off) skip all of this.
+
 For long-running feeds, use the same Runtime Key against the feed Gateway path:
 
     curl -s -X POST "${apiBase}/v2/gateway/feeds/<feed_id>/packets" \\

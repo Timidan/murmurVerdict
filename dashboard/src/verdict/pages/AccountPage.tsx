@@ -19,6 +19,8 @@ import { CompactTopbar } from "../components/compact/Topbar.js";
 import { TierBadge } from "../components/TierBadge.js";
 import { FheStatusPanel } from "../components/FheStatusPanel.js";
 import { LinkedLoginsPanel } from "../components/account/LinkedLoginsPanel.js";
+import { ActivityPanel } from "../components/account/ActivityPanel.js";
+import { KillSwitchPanel } from "../components/account/KillSwitchPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import type { AccountAgent, AgentKind } from "../api.js";
@@ -134,7 +136,7 @@ export function AccountPage() {
       <main className="flex-1 px-3 py-3 flex flex-col gap-3 max-w-[960px] w-full mx-auto">
         <section className="ck-frame">
           <div className="ck-header">
-            <span className="ck-label ck-pos">your agents</span>
+            <span className="ck-title">your agents</span>
             <span className="flex items-center gap-3">
               <span className="ck-mono ck-dim">{account.agents.length} owned</span>
               <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
@@ -165,6 +167,8 @@ export function AccountPage() {
           )}
         </section>
         <LinkedLoginsPanel />
+        <ActivityPanel />
+        <KillSwitchPanel />
         <FheStatusPanel />
       </main>
     </div>

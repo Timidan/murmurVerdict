@@ -40,8 +40,10 @@ import type {
   OracleObservation,
 } from "../integrations/oracles/types.js";
 import {
+  PolymarketClobClient,
   PolymarketGammaClient,
   setDefaultPolymarketClient,
+  setDefaultPolymarketClobClient,
 } from "../markets/polymarket-gamma/index.js";
 
 let failures = 0;
@@ -101,6 +103,7 @@ class SmokeFhenixVerifier implements FhenixEventVerifier {
       agent_wallet: input.expected_agent_wallet,
       market_id_hash: fhenixMarketIdForMurmurMarket(input.expected_market_id),
       onchain_call_id: input.onchain_call_id.toLowerCase(),
+      reveal_sender: null,
     };
   }
 
@@ -117,6 +120,7 @@ class SmokeFhenixVerifier implements FhenixEventVerifier {
       agent_wallet: input.expected_agent_wallet,
       market_id_hash: fhenixMarketIdForMurmurMarket(input.expected_market_id),
       onchain_call_id: input.onchain_call_id.toLowerCase(),
+      reveal_sender: null,
     };
   }
 }
@@ -138,6 +142,7 @@ try {
   const sealedCallIds = [
     "00000000-0000-4000-8000-000000000301",
     "00000000-0000-4000-8000-000000000302",
+    "00000000-0000-4000-8000-000000000303",
   ];
   const consumedSealedCallIds: string[] = [];
   const newSealedCallId = () => {
@@ -536,6 +541,138 @@ try {
       assert.equal(full?.resolution?.signed_return, null);
     } finally {
       setDefaultPolymarketClient(null);
+    }
+  });
+
+  await check("Gamma-dropped micro-market resolves through the CLOB fallback", async () => {
+    const clobMarketId = "0x" + "cd".repeat(32);
+    marketsRepo.upsertExternalMarket(db, {
+      market_id: clobMarketId,
+      asset_id: "polymarket:event",
+      market_kind: "event_binary",
+      horizon_seconds: 3600,
+      primary_oracle_id: "polymarket-gamma-oracle",
+      adapter_id: "polymarket-gamma",
+      market_family: "prediction-market-binary",
+      scoring_kind: "multinomial_brier",
+      config_json: JSON.stringify({
+        conditionId: clobMarketId,
+        slug: "fhenix-api-smoke-clob-market",
+        outcomes: ["Up", "Down"],
+        clobTokenIds: { up: "111", down: "222" },
+        endDate: revealOpenAt,
+        gamma_url: "https://polymarket.com/event/fhenix-api-smoke-clob-market",
+      }),
+      void_band: "0",
+      status: "listed",
+      created_at: acceptedAt,
+    });
+    const clobSubmitBody = {
+      ...submitBody,
+      marketRef: { ...submitBody.marketRef, sourceId: clobMarketId },
+      client_order_id: "fhenix-api-order-clob-001",
+      fhenix: {
+        ...submitBody.fhenix,
+        onchain_call_id: "0x" + "9a".repeat(32),
+        submit_tx_hash: "0x" + "9b".repeat(32),
+        binary_index_ct_hash: "0x" + "9c".repeat(32),
+        confidence_ct_hash: "0x" + "9d".repeat(32),
+      },
+    };
+    const submitRes = await adminBackfill(clobSubmitBody);
+    assert.equal(submitRes.status, 201);
+    const clobCallId = ((await submitRes.json()) as { call_id: string }).call_id;
+    assert.equal(clobCallId, "00000000-0000-4000-8000-000000000303");
+    const revealRes = await fetch(`${baseUrl}/v1/admin/fhenix/reveals`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        call_id: clobCallId,
+        binary_index: 0,
+        confidence_bps: 6100,
+        revealed_at: revealOpenAt,
+        reveal_tx_hash: "0x" + "9e".repeat(32),
+        reveal_log_index: 3,
+      }),
+    });
+    assert.equal(revealRes.status, 200);
+
+    // Gamma serves `200 []` for the vanished micro-market (recorded as
+    // http_404); the CLOB surface still has it, closed with one winner.
+    const gammaClient = new PolymarketGammaClient({
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: (_name: string) => "application/json" },
+        text: async () => JSON.stringify([]),
+      }),
+      maxRetries: 1,
+      sleepMs: async () => undefined,
+      nowMs: () => Date.parse("2026-05-14T14:00:00Z"),
+    });
+    const clobClient = new PolymarketClobClient({
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: (_name: string) => "application/json" },
+        text: async () =>
+          JSON.stringify({
+            condition_id: clobMarketId,
+            question: "Fhenix smoke - Up or Down",
+            closed: true,
+            archived: false,
+            accepting_orders: false,
+            is_50_50_outcome: false,
+            tokens: [
+              { token_id: "222", outcome: "DOWN", price: 0, winner: false },
+              { token_id: "111", outcome: "UP", price: 1, winner: true },
+            ],
+          }),
+      }),
+      maxRetries: 1,
+      sleepMs: async () => undefined,
+      nowMs: () => Date.parse("2026-05-14T14:00:00Z"),
+    });
+    setDefaultPolymarketClient(gammaClient);
+    setDefaultPolymarketClobClient(clobClient);
+    try {
+      const logs: unknown[] = [];
+      const resolver = new Resolver({
+        db,
+        oracle: {
+          getLatestPrice: async () => {
+            throw new Error("native-price oracle should not be used for polymarket smoke");
+          },
+        } as unknown as OracleClient,
+        now: () => new Date("2026-05-14T14:00:00Z"),
+        log: (line) => logs.push(line),
+      });
+      const result = await resolver.tick();
+      assert.equal(result.resolved, 1, JSON.stringify(logs));
+      const full = resolutionsRepo.loadFullCall(db, clobCallId);
+      assert.equal(full?.submission.status, "resolved");
+      assert.equal(full?.resolution?.outcome, "win");
+      assert.equal(full?.resolution?.call_score, 1);
+      const storedOutcome = JSON.parse(
+        full?.resolution?.resolved_outcome_json ?? "null",
+      ) as {
+        kind: string;
+        payoutNumerators: string[];
+        evidence: { sourceProtocol: string; sourceId: string };
+      } | null;
+      assert.equal(storedOutcome?.kind, "binary");
+      assert.deepEqual(storedOutcome?.payoutNumerators, ["1", "0"]);
+      assert.equal(
+        storedOutcome?.evidence.sourceProtocol,
+        "polymarket-clob-fallback",
+      );
+      assert.equal(storedOutcome?.evidence.sourceId, clobMarketId);
+    } finally {
+      setDefaultPolymarketClient(null);
+      setDefaultPolymarketClobClient(null);
     }
   });
 

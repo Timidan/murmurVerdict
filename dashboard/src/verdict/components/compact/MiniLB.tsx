@@ -47,7 +47,7 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
 
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[24px_1fr_44px_38px_56px_28px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[24px_1fr_58px_38px_56px_28px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span title="rank">#</span>
         <span title="agent handle">agent</span>
         <span className="flex justify-end" title="verdict score — mean(call_score) − stdev/√n">
@@ -74,43 +74,44 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
         return (
           <li
             key={row.agent_id}
-            className="grid grid-cols-[24px_1fr_44px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+            className="relative grid grid-cols-[24px_1fr_58px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
           >
+            {/* Stretched row link — real box so keyboard focus lands. */}
             <a
               href={`#/agents/${row.display_slug}`}
-              className="contents no-underline"
+              aria-label={`open agent ${row.display_slug}`}
+              className="ck-rowlink"
+            />
+            <span className="ck-mono ck-dim">
+              {row.rank ? String(row.rank).padStart(2, "0") : "—"}
+            </span>
+            <span className="ck-mono ck-pos truncate" title={row.display_name}>
+              {row.display_slug}
+            </span>
+            <span
+              className={
+                "ck-mono text-right " +
+                ((row.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg")
+              }
             >
-              <span className="ck-mono ck-dim">
-                {row.rank ? String(row.rank).padStart(2, "0") : "—"}
-              </span>
-              <span className="ck-mono ck-pos truncate" title={row.display_name}>
-                {row.display_slug}
-              </span>
-              <span
-                className={
-                  "ck-mono text-right " +
-                  ((row.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg")
-                }
-              >
-                {formatScore(row.verdict_score)}
-              </span>
-              <span className="ck-mono ck-dim text-right">
-                {row.win_rate === null ? "—" : `${Math.round(row.win_rate * 100)}`}
-              </span>
-              <span className="flex justify-end items-center">
-                <div className="h-px bg-[var(--color-border)] w-full" />
-              </span>
-              <span className="text-right">
-                {row.pending_calls > 0 ? (
-                  <span
-                    className="inline-block w-[5px] h-[5px] bg-[var(--color-disabled)]"
-                    title={`${row.pending_calls} pending`}
-                  />
-                ) : (
-                  <span className="ck-mono ck-dim">·</span>
-                )}
-              </span>
-            </a>
+              {formatScore(row.verdict_score)}
+            </span>
+            <span className="ck-mono ck-dim text-right">
+              {row.win_rate === null ? "—" : `${Math.round(row.win_rate * 100)}`}
+            </span>
+            <span className="flex justify-end items-center">
+              <div className="h-px bg-[var(--color-border)] w-full" />
+            </span>
+            <span className="text-right">
+              {row.pending_calls > 0 ? (
+                <span
+                  className="inline-block w-[5px] h-[5px] bg-[var(--color-disabled)]"
+                  title={`${row.pending_calls} pending`}
+                />
+              ) : (
+                <span className="ck-mono ck-dim">·</span>
+              )}
+            </span>
           </li>
         );
       })}
@@ -125,7 +126,7 @@ function SkeletonRows() {
       {[0, 1, 2, 3, 4].map((i) => (
         <li
           key={i}
-          className="grid grid-cols-[24px_1fr_44px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)]"
+          className="grid grid-cols-[24px_1fr_58px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)]"
         >
           <div className="h-[8px] bg-[var(--color-border)] w-[16px]" />
           <div className="h-[10px] bg-[var(--color-border)] w-[60%]" />

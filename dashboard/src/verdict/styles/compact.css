@@ -41,14 +41,69 @@
   background: color-mix(in srgb, var(--color-primary), transparent 97%);
 }
 
+/* ── Cockpit type ladder (T1 → T3) ───────────────────────────────────────────
+   Three roles used to share ck-label (panel titles, column headers, field
+   labels), so a section heading read identically to a single-datum label — and
+   both sat BELOW body/data (15px). The ladder below assigns each role its own
+   tier so scanning has a clear top-down rhythm while staying pure Space-Mono
+   terminal (lowercase idiom preserved; differentiation is size + ink + tracking
+   + a leading marker on titles, not a font swap).
+
+     T1  ck-title    17px · display ink · leading marker   → panel / section titles
+     ——  (body/data  15px · primary/display ink            → the content itself)
+     T3  ck-label    12px · secondary   · 0.04em           → inline field labels
+     T2  ck-colhead  11px · disabled    · 0.09em           → table column headers (quiet scaffold)
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* T1 — Panel / section title. The loudest chrome inside the content area. */
+.mmr-shell .ck-title {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 17px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--color-display);
+  display: inline-flex;
+  align-items: center;
+}
+/* Leading marker — a small solid square (monochrome, Nothing's geometric
+   language) that visually anchors a title as the head of a region. Kept in
+   display ink, NOT the reserved accent, so "color stays an event". */
+.mmr-shell .ck-title::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  /* Follows the title's own ink so a toned title (e.g. a destructive red modal
+     heading via ck-neg) keeps a matching marker. */
+  background: currentColor;
+}
+
+/* T3 — Inline field label. Names one datum next to its value. */
 .mmr-shell .ck-label {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.25;
   letter-spacing: 0.04em;
   color: var(--color-secondary);
 }
+
+/* T2 — Table column header. Recedes: dimmer tone + wider tracking than a field
+   label, so a header row reads as quiet scaffolding, not data. */
+.mmr-shell .ck-colhead {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1.25;
+  letter-spacing: 0.09em;
+  color: var(--color-disabled);
+}
+
+/* (Value tier, row-link focus ring, and the mobile input floor live at the
+   END of this file: they must come after .ck-mono in source order to win the
+   equal-specificity fight over font-size.) */
 
 .mmr-shell .ck-num {
   font-family: var(--font-mono);
@@ -166,6 +221,41 @@
   }
 }
 
+/* ── Component form grammar (monochrome differentiation) ─────────────────────
+   Color is reserved for events, so component ROLE is carried by FORM:
+     · action  → ck-btn-bracket   [ label ]   brackets, no box
+     · badge   → ck-badge         │ label │   hairline box, no brackets
+     · status  → ck-dot + label   ▪ live      leading marker
+     · title   → ck-title         ■ label     region marker
+   A badge is a STATIC descriptor (tier, privacy mode, tag). It must never wear
+   the button's brackets — the box is its signature, complementary to the
+   bracket. Red border/ink is the one exception where a tier is itself an event
+   (e.g. `attested`). */
+.mmr-shell .ck-badge {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border-vis);
+  color: var(--color-secondary);
+  white-space: nowrap;
+}
+/* Tone modifiers compose with the base box. */
+.mmr-shell .ck-badge.ck-pos {
+  color: var(--color-display);
+}
+.mmr-shell .ck-badge.ck-neg {
+  color: var(--color-accent-ink);
+  border-color: var(--color-accent-ink);
+}
+.mmr-shell .ck-badge.ck-dim {
+  color: var(--color-disabled);
+}
+
 /* Live status dot — only animation allowed in COMPACT. */
 .mmr-shell .ck-dot {
   display: inline-block;
@@ -200,7 +290,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 3px 6px;
+  /* Room for the 17px ck-title (T1) — was 3px/6px for the old 13px label. */
+  padding: 6px 8px;
+  min-height: 30px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
 }
@@ -345,4 +437,61 @@
   font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.45;
+}
+
+/* ── Late-order rules (must follow .ck-mono to win equal specificity) ─────── */
+
+/* Value tier — the bold readout paired with a ck-label (ribbon cells, fact
+   rows, stat headers). One class per size step instead of the ad-hoc inline
+   fontSize/fontWeight styles that used to sit off-ladder in each component.
+   Placed after .ck-mono (same 0,2,0 specificity) so the tier's size wins on
+   elements that carry both classes. */
+.mmr-shell .ck-value {
+  font-size: 13px;
+  font-weight: 700;
+}
+.mmr-shell .ck-value-sm {
+  font-size: 12px;
+  font-weight: 700;
+}
+.mmr-shell .ck-value-lg {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* Row link — stretched-link overlay for whole-row navigation.
+   Rows used to wrap their cells in a `display: contents` anchor, but a
+   contents element generates no box and Chromium refuses to focus it at all
+   (verified: script focus fails, Tab skips it) — every data row was
+   unreachable by keyboard. The overlay anchor is a real box (absolute,
+   inset-0, first child of the relative row), so it joins the tab order and
+   its own focus ring outlines the full row. Inward offset so tightly packed
+   rows don't clip it. Interactive siblings inside a row (e.g. the [V]
+   verify chip) sit above the overlay via position+z-index. */
+.mmr-shell .ck-rowlink {
+  position: absolute;
+  inset: 0;
+}
+.mmr-shell .ck-rowlink:focus-visible {
+  outline: 2px solid var(--color-accent-ink);
+  outline-offset: -2px;
+}
+/* Row tint while focused — progressive enhancement on top of the ring. */
+.mmr-shell li:has(> .ck-rowlink:focus-visible) {
+  background: color-mix(in srgb, var(--color-primary), transparent 97%);
+}
+
+/* iOS Safari zooms the page when a focused input renders below 16px. Hold
+   form text at 16px on small viewports; the compact 15px resumes at ≥640px.
+   The .ck-mono variants out-rank the bare .ck-mono size (0,2,1 vs 0,2,0) —
+   a media query adds no specificity of its own. */
+@media (max-width: 639px) {
+  .mmr-shell input,
+  .mmr-shell select,
+  .mmr-shell textarea,
+  .mmr-shell input.ck-mono,
+  .mmr-shell select.ck-mono,
+  .mmr-shell textarea.ck-mono {
+    font-size: 16px;
+  }
 }

@@ -66,3 +66,11 @@ export {
   type SetDestinationAddressInput,
   type SetDestinationResult,
 } from "./destination-address.js";
+export {
+  agentCredentialsDisabledAt,
+  assertAgentCredentialsEnabled,
+  engageAccountKillSwitch,
+  releaseAccountKillSwitch,
+  type EngageKillSwitchResult,
+  type ReleaseKillSwitchResult,
+} from "./account-kill-switch.js";

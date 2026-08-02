@@ -21,6 +21,7 @@ import {
   type RuntimeKeyMintResponse,
 } from "../../api.js";
 import { RuntimeKeyMintModal } from "./RuntimeKeyMintModal.js";
+import { generateRuntimeKeySigningKeypair } from "../../lib/runtime-key-signing.js";
 
 const CONFIRM_TIMEOUT_MS = 5000;
 
@@ -40,6 +41,8 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   const [busy, setBusy] = useState<BusyState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [minted, setMinted] = useState<RuntimeKeyMintResponse | null>(null);
+  const [mintedSigning, setMintedSigning] = useState<string | null>(null);
+  const [popEnabled, setPopEnabled] = useState(true);
 
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -97,8 +100,14 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
         setError("× session expired — sign in again");
         return;
       }
+      // PoP: the keypair must exist BEFORE the challenge so its public half
+      // is inside the policy the controller wallet signs.
+      const signing = popEnabled ? await generateRuntimeKeySigningKeypair() : null;
+      const policy = signing ? { signing_pubkey: signing.publicKeyHex } : {};
       setBusy("challenging");
-      const challenge = await verdictApi.postRuntimeKeyChallenge(token, slug, {});
+      const challenge = await verdictApi.postRuntimeKeyChallenge(token, slug, {
+        policy,
+      });
       setBusy("signing");
       // Pin signer to the bound controller wallet — daemon validates
       // the signature recovers to controller_wallet_address.
@@ -108,10 +117,12 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       );
       setBusy("submitting");
       const result = await verdictApi.postRuntimeKey(token, slug, {
+        policy,
         authorization_nonce: challenge.authorization_nonce,
         authorization_issued_at: challenge.authorization_issued_at,
         signature,
       });
+      setMintedSigning(signing?.privateKeyPkcs8Base64 ?? null);
       setMinted(result);
     } catch (e) {
       // Frame the raw daemon detail in plain words — operators are devs,
@@ -154,8 +165,8 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
   return (
     <section className="ck-frame w-full max-w-[720px] px-4 py-4 flex flex-col gap-3">
-      <header className="flex items-baseline justify-between">
-        <h3 className="ck-label">runtime keys · {slug}</h3>
+      <header className="flex items-center justify-between">
+        <h3 className="ck-title">runtime keys · {slug}</h3>
         <span className="ck-mono text-[10px] ck-dim">
           {keys.filter((k) => !k.revoked_at).length} active · {keys.filter((k) => k.revoked_at).length} revoked
         </span>
@@ -202,7 +213,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
       {!loading && keys.length > 0 && (
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
-          <li className="grid grid-cols-[140px_1fr_120px_60px] gap-2 ck-label">
+          <li className="grid grid-cols-[140px_1fr_120px_60px] gap-2 ck-colhead">
             <span>prefix</span>
             <span>policy</span>
             <span>created</span>
@@ -280,6 +291,18 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       )}
 
       {cw && (
+        <label className="ck-mono text-[10px] flex items-center gap-1.5 self-start cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={popEnabled}
+            onChange={(e) => setPopEnabled(e.target.checked)}
+            disabled={busy !== "idle"}
+          />
+          require request signatures (PoP) — a leaked bearer key alone can't
+          authenticate
+        </label>
+      )}
+      {cw && (
         <button
           className="ck-btn ck-btn-bracket ck-pos self-start disabled:opacity-40 disabled:cursor-not-allowed"
           onClick={mint}
@@ -307,8 +330,10 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
         <RuntimeKeyMintModal
           result={minted}
           slug={slug}
+          signingPrivateKey={mintedSigning}
           onDone={() => {
             setMinted(null);
+            setMintedSigning(null);
             void refresh();
           }}
         />

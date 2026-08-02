@@ -51,14 +51,40 @@ services:
       BASE_MAINNET_RPC_URL: "${BASE_MAINNET_RPC_URL:-}"
       CHAINLINK_BASE_ETH_USD_ADDRESS: "${CHAINLINK_BASE_ETH_USD_ADDRESS:-}"
       PYTH_HERMES_ENDPOINT: "${PYTH_HERMES_ENDPOINT:-https://hermes.pyth.network/v2/updates/price/latest}"
+      # FHENIX_RPC_URL and FHENIX_WATCHER_RPC_URL MUST serve archive
+      # eth_getLogs back to the contract deploy block or reveal ingestion
+      # breaks (publicnode free tier does not; drpc/Tenderly/Alchemy do).
       FHENIX_RPC_URL: "${FHENIX_RPC_URL:-}"
+      # Optional dedicated archive RPC for the watcher; empty reuses FHENIX_RPC_URL.
+      FHENIX_WATCHER_RPC_URL: "${FHENIX_WATCHER_RPC_URL:-}"
       FHENIX_CHAIN_ID: "${FHENIX_CHAIN_ID:-}"
       FHENIX_CONTRACT_ADDRESS: "${FHENIX_CONTRACT_ADDRESS:-}"
       FHENIX_EVENT_TICK_SEC: "${FHENIX_EVENT_TICK_SEC:-30}"
+      # 0 = auto-derive the start block from the deployment manifest entry that
+      # matches FHENIX_CONTRACT_ADDRESS; a positive value overrides it.
       FHENIX_EVENT_START_BLOCK: "${FHENIX_EVENT_START_BLOCK:-0}"
       FHENIX_EVENT_CONFIRMATIONS: "${FHENIX_EVENT_CONFIRMATIONS:-2}"
       FHENIX_EVENT_BATCH_SIZE: "${FHENIX_EVENT_BATCH_SIZE:-1000}"
       FHENIX_REVEAL_GRACE_SEC: "${FHENIX_REVEAL_GRACE_SEC:-3600}"
+      # Murmur-owned FALLBACK reveal worker (calls only). Default OFF. Guarantees
+      # every sealed CALL is publicly revealed after the agent grace window, using
+      # a DEDICATED reveal EOA (must differ from the relayer key). Exactly ONE
+      # write-enabled process per reveal EOA — do not scale this service >1
+      # replica with the worker enabled (see DEPLOYMENT.md). Fund the key.
+      FHENIX_REVEAL_WORKER_ENABLED: "${FHENIX_REVEAL_WORKER_ENABLED:-false}"
+      FHENIX_REVEAL_PRIVATE_KEY: "${FHENIX_REVEAL_PRIVATE_KEY:-}"
+      FHENIX_REVEAL_WORKER_GRACE_SEC: "${FHENIX_REVEAL_WORKER_GRACE_SEC:-300}"
+      FHENIX_REVEAL_WORKER_TICK_SEC: "${FHENIX_REVEAL_WORKER_TICK_SEC:-30}"
+      FHENIX_REVEAL_WORKER_CONFIRMATIONS: "${FHENIX_REVEAL_WORKER_CONFIRMATIONS:-2}"
+      FHENIX_REVEAL_WORKER_MAX_JOBS_PER_TICK: "${FHENIX_REVEAL_WORKER_MAX_JOBS_PER_TICK:-5}"
+      FHENIX_REVEAL_WORKER_MAX_CONCURRENCY: "${FHENIX_REVEAL_WORKER_MAX_CONCURRENCY:-2}"
+      FHENIX_REVEAL_WORKER_RETRY_BASE_MS: "${FHENIX_REVEAL_WORKER_RETRY_BASE_MS:-5000}"
+      FHENIX_REVEAL_WORKER_RETRY_MAX_MS: "${FHENIX_REVEAL_WORKER_RETRY_MAX_MS:-300000}"
+      FHENIX_REVEAL_WORKER_REBROADCAST_MS: "${FHENIX_REVEAL_WORKER_REBROADCAST_MS:-90000}"
+      FHENIX_REVEAL_WORKER_WARN_SEC: "${FHENIX_REVEAL_WORKER_WARN_SEC:-600}"
+      FHENIX_REVEAL_WORKER_ESCALATE_SEC: "${FHENIX_REVEAL_WORKER_ESCALATE_SEC:-1800}"
+      FHENIX_REVEAL_WORKER_MIN_BALANCE_WEI: "${FHENIX_REVEAL_WORKER_MIN_BALANCE_WEI:-20000000000000000}"
+      FHENIX_REVEAL_WORKER_WITHOUT_PERMIT: "${FHENIX_REVEAL_WORKER_WITHOUT_PERMIT:-false}"
       # Murmur Gateway broadcaster. Required by /v2/gateway/calls and
       # /v2/gateway/feeds/:id/packets — without these, those routes return 503.
       FHENIX_GATEWAY_ENABLED: "${FHENIX_GATEWAY_ENABLED:-false}"

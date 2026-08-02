@@ -148,7 +148,7 @@ export function AdminOverviewPage() {
 
       {/* CONTROL STRIP ───────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-2 flex items-center justify-between flex-wrap gap-2">
-        <span className="ck-label ck-pos">operator health</span>
+        <span className="ck-title">operator health</span>
         <div className="flex items-center gap-3 flex-wrap">
           <button
             className="ck-btn ck-btn-bracket"
@@ -176,12 +176,12 @@ export function AdminOverviewPage() {
       <main className="flex-1 min-h-0 flex flex-col">
         {error && (
           <div className="border-b border-[var(--color-border)] px-3 py-2 ck-mono ck-neg">
-            [ERROR] {error}
+            [error] {error}
           </div>
         )}
 
         {!loaded && !error && (
-          <div className="px-3 py-8 ck-mono ck-dim">[loading …]</div>
+          <div className="px-3 py-8 ck-mono ck-dim">[loading…]</div>
         )}
 
         {loaded && <StatusBanner health={overall} cards={cards} />}
@@ -399,7 +399,7 @@ function HealthCard({ card }: { card: OverviewCard }) {
   const body = (
     <div className="bg-[var(--color-bg)] px-4 py-3 h-full flex flex-col gap-3 transition-colors duration-[var(--dur-fast)] ease-out hover:bg-[var(--color-surface)]">
       <div className="flex items-center justify-between gap-3">
-        <span className="ck-label">{card.title}</span>
+        <span className="ck-title">{card.title}</span>
         <HealthDot health={card.health} />
       </div>
       <div className={`ck-mono text-2xl tabular-nums ${healthTextClass(card.health)}`}>{card.status}</div>
@@ -490,7 +490,7 @@ function TokenPrompt({
           <div className="px-4 py-6 flex flex-col gap-4">
             {error && (
               <div className="ck-frame-strong px-3 py-2 ck-mono ck-neg">
-                [ERROR] {error}
+                [error] {error}
               </div>
             )}
             <form

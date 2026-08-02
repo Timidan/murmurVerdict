@@ -1,5 +1,6 @@
 import { useEffect, useState, lazy, Suspense } from "react";
 import { parseLocation } from "./route.js";
+import { DetailDrawerProvider, DetailDrawer, useDetailDrawer } from "./components/compact/DetailDrawer.js";
 
 const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ default: m.TodayPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
@@ -108,6 +109,8 @@ export function VerdictRouter() {
   const next = parseNext(window.location.hash || window.location.search);
 
   return (
+    <DetailDrawerProvider>
+    <BackgroundInert>
     <Suspense
       fallback={
         <div className="mmr-shell min-h-dvh bg-[var(--color-bg)] flex items-center justify-center">
@@ -153,7 +156,22 @@ export function VerdictRouter() {
       {route.name === "logo" && <LogoDemoPage />}
       {route.name === "not_found" && <NotFoundPage path={route.params?.path} />}
     </Suspense>
+    </BackgroundInert>
+      <DetailDrawer />
+    </DetailDrawerProvider>
   );
+}
+
+/**
+ * While the detail drawer is open, mark the page behind it `inert` so the
+ * background is removed from the tab order AND the screen-reader tree — the
+ * drawer's focus trap alone keeps Tab inside, but without inert a virtual
+ * cursor could still wander the dimmed page. The drawer itself renders as a
+ * sibling, outside this wrapper.
+ */
+function BackgroundInert({ children }: { children: React.ReactNode }) {
+  const { entity } = useDetailDrawer();
+  return <div inert={entity !== null || undefined}>{children}</div>;
 }
 
 /**

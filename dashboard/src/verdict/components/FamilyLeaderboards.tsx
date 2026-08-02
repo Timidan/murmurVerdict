@@ -77,7 +77,7 @@ export function FamilyLeaderboards() {
   return (
     <div className="border border-[var(--color-border-vis)]">
       <div className="ck-header flex items-center gap-2 px-2 py-1">
-        <span className="ck-label ck-pos">families</span>
+        <span className="ck-title">families</span>
         <span className="ck-mono ck-dim text-xs">
           {view === "cross" ? "general" : `per-family · ${view.family}`}
         </span>
@@ -174,7 +174,7 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
             {formatScore(r.general_score)}
           </span>
           <span className="ck-dim">
-            {Math.round(r.coverage_ratio * 100)}% cov
+            {Math.round(r.coverage_ratio * 100)}% covered
           </span>
         </li>
       ))}

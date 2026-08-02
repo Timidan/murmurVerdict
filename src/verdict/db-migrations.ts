@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 55 as const;
+export const LATEST_DB_MIGRATION_VERSION = 60 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1017,11 +1017,190 @@ export function applyMigrations(db: Database.Database): void {
       db,
       MIGRATION_055_T1_RESOLUTIONS_NULLABLE_EVIDENCE,
       () => {
-        set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+        // Intermediate step: 056 follows in this same applyMigrations pass.
+        // Persist 55 here (not LATEST) so a crash between 055 and 056 leaves
+        // an honest schema_version that re-runs 056 on the next boot.
+        set.run("schema_version", "55");
       },
       ["t1_resolutions", "t1_resolutions_v055"],
     );
     v = 55;
+  }
+
+  if (v < 56) {
+    // Migration 056 — Polymarket discovery ledger + health row.
+    //
+    // `polymarket_discovery_state` is the durable per-conditionId record of
+    // the auto-discovery ticker's registration attempts: state-machine status
+    // (draft → broadcasting → confirmed → listed, with frozen/failed exits),
+    // end-time, tx hash, error/attempt bookkeeping, and gas telemetry. It
+    // survives daemon crashes so a broadcast whose receipt was lost can be
+    // reconciled against on-chain state instead of re-spending gas, and the
+    // per-hour / per-day registration caps are counted from it.
+    //
+    // `polymarket_discovery_health` is a single-row tick heartbeat the
+    // operator-alert scanner reads (stale ticks, relayer balance posture).
+    //
+    // Pure additive — CREATE TABLE IF NOT EXISTS, safe to re-run.
+    db.transaction(() => {
+      db.exec(MIGRATION_056_POLYMARKET_DISCOVERY);
+      // Intermediate step: 057 follows in this same applyMigrations pass.
+      // Persist 56 here (not LATEST) so a crash between 056 and 057 leaves an
+      // honest schema_version that re-runs 057 on the next boot.
+      set.run("schema_version", "56");
+    })();
+    v = 56;
+  }
+
+  if (v < 57) {
+    // Migration 057 — durable fallback reveal jobs + reveal attribution.
+    //
+    // `fhenix_reveal_jobs` is the crash-durable per-call state machine for the
+    // murmur-owned fallback reveal worker (src/integrations/fhenix-reveal-
+    // worker.ts). One row per sealed call the worker has become responsible
+    // for after the agent grace window; it persists open/publish tx hashes,
+    // partial threshold-decrypt results, backoff timing, and the phase so a
+    // restart never re-opens or re-publishes a call whose receipt was lost.
+    //
+    // The two new `fhenix_sealed_calls` columns are normalized reveal
+    // attribution evidence, written atomically when a reveal is ingested:
+    //   - reveal_sender: the successful publishReveal tx `from` (lowercased).
+    //   - reveal_source: agent | daemon_fallback | unattributed_external,
+    //     classified from that sender. Powers honest daemon_fallback_reveals
+    //     and reveal_reliability on the leaderboard instead of the old
+    //     hardcoded zero. NULL on rows revealed before this migration
+    //     (historical backfill would require an RPC sweep of receipt.from).
+    //
+    // Pure additive — ADD COLUMN + CREATE TABLE IF NOT EXISTS, safe to re-run.
+    db.transaction(() => {
+      db.exec(MIGRATION_057_FHENIX_REVEAL_JOBS);
+      // Intermediate step: 058 follows in this same applyMigrations pass.
+      // Persist 57 here (not LATEST) so a crash between 057 and 058 leaves an
+      // honest schema_version that re-runs 058 on the next boot.
+      set.run("schema_version", "57");
+    })();
+    v = 57;
+  }
+
+  if (v < 58) {
+    // Migration 058 — reveal-worker self-heal watermark + legacy `missed` reset.
+    //
+    // `tx_broadcast_at` is the crash-durable broadcast watermark for the reveal
+    // worker's currently-pending open/publish tx. Without it a dropped /
+    // nonce-gapped tx (which never produces a receipt) is indistinguishable
+    // from a still-mining one, so the worker would wait on a null receipt
+    // forever and never re-broadcast. The worker re-broadcasts once
+    // `now - tx_broadcast_at` exceeds its staleness threshold, self-healing a
+    // stuck reveal EOA nonce instead of stranding the call (which is revealable
+    // forever). See src/integrations/fhenix-reveal-worker.ts.
+    //
+    // The `missed` reset recovers legacy rows the OLD time-only terminalization
+    // path auto-marked before it was replaced by worker-health alerts. Every
+    // such row has revealed_at IS NULL and is still on-chain revealable (a call
+    // has no reveal expiry), so it is returned to `pending` for the fallback
+    // worker to seed and for reveal ingestion to attach. `missed` is now
+    // reserved for a manually-established irrecoverable condition, so only
+    // still-revealable auto-missed rows are reset here.
+    //
+    // Pure additive — ADD COLUMN + idempotent UPDATE, safe to re-run.
+    db.transaction(() => {
+      db.exec(MIGRATION_058_REVEAL_WORKER_SELFHEAL);
+      // Persist 58 (not LATEST) so a crash before 059 re-runs 059 next boot.
+      set.run("schema_version", "58");
+    })();
+    v = 58;
+  }
+
+  if (v < 59) {
+    // Migration 059 — Flow 2 paid private decrypt-grant entitlements.
+    //
+    // `entitlements` is the crash-durable state machine for a subscriber who
+    // pays (off-chain nanopay/x402) to receive EARLY private decrypt access to
+    // an agent's sealed call, before the public reveal. Exactly one row per
+    // (chain_id, contract_address, onchain_call_id, subscriber_address): the
+    // UNIQUE reservation is inserted BEFORE settlement so two concurrent
+    // payment nonces cannot double-buy the same (call, subscriber) and charge
+    // twice. `status` mirrors the ordered payment→reserve→settle→grant→confirm
+    // path from the access route (src/verdict/entitlement-access-surface.ts)
+    // and the grant reconciler (src/integrations/fhenix-grant-reconciler.ts).
+    // A settled payment is NEVER relabeled a plain failure — a grant that
+    // cannot be broadcast/confirmed becomes grant_failed_refund_due so the
+    // operator/reconciler owes a refund. See
+    // contracts/src/MurmurSealedVerdicts.sol grantDecryptAccess for the
+    // on-chain window enforcement this pairs with.
+    //
+    // Pure additive — CREATE TABLE IF NOT EXISTS, safe to re-run.
+    db.transaction(() => {
+      db.exec(MIGRATION_059_ENTITLEMENTS);
+      // Persist 59 (not LATEST) so a crash before 060 re-runs 060 next boot.
+      set.run("schema_version", "59");
+    })();
+    v = 59;
+  }
+
+  if (v < 60) {
+    // Migration 060 — agent-auth hardening (PayBox competitive review,
+    // codex-reviewed 2026-08-02). Four independent pieces, one version:
+    //
+    //   1. agent_runtime_key_nonces — consumed (runtime_key_id, nonce) pairs
+    //      for murmur-rk-v1 proof-of-possession replay prevention. No FK to
+    //      agent_runtime_keys: keys are soft-revoked (never deleted), and an
+    //      FK would tax every authenticated request for a cascade that can't
+    //      fire. Rows are pruned lazily on each verify (retention 600s).
+    //   2. request_fingerprint + auth_proof on both gateway attempt tables.
+    //      fingerprint = sha256 of the canonicalized semantic request body,
+    //      compared on every client_order_id duplicate exit so an idempotent
+    //      200 can never be returned for DIFFERENT content ("any changed
+    //      parameter = new request"). auth_proof records how the reserving
+    //      request authenticated ('pop-v1' or NULL bearer-only), so
+    //      acceptance-time audit attribution reflects what actually happened.
+    //   3. accounts.agent_credentials_disabled_at — the account kill switch.
+    //      Checked at dispatch (runtime + api key), both key mints, and
+    //      gateway attempt claiming; a bulk revoke alone is not durable
+    //      because API-key mint is Privy-gated only.
+    //   4. agent_security_events rebuild (SQLite CHECK can't be ALTERed) to
+    //      admit the two kill-switch event kinds. Mirrors the closed enum in
+    //      schema.ts AgentSecurityEventKindSchema — both surfaces must move
+    //      together, by design.
+    //
+    // ALTERs are idempotent via applyAlterTableAddColumn; CREATEs use IF NOT
+    // EXISTS; the rebuild drops its scratch table first — safe to re-run.
+    applyAlterTableAddColumn(
+      db,
+      "fhenix_gateway_tx_attempts",
+      "request_fingerprint",
+      `ALTER TABLE fhenix_gateway_tx_attempts ADD COLUMN request_fingerprint TEXT`,
+    );
+    applyAlterTableAddColumn(
+      db,
+      "fhenix_gateway_tx_attempts",
+      "auth_proof",
+      `ALTER TABLE fhenix_gateway_tx_attempts ADD COLUMN auth_proof TEXT`,
+    );
+    applyAlterTableAddColumn(
+      db,
+      "fhenix_gateway_feed_packet_tx_attempts",
+      "request_fingerprint",
+      `ALTER TABLE fhenix_gateway_feed_packet_tx_attempts ADD COLUMN request_fingerprint TEXT`,
+    );
+    applyAlterTableAddColumn(
+      db,
+      "fhenix_gateway_feed_packet_tx_attempts",
+      "auth_proof",
+      `ALTER TABLE fhenix_gateway_feed_packet_tx_attempts ADD COLUMN auth_proof TEXT`,
+    );
+    applyAlterTableAddColumn(
+      db,
+      "accounts",
+      "agent_credentials_disabled_at",
+      `ALTER TABLE accounts ADD COLUMN agent_credentials_disabled_at TEXT`,
+    );
+    db.transaction(() => {
+      db.exec(MIGRATION_060_RUNTIME_KEY_POP_NONCES);
+      db.exec(MIGRATION_060_SECURITY_EVENT_KINDS);
+      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+    })();
+    v = 60;
   }
 }
 
@@ -2825,6 +3004,175 @@ const MIGRATION_055_T1_RESOLUTIONS_NULLABLE_EVIDENCE = `
   ALTER TABLE t1_resolutions_v055 RENAME TO t1_resolutions;
 `;
 
+// ─── Migration 056 — Polymarket discovery ledger ────────────────────────────
+// Status vocabulary mirrors the discovery state machine reviewed for the
+// auto-registration ticker: rows are created as 'draft' alongside the draft
+// markets row, move to 'broadcasting' once a registerFixedRevealMarket tx is
+// signed (tx_hash persisted BEFORE the receipt wait so a crash can reconcile),
+// 'confirmed' on a success receipt, 'listed' when the markets row is promoted,
+// 'frozen' when the window ends before promotion, and 'failed' on terminal
+// registration errors. registered_onchain_at is the spend-cap anchor.
+const MIGRATION_056_POLYMARKET_DISCOVERY = `
+  CREATE TABLE IF NOT EXISTS polymarket_discovery_state (
+    condition_id            TEXT PRIMARY KEY,
+    question                TEXT,
+    slug                    TEXT,
+    end_date_epoch_s        INTEGER NOT NULL CHECK (end_date_epoch_s > 0),
+    status                  TEXT NOT NULL CHECK (status IN (
+      'draft','broadcasting','confirmed','listed','frozen','failed'
+    )),
+    attempt_count           INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    tx_hash                 TEXT,
+    gas_used                TEXT,
+    effective_gas_price_wei TEXT,
+    last_error              TEXT,
+    registered_onchain_at   TEXT,
+    listed_at               TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_polymarket_discovery_status
+    ON polymarket_discovery_state(status);
+  CREATE INDEX IF NOT EXISTS idx_polymarket_discovery_registered
+    ON polymarket_discovery_state(registered_onchain_at)
+    WHERE registered_onchain_at IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_polymarket_discovery_end_date
+    ON polymarket_discovery_state(end_date_epoch_s);
+
+  CREATE TABLE IF NOT EXISTS polymarket_discovery_health (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled             INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    tick_interval_sec   INTEGER,
+    last_tick_at        TEXT,
+    last_success_at     TEXT,
+    last_error          TEXT,
+    relayer_balance_wei TEXT,
+    balance_status      TEXT CHECK (
+      balance_status IS NULL OR balance_status IN ('ok','warning','critical')
+    ),
+    updated_at          TEXT NOT NULL
+  );
+`;
+
+const MIGRATION_057_FHENIX_REVEAL_JOBS = `
+  ALTER TABLE fhenix_sealed_calls ADD COLUMN reveal_sender TEXT;
+  ALTER TABLE fhenix_sealed_calls ADD COLUMN reveal_source TEXT
+    CHECK (reveal_source IS NULL OR reveal_source IN (
+      'agent','daemon_fallback','unattributed_external'
+    ));
+
+  CREATE TABLE IF NOT EXISTS fhenix_reveal_jobs (
+    call_id                  TEXT PRIMARY KEY
+                             REFERENCES fhenix_sealed_calls(call_id) ON DELETE CASCADE,
+    chain_id                 INTEGER NOT NULL,
+    contract_address         TEXT NOT NULL,
+    onchain_call_id          TEXT NOT NULL,
+    reveal_open_at           TEXT NOT NULL,
+    phase                    TEXT NOT NULL CHECK (phase IN (
+      'eligible',
+      'open_tx_pending',
+      'opened_confirmed',
+      'decrypt_pending',
+      'partially_decrypted',
+      'ready_to_publish',
+      'publish_tx_pending',
+      'quarantined',
+      'terminal_daemon',
+      'terminal_external'
+    )),
+    open_tx_hash             TEXT,
+    open_block_number        INTEGER,
+    publish_tx_hash          TEXT,
+    publish_block_number     INTEGER,
+    binary_index_value       INTEGER,
+    binary_index_signature   TEXT,
+    confidence_value         INTEGER,
+    confidence_signature     TEXT,
+    attempt_count            INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    next_attempt_at          TEXT NOT NULL,
+    last_error               TEXT,
+    -- Worker-health escalation: NULL (healthy) | 'warn' | 'escalate'. Set by
+    -- the worker once a still-unrevealed job passes the warn / escalate age
+    -- thresholds. Never terminalizes the call — a call is revealable forever.
+    alert_level              TEXT CHECK (alert_level IS NULL OR alert_level IN ('warn','escalate')),
+    first_eligible_at        TEXT NOT NULL,
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_fhenix_reveal_jobs_due
+    ON fhenix_reveal_jobs(phase, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_fhenix_reveal_jobs_open_tx
+    ON fhenix_reveal_jobs(chain_id, open_tx_hash)
+    WHERE open_tx_hash IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_fhenix_reveal_jobs_publish_tx
+    ON fhenix_reveal_jobs(chain_id, publish_tx_hash)
+    WHERE publish_tx_hash IS NOT NULL;
+`;
+
+const MIGRATION_058_REVEAL_WORKER_SELFHEAL = `
+  ALTER TABLE fhenix_reveal_jobs ADD COLUMN tx_broadcast_at TEXT;
+
+  UPDATE fhenix_sealed_calls
+     SET reveal_status = 'pending',
+         invalid_reason = NULL,
+         terminal_at = NULL
+   WHERE reveal_status = 'missed'
+     AND revealed_at IS NULL;
+`;
+
+const MIGRATION_059_ENTITLEMENTS = `
+  CREATE TABLE IF NOT EXISTS entitlements (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    chain_id              INTEGER NOT NULL,
+    contract_address      TEXT NOT NULL,
+    -- Murmur's internal sealed-call id (fhenix_sealed_calls.call_id) when known.
+    call_id               TEXT,
+    -- The on-chain callId (bytes32 hex, lowercased) passed to grantDecryptAccess.
+    onchain_call_id       TEXT NOT NULL,
+    -- The paying subscriber, derived from the VERIFIED payer wallet (never JSON).
+    subscriber_address    TEXT NOT NULL,
+    -- The producing agent (fhenix_sealed_calls.agent_id) recorded for later
+    -- accounting; v1 pays all revenue to Murmur with NO producer split.
+    producer_agent_id     TEXT,
+    -- The nanopay receipt this entitlement settled against (nanopay_receipts.id
+    -- as text, or the Circle transaction UUID) for reconciliation.
+    nanopay_receipt_id    TEXT,
+    amount                TEXT,
+    currency              TEXT,
+    status                TEXT NOT NULL CHECK (status IN (
+      'payment_settling',
+      'grant_queued',
+      'grant_broadcast',
+      'granted',
+      'settlement_unknown',
+      'grant_failed_refund_due',
+      'refunded'
+    )),
+    grant_tx_hash         TEXT,
+    grant_block_number    INTEGER,
+    grant_attempts        INTEGER NOT NULL DEFAULT 0 CHECK (grant_attempts >= 0),
+    last_error            TEXT,
+    -- Refund lifecycle, orthogonal to status: NULL | 'refund_due' | 'refunded'.
+    refund_status         TEXT CHECK (refund_status IS NULL OR refund_status IN ('refund_due','refunded')),
+    -- Backoff watermark for the grant reconciler (ISO). Due when <= now.
+    next_attempt_at       TEXT,
+    granted_at            TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+  );
+
+  -- One entitlement per (chain, contract, on-chain call, subscriber). Inserted
+  -- BEFORE settlement so concurrent payment nonces cannot double-charge the
+  -- same access. Normalized lowercase columns keep case variants from bypassing
+  -- the constraint (contract/subscriber are case-insensitive EVM addresses;
+  -- onchain_call_id is a lowercased bytes32).
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_entitlements_reservation
+    ON entitlements(chain_id, contract_address, onchain_call_id, subscriber_address);
+  -- Reconciler due-work scan: non-terminal statuses ordered by next_attempt_at.
+  CREATE INDEX IF NOT EXISTS idx_entitlements_due
+    ON entitlements(status, next_attempt_at);
+`;
+
 // ─── Migration 034 — local-FHE retreat ──────────────────────────────────────
 //
 // Drops the retired daemon-local FHE pipeline. Existing deployments that had
@@ -3847,6 +4195,81 @@ const MIGRATION_051_NANOPAY_RECEIPTS = `
   -- so Phase 3 doesn't add an ALTER on an already-populated table.
   CREATE INDEX IF NOT EXISTS idx_nanopay_receipts_status_created
     ON nanopay_receipts(status, created_at);
+`;
+
+// ─── Migration 060 — agent-auth hardening ───────────────────────────────────
+const MIGRATION_060_RUNTIME_KEY_POP_NONCES = `
+  CREATE TABLE IF NOT EXISTS agent_runtime_key_nonces (
+    runtime_key_id TEXT NOT NULL,
+    nonce          TEXT NOT NULL,
+    seen_at        TEXT NOT NULL,
+    PRIMARY KEY (runtime_key_id, nonce)
+  ) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS idx_agent_runtime_key_nonces_seen
+    ON agent_runtime_key_nonces(seen_at);
+`;
+
+// Rebuild copied from MIGRATION_053 (same triggers/indexes) with the two
+// account kill-switch kinds appended to the closed CHECK.
+const MIGRATION_060_SECURITY_EVENT_KINDS = `
+  DROP TRIGGER IF EXISTS trg_agent_security_events_no_update;
+  DROP TRIGGER IF EXISTS trg_agent_security_events_no_delete;
+
+  DROP TABLE IF EXISTS agent_security_events_v060;
+  CREATE TABLE agent_security_events_v060 (
+    event_id     TEXT PRIMARY KEY,
+    agent_id     TEXT,
+    account_id   TEXT,
+    kind         TEXT NOT NULL CHECK (kind IN (
+      'admin_claim',
+      'admin_polymarket_upsert',
+      'admin_market_status_change',
+      'admin_ref_delete',
+      'admin_account_unlink',
+      'admin_fhenix_gateway_retry',
+      'admin_fhenix_feed_packet_backfill',
+      'account_kill_switch_engaged',
+      'account_kill_switch_released'
+    )),
+    actor        TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL
+  );
+
+  INSERT INTO agent_security_events_v060 (
+    event_id, agent_id, account_id, kind, actor, payload_json, created_at
+  )
+  SELECT
+    event_id, agent_id, account_id, kind, actor, payload_json, created_at
+  FROM agent_security_events;
+
+  DROP TABLE agent_security_events;
+  ALTER TABLE agent_security_events_v060 RENAME TO agent_security_events;
+
+  CREATE INDEX idx_agent_security_events_agent
+    ON agent_security_events(agent_id)
+    WHERE agent_id IS NOT NULL;
+  CREATE INDEX idx_agent_security_events_account
+    ON agent_security_events(account_id)
+    WHERE account_id IS NOT NULL;
+  CREATE INDEX idx_agent_security_events_kind
+    ON agent_security_events(kind);
+  CREATE INDEX idx_agent_security_events_created
+    ON agent_security_events(created_at DESC);
+  CREATE INDEX idx_agent_security_events_polymarket_condition
+    ON agent_security_events(json_extract(payload_json, '$.conditionId'))
+    WHERE kind = 'admin_polymarket_upsert';
+
+  CREATE TRIGGER trg_agent_security_events_no_update
+  BEFORE UPDATE ON agent_security_events
+  BEGIN
+    SELECT RAISE(ABORT, 'agent_security_events rows are append-only');
+  END;
+  CREATE TRIGGER trg_agent_security_events_no_delete
+  BEFORE DELETE ON agent_security_events
+  BEGIN
+    SELECT RAISE(ABORT, 'agent_security_events rows are append-only');
+  END;
 `;
 
 /**

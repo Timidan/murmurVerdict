@@ -196,7 +196,7 @@ export function DestinationAddressForm({
       noValidate
     >
       <div className="ck-header">
-        <span className="ck-label ck-pos">payout destination · casual tier</span>
+        <span className="ck-title">payout destination · casual tier</span>
         <span className="ck-mono ck-dim">{slug}</span>
       </div>
 

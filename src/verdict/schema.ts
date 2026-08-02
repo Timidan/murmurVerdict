@@ -234,9 +234,14 @@ export const LeaderboardRowSchema = z
     win_rate: z.number().min(0).max(1).nullable(),
     pending_calls: z.number().int().nonnegative(),
     last_resolved_at: z.string().datetime({ offset: false }).nullable(),
-    /** Reserved compatibility fields; sealed Fhenix does not use fallbacks. */
+    /** Reveal reliability = non-daemon reveals / (non-daemon + daemon-fallback +
+     *  genuine misses). Null until the agent has any terminal sealed reveal. */
     reveal_reliability: z.number().min(0).max(1).nullable(),
+    /** Reveals published WITHOUT the murmur fallback (agent self-reveal or an
+     *  unattributed external sender), by publish-tx `from`. */
     agent_reveals: z.number().int().nonnegative(),
+    /** Reveals the murmur-owned fallback worker guaranteed (publish tx sent by
+     *  the dedicated reveal EOA). No longer hardcoded to 0. */
     daemon_fallback_reveals: z.number().int().nonnegative(),
     /**
      * Pillar-4 marketplace booking gate. True iff resolved_calls >=
@@ -291,6 +296,13 @@ export const UsageEventKindSchema = z.enum([
   "call.first_submitted",
   "call.first_resolved",
   "call.tenth_submitted",
+  // Reveal attribution (migration 057) — emitted in the SAME transaction that
+  // attaches a valid or invalid Fhenix reveal, carrying
+  // {call_id, tx_hash, sender, source}. `source` is agent | daemon_fallback |
+  // unattributed_external (see fhenix-reveal-attribution.ts). The leaderboard
+  // aggregates the normalized reveal_source column; this event is the durable
+  // per-reveal audit trail behind it.
+  "fhenix_reveal_published",
 ]);
 export type UsageEventKind = z.infer<typeof UsageEventKindSchema>;
 
@@ -338,6 +350,14 @@ export const AgentSecurityEventKindSchema = z.enum([
   // ingest route (recovery path when the watcher missed a packet).
   // Only emitted when the ingest call actually inserts a new row.
   "admin_fhenix_feed_packet_backfill",
+  // Account owner engaged the kill switch via POST /v1/account/kill-switch:
+  // agent_credentials_disabled_at set, all runtime keys revoked, all API
+  // keys rotated out. actor is the Privy account, not an operator.
+  "account_kill_switch_engaged",
+  // Account owner released the kill switch (separate deliberate ceremony);
+  // previously revoked/rotated credentials stay dead — only NEW mints and
+  // dispatch resume.
+  "account_kill_switch_released",
 ]);
 export type AgentSecurityEventKind = z.infer<
   typeof AgentSecurityEventKindSchema
@@ -439,6 +459,19 @@ export const ERROR_CODES = {
    */
   agent_already_owned_by_another_account: "agent_already_owned_by_another_account",
   asset_not_supported: "asset_not_supported",
+  /**
+   * A valid PoP-bound Runtime Key presented a missing, stale, replayed, or
+   * cryptographically invalid request signature. Fail-closed 401: the
+   * dispatcher throws instead of falling through to API-key auth, so a
+   * stolen bearer secret alone can never downgrade to weaker auth.
+   */
+  runtime_key_signature_invalid: "runtime_key_signature_invalid",
+  /**
+   * The account engaged its kill switch (accounts.agent_credentials_disabled_at).
+   * Every runtime-key/API-key dispatch, key mint, and gateway attempt claim
+   * rejects with this code until the account re-enables agent access. 403.
+   */
+  agent_credentials_disabled: "agent_credentials_disabled",
   /** Operator admin surface is disabled (VERDICT_ADMIN_TOKEN not set). 503. */
   admin_disabled: "admin_disabled",
   /** Admin route auth rejected the supplied/absent admin token. 403. */

@@ -9,6 +9,16 @@ function runtimeKeyPolicyFields(notesMaxLength: number) {
     max_calls_per_day: z.number().int().min(1).max(10000).optional(),
     feed_packets: z.boolean().optional(),
     notes: z.string().max(notesMaxLength).optional(),
+    // Ed25519 public key (32 bytes, lowercase hex) generated client-side at
+    // mint time and covered by the controller-wallet signature via
+    // policy_hash. Presence upgrades the key to proof-of-possession: gateway
+    // requests must carry a valid X-Murmur-Key-Signature or fail closed.
+    // Absent on keys minted before PoP; those stay bearer-only. No default —
+    // materializing one would change canonical policy hashes of old keys.
+    signing_pubkey: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
   };
 }
 

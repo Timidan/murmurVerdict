@@ -9,6 +9,7 @@ import {
   requireOwnedAgentBySlug,
 } from "./agent-identity.js";
 import {
+  assertAgentCredentialsEnabled,
   controllerWalletAttestationStatus,
   mintRuntimeKey,
   revokeRuntimeKey,
@@ -98,6 +99,7 @@ export function runtimeKeyChallengeResponse(
     message: string;
   };
 } {
+  assertAgentCredentialsEnabled(input.db, input.accountId);
   const agent = requireOwnedAgentBySlug(input.db, input.accountId, input.slug);
   const controller = requireControllerWalletForAgent(
     input.db,
@@ -152,6 +154,7 @@ export async function mintAccountRuntimeKeyResponse(
     warning: string;
   };
 }> {
+  assertAgentCredentialsEnabled(input.db, input.accountId);
   const agent = requireOwnedAgentBySlug(input.db, input.accountId, input.slug);
   const controller = requireControllerWalletForAgent(
     input.db,

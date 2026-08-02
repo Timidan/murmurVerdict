@@ -190,8 +190,7 @@ export function LeaderboardPage() {
           for the sort key. Default order is the daemon's lb-derived rank; vs
           (verdict_score) is shown first only as the headline number. */}
       <div
-        className="px-2 py-1 ck-mono ck-dim border-b border-[var(--color-border)]"
-        style={{ fontSize: 13 }}
+        className="px-2 py-1 ck-mono ck-dim border-b border-[var(--color-border)] text-[13px]"
       >
         ranked by lb — the conservative lower-bound score (mean − 1.6449·SEM);
         vs is the headline verdict score.
@@ -234,7 +233,7 @@ export function LeaderboardPage() {
           )}
           {!error && sorted && sorted.length === 0 && (
             <div className="px-2 py-2 ck-mono ck-dim flex flex-col items-start gap-1.5">
-              <span>[no agents ranked yet — verdicts build the ladder]</span>
+              <span>[no agents ranked yet — verdicts fill this in]</span>
               <a href="#/agent/onboard" className="ck-btn ck-btn-bracket">
                 register an agent →
               </a>
@@ -258,7 +257,7 @@ export function LeaderboardPage() {
 function Ladder({ rows }: { rows: LeaderboardRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[28px_1fr_70px_58px_58px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span title="rank">#</span>
         <span title="agent handle">agent</span>
         <span title="agent kind">kind</span>
@@ -297,9 +296,15 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
       {rows.map((r) => (
         <li
           key={r.agent_id}
-          className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[28px_1fr_70px_58px_58px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
-          <a href={`#/agents/${r.display_slug}`} className="contents no-underline">
+          {/* Stretched row link — real box so keyboard focus lands. */}
+          <a
+            href={`#/agents/${r.display_slug}`}
+            aria-label={`open agent ${r.display_slug}`}
+            className="ck-rowlink"
+          />
+          <span className="contents">
             <span className="ck-mono ck-dim">
               {r.rank ? String(r.rank).padStart(2, "0") : "—"}
             </span>
@@ -337,7 +342,7 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
             <span className="text-right ck-mono ck-dim">
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
             </span>
-          </a>
+          </span>
         </li>
       ))}
     </ul>
@@ -358,7 +363,7 @@ function RibbonCell({
   return (
     <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5">
       <span className="ck-label">{label}</span>
-      <span className={"ck-mono " + toneClass} style={{ fontSize: 14, fontWeight: 700 }}>
+      <span className={"ck-mono ck-value-lg " + toneClass}>
         {value}
       </span>
     </div>
@@ -376,8 +381,7 @@ function ScoringLegend() {
         legend / scoring
       </summary>
       <div
-        className="details-fade px-2 pb-2 pt-1 ck-mono ck-dim leading-relaxed"
-        style={{ fontSize: 13 }}
+        className="details-fade px-2 pb-2 pt-1 ck-mono ck-dim leading-relaxed text-[13px]"
       >
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 m-0">
           <dt className="ck-pos">vs</dt>

@@ -9,6 +9,7 @@ import { useStream } from "../../hooks/useStream.js";
 import { mergeMarketAgentRow } from "../../hooks/stream-merge.js";
 import { parseMarketConfig, marketDisplayName, type MarketConfig } from "../../lib/market-meta.js";
 import { formatScore } from "../../lib/score-format.js";
+import { useDetailDrawer, isPlainLeftClick } from "./DetailDrawer.js";
 
 /**
  * Markets matrix — single dense table. One row per market, with the
@@ -21,6 +22,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<MarketFilters>(DEFAULT_FILTERS);
   const { markets: liveMarkets } = useStream();
+  const { open } = useDetailDrawer();
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   // "/" focuses the market search (terminal idiom). Ignored while another
@@ -169,11 +171,11 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
         </div>
       )}
     <ul className="m-0 p-0 list-none">
-      <li className={`grid ${GRID_COLS} gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label`}>
+      <li className={`grid ${GRID_COLS} gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead`}>
         <span aria-hidden="true" />
         <span>market</span>
         <span>class</span>
-        <span>hzn</span>
+        <span>horizon</span>
         <span className="text-right">n</span>
         <span>top-3</span>
         <span className="text-right">lead</span>
@@ -186,12 +188,21 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
         return (
           <li
             key={m.market_id}
-            className={`grid ${GRID_COLS} gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable`}
+            className={`relative grid ${GRID_COLS} gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable`}
           >
+            {/* Stretched row link — real box so keyboard focus lands. */}
             <a
               href={`#/markets/${encodeURIComponent(m.market_id)}`}
-              className="contents no-underline"
-            >
+              aria-label={`open market ${displayName}`}
+              onClick={(e) => {
+                if (isPlainLeftClick(e)) {
+                  e.preventDefault();
+                  open("market", m.market_id);
+                }
+              }}
+              className="ck-rowlink"
+            />
+            <span className="contents">
               <AssetGlyph market={m} />
               <span
                 className="ck-mono ck-pos truncate"
@@ -228,7 +239,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
               >
                 {formatScore(leader?.verdict_score ?? null)}
               </span>
-            </a>
+            </span>
           </li>
         );
       })}
@@ -420,11 +431,11 @@ function MarketsSkeleton() {
   // Hairline skeleton matching the row grid. No spinner per DESIGN.md §10.
   return (
     <ul className="m-0 p-0 list-none">
-      <li className={`grid ${GRID_COLS} gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label`}>
+      <li className={`grid ${GRID_COLS} gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead`}>
         <span aria-hidden="true" />
         <span>market</span>
         <span>class</span>
-        <span>hzn</span>
+        <span>horizon</span>
         <span className="text-right">n</span>
         <span>top-3</span>
         <span className="text-right">lead</span>

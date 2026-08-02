@@ -30,7 +30,7 @@ export function ErrorState({ kind, what, id, detail }: ErrorStateProps) {
   return (
     <div className="px-2 py-3 ck-mono">
       <div className="ck-label ck-dim mb-1">{status}</div>
-      <div className="ck-pos" style={{ fontSize: 14, fontWeight: 700 }}>
+      <div className="ck-pos ck-value-lg">
         {headline}
       </div>
       {id && (

@@ -36,6 +36,11 @@ export interface FhenixGatewayTxAttemptInsert {
   strategy_tag: string | null;
   binary_index_input_json: string;
   confidence_input_json: string;
+  /** murmur-idem-v1 hash of the reserving request's validated body; NULL on
+   *  pre-060 rows. Compared on every client_order_id duplicate exit. */
+  request_fingerprint: string | null;
+  /** How the reserving request authenticated: 'pop-v1' or NULL (bearer). */
+  auth_proof: string | null;
   next_attempt_at: string;
   created_at: string;
   updated_at: string;
@@ -86,6 +91,7 @@ export const fhenixGatewayTxRepo = {
         market_id, market_id_hash, market_ref_protocol, market_config_version,
         client_order_id, client_nonce, submitted_at, rationale, strategy_tag,
         binary_index_input_json, confidence_input_json,
+        request_fingerprint, auth_proof,
         next_attempt_at, created_at, updated_at)
        VALUES
        (@attempt_id, @status, @runtime_key_id, @account_id, @agent_id,
@@ -94,6 +100,7 @@ export const fhenixGatewayTxRepo = {
         @market_id, @market_id_hash, @market_ref_protocol, @market_config_version,
         @client_order_id, @client_nonce, @submitted_at, @rationale, @strategy_tag,
         @binary_index_input_json, @confidence_input_json,
+        @request_fingerprint, @auth_proof,
         @next_attempt_at, @created_at, @updated_at)`,
     ).run(input);
   },

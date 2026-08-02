@@ -115,7 +115,7 @@ export function MobileNav({
       {open && (
         <div className="fixed inset-0 z-40">
           <div
-            className="drawer-enter-backdrop absolute inset-0 bg-black/50"
+            className="drawer-enter-backdrop absolute inset-0 bg-[var(--color-scrim)]"
             onClick={close}
             aria-hidden="true"
           />

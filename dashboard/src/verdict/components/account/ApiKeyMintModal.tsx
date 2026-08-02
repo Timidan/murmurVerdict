@@ -146,7 +146,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
         className="modal-enter-panel ck-frame-strong w-full max-w-[560px] bg-[var(--color-bg)]"
       >
         <div className="ck-header">
-          <span id="mint-modal-title" className="ck-label ck-neg">
+          <span id="mint-modal-title" className="ck-title ck-neg">
             ⚠ api key · one-time reveal
           </span>
           <span className="ck-mono ck-dim">{slug}</span>

@@ -75,22 +75,21 @@ export async function acceptSealedCall(
 
   const agentId = requireSealedCallAcceptanceAgent(authResult);
 
-  const existing = submissionsRepo.findByClientOrderId(
-    db,
-    agentId,
-    client_order_id,
-  );
-  if (existing) {
-    const existingCtx = submissionsRepo.loadResolverContext(db, existing.call_id);
+  // Shared by the pre-insert duplicate branch AND unique-race recovery: both
+  // must prove the existing call is the SAME sealed Fhenix event before
+  // returning an idempotent 200 (a blind recovery return let two concurrent
+  // DIFFERENT bodies both report success — codex review 2026-08-02).
+  const replayFromExisting = (existingCallId: string): AcceptSealedCallResult => {
+    const existingCtx = submissionsRepo.loadResolverContext(db, existingCallId);
     if (existingCtx?.privacy_mode !== "sealed_fhenix") {
       throw new VerdictError(
         "client_order_id is already bound to a non-sealed_fhenix call",
         ERROR_CODES.duplicate,
         409,
-        { existing_call_id: existing.call_id },
+        { existing_call_id: existingCallId },
       );
     }
-    const sealed = fhenixSealedCallsRepo.byCallId(db, existing.call_id);
+    const sealed = fhenixSealedCallsRepo.byCallId(db, existingCallId);
     const sameEvent =
       sealed &&
       sealed.chain_id === verifiedSubmit.chain_id &&
@@ -107,13 +106,13 @@ export async function acceptSealedCall(
         "client_order_id is already bound to a different sealed Fhenix event",
         ERROR_CODES.duplicate,
         409,
-        { existing_call_id: existing.call_id },
+        { existing_call_id: existingCallId },
       );
     }
     return {
       status: 200,
       body: {
-        call_id: existing.call_id,
+        call_id: existingCallId,
         privacy_mode: "sealed_fhenix",
         market_id: existingCtx.market_id,
         status: existingCtx.status,
@@ -123,6 +122,15 @@ export async function acceptSealedCall(
         tier: authResult.tier,
       },
     };
+  };
+
+  const existing = submissionsRepo.findByClientOrderId(
+    db,
+    agentId,
+    client_order_id,
+  );
+  if (existing) {
+    return replayFromExisting(existing.call_id);
   }
 
   const prepared = prepareSealedCallAcceptance({
@@ -214,19 +222,7 @@ export async function acceptSealedCall(
         client_order_id,
       );
       if (existingAfter) {
-        return {
-          status: 200,
-          body: {
-            call_id: existingAfter.call_id,
-            privacy_mode: "sealed_fhenix",
-            market_id: market.market_id,
-            status: "pending_t0",
-            reveal_open_at: verifiedSubmit.reveal_open_at,
-            onchain_call_id: verifiedSubmit.onchain_call_id,
-            idempotent_hit: true,
-            tier: authResult.tier,
-          },
-        };
+        return replayFromExisting(existingAfter.call_id);
       }
       throw new VerdictError(
         "duplicate sealed Fhenix submission event",

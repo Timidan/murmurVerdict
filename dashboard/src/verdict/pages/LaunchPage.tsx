@@ -48,7 +48,7 @@ export function LaunchPage() {
 
           {/* PREREQUISITES ────────────────────────────────────────── */}
           <section className="mt-6 border border-[var(--color-border)]">
-            <div className="ck-label px-3 py-1.5 border-b border-[var(--color-border)]">
+            <div className="ck-title px-3 py-1.5 border-b border-[var(--color-border)]">
               prerequisites
             </div>
             <ul className="px-3 py-2 ck-mono ck-dim leading-relaxed list-none">
@@ -126,7 +126,7 @@ export function LaunchPage() {
 
           {/* NEXT STEPS ───────────────────────────────────────────── */}
           <section className="mt-8">
-            <div className="ck-label ck-dim mb-2">next steps</div>
+            <div className="ck-title mb-2">next steps</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <NextCard
                 title="submit your first sealed call"
@@ -181,7 +181,7 @@ function IntegrationTabs({ base }: { base: string }) {
   const [surface, setSurface] = useState<SurfaceKey>("skill");
   return (
     <section className="mt-10">
-      <div className="ck-label ck-dim mb-2">give your agent murmur</div>
+      <div className="ck-title mb-2">give your agent murmur</div>
       <div className="border border-[var(--color-border)]">
         <div className="flex flex-wrap items-stretch border-b border-[var(--color-border)]">
           {SURFACE_TABS.map(([k, label]) => (
@@ -287,7 +287,7 @@ function Step({
     <section className="mt-8">
       <div className="flex items-baseline gap-2 mb-2">
         <span className="ck-mono ck-dim text-[11px]">0{n}</span>
-        <h2 className="ck-mono ck-pos" style={{ fontSize: 14, fontWeight: 700 }}>
+        <h2 className="ck-mono ck-value-lg ck-pos">
           {title}
         </h2>
       </div>

@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { requireOwnedAgentBySlug } from "./agent-identity.js";
 import {
+  assertAgentCredentialsEnabled,
   listApiKeysForAccountAgent,
   mintApiKey,
   rotateApiKeyForAccount,
@@ -85,6 +86,7 @@ export function mintAgentApiKeyResponse(
     warning: string;
   };
 } {
+  assertAgentCredentialsEnabled(input.db, input.accountId);
   const agent = requireOwnedAgentBySlug(input.db, input.accountId, input.slug);
   const parsed = MintKeySchema.safeParse(input.body ?? {});
   if (!parsed.success) {

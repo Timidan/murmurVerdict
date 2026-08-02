@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { verdictApi, type TodayFeed, type TodayFeedRow } from "../api.js";
+import { useDetailDrawer, isPlainLeftClick } from "../components/compact/DetailDrawer.js";
 import { useStream } from "../hooks/useStream.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
@@ -126,6 +127,7 @@ function FeedRows({
   pending?: boolean;
   emptyLabel: string;
 }) {
+  const { open } = useDetailDrawer();
   if (rows.length === 0) {
     return <div className="px-2 py-3 ck-mono ck-dim leading-tight">{emptyLabel}</div>;
   }
@@ -149,14 +151,24 @@ function FeedRows({
         return (
           <li
             key={row.call_id}
-            className="grid grid-cols-[60px_14px_1fr_60px] gap-2 px-2 py-1 border-b border-[var(--color-border)] items-center"
+            className="relative grid grid-cols-[76px_14px_1fr_60px] gap-2 px-2 py-1 border-b border-[var(--color-border)] items-center"
           >
-            <a href={`#/calls/${row.call_id}`} className="contents no-underline">
-              <span className="ck-mono ck-dim">{ts}</span>
-              <span aria-hidden="true" className="ck-dim">▪</span>
-              <span className="ck-mono ck-dim truncate">@{row.agent_slug}</span>
-              <span className={"ck-mono text-right " + outcomeTone}>{outcomeText}</span>
-            </a>
+            {/* Stretched row link — real box so keyboard focus lands. */}
+            <a
+              href={`#/calls/${row.call_id}`}
+              aria-label={`open call ${row.call_id.slice(0, 8)} by ${row.agent_slug}`}
+              onClick={(e) => {
+                if (isPlainLeftClick(e)) {
+                  e.preventDefault();
+                  open("call", row.call_id);
+                }
+              }}
+              className="ck-rowlink"
+            />
+            <span className="ck-mono ck-dim truncate">{ts}</span>
+            <span aria-hidden="true" className="ck-dim">▪</span>
+            <span className="ck-mono ck-dim truncate">@{row.agent_slug}</span>
+            <span className={"ck-mono text-right " + outcomeTone}>{outcomeText}</span>
           </li>
         );
       })}

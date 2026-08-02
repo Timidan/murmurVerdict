@@ -39,6 +39,7 @@ import {
   type FhenixEventVerifier,
 } from "../integrations/fhenix-events.js";
 import type { FhenixGatewayBroadcaster } from "../integrations/fhenix-gateway.js";
+import type { EntitlementAccessSurfaceDeps } from "./entitlement-access-surface.js";
 import type { LiveCanaryProvider } from "../integrations/live-canaries.js";
 import {
   type WebhookDnsLookup,
@@ -96,6 +97,11 @@ export interface ApiDeps {
    * When unset, `/v2/gateway/calls` fails closed with 503.
    */
   fhenixGateway?: FhenixGatewayBroadcaster | null;
+  /**
+   * Flow 2 paid decrypt-access surface. When unset, the access routes under
+   * `/v2/gateway/calls/:callId/access` fail closed with 503.
+   */
+  entitlementAccess?: EntitlementAccessSurfaceDeps | null;
   privyAuth?: PrivyAuthVerifier;
   /**
    * Optional live operator canaries for external dependencies that are not
@@ -161,6 +167,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     now,
     privyAuth: deps.privyAuth,
     requireAdmin: adminAuth.requireAdmin,
+    entitlementAccess: deps.entitlementAccess,
   }));
 
   router.use(operatorControlRouter({

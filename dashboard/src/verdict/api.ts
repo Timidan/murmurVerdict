@@ -203,6 +203,25 @@ import type {
 // the existing call-sites (they continue to omit the second arg).
 type HeaderMap = Record<string, string>;
 
+export interface AccountActivityRow {
+  attempt_id: string;
+  kind: "sealed_call" | "feed_packet";
+  agent_id: string;
+  agent_slug: string | null;
+  market_id: string | null;
+  feed_id: string | null;
+  status: string;
+  runtime_key_id: string | null;
+  runtime_key_prefix: string | null;
+  runtime_key_label: string | null;
+  auth_proof: string | null;
+  tx_hash: string | null;
+  call_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 async function get<T>(path: string, headers?: HeaderMap): Promise<T> {
   const init: RequestInit = headers ? { headers } : {};
   const res = await fetch(`${API_URL}${path}`, init);
@@ -765,6 +784,45 @@ export const verdictApi = {
       `/v1/account/agents/${encodeURIComponent(slug)}/runtime-keys`,
       { Authorization: `Bearer ${privyToken}` },
     ),
+
+  getKillSwitch: (privyToken: string) =>
+    get<{ engaged: boolean; disabled_at: string | null }>(
+      `/v1/account/kill-switch`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  postKillSwitch: (privyToken: string) =>
+    post<{
+      engaged: boolean;
+      already_engaged: boolean;
+      disabled_at: string;
+      runtime_keys_revoked: number;
+      api_keys_rotated: number;
+    }>(`/v1/account/kill-switch`, {}, { Authorization: `Bearer ${privyToken}` }),
+
+  postKillSwitchRelease: (privyToken: string) =>
+    post<{ engaged: boolean; was_engaged: boolean; released_at: string | null }>(
+      `/v1/account/kill-switch/release`,
+      { confirm: "release-agent-access" },
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  getAccountActivity: (
+    privyToken: string,
+    params?: { limit?: number; before?: string; before_id?: string },
+  ) => {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.before) qs.set("before", params.before);
+    if (params?.before_id) qs.set("before_id", params.before_id);
+    const suffix = qs.size > 0 ? `?${qs.toString()}` : "";
+    return get<{
+      activity: AccountActivityRow[];
+      next: { before: string; before_id: string } | null;
+    }>(`/v1/account/activity${suffix}`, {
+      Authorization: `Bearer ${privyToken}`,
+    });
+  },
 
   postRuntimeKeyChallenge: (
     privyToken: string,

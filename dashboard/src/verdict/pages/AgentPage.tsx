@@ -14,6 +14,8 @@ import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { FormulaTip } from "../components/compact/FormulaTip.js";
 import { ErrorState } from "../components/compact/ErrorState.js";
 import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
+import { useDetailDrawer, isPlainLeftClick } from "../components/compact/DetailDrawer.js";
+import { KindGlyph } from "../components/compact/glyphs.js";
 import { formatScore } from "../lib/score-format.js";
 import {
   classifyCallOutcome,
@@ -177,7 +179,7 @@ export function AgentPage({ slug }: { slug: string }) {
           <section className="grid grid-cols-2 md:grid-cols-8 border-b border-[var(--color-border)]">
             <RCell label="handle" value={`@${agent.display_slug}`} />
             <RCell label="name" value={agent.display_name} />
-            <RCell label="kind" value={agent.kind} tone={kindTone(agent.kind)} />
+            <RCell label="kind" value={<KindGlyph kind={agent.kind} />} tone={kindTone(agent.kind)} />
             <RCell
               label={
                 <FormulaTip
@@ -294,9 +296,10 @@ export function AgentPage({ slug }: { slug: string }) {
 }
 
 function CallTable({ calls }: { calls: AgentCallRow[] }) {
+  const { open } = useDetailDrawer();
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[64px_14px_1fr_50px_30px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[104px_14px_1fr_50px_30px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>time</span>
         <span aria-hidden="true"></span>
         <span>note<span className="sr-only"> (each row sealed)</span></span>
@@ -313,25 +316,36 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
         return (
           <li
             key={c.call_id}
-            className="grid grid-cols-[64px_14px_1fr_50px_30px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+            className="relative grid grid-cols-[104px_14px_1fr_50px_30px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
           >
-            <a href={`#/calls/${c.call_id}`} className="contents no-underline">
-              <span className="ck-mono ck-dim">{ts}</span>
-              <span aria-hidden="true" className="ck-dim">▪</span>
-              <span className="ck-mono ck-dim truncate">{note}</span>
-              <span
-                className={
-                  "ck-mono text-right " +
-                  (c.outcome === "win"
-                    ? "ck-pos"
-                    : c.outcome === "loss"
-                      ? "ck-neg"
-                      : "ck-dim")
+            {/* Stretched row link — a real box (unlike display:contents) so
+                keyboard focus lands and the ring outlines the whole row. */}
+            <a
+              href={`#/calls/${c.call_id}`}
+              aria-label={`open call ${c.call_id.slice(0, 8)} · ${outLabel}`}
+              onClick={(e) => {
+                if (isPlainLeftClick(e)) {
+                  e.preventDefault();
+                  open("call", c.call_id);
                 }
-              >
-                {outLabel}
-              </span>
-            </a>
+              }}
+              className="ck-rowlink"
+            />
+            <span className="ck-mono ck-dim truncate">{ts}</span>
+            <span aria-hidden="true" className="ck-dim">▪</span>
+            <span className="ck-mono ck-dim truncate">{note}</span>
+            <span
+              className={
+                "ck-mono text-right " +
+                (c.outcome === "win"
+                  ? "ck-pos"
+                  : c.outcome === "loss"
+                    ? "ck-neg"
+                    : "ck-dim")
+              }
+            >
+              {outLabel}
+            </span>
             <VerifyCallLink callId={c.call_id} />
           </li>
         );
@@ -347,7 +361,8 @@ function VerifyCallLink({ callId }: { callId: string }) {
       href={`#/calls/${callId}`}
       aria-label={`verify call ${shortId}`}
       className={
-        "t-meta ck-mono justify-self-end border border-[var(--color-border-vis)] px-1 " +
+        // relative z-[1] lifts the chip above the row's stretched link overlay.
+        "t-meta ck-mono relative z-[1] justify-self-end border border-[var(--color-border-vis)] px-1 " +
         "text-[9px] leading-[14px] text-[var(--color-secondary)] no-underline " +
         "hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
         "hover:border-[var(--color-display)]"
@@ -359,9 +374,10 @@ function VerifyCallLink({ callId }: { callId: string }) {
 }
 
 function GridTable({ rows }: { rows: AgentMarketRow[] }) {
+  const { open } = useDetailDrawer();
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[1fr_44px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[1fr_58px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>market</span>
         <span className="text-right">vs</span>
         <span className="text-right">wr</span>
@@ -370,34 +386,40 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
       {rows.map((r) => (
         <li
           key={r.market_id}
-          className="grid grid-cols-[1fr_44px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[1fr_58px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           <a
             href={`#/markets/${encodeURIComponent(r.market_id)}`}
-            className="contents no-underline"
-          >
-            <span className="ck-mono ck-pos truncate">{r.market_id}</span>
-            <span
-              className={
-                "ck-mono text-right " +
-                ((r.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg")
+            aria-label={`open market ${r.market_id}`}
+            onClick={(e) => {
+              if (isPlainLeftClick(e)) {
+                e.preventDefault();
+                open("market", r.market_id);
               }
-            >
-              {formatScore(r.verdict_score)}
-            </span>
-            <span className="ck-mono ck-dim text-right">
-              {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
-            </span>
-            <span className="flex justify-end">
-              <CompactSparkline
-                values={
-                  r.call_scores?.filter((s): s is number => s !== null) ?? []
-                }
-                width={56}
-                height={12}
-              />
-            </span>
-          </a>
+            }}
+            className="ck-rowlink"
+          />
+          <span className="ck-mono ck-pos truncate">{r.market_id}</span>
+          <span
+            className={
+              "ck-mono text-right " +
+              ((r.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg")
+            }
+          >
+            {formatScore(r.verdict_score)}
+          </span>
+          <span className="ck-mono ck-dim text-right">
+            {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
+          </span>
+          <span className="flex justify-end">
+            <CompactSparkline
+              values={
+                r.call_scores?.filter((s): s is number => s !== null) ?? []
+              }
+              width={56}
+              height={12}
+            />
+          </span>
         </li>
       ))}
     </ul>
@@ -427,7 +449,7 @@ function OwnerAuthorizedPill({ explorerUrl }: { explorerUrl: string | null }) {
 
   const content = (
     <>
-      <span>owner-authorized</span>
+      <span>owner verified</span>
       {explorerUrl && (
         <svg
           aria-hidden="true"
@@ -491,7 +513,7 @@ function SidebarStats({
       <FactRow label="wr" value={stats ? formatWR(stats.winRate) : "—"} />
       <FactRow label="streak" value={stats ? `${stats.streak}w` : "—"} />
       <FactRow label="total" value={stats ? String(stats.total) : "—"} tone="dim" />
-      <FactRow label="kind" value={agent.kind} tone="dim" />
+      <FactRow label="kind" value={<KindGlyph kind={agent.kind} />} tone="dim" />
       <FactRow
         label="chain"
         value={humanChain(agent.chain_id)}
@@ -502,16 +524,16 @@ function SidebarStats({
             the deleted tiers. `agent` is the canonical Privy-owned default
             and gets the main-tier-eligible note. */}
         {agent.kind === "agent" && (
-          <span>agent · Privy-owned · main-tier eligible.</span>
+          <span>agent · owned through Privy · can reach the main tier</span>
         )}
         {agent.kind === "benchmark" && (
-          <span>benchmark · system-curated comparison agent.</span>
+          <span>benchmark · a comparison agent we maintain</span>
         )}
         {agent.kind === "attested" && (
-          <span>attested · Olas Service Registry bond · sentinel tier.</span>
+          <span>attested · backed by an Olas bond · sentinel tier</span>
         )}
         {agent.kind === "internal_test" && (
-          <span>internal · operator-only test agent.</span>
+          <span>internal · test agent, operators only</span>
         )}
       </div>
     </div>
@@ -524,7 +546,7 @@ function FactRow({
   tone = "default",
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   tone?: "pos" | "neg" | "dim" | "default";
 }) {
   const toneClass =
@@ -533,8 +555,7 @@ function FactRow({
     <div className="grid grid-cols-[60px_1fr] items-center px-2 py-1 border-b border-[var(--color-border)]">
       <span className="ck-label">{label}</span>
       <span
-        className={"ck-mono text-right " + toneClass}
-        style={{ fontSize: 12, fontWeight: 700 }}
+        className={"ck-mono ck-value-sm text-right " + toneClass}
       >
         {value}
       </span>
@@ -548,18 +569,21 @@ function RCell({
   tone = "default",
 }: {
   label: ReactNode;
-  value: number | string;
+  value: ReactNode;
   tone?: "pos" | "neg" | "dim" | "default";
 }) {
   const toneClass =
     tone === "pos" ? "ck-pos" : tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
+  // Only string/number values get a native hover title — a glyph value carries
+  // its own tooltip and would stringify to "[object Object]".
+  const title =
+    typeof value === "string" || typeof value === "number" ? String(value) : undefined;
   return (
     <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5 min-w-0">
       <span className="ck-label">{label}</span>
       <span
-        className={"ck-mono truncate " + toneClass}
-        style={{ fontSize: 13, fontWeight: 700 }}
-        title={String(value)}
+        className={"ck-mono ck-value truncate " + toneClass}
+        title={title}
       >
         {value}
       </span>

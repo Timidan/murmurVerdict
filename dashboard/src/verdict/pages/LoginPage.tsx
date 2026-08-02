@@ -68,7 +68,7 @@ export function LoginPage({ next }: LoginPageProps) {
       <main className="flex-1 flex items-center justify-center px-4">
         <section className="ck-frame w-full max-w-[480px]">
           <div className="ck-header">
-            <span className="ck-label ck-pos">sign in · no wallet required</span>
+            <span className="ck-title">sign in · no wallet required</span>
             <span className="ck-mono ck-dim">privy</span>
           </div>
 

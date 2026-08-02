@@ -87,7 +87,7 @@ export function AdminRefsPage() {
       {/* INTRO STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-3 flex items-center justify-between gap-4 flex-wrap">
         <div className="flex flex-col gap-1">
-          <span className="ck-label ck-pos">full attribution data</span>
+          <span className="ck-title">full attribution data</span>
           <span className="ck-mono ck-dim">
             admin · sender board · full unfiltered list with per-row delete
           </span>
@@ -102,7 +102,7 @@ export function AdminRefsPage() {
           {error && <div className="px-2 py-2 ck-mono ck-neg">[error] {error}</div>}
 
           {!rows && !error && (
-            <div className="px-3 py-8 ck-mono ck-dim">[loading …]</div>
+            <div className="px-3 py-8 ck-mono ck-dim">[loading…]</div>
           )}
 
           {rows && rows.length === 0 && (
@@ -117,7 +117,7 @@ export function AdminRefsPage() {
 
           {rows && rows.length > 0 && (
             <ul className="m-0 p-0 list-none">
-              <li className={COLS + " border-b border-[var(--color-border-vis)] ck-label"}>
+              <li className={COLS + " border-b border-[var(--color-border-vis)] ck-colhead"}>
                 <span>rank</span>
                 <span>sender</span>
                 <span className="text-right">clicks</span>

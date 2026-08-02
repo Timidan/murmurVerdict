@@ -19,7 +19,7 @@ export function NotFoundPage({ path }: NotFoundPageProps) {
       <CompactTopbar crumb="404" />
       <main className="px-2 py-3 ck-mono">
         <div className="ck-label ck-dim mb-1">404</div>
-        <div className="ck-pos" style={{ fontSize: 14, fontWeight: 700 }}>
+        <div className="ck-pos ck-value-lg">
           page not found
         </div>
         <div className="ck-mono ck-dim mt-1 max-w-[52ch] truncate" title={attempted}>

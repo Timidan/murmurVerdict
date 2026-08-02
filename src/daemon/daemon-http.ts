@@ -7,6 +7,7 @@ import type { FhenixGatewayBroadcaster } from "../integrations/fhenix-gateway.js
 import type { LiveCanaryProvider } from "../integrations/live-canaries.js";
 import type { OracleClient } from "../integrations/oracle.js";
 import { createVerdictRouter } from "../verdict/api.js";
+import type { EntitlementAccessSurfaceDeps } from "../verdict/entitlement-access-surface.js";
 import { createVerdictErrorHandler } from "../verdict/verdict-error-surface.js";
 import type { AccountAgentIdAdapter } from "../verdict/account-agent-surface.js";
 import type { AgentSecurityEventIdAdapter } from "../verdict/agent-security-event.js";
@@ -68,6 +69,7 @@ export interface DaemonHttpSurfaceDeps {
   now: () => Date;
   operatorAlertSink?: OperatorAlertSinkConfig | null;
   nanopayRuntime?: DaemonNanopayRuntime | null;
+  entitlementAccess?: EntitlementAccessSurfaceDeps | null;
 }
 
 export function createDaemonHttpSurface(
@@ -117,6 +119,7 @@ export function createDaemonHttpSurface(
       oracleProbe: deps.oracle ? oracleProbe(deps.oracle) : undefined,
       fhenixVerifier: deps.fhenixVerifier,
       fhenixGateway: deps.fhenixGateway,
+      entitlementAccess: deps.entitlementAccess,
       privyAuth: deps.privyAuth ?? undefined,
       liveCanaries: deps.liveCanaries,
       publicOrigin: deps.config.publicOrigin,

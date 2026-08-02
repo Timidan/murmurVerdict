@@ -94,7 +94,16 @@ export function authorizeRuntimeKeyGatewayIntent(
   db: Database.Database,
   identity: RuntimeKeyIdentity,
   intent: RuntimeKeyGatewayIntent,
-  opts: { now: () => Date },
+  opts: {
+    now: () => Date;
+    /**
+     * Duplicate exits re-apply pure policy (chain match, market allowlist,
+     * feed flag) before handing back a pinned attempt — a key narrowed since
+     * the original reservation must not retrieve orders outside its policy —
+     * but a replay is not new work, so it must not burn rate-limit quota.
+     */
+    skipRateLimits?: boolean;
+  },
 ): RuntimeKeyAuthorization {
   const runtimeKey = identity.runtime_key;
   const expectedChainId = `eip155:${intent.chain_id}`;
@@ -144,7 +153,7 @@ export function authorizeRuntimeKeyGatewayIntent(
     );
   }
 
-  if (intent.kind === "sealed_call") {
+  if (intent.kind === "sealed_call" && !opts.skipRateLimits) {
     enforceSealedCallRateLimits(db, runtimeKey, policy, opts.now);
   }
 

@@ -20,9 +20,12 @@ export interface DaemonTickerIntervals {
   resolverMs: number;
   fhenixEventMs: number;
   fhenixGatewayMs: number;
+  fhenixRevealWorkerMs: number;
+  fhenixGrantReconcilerMs?: number;
   feedSlaMs: number;
   liveCanaryMs: number;
   operatorAlertMs: number;
+  polymarketDiscoveryMs: number;
   statsMs: number;
 }
 
@@ -37,6 +40,9 @@ export interface DaemonTickersDeps {
   resolver: Tickable | null;
   fhenixIngestor: Tickable | null;
   fhenixGateway: Tickable | null;
+  fhenixRevealWorker: Tickable | null;
+  fhenixGrantReconciler?: Tickable | null;
+  polymarketDiscovery: Tickable | null;
   liveCanaries: LiveCanaryProvider;
   newFeedSlaIncidentId?: FeedSlaIncidentIdAdapter;
   newOperatorAlertId?: OperatorAlertIdAdapter;
@@ -69,6 +75,9 @@ export function startDaemonTickers(
     resolver,
     fhenixIngestor,
     fhenixGateway,
+    fhenixRevealWorker,
+    fhenixGrantReconciler,
+    polymarketDiscovery,
     liveCanaries,
     newFeedSlaIncidentId,
     newOperatorAlertId,
@@ -107,6 +116,58 @@ export function startDaemonTickers(
         async () => {
           await fhenixGateway.tick();
         },
+      ),
+    );
+  }
+
+  if (fhenixRevealWorker) {
+    // Immediate startup tick: after a restart the reveal EOA must resume any
+    // in-flight open/publish jobs (and pick up newly-overdue calls) without
+    // waiting a full interval. The overlap guard prevents a slow decrypt tick
+    // from stacking, and stop() awaits the in-flight body on shutdown.
+    tickers.push(
+      setIntervalGuarded(
+        logger,
+        intervals.fhenixRevealWorkerMs,
+        "fhenix-reveal-worker",
+        async () => {
+          await fhenixRevealWorker.tick();
+        },
+        { runImmediately: true },
+      ),
+    );
+  }
+
+  if (fhenixGrantReconciler) {
+    // Immediate startup tick: after a restart, entitlements left in
+    // grant_queued / grant_broadcast / settlement_unknown must resume without
+    // waiting a full interval — a subscriber already paid for access.
+    tickers.push(
+      setIntervalGuarded(
+        logger,
+        intervals.fhenixGrantReconcilerMs ?? 30_000,
+        "fhenix-grant-reconciler",
+        async () => {
+          await fhenixGrantReconciler.tick();
+        },
+        { runImmediately: true },
+      ),
+    );
+  }
+
+  if (polymarketDiscovery) {
+    // Immediate startup tick: fresh 5-minute windows appear only ~10-30min
+    // before their end, so waiting a full interval after a restart can miss
+    // a whole boundary.
+    tickers.push(
+      setIntervalGuarded(
+        logger,
+        intervals.polymarketDiscoveryMs,
+        "polymarket-discovery",
+        async () => {
+          await polymarketDiscovery.tick();
+        },
+        { runImmediately: true },
       ),
     );
   }
@@ -204,10 +265,11 @@ function setIntervalGuarded(
   intervalMs: number,
   label: string,
   work: () => Promise<unknown>,
+  opts?: { runImmediately?: boolean },
 ): GuardedTicker {
   let inFlight = false;
   let inFlightPromise: Promise<unknown> = Promise.resolve();
-  const timer = setInterval(() => {
+  const run = () => {
     if (inFlight) {
       logger.warn(`[daemon] ${label} tick still in flight - skipping`);
       return;
@@ -218,6 +280,9 @@ function setIntervalGuarded(
       .finally(() => {
         inFlight = false;
       });
-  }, intervalMs);
+  };
+  const timer = setInterval(run, intervalMs);
+  // Tracked through inFlightPromise so stop() awaits the startup tick too.
+  if (opts?.runImmediately) run();
   return { timer, settled: () => inFlightPromise };
 }

@@ -27,6 +27,13 @@ export type {
   FeedSlaIncidentRow,
   FeedSlaIncidentStatus,
 } from "./repos/feed-availability-repo.js";
+export { entitlementsRepo } from "./repos/entitlements-repo.js";
+export type {
+  EntitlementRefundStatus,
+  EntitlementRow,
+  EntitlementStatus,
+  ReserveEntitlementInput,
+} from "./repos/entitlements-repo.js";
 export { fhenixEventsRepo } from "./repos/fhenix-event-index-repo.js";
 export type {
   FhenixIndexedEventInput,

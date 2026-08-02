@@ -32,6 +32,8 @@ import { accountSessionRouter } from "./account-session.js";
 import { accountAgentsRouter } from "./account-agents.js";
 import { accountControllerWalletRouter } from "./account-controller-wallet.js";
 import { accountRuntimeKeyRouter } from "./account-runtime-keys.js";
+import { accountKillSwitchRouter } from "./account-kill-switch.js";
+import { accountActivityRouter } from "./account-activity.js";
 import { accountApiKeyRouter } from "./account-api-keys.js";
 import { accountDestinationRouter } from "./account-destination.js";
 import { accountFunnelEventsRouter } from "./account-funnel-events.js";
@@ -144,6 +146,20 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     newRuntimeKeySecret,
     now,
     rotateKeyLimiter,
+  }));
+
+  router.use(accountKillSwitchRouter({
+    requireAccount,
+    db,
+    json,
+    limiter: rotateKeyLimiter,
+    now,
+  }));
+
+  router.use(accountActivityRouter({
+    requireAccount,
+    db,
+    limiter: listAgentsLimiter,
   }));
 
   router.use(accountApiKeyRouter({

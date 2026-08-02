@@ -154,6 +154,7 @@ interface PreflightEnv {
   dashboardUrl: string;
   agentAddress: Address;
   marketId: Hex;
+  marketProtocol: string;
 }
 
 function preflightEnv(): PreflightEnv {
@@ -190,8 +191,12 @@ function preflightEnv(): PreflightEnv {
     die("pre-flight", "OPERATOR_BLIND_MARKET_ID must be a 0x-prefixed bytes32 market id");
   }
   const marketId = marketRaw.toLowerCase() as Hex;
+  // marketRef.protocol must match the daemon market's adapter_id. Default stays
+  // the fixture's native-price adapter; override to target e.g. polymarket-gamma.
+  const marketProtocol =
+    (process.env.OPERATOR_BLIND_MARKET_PROTOCOL ?? "native-price").trim();
 
-  return { baseRpcUrl, relayerKey, runtimeKey, daemonUrl, dashboardUrl, agentAddress, marketId };
+  return { baseRpcUrl, relayerKey, runtimeKey, daemonUrl, dashboardUrl, agentAddress, marketId, marketProtocol };
 }
 
 async function probeUrl(label: string, url: string, expectStatuses: number[] = [200]): Promise<void> {
@@ -575,7 +580,7 @@ async function main() {
     const clientNonce = makeOperatorBlindClientNonce({ runId });
     const gatewayBody: GatewaySealedCallBody = {
       marketRef: {
-        protocol: "native-price",
+        protocol: env.marketProtocol,
         sourceId: marketId,
         configVersion: 1,
       },

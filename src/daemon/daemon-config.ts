@@ -70,7 +70,24 @@ export interface DaemonRuntimeConfig {
   openServLaunchpad: OpenServLaunchpadRuntimeConfig;
   webhookUrlPolicy: WebhookUrlPolicy;
   operatorFhenixLifecycleQueryDefaults: OperatorFhenixLifecycleQueryDefaults;
+  polymarketDiscovery: PolymarketDiscoveryRuntimeConfig;
   intervals: DaemonTickerIntervals;
+}
+
+export interface PolymarketDiscoveryRuntimeConfig {
+  enabled: boolean;
+  tickSec: number;
+  lookaheadMin: number;
+  minLeadSec: number;
+  questionFilter: string;
+  assets: string[];
+  windowDurationSec: number;
+  maxPerTick: number;
+  maxPerHour: number;
+  maxPerDay: number;
+  minBalanceWei: bigint;
+  warnBalanceWei: bigint;
+  maxRegisterCostWei: bigint;
 }
 
 export interface OpenServLaunchpadRuntimeConfig {
@@ -120,6 +137,16 @@ export function loadDaemonRuntimeConfig(
     10,
     "FHENIX_GATEWAY_TICK_SEC",
   );
+  const fhenixRevealWorkerTickSec = parsePositiveSeconds(
+    env.FHENIX_REVEAL_WORKER_TICK_SEC,
+    30,
+    "FHENIX_REVEAL_WORKER_TICK_SEC",
+  );
+  const fhenixGrantReconcilerTickSec = parsePositiveSeconds(
+    env.FHENIX_GRANT_RECONCILER_TICK_SEC,
+    30,
+    "FHENIX_GRANT_RECONCILER_TICK_SEC",
+  );
   const feedSlaTickSec = parsePositiveSeconds(
     env.FEED_SLA_TICK_SEC,
     60,
@@ -138,6 +165,11 @@ export function loadDaemonRuntimeConfig(
   const publicOrigin = loadMurmurPublicOrigin(env);
   const fhenixRuntime = loadFhenixRuntimeConfig(env);
   const privyAuth = loadPrivyAuthConfig(env);
+  const polymarketGammaEnabled = resolvePolymarketGammaEnabled(env);
+  const polymarketDiscovery = loadPolymarketDiscoveryRuntimeConfig(env, {
+    polymarketGammaEnabled,
+    fhenixGatewayConfigured: fhenixRuntime.gateway !== null,
+  });
 
   return {
     port,
@@ -162,7 +194,7 @@ export function loadDaemonRuntimeConfig(
     // zero Polymarket markets, and the resolver needs this adapter registered
     // for any admin-registered polymarket market to resolve. Set =false to opt
     // out explicitly.
-    polymarketGammaEnabled: resolvePolymarketGammaEnabled(env),
+    polymarketGammaEnabled,
     fhenixRuntime,
     nanopayRuntime: loadDaemonNanopayRuntimeConfig({
       env,
@@ -184,16 +216,156 @@ export function loadDaemonRuntimeConfig(
         30 * 24 * 60 * 60,
       ),
     },
+    polymarketDiscovery,
     intervals: {
       resolverMs: resolverTickSec * 1000,
       fhenixEventMs: fhenixEventTickSec * 1000,
       fhenixGatewayMs: fhenixGatewayTickSec * 1000,
+      fhenixRevealWorkerMs: fhenixRevealWorkerTickSec * 1000,
+      fhenixGrantReconcilerMs: fhenixGrantReconcilerTickSec * 1000,
       feedSlaMs: feedSlaTickSec * 1000,
       liveCanaryMs: liveCanaryTickSec * 1000,
       operatorAlertMs: operatorAlertTickSec * 1000,
+      polymarketDiscoveryMs: polymarketDiscovery.tickSec * 1000,
       statsMs: 10_000,
     },
   };
+}
+
+// Every write the discovery ticker makes spends owner-key gas, so an
+// invalid enabled configuration refuses to start instead of guessing.
+function loadPolymarketDiscoveryRuntimeConfig(
+  env: NodeJS.ProcessEnv,
+  runtime: { polymarketGammaEnabled: boolean; fhenixGatewayConfigured: boolean },
+): PolymarketDiscoveryRuntimeConfig {
+  const enabled = parseBooleanFlag(
+    env.POLYMARKET_DISCOVERY_ENABLED,
+    false,
+    "POLYMARKET_DISCOVERY_ENABLED",
+  );
+  const tickSec = parsePositiveSeconds(
+    env.POLYMARKET_DISCOVERY_TICK_SEC,
+    60,
+    "POLYMARKET_DISCOVERY_TICK_SEC",
+  );
+  const lookaheadMin = parseIntegerRange(
+    env.POLYMARKET_DISCOVERY_LOOKAHEAD_MIN,
+    20,
+    "POLYMARKET_DISCOVERY_LOOKAHEAD_MIN",
+    1,
+    24 * 60,
+  );
+  const minLeadSec = parseIntegerRange(
+    env.POLYMARKET_DISCOVERY_MIN_LEAD_SEC,
+    120,
+    "POLYMARKET_DISCOVERY_MIN_LEAD_SEC",
+    0,
+    60 * 60,
+  );
+  const questionFilter =
+    env.POLYMARKET_DISCOVERY_QUESTION_FILTER?.trim() || "Up or Down";
+  const assets = (env.POLYMARKET_DISCOVERY_ASSETS ?? "Bitcoin,Ethereum")
+    .split(",")
+    .map((asset) => asset.trim())
+    .filter(Boolean);
+  const config: PolymarketDiscoveryRuntimeConfig = {
+    enabled,
+    tickSec,
+    lookaheadMin,
+    minLeadSec,
+    questionFilter,
+    assets,
+    windowDurationSec: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC,
+      300,
+      "POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC",
+      60,
+      24 * 60 * 60,
+    ),
+    maxPerTick: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_MAX_PER_TICK,
+      4,
+      "POLYMARKET_DISCOVERY_MAX_PER_TICK",
+      1,
+      100,
+    ),
+    maxPerHour: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_MAX_PER_HOUR,
+      30,
+      "POLYMARKET_DISCOVERY_MAX_PER_HOUR",
+      1,
+      10_000,
+    ),
+    maxPerDay: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_MAX_PER_DAY,
+      650,
+      "POLYMARKET_DISCOVERY_MAX_PER_DAY",
+      1,
+      100_000,
+    ),
+    // Hard stop / warning reserve for the shared owner+relayer balance —
+    // discovery must never drain the account the Gateway relays with.
+    minBalanceWei: parseWei(
+      env.POLYMARKET_DISCOVERY_MIN_BALANCE_WEI,
+      50_000_000_000_000_000n, // 0.05 ETH
+      "POLYMARKET_DISCOVERY_MIN_BALANCE_WEI",
+    ),
+    warnBalanceWei: parseWei(
+      env.POLYMARKET_DISCOVERY_WARN_BALANCE_WEI,
+      200_000_000_000_000_000n, // 0.2 ETH
+      "POLYMARKET_DISCOVERY_WARN_BALANCE_WEI",
+    ),
+    maxRegisterCostWei: parseWei(
+      env.POLYMARKET_DISCOVERY_MAX_REGISTER_COST_WEI,
+      500_000_000_000_000n, // 0.0005 ETH per registration
+      "POLYMARKET_DISCOVERY_MAX_REGISTER_COST_WEI",
+    ),
+  };
+  if (!enabled) return config;
+  if (!runtime.polymarketGammaEnabled) {
+    throw new DaemonConfigError(
+      "POLYMARKET_DISCOVERY_ENABLED",
+      "requires the Polymarket Gamma adapter (MURMUR_POLYMARKET_GAMMA_ENABLED must not be false)",
+    );
+  }
+  if (!runtime.fhenixGatewayConfigured) {
+    throw new DaemonConfigError(
+      "POLYMARKET_DISCOVERY_ENABLED",
+      "requires the Fhenix gateway relayer (FHENIX_GATEWAY_ENABLED=true with FHENIX_RPC_URL, FHENIX_CHAIN_ID, and FHENIX_GATEWAY_RELAYER_PRIVATE_KEY) — on-chain registration signs with the owner/relayer key",
+    );
+  }
+  if (assets.length === 0) {
+    throw new DaemonConfigError(
+      "POLYMARKET_DISCOVERY_ASSETS",
+      "must list at least one asset name when discovery is enabled",
+    );
+  }
+  if (lookaheadMin * 60 <= minLeadSec) {
+    throw new DaemonConfigError(
+      "POLYMARKET_DISCOVERY_LOOKAHEAD_MIN",
+      "lookahead window must extend past POLYMARKET_DISCOVERY_MIN_LEAD_SEC",
+    );
+  }
+  if (config.warnBalanceWei < config.minBalanceWei) {
+    throw new DaemonConfigError(
+      "POLYMARKET_DISCOVERY_WARN_BALANCE_WEI",
+      "must be >= POLYMARKET_DISCOVERY_MIN_BALANCE_WEI",
+    );
+  }
+  return config;
+}
+
+function parseWei(
+  raw: string | undefined,
+  fallback: bigint,
+  key: string,
+): bigint {
+  const trimmed = raw?.trim();
+  if (!trimmed) return fallback;
+  if (!/^[0-9]+$/.test(trimmed)) {
+    throw new DaemonConfigError(key, "must be a non-negative integer wei amount");
+  }
+  return BigInt(trimmed);
 }
 
 function loadOpenServLaunchpadRuntimeConfig(

@@ -15,6 +15,7 @@ import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
+import { VenueGlyph } from "../components/compact/glyphs.js";
 import { ErrorState } from "../components/compact/ErrorState.js";
 import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
 import { useStream } from "../hooks/useStream.js";
@@ -30,7 +31,16 @@ import { isTerminalFailureStatus } from "@shared/wire-call-status";
  * poll). All numbers mono, no card chrome, sub-row shows verdict_lb under
  * the headline verdict score.
  */
-export function MarketDetailPage({ marketId }: { marketId: string }) {
+export function MarketDetailPage({
+  marketId,
+  variant = "page",
+}: {
+  marketId: string;
+  /** "page" = full route (topbar + full-height); "drawer" = body only,
+   *  stacked, rendered inside the shared entity drawer. */
+  variant?: "page" | "drawer";
+}) {
+  const isDrawer = variant === "drawer";
   const [market, setMarket] = useState<MarketRow | null>(null);
   const [agents, setAgents] = useState<AgentMarketRow[] | null>(null);
   const [calls, setCalls] = useState<MarketCallRow[] | null>(null);
@@ -163,7 +173,8 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
   // Venue markets title the tab with the human question (fallback: market id);
   // restore whatever title was there before on unmount / market change.
   useEffect(() => {
-    if (!market || !isVenueMarket(market)) return;
+    // In drawer mode the market isn't the page, so it must not hijack the tab.
+    if (isDrawer || !market || !isVenueMarket(market)) return;
     const prev = document.title;
     const question = parseMarketConfig(market)?.question;
     document.title = `${question ?? market.market_id} · murmur`;
@@ -191,17 +202,19 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
   }
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
-            markets <span className="ck-dim mx-1">/</span>
-            <span className="ck-pos" title={marketId}>
-              {midTruncateId(marketId)}
+    <div className={isDrawer ? "flex flex-col min-h-0" : "mmr-shell min-h-dvh flex flex-col"}>
+      {!isDrawer && (
+        <CompactTopbar
+          crumb={
+            <span>
+              markets <span className="ck-dim mx-1">/</span>
+              <span className="ck-pos" title={marketId}>
+                {midTruncateId(marketId)}
+              </span>
             </span>
-          </span>
-        }
-      />
+          }
+        />
+      )}
 
       {error && (
         <ErrorState kind="error" what="market" id={marketId} detail={error} />
@@ -233,7 +246,7 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
           <section
             className={
               "grid grid-cols-2 border-b border-[var(--color-border)] " +
-              (isVenue ? "md:grid-cols-9" : "md:grid-cols-8")
+              (isDrawer ? "" : isVenue ? "md:grid-cols-9" : "md:grid-cols-8")
             }
           >
             <RCell label="market" value={midTruncateId(marketId)} title={marketId} />
@@ -283,8 +296,7 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
                 return (
                   <span
                     key={`${i}-${o}`}
-                    className="ck-mono border border-[var(--color-border-vis)] px-2 py-[1px]"
-                    style={{ fontSize: 13, fontWeight: 700 }}
+                    className="ck-mono ck-value border border-[var(--color-border-vis)] px-2 py-[1px]"
                     title={odds?.title}
                   >
                     {o.toLowerCase()}
@@ -300,7 +312,7 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
             <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
               market config
             </summary>
-            <div className="details-fade grid grid-cols-2 md:grid-cols-8 border-t border-[var(--color-border)]">
+            <div className={"details-fade grid grid-cols-2 border-t border-[var(--color-border)] " + (isDrawer ? "" : "md:grid-cols-8")}>
               <RCell
                 label="class"
                 value={taxonomy?.label ?? market?.market_kind ?? "—"}
@@ -341,7 +353,13 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
           </details>
 
           {/* MAIN ────────────────────────────────────────── */}
-          <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)] min-h-0">
+          <main
+            className={
+              isDrawer
+                ? "grid grid-cols-1"
+                : "flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)] min-h-0"
+            }
+          >
             <Panel
               title="agent ladder"
               meta={agents ? `${agents.length}` : ""}
@@ -350,7 +368,7 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
                   all markets
                 </a>
               }
-              className="lg:border-r-0"
+              className={isDrawer ? undefined : "lg:border-r-0"}
             >
               {agents === null && <PanelSkeleton rows={6} />}
               {agents !== null && agents.length === 0 && (
@@ -366,7 +384,7 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
               >
                 {calls === null && <PanelSkeleton rows={5} />}
                 {calls !== null && calls.length === 0 && (
-                  <div className="px-2 py-2 ck-mono ck-dim">[no verdicts sealed here yet]</div>
+                  <div className="px-2 py-2 ck-mono ck-dim">[no calls on this market yet]</div>
                 )}
                 {calls !== null && calls.length > 0 && (
                   <VerdictsFeed rows={calls} nowMs={nowMs} />
@@ -386,7 +404,7 @@ export function MarketDetailPage({ marketId }: { marketId: string }) {
 function Ladder({ rows }: { rows: AgentMarketRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_56px_44px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-label">
+      <li className="grid grid-cols-[28px_1fr_58px_58px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
         <span>agent</span>
         <span className="text-right">vs</span>
@@ -399,9 +417,15 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
       {rows.map((r, i) => (
         <li
           key={r.agent_id}
-          className="grid grid-cols-[28px_1fr_56px_44px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[28px_1fr_58px_58px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
-          <a href={`#/agents/${r.display_slug}`} className="contents no-underline">
+          {/* Stretched row link — real box so keyboard focus lands. */}
+          <a
+            href={`#/agents/${r.display_slug}`}
+            aria-label={`open agent ${r.display_slug}`}
+            className="ck-rowlink"
+          />
+          <span className="contents">
             <span className="ck-mono ck-dim">{String(i + 1).padStart(2, "0")}</span>
             <span className="flex items-baseline gap-1 min-w-0">
               <span className="ck-mono ck-pos truncate" title={r.display_name}>
@@ -438,7 +462,7 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
             <span className="text-right ck-mono ck-dim">
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
             </span>
-          </a>
+          </span>
         </li>
       ))}
     </ul>
@@ -556,8 +580,7 @@ function RCell({
     <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5 min-w-0">
       <span className="ck-label">{label}</span>
       <span
-        className={"ck-mono truncate " + toneClass}
-        style={{ fontSize: 13, fontWeight: 700 }}
+        className={"ck-mono ck-value truncate " + toneClass}
         title={title ?? String(value)}
       >
         {value}
@@ -577,20 +600,14 @@ function VenueCell({ url, venue }: { url: string | undefined; venue: string }) {
           href={url}
           target="_blank"
           rel="noopener noreferrer"
-          className="ck-mono ck-pos truncate no-underline hover:underline"
-          style={{ fontSize: 13, fontWeight: 700 }}
-          title={url}
+          className="ck-pos no-underline hover:opacity-80 inline-flex items-center gap-1"
+          title={`${venue} — open event ↗`}
         >
-          {venue} ↗
+          <VenueGlyph venue={venue} size={16} />
+          <span aria-hidden="true" className="ck-dim text-[10px]">↗</span>
         </a>
       ) : (
-        <span
-          className="ck-mono ck-pos truncate"
-          style={{ fontSize: 13, fontWeight: 700 }}
-          title={venue}
-        >
-          {venue}
-        </span>
+        <VenueGlyph venue={venue} size={16} />
       )}
     </div>
   );

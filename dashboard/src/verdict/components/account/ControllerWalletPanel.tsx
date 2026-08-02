@@ -244,8 +244,8 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
 
   return (
     <section className="ck-frame w-full max-w-[720px] px-4 py-4 flex flex-col gap-3">
-      <header className="flex items-baseline justify-between">
-        <h3 className="ck-label">controller wallet</h3>
+      <header className="flex items-center justify-between">
+        <h3 className="ck-title">controller wallet</h3>
         <StateBadge state={state} />
       </header>
 

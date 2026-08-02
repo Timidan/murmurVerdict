@@ -1,35 +1,18 @@
-// ─── PrivacyTierBadge — one-line privacy-mode chip ─────────────────────────
+// ─── PrivacyTierBadge — privacy-mode indicator ─────────────────────────────
+//
+// Renders the call's privacy mode as a monochrome seal/padlock glyph with a
+// tooltip carrying the name (e.g. "fhenix sealed"), instead of a text chip —
+// see components/compact/glyphs.tsx (SealGlyph). Returns null when the row
+// predates the privacy_mode column.
+
+import { SealGlyph } from "./compact/glyphs.js";
 
 export interface PrivacyTierBadgeProps {
   /** From `submissions.privacy_mode`. Null/undefined when the row predates
-   *  the privacy_mode column — render nothing in that case (caller branches). */
+   *  the privacy_mode column — render nothing in that case. */
   mode: string | null | undefined;
 }
 
-interface PrivacyStyle {
-  label: string;
-  cls: string;
-}
-
-const PRIVACY_STYLES: Record<string, PrivacyStyle> = {
-  sealed_fhenix: { label: "fhenix sealed", cls: "ck-pos" },
-};
-
 export function PrivacyTierBadge({ mode }: PrivacyTierBadgeProps) {
-  if (mode === null || mode === undefined || mode === "") return null;
-  const style = PRIVACY_STYLES[mode] ?? {
-    label: mode,
-    cls: "ck-dim",
-  };
-  return (
-    <span
-      className={
-        "ck-label inline-flex items-center px-[6px] py-[1px] border " +
-        "border-[var(--color-border-vis)] " +
-        style.cls
-      }
-    >
-      [ {style.label} ]
-    </span>
-  );
+  return <SealGlyph mode={mode} size={14} />;
 }
