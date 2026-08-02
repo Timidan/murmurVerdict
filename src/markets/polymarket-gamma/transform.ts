@@ -39,9 +39,11 @@ export interface GammaMarketSnapshot {
   /** JSON-encoded string of `string[]`. Last entry is the live status. */
   readonly umaResolutionStatuses?: string;
   readonly umaResolutionStatus?: string | null;
+  readonly question?: string;
   readonly closed?: boolean;
   readonly active?: boolean;
   readonly archived?: boolean;
+  readonly startDate?: string;
   readonly endDate?: string;
   readonly umaEndDate?: string;
   readonly closedTime?: string;

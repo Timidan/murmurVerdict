@@ -12,6 +12,7 @@ import {
 } from "./repos/fhenix-gateway-feed-packet-tx-repo.js";
 import { feedSlaIncidentsRepo } from "./repos/feed-availability-repo.js";
 import { fhenixSealedCallsRepo } from "./repos/fhenix-sealed-calls-repo.js";
+import { polymarketDiscoveryRepo } from "./repos/polymarket-discovery-repo.js";
 import type {
   OperatorAlertInput,
   OperatorAlertSeverity,
@@ -24,6 +25,10 @@ import { isoFromMs } from "./time.js";
 
 const DEFAULT_STUCK_AFTER_MS = 10 * 60_000;
 const DEFAULT_REVEAL_GRACE_SEC = 60 * 60;
+// Additional overdue window past the grace before an unrevealed sealed call
+// escalates from warning to critical. A call is revealable forever, so this is
+// a worker-HEALTH escalation, never a terminal `missed` marking.
+const REVEAL_ESCALATE_AFTER_SEC = 30 * 60;
 const DEFAULT_IDENTITY_DUE_SOON_HOURS = 24;
 
 export interface OperatorAlertSourceOptions {
@@ -67,6 +72,10 @@ export function collectOperatorAlertSources(
         opts.servedAt,
         opts.identityDueSoonHours,
       ),
+    },
+    {
+      source: "polymarket_discovery",
+      alerts: polymarketDiscoveryAlerts(opts.db, opts.servedAt),
     },
   ];
   if (opts.liveCanaries) {
@@ -166,18 +175,27 @@ function fhenixLifecycleAlerts(
   servedAt: string,
   revealGraceSec = DEFAULT_REVEAL_GRACE_SEC,
 ): OperatorAlertInput[] {
-  const cutoff = isoFromMs(Date.parse(servedAt) - Math.max(0, revealGraceSec) * 1_000);
+  // Graduated worker-health alerting (Codex review §10) — the old automatic
+  // time-only `missed` terminalization is gone. An overdue-past-grace pending
+  // call warns; still unrevealed REVEAL_ESCALATE_AFTER_SEC later it escalates
+  // to critical. This fires whether or not the fallback worker is enabled, so
+  // accepting sealed submissions without an active funded worker still pages.
+  const servedMs = Date.parse(servedAt);
+  const warnCutoff = isoFromMs(servedMs - Math.max(0, revealGraceSec) * 1_000);
+  const escalateCutoffMs =
+    servedMs - (Math.max(0, revealGraceSec) + REVEAL_ESCALATE_AFTER_SEC) * 1_000;
   const alerts: OperatorAlertInput[] = [];
-  for (const row of fhenixSealedCallsRepo.listMissable(db, cutoff, 100)) {
+  for (const row of fhenixSealedCallsRepo.listMissable(db, warnCutoff, 100)) {
+    const escalated = Date.parse(row.reveal_open_at) <= escalateCutoffMs;
     alerts.push(alertInput({
       source: "fhenix_lifecycle",
-      kind: "fhenix_reveal_overdue",
+      kind: "fhenix_reveal_fallback_overdue",
       key: `fhenix_lifecycle:overdue:${row.call_id}`,
-      severity: "critical",
-      title: "Fhenix reveal overdue",
-      description: `Call ${row.call_id} passed reveal_open_at ${row.reveal_open_at} without a reveal.`,
+      severity: escalated ? "critical" : "warning",
+      title: escalated ? "Fhenix fallback reveal escalated" : "Fhenix fallback reveal overdue",
+      description: `Call ${row.call_id} passed reveal_open_at ${row.reveal_open_at} and is still unrevealed; the fallback reveal worker keeps retrying (the call is never auto-marked missed).`,
       seenAt: servedAt,
-      payload: row,
+      payload: { ...row, escalated },
     }));
   }
   const terminalRows = db.prepare(
@@ -206,6 +224,88 @@ function fhenixLifecycleAlerts(
       severity: row.reveal_status === "invalid" ? "critical" : "warning",
       title: row.reveal_status === "invalid" ? "Fhenix reveal invalid" : "Fhenix reveal missed",
       description: `Call ${row.call_id} terminalized as ${row.reveal_status}.`,
+      seenAt: servedAt,
+      payload: row,
+    }));
+  }
+  return alerts;
+}
+
+// Minimum staleness before the "no successful tick" alert fires, so a
+// single slow tick doesn't page anyone.
+const DISCOVERY_STALE_FLOOR_MS = 5 * 60_000;
+
+function polymarketDiscoveryAlerts(
+  db: Database.Database,
+  servedAt: string,
+): OperatorAlertInput[] {
+  const alerts: OperatorAlertInput[] = [];
+  const health = polymarketDiscoveryRepo.getHealth(db);
+  const servedAtMs = Date.parse(servedAt);
+  if (health && health.enabled === 1) {
+    if (health.balance_status === "warning" || health.balance_status === "critical") {
+      alerts.push(alertInput({
+        source: "polymarket_discovery",
+        kind: "polymarket_discovery_balance_low",
+        key: `polymarket_discovery:balance:${health.balance_status}`,
+        severity: health.balance_status === "critical" ? "critical" : "warning",
+        title: health.balance_status === "critical"
+          ? "Polymarket discovery relayer balance below hard stop"
+          : "Polymarket discovery relayer balance low",
+        description: health.balance_status === "critical"
+          ? `Relayer balance ${health.relayer_balance_wei ?? "?"} wei is under the registration hard stop; on-chain market registration is halted.`
+          : `Relayer balance ${health.relayer_balance_wei ?? "?"} wei is under the warning reserve.`,
+        seenAt: servedAt,
+        payload: health,
+      }));
+    }
+    const staleAfterMs = Math.max(
+      DISCOVERY_STALE_FLOOR_MS,
+      (health.tick_interval_sec ?? 60) * 5 * 1000,
+    );
+    const lastSuccessMs = health.last_success_at
+      ? Date.parse(health.last_success_at)
+      : Number.NaN;
+    if (!Number.isFinite(lastSuccessMs) || servedAtMs - lastSuccessMs > staleAfterMs) {
+      alerts.push(alertInput({
+        source: "polymarket_discovery",
+        kind: "polymarket_discovery_stale",
+        key: "polymarket_discovery:stale",
+        severity: "critical",
+        title: "Polymarket discovery has no recent successful tick",
+        description: health.last_success_at
+          ? `Last successful discovery tick was ${health.last_success_at}; last error: ${health.last_error ?? "unknown"}.`
+          : `Discovery is enabled but has never completed a successful tick; last error: ${health.last_error ?? "unknown"}.`,
+        seenAt: servedAt,
+        payload: health,
+      }));
+    }
+    const listedOpen = polymarketDiscoveryRepo.countListedEndingAfter(
+      db,
+      Math.floor(servedAtMs / 1000),
+    );
+    if (listedOpen === 0) {
+      alerts.push(alertInput({
+        source: "polymarket_discovery",
+        kind: "polymarket_discovery_no_coverage",
+        key: "polymarket_discovery:no_coverage",
+        severity: "warning",
+        title: "No fresh Polymarket five-minute coverage",
+        description:
+          "Discovery is enabled but no discovery-listed market has an end time in the future; agents have nothing imminent to call.",
+        seenAt: servedAt,
+        payload: health,
+      }));
+    }
+  }
+  for (const row of polymarketDiscoveryRepo.listByStatus(db, "failed", 50)) {
+    alerts.push(alertInput({
+      source: "polymarket_discovery",
+      kind: "polymarket_discovery_registration_failed",
+      key: `polymarket_discovery:failed:${row.condition_id}`,
+      severity: "critical",
+      title: "Polymarket discovery registration failed terminally",
+      description: `Registration for ${row.condition_id} failed after ${row.attempt_count} attempt(s): ${row.last_error ?? "unknown"}.`,
       seenAt: servedAt,
       payload: row,
     }));

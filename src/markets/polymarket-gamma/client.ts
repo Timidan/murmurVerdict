@@ -98,6 +98,27 @@ export interface FetchResult {
   error: string | null;
 }
 
+export interface FetchWindowInput {
+  /** Inclusive lower bound for the market endDate (ISO string). */
+  endDateMinIso: string;
+  /** Inclusive upper bound for the market endDate (ISO string). */
+  endDateMaxIso: string;
+  /** Rows per page; Gamma caps around 100. */
+  pageLimit?: number;
+  /** Hard page ceiling so a filter mistake can't walk the whole catalog. */
+  maxPages?: number;
+}
+
+export interface FetchWindowResult {
+  snapshots: GammaMarketSnapshot[];
+  /** Stable error code when the fetch could not complete; null on success.
+   *  Partial pages before the failure are still returned. */
+  error: string | null;
+}
+
+const WINDOW_PAGE_LIMIT_DEFAULT = 100;
+const WINDOW_MAX_PAGES_DEFAULT = 3;
+
 // ─── Implementation ─────────────────────────────────────────────────────────
 
 export class PolymarketGammaClient {
@@ -163,6 +184,44 @@ export class PolymarketGammaClient {
     return promise;
   }
 
+  /**
+   * List open markets whose endDate falls inside [endDateMinIso,
+   * endDateMaxIso]. Uncached (the window moves every tick) but bounded:
+   * explicit page limit, hard page ceiling, per-request timeout, and the
+   * same 3× backoff as the conditionId path. NEVER throws — a mid-walk
+   * failure returns the pages collected so far plus a stable error code.
+   */
+  async fetchMarketsClosingBetween(
+    input: FetchWindowInput,
+  ): Promise<FetchWindowResult> {
+    const pageLimit = Math.max(
+      1,
+      Math.min(input.pageLimit ?? WINDOW_PAGE_LIMIT_DEFAULT, WINDOW_PAGE_LIMIT_DEFAULT),
+    );
+    const maxPages = Math.max(1, input.maxPages ?? WINDOW_MAX_PAGES_DEFAULT);
+    const snapshots: GammaMarketSnapshot[] = [];
+    const seen = new Set<string>();
+    for (let page = 0; page < maxPages; page++) {
+      const url =
+        `${this.baseUrl}/markets?closed=false` +
+        `&end_date_min=${encodeURIComponent(input.endDateMinIso)}` +
+        `&end_date_max=${encodeURIComponent(input.endDateMaxIso)}` +
+        `&limit=${pageLimit}&offset=${page * pageLimit}`;
+      const result = await this.fetchWindowPage(url);
+      if (result.kind === "error") {
+        return { snapshots, error: result.error };
+      }
+      for (const snapshot of result.snapshots) {
+        const key = snapshot.conditionId.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        snapshots.push(snapshot);
+      }
+      if (result.snapshots.length < pageLimit) break;
+    }
+    return { snapshots, error: null };
+  }
+
   /** Drop a cache entry (smoke / admin tooling). */
   invalidate(conditionId: string): void {
     this.cache.delete(conditionId.toLowerCase());
@@ -226,6 +285,89 @@ export class PolymarketGammaClient {
       expiresAtMs: this.nowMs() + TTL_NEGATIVE_MS,
     });
     return { snapshot: null, source: "fresh", error: lastError };
+  }
+
+  private async fetchWindowPage(
+    url: string,
+  ): Promise<
+    | { kind: "ok"; snapshots: GammaMarketSnapshot[] }
+    | { kind: "error"; error: string }
+  > {
+    let lastError = "unknown";
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      const result = await this.fetchWindowPageOnce(url);
+      if (result.kind === "ok") return result;
+      lastError = result.error;
+      if (attempt < this.maxRetries - 1) {
+        const jitter = Math.max(0, Math.floor(this.retryJitterMs()));
+        await this.sleepMs(BASE_BACKOFF_MS * 2 ** attempt + jitter);
+      }
+    }
+    return { kind: "error", error: lastError };
+  }
+
+  private async fetchWindowPageOnce(
+    url: string,
+  ): Promise<
+    | { kind: "ok"; snapshots: GammaMarketSnapshot[] }
+    | { kind: "error"; error: string }
+  > {
+    const controller = new AbortController();
+    const timer = this.timers.setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Awaited<ReturnType<FetchFnLike>>;
+    try {
+      response = await this.fetchFn(url, { signal: controller.signal });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        kind: "error",
+        error: msg.includes("abort") ? "timeout" : `network:${msg}`,
+      };
+    } finally {
+      this.timers.clearTimeout(timer);
+    }
+    if (response.status < 200 || response.status >= 300) {
+      return { kind: "error", error: `http_${response.status}` };
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("text/html")) {
+      return { kind: "error", error: "gamma_endpoint_removed" };
+    }
+    let bodyText: string;
+    try {
+      bodyText = await response.text();
+    } catch (err) {
+      return {
+        kind: "error",
+        error: `read_body:${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(bodyText);
+    } catch (err) {
+      return {
+        kind: "error",
+        error: `json_parse:${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    const candidates = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as { markets?: unknown }).markets)
+        ? ((parsed as { markets: unknown[] }).markets as unknown[])
+        : null;
+    if (candidates === null) {
+      return { kind: "error", error: "schema_drift:envelope" };
+    }
+    // Rows without a hex conditionId are dropped (not fatal) — discovery
+    // re-validates every field it uses before spending gas anyway.
+    const snapshots = candidates.filter(
+      (candidate): candidate is GammaMarketSnapshot =>
+        candidate !== null &&
+        typeof candidate === "object" &&
+        typeof (candidate as { conditionId?: unknown }).conditionId === "string",
+    );
+    return { kind: "ok", snapshots };
   }
 
   private async fetchOnce(

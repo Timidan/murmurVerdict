@@ -25,10 +25,13 @@
 
 import type Database from "better-sqlite3";
 import { PolymarketGammaClient } from "./client.js";
-import { ADAPTER_NAME } from "./index.js";
+import { PolymarketClobClient } from "./clob-client.js";
+import { clobMarketToOutcome } from "./clob-transform.js";
+import { ADAPTER_NAME, getDefaultPolymarketClobClient } from "./index.js";
 import {
   conditionIdForMarketConfig,
   endDateMsForMarketConfig,
+  parseMarketConfigJson,
 } from "../../verdict/market-adapter-config.js";
 
 // ─── Cadence policy ─────────────────────────────────────────────────────────
@@ -63,6 +66,9 @@ export interface SyncStateRow {
 export interface SyncTickerOpts {
   db: Database.Database;
   client?: PolymarketGammaClient;
+  /** Shared CLOB fallback client — register.ts wires the same instance the
+   *  resolver uses so caching/breaker state spans both pollers. */
+  clobClient?: PolymarketClobClient;
   /** Operation clock for poll scheduling and alert timestamps. */
   nowMs: () => number;
   /** Operator-alert sink. Default: stderr log. */
@@ -113,7 +119,68 @@ function pickPollIntervalMs(nowMs: number, endDateMs: number | null): number {
   return POLL_SLIPPED_MS;
 }
 
+/**
+ * Post-end Gamma-404 recovery read against the CLOB fallback surface.
+ * Returns:
+ *   - `'resolved'` — CLOB serves the market with a scoreable terminal state
+ *     (same fail-closed mapping the resolver uses); the Gamma disappearance
+ *     is EXPECTED micro-market behavior, not an incident.
+ *   - `'pending'`  — CLOB serves the market but it is not terminal yet
+ *     (open / zero winners / archived / 50-50 held); no incident either.
+ *   - `null`       — CLOB unavailable or mismatched; the existing 404 +
+ *     MARKET_DISAPPEARED alert path is preserved.
+ * Never throws.
+ */
+async function clobFallbackStatusForRow(input: {
+  db: Database.Database;
+  clobClient: PolymarketClobClient;
+  market_id: string;
+  conditionId: string;
+}): Promise<"resolved" | "pending" | null> {
+  try {
+    const row = input.db
+      .prepare("SELECT config_json FROM markets WHERE market_id = ?")
+      .get(input.market_id) as { config_json: string } | undefined;
+    if (!row) return null;
+    const config = parseMarketConfigJson(row.config_json);
+    const outcomes = Array.isArray(config.outcomes)
+      ? config.outcomes.filter((label): label is string => typeof label === "string")
+      : [];
+    const clobTokenIds =
+      config.clobTokenIds !== null &&
+      typeof config.clobTokenIds === "object" &&
+      !Array.isArray(config.clobTokenIds) &&
+      Object.values(config.clobTokenIds).every((id) => typeof id === "string")
+        ? (config.clobTokenIds as Record<string, string>)
+        : undefined;
+    const result = await input.clobClient.fetchMarketByConditionId(
+      input.conditionId,
+    );
+    if (result.snapshot === null) return null;
+    const mapped = clobMarketToOutcome({
+      conditionId: input.conditionId,
+      storedOutcomes: outcomes,
+      storedClobTokenIds: clobTokenIds,
+      endDate: typeof config.endDate === "string" ? config.endDate : null,
+      snapshot: result.snapshot,
+    });
+    if (mapped.kind === "outcome") return "resolved";
+    // Present-but-pending states are not a disappearance incident; every
+    // other error code (bijection / consistency failures) preserves the
+    // existing alert so an operator investigates.
+    if (mapped.error === null || mapped.error.endsWith("_held_pending")) {
+      return "pending";
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Tick ──────────────────────────────────────────────────────────────────
+
+/** Last-resort CLOB client for standalone tick callers (see below). */
+let fallbackClobClient: PolymarketClobClient | null = null;
 
 /**
  * One pass of the sync ticker. Walks up to `rowsPerTick` rows whose
@@ -130,6 +197,14 @@ export async function runPolymarketSyncTick(
   const db = opts.db;
   const nowMs = opts.nowMs;
   const client = opts.client ?? new PolymarketGammaClient({ nowMs });
+  const clobClient =
+    opts.clobClient ??
+    getDefaultPolymarketClobClient() ??
+    // Memoized so standalone callers (no injected client, no configured
+    // singleton) keep LRU / negative-cache / breaker state across ticks.
+    // Captures the first caller's clock — acceptable for this last-resort
+    // path; the daemon always configures the shared singleton.
+    (fallbackClobClient ??= new PolymarketClobClient({ nowMs }));
   const onAlert =
     opts.onAlert ??
     ((a) => {
@@ -221,9 +296,31 @@ export async function runPolymarketSyncTick(
       const result = await client.fetchMarketByConditionId(conditionId);
       polled += 1;
       if (result.error === "http_404") {
-        observedStatus = "404";
-        failures = row.consecutive_failures + 1;
-        lastError = "http_404";
+        // Post-end Gamma 404s are expected for 5-min micro-markets (Gamma
+        // drops them after close) — consult the shared CLOB client before
+        // treating the disappearance as a failure.
+        const clobStatus =
+          endDateMs !== null && now > endDateMs
+            ? await clobFallbackStatusForRow({
+                db,
+                clobClient,
+                market_id: row.market_id,
+                conditionId,
+              })
+            : null;
+        if (clobStatus === "resolved") {
+          observedStatus = "resolved";
+          failures = 0;
+          lastError = null;
+        } else if (clobStatus === "pending") {
+          observedStatus = "pending";
+          failures = 0;
+          lastError = null;
+        } else {
+          observedStatus = "404";
+          failures = row.consecutive_failures + 1;
+          lastError = "http_404";
+        }
       } else if (result.snapshot === null) {
         observedStatus = "error";
         failures = row.consecutive_failures + 1;

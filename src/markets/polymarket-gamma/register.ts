@@ -21,6 +21,7 @@ import {
 } from "../../verdict/market-maker/registry.js";
 import {
   polymarketGammaAdapter,
+  getDefaultPolymarketClobClient,
   setDefaultPolymarketClock,
   ADAPTER_NAME,
   ADAPTER_VERSION,
@@ -77,6 +78,9 @@ export function registerPolymarketGammaAdapter(
     );
   }
   if (opts.configureDefaultClient && opts.nowMs) {
+    // One clock configures BOTH default clients (Gamma + CLOB fallback);
+    // the CLOB instance is shared with the sync ticker below so its LRU /
+    // single-flight / circuit breaker span the resolver and sync pollers.
     setDefaultPolymarketClock(opts.nowMs);
   }
   if (opts.db) {
@@ -84,6 +88,10 @@ export function registerPolymarketGammaAdapter(
       db: opts.db,
       nowMs: opts.nowMs,
     };
+    const sharedClobClient = getDefaultPolymarketClobClient();
+    if (sharedClobClient) {
+      tickerOpts.clobClient = sharedClobClient;
+    }
     if (opts.syncIntervalMs !== undefined) {
       tickerOpts.intervalMs = opts.syncIntervalMs;
     }

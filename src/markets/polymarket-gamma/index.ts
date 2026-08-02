@@ -37,6 +37,8 @@ import type {
 } from "../types.js";
 import { CommitmentSchema } from "../../verdict/markets-core.js";
 import { PolymarketGammaClient } from "./client.js";
+import { PolymarketClobClient } from "./clob-client.js";
+import { clobMarketToOutcome } from "./clob-transform.js";
 import {
   marketConfigSchema,
   POLYMARKET_CONDITION_ID_REGEX,
@@ -50,7 +52,7 @@ export {
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 export const ADAPTER_NAME = "polymarket-gamma" as const;
-export const ADAPTER_VERSION = "1.0.0" as const;
+export const ADAPTER_VERSION = "1.1.0" as const;
 export const MARKET_FAMILY = "prediction-market-binary" as const;
 
 // ─── Schemas (V2_REVIEW BLOCKER #1: `.passthrough()` everywhere) ───────────
@@ -117,9 +119,21 @@ export interface PolymarketGammaContext {
   conditionId: string;
   /** `markets.id` — used for logging / sync_state bookkeeping. */
   market_id: string;
+  /** Stored `config_json.endDate` — gates + timestamps the CLOB fallback. */
+  endDate?: string;
+  /** Stored `config_json.outcomes` — canonical payout-vector label order. */
+  outcomes?: string[];
+  /** Stored `normalized label → clob token_id` map (config.ts hardening). */
+  clobTokenIds?: Record<string, string>;
   /** Optional adapter-private Gamma client injection. Defaults to the
    *  module-level singleton ({@link getDefaultClient}). */
   client?: PolymarketGammaClient;
+  /** Optional CLOB fallback client injection. Defaults to the module-level
+   *  singleton ({@link getDefaultPolymarketClobClient}). */
+  clobClient?: PolymarketClobClient;
+  /** Fallback-gate clock (endDate-in-the-past check). Defaults to the boot
+   *  clock ({@link setDefaultPolymarketClock}), then Date.now. */
+  nowMs?: () => number;
   /** Optional sink for error codes ('http_404', 'network:*', 'schema_drift:*').
    *  The sync ticker forwards these to `external_market_sync_state`. */
   onError?: (code: string) => void;
@@ -133,8 +147,32 @@ function narrowContext(ctx: ObservationContext): PolymarketGammaContext | null {
     conditionId: ctx.conditionId,
     market_id: ctx.market_id,
   };
+  if (typeof ctx.endDate === "string") {
+    narrowed.endDate = ctx.endDate;
+  }
+  if (
+    Array.isArray(ctx.outcomes) &&
+    ctx.outcomes.length === 2 &&
+    ctx.outcomes.every((label) => typeof label === "string" && label.length > 0)
+  ) {
+    narrowed.outcomes = ctx.outcomes as string[];
+  }
+  if (
+    ctx.clobTokenIds !== null &&
+    typeof ctx.clobTokenIds === "object" &&
+    !Array.isArray(ctx.clobTokenIds) &&
+    Object.values(ctx.clobTokenIds).every((id) => typeof id === "string")
+  ) {
+    narrowed.clobTokenIds = ctx.clobTokenIds as Record<string, string>;
+  }
   if (ctx.client instanceof PolymarketGammaClient) {
     narrowed.client = ctx.client;
+  }
+  if (ctx.clobClient instanceof PolymarketClobClient) {
+    narrowed.clobClient = ctx.clobClient;
+  }
+  if (typeof ctx.nowMs === "function") {
+    narrowed.nowMs = ctx.nowMs as () => number;
   }
   if (typeof ctx.onError === "function") {
     narrowed.onError = ctx.onError as (code: string) => void;
@@ -149,6 +187,18 @@ function getDefaultClient(): PolymarketGammaClient | null {
   return defaultClient;
 }
 
+let defaultClobClient: PolymarketClobClient | null = null;
+let defaultNowMs: (() => number) | null = null;
+
+/**
+ * Shared CLOB fallback client — one instance across the resolver and the
+ * sync ticker so the LRU / single-flight / circuit breaker are effective
+ * process-wide.
+ */
+export function getDefaultPolymarketClobClient(): PolymarketClobClient | null {
+  return defaultClobClient;
+}
+
 /**
  * Test / boot-time injection. Set this to a fixture-driven client to make
  * `observeResolution` deterministic without monkey-patching globalThis.fetch.
@@ -159,8 +209,67 @@ export function setDefaultPolymarketClient(
   defaultClient = client;
 }
 
+/** Test / boot-time injection for the CLOB fallback client. */
+export function setDefaultPolymarketClobClient(
+  client: PolymarketClobClient | null,
+): void {
+  defaultClobClient = client;
+}
+
 export function setDefaultPolymarketClock(nowMs: () => number): void {
   defaultClient = new PolymarketGammaClient({ nowMs });
+  defaultClobClient = new PolymarketClobClient({ nowMs });
+  defaultNowMs = nowMs;
+}
+
+// ─── CLOB fallback (post-disappearance resolution recovery) ────────────────
+
+/**
+ * Consult the CLOB surface after Gamma returned no snapshot. Triggers ONLY
+ * when the stored endDate is a valid timestamp in the past — Gamma remains
+ * the primary surface (richer UMA status incl. disputes). Every failure
+ * collapses to 'pending' + an error-coded log line; the never-throw
+ * invariant of `observeResolution` is preserved by the caller's try/catch.
+ */
+async function observeClobFallback(
+  narrowed: PolymarketGammaContext,
+): Promise<Outcome | "pending"> {
+  const endDateMs =
+    typeof narrowed.endDate === "string" ? Date.parse(narrowed.endDate) : Number.NaN;
+  if (!Number.isFinite(endDateMs)) return "pending";
+  // Resolver-path contexts carry no clock (buildAdapterObservationContext
+  // spreads JSON config only), so fall back to the boot clock configured by
+  // setDefaultPolymarketClock before reaching for wall time.
+  const nowMs = narrowed.nowMs
+    ? narrowed.nowMs()
+    : defaultNowMs
+      ? defaultNowMs()
+      : Date.now();
+  if (endDateMs > nowMs) return "pending";
+  if (!narrowed.outcomes) {
+    narrowed.onError?.("clob:missing_stored_outcomes");
+    return "pending";
+  }
+  const clobClient = narrowed.clobClient ?? getDefaultPolymarketClobClient();
+  if (!clobClient) {
+    narrowed.onError?.("clob:client_unconfigured");
+    return "pending";
+  }
+  const result = await clobClient.fetchMarketByConditionId(narrowed.conditionId);
+  if (result.error) narrowed.onError?.(`clob:${result.error}`);
+  if (result.snapshot === null) return "pending";
+  const mapped = clobMarketToOutcome({
+    conditionId: narrowed.conditionId,
+    storedOutcomes: narrowed.outcomes,
+    storedClobTokenIds: narrowed.clobTokenIds,
+    endDate: narrowed.endDate,
+    snapshot: result.snapshot,
+  });
+  if (mapped.kind === "pending") {
+    if (mapped.error) narrowed.onError?.(`clob:${mapped.error}`);
+    return "pending";
+  }
+  return mapped.outcome;
 }
 
 // ─── Adapter implementation ────────────────────────────────────────────────
@@ -212,7 +321,13 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
       const result = await client.fetchMarketByConditionId(narrowed.conditionId);
       if (result.error) narrowed.onError?.(result.error);
       const snapshot = result.snapshot;
-      if (snapshot === null) return "pending";
+      if (snapshot === null) {
+        // Gamma has no row. For 5-min micro-markets that is EXPECTED after
+        // close (Gamma drops them), so consult the CLOB fallback — but only
+        // once the stored endDate has passed; pre-end, a Gamma miss is a
+        // transient failure and CLOB must not be spammed.
+        return await observeClobFallback(narrowed);
+      }
       if (snapshot.conditionId.toLowerCase() !== marketRef.sourceId.toLowerCase()) {
         narrowed.onError?.("conditionId_response_mismatch");
         return "pending";
@@ -341,6 +456,15 @@ export type { PolymarketGammaAdapter };
 
 // Re-exports for the smoke driver / sync ticker / register module.
 export { PolymarketGammaClient } from "./client.js";
+export {
+  PolymarketClobClient,
+  type ClobMarketSnapshot,
+} from "./clob-client.js";
+export {
+  clobMarketToOutcome,
+  normalizeOutcomeLabel,
+  CLOB_SOURCE_PROTOCOL,
+} from "./clob-transform.js";
 export {
   gammaMarketToOutcome,
   parseOutcomePrices,

@@ -4,7 +4,11 @@ import { polymarketGammaMarketConfigJson } from "../markets/polymarket-gamma/con
 import type { GammaMarketSnapshot } from "../markets/polymarket-gamma/transform.js";
 import { marketsRepo } from "./repos/market-registry-repo.js";
 import { agentSecurityEventsRepo } from "./repos/agent-security-events-repo.js";
-import { ResolutionClassSchema, SCHEMA_VERSION } from "./schema.js";
+import {
+  ResolutionClassSchema,
+  SCHEMA_VERSION,
+  type ResolutionClass,
+} from "./schema.js";
 import { nowIso } from "./time.js";
 import {
   makeAgentSecurityEvent,
@@ -60,6 +64,20 @@ const PolymarketMarketRegistrationBodySchema = z
   })
   .strict();
 
+export interface PolymarketMarketRegistrationOperationInput {
+  db: Database.Database;
+  conditionId: string;
+  status: "draft" | "listed" | "frozen" | "retired";
+  horizon_seconds?: number;
+  resolution_class?: ResolutionClass;
+  /** Audit trail actor stamped on the security event (e.g. "admin_token",
+   *  "polymarket_discovery"). */
+  actor: string;
+  gammaLookup?: PolymarketMarketRegistrationGammaAdapter;
+  newAgentSecurityEventId?: AgentSecurityEventIdAdapter;
+  now: () => Date;
+}
+
 export async function registerPolymarketMarketFromAdminBody(
   input: PolymarketMarketRegistrationInput,
 ): Promise<PolymarketMarketRegistrationResult> {
@@ -73,7 +91,30 @@ export async function registerPolymarketMarketFromAdminBody(
       },
     };
   }
-  const { conditionId, status, horizon_seconds, resolution_class } = parsed.data;
+  return runPolymarketMarketRegistration({
+    db: input.db,
+    conditionId: parsed.data.conditionId,
+    status: parsed.data.status,
+    horizon_seconds: parsed.data.horizon_seconds,
+    resolution_class: parsed.data.resolution_class,
+    actor: "admin_token",
+    gammaLookup: input.gammaLookup,
+    newAgentSecurityEventId: input.newAgentSecurityEventId,
+    now: input.now,
+  });
+}
+
+/**
+ * Shared registration operation behind both the admin route and the
+ * discovery ticker. The canonical market_id is the LOWERCASE conditionId —
+ * the market registry schema only admits lowercase hex, so an uppercase
+ * admin input must not create a shadow row that dedupe then misses.
+ */
+export async function runPolymarketMarketRegistration(
+  input: PolymarketMarketRegistrationOperationInput,
+): Promise<PolymarketMarketRegistrationResult> {
+  const conditionId = input.conditionId.toLowerCase();
+  const { status, horizon_seconds, resolution_class } = input;
   const operationNow = input.now();
   const operationNowMs = operationNow.getTime();
   const gammaLookup = input.gammaLookup ??
@@ -89,8 +130,23 @@ export async function registerPolymarketMarketFromAdminBody(
       },
     };
   }
+  // Never trust the adapter's filtering: a snapshot for a DIFFERENT
+  // conditionId would persist another market's config under this market_id.
+  if (fetched.snapshot.conditionId.toLowerCase() !== conditionId) {
+    return {
+      status: 502,
+      body: {
+        code: "gamma_condition_mismatch",
+        message: `Polymarket Gamma returned conditionId ${fetched.snapshot.conditionId} for requested ${conditionId}`,
+      },
+    };
+  }
 
-  const snapshot = fetched.snapshot;
+  // The sealed-call acceptance guard pins reveal_open_at to the persisted
+  // endDate at millisecond precision, while the on-chain fixed reveal is
+  // whole seconds. Floor the persisted date to the second so both layers
+  // always agree.
+  const snapshot = normalizeSnapshotEndDate(fetched.snapshot);
   const endDateMs = snapshot.endDate ? Date.parse(snapshot.endDate) : Number.NaN;
   // Refuse to mark a past-ended Polymarket market `listed`; otherwise it
   // would accept submissions and resolve effectively immediately.
@@ -145,7 +201,7 @@ export async function registerPolymarketMarketFromAdminBody(
       input.db,
       makeAgentSecurityEvent({
         kind: "admin_polymarket_upsert",
-        actor: "admin_token",
+        actor: input.actor,
         newEventId: input.newAgentSecurityEventId,
         payload: {
           conditionId,
@@ -166,6 +222,18 @@ export async function registerPolymarketMarketFromAdminBody(
       schema_version: SCHEMA_VERSION,
       market: row,
     },
+  };
+}
+
+function normalizeSnapshotEndDate(
+  snapshot: GammaMarketSnapshot,
+): GammaMarketSnapshot {
+  if (typeof snapshot.endDate !== "string") return snapshot;
+  const endDateMs = Date.parse(snapshot.endDate);
+  if (!Number.isFinite(endDateMs) || endDateMs % 1000 === 0) return snapshot;
+  return {
+    ...snapshot,
+    endDate: new Date(Math.floor(endDateMs / 1000) * 1000).toISOString(),
   };
 }
 
