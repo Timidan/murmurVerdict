@@ -2,6 +2,7 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  nonceManager,
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -14,6 +15,10 @@ import {
 } from "./deployments.js";
 import type { FhenixGatewayClient } from "./fhenix-gateway-contract.js";
 import {
+  ViemFhenixMarketRegistrar,
+  type FhenixMarketRegistrar,
+} from "./fhenix-market-registration.js";
+import {
   SdkMurmurOwnedCofheSealer,
   type MurmurOwnedCofheSealer,
 } from "./murmur-owned-cofhe-sealer.js";
@@ -24,6 +29,12 @@ export interface FhenixGatewayEnvConfig {
   relayerAddress: string;
   client: FhenixGatewayClient;
   murmurOwnedSealer: MurmurOwnedCofheSealer | null;
+  /**
+   * Owner-plane market registrar built on the SAME account, clients, and
+   * broadcast queue as the Gateway relayer — the discovery ticker and the
+   * Gateway must never allocate this key's nonces independently.
+   */
+  marketRegistrar: FhenixMarketRegistrar;
   confirmations: number;
   retryBaseMs: number;
   retryMaxMs: number;
@@ -137,22 +148,31 @@ export function loadFhenixGatewayEnvConfig(
     env,
     { min: 0, allowZero: true },
   );
-  const account = privateKeyToAccount(privateKey as Hex);
+  // One nonce-managed account + one broadcast queue for every writer on this
+  // key. The Gateway's HTTP submit handlers, the gateway tick, and the market
+  // discovery registrar all sign with the same EOA; without shared nonce
+  // allocation two overlapping broadcasts race the same nonce and one revert
+  // is guaranteed. The queue serializes allocate/sign/broadcast only —
+  // receipt waiting happens outside it.
+  const account = privateKeyToAccount(privateKey as Hex, { nonceManager });
   const publicClient = createPublicClient({ transport: http(rpcUrl) });
   const walletClient = createWalletClient({
     account,
     transport: http(rpcUrl),
   });
+  const broadcastQueue = createSerialBroadcastQueue();
   const client: FhenixGatewayClient = {
     getChainId: () => publicClient.getChainId(),
     getBlockNumber: () => publicClient.getBlockNumber(),
     getTransactionReceipt: (args) => publicClient.getTransactionReceipt(args),
     writeContract: (args) =>
-      walletClient.writeContract({
-        ...args,
-        account,
-        chain: null,
-      } as never),
+      broadcastQueue.run(() =>
+        walletClient.writeContract({
+          ...args,
+          account,
+          chain: null,
+        } as never),
+      ),
     // Reconciliation read path — viem's readContract throws on revert
     // (CallNotFound / PacketNotFound), which the reconciler wraps to mean
     // "no on-chain state".
@@ -175,6 +195,20 @@ export function loadFhenixGatewayEnvConfig(
         toBlock: args.toBlock,
       } as never) as unknown as Promise<never>,
   };
+  const marketRegistrar = new ViemFhenixMarketRegistrar({
+    chainId,
+    contractAddress,
+    relayerAddress: account.address,
+    publicClient,
+    writeContract: (args) =>
+      broadcastQueue.run(() =>
+        walletClient.writeContract({
+          ...args,
+          account,
+          chain: null,
+        } as never),
+      ),
+  });
   return {
     chainId,
     contractAddress,
@@ -183,6 +217,7 @@ export function loadFhenixGatewayEnvConfig(
     murmurOwnedSealer: murmurOwnedSealingEnabled
       ? new SdkMurmurOwnedCofheSealer(publicClient, walletClient)
       : null,
+    marketRegistrar,
     confirmations,
     retryBaseMs,
     retryMaxMs,
@@ -190,6 +225,31 @@ export function loadFhenixGatewayEnvConfig(
     stuckAfterMs: stuckAfterSec * 1_000,
     broadcastTimeoutMs,
     reconcileFromBlock,
+  };
+}
+
+export interface SerialBroadcastQueue {
+  run<T>(work: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * Promise-chain mutex for relayer-key broadcasts. Every writeContract on the
+ * shared EOA (Gateway sealed calls, feed packets, discovery market
+ * registrations) enters here so nonce allocation + sign + broadcast happen
+ * one at a time; callers await receipts on their own afterwards. A failed
+ * broadcast never poisons the chain — the tail always settles.
+ *
+ * In-process only: with multiple daemon replicas holding this key, exactly
+ * one replica may run write-enabled (see DEPLOYMENT.md).
+ */
+export function createSerialBroadcastQueue(): SerialBroadcastQueue {
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    run<T>(work: () => Promise<T>): Promise<T> {
+      const next = tail.then(work, work);
+      tail = next.catch(() => undefined);
+      return next;
+    },
   };
 }
 

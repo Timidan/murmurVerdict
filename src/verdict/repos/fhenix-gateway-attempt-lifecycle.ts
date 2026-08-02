@@ -87,6 +87,7 @@ export interface GatewayAttemptLifecycleRow {
   attempt_id: string;
   status: FhenixGatewayTxStatus;
   runtime_key_id: string | null;
+  account_id: string;
   agent_wallet_address: string;
   tx_hash: string | null;
   attempt_count: number;

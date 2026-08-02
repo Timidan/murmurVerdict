@@ -42,6 +42,11 @@ export interface FhenixGatewayFeedPacketTxAttemptInsert {
   reveal_after: string;
   action_input_json: string;
   signal_input_json: string;
+  /** murmur-idem-v1 hash of the reserving request's validated body; NULL on
+   *  pre-060 rows. Compared on every client_order_id duplicate exit. */
+  request_fingerprint: string | null;
+  /** How the reserving request authenticated: 'pop-v1' or NULL (bearer). */
+  auth_proof: string | null;
   next_attempt_at: string;
   created_at: string;
   updated_at: string;
@@ -91,7 +96,8 @@ export const fhenixGatewayFeedPacketTxRepo = {
         feed_id_hash, market_id, market_id_hash, packet_kind, sequence,
         payload_schema, client_order_id, client_nonce, submitted_at,
         delivery_deadline_at, reveal_after, action_input_json,
-        signal_input_json, next_attempt_at, created_at, updated_at)
+        signal_input_json, request_fingerprint, auth_proof,
+        next_attempt_at, created_at, updated_at)
        VALUES
        (@attempt_id, @status, @runtime_key_id, @runtime_key_policy_hash,
         @runtime_key_policy_json, @account_id, @agent_id, @chain_id,
@@ -99,7 +105,8 @@ export const fhenixGatewayFeedPacketTxRepo = {
         @feed_id_hash, @market_id, @market_id_hash, @packet_kind, @sequence,
         @payload_schema, @client_order_id, @client_nonce, @submitted_at,
         @delivery_deadline_at, @reveal_after, @action_input_json,
-        @signal_input_json, @next_attempt_at, @created_at, @updated_at)`,
+        @signal_input_json, @request_fingerprint, @auth_proof,
+        @next_attempt_at, @created_at, @updated_at)`,
     ).run(input);
   },
 

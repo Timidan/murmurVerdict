@@ -609,6 +609,37 @@ try {
     ]);
   });
 
+  await check("changed body with the same client_order_id is rejected", async () => {
+    const res = await fetch(`${baseUrl}/v2/gateway/calls`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Murmur-Runtime-Key": runtimeKey.secret,
+      },
+      body: JSON.stringify({ ...body, rationale: "same order id, different content" }),
+    });
+    assert.equal(res.status, 409);
+    const payload = await res.json() as { code: string };
+    assert.equal(payload.code, "duplicate");
+  });
+
+  await check("legacy attempt without a stored fingerprint keeps the 200 replay", async () => {
+    db.prepare(
+      "UPDATE fhenix_gateway_tx_attempts SET request_fingerprint = NULL WHERE attempt_id = ?",
+    ).run(attemptId);
+    const res = await fetch(`${baseUrl}/v2/gateway/calls`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Murmur-Runtime-Key": runtimeKey.secret,
+      },
+      body: JSON.stringify({ ...body, rationale: "legacy rows cannot be compared" }),
+    });
+    assert.equal(res.status, 200);
+    const payload = await res.json() as { idempotent_hit: boolean };
+    assert.equal(payload.idempotent_hit, true);
+  });
+
   await check("runtime key gateway feed packet submit broadcasts relayer transaction", async () => {
     const res = await fetch(`${baseUrl}/v2/gateway/feeds/${feedId}/packets`, {
       method: "POST",
@@ -694,11 +725,27 @@ try {
     assert.equal(attempt?.packet_id, "gateway-smoke-packet-1");
   });
 
+  await check("changed feed body with the same client_order_id is rejected", async () => {
+    const res = await fetch(`${baseUrl}/v2/gateway/feeds/${feedId}/packets`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Murmur-Runtime-Key": runtimeKey.secret,
+      },
+      body: JSON.stringify({ ...feedBody, submitted_at: "2026-05-14T12:03:00Z" }),
+    });
+    assert.equal(res.status, 409);
+    const payload = await res.json() as { code: string };
+    assert.equal(payload.code, "duplicate");
+  });
+
   await check("admin gateway retry submits only retryable attempts", async () => {
     const retryAttemptId = randomUUID();
     fhenixGatewayTxRepo.insert(db, {
       attempt_id: retryAttemptId,
       status: "failed_retryable",
+      request_fingerprint: null,
+      auth_proof: null,
       runtime_key_id: runtimeKey.runtime_key_id,
       runtime_key_policy_hash: runtimePolicyHash,
       runtime_key_policy_json: runtimePolicyJson,
@@ -762,6 +809,8 @@ try {
     fhenixGatewayFeedPacketTxRepo.insert(db, {
       attempt_id: feedRetryAttemptId,
       status: "failed_retryable",
+      request_fingerprint: null,
+      auth_proof: null,
       runtime_key_id: runtimeKey.runtime_key_id,
       runtime_key_policy_hash: runtimePolicyHash,
       runtime_key_policy_json: runtimePolicyJson,

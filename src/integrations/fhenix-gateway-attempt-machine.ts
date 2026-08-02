@@ -31,7 +31,10 @@ import type {
   GatewaySubmitResult,
 } from "./fhenix-gateway-presenters.js";
 import { isoFromMs, nowIso } from "../verdict/time.js";
-import { isRuntimeKeyActive } from "../verdict/auth/accounts.js";
+import {
+  agentCredentialsDisabledAt,
+  isRuntimeKeyActive,
+} from "../verdict/auth/accounts.js";
 
 /**
  * Gateway Attempt Machine — the single implementation of the Gateway
@@ -165,6 +168,18 @@ export async function broadcastGatewayAttempt<
     kind.lifecycle.markTerminalFailure(config.db, {
       attempt_id: attempt.attempt_id,
       last_error: kind.terminal.runtimeKeyRevoked,
+      updated_at: nowIso(runtimeKeyCheckedAt),
+    });
+    return { kind: "terminal_failure" };
+  }
+  // The kill switch revokes every key in the same transaction, so the check
+  // above already fells most queued attempts — this account-level gate closes
+  // the remainder (rows whose runtime_key_id went NULL, and the window
+  // between an engage commit and a claim that read the key just before).
+  if (agentCredentialsDisabledAt(config.db, attempt.account_id)) {
+    kind.lifecycle.markTerminalFailure(config.db, {
+      attempt_id: attempt.attempt_id,
+      last_error: "account kill switch engaged before broadcast",
       updated_at: nowIso(runtimeKeyCheckedAt),
     });
     return { kind: "terminal_failure" };

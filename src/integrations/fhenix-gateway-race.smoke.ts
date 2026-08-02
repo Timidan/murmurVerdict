@@ -123,6 +123,8 @@ async function main(): Promise<void> {
       return {
         attempt_id: randomUUID(),
         status: "queued",
+        request_fingerprint: null,
+        auth_proof: null,
         runtime_key_id: null,
         runtime_key_policy_hash: "0x" + "00".repeat(32),
         runtime_key_policy_json: "{}",
@@ -566,6 +568,8 @@ async function main(): Promise<void> {
       const attempt: FhenixGatewayFeedPacketTxAttemptInsert = {
         attempt_id: randomUUID(),
         status: "queued",
+        request_fingerprint: null,
+        auth_proof: null,
         runtime_key_id: null,
         runtime_key_policy_hash: "0x" + "00".repeat(32),
         runtime_key_policy_json: "{}",

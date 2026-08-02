@@ -36,6 +36,8 @@ import {
 
 type GatewayMarket = NonNullable<ReturnType<typeof marketsRepo.get>>;
 
+import { assertGatewayFingerprintMatch } from "./gateway-request-fingerprint.js";
+
 export type ReserveSealedCallAttemptResult =
   | {
       kind: "attempt";
@@ -50,6 +52,60 @@ export type ReserveSealedCallAttemptResult =
       call_id: string;
     };
 
+/**
+ * The ONE way a sealed-call client_order_id duplicate may exit (used by the
+ * broadcaster's early checks, the pre-transaction checks here, the
+ * in-transaction recheck, and unique-race recovery — per codex review
+ * 2026-08-02, every exit must compare fingerprints or the changed-parameter
+ * guarantee is false under concurrency). Returns null when no duplicate
+ * exists. Throws 409 when the same client_order_id carries DIFFERENT content,
+ * and re-applies pure policy (no rate-limit burn) before handing back a
+ * pinned attempt so a since-narrowed key can't retrieve orders outside its
+ * policy. An accepted submission with no surviving attempt row has no stored
+ * fingerprint — that replay keeps the legacy 200.
+ */
+export function sealedCallDuplicateExit(params: {
+  db: Database.Database;
+  runtimeIdentity: RuntimeKeyIdentity;
+  clientOrderId: string;
+  requestFingerprint: string;
+  now: () => Date;
+}): ReserveSealedCallAttemptResult | null {
+  const agentId = params.runtimeIdentity.agent_id;
+  const attempt = fhenixGatewayTxRepo.byClientOrder(
+    params.db,
+    agentId,
+    params.clientOrderId,
+  );
+  if (attempt) {
+    assertGatewayFingerprintMatch(
+      attempt.request_fingerprint,
+      params.requestFingerprint,
+      { client_order_id: params.clientOrderId, attempt_id: attempt.attempt_id },
+    );
+    authorizeRuntimeKeyGatewayIntent(
+      params.db,
+      params.runtimeIdentity,
+      {
+        kind: "sealed_call",
+        chain_id: attempt.chain_id,
+        market_id: attempt.market_id,
+      },
+      { now: params.now, skipRateLimits: true },
+    );
+    return { kind: "existing_attempt", attempt };
+  }
+  const submission = submissionsRepo.findByClientOrderId(
+    params.db,
+    agentId,
+    params.clientOrderId,
+  );
+  if (submission) {
+    return { kind: "accepted_submission", call_id: submission.call_id };
+  }
+  return null;
+}
+
 export function reserveSealedCallAttempt(params: {
   db: Database.Database;
   runtimeIdentity: RuntimeKeyIdentity;
@@ -58,6 +114,8 @@ export function reserveSealedCallAttempt(params: {
   chainId: number;
   contractAddress: string;
   relayerAddress: string;
+  requestFingerprint: string;
+  authProof: string | null;
   newAttemptId?: () => string;
   now: () => Date;
 }): ReserveSealedCallAttemptResult {
@@ -67,46 +125,33 @@ export function reserveSealedCallAttempt(params: {
     runtime_key: runtimeKey,
   } = params.runtimeIdentity;
 
-  const existingAttempt = fhenixGatewayTxRepo.byClientOrder(
-    params.db,
-    agentId,
-    params.body.client_order_id,
-  );
-  if (existingAttempt) {
-    return { kind: "existing_attempt", attempt: existingAttempt };
-  }
-  const existingSubmission = submissionsRepo.findByClientOrderId(
-    params.db,
-    agentId,
-    params.body.client_order_id,
-  );
-  if (existingSubmission) {
-    return { kind: "accepted_submission", call_id: existingSubmission.call_id };
+  const preTxDuplicate = sealedCallDuplicateExit({
+    db: params.db,
+    runtimeIdentity: params.runtimeIdentity,
+    clientOrderId: params.body.client_order_id,
+    requestFingerprint: params.requestFingerprint,
+    now: params.now,
+  });
+  if (preTxDuplicate) {
+    return preTxDuplicate;
   }
 
   const ts = nowIso(params.now());
-  let idempotentReturn: FhenixGatewayTxAttemptRow | null = null;
-  let idempotentSubmissionCallId: string | null = null;
+  let inTxDuplicate: ReserveSealedCallAttemptResult | null = null;
   let createdAttemptId: string | null = null;
   const reserveAndInsert = params.db.transaction(() => {
     // Re-check inside the lock: a competing process may have inserted the same
-    // Gateway Attempt or already promoted it to an accepted Sealed Call.
-    const competing = fhenixGatewayTxRepo.byClientOrder(
-      params.db,
-      agentId,
-      params.body.client_order_id,
-    );
-    if (competing) {
-      idempotentReturn = competing;
-      return;
-    }
-    const competingSubmission = submissionsRepo.findByClientOrderId(
-      params.db,
-      agentId,
-      params.body.client_order_id,
-    );
-    if (competingSubmission) {
-      idempotentSubmissionCallId = competingSubmission.call_id;
+    // Gateway Attempt or already promoted it to an accepted Sealed Call. The
+    // shared exit compares fingerprints, so a concurrent DIFFERENT body 409s
+    // instead of silently receiving the winner's attempt.
+    inTxDuplicate = sealedCallDuplicateExit({
+      db: params.db,
+      runtimeIdentity: params.runtimeIdentity,
+      clientOrderId: params.body.client_order_id,
+      requestFingerprint: params.requestFingerprint,
+      now: params.now,
+    });
+    if (inTxDuplicate) {
       return;
     }
     authorizeRuntimeKeyGatewayIntent(
@@ -143,6 +188,8 @@ export function reserveSealedCallAttempt(params: {
       strategy_tag: params.body.strategy_tag ?? null,
       binary_index_input_json: gatewayCofheInputJson(params.body.binary_index_input),
       confidence_input_json: gatewayCofheInputJson(params.body.confidence_input),
+      request_fingerprint: params.requestFingerprint,
+      auth_proof: params.authProof,
       next_attempt_at: ts,
       created_at: ts,
       updated_at: ts,
@@ -152,13 +199,17 @@ export function reserveSealedCallAttempt(params: {
       createdAttemptId = attempt.attempt_id;
     } catch (err) {
       if (isUniqueViolation(err)) {
-        const row = fhenixGatewayTxRepo.byClientOrder(
-          params.db,
-          agentId,
-          params.body.client_order_id,
-        );
-        if (row) {
-          idempotentReturn = row;
+        // Unique-race recovery goes through the same fingerprint-checked
+        // exit: the loser of a different-body race gets 409, not the
+        // winner's attempt.
+        inTxDuplicate = sealedCallDuplicateExit({
+          db: params.db,
+          runtimeIdentity: params.runtimeIdentity,
+          clientOrderId: params.body.client_order_id,
+          requestFingerprint: params.requestFingerprint,
+          now: params.now,
+        });
+        if (inTxDuplicate) {
           return;
         }
       }
@@ -167,11 +218,8 @@ export function reserveSealedCallAttempt(params: {
   });
   reserveAndInsert.immediate();
 
-  if (idempotentReturn) {
-    return { kind: "existing_attempt", attempt: idempotentReturn };
-  }
-  if (idempotentSubmissionCallId !== null) {
-    return { kind: "accepted_submission", call_id: idempotentSubmissionCallId };
+  if (inTxDuplicate) {
+    return inTxDuplicate;
   }
   if (!createdAttemptId) {
     throw new Error("Gateway sealed-call reservation did not create an attempt");
@@ -189,6 +237,39 @@ export type ReserveFeedPacketAttemptResult =
       attempt: FhenixGatewayFeedPacketTxAttemptRow;
     };
 
+/**
+ * Feed-lane sibling of sealedCallDuplicateExit. Policy is NOT re-applied
+ * here because reserveFeedPacketAttempt authorizes unconditionally before
+ * any duplicate check (unlike the sealed lane, where duplicates exit first).
+ */
+export function feedPacketDuplicateExit(params: {
+  db: Database.Database;
+  agentId: string;
+  feedId: string;
+  clientOrderId: string;
+  requestFingerprint: string;
+}): ReserveFeedPacketAttemptResult | null {
+  const attempt = fhenixGatewayFeedPacketTxRepo.byClientOrder(
+    params.db,
+    params.agentId,
+    params.feedId,
+    params.clientOrderId,
+  );
+  if (attempt) {
+    assertGatewayFingerprintMatch(
+      attempt.request_fingerprint,
+      params.requestFingerprint,
+      {
+        client_order_id: params.clientOrderId,
+        feed_id: params.feedId,
+        attempt_id: attempt.attempt_id,
+      },
+    );
+    return { kind: "existing_attempt", attempt };
+  }
+  return null;
+}
+
 export function reserveFeedPacketAttempt(params: {
   db: Database.Database;
   runtimeIdentity: RuntimeKeyIdentity;
@@ -197,6 +278,8 @@ export function reserveFeedPacketAttempt(params: {
   chainId: number;
   contractAddress: string;
   relayerAddress: string;
+  requestFingerprint: string;
+  authProof: string | null;
   newAttemptId?: () => string;
   now: () => Date;
 }): ReserveFeedPacketAttemptResult {
@@ -218,14 +301,15 @@ export function reserveFeedPacketAttempt(params: {
   );
   validateFeedPacketMarket(params.db, params.feed, params.body.market_id ?? null);
 
-  const existingAttempt = fhenixGatewayFeedPacketTxRepo.byClientOrder(
-    params.db,
+  const preTxFeedDuplicate = feedPacketDuplicateExit({
+    db: params.db,
     agentId,
-    params.feed.feed_id,
-    params.body.client_order_id,
-  );
-  if (existingAttempt) {
-    return { kind: "existing_attempt", attempt: existingAttempt };
+    feedId: params.feed.feed_id,
+    clientOrderId: params.body.client_order_id,
+    requestFingerprint: params.requestFingerprint,
+  });
+  if (preTxFeedDuplicate) {
+    return preTxFeedDuplicate;
   }
 
   const now = params.now();
@@ -245,14 +329,15 @@ export function reserveFeedPacketAttempt(params: {
   let createdAttemptId: string | null = null;
   try {
     const reserveFeedAttempt = params.db.transaction(() => {
-      const competing = fhenixGatewayFeedPacketTxRepo.byClientOrder(
-        params.db,
+      const competing = feedPacketDuplicateExit({
+        db: params.db,
         agentId,
-        params.feed.feed_id,
-        params.body.client_order_id,
-      );
-      if (competing) {
-        idempotentFeedReturn = competing;
+        feedId: params.feed.feed_id,
+        clientOrderId: params.body.client_order_id,
+        requestFingerprint: params.requestFingerprint,
+      });
+      if (competing?.kind === "existing_attempt") {
+        idempotentFeedReturn = competing.attempt;
         return;
       }
       const sequence = params.body.sequence ?? Math.max(
@@ -302,6 +387,8 @@ export function reserveFeedPacketAttempt(params: {
         reveal_after: revealAfter,
         action_input_json: gatewayCofheInputJson(params.body.action_input),
         signal_input_json: gatewayCofheInputJson(params.body.signal_input),
+        request_fingerprint: params.requestFingerprint,
+        auth_proof: params.authProof,
         next_attempt_at: ts,
         created_at: ts,
         updated_at: ts,
@@ -311,14 +398,15 @@ export function reserveFeedPacketAttempt(params: {
     reserveFeedAttempt.immediate();
   } catch (err) {
     if (isUniqueViolation(err)) {
-      const row = fhenixGatewayFeedPacketTxRepo.byClientOrder(
-        params.db,
+      const recovered = feedPacketDuplicateExit({
+        db: params.db,
         agentId,
-        params.feed.feed_id,
-        params.body.client_order_id,
-      );
-      if (row) {
-        return { kind: "existing_attempt", attempt: row };
+        feedId: params.feed.feed_id,
+        clientOrderId: params.body.client_order_id,
+        requestFingerprint: params.requestFingerprint,
+      });
+      if (recovered) {
+        return recovered;
       }
     }
     throw err;

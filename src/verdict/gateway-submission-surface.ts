@@ -24,6 +24,13 @@ type GatewaySubmissionAdapter = Pick<
 
 export interface GatewaySubmissionRequest {
   header(name: string): string | undefined;
+  /** Present on real express requests; PoP-bound runtime keys fail closed
+   *  without them. Optional so header-only smoke fakes keep compiling and
+   *  exercise bearer-only keys. */
+  method?: string;
+  originalUrl?: string;
+  /** Raw-body sha256 from the gateway router's express.json verify hook. */
+  murmurRawBodySha256?: string;
 }
 
 export type GatewayAuthDispatcher = (

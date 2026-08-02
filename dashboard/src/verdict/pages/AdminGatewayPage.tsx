@@ -190,7 +190,7 @@ export function AdminGatewayPage() {
 
       {/* CONTROL STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-2 flex items-center justify-between gap-3 flex-wrap">
-        <span className="ck-label ck-pos">relayer control plane</span>
+        <span className="ck-title">relayer control plane</span>
         <div className="flex items-center gap-3 flex-wrap">
           <a href="#/admin/overview" className="ck-btn ck-btn-bracket no-underline">← overview</a>
           <button
@@ -219,7 +219,7 @@ export function AdminGatewayPage() {
         )}
 
         {!snapshot && !error && (
-          <div className="px-3 py-10 ck-mono ck-dim">[loading …]</div>
+          <div className="px-3 py-10 ck-mono ck-dim">[loading…]</div>
         )}
 
         {snapshot && (
@@ -332,7 +332,7 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[1040px]">
-        <div className="grid grid-cols-[110px_130px_170px_1fr_150px_120px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[110px_130px_170px_1fr_150px_120px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>severity</span>
           <span>source</span>
           <span>kind</span>
@@ -412,7 +412,7 @@ function FeedHealthTable({ rows }: { rows: FeedAvailabilitySummary[] }) {
   return (
     <div className="overflow-x-auto border-b border-[var(--color-border)]">
       <div className="min-w-[1060px]">
-        <div className="grid grid-cols-[1fr_120px_110px_120px_130px_160px_130px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[1fr_120px_110px_120px_130px_160px_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>feed</span>
           <span>health</span>
           <span className="text-right">rel</span>
@@ -475,7 +475,7 @@ function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[1040px]">
-        <div className="grid grid-cols-[120px_130px_1fr_130px_130px_90px_90px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[120px_130px_1fr_130px_130px_90px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>wallet</span>
@@ -579,7 +579,7 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[1180px]">
-        <div className="grid grid-cols-[110px_120px_1fr_150px_110px_120px_1fr_130px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[110px_120px_1fr_150px_110px_120px_1fr_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>market</span>
@@ -629,7 +629,7 @@ function CanaryTable({ rows }: { rows: LiveCanaryCheck[] }) {
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[980px]">
-        <div className="grid grid-cols-[170px_110px_110px_130px_1fr_190px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[170px_110px_110px_130px_1fr_190px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>check</span>
           <span>status</span>
           <span className="text-right">lat</span>
@@ -671,7 +671,7 @@ function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[1060px]">
-        <div className="grid grid-cols-[1fr_120px_120px_150px_120px_120px_130px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[1fr_120px_120px_150px_120px_120px_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>feed</span>
           <span className="text-right">seq</span>
           <span>status</span>
@@ -784,7 +784,7 @@ function FeedAttemptTable({
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[1460px]">
-        <div className="grid grid-cols-[130px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[130px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>feed</span>
@@ -862,7 +862,7 @@ function AttemptTable({
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[1280px]">
-        <div className="grid grid-cols-[130px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-1.5 ck-label border-b border-[var(--color-border)]">
+        <div className="grid grid-cols-[130px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>market</span>

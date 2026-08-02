@@ -30,7 +30,9 @@ import {
 import {
   reserveFeedPacketAttempt,
   reserveSealedCallAttempt,
+  sealedCallDuplicateExit,
 } from "./fhenix-gateway-reservations.js";
+import { gatewayRequestFingerprint } from "./gateway-request-fingerprint.js";
 import {
   normalizeAddress,
   type FhenixGatewayRuntimeTimers,
@@ -199,6 +201,10 @@ export class FhenixGatewayBroadcaster {
   async submitSealedCall(params: {
     authResult: AuthIdentity;
     bodyJson: unknown;
+    /** Owned sealing fingerprints the ORIGINAL client body before randomized
+     *  CoFHE sealing and threads it through here, so byte-identical retries
+     *  match even though sealing output differs per call. */
+    requestFingerprintOverride?: string;
   }): Promise<GatewaySubmitResult> {
     const parsed = GatewaySealedCallBodySchema.safeParse(params.bodyJson);
     if (!parsed.success) {
@@ -214,29 +220,28 @@ export class FhenixGatewayBroadcaster {
       params.authResult,
       "gateway submissions require X-Murmur-Runtime-Key auth",
     );
-    const { agent_id: agentId } = runtimeIdentity;
 
-    const existingAttempt = fhenixGatewayTxRepo.byClientOrder(
-      this.db,
-      agentId,
-      body.client_order_id,
-    );
-    if (existingAttempt) {
-      return resultFromAttempt(existingAttempt, true);
+    const requestFingerprint =
+      params.requestFingerprintOverride ??
+      gatewayRequestFingerprint("sealed_call", body);
+    const earlyDuplicate = sealedCallDuplicateExit({
+      db: this.db,
+      runtimeIdentity,
+      clientOrderId: body.client_order_id,
+      requestFingerprint,
+      now: this.now,
+    });
+    if (earlyDuplicate?.kind === "existing_attempt") {
+      return resultFromAttempt(earlyDuplicate.attempt, true);
     }
-    const existingSubmission = submissionsRepo.findByClientOrderId(
-      this.db,
-      agentId,
-      body.client_order_id,
-    );
-    if (existingSubmission) {
+    if (earlyDuplicate?.kind === "accepted_submission") {
       return {
         status: 200,
         body: {
           attempt_id: "",
           status: "accepted",
           tx_hash: null,
-          call_id: existingSubmission.call_id,
+          call_id: earlyDuplicate.call_id,
           next_attempt_at: nowIso(this.now()),
           idempotent_hit: true,
         },
@@ -273,6 +278,10 @@ export class FhenixGatewayBroadcaster {
       chainId: this.chainId,
       contractAddress: this.contractAddress,
       relayerAddress: this.relayerAddress,
+      requestFingerprint,
+      authProof: runtimeIdentity.runtime_key.signature_verified
+        ? "pop-v1"
+        : null,
       newAttemptId: this.newAttemptId,
       now: this.now,
     });
@@ -323,27 +332,28 @@ export class FhenixGatewayBroadcaster {
       params.authResult,
       "murmur-owned sealing requires X-Murmur-Runtime-Key auth",
     );
-    const existingAttempt = fhenixGatewayTxRepo.byClientOrder(
-      this.db,
-      runtimeIdentity.agent_id,
-      parsed.data.client_order_id,
+    const requestFingerprint = gatewayRequestFingerprint(
+      "owned_sealed_call",
+      parsed.data,
     );
-    if (existingAttempt) {
-      return resultFromAttempt(existingAttempt, true);
+    const earlyDuplicate = sealedCallDuplicateExit({
+      db: this.db,
+      runtimeIdentity,
+      clientOrderId: parsed.data.client_order_id,
+      requestFingerprint,
+      now: this.now,
+    });
+    if (earlyDuplicate?.kind === "existing_attempt") {
+      return resultFromAttempt(earlyDuplicate.attempt, true);
     }
-    const existingSubmission = submissionsRepo.findByClientOrderId(
-      this.db,
-      runtimeIdentity.agent_id,
-      parsed.data.client_order_id,
-    );
-    if (existingSubmission) {
+    if (earlyDuplicate?.kind === "accepted_submission") {
       return {
         status: 200,
         body: {
           attempt_id: "",
           status: "accepted",
           tx_hash: null,
-          call_id: existingSubmission.call_id,
+          call_id: earlyDuplicate.call_id,
           next_attempt_at: nowIso(this.now()),
           idempotent_hit: true,
         },
@@ -358,6 +368,7 @@ export class FhenixGatewayBroadcaster {
         binaryIndexInput: sealed.binary_index_input,
         confidenceInput: sealed.confidence_input,
       }),
+      requestFingerprintOverride: requestFingerprint,
     });
   }
 
@@ -415,6 +426,12 @@ export class FhenixGatewayBroadcaster {
       chainId: this.chainId,
       contractAddress: this.contractAddress,
       relayerAddress: this.relayerAddress,
+      requestFingerprint: gatewayRequestFingerprint("feed_packet", body, {
+        feedId: params.feedId,
+      }),
+      authProof: runtimeIdentity.runtime_key.signature_verified
+        ? "pop-v1"
+        : null,
       newAttemptId: this.newAttemptId,
       now: this.now,
     });
