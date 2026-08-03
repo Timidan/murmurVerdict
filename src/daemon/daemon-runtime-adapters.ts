@@ -185,8 +185,9 @@ export async function loadDaemonRuntimeAdapters(
   // venues now: resolution is `adapter.observeResolution(...)` and its only
   // dependencies are the database and a clock, both of which always exist by
   // this point. There is no configuration under which the resolver should be
-  // absent. Proven by src/verdict/resolver-adapter.smoke.ts, which resolves a
-  // sealed call end-to-end with a completely empty environment.
+  // absent. Pinned by src/daemon/daemon-runtime-adapters.smoke.ts (resolver is
+  // constructed and tickable with zero oracle configuration) and exercised
+  // end-to-end by src/verdict/fhenix-api.smoke.ts.
   const resolver = new Resolver({
     db,
     now,

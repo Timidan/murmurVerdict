@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   agentsRepo,
+  marketsRepo,
   openDb,
   resolutionsRepo,
   submissionsRepo,
@@ -62,6 +63,27 @@ try {
   process.stdout.write("murmur openserv launchpad smoke\n");
   const db = openDb({ path: dbPath });
   const agentId = randomUUID();
+  // A LISTED external market — the only kind murmur accepts calls against now.
+  const externalMarketId = `0x${"7e".repeat(32)}`;
+  marketsRepo.upsertExternalMarket(db, {
+    market_id: externalMarketId,
+    asset_id: "polymarket:event",
+    market_kind: "event_binary",
+    horizon_seconds: 3600,
+    primary_oracle_id: "polymarket-gamma-oracle",
+    adapter_id: "polymarket-gamma",
+    market_family: "prediction-market-binary",
+    scoring_kind: "multinomial_brier",
+    config_json: JSON.stringify({
+      conditionId: externalMarketId,
+      question: "Bitcoin Up or Down - launchpad smoke",
+      outcomes: ["Up", "Down"],
+      endDate: "2026-05-14T14:00:00Z",
+    }),
+    void_band: "0",
+    status: "listed",
+    created_at: "2026-05-14T12:00:00Z",
+  });
   const pendingCallId = randomUUID();
   const resolvedCallId = randomUUID();
   const acceptedAt = "2026-05-14T12:00:00Z";
@@ -316,33 +338,32 @@ try {
   });
 
   await check("market discovery returns public registry metadata", async () => {
-    const result = await call("search_markets", { query: "eth", limit: 5 });
+    // Discovery serves LISTED external markets. eth.1h is the legacy
+    // native-price row retired by MIGRATION_061 and must never surface here.
+    const result = await call("search_markets", { query: "Bitcoin", limit: 5 });
     assert.equal(result.kind, "murmur_market_search");
     assert.ok(
-      result.markets.some((market: { market_id: string }) => market.market_id === "eth.1h"),
+      result.markets.some(
+        (market: { market_id: string }) => market.market_id === externalMarketId,
+      ),
+      "listed external market is discoverable",
     );
-    const market = await call("get_market", { market_id: "eth.1h" });
-    assert.equal(market.market.market_id, "eth.1h");
-    assert.equal(market.market.adapter_id, "native-price");
-    assert.equal(market.market.market_taxonomy.resolution_class, "price_direction");
-    assert.equal(market.market.oracles.health, "ok");
-    assert.equal(market.market.oracles.primary.oracle_id, "chainlink-base-eth-usd");
-    assert.equal(market.market.oracles.primary.status, "listed");
-    const byClass = await call("search_markets", {
-      resolution_class: "price_direction",
-      limit: 5,
-    });
     assert.ok(
-      byClass.markets.some((item: { market_id: string }) => item.market_id === "eth.1h"),
+      !result.markets.some(
+        (market: { market_id: string }) => market.market_id === "eth.1h",
+      ),
+      "retired native-price market is not discoverable",
     );
+    const market = await call("get_market", { market_id: externalMarketId });
+    assert.equal(market.market.market_id, externalMarketId);
+    assert.equal(market.market.adapter_id, "polymarket-gamma");
+    assert.equal(market.market.market_family, "prediction-market-binary");
     const ranking = await call("rank_agents_for_market", {
-      market_id: "eth.1h",
+      market_id: externalMarketId,
       limit: 5,
     });
     assert.equal(ranking.kind, "murmur_market_agent_rankings");
-    assert.equal(ranking.market.market_id, "eth.1h");
-    assert.equal(ranking.market.oracles.health, "ok");
-    assert.equal(ranking.market.oracles.fallback.oracle_id, "pyth-base-eth-usd");
+    assert.equal(ranking.market.market_id, externalMarketId);
     assert.ok(Array.isArray(ranking.agents));
   });
 

@@ -109,11 +109,11 @@ export const CallStatusSchema = z.enum([
 export type CallStatus = z.infer<typeof CallStatusSchema>;
 
 // Wave 4b-2 — VerdictPreflight + MarketRegime were Santiment-derived
-// decoration stamped onto every accepted call. Resolver never consulted
-// them; calls settle against Chainlink/Pyth oracles. The preflight
-// struct, the /v1/market/preflight endpoint, the preflights table, and
-// the entire scout → analyst pipeline are removed. Murmur is a pure
-// ranking layer over canonical price/event oracles.
+// decoration stamped onto every accepted call. The resolver never consulted
+// them. The preflight struct, the /v1/market/preflight endpoint, the
+// preflights table, and the entire scout → analyst pipeline are removed.
+// Murmur is a pure referee: the external venue resolves its own market and
+// murmur scores the sealed call against that outcome.
 
 // ─── Resolution outcomes ──────────────────────────────────────────────────────
 //

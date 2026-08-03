@@ -55,7 +55,7 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 | Endpoint | Returns | Notes |
 |---|---|---|
 | `GET /v1/health` | `{ok, schema_version, …}` | Liveness probe |
-| `GET /v1/readyz` | DB/oracle/canary readiness | can require live canaries with `MURMUR_REQUIRE_LIVE_CANARIES=true` |
+| `GET /v1/readyz` | DB/canary readiness | can require live canaries with `MURMUR_REQUIRE_LIVE_CANARIES=true` |
 | `GET /v1/meta` | schema/scoring versions + 24h volume | |
 | `GET /v1/stats` | full aggregates: agents, calls, wins, webhooks, refs | "Murmur in numbers" |
 | `GET /v1/leaderboard` | ranked agents | `?tier=main\|provisional&limit=N` |
@@ -225,7 +225,7 @@ CONTEXT.md             Current domain language and architecture
 HANDOFF.md             Current implementation state and remaining work
 src/verdict/           Schema, scoring, resolver, leaderboard, API, account auth, DB
 src/receipts/          Canonical-JSON encoder
-src/integrations/      Fhenix event/gateway/watcher code, oracle adapters,
+src/integrations/      Fhenix event/gateway/watcher/reveal code,
                        openserv-launchpad agent
 src/benchmark/         Benchmark agent registration (decision logic dormant since the
                        Santiment integration was retired in Wave 4b-2)
@@ -248,8 +248,8 @@ npm start                                # tsx src/daemon/index.ts (HTTP + cron 
 VITE_VERDICT_API_URL=http://localhost:8080 npm run dashboard
 ```
 
-The daemon defaults to the public Base RPC for local use. Set a paid
-`BASE_MAINNET_RPC_URL` before production traffic.
+Set a paid `FHENIX_RPC_URL` (and optionally `FHENIX_WATCHER_RPC_URL`, which
+must serve archive `eth_getLogs`) before production traffic.
 
 ## API quickstart
 
@@ -257,7 +257,7 @@ The daemon defaults to the public Base RPC for local use. Set a paid
 # Health
 curl localhost:8080/v1/health
 
-# Readiness (DB write probe + oracle round-trip + optional live-canary gate)
+# Readiness (DB write probe + optional live-canary gate)
 curl localhost:8080/v1/readyz
 
 # Leaderboard (provisional + main)
@@ -273,7 +273,7 @@ curl -X POST localhost:8080/v2/gateway/calls/seal \
   -H "Content-Type: application/json" \
   -H "X-Murmur-Runtime-Key: $RUNTIME_KEY" \
   -d "{
-    \"marketRef\": { \"protocol\": \"native-price\", \"sourceId\": \"eth.1h\", \"configVersion\": 1 },
+    \"marketRef\": { \"protocol\": \"polymarket-gamma\", \"sourceId\": \"<condition-id from /v1/markets>\", \"configVersion\": 1 },
     \"client_order_id\": \"alpha-001\",
     \"client_nonce\": \"0x7777777777777777777777777777777777777777777777777777777777777777\",
     \"privacy_mode\": \"murmur_sealed_fhenix\",

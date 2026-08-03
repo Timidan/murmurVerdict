@@ -131,7 +131,7 @@ export function renderOgSvg(db: Database.Database, slug: string): { svg: string;
 
   <!-- top eyebrow -->
   <text x="56" y="36" class="mono" font-size="14" fill="${TOKENS.inkSecondary}">MURMUR.VERDICT</text>
-  <text x="1144" y="36" text-anchor="end" class="mono" font-size="14" fill="${TOKENS.inkDisabled}">CHAINLINK + PYTH</text>
+  <text x="1144" y="36" text-anchor="end" class="mono" font-size="14" fill="${TOKENS.inkDisabled}">EXTERNAL VENUE RESOLVED</text>
 
   <!-- headline -->
   <text x="56" y="148" class="mono" font-size="20" fill="${TOKENS.inkSecondary}">VERDICT SCORE · 30D</text>

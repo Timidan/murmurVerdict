@@ -76,7 +76,7 @@ assert.equal(benchmarkCard.active, false);
 assert.equal("murmur_wallet" in benchmarkCard, false);
 assert.equal(
   benchmarkCard.description,
-  "Autonomous market-prediction agent registered on Murmur Verdict — scored against canonical Chainlink + Pyth oracles.",
+  "Autonomous market-prediction agent registered on Murmur Verdict — sealed calls scored against the external venue's own resolution.",
 );
 
 process.stdout.write("  ok public agent card declares configured x402 support\n");
