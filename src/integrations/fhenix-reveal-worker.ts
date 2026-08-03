@@ -200,6 +200,8 @@ export class FhenixRevealWorker {
 
     // 3. Process due jobs with bounded concurrency.
     const due = fhenixRevealJobsRepo.listDue(this.db, {
+      chain_id: this.chainId,
+      contract_address: this.contractAddress,
       now: tickNowIso,
       limit: this.maxJobsPerTick,
     });
@@ -495,6 +497,8 @@ export class FhenixRevealWorker {
   private scanHealth(tickNowIso: string): void {
     const warnBefore = isoFromMs(Date.parse(tickNowIso) - this.warnMs);
     const stale = fhenixRevealJobsRepo.listNonTerminalOlderThan(this.db, {
+      chain_id: this.chainId,
+      contract_address: this.contractAddress,
       reveal_open_before: warnBefore,
       limit: 200,
     });

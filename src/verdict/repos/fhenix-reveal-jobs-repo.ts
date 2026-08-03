@@ -124,15 +124,26 @@ export const fhenixRevealJobsRepo = {
   // Due, non-terminal jobs ordered by next_attempt_at. Single write-enabled
   // process per reveal EOA (documented) means no lease is required for
   // correctness; the on-chain WrongState guard is the real safety boundary.
+  // Scoped by (chain_id, contract_address): a worker is bound to ONE deployed
+  // contract, so an unscoped read would hand it a job persisted against a
+  // previous deployment and it would open/publish that call at the wrong
+  // address.
   listDue(
     db: Database.Database,
-    input: { now: string; limit: number },
+    input: {
+      chain_id: number;
+      contract_address: string;
+      now: string;
+      limit: number;
+    },
   ): FhenixRevealJobRow[] {
     return prep(
       db,
       `SELECT ${JOB_COLUMNS}
        FROM fhenix_reveal_jobs
        WHERE phase NOT IN ('terminal_daemon','terminal_external')
+         AND chain_id = @chain_id
+         AND lower(contract_address) = lower(@contract_address)
          AND next_attempt_at <= @now
        ORDER BY next_attempt_at
        LIMIT @limit`,
@@ -144,13 +155,20 @@ export const fhenixRevealJobsRepo = {
   // without ever terminalizing the (still-revealable) call.
   listNonTerminalOlderThan(
     db: Database.Database,
-    input: { reveal_open_before: string; limit: number },
+    input: {
+      chain_id: number;
+      contract_address: string;
+      reveal_open_before: string;
+      limit: number;
+    },
   ): FhenixRevealJobRow[] {
     return prep(
       db,
       `SELECT ${JOB_COLUMNS}
        FROM fhenix_reveal_jobs
        WHERE phase NOT IN ('terminal_daemon','terminal_external')
+         AND chain_id = @chain_id
+         AND lower(contract_address) = lower(@contract_address)
          AND reveal_open_at <= @reveal_open_before
        ORDER BY reveal_open_at
        LIMIT @limit`,

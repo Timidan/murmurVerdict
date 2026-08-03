@@ -137,19 +137,32 @@ fhenixRevealJobsRepo.ensure(db, {
 });
 fhenixRevealJobsRepo.update(db, callC, { phase: "terminal_daemon", now: "2026-05-14T14:00:00Z" });
 
-const due = fhenixRevealJobsRepo.listDue(db, { now: "2026-05-14T14:20:00Z", limit: 10 });
+const due = fhenixRevealJobsRepo.listDue(db, {
+  chain_id: CHAIN_ID,
+  contract_address: CONTRACT,
+  now: "2026-05-14T14:20:00Z",
+  limit: 10,
+});
 const dueIds = due.map((j) => j.call_id);
 assert.ok(dueIds.includes(callA) && dueIds.includes(callB), "non-terminal due jobs returned");
 assert.ok(!dueIds.includes(callC), "terminal job excluded");
 // callB (next_attempt 13:59) before callA (14:05).
 assert.ok(dueIds.indexOf(callB) < dueIds.indexOf(callA), "ordered by next_attempt_at");
 // A not-yet-due job is excluded.
-const none = fhenixRevealJobsRepo.listDue(db, { now: "2026-05-14T14:00:00Z", limit: 10 });
+const none = fhenixRevealJobsRepo.listDue(db, {
+  chain_id: CHAIN_ID,
+  contract_address: CONTRACT,
+  now: "2026-05-14T14:00:00Z",
+  limit: 10,
+});
 assert.ok(!none.map((j) => j.call_id).includes(callA), "future next_attempt excluded");
 process.stdout.write("  ok listDue orders/excludes correctly\n");
 
+
 // listNonTerminalOlderThan for the health scan.
 const stale = fhenixRevealJobsRepo.listNonTerminalOlderThan(db, {
+  chain_id: CHAIN_ID,
+  contract_address: CONTRACT,
   reveal_open_before: "2026-05-14T13:35:00Z",
   limit: 10,
 });
@@ -163,6 +176,53 @@ assert.equal(counts.terminal_daemon, 1);
 assert.equal(counts.opened_confirmed, 1);
 assert.equal(counts.eligible, 1);
 process.stdout.write("  ok counts by phase\n");
+
+// REGRESSION: a worker is bound to ONE deployed contract. A job persisted
+// against a previous deployment must never be handed to it — opening or
+// publishing that call at the wrong address would revert (or worse, hit an
+// unrelated call id).
+const OTHER_CONTRACT = "0x" + "cd".repeat(20);
+const callOther = randomUUID();
+seed(callOther, "2026-05-14T13:40:00Z");
+fhenixRevealJobsRepo.ensure(db, {
+  call_id: callOther,
+  chain_id: CHAIN_ID,
+  contract_address: OTHER_CONTRACT,
+  onchain_call_id: "0x" + (9).toString(16).padStart(64, "0"),
+  reveal_open_at: "2026-05-14T13:40:00Z",
+  now: "2026-05-14T13:41:00Z",
+});
+const scoped = fhenixRevealJobsRepo.listDue(db, {
+  chain_id: CHAIN_ID,
+  contract_address: CONTRACT,
+  now: "2026-05-14T14:20:00Z",
+  limit: 10,
+});
+assert.ok(
+  !scoped.map((j) => j.call_id).includes(callOther),
+  "job from another contract deployment must not be returned",
+);
+const otherScoped = fhenixRevealJobsRepo.listDue(db, {
+  chain_id: CHAIN_ID,
+  contract_address: OTHER_CONTRACT,
+  now: "2026-05-14T14:20:00Z",
+  limit: 10,
+});
+assert.ok(
+  otherScoped.map((j) => j.call_id).includes(callOther),
+  "the other contract's own worker still sees its job",
+);
+const staleScoped = fhenixRevealJobsRepo.listNonTerminalOlderThan(db, {
+  chain_id: CHAIN_ID,
+  contract_address: CONTRACT,
+  reveal_open_before: "2026-05-14T14:00:00Z",
+  limit: 10,
+});
+assert.ok(
+  !staleScoped.map((j) => j.call_id).includes(callOther),
+  "health scan is contract-scoped too",
+);
+process.stdout.write("  ok jobs are scoped to their own contract deployment\n");
 
 db.close();
 rmSync(tmp, { recursive: true, force: true });
