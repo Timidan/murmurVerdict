@@ -50,6 +50,10 @@ import {
 } from "../verdict/db.js";
 import { broadcastGatewayAttempt } from "./fhenix-gateway-attempt-machine.js";
 import {
+  engageAccountKillSwitch,
+  releaseAccountKillSwitch,
+} from "../verdict/auth/account-kill-switch.js";
+import {
   feedPacketAttemptKind,
   sealedCallAttemptKind,
 } from "./fhenix-gateway-attempt-kinds.js";
@@ -545,6 +549,80 @@ async function main(): Promise<void> {
       );
       assert.equal(after?.broadcast_claim_token, null);
       assert.equal(after?.last_error, null);
+    });
+
+    // ── 7b. Kill switch engaged while the write waits in the broadcast queue ──
+    //
+    // The machine's halt checks at the top of broadcastGatewayAttempt run
+    // BEFORE the write enters the serial broadcast queue; an engagement that
+    // lands while the write is parked behind earlier queue work must still
+    // stop it. The preBroadcast seam runs inside the serialized slot — this
+    // pins that a late engagement halts the broadcast terminally and the
+    // signer call never runs.
+    await check("kill switch engaged while queued halts the broadcast (no tx)", async () => {
+      const attempt = makeAttempt("queued-halt");
+      // Valid CoFHE input JSON so contractWrite() succeeds and the machine
+      // actually reaches the client — the halt must come from the
+      // preBroadcast seam, not from an argument-construction failure.
+      const cofheInput = JSON.stringify({
+        ct_hash: "0x" + "aa".repeat(32),
+        security_zone: 0,
+        utype: 2,
+        signature: "0x" + "bb".repeat(65),
+      });
+      attempt.binary_index_input_json = cofheInput;
+      attempt.confidence_input_json = JSON.stringify({
+        ct_hash: "0x" + "cc".repeat(32),
+        security_zone: 0,
+        utype: 3,
+        signature: "0x" + "dd".repeat(65),
+      });
+      fhenixGatewayTxRepo.insert(dbA, attempt);
+      let signerCalls = 0;
+      const haltClient: FhenixGatewayClient = {
+        getChainId: async () => 84532,
+        getBlockNumber: async () => 1n,
+        // Mirrors the gateway-env queue wrapper: the hook fires inside the
+        // serialized slot, immediately before the signer call. Engaging the
+        // switch FIRST simulates it landing while this write sat in queue.
+        writeContract: async (_args, opts) => {
+          engageAccountKillSwitch(dbA, {
+            account_id: accountId,
+            actor: "race-smoke",
+            now: () => new Date(),
+          });
+          opts?.preBroadcast?.();
+          signerCalls += 1;
+          return ("0x" + "ab".repeat(32)) as Hex;
+        },
+        getTransactionReceipt: async () => {
+          throw new Error("not used");
+        },
+      };
+      const result = await broadcastGatewayAttempt(sealedCallAttemptKind(), {
+        db: dbA,
+        client: haltClient,
+        chainId: 84532,
+        contractAddress: "0x" + "11".repeat(20),
+        reconcileFromBlock: 0,
+        maxAttempts: 5,
+        retryBaseMs: 5_000,
+        retryMaxMs: 120_000,
+        broadcastTimeoutMs: 0,
+        now: () => new Date(),
+        attemptId: attempt.attempt_id,
+      });
+      assert.equal(result.kind, "terminal_failure");
+      assert.equal(signerCalls, 0, "signer must never run after a late engagement");
+      const after = fhenixGatewayTxRepo.byId(dbA, attempt.attempt_id);
+      assert.equal(after?.status, "failed_terminal");
+      assert.match(after?.last_error ?? "", /kill switch/i);
+      // release so later checks in this db are unaffected
+      releaseAccountKillSwitch(dbA, {
+        account_id: accountId,
+        actor: "race-smoke",
+        now: () => new Date(),
+      });
     });
 
     // ── 8. Feed-lane reconciliation (same invariant, feed_packet kind) ──

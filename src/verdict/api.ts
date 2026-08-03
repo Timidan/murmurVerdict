@@ -103,6 +103,8 @@ export interface ApiDeps {
    */
   entitlementAccess?: EntitlementAccessSurfaceDeps | null;
   privyAuth?: PrivyAuthVerifier;
+  /** Deployment-specific runtime-key PoP audience (MURMUR_POP_AUDIENCE). */
+  popAudience?: string;
   /**
    * Optional live operator canaries for external dependencies that are not
    * safe to assume from local process health: Fhenix RPC/contract reachability
@@ -168,6 +170,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     privyAuth: deps.privyAuth,
     requireAdmin: adminAuth.requireAdmin,
     entitlementAccess: deps.entitlementAccess,
+    popAudience: deps.popAudience,
   }));
 
   router.use(operatorControlRouter({

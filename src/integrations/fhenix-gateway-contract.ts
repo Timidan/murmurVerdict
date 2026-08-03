@@ -28,10 +28,24 @@ export const MURMUR_SEALED_VERDICTS_GATEWAY_ABI = [
   FEED_PACKET_SUBMITTED_EVENT,
 ] as const;
 
+export interface GatewayWriteOptions {
+  /**
+   * Runs INSIDE the serialized broadcast slot, immediately before the signer
+   * call. Broadcasts can sit behind earlier work in the queue, so state
+   * checked at enqueue time (kill switch, key revocation) may be stale by the
+   * time the slot opens — this hook re-checks at the last possible moment.
+   * Throwing aborts the broadcast before any transaction is sent.
+   */
+  preBroadcast?: () => void;
+}
+
 export interface FhenixGatewayClient {
   getChainId: () => Promise<number>;
   getBlockNumber: () => Promise<bigint>;
-  writeContract: (args: GatewayWriteContractArgs) => Promise<Hex>;
+  writeContract: (
+    args: GatewayWriteContractArgs,
+    opts?: GatewayWriteOptions,
+  ) => Promise<Hex>;
   getTransactionReceipt: (args: { hash: Hex }) => Promise<GatewayReceipt>;
   /**
    * Reconciliation read path: confirm the contract already accepted a

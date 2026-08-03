@@ -1143,7 +1143,7 @@ export function applyMigrations(db: Database.Database): void {
     // codex-reviewed 2026-08-02). Four independent pieces, one version:
     //
     //   1. agent_runtime_key_nonces — consumed (runtime_key_id, nonce) pairs
-    //      for murmur-rk-v1 proof-of-possession replay prevention. No FK to
+    //      for murmur-rk (v2) proof-of-possession replay prevention. No FK to
     //      agent_runtime_keys: keys are soft-revoked (never deleted), and an
     //      FK would tax every authenticated request for a cascade that can't
     //      fire. Rows are pruned lazily on each verify (retention 600s).

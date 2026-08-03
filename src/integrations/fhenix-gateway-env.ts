@@ -165,14 +165,17 @@ export function loadFhenixGatewayEnvConfig(
     getChainId: () => publicClient.getChainId(),
     getBlockNumber: () => publicClient.getBlockNumber(),
     getTransactionReceipt: (args) => publicClient.getTransactionReceipt(args),
-    writeContract: (args) =>
-      broadcastQueue.run(() =>
-        walletClient.writeContract({
+    writeContract: (args, opts) =>
+      broadcastQueue.run(() => {
+        // Last-moment halt seam: runs inside the serialized slot so a kill
+        // switch engaged while this write waited in the queue still stops it.
+        opts?.preBroadcast?.();
+        return walletClient.writeContract({
           ...args,
           account,
           chain: null,
-        } as never),
-      ),
+        } as never);
+      }),
     // Reconciliation read path — viem's readContract throws on revert
     // (CallNotFound / PacketNotFound), which the reconciler wraps to mean
     // "no on-chain state".
@@ -200,6 +203,8 @@ export function loadFhenixGatewayEnvConfig(
     contractAddress,
     relayerAddress: account.address,
     publicClient,
+    // No halt seam here: discovery market registration is daemon-owned, not
+    // an agent-credential submission, so the kill switch does not apply.
     writeContract: (args) =>
       broadcastQueue.run(() =>
         walletClient.writeContract({

@@ -9,6 +9,7 @@ import type {
 } from "./fhenix-gateway-contract.js";
 import {
   errorMessage,
+  redactedErrorText,
   measure,
   receiptTelemetry,
   safeBlockNumber,
@@ -223,7 +224,7 @@ export async function broadcastGatewayAttempt<
       // still hasn't been broadcast in this tick.
       kind.lifecycle.markReconciliationFailure(config.db, {
         attempt_id: attempt.attempt_id,
-        last_error: `Reconciliation failed: ${errorMessage(err)}`,
+        last_error: `Reconciliation failed: ${redactedErrorText(err)}`,
         next_attempt_at: nextRetryAt(config, attempt.attempt_count + 1),
         updated_at: nowIso(config.now()),
       });
@@ -254,10 +255,31 @@ export async function broadcastGatewayAttempt<
       attempt,
       config.contractAddress as Address,
     );
+    // Re-check halt state INSIDE the serialized broadcast slot: a kill switch
+    // engaged (or key revoked) while this write waited behind earlier queue
+    // work must still stop it — the checks at the top of this function ran
+    // before the queue wait and can be stale by the time the slot opens.
+    const preBroadcast = () => {
+      const checkedAt = config.now();
+      if (
+        attempt.runtime_key_id &&
+        !isRuntimeKeyActive(config.db, {
+          runtime_key_id: attempt.runtime_key_id,
+          checkedAt,
+        })
+      ) {
+        throw new GatewayBroadcastHaltedError(kind.terminal.runtimeKeyRevoked);
+      }
+      if (agentCredentialsDisabledAt(config.db, attempt.account_id)) {
+        throw new GatewayBroadcastHaltedError(
+          "account kill switch engaged before broadcast",
+        );
+      }
+    };
     const { value: txHash, latencyMs } = await measure(
       () => config.now().getTime(),
       () => withTimeout(
-        config.client.writeContract(write),
+        config.client.writeContract(write, { preBroadcast }),
         config.broadcastTimeoutMs,
         write.functionName,
         config.timers,
@@ -274,9 +296,19 @@ export async function broadcastGatewayAttempt<
     });
     return { kind: "submitted" };
   } catch (err) {
+    if (err instanceof GatewayBroadcastHaltedError) {
+      // Halted at the last moment inside the broadcast slot — no tx was
+      // sent. Terminal, not retryable: the halt condition is durable.
+      kind.lifecycle.markTerminalFailure(config.db, {
+        attempt_id: attempt.attempt_id,
+        last_error: err.message,
+        updated_at: nowIso(config.now()),
+      });
+      return { kind: "terminal_failure" };
+    }
     kind.lifecycle.markRetryableFailure(config.db, {
       attempt_id: attempt.attempt_id,
-      last_error: errorMessage(err),
+      last_error: redactedErrorText(err),
       next_attempt_at: nextRetryAt(config, attempt.attempt_count + 1),
       updated_at: nowIso(config.now()),
       broadcast_started_at: broadcastStartedAt,
@@ -284,6 +316,16 @@ export async function broadcastGatewayAttempt<
       claim_token: claimToken,
     });
     return { kind: "retryable_failure" };
+  }
+}
+
+/** Thrown by the preBroadcast seam when halt state is detected inside the
+ *  serialized broadcast slot; the attempt machine maps it to a terminal
+ *  failure instead of a retryable one. */
+export class GatewayBroadcastHaltedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GatewayBroadcastHaltedError";
   }
 }
 
@@ -323,7 +365,7 @@ export async function confirmGatewayAttempt<
       attempt_id: attempt.attempt_id,
       receipt_observed_at: receiptObservedAt,
       receipt_latency_ms: null,
-      last_rpc_error: errorMessage(err),
+      last_rpc_error: redactedErrorText(err),
     });
     return { kind: "not_confirmed" };
   }
@@ -338,7 +380,7 @@ export async function confirmGatewayAttempt<
       receipt_observed_at: receiptObservedAt,
       receipt_latency_ms: measuredReceipt.latencyMs,
       confirmation: null,
-      last_rpc_error: errorMessage(err),
+      last_rpc_error: redactedErrorText(err),
     }));
     return { kind: "not_confirmed" };
   }

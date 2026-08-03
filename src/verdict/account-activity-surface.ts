@@ -13,6 +13,8 @@
 
 import type Database from "better-sqlite3";
 
+import { redactedErrorText } from "../integrations/fhenix-gateway-runtime.js";
+
 export interface AccountActivityRow {
   attempt_id: string;
   kind: "sealed_call" | "feed_packet";
@@ -85,6 +87,12 @@ export function listAccountActivityResponse(input: {
     before_id: input.before_id ?? "",
     limit,
   }) as AccountActivityRow[];
+  // Redact on READ as well as at persist time: provider errors can embed RPC
+  // URLs whose path/query carry operator credentials, and rows written before
+  // persist-side redaction existed must never serve them to account holders.
+  for (const row of rows) {
+    if (row.last_error) row.last_error = redactedErrorText(row.last_error);
+  }
   const last = rows.length === limit ? rows[rows.length - 1] : undefined;
   return {
     status: 200,

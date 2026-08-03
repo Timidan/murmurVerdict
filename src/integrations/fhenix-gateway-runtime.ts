@@ -135,3 +135,20 @@ export function safeBlockNumber(value: bigint | undefined): number | null {
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/**
+ * Error text safe to PERSIST and to serve through account-facing APIs.
+ * Provider errors (viem HTTP errors especially) embed the full request URL,
+ * and RPC providers put credentials in the URL path or query
+ * (…/v2/<API_KEY>, ?apikey=…). Strip every URL down to scheme + host and cap
+ * the length so a raw provider error can never leak an operator credential
+ * through `last_error` columns or /v1/account/activity.
+ */
+export function redactedErrorText(input: unknown): string {
+  const raw = typeof input === "string" ? input : errorMessage(input);
+  const stripped = raw.replace(
+    /https?:\/\/([^\s/"'\\]+)[^\s"'\\]*/gi,
+    (_m, host: string) => `https://${host}/<redacted>`,
+  );
+  return stripped.length > 600 ? `${stripped.slice(0, 600)}…` : stripped;
+}

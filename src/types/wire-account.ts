@@ -107,7 +107,7 @@ export interface WireRuntimeKeyPolicy {
   feed_packets?: boolean;
   notes?: string;
   /** Ed25519 public key (64 lowercase hex) — presence makes the runtime key
-   *  proof-of-possession: gateway requests must carry murmur-rk-v1 request
+   *  proof-of-possession: gateway requests must carry murmur-rk-v2 request
    *  signatures. Generated client-side at mint; covered by policy_hash. */
   signing_pubkey?: string;
 }

@@ -40,7 +40,7 @@ export interface RuntimeKeyVerification {
   controller_chain_id: string;
   expires_at: string | null;
   /**
-   * True when the dispatcher verified a murmur-rk-v1 PoP signature for this
+   * True when the dispatcher verified a murmur-rk-v2 PoP signature for this
    * request. Set by dispatchAuth AFTER verification, never read from the DB;
    * bearer-only keys carry false. Persisted onto gateway attempt rows as
    * auth_proof so acceptance-time audit attribution reflects reality.

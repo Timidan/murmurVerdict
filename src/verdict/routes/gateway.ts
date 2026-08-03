@@ -33,6 +33,8 @@ export interface GatewayRouterDeps {
   requireAdmin: (req: Request, res: Response) => boolean;
   /** Flow 2 paid decrypt-access surface. null → the access routes 503. */
   entitlementAccess?: EntitlementAccessSurfaceDeps | null;
+  /** Deployment-specific runtime-key PoP audience (MURMUR_POP_AUDIENCE). */
+  popAudience?: string;
 }
 
 export function gatewayRouter(deps: GatewayRouterDeps): Router {

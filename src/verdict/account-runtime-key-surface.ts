@@ -208,22 +208,55 @@ export async function mintAccountRuntimeKeyResponse(
 
   let minted: ReturnType<typeof mintRuntimeKey>;
   try {
-    minted = mintRuntimeKey(input.db, {
-      account_id: input.accountId,
-      agent_id: agent.agent_id,
-      label: parsed.data.label,
-      policy_json: authorization.policy_json,
-      policy_hash: authorization.policy_hash,
-      controller_wallet_address: controller.wallet_address,
-      controller_chain_id: controller.chain_id,
-      authorization_nonce: authorization.authorization_nonce,
-      authorization_message: authorization.message,
-      authorization_signature: parsed.data.signature,
-      expires_at: authorization.expires_at,
-      createdAt: input.operationInstant,
-      newRuntimeKeyId: input.newRuntimeKeyId,
-      newRuntimeKeySecret: input.newRuntimeKeySecret,
-    });
+    // The signature await above is a suspension point: the kill switch can
+    // engage (bulk-revoking every EXISTING key) or the controller wallet can
+    // be rebound while this request is parked. Re-check both inside one
+    // immediate transaction with the insert, so a late mint can never slip a
+    // fresh unrevoked key past an engagement or bind to a stale wallet.
+    minted = input.db.transaction(() => {
+      assertAgentCredentialsEnabled(input.db, input.accountId);
+      const controllerNow = requireControllerWalletForAgent(
+        input.db,
+        agent.agent_id,
+        "controller wallet unbound while minting",
+      );
+      if (
+        controllerNow.wallet_address !== controller.wallet_address ||
+        controllerNow.chain_id !== controller.chain_id
+      ) {
+        throw new VerdictError(
+          "controller wallet changed while minting; re-sign the authorization",
+          ERROR_CODES.agent_not_authorized,
+          409,
+        );
+      }
+      const attestationNow = controllerWalletAttestationStatus(controllerNow, {
+        checkedAt: input.operationInstant,
+      });
+      if (attestationNow.reattestation_overdue) {
+        throw new VerdictError(
+          "controller wallet re-attestation lapsed while minting",
+          ERROR_CODES.agent_not_authorized,
+          409,
+        );
+      }
+      return mintRuntimeKey(input.db, {
+        account_id: input.accountId,
+        agent_id: agent.agent_id,
+        label: parsed.data.label,
+        policy_json: authorization.policy_json,
+        policy_hash: authorization.policy_hash,
+        controller_wallet_address: controller.wallet_address,
+        controller_chain_id: controller.chain_id,
+        authorization_nonce: authorization.authorization_nonce,
+        authorization_message: authorization.message,
+        authorization_signature: parsed.data.signature,
+        expires_at: authorization.expires_at,
+        createdAt: input.operationInstant,
+        newRuntimeKeyId: input.newRuntimeKeyId,
+        newRuntimeKeySecret: input.newRuntimeKeySecret,
+      });
+    }).immediate();
   } catch (err) {
     if (err instanceof RuntimeKeyAuthorizationReplayError) {
       throw new VerdictError(err.message, ERROR_CODES.duplicate, 409, {

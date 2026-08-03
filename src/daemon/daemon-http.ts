@@ -121,6 +121,7 @@ export function createDaemonHttpSurface(
       fhenixGateway: deps.fhenixGateway,
       entitlementAccess: deps.entitlementAccess,
       privyAuth: deps.privyAuth ?? undefined,
+      popAudience: deps.config.popAudience,
       liveCanaries: deps.liveCanaries,
       publicOrigin: deps.config.publicOrigin,
       fhenixChainId: deps.fhenixChainId,

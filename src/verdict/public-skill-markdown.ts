@@ -209,12 +209,14 @@ alone no longer authenticates: every gateway request must ALSO send
     X-Murmur-Key-Nonce:     <32 hex chars, fresh random per request>
     X-Murmur-Key-Signature: <128 hex chars, ed25519>
 
-The signature covers this exact newline-joined string:
+The signature covers this exact newline-joined string (the nonce IS part of
+the signed payload — a signature over one nonce is useless with any other):
 
-    murmur-rk-v1
+    murmur-rk-v2
     <audience>            ("murmur-gateway" unless the operator overrides it)
     <runtime_key_id>
     <timestamp>
+    <nonce>               (the same 32 hex chars sent in X-Murmur-Key-Nonce)
     <METHOD>              (uppercase, e.g. POST)
     <path-and-query>      (e.g. /v2/gateway/calls/seal)
     <sha256-hex of the raw request body bytes>
@@ -230,8 +232,8 @@ mint, e.g. in node:
     const bodyHash = createHash("sha256").update(bodyBytes).digest("hex");
     const ts = Math.floor(Date.now() / 1000);
     const nonce = randomBytes(16).toString("hex");
-    const payload = ["murmur-rk-v1", "murmur-gateway", runtimeKeyId,
-      String(ts), "POST", "/v2/gateway/calls/seal", bodyHash].join("\\n");
+    const payload = ["murmur-rk-v2", "murmur-gateway", runtimeKeyId,
+      String(ts), nonce, "POST", "/v2/gateway/calls/seal", bodyHash].join("\\n");
     const signature = sign(null, Buffer.from(payload, "utf8"), key).toString("hex");
 
 Hash the exact bytes you send — re-serializing JSON changes them. A missing,

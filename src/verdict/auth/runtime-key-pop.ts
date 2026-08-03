@@ -1,4 +1,4 @@
-// ─── Runtime-key proof-of-possession (murmur-rk-v1) ──────────────────────────
+// ─── Runtime-key proof-of-possession (murmur-rk-v2) ──────────────────────────
 //
 // A Runtime Key whose controller-signed policy carries `signing_pubkey` is
 // PoP-bound: the bearer secret alone no longer authenticates. Each request
@@ -6,14 +6,18 @@
 // only the agent host holds (generated client-side at mint; the server never
 // sees it), over a canonical string that pins:
 //
-//   murmur-rk-v1\n<audience>\n<runtime_key_id>\n<timestamp>\n<METHOD>\n
-//   <path-and-query>\n<raw-body-sha256>
+//   murmur-rk-v2\n<audience>\n<runtime_key_id>\n<timestamp>\n<nonce>\n
+//   <METHOD>\n<path-and-query>\n<raw-body-sha256>
 //
-// Design notes (per codex review 2026-08-02):
+// Design notes (per codex reviews 2026-08-02):
 //   - The audience is a CONFIGURED deployment identifier, never the inbound
 //     Host header (proxies rewrite it), so signatures can't cross deployments.
 //   - runtime_key_id in the string stops cross-key reuse when one signing
 //     keypair is (wrongly) shared between keys.
+//   - The NONCE is part of the signed string (v2). In v1 it was only a header,
+//     so a captured request could be replayed inside the freshness window by
+//     substituting a fresh nonce — the signature still verified. v1 is
+//     rejected outright; there are no deployed v1 clients.
 //   - The body hash covers the RAW bytes captured by express.json's verify
 //     hook — hashing a re-serialized req.body is not the same bytes.
 //   - Replay: timestamp skew is bounded AND the (runtime_key_id, nonce) pair
@@ -25,7 +29,7 @@ import type Database from "better-sqlite3";
 
 import { ERROR_CODES, VerdictError } from "../schema.js";
 
-export const RUNTIME_KEY_POP_VERSION = "murmur-rk-v1";
+export const RUNTIME_KEY_POP_VERSION = "murmur-rk-v2";
 export const RUNTIME_KEY_POP_MAX_SKEW_SECONDS = 120;
 export const RUNTIME_KEY_POP_NONCE_RETENTION_SECONDS = 600;
 
@@ -59,6 +63,8 @@ export function buildRuntimeKeyPopSigningString(input: {
   audience: string;
   runtimeKeyId: string;
   timestamp: number;
+  /** Normalized lowercase 32-hex request nonce — signed since v2. */
+  nonce: string;
   method: string;
   pathAndQuery: string;
   rawBodySha256: string;
@@ -68,6 +74,7 @@ export function buildRuntimeKeyPopSigningString(input: {
     input.audience,
     input.runtimeKeyId,
     String(input.timestamp),
+    input.nonce,
     input.method.toUpperCase(),
     input.pathAndQuery,
     input.rawBodySha256,
@@ -142,6 +149,7 @@ export function verifyRuntimeKeyPop(
     audience: input.audience,
     runtimeKeyId: input.runtimeKeyId,
     timestamp,
+    nonce,
     method: request.method,
     pathAndQuery: request.pathAndQuery,
     rawBodySha256: request.rawBodySha256,

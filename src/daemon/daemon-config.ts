@@ -51,6 +51,10 @@ export interface DaemonRuntimeConfig {
   dbPath: string;
   adminToken: string;
   publicOrigin: MurmurPublicOrigin;
+  /** Deployment-specific runtime-key PoP audience (MURMUR_POP_AUDIENCE).
+   *  Distinct per deployment so a DB clone with the same runtime-key
+   *  material cannot replay signed requests across environments. */
+  popAudience: string | undefined;
   resolverTickSec: number;
   dashboardCors: DashboardCorsConfig;
   requireLiveCanaries: boolean;
@@ -163,6 +167,7 @@ export function loadDaemonRuntimeConfig(
     "OPERATOR_ALERT_TICK_SEC",
   );
   const publicOrigin = loadMurmurPublicOrigin(env);
+  const popAudience = env.MURMUR_POP_AUDIENCE?.trim() || undefined;
   const fhenixRuntime = loadFhenixRuntimeConfig(env);
   const privyAuth = loadPrivyAuthConfig(env);
   const polymarketGammaEnabled = resolvePolymarketGammaEnabled(env);
@@ -183,6 +188,7 @@ export function loadDaemonRuntimeConfig(
     dbPath: resolveVerdictDbPath(env, overrides.dbPath),
     adminToken: env.VERDICT_ADMIN_TOKEN ?? "",
     publicOrigin,
+    popAudience,
     resolverTickSec,
     dashboardCors: parseDashboardCors(env.DASHBOARD_ORIGIN),
     requireLiveCanaries: parseBooleanFlag(

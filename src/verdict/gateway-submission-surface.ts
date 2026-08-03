@@ -44,6 +44,9 @@ export interface GatewaySubmissionSurfaceDeps {
   now: () => Date;
   privyAuth?: PrivyAuthVerifier;
   dispatchAuth?: GatewayAuthDispatcher;
+  /** Deployment-specific PoP audience; signatures cannot cross deployments
+   *  (a DB clone with the same key material replays elsewhere otherwise). */
+  popAudience?: string;
 }
 
 export type GatewaySubmissionResponse =
@@ -125,6 +128,7 @@ async function requireGatewayRuntimeAuth(
     allowRuntimeKey: true,
     now: deps.now,
     privyAuth: deps.privyAuth,
+    popAudience: deps.popAudience,
   });
   if (!authResult) {
     throw new VerdictError(
