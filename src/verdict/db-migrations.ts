@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 62 as const;
+export const LATEST_DB_MIGRATION_VERSION = 63 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1273,9 +1273,42 @@ export function applyMigrations(db: Database.Database): void {
     // Idempotent: re-running finds nothing left to delete.
     db.transaction(() => {
       db.exec(MIGRATION_062_DROP_UNREFERENCED_NATIVE_ROWS);
-      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+      set.run("schema_version", "62");
     })();
     v = 62;
+  }
+
+  if (v < 63) {
+    // Migration 063 — feed-packet reveal lifecycle.
+    //
+    // A sealed feed packet could be SUBMITTED but never revealed: the
+    // contract has had openFeedPacketReveal / publishFeedPacketReveal and
+    // the FeedPacketRevealed / FeedPacketRevealInvalid events all along, but
+    // the daemon had no reveal columns, no jobs table and no watcher
+    // streams for them. That is the same withholding hole the call path
+    // closed — a producer could accept payment for a feed and simply never
+    // disclose a packet.
+    //
+    // feed_packets gains terminal reveal evidence (status, plaintext,
+    // tx/log/block, sender and attribution) mirroring fhenix_sealed_calls.
+    // `agent_wallet_address` is captured at SUBMISSION time so attribution
+    // cannot be misread after a controller-wallet rotation.
+    //
+    // Reveal jobs live in their OWN table rather than gaining a target-kind
+    // discriminator on fhenix_reveal_jobs: that table's primary key is a
+    // real FK to fhenix_sealed_calls, so a shared table would need a
+    // polymorphic key and a rebuild of a populated table. The worker keeps
+    // one signer and one serial queue and drives both tables.
+    //
+    // There is deliberately no time-based 'missed' status: a sealed packet,
+    // like a sealed call, has no on-chain reveal expiry and stays revealable
+    // indefinitely. Liveness gaps surface as operator alerts instead.
+    db.transaction(() => {
+      applyAlterTableAddColumn(db, "feed_packets", "reveal_status", MIGRATION_063_FEED_REVEAL_COLUMNS);
+      db.exec(MIGRATION_063_FEED_REVEAL_JOBS);
+      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+    })();
+    v = 63;
   }
 }
 
@@ -4361,6 +4394,84 @@ const MIGRATION_060_SECURITY_EVENT_KINDS = `
 //
 // `event_binary` + `multinomial_brier` rows are untouched: those are the
 // external Polymarket markets that carry all 44 live resolutions.
+const MIGRATION_063_FEED_REVEAL_COLUMNS = `
+  ALTER TABLE feed_packets ADD COLUMN reveal_status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (reveal_status IN ('pending','revealed','invalid'));
+  ALTER TABLE feed_packets ADD COLUMN revealed_action INTEGER
+    CHECK (revealed_action IS NULL OR (revealed_action >= 0 AND revealed_action <= 255));
+  ALTER TABLE feed_packets ADD COLUMN revealed_signal_bps INTEGER
+    CHECK (revealed_signal_bps IS NULL OR (revealed_signal_bps >= 0 AND revealed_signal_bps <= 65535));
+  ALTER TABLE feed_packets ADD COLUMN revealed_at TEXT;
+  ALTER TABLE feed_packets ADD COLUMN terminal_at TEXT;
+  ALTER TABLE feed_packets ADD COLUMN reveal_tx_hash TEXT;
+  ALTER TABLE feed_packets ADD COLUMN reveal_log_index INTEGER;
+  ALTER TABLE feed_packets ADD COLUMN reveal_block_number INTEGER;
+  ALTER TABLE feed_packets ADD COLUMN reveal_sender TEXT;
+  ALTER TABLE feed_packets ADD COLUMN reveal_source TEXT
+    CHECK (reveal_source IS NULL OR reveal_source IN (
+      'agent','daemon_fallback','unattributed_external'
+    ));
+  ALTER TABLE feed_packets ADD COLUMN invalid_reason TEXT
+    CHECK (invalid_reason IS NULL OR invalid_reason = 'signal_bps');
+  ALTER TABLE feed_packets ADD COLUMN agent_wallet_address TEXT;
+  ALTER TABLE feed_packets ADD COLUMN submit_block_number INTEGER;
+
+  -- Exact event identity: one terminal reveal event attaches at most once.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_packets_reveal_event
+    ON feed_packets(chain_id, reveal_tx_hash, reveal_log_index)
+    WHERE reveal_tx_hash IS NOT NULL;
+  -- Candidate scan: pending packets past their reveal window, per deployment.
+  CREATE INDEX IF NOT EXISTS idx_feed_packets_reveal_candidates
+    ON feed_packets(chain_id, contract_address, reveal_status, reveal_after);
+`;
+
+const MIGRATION_063_FEED_REVEAL_JOBS = `
+  CREATE TABLE IF NOT EXISTS fhenix_feed_packet_reveal_jobs (
+    packet_id                TEXT PRIMARY KEY
+                             REFERENCES feed_packets(packet_id) ON DELETE CASCADE,
+    chain_id                 INTEGER NOT NULL,
+    contract_address         TEXT NOT NULL,
+    onchain_packet_id        TEXT NOT NULL,
+    reveal_after             TEXT NOT NULL,
+    phase                    TEXT NOT NULL CHECK (phase IN (
+      'eligible',
+      'open_tx_pending',
+      'opened_confirmed',
+      'decrypt_pending',
+      'partially_decrypted',
+      'ready_to_publish',
+      'publish_tx_pending',
+      'quarantined',
+      'terminal_daemon',
+      'terminal_external'
+    )),
+    open_tx_hash             TEXT,
+    open_block_number        INTEGER,
+    publish_tx_hash          TEXT,
+    publish_block_number     INTEGER,
+    action_value             INTEGER,
+    action_signature         TEXT,
+    signal_bps_value         INTEGER,
+    signal_bps_signature     TEXT,
+    attempt_count            INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    next_attempt_at          TEXT NOT NULL,
+    tx_broadcast_at          TEXT,
+    last_error               TEXT,
+    alert_level              TEXT CHECK (alert_level IS NULL OR alert_level IN ('warn','escalate')),
+    first_eligible_at        TEXT NOT NULL,
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_feed_reveal_jobs_due
+    ON fhenix_feed_packet_reveal_jobs(chain_id, contract_address, phase, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_feed_reveal_jobs_open_tx
+    ON fhenix_feed_packet_reveal_jobs(chain_id, open_tx_hash)
+    WHERE open_tx_hash IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_feed_reveal_jobs_publish_tx
+    ON fhenix_feed_packet_reveal_jobs(chain_id, publish_tx_hash)
+    WHERE publish_tx_hash IS NOT NULL;
+`;
+
 const MIGRATION_062_DROP_UNREFERENCED_NATIVE_ROWS = `
   -- Markets: drop retired native rows that no submission references.
   DELETE FROM markets
