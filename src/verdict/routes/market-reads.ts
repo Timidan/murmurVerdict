@@ -192,7 +192,7 @@ export function marketReadRouter(deps: MarketReadRouterDeps): Router {
 function disabledVenueSnapshotAdapter(): MarketVenueSnapshotAdapter {
   return {
     async venueForMarket(market) {
-      if ((market.adapter_id ?? "native-price") !== VENUE_ADAPTER_ID) {
+      if (market.adapter_id !== VENUE_ADAPTER_ID) {
         return undefined;
       }
       const config = parseMarketConfigJson(market.config_json);

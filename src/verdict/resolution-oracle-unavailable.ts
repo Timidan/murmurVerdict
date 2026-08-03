@@ -1,9 +1,6 @@
 import type Database from "better-sqlite3";
 
-import {
-  anchorsRepo,
-  resolutionsRepo,
-} from "./repos/resolution-repo.js";
+import { resolutionsRepo } from "./repos/resolution-repo.js";
 import { submissionsRepo } from "./repos/sealed-call-submissions-repo.js";
 import { usageRepo } from "./repos/usage-events-repo.js";
 import type {
@@ -13,15 +10,26 @@ import type {
 import { makeResolutionUsage } from "./resolution-usage.js";
 import { nowIso } from "./time.js";
 
+/**
+ * Terminalize a call Murmur cannot score — the venue adapter is missing,
+ * misconfigured, or returned an unscoreable outcome.
+ *
+ * The persisted outcome string stays `"oracle_unavailable"`. That is a LEGACY
+ * PERSISTED VALUE, not a statement about a price oracle: it is the terminal
+ * null-score bucket the leaderboard already knows to exclude, and historical
+ * rows carry it. Renaming it would require rewriting stored rows, which this
+ * removal explicitly does not do.
+ *
+ * There is only a `t1` phase now — the t0 price-anchoring phase is gone.
+ */
 export async function markOracleUnavailable(input: {
   db: Database.Database;
   ctx: ResolverContext;
-  phase: "t0" | "t1";
+  phase: "t1";
   now: () => Date;
   log: ResolutionLifecycleLog;
 }): Promise<boolean> {
   const resolvedAt = nowIso(input.now());
-  const t0row = anchorsRepo.getT0(input.db, input.ctx.call_id);
   const tx = input.db.transaction(() => {
     // setResolution returns false when the submission is already in a terminal
     // status (resolved/disputed/etc.) — a concurrent writer beat us to it.
@@ -29,11 +37,11 @@ export async function markOracleUnavailable(input: {
     const written = resolutionsRepo.setResolution(input.db, {
       call_id: input.ctx.call_id,
       t1: resolvedAt,
-      // No canonical price was observed. Record the genuine t0 anchor feed if
-      // this call ever anchored; otherwise NULL — never a fabricated feed
-      // (migration 055 dropped the placeholder "chainlink:base:ETH-USD").
+      // p1 / t1_feed / signed_return are legacy price-anchor evidence columns
+      // (migration 055 made them nullable). Murmur observes no prices, so they
+      // are always NULL on any row written from here.
       p1: null,
-      t1_feed: t0row?.feed ?? null,
+      t1_feed: null,
       signed_return: null,
       outcome: "oracle_unavailable",
       call_score: null,

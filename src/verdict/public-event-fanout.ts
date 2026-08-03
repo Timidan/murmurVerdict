@@ -17,6 +17,7 @@ import {
   agentsRepo,
   type AgentRow,
 } from "./repos/agents-repo.js";
+import { adapterIdentityForMarket } from "./markets.js";
 import type { MarketRow } from "./repos/market-registry-repo.js";
 import {
   resolutionsRepo,
@@ -122,8 +123,7 @@ export function publicAcceptedCallEvent(
     privacy_mode: "sealed_fhenix",
     accepted_at: input.accepted_at,
     commit_hash: input.commit_hash,
-    adapter_id: input.market.adapter_id ?? "native-price",
-    market_family: input.market.market_family ?? "financial-direction",
+    ...adapterIdentityForMarket(input.market),
     market_id: input.market.market_id,
   };
 }
@@ -144,10 +144,10 @@ export function publicResolvedCallEvent(
   input: ResolvedCallFanoutInput,
 ): CallResolvedEvent | null {
   if (!input.full.resolution) return null;
-  // Resolved-side public fields (outcome / call_score / native-price
-  // signed_return gate / resolved_at / adapter + market-family defaults /
-  // market_id) come from the SINGLE OWNER in the projection module, so this
-  // SSE/webhook shape can't drift from the REST/RSS row projections.
+  // Resolved-side public fields (outcome / call_score / resolved_at / adapter
+  // + market-family identity / market_id) come from the SINGLE OWNER in the
+  // projection module, so this SSE/webhook shape can't drift from the REST/RSS
+  // row projections.
   return {
     type: "call.resolved",
     call_id: input.full.submission.call_id,
@@ -159,7 +159,6 @@ export function publicResolvedCallEvent(
       market_id: input.full.submission.market_id,
       outcome: input.full.resolution.outcome,
       call_score: input.full.resolution.call_score,
-      signed_return: input.full.resolution.signed_return,
       resolved_at: input.full.resolution.resolved_at,
     }),
     ...publicResolutionOutcomeEvidence(input.full.resolution),

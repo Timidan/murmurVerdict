@@ -20,7 +20,6 @@ import {
 } from "../integrations/fhenix-events.js";
 import {
   agentsRepo,
-  anchorsRepo,
   marketsRepo,
   openDb,
   resolutionsRepo,
@@ -33,12 +32,6 @@ import {
   linkAgentToAccount,
 } from "./auth/accounts.js";
 import { Resolver } from "./resolver.js";
-import type { OracleClient } from "../integrations/oracle.js";
-import { registerAdapter } from "../integrations/oracles/registry.js";
-import type {
-  OracleAdapter,
-  OracleObservation,
-} from "../integrations/oracles/types.js";
 import {
   PolymarketClobClient,
   PolymarketGammaClient,
@@ -367,7 +360,28 @@ try {
     assert.equal(sealed?.invalid_reason, "binary_index");
   });
 
-  await check("resolver does not resurrect a call terminalized during an oracle read", async () => {
+  await check("resolver does not resurrect a call terminalized during an adapter observation", async () => {
+    const raceMarketId = "0x" + "ef".repeat(32);
+    marketsRepo.upsertExternalMarket(db, {
+      market_id: raceMarketId,
+      asset_id: "polymarket:event",
+      market_kind: "event_binary",
+      horizon_seconds: 3600,
+      primary_oracle_id: "polymarket-gamma-oracle",
+      adapter_id: "polymarket-gamma",
+      market_family: "prediction-market-binary",
+      scoring_kind: "multinomial_brier",
+      config_json: JSON.stringify({
+        conditionId: raceMarketId,
+        slug: "fhenix-api-smoke-race-market",
+        outcomes: ["Yes", "No"],
+        endDate: revealOpenAt,
+        gamma_url: "https://polymarket.com/event/fhenix-api-smoke-race-market",
+      }),
+      void_band: "0",
+      status: "listed",
+      created_at: acceptedAt,
+    });
     const raceCallId = randomUUID();
     submissionsRepo.acceptSealedFhenixCall(db, {
       call_id: raceCallId,
@@ -381,85 +395,93 @@ try {
       dedup_key: `resolver-race-${raceCallId}`,
       commit_hash: "a".repeat(64),
       commit_scheme: "fhenix-sealed-v1",
-      market_id: "eth.1h",
+      market_id: raceMarketId,
       market_config_version: 1,
-      adapter_id: "native-price",
-      market_family: "financial-direction",
+      adapter_id: "polymarket-gamma",
+      market_family: "prediction-market-binary",
     });
+    submissionsRepo.attachRevealedCommitment(db, {
+      call_id: raceCallId,
+      commitment_json: JSON.stringify({
+        marketRef: {
+          protocol: "polymarket-gamma",
+          sourceId: raceMarketId,
+          configVersion: 1,
+        },
+        predictedOutcome: {
+          kind: "binary",
+          payoutNumerators: ["1", "0"],
+          payoutDenominator: "1",
+        },
+        horizon: { iso: revealOpenAt, resolvesAfterMin: 60 },
+        confidence: 0.72,
+      }),
+      predicted_outcome_json: JSON.stringify({ index: 0, label: "Yes" }),
+      outcome_labels_json: JSON.stringify(["Yes", "No"]),
+    });
+    submissionsRepo.setStatus(db, raceCallId, "pending_t1");
 
-    let resolveObservation!: (observation: OracleObservation) => void;
-    const observation = new Promise<OracleObservation>((resolve) => {
-      resolveObservation = resolve;
+    // Hold the venue read open so the reveal watcher can terminalize the call
+    // mid-flight; the stale resolver context must not overwrite it.
+    let releaseVenueRead!: () => void;
+    const venueRead = new Promise<void>((resolve) => {
+      releaseVenueRead = resolve;
     });
-    let markOracleReadStarted!: () => void;
-    const oracleReadStarted = new Promise<void>((resolve) => {
-      markOracleReadStarted = resolve;
+    let markVenueReadStarted!: () => void;
+    const venueReadStarted = new Promise<void>((resolve) => {
+      markVenueReadStarted = resolve;
     });
-    const adapterName = `resolver-race-${randomUUID()}`;
-    const deferredAdapter: OracleAdapter = {
-      name: adapterName,
-      async getLatest() {
-        markOracleReadStarted();
-        return observation;
+    const gammaClient = new PolymarketGammaClient({
+      fetchFn: async () => {
+        markVenueReadStarted();
+        await venueRead;
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (_name: string) => "application/json" },
+          text: async () =>
+            JSON.stringify([
+              {
+                conditionId: raceMarketId,
+                slug: "fhenix-api-smoke-race-market",
+                outcomes: JSON.stringify(["Yes", "No"]),
+                outcomePrices: JSON.stringify(["1", "0"]),
+                umaResolutionStatus: "resolved",
+                closed: true,
+                active: false,
+                archived: false,
+                endDate: revealOpenAt,
+                closedTime: revealOpenAt,
+              },
+            ]),
+        };
       },
-    };
-    registerAdapter(deferredAdapter);
-    db.prepare(
-      "UPDATE oracles SET adapter = ? WHERE oracle_id = 'chainlink-base-eth-usd'",
-    ).run(adapterName);
-
-    const raceNow = new Date("2026-05-14T12:01:00Z");
-    const logs: unknown[] = [];
-    const oracle = {
-      adapterContext: () => ({ now: () => raceNow }),
-      getLatestPrice: async () => {
-        throw new Error("registry adapter should handle the race observation");
-      },
-    } as unknown as OracleClient;
-
+      maxRetries: 1,
+      sleepMs: async () => undefined,
+      nowMs: () => Date.parse("2026-05-14T12:01:00Z"),
+    });
+    setDefaultPolymarketClient(gammaClient);
     try {
+      const raceNow = new Date("2026-05-14T12:01:00Z");
+      const logs: unknown[] = [];
       const tick = new Resolver({
         db,
-        oracle,
         now: () => raceNow,
         log: (event) => logs.push(event),
       }).tick();
-      await oracleReadStarted;
-
-      // A reveal watcher can terminalize the call while a remote oracle read
-      // is in flight. The stale resolver context must not overwrite it.
+      await venueReadStarted;
       submissionsRepo.setStatus(db, raceCallId, "invalid_reveal");
-      resolveObservation({
-        oracle_id: "chainlink-base-eth-usd",
-        asset_id: "base:ETH:USD",
-        price: "3200",
-        feed_timestamp: "2026-05-14T12:00:30Z",
-        observed_at: raceNow.toISOString(),
-        source_id: "resolver-race-round",
-        source_age_seconds: 30,
-      });
+      releaseVenueRead();
 
       const result = await tick;
       assert.equal(
         submissionsRepo.loadResolverContext(db, raceCallId)?.status,
         "invalid_reveal",
       );
-      assert.equal(anchorsRepo.getT0(db, raceCallId), null);
-      assert.equal(result.anchored, 0);
-      assert.equal(
-        logs.some(
-          (event) =>
-            typeof event === "object" &&
-            event !== null &&
-            "kind" in event &&
-            event.kind === "anchored_t0",
-        ),
-        false,
-      );
+      assert.equal(resolutionsRepo.loadFullCall(db, raceCallId)?.resolution, null);
+      assert.equal(result.resolved, 0, JSON.stringify(logs));
     } finally {
-      db.prepare(
-        "UPDATE oracles SET adapter = 'chainlink-evm' WHERE oracle_id = 'chainlink-base-eth-usd'",
-      ).run();
+      setDefaultPolymarketClient(null);
     }
   });
 
@@ -517,13 +539,9 @@ try {
     setDefaultPolymarketClient(client);
     try {
       const logs: unknown[] = [];
+      // No oracle dependency: the Resolver takes db + clock only.
       const resolver = new Resolver({
         db,
-        oracle: {
-          getLatestPrice: async () => {
-            throw new Error("native-price oracle should not be used for polymarket smoke");
-          },
-        } as unknown as OracleClient,
         now: () => new Date("2026-05-14T14:00:00Z"),
         log: (line) => logs.push(line),
       });
@@ -533,9 +551,8 @@ try {
       assert.equal(full?.submission.status, "resolved");
       assert.equal(full?.resolution?.outcome, "win");
       assert.equal(full?.resolution?.call_score, 1);
-      // Adapter (polymarket-gamma) resolutions have no price feed: t1_feed /
-      // p1 / signed_return are native-price-only evidence and are NULL here
-      // (migration 055 — no more adapter-name-in-feed-column fabrication).
+      // Murmur observes no prices: t1_feed / p1 / signed_return are legacy
+      // columns and are always NULL (migration 055).
       assert.equal(full?.resolution?.t1_feed, null);
       assert.equal(full?.resolution?.p1, null);
       assert.equal(full?.resolution?.signed_return, null);
@@ -640,13 +657,9 @@ try {
     setDefaultPolymarketClobClient(clobClient);
     try {
       const logs: unknown[] = [];
+      // No oracle dependency: the Resolver takes db + clock only.
       const resolver = new Resolver({
         db,
-        oracle: {
-          getLatestPrice: async () => {
-            throw new Error("native-price oracle should not be used for polymarket smoke");
-          },
-        } as unknown as OracleClient,
         now: () => new Date("2026-05-14T14:00:00Z"),
         log: (line) => logs.push(line),
       });

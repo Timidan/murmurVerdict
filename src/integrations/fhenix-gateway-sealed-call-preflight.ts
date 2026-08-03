@@ -9,9 +9,9 @@ import {
   perMarketDailyCap,
 } from "../verdict/markets.js";
 import {
-  derivePolicyFromMarket,
-  PolicyDerivationError,
-} from "../verdict/oracle-routing.js";
+  ExternalMarketValidationError,
+  requireMintableExternalMarket,
+} from "../verdict/external-market-guard.js";
 import {
   ERROR_CODES,
   SUBMISSION_LIMITS,
@@ -40,15 +40,15 @@ export function preflightMarketAndRateLimits(
     );
   }
   try {
-    derivePolicyFromMarket(db, market);
+    requireMintableExternalMarket(market);
   } catch (err) {
-    if (err instanceof PolicyDerivationError) {
+    if (err instanceof ExternalMarketValidationError) {
       throw new VerdictError(
         `cannot mint call on ${market.market_id}: ${err.message}`,
         ERROR_CODES.asset_not_supported,
         400,
         {
-          reason: "policy_derivation_failed",
+          reason: "external_market_invalid",
           market_id: market.market_id,
           cause: err.cause,
         },

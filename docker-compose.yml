@@ -48,9 +48,6 @@ services:
       MURMUR_PUBLIC_URL: "${MURMUR_PUBLIC_URL:-http://localhost:8080}"
       MURMUR_TRUST_PROXY_HOPS: "${MURMUR_TRUST_PROXY_HOPS:-0}"
       WEBHOOK_ALLOW_HTTP: "${WEBHOOK_ALLOW_HTTP:-}"
-      BASE_MAINNET_RPC_URL: "${BASE_MAINNET_RPC_URL:-}"
-      CHAINLINK_BASE_ETH_USD_ADDRESS: "${CHAINLINK_BASE_ETH_USD_ADDRESS:-}"
-      PYTH_HERMES_ENDPOINT: "${PYTH_HERMES_ENDPOINT:-https://hermes.pyth.network/v2/updates/price/latest}"
       # FHENIX_RPC_URL and FHENIX_WATCHER_RPC_URL MUST serve archive
       # eth_getLogs back to the contract deploy block or reveal ingestion
       # breaks (publicnode free tier does not; drpc/Tenderly/Alchemy do).

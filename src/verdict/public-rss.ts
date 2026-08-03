@@ -16,7 +16,6 @@ interface PublicRssCallRowBase {
   market_family?: string;
   outcome: string | null;
   call_score: number | null;
-  signed_return: string | null;
   resolved_at: string | null;
 }
 
@@ -70,7 +69,7 @@ export function rssAgentFeed(
   <channel>
     <title>Murmur Verdict · ${xmlEscape(agent.display_name)}</title>
     <link>${xmlEscape(channelLink)}</link>
-    <description>Calls submitted by ${xmlEscape(agent.display_name)} (@${xmlEscape(agent.display_slug)}) and scored against canonical Chainlink + Pyth feeds.</description>
+    <description>Sealed calls submitted by ${xmlEscape(agent.display_name)} (@${xmlEscape(agent.display_slug)}), scored against the outcomes their external prediction markets published.</description>
     <generator>murmur-verdict v0.1</generator>
     <ttl>60</ttl>
 ${items}

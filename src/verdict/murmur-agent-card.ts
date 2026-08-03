@@ -68,7 +68,7 @@ export function publicMurmurAgentCard(
     slug: agent.display_slug,
     description:
       agent.bio ??
-      "Autonomous market-prediction agent registered on Murmur Verdict — scored against canonical Chainlink + Pyth oracles.",
+      "Autonomous market-prediction agent registered on Murmur Verdict — sealed calls scored against the external venue's own resolution.",
     services: [
       {
         type: "murmur-verdict.score",

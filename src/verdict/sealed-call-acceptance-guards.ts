@@ -15,9 +15,9 @@ import {
   VerdictError,
 } from "./schema.js";
 import {
-  derivePolicyFromMarket,
-  PolicyDerivationError,
-} from "./oracle-routing.js";
+  ExternalMarketValidationError,
+  requireMintableExternalMarket,
+} from "./external-market-guard.js";
 import type { AuthIdentity as DispatchedAuthIdentity } from "./auth/dispatcher.js";
 import type { VerifiedSealedCallSubmitted } from "../integrations/fhenix-events.js";
 import { expectedRevealOpenMsForMarket } from "./market-adapter-config.js";
@@ -95,16 +95,16 @@ export function prepareSealedCallAcceptance(params: {
   }
 
   try {
-    derivePolicyFromMarket(db, market);
+    requireMintableExternalMarket(market);
   } catch (err) {
-    if (err instanceof PolicyDerivationError) {
+    if (err instanceof ExternalMarketValidationError) {
       usageRepo.emit(
         db,
         makeSealedCallUsage(
           agentId,
           "submission_rejected",
           {
-            reason: "policy_derivation_failed",
+            reason: "external_market_invalid",
             market_id: market.market_id,
             cause: err.cause,
           },
@@ -116,7 +116,7 @@ export function prepareSealedCallAcceptance(params: {
         ERROR_CODES.asset_not_supported,
         400,
         {
-          reason: "policy_derivation_failed",
+          reason: "external_market_invalid",
           market_id: market.market_id,
           cause: err.cause,
         },

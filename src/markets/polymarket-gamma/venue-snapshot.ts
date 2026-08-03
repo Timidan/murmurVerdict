@@ -133,7 +133,7 @@ export class PolymarketVenueSnapshotProvider
   async venueForMarket(
     market: MarketVenueSnapshotSource,
   ): Promise<MarketVenueSnapshot | undefined> {
-    if ((market.adapter_id ?? "native-price") !== VENUE_ADAPTER_ID) {
+    if (market.adapter_id !== VENUE_ADAPTER_ID) {
       return undefined;
     }
     const config = parseMarketConfigJson(market.config_json);

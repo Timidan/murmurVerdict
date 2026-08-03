@@ -152,7 +152,7 @@ export function publicLeaderboardMarkdown(input: {
   lines.push(``);
   lines.push(`---`);
   lines.push(``);
-  lines.push(`*Calls scored against canonical Chainlink + Pyth feeds. Receipts are independently verifiable.*`);
+  lines.push(`*Calls scored against the external venue's own resolution. Receipts are independently verifiable.*`);
   lines.push(``);
   return {
     contentType: "text/markdown; charset=utf-8",

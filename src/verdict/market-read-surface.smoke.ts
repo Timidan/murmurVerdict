@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { openDb } from "./db.js";
+import { marketsRepo, openDb } from "./db.js";
 import {
   listMarketsSurface,
   marketLeaderboardSurface,
@@ -32,6 +32,27 @@ try {
   process.stdout.write("murmur market read surface smoke\n");
   const db = openDb({ path: dbPath });
   const servedAt = new Date("2026-06-12T09:30:00Z");
+  const marketId = `0x${"cd".repeat(32)}`;
+  marketsRepo.upsertExternalMarket(db, {
+    market_id: marketId,
+    asset_id: "polymarket:event",
+    market_kind: "event_binary",
+    horizon_seconds: 3600,
+    primary_oracle_id: "polymarket-gamma-oracle",
+    adapter_id: "polymarket-gamma",
+    market_family: "prediction-market-binary",
+    scoring_kind: "multinomial_brier",
+    config_json: JSON.stringify({
+      conditionId: marketId,
+      slug: "market-read-surface-smoke",
+      outcomes: ["YES", "NO"],
+      endDate: "2026-06-13T00:00:00Z",
+      gamma_url: "https://polymarket.com/event/market-read-surface-smoke",
+    }),
+    void_band: "0",
+    status: "listed",
+    created_at: "2026-06-12T09:00:00Z",
+  });
 
   const taxonomy = marketTaxonomySurface({ servedAt });
   assert.equal(taxonomy.status, 200);
@@ -44,7 +65,7 @@ try {
   assert.equal(taxonomyRes.statusCode, 200);
   assert.equal(
     (taxonomyRes.body as { taxonomy: { live_resolution_classes: string[] } }).taxonomy
-      .live_resolution_classes.includes("price_direction"),
+      .live_resolution_classes.includes("event_binary"),
     true,
   );
 
@@ -54,13 +75,13 @@ try {
     servedAt,
   });
   assert.equal(listedMarkets.status, 200);
-  assert.equal(
-    (listedMarkets.body as { markets: Array<{ market_id: string }> }).markets.some(
-      (market) => market.market_id === "eth.1h",
-    ),
-    true,
-  );
-  const listedEth = (listedMarkets.body as {
+  const listedIds = (listedMarkets.body as {
+    markets: Array<{ market_id: string }>;
+  }).markets.map((market) => market.market_id);
+  assert.equal(listedIds.includes(marketId), true);
+  // MIGRATION_061 retired every seeded native-price market.
+  assert.equal(listedIds.includes("eth.1h"), false);
+  const listedRow = (listedMarkets.body as {
     markets: Array<{
       market_id: string;
       oracles?: {
@@ -68,11 +89,11 @@ try {
         primary?: { oracle_id?: string; status?: string; asset_match?: boolean };
       };
     }>;
-  }).markets.find((market) => market.market_id === "eth.1h");
-  assert.equal(listedEth?.oracles?.health, "ok");
-  assert.equal(listedEth?.oracles?.primary?.oracle_id, "chainlink-base-eth-usd");
-  assert.equal(listedEth?.oracles?.primary?.status, "listed");
-  assert.equal(listedEth?.oracles?.primary?.asset_match, true);
+  }).markets.find((market) => market.market_id === marketId);
+  assert.equal(listedRow?.oracles?.health, "ok");
+  assert.equal(listedRow?.oracles?.primary?.oracle_id, "polymarket-gamma-oracle");
+  assert.equal(listedRow?.oracles?.primary?.status, "listed");
+  assert.equal(listedRow?.oracles?.primary?.asset_match, true);
 
   const unknownMarket = marketLeaderboardSurface({
     db,

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { OracleFeedSchema } from "./market-registry-schema.js";
 
 export * from "./feed-contract-schema.js";
 export * from "./market-registry-schema.js";
@@ -83,11 +82,16 @@ export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 
 // ─── Call lifecycle ───────────────────────────────────────────────────────────
 // Authoritative state machine. Transitions:
-//   submitted → preflighted → accepted (= pending_t0)
-//             → pending_t1 → resolved
-//             → disputed → re_resolved
-//   rejected (terminal at any point before accepted)
+//   submitted → preflighted → pending_t1 → resolved
+//                                        → disputed → re_resolved
+//   rejected (terminal at any point before acceptance)
 //   invalid_reveal / missed_reveal (terminal sealed-Fhenix reveal failures)
+//
+// LEGACY PERSISTED STATES. `accepted` and `pending_t0` belonged to the removed
+// native-price two-phase resolver (anchor a t0 price, then settle at t1).
+// Nothing writes them any more — acceptance stamps `pending_t1` directly — but
+// they stay in the union so rows persisted before the cutover remain readable
+// and the resolver can drain them (see DRAINING_STATUSES in resolver.ts).
 
 export const CallStatusSchema = z.enum([
   "submitted",
@@ -104,12 +108,6 @@ export const CallStatusSchema = z.enum([
 ]);
 export type CallStatus = z.infer<typeof CallStatusSchema>;
 
-export const SideSchema = z.enum(["BUY", "SELL"]);
-export type Side = z.infer<typeof SideSchema>;
-
-export const HORIZONS_HOURS = [0, 1, 4, 24, 168] as const;
-export type HorizonHours = (typeof HORIZONS_HOURS)[number];
-
 // Wave 4b-2 — VerdictPreflight + MarketRegime were Santiment-derived
 // decoration stamped onto every accepted call. Resolver never consulted
 // them; calls settle against Chainlink/Pyth oracles. The preflight
@@ -117,46 +115,14 @@ export type HorizonHours = (typeof HORIZONS_HOURS)[number];
 // the entire scout → analyst pipeline are removed. Murmur is a pure
 // ranking layer over canonical price/event oracles.
 
-// ─── T0 / oracle anchoring policy ────────────────────────────────────────────
-
-// Native-price markets derive this from the market registry at submit and
-// resolver time. Fallback fields travel as a pair: either both are present or
-// both are absent.
-export const T0PolicySchema = z
-  .object({
-    primary_feed: OracleFeedSchema,
-    fallback_feed: OracleFeedSchema.optional(),
-    primary_max_staleness_sec: z.number().int().positive(),
-    fallback_max_staleness_sec: z.number().int().positive().optional(),
-    t0_grace_seconds: z.number().int().positive(),
-    t0_extended_grace_seconds: z.number().int().positive(),
-  })
-  .strict()
-  .superRefine((v, ctx) => {
-    if (v.t0_extended_grace_seconds < v.t0_grace_seconds) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "t0_extended_grace_seconds must be ≥ t0_grace_seconds",
-        path: ["t0_extended_grace_seconds"],
-      });
-    }
-    // Phase 2d: fallback fields travel as a pair. Permitting one without
-    // the other would leave the resolver in an undefined state when it
-    // walks past primary grace.
-    const hasFallbackFeed = v.fallback_feed !== undefined;
-    const hasFallbackStaleness = v.fallback_max_staleness_sec !== undefined;
-    if (hasFallbackFeed !== hasFallbackStaleness) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "fallback_feed and fallback_max_staleness_sec must both be present, or both absent",
-        path: ["fallback_feed"],
-      });
-    }
-  });
-export type T0Policy = z.infer<typeof T0PolicySchema>;
-
 // ─── Resolution outcomes ──────────────────────────────────────────────────────
+//
+// LEGACY PERSISTED ENUM — every value below appears in `t1_resolutions.outcome`
+// on live rows and the leaderboard aggregates on them, so the set is frozen.
+// `oracle_unavailable` no longer means "a price oracle was down": it is the
+// terminal null-score bucket for a call Murmur could not score at all (missing
+// or misconfigured venue adapter, unscoreable observation). `void` is likewise
+// a stored value the leaderboard excludes.
 
 export const OutcomeSchema = z.enum([
   "win",
@@ -165,44 +131,6 @@ export const OutcomeSchema = z.enum([
   "oracle_unavailable",
 ]);
 export type Outcome = z.infer<typeof OutcomeSchema>;
-
-export const VerdictResolutionSchema = z
-  .object({
-    schema_version: z.literal(SCHEMA_VERSION),
-    scoring_version: z.literal(SCORING_VERSION),
-    call_id: z.string().uuid(),
-    t0: z.string().datetime({ offset: false }),
-    p0: z.string().regex(/^[0-9]+(\.[0-9]+)?$/, "decimal string"),
-    t0_feed: OracleFeedSchema,
-    t1: z.string().datetime({ offset: false }),
-    p1: z.string().regex(/^[0-9]+(\.[0-9]+)?$/, "decimal string"),
-    t1_feed: OracleFeedSchema,
-    signed_return: z.string().regex(/^-?[0-9]+(\.[0-9]+)?$/),
-    outcome: OutcomeSchema,
-    call_score: z.number().nullable(),
-    resolved_at: z.string().datetime({ offset: false }),
-    resolution_receipt_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-    resolution_receipt_cid: z.string().min(1).optional(),
-    previous_hash: z.string().regex(/^0x[0-9a-f]{64}$/),
-  })
-  .strict()
-  .superRefine((v, ctx) => {
-    if ((v.outcome === "win" || v.outcome === "loss") && v.call_score === null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "call_score required for win/loss outcomes",
-        path: ["call_score"],
-      });
-    }
-    if ((v.outcome === "void" || v.outcome === "oracle_unavailable") && v.call_score !== null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "call_score must be null for void / oracle_unavailable",
-        path: ["call_score"],
-      });
-    }
-  });
-export type VerdictResolution = z.infer<typeof VerdictResolutionSchema>;
 
 // Wave 4b — receipt payload schemas (AcceptanceReceiptPayloadSchema,
 // ResolutionReceiptPayloadSchema and their v1/v2 variants) were dropped
@@ -425,7 +353,7 @@ export type Dispute = z.infer<typeof DisputeSchema>;
 export const SUBMISSION_LIMITS = {
   max_active_calls_per_agent: 5,
   max_calls_per_asset_per_day: 24,
-  /** dedup window = horizon_hours / 4, in hours; floor of submitted_at into this bucket */
+  /** dedup window = horizon_seconds / 4; floor of accepted_at into this bucket */
   dedup_bucket_divisor: 4,
 } as const;
 
@@ -496,7 +424,6 @@ export class VerdictError extends Error {
 
 export const CONFIDENCE_MIN = 0.51;
 export const CONFIDENCE_MAX = 0.95;
-export const VOID_BAND = 0.002; // |signed_return| < this → void
 export const MIN_RESOLVED_CALLS_FOR_MAIN_TIER = 20;
 /**
  * Phase F D25 — pillar-4 marketplace booking gate. Stricter than the

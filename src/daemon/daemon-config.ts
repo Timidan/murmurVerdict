@@ -27,10 +27,6 @@ import {
   type WebhookUrlPolicy,
 } from "../verdict/webhook-url.js";
 import {
-  loadDaemonOracleRuntimeConfig,
-  type DaemonOracleRuntimeConfig,
-} from "./oracle-runtime.js";
-import {
   loadFhenixRuntimeConfig,
   type FhenixRuntimeConfig,
 } from "./fhenix-runtime.js";
@@ -61,7 +57,6 @@ export interface DaemonRuntimeConfig {
   polymarketGammaEnabled: boolean;
   fhenixRuntime: FhenixRuntimeConfig;
   nanopayRuntime: DaemonNanopayRuntimeConfig;
-  oracleRuntime: DaemonOracleRuntimeConfig;
   operatorAlertSink: OperatorAlertSinkConfig;
   privyAuth: PrivyAuthConfig;
   /**
@@ -207,7 +202,6 @@ export function loadDaemonRuntimeConfig(
       fhenixChainId: fhenixRuntime.chainId,
       fhenixSealedVerdictsAddress: fhenixRuntime.sealedVerdictsAddress,
     }),
-    oracleRuntime: loadDaemonOracleRuntimeConfig(env),
     operatorAlertSink: loadOperatorAlertSinkConfig(env),
     privyAuth,
     privyWebhookSigningSecret: loadPrivyWebhookSigningSecret(env, privyAuth),

@@ -31,11 +31,27 @@ export const OPERATOR_BLIND_FIXTURE_MARKET_ID = keccak256(
 export const OPERATOR_BLIND_FIXTURE_MARKET_HORIZON_SECONDS = 90;
 export const OPERATOR_BLIND_FIXTURE_PRIVY_USER_ID =
   "did:fixture:operator-blind-test";
+// The fixture market is an EXTERNAL venue market like every real Murmur
+// market: adapter polymarket-gamma, family prediction-market-binary, kind
+// event_binary, scored by multinomial_brier, anchored on the synthetic
+// `polymarket:event` asset / `polymarket-gamma-oracle` registry rows.
+//
+// It deliberately carries `endDate: null`. The Polymarket adapter's
+// expectedRevealOpenAt returns null for a null endDate
+// (src/markets/polymarket-gamma/index.ts), so the shared fallback in
+// market-adapter-config.ts uses `accepted_at + horizon_seconds` — which is
+// what keeps the release gate's deterministic 90-second reveal window.
+//
+// The gate never calls market resolution or Gamma: it exercises sealing,
+// operator-blind opacity, the Fhenix reveal, and the dashboard plaintext.
+// conditionId is the deterministic fixture market id (a keccak256 digest, so
+// already the 0x+64-hex shape Polymarket's marketConfigSchema requires).
 export const OPERATOR_BLIND_FIXTURE_MARKET_REF = {
-  protocol: "native-price",
+  protocol: "polymarket-gamma",
   sourceId: OPERATOR_BLIND_FIXTURE_MARKET_ID,
   configVersion: 1,
 } as const;
+export const OPERATOR_BLIND_FIXTURE_MARKET_OUTCOMES = ["YES", "NO"] as const;
 
 export type OperatorBlindFixtureRuntimeAuthorizationNonceAdapter = () => string;
 export type OperatorBlindFixtureRuntimeAuthorizationMessageIdAdapter =
@@ -154,14 +170,21 @@ export function seedOperatorBlindFixtureDb(
 
     marketsRepo.upsertExternalMarket(input.db, {
       market_id: OPERATOR_BLIND_FIXTURE_MARKET_ID,
-      asset_id: "base:ETH:USD",
-      market_kind: "direction_binary",
+      asset_id: "polymarket:event",
+      market_kind: "event_binary",
       horizon_seconds: OPERATOR_BLIND_FIXTURE_MARKET_HORIZON_SECONDS,
-      primary_oracle_id: "chainlink-base-eth-usd",
-      adapter_id: "native-price",
-      market_family: "financial-direction",
-      scoring_kind: "brier_direction",
+      primary_oracle_id: "polymarket-gamma-oracle",
+      adapter_id: OPERATOR_BLIND_FIXTURE_MARKET_REF.protocol,
+      market_family: "prediction-market-binary",
+      scoring_kind: "multinomial_brier",
+      // Satisfies the polymarket-gamma marketConfigSchema the shared
+      // external-market guard now parses at submit time.
       config_json: JSON.stringify({
+        conditionId: OPERATOR_BLIND_FIXTURE_MARKET_ID,
+        slug: OPERATOR_BLIND_FIXTURE_SLUG,
+        outcomes: [...OPERATOR_BLIND_FIXTURE_MARKET_OUTCOMES],
+        endDate: null,
+        gamma_url: `https://polymarket.com/event/${OPERATOR_BLIND_FIXTURE_SLUG}`,
         label: OPERATOR_BLIND_FIXTURE_SLUG,
         fixture: true,
       }),

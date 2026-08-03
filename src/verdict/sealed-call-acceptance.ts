@@ -179,8 +179,11 @@ export async function acceptSealedCall(
       commit_scheme: "fhenix-sealed-v1",
       market_id: market.market_id,
       market_config_version: market.market_config_version,
-      adapter_id: market.adapter_id ?? "native-price",
-      market_family: market.market_family ?? "financial-direction",
+      // Explicit, never defaulted: prepareSealedCallAcceptance has already
+      // run requireMintableExternalMarket, which refuses a row without a
+      // registered adapter_id and a matching market_family.
+      adapter_id: market.adapter_id!,
+      market_family: market.market_family!,
     });
     fhenixSealedCallsRepo.insert(db, {
       call_id: callId,
@@ -194,7 +197,12 @@ export async function acceptSealedCall(
       reveal_open_at: verifiedSubmit.reveal_open_at,
       created_at: nowIso(now()),
     });
-    submissionsRepo.setStatus(db, callId, "pending_t0");
+    // Externally-resolved markets never anchor a t0 price, so a new sealed
+    // call enters pending_t1 directly — the resolver's single adapter loop is
+    // the only settlement surface. `pending_t0` survives in the persisted
+    // status union purely so pre-existing rows can still drain (see
+    // resolver.ts DRAINING_STATUSES); nothing writes it any more.
+    submissionsRepo.setStatus(db, callId, "pending_t1");
     usageRepo.emit(
       db,
       makeSealedCallUsage(
@@ -239,7 +247,7 @@ export async function acceptSealedCall(
       call_id: callId,
       privacy_mode: "sealed_fhenix",
       market_id: market.market_id,
-      status: "pending_t0",
+      status: "pending_t1",
       reveal_open_at: verifiedSubmit.reveal_open_at,
       onchain_call_id: verifiedSubmit.onchain_call_id,
       commit_hash: commitHash,

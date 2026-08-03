@@ -26,7 +26,6 @@ export interface PublicSystemRouterDeps {
   liveCanaries?: LiveCanaryProvider | null;
   nanopayX402Mounted?: boolean;
   now: () => Date;
-  oracleProbe?: () => Promise<string | null>;
   publicOrigin: MurmurPublicOrigin;
   requireLiveCanaries?: boolean;
 }
@@ -62,7 +61,6 @@ export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
     sendPublicSystemJsonResponse(res, await publicReadinessSurface({
       db: deps.db,
       now: deps.now,
-      oracleProbe: deps.oracleProbe,
       liveCanaries: deps.liveCanaries,
       requireLiveCanaries: deps.requireLiveCanaries,
     }));

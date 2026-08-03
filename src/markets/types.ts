@@ -3,21 +3,16 @@
  *
  * Cite: `.claude/architecture/V2_DECISION_RECORD.md` §2.4.
  *
- * Directory purpose: `src/markets/` hosts pluggable market-maker adapters
- * (NativePrice, Polymarket, UMA OOv3, Reality.eth, social-pulse, ...). Each
- * adapter declares its commitment / market-config Zod schemas, observes
- * resolutions, and scores calls. Wave 4b retired the receipts subsystem;
- * call + reveal + resolution rows are the canonical evidence — adapters no
- * longer issue acceptance receipts or verify receipt blobs.
+ * Directory purpose: `src/markets/` hosts pluggable market-maker adapters for
+ * EXTERNAL prediction venues (Polymarket, UMA OOv3, Reality.eth, ...). Each
+ * adapter declares its commitment / market-config Zod schemas, observes the
+ * resolution the venue published, and scores calls. Murmur never authors a
+ * market and never decides an outcome itself, so there is no self-resolving
+ * adapter here. Wave 4b retired the receipts subsystem; call + reveal +
+ * resolution rows are the canonical evidence.
  *
- * This registry lives **one level above** `src/integrations/oracles/registry.ts`.
- * Oracle adapters are an implementation detail of `NativePriceAdapter` (a
- * future market-maker). Polymarket / UMA / Reality.eth adapters do NOT touch
- * the oracles registry — they reach into their own protocol-native channels.
- *
- * Only the type primitives + an in-memory registry live here. Concrete
- * adapters (`src/markets/native-price/`, `src/markets/polymarket/`, ...) are
- * later phases per V2 §4 phase 3.
+ * Only the type primitives + an in-memory registry live here; concrete
+ * adapters are siblings (`src/markets/polymarket-gamma/`, ...).
  */
 
 import type { ZodSchema } from "zod";
@@ -37,15 +32,12 @@ export type { MarketRef } from "../verdict/markets-core.js";
  * Per-call resolver context the adapter needs to compute a universal
  * {@link Outcome} from a {@link Commitment}. The universal {@link MarketRef}
  * alone is intentionally context-free (protocol + sourceId + configVersion);
- * adapters that need anchor prices, oracle observations, or the agent's
- * predicted side surface those needs through this structured context.
+ * an adapter that needs protocol-native lookup keys (Polymarket's conditionId,
+ * a UMA request id, ...) surfaces them through this structured context, built
+ * by its own `buildObservationContext`.
  *
- * The native-price adapter consumes the financial-direction fields
- * (t0_p0, t1_p1, t1_iso, t1_feed, t1_source_id, void_band, side, market_id).
- * Other adapters (Polymarket, UMA OOv3, Reality.eth) ignore those and instead
- * read protocol-native fields they declare in their own typed extension. The
- * shape is intentionally permissive (`unknown`-cast at the boundary) so each
- * adapter can carry its own context payload without polluting the universal
+ * The shape is intentionally permissive (`unknown`-cast at the boundary) so
+ * each adapter can carry its own payload without polluting the universal
  * surface — the adapter's `observeResolution` body narrows via `as` /
  * structural checks before reading any field.
  */
@@ -67,9 +59,11 @@ export type ObservationContext = Record<string, unknown>;
  * so cross-adapter dispatch stays load-bearing.
  *
  * `marketFamily` is open-set so future families can land without a core bump,
- * but Murmur curates an allowlist (`'financial-direction' |
- * 'prediction-market-binary' | 'social-pulse' | 'prediction-market-categorical'`)
- * before permissionless families are accepted (V2 §5 risk 4).
+ * but Murmur curates an allowlist (`'prediction-market-binary' |
+ * 'social-pulse' | 'prediction-market-categorical'`) before permissionless
+ * families are accepted (V2 §5 risk 4). The shared external-market guard
+ * additionally requires a market row's stored `market_family` to EQUAL the
+ * dispatching adapter's own value.
  */
 export interface MarketMakerAdapter {
   /** Stable name. Used as the registry key alongside {@link version}. */
@@ -78,7 +72,6 @@ export interface MarketMakerAdapter {
   version: string;
   /** Curated taxonomy bucket — see V2 §5 risk 4. */
   marketFamily:
-    | "financial-direction"
     | "prediction-market-binary"
     | "social-pulse"
     | (string & {});
@@ -92,9 +85,8 @@ export interface MarketMakerAdapter {
    * resolver loops until an {@link Outcome} is returned. Disputes are routed
    * through `src/verdict/disputes.ts` on subsequent re-resolutions.
    *
-   * Concrete adapter context shapes are adapter-private; see e.g.
-   * `NativePriceObservationContext` in
-   * `src/verdict/market-maker/native-price.ts`.
+   * Concrete adapter context shapes are adapter-private; see e.g. the
+   * narrowed Polymarket context in `src/markets/polymarket-gamma/index.ts`.
    */
   observeResolution(
     marketRef: MarketRef,
@@ -102,8 +94,8 @@ export interface MarketMakerAdapter {
   ): Promise<Outcome | "pending" | "disputed">;
   /**
    * Adapter-owned interpretation of `markets.config_json` for the reveal
-   * window. Native-price returns accepted_at + horizon; fixed-end markets
-   * like Polymarket return their public market end time.
+   * window. Fixed-end markets like Polymarket return their public market end
+   * time; returning `null` falls back to accepted_at + horizon_seconds.
    */
   expectedRevealOpenAt?(input: {
     marketRef: MarketRef;
@@ -131,9 +123,9 @@ export interface MarketMakerAdapter {
   }): ObservationContext;
   /**
    * Score a commitment against its resolution. `call_score ∈ [0, 1]`.
-   * `components` is adapter-private (e.g. confidence-weighted breakdown,
-   * native-price T0/T1 reconstruction); the resolver stamps it on the
-   * resolution row for replay but never consumes it directly.
+   * `components` is adapter-private (e.g. a confidence-weighted breakdown);
+   * the resolver stamps it on the resolution row for replay but never
+   * consumes it directly.
    */
   score(
     c: Commitment,
@@ -153,8 +145,7 @@ export interface MarketMakerAdapter {
 // ─── Registry ────────────────────────────────────────────────────────────────
 
 /**
- * In-memory market-maker registry. Mirrors the existing oracle adapter
- * registry pattern at `src/integrations/oracles/registry.ts`, one level up.
+ * In-memory market-maker registry.
  *
  * Version-aware: the same adapter `name` may be registered under multiple
  * `version` values during a rolling schema migration. Lookups default to

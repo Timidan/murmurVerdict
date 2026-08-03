@@ -111,7 +111,6 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       config,
       logger,
       events: adapters.events,
-      oracle: adapters.oracle,
       fhenixVerifier: adapters.fhenixVerifier,
       fhenixGateway: adapters.fhenixGateway,
       entitlementAccess: adapters.entitlementAccess,

@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 60 as const;
+export const LATEST_DB_MIGRATION_VERSION = 61 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1198,9 +1198,54 @@ export function applyMigrations(db: Database.Database): void {
     db.transaction(() => {
       db.exec(MIGRATION_060_RUNTIME_KEY_POP_NONCES);
       db.exec(MIGRATION_060_SECURITY_EVENT_KINDS);
-      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+      // Persist 60 (not LATEST) so a crash before 061 re-runs 061 next boot.
+      set.run("schema_version", "60");
     })();
     v = 60;
+  }
+
+  if (v < 61) {
+    // Migration 061 — retire the native-price / financial-direction
+    // registry surface. Murmur is a PURE REFEREE over external prediction
+    // venues (Polymarket today): agents seal a call, the external venue
+    // resolves it, Murmur seals/reveals/scores. Murmur never authors a
+    // market and never resolves an outcome itself, so the self-resolving
+    // native-price machinery (Chainlink/Pyth readers, t0/t1 price
+    // anchoring, signed-return outcomes) is gone from the runtime.
+    //
+    // This migration is DATA-ONLY and append-only, per the repo's
+    // migration discipline:
+    //
+    //   1. Every market that is native/self-resolving by any of its four
+    //      independent markers (market_kind, scoring_kind, adapter_id,
+    //      market_family) is moved to status='retired'. `retired` is the
+    //      terminal registry status: acceptsSubmissions() refuses it and
+    //      resolverShouldTick() stops walking it. On the live DB this is
+    //      exactly one row (a frozen direction_binary ETH market with zero
+    //      submissions); the wider predicate is defensive so an operator's
+    //      hand-seeded row cannot survive the removal as a live market.
+    //   2. Every price-feed oracle registry row (chainlink_evm / pyth_pull
+    //      / pyth_solana) is moved to status='retired'. The synthetic
+    //      'polymarket-gamma-oracle' row (kind='external_adapter') is
+    //      deliberately NOT touched — markets.primary_oracle_id is still
+    //      NOT NULL with an FK into oracles, and Polymarket market
+    //      registration writes that synthetic dependency on every upsert.
+    //
+    // Explicitly NOT done here (and never in a later migration either):
+    //   · No table rebuild. The physical `t0_anchors` table, the `assets`
+    //     rows, and t1_resolutions' p1 / t1_feed / signed_return columns
+    //     stay exactly as migrations 008–055 left them. They are legacy
+    //     PERSISTED evidence for historical rows and must stay readable.
+    //   · No row deletes. Retirement is a status flip, so a forensic read
+    //     of the frozen ETH market or a legacy oracle row still resolves.
+    //
+    // Idempotent — both statements are status UPDATEs guarded on
+    // `status <> 'retired'`, safe to re-run.
+    db.transaction(() => {
+      db.exec(MIGRATION_061_RETIRE_NATIVE_PRICE_REGISTRY);
+      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+    })();
+    v = 61;
   }
 }
 
@@ -4270,6 +4315,37 @@ const MIGRATION_060_SECURITY_EVENT_KINDS = `
   BEGIN
     SELECT RAISE(ABORT, 'agent_security_events rows are append-only');
   END;
+`;
+
+// ─── Migration 061 — retire the native-price registry surface ───────────────
+//
+// See the prose in applyMigrations() above. Data-only: two idempotent status
+// UPDATEs, no DDL, no rebuild, no deletes.
+//
+// The market predicate is deliberately four-way redundant. A native market is
+// identifiable by ANY of market_kind / scoring_kind / adapter_id /
+// market_family, and the four columns were introduced across different
+// migrations (008, 016, 029) — an old hand-seeded row may carry only some of
+// them. OR-ing all four means no self-resolving market can survive as
+// `listed`.
+//
+// `event_binary` + `multinomial_brier` rows are untouched: those are the
+// external Polymarket markets that carry all 44 live resolutions.
+const MIGRATION_061_RETIRE_NATIVE_PRICE_REGISTRY = `
+  UPDATE markets
+     SET status = 'retired'
+   WHERE status <> 'retired'
+     AND (
+       market_kind   IN ('direction_binary','price_point','price_bracket','depeg_threshold')
+       OR scoring_kind IN ('brier_direction','rank_proximity_l1','bracket_hit','threshold_hit')
+       OR adapter_id     = 'native-price'
+       OR market_family  = 'financial-direction'
+     );
+
+  UPDATE oracles
+     SET status = 'retired'
+   WHERE status <> 'retired'
+     AND kind IN ('chainlink_evm','pyth_pull','pyth_solana');
 `;
 
 /**

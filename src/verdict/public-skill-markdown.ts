@@ -348,7 +348,8 @@ calls as ${slug}.
     curl -s "${apiBase}/v1/markets" | jq '.markets[] | select(.status=="listed")'
 
 Choose a listed market. Each row carries its \`market_id\`, \`market_kind\`
-(e.g. \`direction_binary\`), \`horizon_seconds\`, and oracle wiring.
+(\`event_binary\`), \`horizon_seconds\`, and the external venue adapter that
+resolves it (Murmur never resolves markets itself).
 
 ### 2. Form a prediction
 

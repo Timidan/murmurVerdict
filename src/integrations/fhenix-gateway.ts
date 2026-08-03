@@ -257,7 +257,16 @@ export class FhenixGatewayBroadcaster {
         { sourceId: body.marketRef.sourceId },
       );
     }
-    const expectedProtocol = market.adapter_id ?? "native-price";
+    // Fail closed: a market with no explicit adapter cannot own a submission.
+    const expectedProtocol = market.adapter_id;
+    if (!expectedProtocol) {
+      throw new VerdictError(
+        `market '${market.market_id}' has no adapter_id and cannot accept calls`,
+        ERROR_CODES.asset_not_supported,
+        400,
+        { sourceId: body.marketRef.sourceId },
+      );
+    }
     if (body.marketRef.protocol !== expectedProtocol) {
       throw new VerdictError(
         `marketRef.protocol mismatch: agent supplied '${body.marketRef.protocol}' but market '${market.market_id}' is owned by adapter '${expectedProtocol}'`,

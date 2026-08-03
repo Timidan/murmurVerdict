@@ -76,23 +76,30 @@ export async function resolveRevealedAdapter(input: {
   try {
     adapter = getAdapterForMarket(marketRow);
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // A RETIRED market's adapter is gone for good (MIGRATION_061 retires the
+    // native-price/financial-direction rows whose adapter this codebase no
+    // longer registers), so its calls can never be scored — terminalize them
+    // in the null-score bucket instead of re-queueing forever. A missing
+    // adapter on a still-listed market is treated as transient (e.g. adapter
+    // registration lost a boot race) and stays retryable.
+    if (marketRow.status === "retired") {
+      input.log({
+        kind: "still_pending",
+        call_id: input.ctx.call_id,
+        phase: "t1",
+        reason: `sealed_fhenix:adapter_retired:${detail}`,
+      });
+      const written = await markOracleUnavailable({ ...input, phase: "t1" });
+      return written ? { kind: "oracle_unavailable" } : { kind: "skipped_terminal" };
+    }
     input.log({
       kind: "still_pending",
       call_id: input.ctx.call_id,
       phase: "t1",
-      reason: `sealed_fhenix:adapter_missing:${err instanceof Error ? err.message : String(err)}`,
+      reason: `sealed_fhenix:adapter_missing:${detail}`,
     });
     return { kind: "pending" };
-  }
-  if (adapter.name === "native-price") {
-    input.log({
-      kind: "still_pending",
-      call_id: input.ctx.call_id,
-      phase: "t1",
-      reason: "sealed_fhenix:adapter_path_received_native_price",
-    });
-    const written = await markOracleUnavailable({ ...input, phase: "t1" });
-    return written ? { kind: "oracle_unavailable" } : { kind: "skipped_terminal" };
   }
   if (
     commitment.marketRef.protocol !== adapter.name ||
@@ -147,10 +154,10 @@ export async function resolveRevealedAdapter(input: {
     const written = resolutionsRepo.setResolution(input.db, {
       call_id: input.ctx.call_id,
       t1: resolvedAtIso,
-      // Adapter markets have no price feed: p1 / t1_feed / signed_return are
-      // native-price-only evidence and are NULL here (migration 055). The
-      // score lives in its own column; the adapter identity + observation are
-      // carried by outcomeEvidence and the usage event.
+      // Murmur observes no prices: p1 / t1_feed / signed_return are legacy
+      // price-anchor evidence columns and are always NULL (migration 055 made
+      // them nullable). The score lives in its own column; the adapter
+      // identity + observation are carried by outcomeEvidence + usage event.
       p1: null,
       t1_feed: null,
       signed_return: null,

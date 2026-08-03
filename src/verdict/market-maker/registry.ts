@@ -1,18 +1,18 @@
 /**
  * Singleton {@link MarketMakerRegistry} for the verdict runtime.
  *
- * Mirrors the existing oracle-adapter registry pattern at
- * `src/integrations/oracles/registry.ts` — one level up. Concrete market-maker
- * adapters land as a sibling file plus a single `register()` call at module
- * load. Lookups dispatch by `name` and (optionally) `version`; the highest
- * semver-sorted version wins when `version` is omitted.
+ * Concrete market-maker adapters land as a sibling file plus a single
+ * `register()` call at module load. Lookups dispatch by `name` and
+ * (optionally) `version`; the highest semver-sorted version wins when
+ * `version` is omitted.
  *
- * This file owns the registration of the legacy native-price market path as
- * the FIRST {@link MarketMakerAdapter}. Post-Wave-4d, the resolver dispatches
- * BOTH t1 observation (`adapter.observeResolution(marketRef, ctx)`) AND
- * scoring (`scoreOutcomeVector(commitment, outcome, adapter)` →
- * `adapter.score(...)`) through this registry — the abstraction is
- * load-bearing, not decorative.
+ * Every registered adapter is an EXTERNAL venue: Murmur never authors or
+ * resolves a market itself. The resolver dispatches BOTH t1 observation
+ * (`adapter.observeResolution(marketRef, ctx)`) AND scoring
+ * (`scoreOutcomeVector(commitment, outcome, adapter)` → `adapter.score(...)`)
+ * through this registry, so the abstraction is load-bearing, not decorative.
+ * An adapter this daemon does not register cannot mint or settle a call —
+ * see requireMintableExternalMarket in ../external-market-guard.ts.
  *
  * Cite: V2_IMPLEMENTATION_PLAN.md "Phase 3 MarketMaker Adapter Framework",
  *       V2_DECISION_RECORD.md §2.4.
@@ -20,7 +20,6 @@
 
 import { MarketMakerRegistry, type MarketMakerAdapter } from "../../markets/types.js";
 import { polymarketGammaAdapter } from "../../markets/polymarket-gamma/index.js";
-import { nativePriceAdapter } from "./native-price.js";
 
 // ─── Module-singleton registry ──────────────────────────────────────────────
 
@@ -29,7 +28,6 @@ const registry = new MarketMakerRegistry();
 // Bootstrap the adapters that ship in this daemon. Registration is local and
 // does not start any external poller; Polymarket network I/O happens only when
 // an operator syncs/upserts a market or the resolver observes a listed row.
-registry.register(nativePriceAdapter);
 registry.register(polymarketGammaAdapter);
 
 /**

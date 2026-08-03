@@ -191,10 +191,11 @@ function preflightEnv(): PreflightEnv {
     die("pre-flight", "OPERATOR_BLIND_MARKET_ID must be a 0x-prefixed bytes32 market id");
   }
   const marketId = marketRaw.toLowerCase() as Hex;
-  // marketRef.protocol must match the daemon market's adapter_id. Default stays
-  // the fixture's native-price adapter; override to target e.g. polymarket-gamma.
+  // marketRef.protocol must match the daemon market's adapter_id. Default is
+  // the seeded fixture's adapter (polymarket-gamma, the same adapter every real
+  // Murmur market uses); override to target a future venue adapter.
   const marketProtocol =
-    (process.env.OPERATOR_BLIND_MARKET_PROTOCOL ?? "native-price").trim();
+    (process.env.OPERATOR_BLIND_MARKET_PROTOCOL ?? "polymarket-gamma").trim();
 
   return { baseRpcUrl, relayerKey, runtimeKey, daemonUrl, dashboardUrl, agentAddress, marketId, marketProtocol };
 }

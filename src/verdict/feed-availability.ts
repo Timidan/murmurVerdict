@@ -30,7 +30,7 @@ export function validateFeedCoveredMarkets(
         { market_id: marketId },
       );
     }
-    const adapterId = market.adapter_id ?? "native-price";
+    const adapterId = market.adapter_id;
     if (adapterId !== venue) {
       throw new VerdictError(
         `covered market ${marketId} belongs to adapter '${adapterId}', not '${venue}'`,
@@ -78,7 +78,7 @@ export function validateFeedPacketMarket(
       { market_id: marketId },
     );
   }
-  const adapterId = market.adapter_id ?? "native-price";
+  const adapterId = market.adapter_id;
   if (adapterId !== feed.venue) {
     throw new VerdictError(
       `packet market ${marketId} belongs to adapter '${adapterId}', not feed venue '${feed.venue}'`,

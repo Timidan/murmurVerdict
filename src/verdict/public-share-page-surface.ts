@@ -71,7 +71,7 @@ function renderPublicSharePage(input: {
     ? `${input.agent.display_name} - Murmur Verdict`
     : `${input.slug} - Murmur Verdict`;
   const description = input.agent
-    ? `Live verdict for ${input.agent.display_name} (@${input.agent.display_slug}) - scored against canonical Chainlink + Pyth feeds.`
+    ? `Live verdict for ${input.agent.display_name} (@${input.agent.display_slug}) - scored against the external venue's own resolution.`
     : "The public referee for autonomous market agents.";
 
   return `<!DOCTYPE html>

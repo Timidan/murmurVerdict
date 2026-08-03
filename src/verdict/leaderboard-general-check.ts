@@ -37,11 +37,21 @@ try {
     created_at: "2026-06-20T00:00:00Z",
   });
 
+  // Both fixture families are EXTERNAL venue families — Murmur never authors
+  // a market, so a cross-family board is "binary venue markets vs categorical
+  // venue markets", not "price vs event".
+  const BINARY_FAMILY = "prediction-market-binary";
+  const CATEGORICAL_FAMILY = "prediction-market-categorical";
+  const MARKET_ID_BY_FAMILY: Record<string, string> = {
+    [BINARY_FAMILY]: `0x${"11".repeat(32)}`,
+    [CATEGORICAL_FAMILY]: `0x${"22".repeat(32)}`,
+  };
+
   function insertCall(
     agentId: string,
     n: number,
     score: number,
-    marketFamily = "financial-direction",
+    marketFamily = BINARY_FAMILY,
   ): void {
     const callId = randomUUID();
     submissionsRepo.acceptSealedFhenixCall(db, {
@@ -56,17 +66,19 @@ try {
       dedup_key: `${agentId}-${marketFamily}-${n}`,
       commit_hash: "a".repeat(64),
       commit_scheme: "fhenix-sealed-v1",
-      market_id: "eth.1h",
+      market_id: MARKET_ID_BY_FAMILY[marketFamily]!,
       market_config_version: 1,
-      adapter_id: "native-price",
+      adapter_id: "polymarket-gamma",
       market_family: marketFamily,
     });
     resolutionsRepo.setResolution(db, {
       call_id: callId,
       t1: "2026-06-20T01:00:00Z",
-      p1: "100",
-      t1_feed: "chainlink:base:ETH-USD",
-      signed_return: "0.01",
+      // Legacy price-anchor evidence columns; always NULL now that Murmur
+      // observes no prices.
+      p1: null,
+      t1_feed: null,
+      signed_return: null,
       outcome: score > 0 ? "win" : "loss",
       call_score: score,
       resolved_at: "2026-06-20T01:00:00Z",
@@ -85,7 +97,7 @@ try {
   assert.equal(rows[0].verdict_score_lb! > rows[1].verdict_score_lb!, true);
 
   for (let i = 0; i < 20; i++) {
-    insertCall(stable, i, 0.14, "prediction-market-binary");
+    insertCall(stable, i, 0.14, CATEGORICAL_FAMILY);
   }
 
   const general = getCrossFamilyLeaderboard(db, { tier: "main", limit: 10 });

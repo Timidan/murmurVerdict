@@ -73,12 +73,6 @@ export interface ApiDeps {
    */
   logger?: Pick<Console, "error">;
   /**
-   * Probe used by /v1/readyz. Should attempt a real oracle read and return
-   * `null` on success or a string describing the failure. When unset, /readyz
-   * still checks DB writeability but reports oracle as `disabled`.
-   */
-  oracleProbe?: () => Promise<string | null>;
-  /**
    * Admin bearer token gating administrative routes.
    */
   adminToken?: string;
@@ -194,7 +188,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     liveCanaries: deps.liveCanaries,
     nanopayX402Mounted: deps.nanopayX402Mounted,
     now,
-    oracleProbe: deps.oracleProbe,
     publicOrigin: runtime.publicOrigin,
     requireLiveCanaries: deps.requireLiveCanaries,
   }));
@@ -288,7 +281,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
   // Santiment scout/analyst pipeline. The endpoint returned composite
   // score / regime / top playbook decoration that the resolver never
   // consulted; nothing on the agent path required it. Murmur is a pure
-  // ranking layer over canonical price/event oracles.
+  // ranking layer over the outcomes external venues publish.
 
   router.use(createVerdictErrorHandler(runtime.logger));
 

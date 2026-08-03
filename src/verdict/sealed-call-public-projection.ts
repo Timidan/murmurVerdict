@@ -5,6 +5,10 @@ import {
   type CallRowFields,
   type PublicCallProjection,
 } from "./projections.js";
+import {
+  UNKNOWN_ADAPTER_ID,
+  UNKNOWN_MARKET_FAMILY,
+} from "./markets.js";
 import type { PublicRssCallRow } from "./public-rss.js";
 import {
   fhenixSealedCallsRepo,
@@ -102,7 +106,7 @@ export function listPublicAgentCallProjections(
               s.submitted_at, s.accepted_at,
               s.privacy_mode, s.commit_hash,
               s.adapter_id, s.market_family, s.market_id,
-              r.outcome, r.call_score, r.signed_return, r.resolved_at
+              r.outcome, r.call_score, r.resolved_at
          FROM submissions s
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
         WHERE s.agent_id = ?
@@ -131,7 +135,7 @@ export function listPublicMarketCallProjections(
               s.privacy_mode, s.commit_hash,
               s.adapter_id, s.market_family, s.market_id,
               a.display_slug, a.display_name,
-              r.outcome, r.call_score, r.signed_return, r.resolved_at
+              r.outcome, r.call_score, r.resolved_at
          FROM submissions s
          JOIN agents a ON a.agent_id = s.agent_id
          LEFT JOIN t1_resolutions r ON r.call_id = s.call_id
@@ -149,17 +153,6 @@ export function listPublicMarketCallProjections(
   }));
 }
 
-/**
- * The native-price gate for the resolved-side `signed_return` field — the ONE
- * place that knows the "native-price" adapter literal. Non-native adapters
- * (venue / prediction-market families) never carry a scalar return, so every
- * public surface (REST agent/market list, RSS, SSE/webhook) omits the field for
- * them by routing its gate decision through here.
- */
-export function isNativePriceAdapter(adapter_id: unknown): boolean {
-  return adapter_id === "native-price";
-}
-
 /** Input for {@link projectPublicResolvedCallFields}. */
 export interface ResolvedCallProjectionInput {
   adapter_id?: string | null;
@@ -167,7 +160,6 @@ export interface ResolvedCallProjectionInput {
   market_id?: string | null;
   outcome: string;
   call_score: number | null;
-  signed_return: string | null;
   resolved_at: string;
 }
 
@@ -175,7 +167,6 @@ export interface ResolvedCallProjectionInput {
 export interface PublicResolvedCallFields {
   outcome: string;
   call_score: number | null;
-  signed_return?: string | null;
   resolved_at: string;
   adapter_id: string;
   market_family: string;
@@ -183,29 +174,25 @@ export interface PublicResolvedCallFields {
 }
 
 /**
- * SINGLE OWNER of the resolved-side public field set: outcome, call_score, the
- * native-price `signed_return` gate, resolved_at, and the adapter / market-family
- * defaults. The SSE/webhook `call.resolved` event (publicResolvedCallEvent in
- * public-event-fanout.ts) builds its resolved half from THIS function so its
- * wire shape cannot drift from the REST/RSS row projections in this module,
- * which apply the same gate via {@link isNativePriceAdapter}.
+ * SINGLE OWNER of the resolved-side public field set: outcome, call_score,
+ * resolved_at, and the adapter / market-family identity. The SSE/webhook
+ * `call.resolved` event (publicResolvedCallEvent in public-event-fanout.ts)
+ * builds its resolved half from THIS function so its wire shape cannot drift
+ * from the REST/RSS row projections in this module.
  *
- * `signed_return` is surfaced ONLY for native-price adapters (the scalar-return
- * concept doesn't apply to venue/prediction-market adapters); it is omitted for
- * every other adapter. `market_id` is omitted when absent.
+ * `signed_return` is gone from every public projection: it was the scalar
+ * return of the removed native-price path, and no venue-settled market has
+ * one. `market_id` is omitted when absent.
  */
 export function projectPublicResolvedCallFields(
   input: ResolvedCallProjectionInput,
 ): PublicResolvedCallFields {
-  const adapter_id = stringOrDefault(input.adapter_id, "native-price");
-  const market_family = stringOrDefault(input.market_family, "financial-direction");
+  const adapter_id = stringOrDefault(input.adapter_id, UNKNOWN_ADAPTER_ID);
+  const market_family = stringOrDefault(input.market_family, UNKNOWN_MARKET_FAMILY);
   const market_id = typeof input.market_id === "string" ? input.market_id : null;
   return {
     outcome: input.outcome,
     call_score: input.call_score ?? null,
-    ...(isNativePriceAdapter(adapter_id)
-      ? { signed_return: input.signed_return }
-      : {}),
     resolved_at: input.resolved_at,
     adapter_id,
     market_family,
@@ -217,10 +204,9 @@ export function projectPublicCallRow(
   row: PublicCallSqlRow,
   agent_slug?: string,
 ): PublicAgentCallProjection {
-  const adapter_id = stringOrDefault(row.adapter_id, "native-price");
-  const market_family = stringOrDefault(row.market_family, "financial-direction");
+  const adapter_id = stringOrDefault(row.adapter_id, UNKNOWN_ADAPTER_ID);
+  const market_family = stringOrDefault(row.market_family, UNKNOWN_MARKET_FAMILY);
   const market_id = typeof row.market_id === "string" ? row.market_id : null;
-  const isNativePrice = isNativePriceAdapter(adapter_id);
   const fields: CallRowFields = {
     call_id: row.call_id as string,
     status: row.status as string,
@@ -232,9 +218,6 @@ export function projectPublicCallRow(
     ...(hasField(row, "outcome") ? { outcome: nullableString(row.outcome) } : {}),
     ...(hasField(row, "call_score")
       ? { call_score: nullableNumber(row.call_score) }
-      : {}),
-    ...(isNativePrice && hasField(row, "signed_return")
-      ? { signed_return: nullableString(row.signed_return) }
       : {}),
     ...(hasField(row, "resolved_at")
       ? { resolved_at: nullableString(row.resolved_at) }
@@ -252,7 +235,6 @@ export function projectPublicCallRow(
 export function publicRssCallRow(
   row: PublicAgentCallProjection,
 ): PublicRssCallRow {
-  const isNativePrice = isNativePriceAdapter(row.adapter_id);
   return {
     call_id: row.call_id,
     status: row.status,
@@ -263,7 +245,6 @@ export function publicRssCallRow(
     market_family: row.market_family,
     outcome: row.outcome ?? null,
     call_score: row.call_score ?? null,
-    signed_return: isNativePrice ? row.signed_return ?? null : null,
     resolved_at: row.resolved_at ?? null,
   };
 }

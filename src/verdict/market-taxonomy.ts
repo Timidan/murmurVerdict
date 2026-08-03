@@ -15,8 +15,12 @@ export type MarketPayoffModel =
   | "scalar"
   | "range"
   | "ranking";
+// Murmur never settles a market itself, so there is no `price_oracle` model:
+// an outcome is published either by an external VENUE or by a signed agent
+// FEED (or a mix). `price_direction` survives below as a semantic question
+// class — "will ETH be above X?" is a perfectly good Polymarket question —
+// but it is venue-settled like everything else.
 export type MarketSettlementModel =
-  | "price_oracle"
   | "venue_adapter"
   | "agent_feed"
   | "hybrid";
@@ -27,7 +31,13 @@ export interface MarketTaxonomyClass {
   support_status: MarketSupportStatus;
   payoff_model: MarketPayoffModel;
   settlement_model: MarketSettlementModel;
-  default_scoring_kind: ScoringKind;
+  /**
+   * Scorer a class would use. Live classes name a scoring kind the daemon
+   * actually implements; `reserved` classes name the scorer their future
+   * support would need, which is why this is a plain string and not the
+   * (deliberately narrow) live {@link ScoringKind} union.
+   */
+  default_scoring_kind: string;
   compatible_market_kinds: string[];
   compatible_market_families: string[];
   compatible_adapters: string[];
@@ -39,15 +49,18 @@ export interface MarketTaxonomyAssignment extends MarketTaxonomyClass {
 
 export const MARKET_TAXONOMY_CLASSES: MarketTaxonomyClass[] = [
   {
+    // Semantic question class only: "will <asset> be above <level> by <time>?"
+    // These are ordinary venue markets — settled by the venue, scored by the
+    // universal payout-vector scorer. Nothing here reads a price feed.
     resolution_class: "price_direction",
     label: "Price direction",
     support_status: "live",
     payoff_model: "binary",
-    settlement_model: "price_oracle",
-    default_scoring_kind: "brier_direction",
-    compatible_market_kinds: ["direction_binary"],
-    compatible_market_families: ["financial-direction"],
-    compatible_adapters: ["native-price"],
+    settlement_model: "venue_adapter",
+    default_scoring_kind: "multinomial_brier",
+    compatible_market_kinds: ["event_binary"],
+    compatible_market_families: ["prediction-market-binary"],
+    compatible_adapters: ["polymarket-gamma"],
   },
   {
     resolution_class: "event_binary",
@@ -76,22 +89,22 @@ export const MARKET_TAXONOMY_CLASSES: MarketTaxonomyClass[] = [
     label: "Price threshold",
     support_status: "reserved",
     payoff_model: "binary",
-    settlement_model: "price_oracle",
+    settlement_model: "venue_adapter",
     default_scoring_kind: "threshold_hit",
-    compatible_market_kinds: ["depeg_threshold"],
-    compatible_market_families: ["financial-threshold"],
-    compatible_adapters: ["native-price", "future-price-adapter"],
+    compatible_market_kinds: ["threshold_binary"],
+    compatible_market_families: ["prediction-market-binary"],
+    compatible_adapters: ["polymarket-gamma", "future-venue-adapter"],
   },
   {
     resolution_class: "range_prediction",
     label: "Range prediction",
     support_status: "reserved",
     payoff_model: "range",
-    settlement_model: "price_oracle",
+    settlement_model: "venue_adapter",
     default_scoring_kind: "bracket_hit",
-    compatible_market_kinds: ["price_bracket"],
-    compatible_market_families: ["financial-range"],
-    compatible_adapters: ["native-price", "future-price-adapter"],
+    compatible_market_kinds: ["range_bracket"],
+    compatible_market_families: ["prediction-market-range"],
+    compatible_adapters: ["future-venue-adapter"],
   },
   {
     resolution_class: "ranking_outcome",
@@ -153,15 +166,9 @@ export function marketTaxonomyForMarket(
   const explicit = configuredResolutionClass(config);
   if (explicit) return assign(explicit, "config");
 
-  if (market.market_kind === "direction_binary") {
-    return assign("price_direction", "market_kind");
-  }
-  if (market.market_kind === "depeg_threshold") {
-    return assign("price_threshold", "market_kind");
-  }
-  if (market.market_kind === "price_bracket" || market.market_kind === "price_point") {
-    return assign("range_prediction", "market_kind");
-  }
+  // Everything Murmur can settle is an externally-resolved binary event. The
+  // explicit `config.resolution_class` above is how a venue market declares a
+  // finer class (e.g. price_direction, sports_match).
   if (
     market.market_kind === "event_binary" ||
     market.market_family === "prediction-market-binary"

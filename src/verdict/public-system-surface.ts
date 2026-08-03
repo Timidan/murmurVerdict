@@ -53,7 +53,6 @@ export interface PublicSystemJsonResponseTarget {
 export interface PublicReadinessDeps extends PublicSystemClock {
   db: Database.Database;
   liveCanaries?: LiveCanaryProvider | null;
-  oracleProbe?: () => Promise<string | null>;
   requireLiveCanaries?: boolean;
 }
 
@@ -69,11 +68,6 @@ export interface PublicReadinessResponse {
     ready: boolean;
     now: string;
     db: { ok: boolean; latency_ms: number; error: string | null };
-    oracle: {
-      status: "ok" | "fail" | "disabled";
-      latency_ms: number;
-      error: string | null;
-    };
     canaries: {
       required: boolean;
       ok: boolean;
@@ -174,14 +168,13 @@ export async function publicReadinessSurface(
   deps: PublicReadinessDeps,
 ): Promise<PublicReadinessResponse> {
   const dbProbe = probeDatabase(deps.db, deps.now);
-  const oracleProbe = await probeOracle(deps.now, deps.oracleProbe);
   const canariesRequired = deps.requireLiveCanaries ?? false;
   const canarySnapshot = deps.liveCanaries?.snapshot() ?? null;
   const canariesOk = !canariesRequired || Boolean(canarySnapshot?.ok);
-  const ready =
-    dbProbe.ok &&
-    (oracleProbe.status === "ok" || oracleProbe.status === "disabled") &&
-    canariesOk;
+  // Readiness is DB writeability + the live canaries. There is no price-oracle
+  // leg any more: Murmur never reads a price, so a probe of one could only ever
+  // fail readiness for a dependency no code path uses.
+  const ready = dbProbe.ok && canariesOk;
 
   return {
     status: ready ? 200 : 503,
@@ -189,7 +182,6 @@ export async function publicReadinessSurface(
       ready,
       now: nowIso(deps.now()),
       db: dbProbe,
-      oracle: oracleProbe,
       canaries: canarySnapshot
         ? {
             required: canariesRequired,
@@ -242,7 +234,11 @@ export function publicMetaSurface(deps: PublicMetaDeps) {
     schema_version: SCHEMA_VERSION,
     scoring_version: SCORING_VERSION,
     strategy_tags: REGISTERED_STRATEGY_TAGS,
-    assets: ["base:ETH:USD"],
+    // Murmur referees EXTERNAL markets; it lists no assets of its own. The
+    // field stays for wire compatibility and now names the venues whose
+    // markets the daemon can seal calls against.
+    assets: [],
+    venues: ["polymarket-gamma"],
     verified_volume_24h: get24hVerifiedVolume(deps.db, deps.servedAt),
     paid_inference: {
       current_venue: "polymarket-gamma",
@@ -288,31 +284,6 @@ function probeDatabase(
     error = "database_probe_failed";
   }
   return { ok, latency_ms: Math.max(0, now().getTime() - startedAt), error };
-}
-
-async function probeOracle(
-  now: () => Date,
-  oracleProbe?: () => Promise<string | null>,
-): Promise<PublicReadinessResponse["body"]["oracle"]> {
-  const startedAt = now().getTime();
-  let status: "ok" | "fail" | "disabled" = "disabled";
-  let error: string | null = null;
-  if (oracleProbe) {
-    try {
-      const result = await oracleProbe();
-      if (result === null) {
-        status = "ok";
-      } else {
-        status = "fail";
-        error = "oracle_probe_failed";
-      }
-    } catch (err) {
-      void err;
-      status = "fail";
-      error = "oracle_probe_failed";
-    }
-  }
-  return { status, latency_ms: Math.max(0, now().getTime() - startedAt), error };
 }
 
 function publicReadinessPrivacy(): PublicReadinessResponse["body"]["privacy"] {

@@ -139,7 +139,6 @@ try {
   const ready = await publicReadinessSurface({
     db,
     now,
-    oracleProbe: async () => null,
     liveCanaries: canaries(true),
     requireLiveCanaries: true,
   });
@@ -147,8 +146,6 @@ try {
   assert.equal(ready.body.ready, true);
   assert.equal(ready.body.db.ok, true);
   assert.equal(ready.body.db.latency_ms, 0);
-  assert.equal(ready.body.oracle.status, "ok");
-  assert.equal(ready.body.oracle.latency_ms, 0);
   assert.equal(ready.body.canaries.required, true);
   assert.equal(ready.body.canaries.checks[0]?.name, "fhenix_rpc");
   assert.equal(
@@ -162,18 +159,9 @@ try {
   assert.equal(readyRes.statusCode, 200);
   assert.equal((readyRes.body as typeof ready.body).ready, true);
 
-  const oracleFailure = await publicReadinessSurface({
-    db,
-    now,
-    oracleProbe: async () => "oracle unavailable",
-  });
-  assert.equal(oracleFailure.status, 503);
-  assert.equal(oracleFailure.body.oracle.status, "fail");
-  assert.equal(oracleFailure.body.oracle.error, "oracle_probe_failed");
-  const oracleFailureRes = new FakeJsonResponse();
-  sendPublicSystemJsonResponse(oracleFailureRes, oracleFailure);
-  assert.equal(oracleFailureRes.statusCode, 503);
-  assert.equal((oracleFailureRes.body as typeof oracleFailure.body).oracle.error, "oracle_probe_failed");
+  // /readyz has no price-oracle leg any more: readiness is DB writeability
+  // plus the live canaries. Nothing in the readiness body may name an oracle.
+  assert.equal(Object.prototype.hasOwnProperty.call(ready.body, "oracle"), false);
 
   const canaryFailure = await publicReadinessSurface({
     db,
@@ -189,14 +177,6 @@ try {
     false,
     "public readiness must not expose provider URLs or credentials from canary errors",
   );
-
-  const secretOracleFailure = await publicReadinessSurface({
-    db,
-    now,
-    oracleProbe: async () => "request failed: https://provider.invalid/SUPERSECRET",
-  });
-  assert.equal(secretOracleFailure.body.oracle.error, "oracle_probe_failed");
-  assert.equal(JSON.stringify(secretOracleFailure.body).includes("SUPERSECRET"), false);
 
   agentsRepo.insert(db, {
     agent_id: agentId,

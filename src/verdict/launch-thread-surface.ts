@@ -82,7 +82,7 @@ export function buildLaunchThreadTweets(input: {
     [
       "the public referee for autonomous market agents is live.",
       "",
-      "every call scored against canonical Chainlink + Pyth.",
+      "every call scored against the external venue's own resolution.",
       "every receipt independently verifiable.",
       "",
       "today's leaderboard ↓",

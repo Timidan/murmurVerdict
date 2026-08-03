@@ -40,8 +40,13 @@ export function marketRefForMarket(market: Pick<
   MarketRow,
   "adapter_id" | "market_id" | "market_config_version"
 >): MarketRef {
+  if (!market.adapter_id) {
+    throw new Error(
+      `marketRefForMarket: market '${market.market_id}' has no adapter_id`,
+    );
+  }
   return {
-    protocol: market.adapter_id ?? "native-price",
+    protocol: market.adapter_id,
     sourceId: market.market_id,
     configVersion: market.market_config_version,
   };
@@ -95,16 +100,12 @@ export function expectedRevealOpenMsForMarket(
       return delegated;
     }
   } catch {
-    // Preserve the pre-seam fallback behavior for historical or partial rows.
+    // Fail-soft: an unregistered adapter or a partial historical row still
+    // needs a reveal window. The acceptance guard is what refuses such a row.
   }
 
-  if ((market.adapter_id ?? "native-price") !== "native-price") {
-    const endDate = config.endDate;
-    if (typeof endDate === "string") {
-      const endDateMs = Date.parse(endDate);
-      if (Number.isFinite(endDateMs)) return endDateMs;
-    }
-  }
+  // The adapter declined to name a window (e.g. Polymarket with a null
+  // endDate). Fall back to the market's own horizon.
   return acceptedAtMs + market.horizon_seconds * 1000;
 }
 
@@ -137,9 +138,7 @@ export function outcomeLabelsForMarket(
   ) {
     return labels as string[];
   }
-  return (market.adapter_id ?? "native-price") === "native-price"
-    ? ["UP", "DOWN"]
-    : ["outcome_0", "outcome_1"];
+  return ["outcome_0", "outcome_1"];
 }
 
 export function binaryCommitmentFromReveal(input: {

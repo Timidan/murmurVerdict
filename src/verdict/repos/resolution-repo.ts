@@ -6,29 +6,14 @@ import type {
   Outcome,
 } from "../schema.js";
 
-export interface T0AnchorInput {
-  call_id: string;
-  t0: string;
-  p0: string;
-  feed: string;
-  source_id: string;
-  anchored_at: string;
-}
-
-export interface T0AnchorRow {
-  t0: string;
-  p0: string;
-  feed: string;
-  source_id: string;
-  anchored_at: string;
-}
-
 export interface ResolutionWriteInput {
   call_id: string;
   t1: string;
-  // p1 / t1_feed / signed_return are native-price price-anchor evidence and are
-  // NULL for non-native (adapter) and oracle-unavailable resolutions, which
-  // have no price feed to record (migration 055).
+  // LEGACY PERSISTED COLUMNS. p1 / t1_feed / signed_return were the
+  // native-price anchor evidence; migration 055 made them nullable and
+  // Murmur no longer observes prices, so every row written today passes NULL.
+  // The columns stay so historical rows remain readable — they are never
+  // dropped.
   p1: string | null;
   t1_feed: string | null;
   signed_return: string | null;
@@ -73,34 +58,6 @@ export interface FullCallResolutionView {
       }
     | null;
 }
-
-export const anchorsRepo = {
-  setT0(
-    db: Database.Database,
-    input: T0AnchorInput,
-  ): void {
-    prep(
-      db,
-      `INSERT INTO t0_anchors (call_id, t0, p0, feed, source_id, anchored_at)
-       VALUES (@call_id, @t0, @p0, @feed, @source_id, @anchored_at)
-       ON CONFLICT(call_id) DO UPDATE SET
-         t0 = excluded.t0, p0 = excluded.p0, feed = excluded.feed,
-         source_id = excluded.source_id, anchored_at = excluded.anchored_at`,
-    ).run(input);
-  },
-
-  getT0(
-    db: Database.Database,
-    call_id: string,
-  ): T0AnchorRow | null {
-    return (
-      (prep(
-        db,
-        "SELECT t0, p0, feed, source_id, anchored_at FROM t0_anchors WHERE call_id = ?",
-      ).get(call_id) as T0AnchorRow | undefined) ?? null
-    );
-  },
-};
 
 /**
  * Submission statuses that mark a call's verdict as final. Once a submission

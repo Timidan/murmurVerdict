@@ -26,7 +26,6 @@ export type WireMarketPayoffModel =
   | "ranking";
 
 export type WireMarketSettlementModel =
-  | "price_oracle"
   | "venue_adapter"
   | "agent_feed"
   | "hybrid";
@@ -100,9 +99,9 @@ export interface WireMarketVenueSnapshot {
  * signature preserves them through without hand-copying each one.
  */
 export interface WireMarketRow {
-  market_id: string; // e.g. "eth.1h"
-  asset_id: string; // e.g. "base:ETH:USD"
-  market_kind: string; // "direction_binary"
+  market_id: string; // venue conditionId, e.g. "0x1f2e…"
+  asset_id: string; // venue synthetic, e.g. "polymarket:event"
+  market_kind: string; // "event_binary"
   horizon_seconds: number;
   primary_oracle_id: string;
   fallback_oracle_id: string | null;

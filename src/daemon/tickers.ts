@@ -87,6 +87,10 @@ export function startDaemonTickers(
   const logger = deps.logger ?? console;
   const tickers: GuardedTicker[] = [];
 
+  // The resolver has no optional dependency left — it settles calls through
+  // the venue adapter registry, which needs only the db + clock. `null` is
+  // still accepted so a harness can deliberately run without a resolver tick,
+  // but the daemon itself always supplies one.
   if (resolver) {
     tickers.push(
       setIntervalGuarded(logger, intervals.resolverMs, "resolver", async () => {
@@ -94,9 +98,7 @@ export function startDaemonTickers(
       }),
     );
   } else {
-    logger.warn(
-      "[daemon] resolver disabled - Verdict Oracle Runtime unavailable",
-    );
+    logger.warn("[daemon] resolver ticker not started (no resolver supplied)");
   }
 
   if (fhenixIngestor) {

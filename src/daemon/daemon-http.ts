@@ -5,7 +5,6 @@ import type Database from "better-sqlite3";
 import type { FhenixEventVerifier } from "../integrations/fhenix-events.js";
 import type { FhenixGatewayBroadcaster } from "../integrations/fhenix-gateway.js";
 import type { LiveCanaryProvider } from "../integrations/live-canaries.js";
-import type { OracleClient } from "../integrations/oracle.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import type { EntitlementAccessSurfaceDeps } from "../verdict/entitlement-access-surface.js";
 import { createVerdictErrorHandler } from "../verdict/verdict-error-surface.js";
@@ -43,7 +42,6 @@ export interface DaemonHttpSurfaceDeps {
   config: DaemonRuntimeConfig;
   logger?: Pick<Console, "error">;
   events: VerdictEventBus;
-  oracle: OracleClient | null;
   fhenixVerifier: FhenixEventVerifier | null;
   fhenixGateway: FhenixGatewayBroadcaster | null;
   privyAuth?: PrivyAuthVerifier | null;
@@ -116,7 +114,6 @@ export function createDaemonHttpSurface(
       adminToken: deps.config.adminToken,
       logger: deps.logger,
       events: deps.events,
-      oracleProbe: deps.oracle ? oracleProbe(deps.oracle) : undefined,
       fhenixVerifier: deps.fhenixVerifier,
       fhenixGateway: deps.fhenixGateway,
       entitlementAccess: deps.entitlementAccess,
@@ -180,18 +177,4 @@ export function createDaemonHttpSurface(
   app.use(createVerdictErrorHandler(deps.logger ?? console));
 
   return app;
-}
-
-function oracleProbe(
-  oracle: OracleClient,
-): () => Promise<string | null> {
-  return async () => {
-    try {
-      const obs = await oracle.getLatestPrice("pyth:base:ETH-USD");
-      if (!obs?.price) return "no price returned";
-      return null;
-    } catch (err) {
-      return err instanceof Error ? err.message : String(err);
-    }
-  };
 }

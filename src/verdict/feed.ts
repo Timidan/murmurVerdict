@@ -34,12 +34,8 @@ export interface TodayFeedRow {
   submitted_at?: string;
   accepted_at: string;
   status: string;
-  // Resolved-only. signed_return is a price-return concept — present
-  // ONLY when adapter_id === 'native-price'. Non-native adapters
-  // (Polymarket today, future event/category families) omit the field
-  // entirely (Drift C).
+  // Resolved-only.
   outcome?: string | null;
-  signed_return?: string | null;
   call_score?: number | null;
   resolved_at?: string | null;
 }
@@ -121,7 +117,7 @@ export function getTodayFeed(db: Database.Database, now: Date): TodayFeed {
               s.submitted_at, s.accepted_at, s.status,
               s.privacy_mode, s.commit_hash,
               s.adapter_id, s.market_family, s.market_id,
-              r.outcome, r.signed_return, r.call_score, r.resolved_at
+              r.outcome, r.call_score, r.resolved_at
        FROM t1_resolutions r
        JOIN submissions s ON s.call_id = r.call_id
        JOIN agents a ON a.agent_id = s.agent_id

@@ -1,11 +1,9 @@
 // Market-level helpers — the bridge between submissions and the registry.
 //
-// Today's resolver still works off legacy (asset_id, horizon_hours) columns.
-// New code calls these helpers to:
-//   - resolve a market_id (live or legacy-synthesized)
-//   - compute the resolve_after timestamp for a submission
-//   - derive a default void_band from a market row
-//   - bucket a t0 into a round_id when the market is round-based
+// Murmur is a pure referee over EXTERNAL prediction venues: every market row
+// is authored by a venue adapter (Polymarket Gamma today) and resolved by that
+// venue. There is no Murmur-authored market and no self-resolving price path,
+// so a market's adapter identity is REQUIRED, never defaulted.
 //
 // Read-only — no writes. Mutating a market goes through `marketsRepo.bumpConfig`.
 
@@ -15,36 +13,36 @@ import {
 import { getMarketMakerRegistry } from "./market-maker/registry.js";
 import type { MarketMakerAdapter } from "../markets/types.js";
 
-// ─── P3 — adapter dispatch (Phase 3 of V2_IMPLEMENTATION_PLAN) ──────────────
+// ─── Adapter dispatch ───────────────────────────────────────────────────────
 //
-// Every market row resolves to exactly one {@link MarketMakerAdapter}. Today
-// the only registered adapter is `native-price` (handles legacy ETH markets,
-// signed-return scoring, oracle T0/T1 anchoring). Phase 11 lands Polymarket
-// Gamma; Phase 13+ lands UMA / Reality.eth / etc. The dispatch key is
-// `markets.adapter_id` once migration 016 lands; until then every native-price
-// market falls through here by name.
-//
-// SHELL behavior: this helper is currently a deterministic constant — every
-// market gets `native-price`. The signature accepts a {@link MarketRow} so
-// the Phase 5 cutover can read `markets.adapter_id` from the row and dispatch
-// without changing any call site.
-
-export const NATIVE_PRICE_ADAPTER_ID = "native-price" as const;
-export const FINANCIAL_DIRECTION_FAMILY = "financial-direction" as const;
+// Every market row resolves to exactly one {@link MarketMakerAdapter} via its
+// stored `markets.adapter_id` (MIGRATION_016). Dispatch is fail-closed: a row
+// with no adapter_id, or one naming an adapter this daemon does not register,
+// is NOT resolvable and must never mint or settle a call.
 
 /**
- * FIX 5 — distinct error for "row references an adapter that isn't
- * registered." Caller (resolver) catches this and skips the v2 path
- * for the call rather than aborting the legacy transaction.
+ * Sentinel surfaced by the PUBLIC registry/call projections for a historical
+ * row that pre-dates the adapter columns. It is presentation-only — nothing
+ * dispatches on it, and {@link getAdapterForMarket} refuses such a row.
+ */
+export const UNKNOWN_ADAPTER_ID = "unknown" as const;
+export const UNKNOWN_MARKET_FAMILY = "unknown" as const;
+
+/**
+ * Distinct error for "row has no adapter, or references an adapter that isn't
+ * registered." Callers (resolver, acceptance guards) catch this and refuse the
+ * call rather than aborting the surrounding transaction.
  */
 export class AdapterNotFoundError extends Error {
   readonly code = "adapter_not_found" as const;
-  readonly adapter_id: string;
+  readonly adapter_id: string | null;
   readonly market_id: string | null;
 
-  constructor(adapter_id: string, market_id: string | null) {
+  constructor(adapter_id: string | null, market_id: string | null) {
     super(
-      `getAdapterForMarket: adapter '${adapter_id}' not registered for market '${market_id ?? "<unknown>"}'`,
+      adapter_id === null
+        ? `getAdapterForMarket: market '${market_id ?? "<unknown>"}' has no adapter_id`
+        : `getAdapterForMarket: adapter '${adapter_id}' not registered for market '${market_id ?? "<unknown>"}'`,
     );
     this.name = "AdapterNotFoundError";
     this.adapter_id = adapter_id;
@@ -53,15 +51,15 @@ export class AdapterNotFoundError extends Error {
 }
 
 /**
- * Return the {@link MarketMakerAdapter} that handles `marketRow`. Honors
- * `markets.adapter_id` (added in MIGRATION_016) — when set, dispatches to
- * that adapter; when null/missing (pre-Phase-1 markets that didn't get the
- * backfill), falls back to the legacy `native-price` adapter. Throws
- * {@link AdapterNotFoundError} when the row points at an adapter that
- * isn't registered.
+ * Return the {@link MarketMakerAdapter} that handles `marketRow`. Requires an
+ * explicit `markets.adapter_id` that names a REGISTERED adapter — there is no
+ * implicit fallback. Throws {@link AdapterNotFoundError} otherwise.
  */
 export function getAdapterForMarket(marketRow: MarketRow): MarketMakerAdapter {
-  const adapterId = marketRow.adapter_id ?? NATIVE_PRICE_ADAPTER_ID;
+  const adapterId = marketRow.adapter_id;
+  if (!adapterId) {
+    throw new AdapterNotFoundError(null, marketRow.market_id);
+  }
   const adapter = getMarketMakerRegistry().get(adapterId);
   if (!adapter) {
     throw new AdapterNotFoundError(adapterId, marketRow.market_id);
@@ -70,75 +68,19 @@ export function getAdapterForMarket(marketRow: MarketRow): MarketMakerAdapter {
 }
 
 /**
- * Resolve the adapter_id + market_family that the public market-list API
- * surfaces for a given row. Reads the stamped columns first (MIGRATION_016
- * backfilled native-price rows; Wave 4b's `upsertExternalMarket` stamps
- * adapter-specific values for Polymarket rows); falls back to the legacy
- * defaults only when the row pre-dates the adapter columns.
+ * Adapter identity a PUBLIC read surface shows for a row. Reads the stamped
+ * columns (`upsertExternalMarket` writes both on every venue registration);
+ * only a pre-adapter-column historical row falls through to the neutral
+ * `unknown` sentinel, which is display-only and never dispatched on.
  */
 export function adapterIdentityForMarket(marketRow: MarketRow): {
   adapter_id: string;
   market_family: string;
 } {
   return {
-    adapter_id: marketRow.adapter_id ?? NATIVE_PRICE_ADAPTER_ID,
-    market_family: marketRow.market_family ?? FINANCIAL_DIRECTION_FAMILY,
+    adapter_id: marketRow.adapter_id ?? UNKNOWN_ADAPTER_ID,
+    market_family: marketRow.market_family ?? UNKNOWN_MARKET_FAMILY,
   };
-}
-
-/**
- * Compute the t1 deadline (`resolve_after`) for a submission. The resolver's
- * tick loop walks calls whose `resolve_after <= now()`. Returns ISO8601 UTC.
- *
- * t0 is the canonical anchor. This function only adds horizon_seconds.
- */
-export function computeResolveAfter(
-  market: MarketRow,
-  t0_iso: string,
-): string {
-  const t0Ms = Date.parse(t0_iso);
-  if (Number.isNaN(t0Ms)) {
-    throw new Error(`computeResolveAfter: invalid t0 '${t0_iso}'`);
-  }
-  const t1Ms = t0Ms + market.horizon_seconds * 1000;
-  return new Date(t1Ms).toISOString().replace(/\.\d+Z$/, "Z");
-}
-
-/**
- * Bucket a t0 into a round_id for round-based scoring kinds
- * (rank_proximity_l1, bracket_hit). Returns null for non-round markets.
- *
- * Cohort policy: floor(t0 / round_cadence) * round_cadence aligned to the
- * Unix epoch — UTC-stable, easy to reproduce off-Murmur. Format the bucket
- * back to ISO8601 UTC for canonicalization in receipts.
- */
-export function computeRoundId(
-  market: MarketRow,
-  t0_iso: string,
-): string | null {
-  if (!market.round_cadence_seconds) return null;
-  const t0Ms = Date.parse(t0_iso);
-  if (Number.isNaN(t0Ms)) {
-    throw new Error(`computeRoundId: invalid t0 '${t0_iso}'`);
-  }
-  const cadenceMs = market.round_cadence_seconds * 1000;
-  const bucketMs = Math.floor(t0Ms / cadenceMs) * cadenceMs;
-  const bucket = new Date(bucketMs).toISOString().replace(/\.\d+Z$/, "Z");
-  return `${market.market_id}@${bucket}`;
-}
-
-/**
- * Default void_band as a Number — markets store it as a decimal string for
- * canonicalization, but the resolver scoring path needs a float.
- */
-export function voidBandFloat(market: MarketRow): number {
-  const n = Number(market.void_band);
-  if (!Number.isFinite(n) || n < 0) {
-    throw new Error(
-      `market ${market.market_id}: void_band='${market.void_band}' is not a valid non-negative number`,
-    );
-  }
-  return n;
 }
 
 /**
@@ -212,21 +154,11 @@ export function buildMarketDedupKey(args: {
 }
 
 /**
- * Phase-1 per-market daily cap (Codex P3 D3). Legacy ETH markets keep the
- * pre-P3 effective cap (24/asset/day, which equals 24/market/day for ETH
- * since ETH had one market per horizon). New markets get a tighter cap
- * until we have telemetry to widen it.
- *
- * NOTE: this is in addition to the per-asset daily cap (24/asset/day) and
- * the per-agent active cap (5). Sum across all of an asset's markets still
- * has to fit under per-asset.
+ * Per-market daily cap (Codex P3 D3), in addition to the per-agent active cap
+ * (5). Uniform across every external market: with markets minted per venue
+ * event there is no privileged market to widen the cap for.
  */
-const LEGACY_ETH_MARKETS = new Set([
-  "eth.1h",
-  "eth.4h",
-  "eth.24h",
-  "eth.7d",
-]);
-export function perMarketDailyCap(market_id: string): number {
-  return LEGACY_ETH_MARKETS.has(market_id) ? 24 : 12;
+export const PER_MARKET_DAILY_CAP = 12;
+export function perMarketDailyCap(_market_id: string): number {
+  return PER_MARKET_DAILY_CAP;
 }

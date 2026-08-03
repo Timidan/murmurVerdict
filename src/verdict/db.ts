@@ -90,15 +90,10 @@ export type {
   RefClickRow,
   RefTopSenderRow,
 } from "./repos/ref-attribution-repo.js";
-export {
-  anchorsRepo,
-  resolutionsRepo,
-} from "./repos/resolution-repo.js";
+export { resolutionsRepo } from "./repos/resolution-repo.js";
 export type {
   FullCallResolutionView,
   ResolutionWriteInput,
-  T0AnchorInput,
-  T0AnchorRow,
 } from "./repos/resolution-repo.js";
 export { submissionsRepo } from "./repos/sealed-call-submissions-repo.js";
 export type {

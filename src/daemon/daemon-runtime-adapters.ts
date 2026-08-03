@@ -8,7 +8,6 @@ import { startWebhookDispatcher } from "../verdict/webhooks.js";
 import type { FhenixEventVerifier } from "../integrations/fhenix-events.js";
 import type { FhenixGatewayBroadcaster } from "../integrations/fhenix-gateway.js";
 import type { FhenixMarketRegistrar } from "../integrations/fhenix-market-registration.js";
-import type { OracleClient } from "../integrations/oracle.js";
 import type { LiveCanaryProvider } from "../integrations/live-canaries.js";
 import type { OperatorAlertSinkConfig } from "../verdict/operator-alerts.js";
 import type { FeedPacketIdAdapter } from "../verdict/feed-packet-ingestion.js";
@@ -31,9 +30,6 @@ import {
   type EntitlementAccessSurfaceDeps,
 } from "../verdict/entitlement-access-surface.js";
 import {
-  loadDaemonOracleRuntime,
-} from "./oracle-runtime.js";
-import {
   loadOperatorObservabilityRuntime,
   loadOperatorObservabilityRuntimeConfig,
 } from "./operator-observability-runtime.js";
@@ -55,10 +51,10 @@ export interface DaemonRuntimeAdapters {
   liveCanaries: LiveCanaryProvider;
   nanopayRuntime: DaemonNanopayRuntime | null;
   operatorAlertSink: OperatorAlertSinkConfig;
-  oracle: OracleClient | null;
   polymarketDiscovery: { tick: () => Promise<unknown> } | null;
   privyAuth: PrivyAuthVerifier;
-  resolver: Resolver | null;
+  /** Never null — see the construction site in loadDaemonRuntimeAdapters. */
+  resolver: Resolver;
   stop(): void;
 }
 
@@ -144,11 +140,6 @@ export async function loadDaemonRuntimeAdapters(
   const privyAuth = createPrivyAuthVerifier(config.privyAuth);
   const events = new VerdictEventBus();
 
-  const oracleRuntime = loadDaemonOracleRuntime({
-    config: config.oracleRuntime,
-    logger,
-    now,
-  });
   const fhenixRuntime = await loadFhenixRuntime(db, {
     config: config.fhenixRuntime,
     gatewayFeedPacketId: deps.gatewayFeedPacketId,
@@ -185,18 +176,26 @@ export async function loadDaemonRuntimeAdapters(
     logger,
     now,
   });
-  const resolver = oracleRuntime.oracle
-    ? new Resolver({
-        db,
-        oracle: oracleRuntime.oracle,
-        now,
-        onResolved: createResolutionFanout({
-          db,
-          events,
-          now,
-        }),
-      })
-    : null;
+  // The Resolver is constructed UNCONDITIONALLY.
+  //
+  // It used to be gated on the price-oracle runtime having produced a
+  // Chainlink/Pyth client, which meant a deployment without Base RPC / feed
+  // env silently resolved NOTHING — including the Polymarket calls that have
+  // never needed a price oracle at all. Murmur is a pure referee over external
+  // venues now: resolution is `adapter.observeResolution(...)` and its only
+  // dependencies are the database and a clock, both of which always exist by
+  // this point. There is no configuration under which the resolver should be
+  // absent. Proven by src/verdict/resolver-adapter.smoke.ts, which resolves a
+  // sealed call end-to-end with a completely empty environment.
+  const resolver = new Resolver({
+    db,
+    now,
+    onResolved: createResolutionFanout({
+      db,
+      events,
+      now,
+    }),
+  });
 
   // Flow 2 access surface: build the payment broker over the SAME nanopay
   // payment infra (seller, facilitator, accepted networks) but a dedicated flat
@@ -249,7 +248,6 @@ export async function loadDaemonRuntimeAdapters(
     liveCanaries: observability.liveCanaries,
     nanopayRuntime,
     operatorAlertSink: observability.operatorAlertSink,
-    oracle: oracleRuntime.oracle,
     polymarketDiscovery,
     privyAuth,
     resolver,
