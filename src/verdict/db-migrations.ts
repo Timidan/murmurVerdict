@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 61 as const;
+export const LATEST_DB_MIGRATION_VERSION = 62 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1236,16 +1236,46 @@ export function applyMigrations(db: Database.Database): void {
     //     rows, and t1_resolutions' p1 / t1_feed / signed_return columns
     //     stay exactly as migrations 008–055 left them. They are legacy
     //     PERSISTED evidence for historical rows and must stay readable.
-    //   · No row deletes. Retirement is a status flip, so a forensic read
-    //     of the frozen ETH market or a legacy oracle row still resolves.
+    //   · No row deletes here. Retirement is a status flip. (MIGRATION_062
+    //     later removes the unreferenced native rows entirely — see there.)
     //
     // Idempotent — both statements are status UPDATEs guarded on
     // `status <> 'retired'`, safe to re-run.
     db.transaction(() => {
       db.exec(MIGRATION_061_RETIRE_NATIVE_PRICE_REGISTRY);
-      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+      set.run("schema_version", "61");
     })();
     v = 61;
+  }
+
+  if (v < 62) {
+    // Migration 062 — DELETE the retired native-price registry rows.
+    //
+    // 061 retired them; this removes them. Murmur relies entirely on
+    // external venues now, so a catalogue of markets murmur would have had
+    // to resolve itself is dead weight: it pollutes operator queries and
+    // market listings, and it is the only reason the registry schema still
+    // had to tolerate self-resolving shapes.
+    //
+    // Deletion is GUARDED, never blind. A native market row is removed only
+    // when nothing references it (no submissions), so any deployment that
+    // did take native calls keeps its history and its market rows — there
+    // the rows simply stay retired, exactly as 061 left them. Oracle and
+    // asset rows are removed only once no market row still points at them.
+    //
+    // Deliberately preserved:
+    //   · the synthetic 'polymarket-gamma-oracle' / 'polymarket:event' rows
+    //     (markets.primary_oracle_id and .asset_id are NOT NULL with FKs,
+    //     and external registration writes them on every upsert),
+    //   · the physical t0_anchors table and t1_resolutions' p1 / t1_feed /
+    //     signed_return columns — legacy persisted evidence stays readable.
+    //
+    // Idempotent: re-running finds nothing left to delete.
+    db.transaction(() => {
+      db.exec(MIGRATION_062_DROP_UNREFERENCED_NATIVE_ROWS);
+      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+    })();
+    v = 62;
   }
 }
 
@@ -4331,6 +4361,32 @@ const MIGRATION_060_SECURITY_EVENT_KINDS = `
 //
 // `event_binary` + `multinomial_brier` rows are untouched: those are the
 // external Polymarket markets that carry all 44 live resolutions.
+const MIGRATION_062_DROP_UNREFERENCED_NATIVE_ROWS = `
+  -- Markets: drop retired native rows that no submission references.
+  DELETE FROM markets
+   WHERE status = 'retired'
+     AND (adapter_id = 'native-price' OR market_family = 'financial-direction')
+     AND market_id NOT IN (SELECT DISTINCT market_id FROM submissions);
+
+  -- Oracles: drop retired price-feed rows no surviving market points at.
+  DELETE FROM oracles
+   WHERE status = 'retired'
+     AND kind IN ('chainlink_evm','pyth_pull','pyth_solana')
+     AND oracle_id NOT IN (SELECT primary_oracle_id FROM markets)
+     AND oracle_id NOT IN (
+       SELECT fallback_oracle_id FROM markets WHERE fallback_oracle_id IS NOT NULL
+     );
+
+  -- Assets: drop native price assets nothing points at any more. Both
+  -- referrers must be checked — markets.asset_id AND oracles.asset_id — or
+  -- this deletes the synthetic 'polymarket:event' asset on a fresh database
+  -- (where no external market exists yet) while the surviving
+  -- 'polymarket-gamma-oracle' row still references it.
+  DELETE FROM assets
+   WHERE asset_id NOT IN (SELECT DISTINCT asset_id FROM markets)
+     AND asset_id NOT IN (SELECT DISTINCT asset_id FROM oracles);
+`;
+
 const MIGRATION_061_RETIRE_NATIVE_PRICE_REGISTRY = `
   UPDATE markets
      SET status = 'retired'

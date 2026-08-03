@@ -134,37 +134,16 @@ try {
     nowMs,
   });
 
-  // ── (a) Single market 200 + list-row shape for eth.1h ────────────────────
+  // ── (a) The removed native catalogue is gone entirely ────────────────────
+  // MIGRATION_062 deleted the unreferenced native-price rows, so the legacy
+  // id no longer resolves at all — murmur ships no markets of its own.
   const ethDetail = await marketDetailSurface({
     db,
     marketId: "eth.1h",
     servedAt,
     venue: liveVenue,
   });
-  assert.equal(ethDetail.status, 200);
-  const ethDetailBody = ethDetail.body as {
-    market: VenueMarketRow & {
-      config_json?: string;
-      market_taxonomy?: { resolution_class?: string };
-      oracles?: { health?: string; primary?: { oracle_id?: string } };
-    };
-    served_at: string;
-  };
-  // eth.1h is the legacy native-price row seeded by an early migration and
-  // RETIRED by MIGRATION_061 (murmur no longer authors or resolves its own
-  // markets). Detail still serves it so historical calls remain inspectable,
-  // but it carries the retired status and no oracle wiring.
-  assert.equal(ethDetailBody.market.market_id, "eth.1h");
-  assert.equal(ethDetailBody.market.adapter_id, "native-price");
-  assert.equal(ethDetailBody.market.status, "retired");
-  assert.notEqual(
-    ethDetailBody.market.market_taxonomy?.resolution_class,
-    "price_direction",
-    "the price_direction resolution class is gone with native resolution",
-  );
-  assert.equal(typeof ethDetailBody.market.config_json, "string");
-  assert.equal("venue" in ethDetailBody.market, false);
-  assert.equal(ethDetailBody.served_at, "2026-06-12T09:30:00Z");
+  assert.equal(ethDetail.status, 404);
   assert.equal(gammaFetchCalls, 0);
 
   // ── (b) Unknown id → 404 market_not_found envelope ───────────────────────
@@ -267,9 +246,10 @@ try {
   assert.equal(offlineRow.venue.url, venueUrl);
 
   // ── (e) Calls feed: empty, populated (sealed-privacy), unknown ───────────
+  // conditionIds[2] is a registered external market with no calls yet.
   const emptyCalls = marketCallsSurface({
     db,
-    marketId: "eth.1h",
+    marketId: conditionIds[2],
     query: { limit: 50 },
     servedAt,
   });

@@ -29,6 +29,7 @@ import {
   agentsRepo,
   fhenixEventsRepo,
   fhenixSealedCallsRepo,
+  marketsRepo,
   openDb,
   submissionsRepo,
 } from "../verdict/db.js";
@@ -104,6 +105,31 @@ const dbPath = join(tmp, "test.db");
 try {
   process.stdout.write("murmur fhenix watcher smoke\n");
   const db = openDb({ path: dbPath });
+
+  // Murmur ships no markets of its own (MIGRATION_062 removed the native
+  // catalogue), so sealed-call fixtures must register their own external
+  // market or reveal ingestion rejects them as an unknown market.
+  const WATCHER_MARKET_ID = `0x${"3f".repeat(32)}`;
+  function seedWatcherMarket(target = db): void {
+    marketsRepo.upsertExternalMarket(target, {
+      market_id: WATCHER_MARKET_ID,
+      asset_id: "polymarket:event",
+      market_kind: "event_binary",
+      horizon_seconds: 3600,
+      primary_oracle_id: "polymarket-gamma-oracle",
+      adapter_id: "polymarket-gamma",
+      market_family: "prediction-market-binary",
+      scoring_kind: "multinomial_brier",
+      config_json: JSON.stringify({
+        conditionId: WATCHER_MARKET_ID,
+        outcomes: ["Up", "Down"],
+      }),
+      void_band: "0",
+      status: "listed",
+      created_at: "2026-05-14T12:00:00Z",
+    });
+  }
+  seedWatcherMarket();
   const verifier = new WatcherSmokeVerifier();
   const agentId = randomUUID();
   const wallet = "0x1111111111111111111111111111111111111111";
@@ -263,10 +289,10 @@ try {
       dedup_key: "watcher-order-replay:dedup",
       commit_hash: "0x" + "66".repeat(32),
       commit_scheme: "fhenix-sealed-v1",
-      market_id: "eth.1h",
+      market_id: WATCHER_MARKET_ID,
       market_config_version: 1,
-      adapter_id: "native-price",
-      market_family: "financial-direction",
+      adapter_id: "polymarket-gamma",
+      market_family: "prediction-market-binary",
     });
     fhenixSealedCallsRepo.insert(db, {
       call_id: replayCallId,
@@ -308,10 +334,10 @@ try {
       dedup_key: `${order}:dedup`,
       commit_hash: "0x" + hexByte.repeat(32),
       commit_scheme: "fhenix-sealed-v1",
-      market_id: "eth.1h",
+      market_id: WATCHER_MARKET_ID,
       market_config_version: 1,
-      adapter_id: "native-price",
-      market_family: "financial-direction",
+      adapter_id: "polymarket-gamma",
+      market_family: "prediction-market-binary",
     });
     fhenixSealedCallsRepo.insert(db, {
       call_id: callId,
@@ -429,6 +455,8 @@ try {
   const newDb = (): Database.Database =>
     openDb({ path: join(tmp, `watcher-${randomUUID()}.db`) });
   const seedAgentInto = (target: Database.Database): void => {
+    // Isolated per-case databases need the external market too.
+    seedWatcherMarket(target);
     agentsRepo.insert(target, {
       agent_id: agentId,
       display_slug: "fhenix-watcher-smoke",
@@ -463,10 +491,10 @@ try {
       dedup_key: `${params.order}:dedup`,
       commit_hash: "0x" + params.hexByte.repeat(32),
       commit_scheme: "fhenix-sealed-v1",
-      market_id: "eth.1h",
+      market_id: WATCHER_MARKET_ID,
       market_config_version: 1,
-      adapter_id: "native-price",
-      market_family: "financial-direction",
+      adapter_id: "polymarket-gamma",
+      market_family: "prediction-market-binary",
     });
     fhenixSealedCallsRepo.insert(target, {
       call_id: params.callId,

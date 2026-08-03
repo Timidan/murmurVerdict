@@ -71,9 +71,11 @@ try {
   assert.equal(enriched.market_taxonomy.resolution_class, "event_binary");
   assert.equal(enriched.oracles?.health, "ok");
 
-  // MIGRATION_061 retired every seeded native-price market; none of them may
+  // MIGRATION_061 retired every seeded native-price market and MIGRATION_062
+  // deleted the unreferenced ones; none of them may
   // ever surface on a `listed` public read again.
-  assert.equal(marketsRepo.get(db, "eth.1h")?.status, "retired");
+  assert.equal(marketsRepo.get(db, "eth.1h"), null,
+    "MIGRATION_062 deletes the unreferenced native market rows outright");
 
   assert.deepEqual(
     publicMarketConfigSummary(JSON.stringify({

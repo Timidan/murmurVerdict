@@ -167,6 +167,19 @@ export const OracleRecordSchema = z
   .strict();
 export type OracleRecord = z.infer<typeof OracleRecordSchema>;
 
+/**
+ * A row of the `markets` registry.
+ *
+ * Every market is resolved by an EXTERNAL venue adapter, so the venue-facing
+ * identity fields (`adapter_id`, `market_family`, `config_json`) are part of
+ * the record — a new adapter's rows must validate here, and `.strict()` would
+ * otherwise reject them as unknown keys.
+ *
+ * The `*_staleness_sec` / `t0_*_grace_seconds` columns are VESTIGIAL: they
+ * configured the deleted native-price t0/t1 price-anchoring walk. Nothing
+ * reads them now and every external row persists 0, so they validate as
+ * non-negative and are not cross-checked.
+ */
 export const MarketRecordSchema = z
   .object({
     market_id: MarketIdSchema,
@@ -175,10 +188,10 @@ export const MarketRecordSchema = z
     horizon_seconds: z.number().int().positive(),
     primary_oracle_id: OracleIdSchema,
     fallback_oracle_id: OracleIdSchema.nullable(),
-    primary_max_staleness_sec: z.number().int().positive(),
-    fallback_max_staleness_sec: z.number().int().positive().nullable(),
-    t0_grace_seconds: z.number().int().positive(),
-    t0_extended_grace_seconds: z.number().int().positive(),
+    primary_max_staleness_sec: z.number().int().nonnegative(),
+    fallback_max_staleness_sec: z.number().int().nonnegative().nullable(),
+    t0_grace_seconds: z.number().int().nonnegative(),
+    t0_extended_grace_seconds: z.number().int().nonnegative(),
     void_band: z.string().regex(/^0(\.[0-9]+)?$|^[1-9][0-9]*(\.[0-9]+)?$/),
     round_cadence_seconds: z.number().int().positive().nullable(),
     scoring_kind: ScoringKindSchema,
@@ -186,16 +199,14 @@ export const MarketRecordSchema = z
     status: RegistryStatusSchema,
     notes: z.string().max(512).nullable(),
     created_at: z.string().datetime({ offset: false }),
+    // External-adapter identity. Nullable only so pre-adapter historical rows
+    // still parse; the mint guard requires all three on anything listable.
+    adapter_id: z.string().min(1).max(64).nullable().optional(),
+    market_family: z.string().min(1).max(64).nullable().optional(),
+    config_json: z.string().nullable().optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
-    if (v.t0_extended_grace_seconds < v.t0_grace_seconds) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "t0_extended_grace_seconds must be ≥ t0_grace_seconds",
-        path: ["t0_extended_grace_seconds"],
-      });
-    }
     // Externally-resolved markets are scored by the universal payout-vector
     // scorer, and that is the only pairing this schema will VALIDATE. The
     // legacy direction_binary / brier_direction members exist purely so a
