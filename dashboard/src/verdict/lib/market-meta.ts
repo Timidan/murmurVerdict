@@ -26,6 +26,13 @@ export interface MarketConfig {
   endDate?: string;
   /** Canonical venue event URL (external link target). */
   gamma_url?: string;
+  /**
+   * Venue artwork, https-validated by the daemon at ingestion AND again on the
+   * way out (src/markets/polymarket-gamma/config.ts). Absent on every market
+   * registered before the field existed — deliberately never backfilled, so
+   * renderers must always have a glyph fallback.
+   */
+  icon_url?: string;
   /** UMA dispute bond (decimal string), e.g. "500". */
   umaBond?: string;
   /** Resolver address (0x…), the account UMA settles against. */
@@ -55,10 +62,94 @@ export function parseMarketConfig(m: MarketRow): MarketConfig | null {
     outcomes: outcomes && outcomes.length > 0 ? outcomes : undefined,
     endDate: typeof parsed.endDate === "string" ? parsed.endDate : undefined,
     gamma_url: typeof parsed.gamma_url === "string" ? parsed.gamma_url : undefined,
+    // https only, checked here as well as server-side. This value goes
+    // straight into an image source, and the config blob is stored
+    // passthrough — a row written before the server-side guard existed must
+    // not be able to put anything else there.
+    //
+    // Parsed, not prefix-matched. `/^https:\/\//` accepts a bare `"https://"`
+    // (and `"https://​"` with any junk that never forms a host), which the
+    // server's own `new URL()` gate rejects — so the two halves of a
+    // belt-and-braces check disagreed, and the browser half was the loose one.
+    icon_url: httpsUrl(parsed.icon_url),
     umaBond: typeof parsed.umaBond === "string" ? parsed.umaBond : undefined,
     resolvedBy: typeof parsed.resolvedBy === "string" ? parsed.resolvedBy : undefined,
   };
 }
+
+/**
+ * An https URL, or undefined. Mirrors `httpsUrlOrNull` in
+ * src/markets/polymarket-gamma/config.ts — same parser, same rule, so the
+ * client-side re-check can actually back the server up instead of admitting a
+ * wider set than it does.
+ */
+export function httpsUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "https:" ? parsed.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The asset a five-minute venue market is about, as a short uppercase symbol
+ * ("BTC", "ETH", "SOL", "XRP", "DOGE").
+ *
+ * Read from the venue SLUG (`btc-updown-5m-1786340100`) rather than from
+ * `asset_id`, because every Polymarket row shares the synthetic asset id
+ * `polymarket:event` — the asset only exists in the slug and the question. The
+ * question text is the fallback, matched on the venue's own names so a slug
+ * scheme change does not blank the whole filter.
+ *
+ * Returns null when neither says: the caller shows the market without an asset
+ * chip rather than guessing one.
+ */
+export function marketAssetSymbol(m: MarketRow): string | null {
+  const cfg = parseMarketConfig(m);
+  return assetSymbolFromSlugOrQuestion(cfg?.slug, cfg?.question);
+}
+
+/** Same derivation, for rows that carry a bare slug/question (archive search). */
+export function assetSymbolFromSlugOrQuestion(
+  slug: string | null | undefined,
+  question: string | null | undefined,
+): string | null {
+  if (typeof slug === "string" && slug.length > 0) {
+    const head = slug.split("-")[0];
+    if (head && SLUG_ASSET_SYMBOLS[head.toLowerCase()]) {
+      return SLUG_ASSET_SYMBOLS[head.toLowerCase()]!;
+    }
+  }
+  if (typeof question === "string" && question.length > 0) {
+    const lower = question.toLowerCase();
+    for (const [name, symbol] of Object.entries(QUESTION_ASSET_NAMES)) {
+      if (lower.startsWith(name)) return symbol;
+    }
+  }
+  return null;
+}
+
+/** Venue slug prefix → display symbol. */
+const SLUG_ASSET_SYMBOLS: Record<string, string> = {
+  btc: "BTC",
+  eth: "ETH",
+  sol: "SOL",
+  xrp: "XRP",
+  doge: "DOGE",
+};
+
+/** The venue's own spelling at the head of a question → display symbol. */
+const QUESTION_ASSET_NAMES: Record<string, string> = {
+  bitcoin: "BTC",
+  ethereum: "ETH",
+  solana: "SOL",
+  xrp: "XRP",
+  dogecoin: "DOGE",
+};
 
 /**
  * Human display name for a market: Gamma question > humanized slug > raw
