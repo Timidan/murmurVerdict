@@ -11,7 +11,10 @@ import {
   type ReactNode,
 } from "react";
 import { readRouteQuery, buildRouteQueryUrl } from "../../route.js";
+import { Ik, type IconName } from "../../icons.js";
 import { PanelSkeleton } from "./PanelSkeleton.js";
+import { useFocusTrap } from "./useFocusTrap.js";
+import { shortId } from "../../lib/display-format.js";
 
 /**
  * Shared in-context detail drawer — a right sheet that shows an entity's detail
@@ -138,9 +141,12 @@ export function isPlainLeftClick(e: React.MouseEvent): boolean {
   return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
 }
 
-const DRAWER_META: Record<EntityKind, { title: string; permalink: (id: string) => string; maxW: string }> = {
-  call: { title: "call", permalink: (id) => `#/calls/${id}`, maxW: "max-w-[720px]" },
-  market: { title: "market", permalink: (id) => `#/markets/${encodeURIComponent(id)}`, maxW: "max-w-[960px]" },
+const DRAWER_META: Record<
+  EntityKind,
+  { title: string; icon: IconName; permalink: (id: string) => string; maxW: string }
+> = {
+  call: { title: "call", icon: "verdict", permalink: (id) => `#/calls/${id}`, maxW: "max-w-[720px]" },
+  market: { title: "market", icon: "market", permalink: (id) => `#/markets/${encodeURIComponent(id)}`, maxW: "max-w-[960px]" },
 };
 
 /**
@@ -173,22 +179,10 @@ export function DetailDrawer() {
     };
   }, [open, close]);
 
-  const onPanelKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key !== "Tab" || !panelRef.current) return;
-    const focusables = panelRef.current.querySelectorAll<HTMLElement>(
-      "a[href], button:not([disabled])",
-    );
-    if (focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
+  // Keep Tab / Shift+Tab within the sheet. `open` is what re-binds the trap:
+  // the panel is only in the DOM while an entity is open. Swapping entities
+  // reuses the same node, so the binding survives it.
+  useFocusTrap(panelRef, open);
 
   if (!entity) return null;
   const meta = DRAWER_META[entity.kind];
@@ -208,17 +202,20 @@ export function DetailDrawer() {
         role="dialog"
         aria-modal="true"
         aria-label={`${meta.title} ${entity.id.slice(0, 8)}`}
-        onKeyDown={onPanelKeyDown}
         className={
           "mmr-shell drawer-enter-panel absolute top-0 right-0 h-full w-full flex flex-col bg-[var(--color-bg)] border-l border-[var(--color-border)] " +
           meta.maxW
         }
       >
         <div className="ck-header shrink-0">
-          <span className="ck-title">{meta.title}</span>
+          {/* Title-marker upgrade (P2): the entity's own glyph replaces the
+              generic ::before square, same as every panel title. */}
+          <span className="ck-title ck-title-ik">
+            <Ik name={meta.icon} /> {meta.title}
+          </span>
           <span className="flex items-center gap-3">
-            <span className="ck-mono ck-dim truncate max-w-[140px]">
-              {entity.id.slice(0, 10)}
+            <span className="ck-mono ck-dim truncate max-w-[140px]" title={entity.id}>
+              {shortId(entity.id, 8, 4)}
             </span>
             <a
               href={meta.permalink(entity.id)}

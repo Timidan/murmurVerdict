@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { verdictApi, ApiError, type FullCall } from "../../api.js";
+import { Ik } from "../../icons.js";
 import { Panel } from "./Panel.js";
 import { ErrorState } from "./ErrorState.js";
 import { PanelSkeleton } from "./PanelSkeleton.js";
 import { PrivacyTierBadge } from "../PrivacyTierBadge.js";
 import { SideGlyph } from "./glyphs.js";
+import { TimeAgo } from "./TimeAgo.js";
 import { formatScore } from "../../lib/score-format.js";
+import { shortId } from "../../lib/display-format.js";
 
 /**
  * Shared call-detail body — the 3-stat header + submission / anchor·resolution
@@ -52,6 +55,13 @@ export function CallDetail({
 
   // Pending calls are sealed; only the privacy-mode label and public
   // resolution data are shown after scoring.
+  //
+  // The tooltip below states the guarantee precisely rather than the flat
+  // "murmur never sees the sealed prediction" it used to claim. That was true
+  // of the client-sealed path only — on /seal the operator IS handed the
+  // plaintext — and it ignored that early decrypt access rests on grantor key
+  // custody. The same overclaim was corrected in the agent card, README,
+  // OpenAPI and skill doc; this was the copy actual users read.
   const subjectLabel = !data ? "" : "operator-blind";
   const outcomeText = !data ? "" : data.resolution ? data.resolution.outcome : "pend";
   const outcomeTone = !data
@@ -102,7 +112,7 @@ export function CallDetail({
               label="subject"
               value={subjectLabel}
               mono
-              title="operator-blind — murmur never sees the sealed prediction; only the agent's plaintext is revealed after the horizon closes"
+              title="operator-blind — the sealed value is not readable here, and the contract cannot make it public before the market's reveal instant. On the canonical client-sealed path murmur never holds the plaintext at all; on the server-sealed /seal path it does, by design. See the threat model."
             />
             <Stat label="outcome" value={outcomeText} tone={outcomeTone} />
             <Stat
@@ -113,9 +123,32 @@ export function CallDetail({
             />
           </div>
 
-          <Panel title="submission" className={panelCls}>
-            <Kv k="call_id" v={data.submission.call_id} mono />
-            <Kv k="agent_id" v={data.submission.agent_id} mono />
+          <Panel
+            title={
+              <>
+                <Ik name="verdict" /> submission
+              </>
+            }
+            className={panelCls}
+          >
+            <Kv
+              k="call_id"
+              v={
+                <span title={data.submission.call_id}>
+                  {shortId(data.submission.call_id, 8, 5)}
+                </span>
+              }
+              mono
+            />
+            <Kv
+              k="agent_id"
+              v={
+                <span title={data.submission.agent_id}>
+                  {shortId(data.submission.agent_id, 8, 5)}
+                </span>
+              }
+              mono
+            />
             {data.submission.privacy_mode && (
               <div className="flex items-center justify-between px-2 py-1">
                 <span className="ck-label ck-dim">privacy_mode</span>
@@ -123,18 +156,33 @@ export function CallDetail({
               </div>
             )}
             {data.submission.commit_hash && (
-              <Kv k="commit_hash" v={data.submission.commit_hash} mono />
+              <Kv
+                k="commit_hash"
+                v={
+                  <span title={data.submission.commit_hash}>
+                    {shortId(data.submission.commit_hash, 8, 5)}
+                  </span>
+                }
+                mono
+              />
             )}
             {data.fhenix && (
               <>
                 {data.fhenix.revealed_verdict ? (
                   <>
+                    {/* Glyph + word, the same grammar the sealed branch below
+                        uses ("seal glyph + sealed"). Without the word the two
+                        states of this one row speak different languages: an
+                        arrow alone, then a marked-up phrase. */}
                     <Kv
                       k="side"
                       v={
-                        <SideGlyph
-                          side={data.fhenix.revealed_verdict.binary_index === 0 ? "UP" : "DOWN"}
-                        />
+                        <span className="inline-flex items-center gap-1">
+                          <SideGlyph
+                            side={data.fhenix.revealed_verdict.binary_index === 0 ? "UP" : "DOWN"}
+                          />
+                          {data.fhenix.revealed_verdict.binary_index === 0 ? "up" : "down"}
+                        </span>
                       }
                     />
                     <Kv
@@ -151,20 +199,27 @@ export function CallDetail({
               </>
             )}
             {data.submission.submitted_at && (
-              <Kv k="submitted_at" v={data.submission.submitted_at} />
+              <Kv k="submitted_at" v={<TimeAgo iso={data.submission.submitted_at} />} />
             )}
-            <Kv k="accepted_at" v={data.submission.accepted_at} />
+            <Kv k="accepted_at" v={<TimeAgo iso={data.submission.accepted_at} />} />
             {data.submission.strategy_tag && (
               <Kv k="strategy_tag" v={data.submission.strategy_tag} />
             )}
           </Panel>
 
-          <Panel title="anchor · resolution" className={panelCls}>
+          <Panel
+            title={
+              <>
+                <Ik name="resolve" /> anchor · resolution
+              </>
+            }
+            className={panelCls}
+          >
             {data.t0 ? (
               <>
                 <Kv
                   k="t0"
-                  v={data.t0.t0}
+                  v={<TimeAgo iso={data.t0.t0} />}
                   title="anchor open — timestamp the oracle price was observed when the call opened"
                 />
                 <Kv
@@ -186,7 +241,7 @@ export function CallDetail({
               <>
                 <Kv
                   k="t1"
-                  v={data.resolution.t1}
+                  v={<TimeAgo iso={data.resolution.t1} />}
                   title="resolution time — horizon-close timestamp the call was settled at"
                 />
                 <Kv
@@ -206,14 +261,21 @@ export function CallDetail({
                     title="call_score — Brier-style skill term for this resolved call"
                   />
                 )}
-                <Kv k="resolved_at" v={data.resolution.resolved_at} />
+                <Kv k="resolved_at" v={<TimeAgo iso={data.resolution.resolved_at} />} />
               </>
             ) : (
               <Kv k="t1" v="awaiting resolution" tone="ck-dim" />
             )}
           </Panel>
 
-          <Panel title="identity evidence" className={page ? undefined : "-mt-px"}>
+          <Panel
+            title={
+              <>
+                <Ik name="seal" /> identity evidence
+              </>
+            }
+            className={page ? undefined : "-mt-px"}
+          >
             {data.fhenix ? (
               <>
                 <Kv
@@ -235,8 +297,8 @@ export function CallDetail({
                 <Kv
                   k="onchain_call_id"
                   v={
-                    <span className="ck-mono ck-pos break-all">
-                      {data.fhenix.onchain_call_id}
+                    <span className="ck-mono ck-pos" title={data.fhenix.onchain_call_id}>
+                      {shortId(data.fhenix.onchain_call_id, 9, 6)}
                     </span>
                   }
                   mono
@@ -248,12 +310,20 @@ export function CallDetail({
                   v={data.fhenix.reveal_status}
                   tone={revealTone(data.fhenix.reveal_status)}
                 />
-                <Kv k="reveal_open_at" v={data.fhenix.reveal_open_at} tone="ck-dim" />
+                <Kv
+                  k="reveal_open_at"
+                  v={<TimeAgo iso={data.fhenix.reveal_open_at} />}
+                  tone="ck-dim"
+                />
                 {data.fhenix.revealed_at && (
-                  <Kv k="revealed_at" v={data.fhenix.revealed_at} />
+                  <Kv k="revealed_at" v={<TimeAgo iso={data.fhenix.revealed_at} />} />
                 )}
                 {data.fhenix.terminal_at && (
-                  <Kv k="terminal_at" v={data.fhenix.terminal_at} tone="ck-dim" />
+                  <Kv
+                    k="terminal_at"
+                    v={<TimeAgo iso={data.fhenix.terminal_at} />}
+                    tone="ck-dim"
+                  />
                 )}
                 {data.fhenix.invalid_reason && (
                   <Kv k="invalid_reason" v={data.fhenix.invalid_reason} tone="ck-neg" />
@@ -365,7 +435,7 @@ function ExplorerLink({
       className="ck-mono ck-pos no-underline hover:underline underline-offset-2 break-all"
       title={`${address} on ${humanChain(id)}`}
     >
-      {address.slice(0, 10)}…{address.slice(-8)}
+      {shortId(address, 10, 8)}
     </a>
   );
 }

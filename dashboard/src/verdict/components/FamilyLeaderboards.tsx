@@ -14,6 +14,8 @@
 
 import { useEffect, useState } from "react";
 import { verdictApi, type AgentFamilyRow, type AgentCrossFamilyRow } from "../api.js";
+import { IkNav } from "../icons.js";
+import { InlineError } from "./compact/InlineError.js";
 import { formatScore } from "../lib/score-format.js";
 
 type View = "cross" | { family: string };
@@ -77,8 +79,13 @@ export function FamilyLeaderboards() {
   return (
     <div className="border border-[var(--color-border-vis)]">
       <div className="ck-header flex items-center gap-2 px-2 py-1">
-        <span className="ck-title">families</span>
-        <span className="ck-mono ck-dim text-xs">
+        {/* ck-title-ik: the `market` glyph REPLACES the generic ::before
+            square — one marker per title, never two. The 24-grid nav drawing
+            is the one that belongs beside 18px/700 title ink. */}
+        <span className="ck-title ck-title-ik">
+          <IkNav name="market" /> families
+        </span>
+        <span className="ck-mono ck-dim">
           {view === "cross" ? "general" : `per-family · ${view.family}`}
         </span>
       </div>
@@ -99,7 +106,7 @@ export function FamilyLeaderboards() {
         ))}
       </div>
       {error && (
-        <div className="px-2 py-2 ck-mono ck-neg text-xs">[error] {error}</div>
+        <InlineError error={error} className="px-2 py-2 ck-mono" />
       )}
       {view === "cross" ? (
         cross === null ? (
@@ -145,20 +152,20 @@ function FamilyChip({
 
 function SkelRows() {
   return (
-    <div className="px-2 py-3 ck-mono ck-dim text-xs">loading…</div>
+    <div className="px-2 py-3 ck-mono ck-dim">loading…</div>
   );
 }
 
 function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
   if (rows.length === 0) {
     return (
-      <div className="px-2 py-3 ck-mono ck-dim text-xs">
+      <div className="px-2 py-3 ck-mono ck-dim">
         no agents qualify in ≥2 families yet
       </div>
     );
   }
   return (
-    <ul className="divide-y divide-[var(--color-border)] ck-mono text-xs">
+    <ul className="divide-y divide-[var(--color-border)] ck-mono">
       {rows.map((r, i) => (
         <li key={r.agent_id} className="flex items-center gap-2 px-2 py-1">
           <span className="ck-dim w-6 text-right">
@@ -185,11 +192,11 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
 function FamilyRows({ rows }: { rows: AgentFamilyRow[] }) {
   if (rows.length === 0) {
     return (
-      <div className="px-2 py-3 ck-mono ck-dim text-xs">no agents yet</div>
+      <div className="px-2 py-3 ck-mono ck-dim">no agents yet</div>
     );
   }
   return (
-    <ul className="divide-y divide-[var(--color-border)] ck-mono text-xs">
+    <ul className="divide-y divide-[var(--color-border)] ck-mono">
       {rows.map((r, i) => (
         <li key={r.agent_id} className="flex items-center gap-2 px-2 py-1">
           <span className="ck-dim w-6 text-right">

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { verdictApi, type LeaderboardRow } from "../api.js";
+import { Ik, IkNav } from "../icons.js";
 import { readRouteQuery, buildRouteQueryUrl } from "../route.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
+import { InlineError } from "../components/compact/InlineError.js";
+import { SkeletonBar } from "../components/compact/PanelSkeleton.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { FormulaTip } from "../components/compact/FormulaTip.js";
 import { FamilyLeaderboards } from "../components/FamilyLeaderboards.js";
@@ -134,11 +137,17 @@ export function LeaderboardPage() {
     <div className="mmr-shell min-h-dvh flex flex-col">
       <CompactTopbar
         crumb={
-          <span>
-            leaderboard <span className="ck-dim mx-1">/</span>
-            <span className="ck-pos">{tier}</span>
-            <span className="ck-dim mx-1">·</span>sort:
-            <span className="ck-pos ml-1">{sort}</span>
+          <span className="inline-flex items-center gap-1.5">
+            <Ik name="leaderboard" />
+            {/* The glyph carries the word `leaderboard` visually; the sr-only
+                span keeps it in the accessible name so the crumb still reads
+                "leaderboard {tier} · sort:{sort}" to assistive tech. */}
+            <span>
+              <span className="sr-only">leaderboard </span>
+              <span className="ck-pos">{tier}</span>
+              <span className="ck-dim mx-1">·</span>sort:
+              <span className="ck-pos ml-1">{sort}</span>
+            </span>
           </span>
         }
       />
@@ -190,7 +199,7 @@ export function LeaderboardPage() {
           for the sort key. Default order is the daemon's lb-derived rank; vs
           (verdict_score) is shown first only as the headline number. */}
       <div
-        className="px-2 py-1 ck-mono ck-dim border-b border-[var(--color-border)] text-[13px]"
+        className="px-2 py-1 ck-dim border-b border-[var(--color-border)] text-[14px]"
       >
         ranked by lb — the conservative lower-bound score (mean − 1.6449·SEM);
         vs is the headline verdict score.
@@ -205,28 +214,35 @@ export function LeaderboardPage() {
 
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.5fr)_minmax(0,1fr)] min-h-0">
         <Panel
-          title="agent ladder"
+          title={
+            <>
+              <IkNav name="leaderboard" /> agent ladder
+            </>
+          }
           meta={sorted ? `${sorted.length}` : ""}
           className="lg:border-r-0"
         >
-          {error && <div className="px-2 py-2 ck-mono ck-neg">[error] {error}</div>}
+          {error && <InlineError error={error} className="px-2 py-2 ck-mono" />}
           {!error && sorted === null && (
-            <div className="opacity-50">
+            <div>
               {Array.from({ length: 8 }).map((_, i) => (
                 <div
                   key={i}
-                  className="grid grid-cols-[28px_1fr_70px_50px_50px_44px_50px_60px_24px_28px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
+                  /* Must stay byte-identical to Ladder's template below — the
+                     skeleton had drifted to TEN tracks (and 50px score columns)
+                     against the ladder's NINE, so rows re-flowed when data
+                     landed. Nine tracks, nine bars, same widths. */
+                  className="grid grid-cols-[28px_1fr_70px_64px_64px_44px_50px_60px_44px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
                 >
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
-                  <div className="h-3 bg-[var(--color-surface)] rounded-sm" />
+                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="h-[10px]" />
                 </div>
               ))}
             </div>
@@ -235,14 +251,30 @@ export function LeaderboardPage() {
             <div className="px-2 py-2 ck-mono ck-dim flex flex-col items-start gap-1.5">
               <span>[no agents ranked yet — verdicts fill this in]</span>
               <a href="#/agent/onboard" className="ck-btn ck-btn-bracket">
-                register an agent →
+                <Ik name="agent" /> register an agent →
               </a>
             </div>
           )}
           {!error && sorted && sorted.length > 0 && <Ladder rows={sorted} />}
         </Panel>
         <div className="flex flex-col">
-          <Panel title="live tape" meta="realtime">
+          <Panel
+            title={
+              <>
+                {/* The glyph transmits only while the shared SSE stream is
+                    actually open — a closed socket leaves it static, so the
+                    motion can't promise a tape that isn't running. */}
+                <Ik
+                  name="live-dot"
+                  className={stream.status === "open" ? "ck-live-tx" : undefined}
+                />{" "}
+                live tape
+              </>
+            }
+            /* The title already carries the live-dot; repeating it in the meta
+               put two identical glyphs on one header row. Meta stays text. */
+            meta="realtime"
+          >
             <CompactLiveFeed limit={60} />
           </Panel>
           <div className="px-2 py-2">
@@ -257,7 +289,7 @@ export function LeaderboardPage() {
 function Ladder({ rows }: { rows: LeaderboardRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_70px_58px_58px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="grid grid-cols-[28px_1fr_70px_64px_64px_44px_50px_60px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span title="rank">#</span>
         <span title="agent handle">agent</span>
         <span title="agent kind">kind</span>
@@ -296,7 +328,7 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
       {rows.map((r) => (
         <li
           key={r.agent_id}
-          className="relative grid grid-cols-[28px_1fr_70px_58px_58px_44px_50px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[28px_1fr_70px_64px_64px_44px_50px_60px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           {/* Stretched row link — real box so keyboard focus lands. */}
           <a
@@ -381,7 +413,7 @@ function ScoringLegend() {
         legend / scoring
       </summary>
       <div
-        className="details-fade px-2 pb-2 pt-1 ck-mono ck-dim leading-relaxed text-[13px]"
+        className="details-fade px-2 pb-2 pt-1 ck-dim leading-relaxed text-[14px]"
       >
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 m-0">
           <dt className="ck-pos">vs</dt>

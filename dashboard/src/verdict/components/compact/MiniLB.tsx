@@ -3,6 +3,7 @@ import { verdictApi, type LeaderboardRow } from "../../api.js";
 import { useStream } from "../../hooks/useStream.js";
 import { formatScore } from "../../lib/score-format.js";
 import { FormulaTip } from "./FormulaTip.js";
+import { SkeletonBar } from "./PanelSkeleton.js";
 
 /**
  * Cockpit-style top-N leaderboard. Single-line rows, mono-spaced
@@ -47,7 +48,7 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
 
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[24px_1fr_58px_38px_56px_28px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="grid grid-cols-[24px_1fr_64px_38px_56px_28px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span title="rank">#</span>
         <span title="agent handle">agent</span>
         <span className="flex justify-end" title="verdict score — mean(call_score) − stdev/√n">
@@ -74,7 +75,7 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
         return (
           <li
             key={row.agent_id}
-            className="relative grid grid-cols-[24px_1fr_58px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+            className="relative grid grid-cols-[24px_1fr_64px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
           >
             {/* Stretched row link — real box so keyboard focus lands. */}
             <a
@@ -126,14 +127,14 @@ function SkeletonRows() {
       {[0, 1, 2, 3, 4].map((i) => (
         <li
           key={i}
-          className="grid grid-cols-[24px_1fr_58px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)]"
+          className="grid grid-cols-[24px_1fr_64px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)]"
         >
-          <div className="h-[8px] bg-[var(--color-border)] w-[16px]" />
-          <div className="h-[10px] bg-[var(--color-border)] w-[60%]" />
-          <div className="h-[8px] bg-[var(--color-border)] w-[32px] justify-self-end" />
-          <div className="h-[8px] bg-[var(--color-border)] w-[24px] justify-self-end" />
-          <div className="h-px bg-[var(--color-border)] w-full" />
-          <div className="h-[5px] w-[5px] bg-[var(--color-border)] justify-self-end" />
+          <SkeletonBar className="h-[8px] w-[16px]" />
+          <SkeletonBar className="h-[10px] w-[60%]" />
+          <SkeletonBar className="h-[8px] w-[32px] justify-self-end" />
+          <SkeletonBar className="h-[8px] w-[24px] justify-self-end" />
+          <SkeletonBar className="h-px w-full" />
+          <SkeletonBar className="h-[5px] w-[5px] justify-self-end" />
         </li>
       ))}
     </ul>

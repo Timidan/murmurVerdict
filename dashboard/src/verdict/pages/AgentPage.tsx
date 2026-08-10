@@ -8,6 +8,7 @@ import {
   type AgentMarketRow,
   type AgentProfile,
 } from "../api.js";
+import { Ik, IkNav } from "../icons.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
@@ -16,7 +17,9 @@ import { ErrorState } from "../components/compact/ErrorState.js";
 import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
 import { useDetailDrawer, isPlainLeftClick } from "../components/compact/DetailDrawer.js";
 import { KindGlyph } from "../components/compact/glyphs.js";
+import { TimeAgo } from "../components/compact/TimeAgo.js";
 import { formatScore } from "../lib/score-format.js";
+import { shortId } from "../lib/display-format.js";
 import {
   classifyCallOutcome,
   isPendingCallStatus,
@@ -236,7 +239,7 @@ export function AgentPage({ slug }: { slug: string }) {
                 className="ck-mono ck-pos no-underline"
                 title={`${agent.wallet_address} on ${humanChain(agent.chain_id)}`}
               >
-                {agent.wallet_address.slice(0, 8)}…{agent.wallet_address.slice(-6)}
+                {shortId(agent.wallet_address, 8, 6)}
               </a>
             )}
             <span className="ck-label ck-dim">
@@ -262,7 +265,7 @@ export function AgentPage({ slug }: { slug: string }) {
           {/* MAIN GRID ───────────────────────────────────────── */}
           <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)] min-h-0">
             <Panel
-              title="call log"
+              title={<><IkNav name="feed" /> call log</>}
               meta={calls ? `${calls.length}` : ""}
               className="lg:border-r-0"
             >
@@ -274,7 +277,7 @@ export function AgentPage({ slug }: { slug: string }) {
             </Panel>
 
             <Panel
-              title="market heat"
+              title={<><IkNav name="market" /> market heat</>}
               meta={grid ? `${grid.length} mkts` : ""}
               className="lg:border-r-0"
             >
@@ -285,7 +288,7 @@ export function AgentPage({ slug }: { slug: string }) {
               {grid !== null && grid.length > 0 && <GridTable rows={grid} />}
             </Panel>
 
-            <Panel title="detail · scores">
+            <Panel title={<><Ik name="verdict" /> detail · scores</>}>
               <SidebarStats stats={stats} agent={agent} />
             </Panel>
           </main>
@@ -299,7 +302,7 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
   const { open } = useDetailDrawer();
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[104px_14px_1fr_50px_30px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="grid grid-cols-[104px_14px_1fr_54px_32px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>time</span>
         <span aria-hidden="true"></span>
         <span>note<span className="sr-only"> (each row sealed)</span></span>
@@ -307,7 +310,6 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
         <span aria-hidden="true"></span>
       </li>
       {calls.map((c) => {
-        const ts = formatTs(c.submitted_at ?? c.accepted_at);
         // Pending Fhenix-sealed verdicts are not public; the compact row
         // stays blind until the post-horizon reveal. A single seal glyph
         // signals "sealed/private" without the three-token placeholder noise.
@@ -316,7 +318,7 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
         return (
           <li
             key={c.call_id}
-            className="relative grid grid-cols-[104px_14px_1fr_50px_30px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+            className="relative grid grid-cols-[104px_14px_1fr_54px_32px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
           >
             {/* Stretched row link — a real box (unlike display:contents) so
                 keyboard focus lands and the ring outlines the whole row. */}
@@ -331,7 +333,10 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
               }}
               className="ck-rowlink"
             />
-            <span className="ck-mono ck-dim truncate">{ts}</span>
+            <TimeAgo
+              iso={c.submitted_at ?? c.accepted_at}
+              className="ck-mono ck-dim truncate"
+            />
             <span aria-hidden="true" className="ck-dim">▪</span>
             <span className="ck-mono ck-dim truncate">{note}</span>
             <span
@@ -355,15 +360,15 @@ function CallTable({ calls }: { calls: AgentCallRow[] }) {
 }
 
 function VerifyCallLink({ callId }: { callId: string }) {
-  const shortId = callId.slice(0, 8);
+  const shortCallId = callId.slice(0, 8);
   return (
     <a
       href={`#/calls/${callId}`}
-      aria-label={`verify call ${shortId}`}
+      aria-label={`verify call ${shortCallId}`}
       className={
         // relative z-[1] lifts the chip above the row's stretched link overlay.
-        "t-meta ck-mono relative z-[1] justify-self-end border border-[var(--color-border-vis)] px-1 " +
-        "text-[9px] leading-[14px] text-[var(--color-secondary)] no-underline " +
+        "t-meta relative z-[1] justify-self-end border border-[var(--color-border-vis)] px-1 " +
+        "text-[12px] leading-[14px] text-[var(--color-secondary)] no-underline " +
         "hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
         "hover:border-[var(--color-display)]"
       }
@@ -377,7 +382,7 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
   const { open } = useDetailDrawer();
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[1fr_58px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="grid grid-cols-[1fr_64px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>market</span>
         <span className="text-right">vs</span>
         <span className="text-right">wr</span>
@@ -386,7 +391,7 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
       {rows.map((r) => (
         <li
           key={r.market_id}
-          className="relative grid grid-cols-[1fr_58px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[1fr_64px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           <a
             href={`#/markets/${encodeURIComponent(r.market_id)}`}
@@ -399,7 +404,9 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
             }}
             className="ck-rowlink"
           />
-          <span className="ck-mono ck-pos truncate">{r.market_id}</span>
+          <span className="ck-mono ck-pos truncate" title={r.market_id}>
+            {shortId(r.market_id, 9, 5)}
+          </span>
           <span
             className={
               "ck-mono text-right " +
@@ -442,28 +449,12 @@ interface AgentStats {
 
 function OwnerAuthorizedPill({ explorerUrl }: { explorerUrl: string | null }) {
   const className =
-    "ck-mono inline-flex items-center gap-1 border border-[var(--color-border-vis)] " +
-    "px-1.5 py-[1px] text-[9px] leading-tight lowercase text-[var(--color-secondary)] " +
+    "inline-flex items-center gap-1 border border-[var(--color-border-vis)] " +
+    "px-1.5 py-[1px] text-[12px] leading-tight lowercase text-[var(--color-secondary)] " +
     "no-underline hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
     "hover:border-[var(--color-display)]";
 
-  const content = (
-    <>
-      <span>owner verified</span>
-      {explorerUrl && (
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 8 8"
-          className="h-2 w-2"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-        >
-          <path d="M2 1.5 5 4 2 6.5" />
-        </svg>
-      )}
-    </>
-  );
+  const content = <span>owner verified</span>;
 
   if (!explorerUrl) {
     return (
@@ -618,15 +609,6 @@ function formatWR(wr: number | null): string {
   return wr === null ? "—" : `${Math.round(wr * 100)}%`;
 }
 
-function formatTs(iso: string): string {
-  const d = new Date(iso);
-  const today = new Date();
-  if (d.toDateString() === today.toDateString()) {
-    return d.toISOString().slice(11, 19);
-  }
-  return iso.slice(5, 10) + " " + iso.slice(11, 16);
-}
-
 function formatNote(c: AgentCallRow): string {
   // Pending calls expose only the commit anchor; resolved calls may expose
   // the public outcome label.
@@ -638,11 +620,9 @@ function formatNote(c: AgentCallRow): string {
 
 function formatOutcome(c: AgentCallRow): string {
   if (!c.outcome) return "pend";
-  if (c.outcome === "win" && c.call_score !== null && c.call_score !== undefined) {
-    return `+${c.call_score.toFixed(2)}`;
-  }
-  if (c.outcome === "loss" && c.call_score !== null && c.call_score !== undefined) {
-    return c.call_score < 0 ? c.call_score.toFixed(2) : `−${c.call_score.toFixed(2)}`;
+  if ((c.outcome === "win" || c.outcome === "loss") && c.call_score != null) {
+    const magnitude = Math.abs(c.call_score);
+    return formatScore(c.outcome === "win" ? magnitude : -magnitude, { decimals: 2 });
   }
   return c.outcome.slice(0, 4);
 }

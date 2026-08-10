@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useStream } from "../../hooks/useStream.js";
 import { formatScore } from "../../lib/score-format.js";
+import { SkeletonBar } from "./PanelSkeleton.js";
+import { TimeAgo } from "./TimeAgo.js";
 
 /**
  * COMPACT live tape — terminal-style scroll of accepted/resolved events.
@@ -75,13 +77,12 @@ export function CompactLiveFeed({
     <ul className="m-0 p-0 list-none">
       {rows.map((evt) => {
         const isResolved = evt.type === "call.resolved";
-        const ts = (isResolved ? evt.resolved_at : evt.accepted_at).slice(11, 19);
         const rowKey = evt.call_id + (isResolved ? "r" : "a");
         const isInitial = initialKeys.current?.has(rowKey) ?? true;
         return (
           <li
             key={rowKey}
-            className={(isInitial ? "" : "tape-row ") + "grid grid-cols-[8px_76px_36px_56px_minmax(0,1fr)_64px_30px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)] ck-hoverable"}
+            className={(isInitial ? "" : "tape-row ") + "grid grid-cols-[8px_76px_36px_64px_minmax(0,1fr)_64px_32px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)] ck-hoverable"}
           >
             <span
               className={
@@ -95,7 +96,10 @@ export function CompactLiveFeed({
                   : "bg-[var(--color-display)]")
               }
             />
-            <span className="ck-mono ck-dim truncate">{ts}</span>
+            <TimeAgo
+              iso={isResolved ? evt.resolved_at : evt.accepted_at}
+              className="ck-mono ck-dim truncate"
+            />
             <span className="ck-label truncate">
               {isResolved ? "res" : "acc"}
             </span>
@@ -133,15 +137,15 @@ function FeedSkeleton() {
       {[0, 1, 2, 3, 4].map((i) => (
         <li
           key={i}
-          className="grid grid-cols-[8px_76px_36px_56px_minmax(0,1fr)_64px_30px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)]"
+          className="grid grid-cols-[8px_76px_36px_64px_minmax(0,1fr)_64px_32px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)]"
         >
           <span className="inline-block w-[5px] h-[5px] bg-[var(--color-border)]" />
-          <div className="h-[8px] bg-[var(--color-border)] w-[44px]" />
-          <div className="h-[8px] bg-[var(--color-border)] w-[24px]" />
-          <div className="h-[8px] bg-[var(--color-border)] w-[32px]" />
-          <div className="h-[10px] bg-[var(--color-border)] w-[70%]" />
-          <div className="h-[8px] bg-[var(--color-border)] w-[44px] justify-self-end" />
-          <div className="h-[8px] bg-[var(--color-border)] w-[18px] justify-self-end" />
+          <SkeletonBar className="h-[8px] w-[44px]" />
+          <SkeletonBar className="h-[8px] w-[24px]" />
+          <SkeletonBar className="h-[8px] w-[32px]" />
+          <SkeletonBar className="h-[10px] w-[70%]" />
+          <SkeletonBar className="h-[8px] w-[44px] justify-self-end" />
+          <SkeletonBar className="h-[8px] w-[18px] justify-self-end" />
         </li>
       ))}
     </ul>
@@ -155,8 +159,8 @@ function VerifyCallLink({ callId }: { callId: string }) {
       href={`#/calls/${callId}`}
       aria-label={`open call detail ${shortId}`}
       className={
-        "t-meta ck-mono justify-self-end inline-flex items-center border border-[var(--color-border-vis)] px-1 py-[5px] " +
-        "text-[10px] leading-[14px] text-[var(--color-secondary)] no-underline " +
+        "t-meta justify-self-end inline-flex items-center border border-[var(--color-border-vis)] px-1 py-[5px] " +
+        "text-[12px] leading-[14px] text-[var(--color-secondary)] no-underline " +
         "hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
         "hover:border-[var(--color-display)]"
       }
