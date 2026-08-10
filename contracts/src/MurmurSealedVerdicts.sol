@@ -11,7 +11,10 @@ contract MurmurSealedVerdicts {
     error NotOwner();
     error MarketInactive();
     error MarketNotFound();
-    error HorizonMustBePositive();
+    error MarketAlreadyRegistered();
+    error ScheduleNotStrictlyOrdered();
+    error SubmissionWindowNotOpen();
+    error SubmissionWindowClosed();
     error CallNotFound();
     error CallAlreadyExists();
     error WrongState();
@@ -20,6 +23,8 @@ contract MurmurSealedVerdicts {
     error PacketNotFound();
     error PacketAlreadyExists();
     error RevealAfterMustBeFuture();
+    /// A feed packet arrived at or after the market resolved.
+    error FeedWindowClosed();
     error ZeroOwner();
     error NotPendingOwner();
     error NotRelayer();
@@ -29,6 +34,7 @@ contract MurmurSealedVerdicts {
     error ZeroGrantor();
     error ZeroSubscriber();
     error DecryptGrantWindowClosed();
+    error CallNotSellable();
 
     enum CallState {
         None,
@@ -45,22 +51,60 @@ contract MurmurSealedVerdicts {
         SignalBps
     }
 
+    /// @notice A market instance's immutable schedule.
+    /// @dev Replaces the old (horizonSeconds | fixedRevealAfter) pair, which
+    ///      conflated three unrelated moments: when providers must submit, when
+    ///      the value stops being sellable, and when it becomes public.
+    ///
+    ///      Ordering is strict and enforced at registration:
+    ///        armCloseAt < submissionOpenAt < earlyAccessCutoffAt
+    ///          < submissionCloseAt < resolutionAt < publicRevealAt
+    ///
+    ///      armCloseAt → submissionOpenAt is the cohort-commit margin. The
+    ///      commitment is a transaction; without a gap a provider's submit can
+    ///      be mined ahead of the commit meant to bind it.
+    ///
+    ///      resolutionAt is the VENUE's end time (when the outcome is
+    ///      determined). publicRevealAt is when murmur unseals. They are
+    ///      separate on purpose: reveal is embargoed past resolution, so one
+    ///      field would assert the market resolves at murmur's reveal deadline.
+    ///      resolutionAt is unused by contract logic and stored for auditability
+    ///      so the on-chain record is self-describing.
     struct Market {
-        uint64 horizonSeconds;
-        uint64 fixedRevealAfter;
+        uint64 armCloseAt;
+        uint64 submissionOpenAt;
+        uint64 earlyAccessCutoffAt;
+        uint64 submissionCloseAt;
+        uint64 resolutionAt;
+        uint64 publicRevealAt;
         bool active;
+    }
+
+    /// @notice Whether a call was submitted early enough to be sold.
+    /// @dev EarlyAccess calls may carry a committed cohort; LateUnsellable ones
+    ///      are still sealed, revealed and scored, but can never be granted.
+    ///      Persisted on-chain because reputation must distinguish them: a
+    ///      provider submitting only in the late window predicts with strictly
+    ///      more information than one who sells.
+    enum SubmissionClass {
+        None,
+        EarlyAccess,
+        LateUnsellable
     }
 
     struct SealedCall {
         address agent;
         bytes32 marketId;
         uint64 acceptedAt;
-        uint64 revealOpenAt;
+        /// @dev Snapshot of the market's publicRevealAt, frozen at submit so a
+        ///      later schedule change cannot retime an existing call.
+        uint64 publicRevealAt;
         euint8 binaryIndex;
         euint16 confidenceBps;
         uint8 revealedBinaryIndex;
         uint16 revealedConfidenceBps;
         CallState state;
+        SubmissionClass submissionClass;
     }
 
     struct SealedFeedPacket {
@@ -96,18 +140,27 @@ contract MurmurSealedVerdicts {
     event RelayerSet(address indexed relayer, bool active);
     event GrantorSet(address indexed grantor, bool active);
     event DecryptAccessGranted(bytes32 indexed callId, address indexed subscriber);
-    event MarketRegistered(bytes32 indexed marketId, uint64 horizonSeconds, bool active);
-    event FixedRevealMarketRegistered(bytes32 indexed marketId, uint64 revealAfter, bool active);
+    event MarketRegistered(
+        bytes32 indexed marketId,
+        uint64 armCloseAt,
+        uint64 submissionOpenAt,
+        uint64 earlyAccessCutoffAt,
+        uint64 submissionCloseAt,
+        uint64 resolutionAt,
+        uint64 publicRevealAt,
+        bool active
+    );
     event MarketActiveSet(bytes32 indexed marketId, bool active);
     event SealedCallSubmitted(
         bytes32 indexed callId,
         address indexed agent,
         bytes32 indexed marketId,
         uint64 acceptedAt,
-        uint64 revealOpenAt,
+        uint64 publicRevealAt,
         bytes32 binaryIndexCtHash,
         bytes32 confidenceCtHash,
-        bytes32 clientNonce
+        bytes32 clientNonce,
+        SubmissionClass submissionClass
     );
     event RevealOpened(
         bytes32 indexed callId, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, uint64 openedAt
@@ -206,18 +259,35 @@ contract MurmurSealedVerdicts {
 
     /// @notice Grant a paying subscriber early private decrypt access to a
     ///         sealed call's ciphertext handles, before the public reveal.
-    /// @dev Grant-only Flow 2 v1: Murmur brokers this after verifying an
-    ///      off-chain payment. Enforced strictly inside the sale window
-    ///      (state == Sealed && block.timestamp < revealOpenAt) so a grant can
-    ///      never be produced after the value is (or is about to become)
-    ///      public via openReveal. `FHE.allow` is persistent: the subscriber
-    ///      keeps read access across the call's later openReveal/allowPublic
-    ///      and state changes. Idempotent per (callId, subscriber).
+    /// @dev Murmur brokers this after verifying an off-chain payment. Kept as a
+    ///      SEPARATE grantor-keyed entrypoint rather than folded into
+    ///      submitSealedFor: merging them would let one bad cohort entry revert
+    ///      a provider's submission, and would hand the relayer key the grant
+    ///      authority the grantor role exists to keep apart. Provider scoring
+    ///      must survive consumer delivery failure.
+    ///
+    ///      The deadline is submissionCloseAt (the prediction window opening),
+    ///      NOT publicRevealAt. A grant landing after the window opens is
+    ///      worthless to the subscriber — the market is already live — so the
+    ///      sale window closes when delivery stops being useful, not when the
+    ///      value goes public days later.
+    ///
+    ///      Only EarlyAccess calls are grantable; LateUnsellable ones are
+    ///      refereed and scored but never sold.
+    ///
+    ///      `FHE.allow` is persistent: the subscriber keeps read access across
+    ///      the call's later openReveal/allowPublic and state changes. There is
+    ///      no revoke in CoFHE, so a grant is permanent. Idempotent per
+    ///      (callId, subscriber).
     function grantDecryptAccess(bytes32 callId, address subscriber) external onlyGrantor {
         SealedCall storage sealedCall = calls[callId];
         if (sealedCall.state == CallState.None) revert CallNotFound();
         if (subscriber == address(0)) revert ZeroSubscriber();
-        if (sealedCall.state != CallState.Sealed || block.timestamp >= sealedCall.revealOpenAt) {
+        if (sealedCall.submissionClass != SubmissionClass.EarlyAccess) revert CallNotSellable();
+        if (
+            sealedCall.state != CallState.Sealed
+                || block.timestamp >= markets[sealedCall.marketId].submissionCloseAt
+        ) {
             revert DecryptGrantWindowClosed();
         }
 
@@ -230,15 +300,18 @@ contract MurmurSealedVerdicts {
         emit DecryptAccessGranted(callId, subscriber);
     }
 
-    /// @notice Subscriber-facing view for the paid decrypt-grant flow: the
-    ///         reveal-window state, both ciphertext handles, and whether the
-    ///         given subscriber already holds an early grant.
+    /// @notice Subscriber-facing view for the paid decrypt-grant flow.
+    /// @dev Returns `grantCloseAt` — the market's submissionCloseAt — NOT
+    ///      publicRevealAt. This view answers "can I still buy access?", and
+    ///      that closes when the prediction window opens, not when the value
+    ///      goes public days later. Returning the reveal time here would let
+    ///      the payment gate settle money for access this contract will reject.
     function getDecryptAccess(bytes32 callId, address subscriber)
         external
         view
         returns (
             CallState state,
-            uint64 revealOpenAt,
+            uint64 grantCloseAt,
             bytes32 binaryIndexCtHash,
             bytes32 confidenceCtHash,
             bool alreadyGranted
@@ -248,38 +321,68 @@ contract MurmurSealedVerdicts {
         if (sealedCall.state == CallState.None) revert CallNotFound();
         return (
             sealedCall.state,
-            sealedCall.revealOpenAt,
+            markets[sealedCall.marketId].submissionCloseAt,
             FHE.unwrap(sealedCall.binaryIndex),
             FHE.unwrap(sealedCall.confidenceBps),
             decryptAccessGranted[callId][subscriber]
         );
     }
 
-    function registerMarket(bytes32 marketId, uint64 horizonSeconds, bool active)
-        external
-        onlyOwner
-    {
-        if (horizonSeconds == 0) revert HorizonMustBePositive();
-        markets[marketId] =
-            Market({horizonSeconds: horizonSeconds, fixedRevealAfter: 0, active: active});
-        emit MarketRegistered(marketId, horizonSeconds, active);
-    }
+    /// @notice Register a market instance's immutable schedule.
+    /// @dev ONE-SHOT. Re-registering is rejected rather than overwriting.
+    ///      The old registrars silently overwrote on-chain configuration, which
+    ///      let a "repair" retime a market that consumers had already armed and
+    ///      providers had already submitted against. A schedule someone paid
+    ///      against must never move; drift is handled off-chain by delisting and
+    ///      refunding, never by rebinding.
+    ///
+    ///      Only `active` remains mutable, via setMarketActive.
+    function registerMarket(bytes32 marketId, Market calldata schedule) external onlyOwner {
+        if (_isRegistered(markets[marketId])) revert MarketAlreadyRegistered();
 
-    function registerFixedRevealMarket(bytes32 marketId, uint64 revealAfter, bool active)
-        external
-        onlyOwner
-    {
-        if (revealAfter <= block.timestamp) revert RevealAfterMustBeFuture();
-        markets[marketId] =
-            Market({horizonSeconds: 0, fixedRevealAfter: revealAfter, active: active});
-        emit FixedRevealMarketRegistered(marketId, revealAfter, active);
+        // Strict ordering. Equality anywhere collapses a window to zero length
+        // (e.g. submissionOpenAt == earlyAccessCutoffAt leaves no interval in
+        // which a sellable call can be submitted).
+        if (
+            !(
+                schedule.armCloseAt < schedule.submissionOpenAt
+                    && schedule.submissionOpenAt < schedule.earlyAccessCutoffAt
+                    && schedule.earlyAccessCutoffAt < schedule.submissionCloseAt
+                    && schedule.submissionCloseAt < schedule.resolutionAt
+                    && schedule.resolutionAt < schedule.publicRevealAt
+            )
+        ) revert ScheduleNotStrictlyOrdered();
+
+        // Registration must complete before arming opens, not merely before the
+        // market ends: a window length large relative to the venue's listing
+        // lead can place armCloseAt in the past, yielding a market nobody can
+        // arm or submit to.
+        if (schedule.armCloseAt <= block.timestamp) revert RevealAfterMustBeFuture();
+
+        markets[marketId] = schedule;
+        emit MarketRegistered(
+            marketId,
+            schedule.armCloseAt,
+            schedule.submissionOpenAt,
+            schedule.earlyAccessCutoffAt,
+            schedule.submissionCloseAt,
+            schedule.resolutionAt,
+            schedule.publicRevealAt,
+            schedule.active
+        );
     }
 
     function setMarketActive(bytes32 marketId, bool active) external onlyOwner {
         Market storage market = markets[marketId];
-        if (market.horizonSeconds == 0 && market.fixedRevealAfter == 0) revert MarketNotFound();
+        if (!_isRegistered(market)) revert MarketNotFound();
         market.active = active;
         emit MarketActiveSet(marketId, active);
+    }
+
+    /// @dev A registered market always has a nonzero publicRevealAt, since
+    ///      registration enforces strict ordering above a nonzero timestamp.
+    function _isRegistered(Market storage market) private view returns (bool) {
+        return market.publicRevealAt != 0;
     }
 
     function submitSealedFor(
@@ -302,17 +405,32 @@ contract MurmurSealedVerdicts {
         bytes32 clientNonce
     ) internal returns (bytes32 callId) {
         Market memory market = markets[marketId];
-        if (market.horizonSeconds == 0 && market.fixedRevealAfter == 0) revert MarketNotFound();
+        if (market.publicRevealAt == 0) revert MarketNotFound();
         if (!market.active) revert MarketInactive();
+
+        uint64 acceptedAt = uint64(block.timestamp);
+
+        // Half-open submission window: [submissionOpenAt, submissionCloseAt).
+        //
+        // Rejecting at exactly submissionCloseAt is deliberate — that instant is
+        // when the prediction window opens and the opening reference price may
+        // already be observable, so a "prediction" made there is not one. The
+        // previous code enforced no deadline at all beyond a future reveal,
+        // which let a provider submit one second before the market ended.
+        if (acceptedAt < market.submissionOpenAt) revert SubmissionWindowNotOpen();
+        if (acceptedAt >= market.submissionCloseAt) revert SubmissionWindowClosed();
 
         callId = keccak256(
             abi.encodePacked(block.chainid, address(this), agent, marketId, clientNonce)
         );
         if (calls[callId].state != CallState.None) revert CallAlreadyExists();
 
-        uint64 acceptedAt = uint64(block.timestamp);
-        uint64 revealOpenAt = _revealOpenAt(market, acceptedAt);
-        if (revealOpenAt <= acceptedAt) revert RevealAfterMustBeFuture();
+        // Sellable only if there is still time to grant the cohort and let a
+        // subscriber decrypt before the window opens. Later calls are sealed,
+        // revealed and scored — just never granted.
+        SubmissionClass submissionClass = acceptedAt < market.earlyAccessCutoffAt
+            ? SubmissionClass.EarlyAccess
+            : SubmissionClass.LateUnsellable;
 
         euint8 sealedBinaryIndex = FHE.asEuint8(binaryIndexInput);
         euint16 sealedConfidence = FHE.asEuint16(confidenceInput);
@@ -323,12 +441,13 @@ contract MurmurSealedVerdicts {
             agent: agent,
             marketId: marketId,
             acceptedAt: acceptedAt,
-            revealOpenAt: revealOpenAt,
+            publicRevealAt: market.publicRevealAt,
             binaryIndex: sealedBinaryIndex,
             confidenceBps: sealedConfidence,
             revealedBinaryIndex: 0,
             revealedConfidenceBps: 0,
-            state: CallState.Sealed
+            state: CallState.Sealed,
+            submissionClass: submissionClass
         });
 
         emit SealedCallSubmitted(
@@ -336,10 +455,11 @@ contract MurmurSealedVerdicts {
             agent,
             marketId,
             acceptedAt,
-            revealOpenAt,
+            market.publicRevealAt,
             FHE.unwrap(sealedBinaryIndex),
             FHE.unwrap(sealedConfidence),
-            clientNonce
+            clientNonce,
+            submissionClass
         );
     }
 
@@ -348,7 +468,7 @@ contract MurmurSealedVerdicts {
         if (sealedCall.state == CallState.None) revert CallNotFound();
         if (sealedCall.state != CallState.Sealed) revert WrongState();
 
-        if (block.timestamp < sealedCall.revealOpenAt) revert RevealWindowNotOpen();
+        if (block.timestamp < sealedCall.publicRevealAt) revert RevealWindowNotOpen();
 
         sealedCall.state = CallState.Opened;
         FHE.allowPublic(sealedCall.binaryIndex);
@@ -417,33 +537,51 @@ contract MurmurSealedVerdicts {
         );
     }
 
+    /// @dev The caller no longer supplies a reveal time: it comes from the
+    ///      market's registered publicRevealAt. The old `revealAfter` argument
+    ///      was overwritten on entry, so it was a no-op that still had to be
+    ///      encoded by every caller.
     function submitFeedPacketFor(
         address agent,
         bytes32 feedId,
         bytes32 marketId,
-        uint64 revealAfter,
         InEuint8 memory actionInput,
         InEuint16 memory signalInput,
         bytes32 clientNonce
     ) external returns (bytes32 packetId) {
         if (!relayers[msg.sender]) revert NotRelayer();
         if (agent == address(0)) revert ZeroAgent();
-        return _submitFeedPacket(
-            agent, feedId, marketId, revealAfter, actionInput, signalInput, clientNonce
-        );
+        return _submitFeedPacket(agent, feedId, marketId, actionInput, signalInput, clientNonce);
     }
 
     function _submitFeedPacket(
         address agent,
         bytes32 feedId,
         bytes32 marketId,
-        uint64 revealAfter,
         InEuint8 memory actionInput,
         InEuint16 memory signalInput,
         bytes32 clientNonce
     ) internal returns (bytes32 packetId) {
+        uint64 revealAfter;
+        // The caller no longer chooses when a packet goes public. A
+        // caller-supplied revealAfter let this path leak on its own schedule,
+        // independent of the market's embargo — a second public-verdict surface
+        // that silently voided the privacy promise the call path enforces.
+        // The market's registered publicRevealAt is now authoritative here too.
+        Market memory market = markets[marketId];
+        if (market.publicRevealAt == 0) revert MarketNotFound();
+        if (!market.active) revert MarketInactive();
+        revealAfter = market.publicRevealAt;
         if (revealAfter <= block.timestamp) {
             revert RevealAfterMustBeFuture();
+        }
+        // Packets close at RESOLUTION, not at public reveal. Between the two
+        // sits the embargo, during which the outcome is already known — a
+        // packet accepted there predicts nothing, yet counts as delivered
+        // feed evidence. Checking only publicRevealAt left that whole window
+        // open.
+        if (block.timestamp >= market.resolutionAt) {
+            revert FeedWindowClosed();
         }
 
         packetId = keccak256(
@@ -636,14 +774,15 @@ contract MurmurSealedVerdicts {
         return FHE.unwrap(sealedCall.confidenceBps);
     }
 
-    function callRevealOpenAt(bytes32 callId) external view returns (uint64) {
+    function callPublicRevealAt(bytes32 callId) external view returns (uint64) {
         SealedCall storage sealedCall = calls[callId];
         if (sealedCall.state == CallState.None) revert CallNotFound();
-        return sealedCall.revealOpenAt;
+        return sealedCall.publicRevealAt;
     }
 
-    function _revealOpenAt(Market memory market, uint64 acceptedAt) private pure returns (uint64) {
-        if (market.fixedRevealAfter != 0) return market.fixedRevealAfter;
-        return acceptedAt + market.horizonSeconds;
+    function callSubmissionClass(bytes32 callId) external view returns (SubmissionClass) {
+        SealedCall storage sealedCall = calls[callId];
+        if (sealedCall.state == CallState.None) revert CallNotFound();
+        return sealedCall.submissionClass;
     }
 }

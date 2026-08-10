@@ -1,5 +1,36 @@
 # Murmur Verdict — Lean 4 formal-verification slice
 
+> ## ⚠️ STALE — DOES NOT MODEL THE CURRENT CONTRACT
+>
+> This slice models a **previous revision** of `MurmurSealedVerdicts.sol` and
+> its results **must not be cited** for the deployed contract.
+>
+> Since these proofs were written the contract gained:
+>
+> - a six-instant `Market` schedule (`armCloseAt`, `submissionOpenAt`,
+>   `earlyAccessCutoffAt`, `submissionCloseAt`, `resolutionAt`,
+>   `publicRevealAt`), replacing the `horizonSeconds` / `fixedRevealAfter`
+>   pair the model still describes;
+> - one-shot `registerMarket` (re-registration reverts) in place of the
+>   overwriting `registerMarket` / `registerFixedRevealMarket` constructors
+>   the model references — those functions no longer exist;
+> - a half-open submission window enforced on-chain;
+> - `SubmissionClass` (EarlyAccess / LateUnsellable) stamped per call;
+> - feed packets taking their reveal time from the market embargo instead of
+>   a caller-supplied `revealAfter`.
+>
+> It **also predates** `grantors`, `decryptAccessGranted`, `setGrantor` and
+> `grantDecryptAccess` — the paid decrypt-grant surface has never been
+> modelled at all, so the state and transition set were already incomplete
+> before this migration.
+>
+> The escrow invariants (E1–E3) are unaffected by these changes; the
+> sealed-verdict invariants (V1, V2, and the feed variant) are not.
+>
+> **Do not describe murmur's current contracts as formally verified until this
+> is remodelled and re-proved.**
+
+
 Proves 6 invariants on the on-chain contracts (`MurmurEscrow.sol`,
 `MurmurSealedVerdicts.sol`). Lean 4.29.1, no mathlib, no `sorry`, two
 declared axioms.

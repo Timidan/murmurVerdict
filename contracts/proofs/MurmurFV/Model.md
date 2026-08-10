@@ -1,5 +1,13 @@
 # Model — abstract state machines
 
+> **⚠️ STALE for `MurmurSealedVerdicts`.** The sealed-verdict half of this
+> model describes a previous contract revision: it still has a single
+> `revealOpenAt` derived from `horizonSeconds` / `fixedRevealAfter`, and
+> references constructors that no longer exist. It has never modelled the
+> grantor / decrypt-ACL surface. See `README.md` for the full delta. The
+> escrow half is unaffected.
+
+
 The Lean project is a hand-translation of two Solidity contracts
 (`contracts/src/MurmurEscrow.sol`, `contracts/src/MurmurSealedVerdicts.sol`)
 into abstract state machines. Each contract becomes

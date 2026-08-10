@@ -32,6 +32,14 @@ contract MurmurSealedVerdictsTest is Test {
 
     uint256 internal constant AGENT_KEY = 0xA6E47;
     uint256 internal constant RELAYER_KEY = 0xBEEF;
+    uint64 internal constant SCHEDULE_BASE = 1_000_000;
+    uint64 internal constant ARM_CLOSE_AT = SCHEDULE_BASE + 60;
+    uint64 internal constant SUBMISSION_OPEN_AT = SCHEDULE_BASE + 120;
+    uint64 internal constant EARLY_ACCESS_CUTOFF_AT = SCHEDULE_BASE + 600;
+    uint64 internal constant SUBMISSION_CLOSE_AT = SCHEDULE_BASE + 900;
+    uint64 internal constant RESOLUTION_AT = SCHEDULE_BASE + 1200;
+    uint64 internal constant PUBLIC_REVEAL_AT = SCHEDULE_BASE + 1800;
+
     bytes32 internal constant MARKET_ID = keccak256("eth.1h");
     bytes32 internal constant FIXED_REVEAL_MARKET_ID = keccak256("polymarket:absolute");
     bytes32 internal constant FEED_ID = keccak256("polymarket-brazil-election");
@@ -48,7 +56,29 @@ contract MurmurSealedVerdictsTest is Test {
         relayerClient = new CofheClient();
         relayerClient.connect(RELAYER_KEY);
         sealedVerdicts = new MurmurSealedVerdicts();
-        sealedVerdicts.registerMarket(MARKET_ID, 1 hours, true);
+
+        // Anchor the schedule to a fixed base so every instant is nameable.
+        // Registration must land strictly before armCloseAt.
+        vm.warp(SCHEDULE_BASE);
+        sealedVerdicts.registerMarket(MARKET_ID, _schedule());
+
+        // Most tests submit immediately, so open the submission window.
+        vm.warp(SUBMISSION_OPEN_AT);
+    }
+
+    /// @dev The canonical test schedule, strictly ordered:
+    ///   base  +60 armClose  +120 submissionOpen  +600 earlyAccessCutoff
+    ///         +900 submissionClose  +1200 resolution  +1800 publicReveal
+    function _schedule() internal pure returns (MurmurSealedVerdicts.Market memory) {
+        return MurmurSealedVerdicts.Market({
+            armCloseAt: ARM_CLOSE_AT,
+            submissionOpenAt: SUBMISSION_OPEN_AT,
+            earlyAccessCutoffAt: EARLY_ACCESS_CUTOFF_AT,
+            submissionCloseAt: SUBMISSION_CLOSE_AT,
+            resolutionAt: RESOLUTION_AT,
+            publicRevealAt: PUBLIC_REVEAL_AT,
+            active: true
+        });
     }
 
     function test_transferOwnershipIsTwoStepAndRejectsZeroOwner() public {
@@ -129,13 +159,18 @@ contract MurmurSealedVerdictsTest is Test {
 
         (
             MurmurSealedVerdicts.CallState state,
-            uint64 revealOpenAt,
+            uint64 grantCloseAt,
             bytes32 binaryCt,
             bytes32 confidenceCt,
             bool alreadyGranted
         ) = sealedVerdicts.getDecryptAccess(callId, SUBSCRIBER);
         assertEq(uint8(state), uint8(MurmurSealedVerdicts.CallState.Sealed));
-        assertEq(revealOpenAt, sealedVerdicts.callRevealOpenAt(callId));
+        // The subscriber view returns the GRANT deadline, not the public
+        // reveal time. It answers "can I still buy?", and buying closes when
+        // the prediction window opens — returning publicRevealAt here let the
+        // payment gate settle money for access the contract would reject.
+        assertEq(grantCloseAt, SUBMISSION_CLOSE_AT);
+        assertTrue(grantCloseAt < sealedVerdicts.callPublicRevealAt(callId));
         assertEq(uint256(binaryCt), binaryHandle);
         assertEq(uint256(confidenceCt), confidenceHandle);
         assertTrue(alreadyGranted);
@@ -143,7 +178,7 @@ contract MurmurSealedVerdictsTest is Test {
         // The persistent grant survives the call's later public reveal — the
         // subscriber's earlier per-address permission is not revoked by the
         // global allowPublic added at openReveal.
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(PUBLIC_REVEAL_AT);
         sealedVerdicts.openReveal(callId);
         assertTrue(mockAcl.persistAllowed(binaryHandle, SUBSCRIBER));
         assertTrue(mockAcl.persistAllowed(confidenceHandle, SUBSCRIBER));
@@ -172,9 +207,9 @@ contract MurmurSealedVerdictsTest is Test {
         bytes32 callId = _submitBuy72();
         sealedVerdicts.setGrantor(GRANTOR, true);
 
-        // The sale window closes at revealOpenAt even before anyone calls
+        // The sale window closes at submissionCloseAt even before anyone calls
         // openReveal; the reveal worker's grace period does not extend it.
-        vm.warp(sealedVerdicts.callRevealOpenAt(callId));
+        vm.warp(SUBMISSION_CLOSE_AT);
         vm.prank(GRANTOR);
         vm.expectRevert(MurmurSealedVerdicts.DecryptGrantWindowClosed.selector);
         sealedVerdicts.grantDecryptAccess(callId, SUBSCRIBER);
@@ -184,7 +219,7 @@ contract MurmurSealedVerdictsTest is Test {
         bytes32 callId = _submitBuy72();
         sealedVerdicts.setGrantor(GRANTOR, true);
 
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(PUBLIC_REVEAL_AT);
         sealedVerdicts.openReveal(callId);
 
         vm.prank(GRANTOR);
@@ -316,9 +351,21 @@ contract MurmurSealedVerdictsTest is Test {
         sealedVerdicts.openReveal(callId);
     }
 
-    function test_fixedRevealMarketUsesAbsoluteRevealTime() public {
-        uint64 revealAfter = uint64(block.timestamp + 2 hours);
-        sealedVerdicts.registerFixedRevealMarket(FIXED_REVEAL_MARKET_ID, revealAfter, true);
+    /// Each market carries its own schedule, and a call snapshots the market's
+    /// publicRevealAt at submit so a second market's timing never bleeds into
+    /// the first's calls.
+    function test_marketCarriesItsOwnScheduleAndCallSnapshotsIt() public {
+        uint64 base = SCHEDULE_BASE + 10_000;
+        MurmurSealedVerdicts.Market memory other = MurmurSealedVerdicts.Market({
+            armCloseAt: base + 60,
+            submissionOpenAt: base + 120,
+            earlyAccessCutoffAt: base + 600,
+            submissionCloseAt: base + 900,
+            resolutionAt: base + 1200,
+            publicRevealAt: base + 1800,
+            active: true
+        });
+        sealedVerdicts.registerMarket(FIXED_REVEAL_MARKET_ID, other);
 
         address relayer = relayerClient.account();
         sealedVerdicts.setRelayer(relayer, true);
@@ -326,28 +373,136 @@ contract MurmurSealedVerdictsTest is Test {
         InEuint16 memory confidence = relayerClient.createInEuint16(7200);
         address agent = agentClient.account();
 
+        vm.warp(other.submissionOpenAt);
         vm.prank(relayer);
         bytes32 callId = sealedVerdicts.submitSealedFor(
             agent,
             FIXED_REVEAL_MARKET_ID,
             binaryIndex,
             confidence,
-            keccak256("fixed-reveal-order")
+            keccak256("second-market-order")
         );
 
-        assertEq(sealedVerdicts.callRevealOpenAt(callId), revealAfter);
+        assertEq(sealedVerdicts.callPublicRevealAt(callId), other.publicRevealAt);
 
-        vm.warp(revealAfter - 1);
+        vm.warp(other.publicRevealAt - 1);
         vm.expectRevert(MurmurSealedVerdicts.RevealWindowNotOpen.selector);
         sealedVerdicts.openReveal(callId);
 
-        vm.warp(revealAfter);
+        vm.warp(other.publicRevealAt);
         sealedVerdicts.openReveal(callId);
+    }
+
+    /// Measures the gas of ONE grantDecryptAccess.
+    ///
+    /// Deliberately does NOT claim a supported "cohort size". There is no
+    /// batch-grant entrypoint: each subscriber is granted in its own
+    /// transaction, so dividing a block budget by this number would describe a
+    /// transaction that does not exist. That derivation was wrong and is gone.
+    ///
+    /// What this number IS good for: sizing the grantor EOA's funding, since
+    /// selling N accesses costs N transactions at roughly this gas each.
+    ///
+    /// Runs against the CoFHE mock; Fhenix documents that mock gas differs
+    /// from production, so treat it as an order of magnitude, not a quote.
+    function test_measureGrantGasPerSubscriber() public {
+        bytes32 callId = _submitBuy72();
+        sealedVerdicts.setGrantor(GRANTOR, true);
+
+        uint256 total = 0;
+        uint256 samples = 5;
+        for (uint256 i = 0; i < samples; i++) {
+            address sub = address(uint160(0x50B0 + i));
+            vm.prank(GRANTOR);
+            uint256 before = gasleft();
+            sealedVerdicts.grantDecryptAccess(callId, sub);
+            total += before - gasleft();
+        }
+        uint256 perSubscriber = total / samples;
+        emit log_named_uint("grant gas per subscriber (one tx each)", perSubscriber);
+
+        assertGt(perSubscriber, 0, "grant must consume gas");
+        // One grant is one transaction, so it must sit comfortably inside a
+        // single block regardless of how many subscribers a call has.
+        assertLt(perSubscriber, 500_000, "a single grant must stay well inside one block");
+    }
+
+    /// Registration is one-shot: re-registering must revert rather than
+    /// silently retime a market that consumers may already have armed against.
+    function test_registerMarketIsOneShot() public {
+        vm.expectRevert(MurmurSealedVerdicts.MarketAlreadyRegistered.selector);
+        sealedVerdicts.registerMarket(MARKET_ID, _schedule());
+    }
+
+    /// Every adjacent pair must be strictly ordered; equality collapses a
+    /// window to zero length.
+    function test_registerMarketRejectsNonStrictSchedule() public {
+        uint64 base = SCHEDULE_BASE + 20_000;
+        MurmurSealedVerdicts.Market memory bad = MurmurSealedVerdicts.Market({
+            armCloseAt: base + 60,
+            submissionOpenAt: base + 120,
+            // Zero-length sellable window: nothing can be submitted AND sold.
+            earlyAccessCutoffAt: base + 120,
+            submissionCloseAt: base + 900,
+            resolutionAt: base + 1200,
+            publicRevealAt: base + 1800,
+            active: true
+        });
+        vm.expectRevert(MurmurSealedVerdicts.ScheduleNotStrictlyOrdered.selector);
+        sealedVerdicts.registerMarket(keccak256("bad-schedule"), bad);
+    }
+
+    /// The submission window is half-open: [submissionOpenAt, submissionCloseAt).
+    /// Rejecting at exactly submissionCloseAt matters because that instant is
+    /// when the prediction window opens and the reference price may already be
+    /// observable — a "prediction" made there is not one.
+    function test_submissionWindowIsHalfOpen() public {
+        address relayer = relayerClient.account();
+        sealedVerdicts.setRelayer(relayer, true);
+        address agent = agentClient.account();
+
+        vm.warp(SUBMISSION_OPEN_AT - 1);
+        InEuint8 memory b1 = relayerClient.createInEuint8(0);
+        InEuint16 memory c1 = relayerClient.createInEuint16(7200);
+        vm.prank(relayer);
+        vm.expectRevert(MurmurSealedVerdicts.SubmissionWindowNotOpen.selector);
+        sealedVerdicts.submitSealedFor(agent, MARKET_ID, b1, c1, keccak256("too-early"));
+
+        vm.warp(SUBMISSION_CLOSE_AT);
+        InEuint8 memory b2 = relayerClient.createInEuint8(0);
+        InEuint16 memory c2 = relayerClient.createInEuint16(7200);
+        vm.prank(relayer);
+        vm.expectRevert(MurmurSealedVerdicts.SubmissionWindowClosed.selector);
+        sealedVerdicts.submitSealedFor(agent, MARKET_ID, b2, c2, keccak256("too-late"));
+    }
+
+    /// Calls submitted after the early-access cutoff are refereed and scored
+    /// but can never be sold — granting one must revert.
+    function test_lateSubmissionIsUnsellable() public {
+        address relayer = relayerClient.account();
+        sealedVerdicts.setRelayer(relayer, true);
+        sealedVerdicts.setGrantor(address(this), true);
+        address agent = agentClient.account();
+
+        vm.warp(EARLY_ACCESS_CUTOFF_AT);
+        InEuint8 memory b = relayerClient.createInEuint8(0);
+        InEuint16 memory c = relayerClient.createInEuint16(7200);
+        vm.prank(relayer);
+        bytes32 callId =
+            sealedVerdicts.submitSealedFor(agent, MARKET_ID, b, c, keccak256("late-call"));
+
+        assertEq(
+            uint8(sealedVerdicts.callSubmissionClass(callId)),
+            uint8(MurmurSealedVerdicts.SubmissionClass.LateUnsellable)
+        );
+
+        vm.expectRevert(MurmurSealedVerdicts.CallNotSellable.selector);
+        sealedVerdicts.grantDecryptAccess(callId, SUBSCRIBER);
     }
 
     function test_openAndPublishReveal() public {
         bytes32 callId = _submitBuy72();
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(PUBLIC_REVEAL_AT);
 
         sealedVerdicts.openReveal(callId);
         bytes32 binaryIndexHandle = sealedVerdicts.binaryIndexHandle(callId);
@@ -375,7 +530,7 @@ contract MurmurSealedVerdictsTest is Test {
 
     function test_publishRevealMarksInvalidOutOfBandConfidenceTerminal() public {
         bytes32 callId = _submitVerdict(0, 5000, INVALID_CONFIDENCE_NONCE);
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(PUBLIC_REVEAL_AT);
         sealedVerdicts.openReveal(callId);
 
         bytes32 binaryIndexHandle = sealedVerdicts.binaryIndexHandle(callId);
@@ -402,7 +557,7 @@ contract MurmurSealedVerdictsTest is Test {
 
     function test_publishRevealMarksInvalidBinaryIndexTerminal() public {
         bytes32 callId = _submitVerdict(2, 7200, INVALID_BINARY_NONCE);
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(PUBLIC_REVEAL_AT);
         sealedVerdicts.openReveal(callId);
 
         bytes32 binaryIndexHandle = sealedVerdicts.binaryIndexHandle(callId);
@@ -429,7 +584,7 @@ contract MurmurSealedVerdictsTest is Test {
 
     function test_publishRevealRejectsTamperedOutOfBandConfidence() public {
         bytes32 callId = _submitBuy72();
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(PUBLIC_REVEAL_AT);
         sealedVerdicts.openReveal(callId);
 
         bytes32 binaryIndexHandle = sealedVerdicts.binaryIndexHandle(callId);
@@ -461,7 +616,11 @@ contract MurmurSealedVerdictsTest is Test {
         assertEq(feedId, FEED_ID);
         assertEq(marketId, MARKET_ID);
         assertEq(acceptedAt, uint64(block.timestamp));
-        assertEq(revealAfter, uint64(block.timestamp + 1 hours));
+        // The market's registered embargo is authoritative — a caller-supplied
+        // revealAfter is ignored. Previously the caller chose it, which let the
+        // feed path go public on its own schedule and quietly bypass the
+        // embargo the call path enforces.
+        assertEq(revealAfter, PUBLIC_REVEAL_AT);
         assertEq(uint8(state), uint8(MurmurSealedVerdicts.CallState.Sealed));
         assertEq(revealedAction, 0);
         assertEq(revealedSignalBps, 0);
@@ -481,7 +640,7 @@ contract MurmurSealedVerdictsTest is Test {
 
         vm.prank(relayer);
         bytes32 packetId = sealedVerdicts.submitFeedPacketFor(
-            expectedAgent, FEED_ID, MARKET_ID, revealAfter, action, signal, nonce
+            expectedAgent, FEED_ID, MARKET_ID, action, signal, nonce
         );
         assertEq(
             packetId,
@@ -515,7 +674,9 @@ contract MurmurSealedVerdictsTest is Test {
             assertEq(feedId, FEED_ID);
             assertEq(marketId, MARKET_ID);
             assertEq(acceptedAt, uint64(block.timestamp));
-            assertEq(storedRevealAfter, revealAfter);
+            // Requested `revealAfter` is overridden by the market embargo.
+            assertTrue(revealAfter != PUBLIC_REVEAL_AT);
+            assertEq(storedRevealAfter, PUBLIC_REVEAL_AT);
             assertEq(uint8(state), uint8(MurmurSealedVerdicts.CallState.Sealed));
         }
         expectPlaintext(sealedVerdicts.feedPacketActionHandle(packetId), 1);
@@ -524,7 +685,7 @@ contract MurmurSealedVerdictsTest is Test {
 
     function test_openAndPublishFeedPacketReveal() public {
         bytes32 packetId = _submitFeedPacket();
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(PUBLIC_REVEAL_AT);
 
         sealedVerdicts.openFeedPacketReveal(packetId);
         bytes32 actionHandle = sealedVerdicts.feedPacketActionHandle(packetId);
@@ -552,7 +713,7 @@ contract MurmurSealedVerdictsTest is Test {
 
     function test_publishFeedPacketRevealMarksInvalidSignalTerminal() public {
         bytes32 packetId = _submitFeedPacketWith(1, 10001, INVALID_PACKET_NONCE);
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(PUBLIC_REVEAL_AT);
 
         sealedVerdicts.openFeedPacketReveal(packetId);
         bytes32 actionHandle = sealedVerdicts.feedPacketActionHandle(packetId);
@@ -598,6 +759,38 @@ contract MurmurSealedVerdictsTest is Test {
         );
     }
 
+    /// Feed packets close at RESOLUTION, not at public reveal.
+    ///
+    /// Only `publicRevealAt` was checked, which left the whole embargo window
+    /// open — the stretch after the market resolves but before the sealed
+    /// values go public. A packet submitted there predicts nothing (the
+    /// outcome is already known) yet still counts as delivered feed evidence.
+    function test_submitFeedPacketRejectedAfterResolution() public {
+        address relayer = relayerClient.account();
+        sealedVerdicts.setRelayer(relayer, true);
+        address agent = agentClient.account();
+        InEuint8 memory action = relayerClient.createInEuint8(1);
+        InEuint16 memory signal = relayerClient.createInEuint16(6500);
+
+        // One second before resolution: still open.
+        vm.warp(RESOLUTION_AT - 1);
+        vm.prank(relayer);
+        sealedVerdicts.submitFeedPacketFor(
+            agent, FEED_ID, MARKET_ID, action, signal, keccak256("before-resolution")
+        );
+
+        // At resolution: closed, even though publicRevealAt is still future.
+        vm.warp(RESOLUTION_AT);
+        assertLt(block.timestamp, PUBLIC_REVEAL_AT, "the embargo has NOT elapsed");
+        InEuint8 memory action2 = relayerClient.createInEuint8(1);
+        InEuint16 memory signal2 = relayerClient.createInEuint16(6500);
+        vm.prank(relayer);
+        vm.expectRevert(MurmurSealedVerdicts.FeedWindowClosed.selector);
+        sealedVerdicts.submitFeedPacketFor(
+            agent, FEED_ID, MARKET_ID, action2, signal2, keccak256("at-resolution")
+        );
+    }
+
     function _submitFeedPacket() internal returns (bytes32 packetId) {
         packetId = _submitFeedPacketWith(1, 6500, PACKET_NONCE);
     }
@@ -617,7 +810,6 @@ contract MurmurSealedVerdictsTest is Test {
             agent,
             FEED_ID,
             MARKET_ID,
-            uint64(block.timestamp + 1 hours),
             action,
             signal,
             nonce

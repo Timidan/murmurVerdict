@@ -1,5 +1,13 @@
 # Invariant map — theorem ↔ Solidity coverage
 
+> **⚠️ STALE for `MurmurSealedVerdicts`.** The function names and line mappings
+> below refer to a PREVIOUS contract revision. `registerFixedRevealMarket` and
+> `_revealOpenAt` no longer exist, `Market` now carries six timestamps, and the
+> grantor / decrypt-ACL surface has never been modelled. Do not use this map to
+> claim coverage of the deployed contract. See `README.md`. The escrow
+> invariants (E1-E3) are unaffected.
+
+
 Each row maps a Lean theorem to the Solidity functions whose `step`
 arm is closed by its case-bash, plus the single most critical Solidity
 line mirrored by the handwritten model. This is a review map, not a
