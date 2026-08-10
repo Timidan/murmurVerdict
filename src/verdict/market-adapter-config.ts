@@ -109,6 +109,40 @@ export function expectedRevealOpenMsForMarket(
   return acceptedAtMs + market.horizon_seconds * 1000;
 }
 
+/**
+ * When the MARKET resolves — the venue determines the outcome here.
+ *
+ * Deliberately separate from {@link expectedRevealOpenMsForMarket}, which is
+ * when MURMUR unseals. Reveal is embargoed past resolution, so using the reveal
+ * time as a prediction's horizon would assert the market resolves at murmur's
+ * disclosure deadline. Adapters that do not distinguish the two fall back to
+ * the reveal value, which is only correct when the embargo is zero.
+ */
+export function marketResolutionMsForMarket(
+  market: Pick<
+    MarketRow,
+    "adapter_id" | "market_id" | "market_config_version" | "horizon_seconds" | "config_json"
+  >,
+  acceptedAtMs: number,
+): number {
+  const config = parseMarketConfigJson(market.config_json);
+  try {
+    const adapter = getAdapterForMarket(market as MarketRow);
+    const delegated = adapter.marketResolutionAt?.({
+      marketRef: marketRefForMarket(market),
+      config,
+      acceptedAtMs,
+      horizonSeconds: market.horizon_seconds,
+    });
+    if (typeof delegated === "number" && Number.isFinite(delegated)) {
+      return delegated;
+    }
+  } catch {
+    // Same fail-soft contract as the reveal-window resolver above.
+  }
+  return expectedRevealOpenMsForMarket(market, acceptedAtMs);
+}
+
 export function outcomeLabelsForMarket(
   market: Pick<MarketRow, "adapter_id" | "market_id" | "market_config_version" | "config_json">,
 ): string[] {
@@ -151,7 +185,11 @@ export function binaryCommitmentFromReveal(input: {
   accepted_at: string;
 }): Commitment {
   const acceptedAtMs = parseIsoMs(input.accepted_at, "accepted_at");
-  const expectedResolveMs = expectedRevealOpenMsForMarket(input.market, acceptedAtMs);
+  // A commitment's horizon is when the MARKET resolves, not when murmur
+  // unseals. These were the same value until reveals became embargoed; using
+  // the reveal time here would overstate the horizon by the whole embargo and
+  // claim the venue settles later than it does.
+  const expectedResolveMs = marketResolutionMsForMarket(input.market, acceptedAtMs);
   return {
     marketRef: marketRefForMarket(input.market),
     predictedOutcome: {

@@ -31,7 +31,7 @@ function snap(over: Partial<GammaMarketSnapshot> & { conditionId: string }): Gam
     outcomes: upDown,
     question: "Bitcoin Up or Down - July 19, 7:05PM-7:10PM ET",
     startDate: creation,
-    endDate: "2026-07-19T23:10:00Z", // now + 600s
+    endDate: "2026-07-19T23:15:00Z", // now + 900s: clears the 660s arm-close lead
     active: true,
     closed: false,
     archived: false,
@@ -39,9 +39,17 @@ function snap(over: Partial<GammaMarketSnapshot> & { conditionId: string }): Gam
   } as GammaMarketSnapshot;
 }
 
+// window 300 + openLead 300 + commitMargin 60 = 660s of lead required before
+// arming closes. minLeadSec alone (120s) is NOT sufficient to register.
 const filter: DiscoveryCandidateFilter = {
   nowMs,
   minLeadSec: 120,
+  seriesClock: {
+    submissionOpenLeadSec: 300,
+    commitMarginSec: 60,
+    deliveryBudgetSec: 60,
+    embargoSec: 600,
+  },
   questionFilter: "Up or Down",
   assets: ["Bitcoin", "Ethereum", "Solana", "Dogecoin"],
   windowDurationSec: 300,
@@ -75,7 +83,7 @@ const subSecond = snap({
 const picked = selectDiscoveryCandidates([btc, eth15, solSoon, dogeYesNo, cardano, subSecond], filter);
 assert.equal(picked.length, 1, `expected only the 5-min Bitcoin row, got ${picked.length}`);
 assert.equal(picked[0].conditionId, btc.conditionId);
-assert.equal(picked[0].endDateEpochSec, Math.floor(Date.parse("2026-07-19T23:10:00Z") / 1000));
+assert.equal(picked[0].endDateEpochSec, Math.floor(Date.parse("2026-07-19T23:15:00Z") / 1000));
 
 // Earliest-end-first ordering across two valid 5-min rows.
 const ethEarlier = snap({
@@ -85,7 +93,7 @@ const ethEarlier = snap({
 const ethValidLater = snap({
   conditionId: `0x${"8".repeat(64)}`,
   question: "Ethereum Up or Down - July 19, 7:10PM-7:15PM ET",
-  endDate: "2026-07-19T23:12:00Z", // 5-min, later end
+  endDate: "2026-07-19T23:20:00Z", // 5-min, later end (still clears arm close)
 });
 const ordered = selectDiscoveryCandidates([ethValidLater, btc], filter);
 assert.deepEqual(
@@ -96,3 +104,21 @@ assert.deepEqual(
 void ethEarlier;
 
 process.stdout.write("polymarket discovery candidate-selection smoke ok\n");
+
+// ── Regression: past minLeadSec but past arm close is NOT registrable ───────
+// This candidate clears minLeadSec (600s > 120s) but arming closed 60s ago
+// (endDate - 660s). Admitting it stages a draft, then reverts at gas
+// estimation, which aborts the tick — and because estimation failures do not
+// count as attempts, the same candidate heads the queue again next tick and
+// starves every registrable candidate behind it.
+{
+  const tooLate = selectDiscoveryCandidates(
+    [snap({ conditionId: `0x${"9".repeat(64)}`, endDate: "2026-07-19T23:10:00Z" })],
+    filter,
+  );
+  assert.equal(
+    tooLate.length,
+    0,
+    "a candidate past arm close must be rejected at selection, not at gas estimation",
+  );
+}

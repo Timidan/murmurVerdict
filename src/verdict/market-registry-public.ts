@@ -16,7 +16,10 @@ import {
 import {
   parseMarketConfigJson,
 } from "./market-adapter-config.js";
-import { publicPolymarketGammaMarketConfigSummary } from "../markets/polymarket-gamma/config.js";
+import {
+  httpsUrlOrNull,
+  publicPolymarketGammaMarketConfigSummary,
+} from "../markets/polymarket-gamma/config.js";
 import type { ResolutionClass } from "./schema.js";
 
 export interface PublicMarketRegistryRow {
@@ -109,10 +112,54 @@ export function enrichedMarketRegistryRow(
   const identity = adapterIdentityForMarket(market);
   return {
     ...market,
+    // Spreading the raw row put `config_json` on the wire VERBATIM, which walks
+    // straight past `publicMarketConfigSummary`'s validated icon gate — the
+    // dashboard parses this blob itself and puts `icon_url` into an <img src>.
+    // Sanitized here so both read shapes answer to the same rule.
+    config_json: sanitizedConfigJson(market.config_json),
     ...identity,
     market_taxonomy: marketTaxonomyForMarket(market),
     ...(opts.db ? { oracles: publicMarketOracleSummary(opts.db, market) } : {}),
   };
+}
+
+/**
+ * The stored config blob with `icon_url` re-validated on the way out.
+ *
+ * `markets.config_json` is stored passthrough, so the value in the database is
+ * whatever the venue supplied on the day the market was registered — including
+ * rows written before the ingestion guard existed, and anything a hand edit put
+ * there. Only the icon is touched: every other key is the market's own
+ * definition and is not this function's business.
+ *
+ * A blob that does not parse is returned unchanged. It carries no usable
+ * `icon_url` by definition (the consumer's own JSON.parse fails too), and
+ * rewriting it would be inventing content for a row we cannot read.
+ */
+function sanitizedConfigJson(configJson: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(configJson);
+  } catch {
+    return configJson;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return configJson;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (!("icon_url" in record)) return configJson;
+  const safe = httpsUrlOrNull(record.icon_url);
+  // Only skip the rewrite when the stored value is ALREADY the canonical
+  // string. `safe === record.icon_url` alone was not that test: a stored
+  // `icon_url: null` satisfies it and survived untouched, so the key reached
+  // the wire as an explicit null rather than being absent.
+  if (safe !== null && safe === record.icon_url) return configJson;
+  const next = { ...record };
+  // Dropped, not nulled: `icon_url === undefined` is what every renderer's
+  // glyph fallback keys on.
+  if (safe === null) delete next.icon_url;
+  else next.icon_url = safe;
+  return JSON.stringify(next);
 }
 
 export function publicMarketOracleSummary(

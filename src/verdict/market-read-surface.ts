@@ -69,19 +69,97 @@ const missingMarketBody = {
   message: "market not found",
 } as const;
 
+/**
+ * The market's immutable schedule snapshot, as the public read surface states
+ * it. Milliseconds, exactly as stored — the dashboard renders them in the
+ * viewer's own timezone, and rounding to seconds here would put a window
+ * boundary a fraction on the wrong side of a countdown.
+ *
+ * Present only on markets that were bound to a series. A market with no clock
+ * has no submission window at all, which is a different thing from a window
+ * that has passed, so the key is absent rather than null-filled.
+ */
+export interface MarketClockSnapshot {
+  series_id: string;
+  /** Arming closes; the venue window has not opened yet. */
+  arm_close_at_ms: number;
+  submission_open_at_ms: number;
+  early_access_cutoff_at_ms: number;
+  /** Submissions stop. The venue's own price window starts here. */
+  submission_close_at_ms: number;
+  /** The venue determines the outcome. */
+  resolution_at_ms: number;
+  /** Murmur unseals. Strictly later than resolution by the series embargo. */
+  public_reveal_at_ms: number;
+}
+
 export type VenueEnrichedMarketRegistryRow = EnrichedMarketRegistryRow & {
   venue?: MarketVenueSnapshot;
+  clock?: MarketClockSnapshot;
 };
+
+interface MarketClockDbRow extends MarketClockSnapshot {
+  market_id: string;
+}
+
+/**
+ * SQLite's compiled-in parameter ceiling is 999 on older builds. A page can
+ * exceed it (every frozen market is a valid read), so the id list is chunked
+ * rather than assumed small.
+ */
+const CLOCK_ID_CHUNK = 900;
+
+/**
+ * Stamp each row's schedule snapshot on, keyed to the ids on THIS page.
+ *
+ * It used to `SELECT … FROM market_clocks` with no WHERE clause, on the
+ * reasoning that the table is small. It is insert-only — one row per market
+ * ever scheduled, never deleted — so "small" is a statement about today, and
+ * the cost lands on every list and detail request, growing forever. Bounding
+ * the read by the page's own ids costs nothing (`market_id` is the table's
+ * PRIMARY KEY, so each probe is an index seek) and stops the query scaling
+ * with archive size instead of page size.
+ *
+ * Markets with no snapshot come back untouched (no `clock` key), which is every
+ * market discovery froze before listing.
+ */
+function attachClockSnapshots<T extends { market_id: string }>(
+  db: Database.Database,
+  rows: T[],
+): Array<T & { clock?: MarketClockSnapshot }> {
+  if (rows.length === 0) return rows;
+  const ids = [...new Set(rows.map((row) => row.market_id))];
+  const byMarket = new Map<string, MarketClockSnapshot>();
+  for (let i = 0; i < ids.length; i += CLOCK_ID_CHUNK) {
+    const chunk = ids.slice(i, i + CLOCK_ID_CHUNK);
+    const placeholders = chunk.map(() => "?").join(",");
+    const clocks = db
+      .prepare(
+        `SELECT market_id, series_id, arm_close_at_ms, submission_open_at_ms,
+                early_access_cutoff_at_ms, submission_close_at_ms,
+                resolution_at_ms, public_reveal_at_ms
+           FROM market_clocks
+          WHERE market_id IN (${placeholders})`,
+      )
+      .all(...chunk) as MarketClockDbRow[];
+    for (const { market_id, ...clock } of clocks) byMarket.set(market_id, clock);
+  }
+  return rows.map((row) => {
+    const clock = byMarket.get(row.market_id);
+    return clock ? { ...row, clock } : row;
+  });
+}
 
 function enrichedMarketRows(input: MarketReadInput & {
   query: MarketRegistryListQuery;
-}): EnrichedMarketRegistryRow[] {
+}): Array<EnrichedMarketRegistryRow & { clock?: MarketClockSnapshot }> {
   let markets = marketsRepo.list(input.db, input.query.status);
   if (input.query.assetId) {
     markets = markets.filter((m) => m.asset_id === input.query.assetId);
   }
-  return markets.map((market) =>
-    enrichedMarketRegistryRow(market, { db: input.db }),
+  return attachClockSnapshots(
+    input.db,
+    markets.map((market) => enrichedMarketRegistryRow(market, { db: input.db })),
   );
 }
 
@@ -92,7 +170,7 @@ function enrichedMarketRows(input: MarketReadInput & {
  * upstream venue trouble.
  */
 async function attachVenueSnapshots(
-  rows: EnrichedMarketRegistryRow[],
+  rows: Array<EnrichedMarketRegistryRow & { clock?: MarketClockSnapshot }>,
   venue: MarketVenueSnapshotAdapter | undefined,
 ): Promise<VenueEnrichedMarketRegistryRow[]> {
   if (!venue) return rows;
@@ -147,7 +225,9 @@ export async function marketDetailSurface(input: MarketReadInput & {
     return { status: 404, body: missingMarketBody };
   }
   const [row] = await attachVenueSnapshots(
-    [enrichedMarketRegistryRow(market, { db: input.db })],
+    attachClockSnapshots(input.db, [
+      enrichedMarketRegistryRow(market, { db: input.db }),
+    ]),
     input.venue,
   );
   return {

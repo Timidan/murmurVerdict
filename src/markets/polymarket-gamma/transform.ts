@@ -40,6 +40,18 @@ export interface GammaMarketSnapshot {
   readonly umaResolutionStatuses?: string;
   readonly umaResolutionStatus?: string | null;
   readonly question?: string;
+  /**
+   * Venue-hosted artwork for the market. Gamma serves both on every row we
+   * have observed and they are usually the SAME url; `icon` is the square
+   * mark, `image` the wider card art. Display metadata only — nothing here
+   * reaches the resolver, so a missing or hostile value can never change an
+   * Outcome. First-class rather than left to the index signature below
+   * because the stored config projection normalizes one of them into
+   * `icon_url` (see ./config.ts) and a typo in the field name would silently
+   * produce iconless markets forever.
+   */
+  readonly icon?: string;
+  readonly image?: string;
   readonly closed?: boolean;
   readonly active?: boolean;
   readonly archived?: boolean;
