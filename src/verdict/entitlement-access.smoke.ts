@@ -11,11 +11,60 @@ import type {
 } from "../integrations/fhenix-grant-env.js";
 import { openDb } from "./db.js";
 import {
+  checkEntitlementEligibility,
   purchaseEntitlementAccess,
   type EntitlementAccessDeps,
   type SettleOutcome,
 } from "./entitlement-access.js";
 import { entitlementsRepo } from "./repos/entitlements-repo.js";
+
+/**
+ * Eligibility now fails closed on an unknown submission class, so a sale test
+ * must seed the canonical accepted-call row that records it. An unseeded call
+ * is correctly unsellable — that is the point of the check.
+ */
+function seedEarlyAccessCall(
+  db: ReturnType<typeof openDb>,
+  chainId: number,
+  contractAddress: string,
+  onchainCallId: string,
+): void {
+  const callId = `seed-${onchainCallId.slice(2, 12)}`;
+  // These rows exist only to give eligibility a submission_class to read.
+  // Building the full agent → submission → sealed-call FK chain would be a lot
+  // of scaffolding for one column, so FKs are relaxed for the seed itself.
+  db.pragma("foreign_keys = OFF");
+  db.prepare(
+    `INSERT OR IGNORE INTO submissions
+       (call_id, agent_id, client_order_id, horizon_seconds, submitted_at,
+        accepted_at, status, schema_version, scoring_version, dedup_key)
+     VALUES (@call_id, 'agent', @call_id, 300, @now, @now, 'pending_resolution',
+        1, 1, @call_id)`,
+  ).run({ call_id: callId, now: "2026-07-20T00:00:00.000Z" });
+  db.prepare(
+    `INSERT INTO fhenix_sealed_calls
+       (call_id, chain_id, contract_address, onchain_call_id, submit_tx_hash,
+        submit_log_index, binary_index_ct_hash, confidence_ct_hash, reveal_open_at,
+        submission_class, created_at)
+     VALUES (@call_id, @chain_id, @contract_address, @onchain_call_id, @tx,
+        0, '0x01', '0x02', @reveal, 1, @now)`,
+  ).run({
+    call_id: callId,
+    chain_id: chainId,
+    contract_address: contractAddress.toLowerCase(),
+    onchain_call_id: onchainCallId.toLowerCase(),
+    tx: `0x${onchainCallId.slice(2).padEnd(64, "0").slice(0, 64)}`,
+    reveal: "2027-01-01T00:00:00.000Z",
+    now: "2026-07-20T00:00:00.000Z",
+  });
+  db.pragma("foreign_keys = ON");
+  const check = db.prepare(
+    "SELECT submission_class FROM fhenix_sealed_calls WHERE lower(onchain_call_id)=lower(?)",
+  ).get(onchainCallId) as { submission_class?: number } | undefined;
+  if (check?.submission_class !== 1) {
+    throw new Error(`seed failed for ${onchainCallId}: ${JSON.stringify(check)}`);
+  }
+}
 
 process.stdout.write("murmur entitlement access orchestrator smoke\n");
 
@@ -27,6 +76,8 @@ const NOW_SEC = Math.floor(NOW.getTime() / 1000);
 
 interface FakeChainOpts {
   view: GrantDecryptAccessView | null;
+  /** Returned once a grant has been attempted; see readDecryptAccess below. */
+  viewAfterGrant?: GrantDecryptAccessView | null;
   sendGrant?: () => Promise<string>;
   receipt?: GrantChainReceipt | null;
 }
@@ -47,10 +98,18 @@ function fakeChain(opts: FakeChainOpts): GrantChainAdapter & { grants: string[] 
       return opts.receipt ?? null;
     },
     async readDecryptAccess() {
+      // `viewAfterGrant` models the crash-restart shape: the pre-purchase read
+      // says not-granted, and only once a grant has been attempted does the
+      // chain report access. Without it, the pre-charge already-granted check
+      // short-circuits and the grant path under test never runs.
+      if (opts.viewAfterGrant && grants.length > 0) return opts.viewAfterGrant;
       return opts.view;
     },
     async getBalanceWei() {
       return 1n;
+    },
+    async hasGrantorRole() {
+      return true;
     },
   };
 }
@@ -60,8 +119,16 @@ function deps(chain: GrantChainAdapter, db: ReturnType<typeof openDb>): Entitlem
     db,
     grantChain: chain,
     salesSafetySeconds: 180,
+    // A sale freezes murmur's cut; injected so this smoke never reads the
+    // operator's .env. The seeded calls carry no fee snapshot, so this is what
+    // every reservation here stamps.
+    protocolFeeBps: 1_000,
     now: () => NOW,
     resolveProducerAgentId: () => "agent-xyz",
+    // Accrual reports unattributed sales loudly, and "agent-xyz" is not a real
+    // agent row here. Swallow those warnings so the smoke's own output stays
+    // readable; provider-earnings.smoke.ts is where attribution is asserted.
+    logger: { warn: () => undefined },
   };
 }
 
@@ -79,10 +146,10 @@ function newDb() {
   return { db, tmp };
 }
 
-// Sealed with a comfortable window (revealOpenAt far in the future).
+// Sealed with a comfortable window (grantCloseAt far in the future).
 const openView: GrantDecryptAccessView = {
   state: 1,
-  revealOpenAt: NOW_SEC + 3600,
+  grantCloseAt: NOW_SEC + 3600,
   binaryIndexCtHash: "0x01",
   confidenceCtHash: "0x02",
   alreadyGranted: false,
@@ -91,8 +158,14 @@ const openView: GrantDecryptAccessView = {
 // 1. Ineligible (sale window closed) → 409, NO reservation, NO settle called.
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL1");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL2");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL3");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL4");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL5");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL6");
   const chain = fakeChain({
-    view: { ...openView, revealOpenAt: NOW_SEC + 60 }, // within 180s safety margin
+    view: { ...openView, grantCloseAt: NOW_SEC + 60 }, // within 180s safety margin
   });
   let settleCalled = false;
   const result = await purchaseEntitlementAccess(deps(chain, db), {
@@ -116,6 +189,12 @@ const openView: GrantDecryptAccessView = {
 // 2. Happy path → granted, grant broadcast + confirmed inline.
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL1");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL2");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL3");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL4");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL5");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL6");
   const chain = fakeChain({
     view: openView,
     receipt: { blockNumber: 42, success: true, confirmations: 2 },
@@ -150,6 +229,12 @@ const openView: GrantDecryptAccessView = {
 //    refund_due (settled payment NEVER relabeled a plain failure).
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL1");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL2");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL3");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL4");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL5");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL6");
   const chain = fakeChain({
     view: openView,
     sendGrant: async () => {
@@ -172,6 +257,12 @@ const openView: GrantDecryptAccessView = {
 // 4. Definitive settle rejection → 402, reservation RELEASED (retry allowed).
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL1");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL2");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL3");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL4");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL5");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL6");
   const chain = fakeChain({ view: openView });
   const result = await purchaseEntitlementAccess(deps(chain, db), {
     onchainCallId: "0xCALL4",
@@ -201,6 +292,12 @@ const openView: GrantDecryptAccessView = {
 //    settlement_unknown for the reconciler.
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL1");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL2");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL3");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL4");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL5");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL6");
   const chain = fakeChain({ view: openView });
   const result = await purchaseEntitlementAccess(deps(chain, db), {
     onchainCallId: "0xCALL5",
@@ -217,12 +314,45 @@ const openView: GrantDecryptAccessView = {
   rmSync(tmp, { recursive: true, force: true });
 }
 
+// 5b. The payer ALREADY holds on-chain access and has no local row (restored
+//     DB, manual grant, reconciler gap). The contract treats a duplicate grant
+//     as a successful no-op, so charging again would take money for access the
+//     subscriber already owns. The chain is authoritative here, not our table.
+{
+  const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALLA");
+  const chain = fakeChain({ view: { ...openView, alreadyGranted: true } });
+  let settleCalls = 0;
+  const result = await purchaseEntitlementAccess(deps(chain, db), {
+    onchainCallId: "0xCALLA",
+    verifiedPayer: PAYER,
+    settlement: {
+      settle: async () => {
+        settleCalls += 1;
+        return settled;
+      },
+    },
+  });
+  assert.equal(result.kind, "already_owned", "on-chain access is not re-sold");
+  assert.equal(settleCalls, 0, "no payment is settled for access already owned");
+  assert.deepEqual(chain.grants, [], "no duplicate grant transaction is sent");
+  db.close();
+  rmSync(tmp, { recursive: true, force: true });
+}
+
 // 6. Grant reverts window-closed BUT the subscriber already holds on-chain
 //    access (crash-restart double-broadcast) → granted, NOT refund_due.
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL1");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL2");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL3");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL4");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL5");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL6");
   const chain = fakeChain({
-    view: { ...openView, alreadyGranted: true },
+    view: openView,
+    viewAfterGrant: { ...openView, alreadyGranted: true },
     sendGrant: async () => {
       throw new Error("execution reverted: DecryptGrantWindowClosed");
     },
@@ -241,3 +371,75 @@ const openView: GrantDecryptAccessView = {
 }
 
 process.stdout.write("OK entitlement access orchestrator smoke\n");
+
+// ── Cohort cap is enforced BEFORE any charge ───────────────────────────────
+// Each grant is its own transaction, so an
+// unbounded cohort can exceed what one transaction can spend — and the grant
+// then fails for EVERYONE on that call, after they have all paid. The cap was
+// previously persisted at registration with no runtime consumer at all.
+{
+  const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL1");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL2");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL3");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL4");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL5");
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL6");
+  const nowIso = "2026-07-20T00:00:00.000Z";
+  const call = "0x" + "c0".repeat(32);
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, call);
+  const chain = {
+    chainId: 84532,
+    contractAddress: "0x1B74A4bAb1E06Ed107780a245c85337AB9dEcD1A",
+    grantorAddress: "0xabc",
+    async sendGrant() { return "0xhash"; },
+    async getReceipt() { return null; },
+    async readDecryptAccess() {
+      return {
+        state: 1,
+        // Far enough ahead that the sale window is open.
+        grantCloseAt: Math.floor(Date.parse("2027-01-01T00:00:00Z") / 1000),
+        binaryIndexCtHash: "0x01",
+        confidenceCtHash: "0x02",
+        alreadyGranted: false,
+      };
+    },
+    async getBalanceWei() { return 1n; },
+  };
+
+  const deps: EntitlementAccessDeps = {
+    db,
+    grantChain: chain as never,
+    salesSafetySeconds: 180,
+    maxArmedPerCall: 2,
+    now: () => new Date(nowIso),
+  };
+
+  // Two subscribers fill the cohort.
+  for (const sub of ["0x" + "a1".repeat(20), "0x" + "a2".repeat(20)]) {
+    entitlementsRepo.reserve(db, {
+      chainId: chain.chainId,
+      contractAddress: chain.contractAddress,
+      onchainCallId: call,
+      subscriberAddress: sub,
+      callId: null,
+      producerAgentId: null,
+      amount: null,
+      currency: null,
+      now: nowIso,
+    });
+  }
+
+  const full = await checkEntitlementEligibility(deps, call);
+  assert.equal(full.reason, "cohort_full", "a full cohort refuses the sale");
+
+  // Below the cap it stays open.
+  const roomy = await checkEntitlementEligibility(
+    { ...deps, maxArmedPerCall: 5 },
+    call,
+  );
+  assert.equal(roomy.reason, "ok", "under the cap the sale is still open");
+
+  db.close();
+  rmSync(tmp, { recursive: true, force: true });
+}

@@ -1,3 +1,4 @@
+import type Database from "better-sqlite3";
 import {
   paymentPayloadHash,
   paymentRequirementsHash,
@@ -12,7 +13,9 @@ import {
   type PurchaseResult,
   type SettleOutcome,
 } from "./entitlement-access.js";
+import { fhenixSealedCallsRepo } from "./repos/fhenix-sealed-calls-repo.js";
 import { entitlementsRepo } from "./repos/entitlements-repo.js";
+import { entitlementPaymentBindingsRepo } from "./repos/entitlement-payment-bindings-repo.js";
 
 // HTTP surface for Flow 2 paid private decrypt-grant (grant-only v1):
 //   POST /v2/gateway/calls/:callId/access         — pay, then broker the grant.
@@ -46,6 +49,13 @@ export interface EntitlementResourceBinding {
   contractAddress: string;
   onchainCallId: string;
   priceAtoms: string;
+  /**
+   * Carried so the settlement record stamps the currency this CALL was priced
+   * in. The amount already comes from the call's snapshot; recording the
+   * deployment-wide currency beside a per-provider amount would make the
+   * receipt describe terms that were never offered.
+   */
+  currency: string;
   pricingVersion: string;
 }
 
@@ -74,16 +84,65 @@ export interface EntitlementAccessSurfaceDeps {
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
+export interface CallTerms {
+  priceAtoms: string;
+  currency: string;
+  pricingVersion: string;
+}
+
+/**
+ * The terms THIS call is sold under, or null when it is not for sale.
+ *
+ * From the call's own snapshot when it has one — the provider's price as it
+ * stood when the call was sealed. An owner repricing afterwards must not
+ * change what a buyer is charged for a call already on offer, and must not
+ * make a purchase in flight disagree with the challenge it answered.
+ *
+ * A missing snapshot means one of two opposite things, and
+ * `provider_terms_snapshotted` is what separates them:
+ *
+ *   flag 0 — sealed before providers could price themselves. It really was
+ *            sold under the deployment-wide terms, so fall back to them.
+ *   flag 1 — the owner set no terms, or cleared them. NOT FOR SALE. Falling
+ *            back here would sell an owner's signal at the operator's price
+ *            straight after they pressed "stop selling".
+ */
+export function termsFor(
+  deps: EntitlementAccessSurfaceDeps,
+  onchainCallId: string,
+): CallTerms | null {
+  const call = fhenixSealedCallsRepo.byOnchainCall(deps.access.db, {
+    chain_id: deps.access.grantChain.chainId,
+    contract_address: deps.access.grantChain.contractAddress,
+    onchain_call_id: onchainCallId,
+  });
+  if (call?.provider_price_atoms && call.provider_currency && call.provider_pricing_version) {
+    return {
+      priceAtoms: call.provider_price_atoms,
+      currency: call.provider_currency,
+      pricingVersion: call.provider_pricing_version,
+    };
+  }
+  if (call && call.provider_terms_snapshotted === 1) return null;
+  return {
+    priceAtoms: deps.priceAtoms,
+    currency: deps.currency,
+    pricingVersion: deps.pricingVersion,
+  };
+}
+
 function bindingFor(
   deps: EntitlementAccessSurfaceDeps,
   onchainCallId: string,
+  terms: CallTerms,
 ): EntitlementResourceBinding {
   return {
     chainId: deps.access.grantChain.chainId,
     contractAddress: deps.access.grantChain.contractAddress,
     onchainCallId,
-    priceAtoms: deps.priceAtoms,
-    pricingVersion: deps.pricingVersion,
+    priceAtoms: terms.priceAtoms,
+    currency: terms.currency,
+    pricingVersion: terms.pricingVersion,
   };
 }
 
@@ -103,7 +162,20 @@ export async function entitlementAccessResponse(input: {
     return { status: 400, body: { error: "BadCallId", message: "callId must be a 0x bytes32" } };
   }
 
-  const binding = bindingFor(deps, onchainCallId);
+  // The owner's price for THIS call. Null means they are not selling access —
+  // answered before eligibility because a call with no price cannot be
+  // challenged for, whatever its window says.
+  const terms = termsFor(deps, onchainCallId);
+  if (!terms) {
+    return {
+      status: 404,
+      body: {
+        error: "NotForSale",
+        message: "this agent does not sell early access to its calls",
+      },
+    };
+  }
+  const binding = bindingFor(deps, onchainCallId, terms);
 
   // (1) Eligibility BEFORE any 402 challenge or charge.
   const eligibility = await checkEntitlementEligibility(deps.access, onchainCallId);
@@ -121,9 +193,9 @@ export async function entitlementAccessResponse(input: {
       body: {
         error: "PaymentRequired",
         accepts: [requirements],
-        price: deps.priceAtoms,
-        currency: deps.currency,
-        pricingVersion: deps.pricingVersion,
+        price: terms.priceAtoms,
+        currency: terms.currency,
+        pricingVersion: terms.pricingVersion,
       },
     };
   }
@@ -144,7 +216,7 @@ export async function entitlementAccessResponse(input: {
 /**
  * GET handler body: async payment + grant status for (call, subscriber).
  * Returns chain/contract/call, both ct handles + FheTypes hints, grant tx
- * hash/status/confirmations, and revealOpenAt. NO plaintext.
+ * hash/status/confirmations, and grantCloseAt. NO plaintext.
  */
 export async function entitlementStatusResponse(input: {
   deps: EntitlementAccessSurfaceDeps;
@@ -164,6 +236,21 @@ export async function entitlementStatusResponse(input: {
   if (!view || view.state === 0) {
     return { status: 404, body: { error: "CallNotFound" } };
   }
+
+  // Public reveal time comes from the canonical sealed-call record. The chain
+  // view now returns the GRANT deadline, so it can no longer supply this.
+  const sealed = fhenixSealedCallsRepo.byOnchainCall(deps.access.db, {
+    chain_id: chain.chainId,
+    contract_address: chain.contractAddress,
+    onchain_call_id: onchainCallId,
+  });
+  // Epoch SECONDS, matching the type this field has always had on the wire.
+  // Restoring the key with an ISO string would be just as breaking as removing
+  // it — a caller doing arithmetic on it silently gets NaN.
+  const publicRevealAtSec = (() => {
+    const ms = sealed?.reveal_open_at ? Date.parse(sealed.reveal_open_at) : Number.NaN;
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+  })();
 
   const row = entitlementsRepo.byReservation(deps.access.db, {
     chainId: chain.chainId,
@@ -207,7 +294,18 @@ export async function entitlementStatusResponse(input: {
         binaryIndex: { handle: view.binaryIndexCtHash, fheType: BINARY_INDEX_FHE_TYPE },
         confidenceBps: { handle: view.confidenceCtHash, fheType: CONFIDENCE_FHE_TYPE },
       },
-      revealOpenAt: view.revealOpenAt,
+      // `grantCloseAt` is when BUYING closes (the prediction window opening).
+      // Exposed alongside the reveal time because they used to be the same
+      // field and are now days apart — a client that assumed one value would
+      // otherwise silently read the wrong deadline.
+      //
+      // Deliberately NOT re-using the old `revealOpenAt` name for this value:
+      // keeping the old key with new semantics is how a caller silently starts
+      // trusting the wrong timestamp. Clients still reading `revealOpenAt` get
+      // the reveal time, which is what that name always meant.
+      grantCloseAt: view.grantCloseAt,
+      revealOpenAt: publicRevealAtSec,
+      publicRevealAt: publicRevealAtSec,
       lastError: row?.last_error ?? null,
     },
   };
@@ -247,11 +345,40 @@ function purchaseResponse(
 }
 
 function eligibilityResponse(
-  reason: "call_not_found" | "not_sealed" | "sale_window_closed",
+  reason:
+    | "call_not_found"
+    | "not_sealed"
+    | "sale_window_closed"
+    | "cohort_full"
+    | "not_sellable",
 ): EntitlementSurfaceResponse {
   if (reason === "call_not_found") return { status: 404, body: { error: "CallNotFound" } };
   if (reason === "not_sealed") {
     return { status: 409, body: { error: "CallNotSealed", message: "call is no longer sealed" } };
+  }
+  if (reason === "not_sellable") {
+    // Submitted after the early-access cutoff: the contract refuses to grant
+    // it, so selling access would take money for undeliverable access.
+    return {
+      status: 409,
+      body: {
+        error: "CallNotSellable",
+        message:
+          "this call is not proven sellable: its on-chain submission class is " +
+          "not EarlyAccess, or was never recorded",
+      },
+    };
+  }
+  if (reason === "cohort_full") {
+    // 409, not 402: this is not a payment problem and retrying with money will
+    // not help. The call's cohort is full for everyone.
+    return {
+      status: 409,
+      body: {
+        error: "CohortFull",
+        message: "this call has reached its maximum number of armed subscribers",
+      },
+    };
   }
   return {
     status: 409,
@@ -282,6 +409,9 @@ export function createGatewayEntitlementBroker(deps: {
   network: string;
   sellerAddress: string;
   currency: string;
+  /** Persists the payload-hash → resource binding. See authorize() below. */
+  db: Database.Database;
+  now: () => Date;
 }): EntitlementPaymentBroker {
   return {
     async challenge(binding) {
@@ -308,14 +438,6 @@ export function createGatewayEntitlementBroker(deps: {
       if (!canonical || canonicalize(canonical) !== canonicalize(parsed.accepted)) {
         return brokerError(402, "PaymentRequirementsMismatch", "not the canonical server challenge");
       }
-      // Bind the resource fingerprint (defensive; the entitlement reservation is
-      // the primary anti-double-charge guard).
-      void paymentPayloadHash(parsed.paymentPayload);
-      void paymentRequirementsHash({
-        pipelineId: `${binding.chainId}:${binding.contractAddress}:${binding.onchainCallId}:${binding.pricingVersion}`,
-        paymentRequirements: canonical,
-      });
-
       let verify: Awaited<ReturnType<GatewayMiddleware["verify"]>>;
       try {
         verify = await deps.gateway.verify(parsed.paymentPayload, canonical);
@@ -328,6 +450,66 @@ export function createGatewayEntitlementBroker(deps: {
       if (verify.payer && verify.payer.toLowerCase() !== parsed.payer.toLowerCase()) {
         return brokerError(402, "PaymentVerificationFailed", "verified payer does not match authorization");
       }
+
+      // Bind this payment to THIS resource, and enforce it.
+      //
+      // AFTER verification, deliberately. Binding first meant an unverified
+      // header wrote a permanent row: the local parser accepts any
+      // address-shaped `from` and any nonempty nonce, so anyone holding the
+      // public 402 challenge could write unbounded junk into this table with
+      // invalid signatures, and nothing cleans it up. Concurrency is still
+      // safe — bind() serializes verified presentations on its own.
+      //
+      // Both hashes used to be computed and thrown away (`void ...`) under a
+      // comment claiming the entitlement reservation was the real guard. It
+      // is not: the reservation is unique per (call, subscriber), so the same
+      // signed header replayed against a DIFFERENT call at the same price
+      // passed every local check — only the facilitator's nonce handling
+      // stood in the way, which is not a guarantee this service makes.
+      //
+      // A repeat of the SAME purchase re-presents the same fingerprint and is
+      // allowed through (clients do retry).
+      const resourceFingerprint =
+        `${binding.chainId}:${binding.contractAddress}:${binding.onchainCallId}:${binding.pricingVersion}`;
+      // Keyed on the SIGNED authorization, not on a hash of the whole decoded
+      // envelope. `accepted` and `resource` sit OUTSIDE the EIP-712 signature
+      // — it covers from/to/value/validity/nonce — so hashing the envelope let
+      // the same signed authorization be re-encoded with a different
+      // `resource`, produce a different hash, and claim a second call. The
+      // nonce is what the facilitator itself replay-protects on; keying on it
+      // makes this check agree with that boundary instead of sitting beside it.
+      if (!parsed.nonce) {
+        return brokerError(
+          400,
+          "MalformedPayment",
+          "payment authorization carries no nonce",
+        );
+      }
+      const payloadHash = paymentPayloadHash({
+        network: parsed.accepted.network,
+        payTo: parsed.accepted.payTo.toLowerCase(),
+        amount: parsed.accepted.amount,
+        from: parsed.payer,
+        nonce: parsed.nonce,
+      });
+      const requirementsHash = paymentRequirementsHash({
+        pipelineId: resourceFingerprint,
+        paymentRequirements: canonical,
+      });
+      const bound = entitlementPaymentBindingsRepo.bind(deps.db, {
+        payload_hash: payloadHash,
+        resource_fingerprint: resourceFingerprint,
+        requirements_hash: requirementsHash,
+        now_iso: deps.now().toISOString(),
+      });
+      if (!bound) {
+        return brokerError(
+          402,
+          "PaymentRequirementsMismatch",
+          "this payment was already presented for a different resource",
+        );
+      }
+
 
       const canonicalRequirements = canonical;
       return {
@@ -355,7 +537,7 @@ export function createGatewayEntitlementBroker(deps: {
               transaction: settle.transaction,
               payer: parsed.payer,
               amount: canonicalRequirements.amount,
-              currency: deps.currency,
+              currency: binding.currency,
             };
           },
         },

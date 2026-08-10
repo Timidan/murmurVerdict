@@ -1,13 +1,27 @@
 import type Database from "better-sqlite3";
 
+import { fhenixSealedCallsRepo } from "./repos/fhenix-sealed-calls-repo.js";
+import { effectiveCohortCap } from "./repos/agent-provider-terms-repo.js";
+import {
+  marketClocksRepo,
+  marketSeriesRepo,
+} from "./repos/market-clocks-repo.js";
+
 import type {
   GrantChainAdapter,
   GrantDecryptAccessView,
 } from "../integrations/fhenix-grant-env.js";
 import {
   entitlementsRepo,
+  NON_TERMINAL_ENTITLEMENT_STATUSES,
   type EntitlementRow,
 } from "./repos/entitlements-repo.js";
+import {
+  accrueIfEligible,
+  grantAndAccrue,
+  type ProviderEarningsDeps,
+} from "./provider-earnings.js";
+import { requireProtocolFeeBps } from "./protocol-fee.js";
 
 // Flow 2 v1 orchestrator: the durable payment→reserve→settle→grant→confirm state
 // machine for paid private decrypt-grant. Kept free of Express/x402 wiring so it
@@ -17,6 +31,8 @@ import {
 //
 // On-chain CallState mirror.
 const STATE_SEALED = 1;
+/** On-chain SubmissionClass.EarlyAccess — the only sellable class. */
+const SUBMISSION_CLASS_EARLY_ACCESS = 1;
 
 export interface EntitlementSettlement {
   /**
@@ -44,12 +60,33 @@ export type SettleOutcome =
 export interface EntitlementAccessDeps {
   readonly db: Database.Database;
   readonly grantChain: GrantChainAdapter;
-  /** Seconds of margin before revealOpenAt when sales close (Codex §6). */
+  /** Seconds of margin before the contract's grantCloseAt when sales close. */
   readonly salesSafetySeconds: number;
+  /**
+   * Max armed consumers per call, from the market's series. Undefined disables
+   * the check — but note that leaves the cohort unbounded, which is what the
+   * cap exists to prevent.
+   */
+  readonly maxArmedPerCall?: number;
   /** Wall clock; epoch seconds derived for the on-chain window comparison. */
   readonly now: () => Date;
-  /** Optional producer lookup for later accounting (no v1 revenue split). */
+  /**
+   * Resolves the agent that produced a call, for revenue attribution.
+   *
+   * Supply it. When it is absent every reservation records a NULL producer, and
+   * accrual has to fall back to re-deriving the owner from the sealed call —
+   * which works, but leaves the entitlement itself unable to say whose sale it
+   * was.
+   */
   readonly resolveProducerAgentId?: (onchainCallId: string) => string | null;
+  /**
+   * Murmur's cut, in basis points. Stamped onto a reservation only when the
+   * CALL carries no snapshot of its own (a legacy row), and used as the split
+   * for legacy accruals. Falls back to MURMUR_PROTOCOL_FEE_BPS when omitted.
+   */
+  readonly protocolFeeBps?: number;
+  /** Where accrual repairs and unattributed sales are reported. */
+  readonly logger?: Pick<Console, "warn">;
   /**
    * Block-depth required before a grant is marked terminally `granted`
    * (Codex §6 step 6). Default 1.
@@ -74,6 +111,55 @@ export interface EntitlementAccessDeps {
   readonly settlementUnknownMaxAttempts?: number;
 }
 
+/**
+ * How long a fresh reservation is left alone before the reconciler may treat
+ * it as abandoned. Reuses the rebroadcast delay: both answer the same
+ * question — how long to wait before presuming an in-flight operation died.
+ */
+function settleGraceSeconds(deps: EntitlementAccessDeps): number {
+  return deps.grantRebroadcastDelaySeconds ?? DEFAULT_REBROADCAST_DELAY_SEC;
+}
+
+/** The accrual engine's view of these deps. */
+function earnings(deps: EntitlementAccessDeps): ProviderEarningsDeps {
+  return {
+    db: deps.db,
+    protocolFeeBps: deps.protocolFeeBps,
+    now: deps.now,
+    logger: deps.logger,
+  };
+}
+
+/**
+ * The split THIS sale freezes.
+ *
+ * From the call's own snapshot, taken when it was sealed. A call with no
+ * snapshot predates migration 071 and froze nothing, so it is stamped with the
+ * fee as it stands right now — that is still a decision made at the SALE, which
+ * is the boundary that matters. What must never happen is reading the live fee
+ * at GRANT time: a fee change between payment and grant would then re-cut a
+ * purchase the subscriber had already answered a 402 for.
+ *
+ * Throws when no fee is configured at all. That is a startup-level
+ * misconfiguration, and it surfaces here BEFORE any reservation or settlement —
+ * no money has moved.
+ */
+function feeBpsForSale(deps: EntitlementAccessDeps, onchainCallId: string): number {
+  const call = fhenixSealedCallsRepo.byOnchainCall(deps.db, {
+    chain_id: deps.grantChain.chainId,
+    contract_address: deps.grantChain.contractAddress,
+    onchain_call_id: onchainCallId,
+  });
+  return (
+    call?.provider_fee_bps ??
+    deps.protocolFeeBps ??
+    requireProtocolFeeBps(
+      process.env,
+      "this call carries no fee snapshot, so the sale has no split to freeze",
+    )
+  );
+}
+
 const DEFAULT_GRANT_CONFIRMATIONS = 1;
 const DEFAULT_MAX_GRANT_ATTEMPTS = 5;
 const DEFAULT_REBROADCAST_DELAY_SEC = 30;
@@ -84,11 +170,23 @@ export type EligibilityReason =
   | "ok"
   | "call_not_found"
   | "not_sealed"
-  | "sale_window_closed";
+  | "sale_window_closed"
+  | "cohort_full"
+  | "not_sellable";
 
 export interface EntitlementEligibility {
   reason: EligibilityReason;
   view: GrantDecryptAccessView | null;
+  /**
+   * The cohort limit this call is actually sold under — the provider's own
+   * ceiling clamped by what the deployment can deliver. Returned rather than
+   * recomputed by the caller because the reservation transaction MUST enforce
+   * the same number this check used; enforcing a different one is how two
+   * buyers racing for the last slot both got in.
+   *
+   * `undefined` means no limit applies.
+   */
+  cap: number | undefined;
 }
 
 /**
@@ -106,12 +204,64 @@ export async function checkEntitlementEligibility(
     // read address. alreadyGranted for the real subscriber is re-read later.
     ZERO_ADDRESS,
   );
-  if (!view || view.state === 0) return { reason: "call_not_found", view: null };
-  if (view.state !== STATE_SEALED) return { reason: "not_sealed", view };
+  if (!view || view.state === 0) return { reason: "call_not_found", view: null, cap: undefined };
+  if (view.state !== STATE_SEALED) return { reason: "not_sealed", view, cap: undefined };
   const nowSec = Math.floor(deps.now().getTime() / 1000);
-  const salesCloseAt = view.revealOpenAt - deps.salesSafetySeconds;
-  if (nowSec >= salesCloseAt) return { reason: "sale_window_closed", view };
-  return { reason: "ok", view };
+  // Sales close a safety margin before the CONTRACT's grant deadline, so the
+  // gate can never settle a payment for a grant that will revert.
+  const salesCloseAt = view.grantCloseAt - deps.salesSafetySeconds;
+  if (nowSec >= salesCloseAt) return { reason: "sale_window_closed", view, cap: undefined };
+
+  // Cohort capacity. Each grant is its own transaction, so an unbounded cohort is a funding and
+  // throughput problem rather than a block-limit one: N subscribers means N
+  // grant transactions that must all confirm inside the delivery budget.
+  //
+  // Checked before the 402 challenge, so a full call is never charged for.
+  // Source of truth is the SERIES cap persisted when the market was
+  // registered, falling back to the global setting only when this call's
+  // market cannot be resolved. Reading the global value alone let a series
+  // registered with a cap of 50 sell more because the daemon setting differed.
+  // The contract refuses to grant a LateUnsellable call (CallNotSellable), so
+  // selling one takes payment for access that can never be delivered. Checked
+  // here, before the 402 — eligibility previously looked only at state, time
+  // and count.
+  const sealedCall = fhenixSealedCallsRepo.byOnchainCall(deps.db, {
+    chain_id: deps.grantChain.chainId,
+    contract_address: deps.grantChain.contractAddress,
+    onchain_call_id: onchainCallId,
+  });
+  // FAIL CLOSED on unknown. NULL means the class was never recorded (a call
+  // accepted before migration 065, or a gateway attempt whose submit log was
+  // never decoded). Treating unknown as sellable settles the payment and only
+  // then discovers the contract reverts CallNotSellable — the subscriber has
+  // paid for access that can never be delivered. Refusing costs a lost sale;
+  // allowing costs a refund obligation with no refund worker to honour it.
+  if (sealedCall?.submission_class !== SUBMISSION_CLASS_EARLY_ACCESS) {
+    return { reason: "not_sellable", view, cap: undefined };
+  }
+
+  // Cohort size: the PROVIDER's business limit, clamped by what this
+  // deployment can actually deliver. Two different constraints — an owner
+  // saying "serve 200" does not make 200 grants confirmable inside the
+  // delivery budget, and selling past that is a refund obligation.
+  //
+  // Read from the call's snapshot, not the live terms row: an owner who
+  // raises their limit must not resize a cohort subscribers already joined.
+  // Falls back to the series cap for calls sealed before per-provider terms.
+  const deliverableCap = seriesCapForCall(deps, onchainCallId) ?? deps.maxArmedPerCall;
+  const { cap } = effectiveCohortCap(
+    sealedCall.provider_max_subscribers,
+    deliverableCap,
+  );
+  if (cap !== undefined) {
+    const armed = entitlementsRepo.countActiveForCall(deps.db, {
+      chainId: deps.grantChain.chainId,
+      contractAddress: deps.grantChain.contractAddress,
+      onchainCallId,
+    });
+    if (armed >= cap) return { reason: "cohort_full", view, cap };
+  }
+  return { reason: "ok", view, cap };
 }
 
 export type PurchaseResult =
@@ -156,19 +306,77 @@ export async function purchaseEntitlementAccess(
     return eligibilityError(eligibility.reason);
   }
 
+  // (1b) Does THIS payer already hold the on-chain grant? The eligibility read
+  // above uses a throwaway address, so it cannot answer that. The contract
+  // treats a duplicate grant as a successful no-op, so without this check a
+  // payer whose local entitlement row is missing — restored-from-backup DB,
+  // manual grant, reconciler gap — pays again for access they already own.
+  //
+  // The chain is authoritative here, not our table: that is the whole point.
+  const payerView = await deps.grantChain.readDecryptAccess(
+    input.onchainCallId,
+    input.verifiedPayer,
+  );
+  if (payerView?.alreadyGranted) {
+    const known = entitlementsRepo.byReservation(deps.db, key);
+    if (known) return classifyExisting(known);
+    // On-chain access with no local row. Record it as granted rather than
+    // charging for it; the subscriber can decrypt right now either way.
+    //
+    // ONE transaction. Reserving and promoting as two autocommit writes left a
+    // crash window in which a `payment_settling` row existed for a payment
+    // that never happened — the reconciler moves that to settlement_unknown
+    // and then to grant_failed_refund_due, inventing a refund obligation. The
+    // same transaction also resolves the race between two adoptions: the
+    // second sees the row the first wrote.
+    const nowAdopt = deps.now().toISOString();
+    const adopted = entitlementsRepo.adoptOnchainGrant(deps.db, {
+      ...key,
+      producerAgentId: deps.resolveProducerAgentId?.(input.onchainCallId) ?? null,
+      now: nowAdopt,
+    });
+    return adopted
+      ? classifyExisting(adopted)
+      : { kind: "error", status: 500, body: { error: "InternalStateInconsistent" } };
+  }
+
   // (2) Reserve the unique entitlement BEFORE settlement. A racing identical
   // reservation throws SQLITE_CONSTRAINT_UNIQUE — resolve to the existing row.
+  //
+  // The cap is re-counted INSIDE the reservation's write transaction. Step (1)
+  // above checks it too, but that check is a read: two different buyers on the
+  // last slot both passed it and both inserted, because the unique index keys
+  // on subscriber and so does not serialize them against each other.
+  //
+  // It enforces the cap step (1) COMPUTED — the provider's own ceiling clamped
+  // by deliverability. Re-deriving the deployment cap here instead meant the
+  // serialized check used a larger number than the check it was there to
+  // backstop: an owner selling to 1 had both racing buyers admitted, because
+  // the transaction was asking whether the deployment could take 50.
   const nowIso = deps.now().toISOString();
   let id: number;
   try {
-    id = entitlementsRepo.reserve(deps.db, {
+    const reserved = entitlementsRepo.reserveWithinCap(deps.db, {
       ...key,
       callId: null,
       producerAgentId: deps.resolveProducerAgentId?.(input.onchainCallId) ?? null,
       amount: null,
       currency: null,
+      // The split is frozen HERE, at the sale, not at the grant.
+      feeBpsAtSale: feeBpsForSale(deps, input.onchainCallId),
       now: nowIso,
+      // Hold the reconciler off while THIS request settles. It exists to
+      // recover reservations whose request died, and it cannot tell that case
+      // from one still waiting on the payment rail — so without a grace it
+      // took live rows first, `listDue` ordering unscheduled ones ahead of
+      // everything else.
+      nextAttemptAt: new Date(
+        deps.now().getTime() + settleGraceSeconds(deps) * 1000,
+      ).toISOString(),
+      cap: eligibility.cap,
     });
+    if (reserved === null) return eligibilityError("cohort_full");
+    id = reserved;
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = entitlementsRepo.byReservation(deps.db, key);
@@ -195,7 +403,28 @@ export async function purchaseEntitlementAccess(
 
   if (outcome.kind === "rejected") {
     // No money moved — release the reservation so a fresh nonce can retry.
-    entitlementsRepo.releaseReservation(deps.db, id);
+    //
+    // Releases a `settlement_unknown` row too, and the result is CHECKED. If
+    // the rejection took longer than the reconciler's grace, the row was
+    // already relabelled by a tick that had no idea how the payment ended;
+    // this definitive answer supersedes that guess. Leaving it behind blocked
+    // the subscriber's retry and aged into a refund owed on money nobody took.
+    const released = entitlementsRepo.releaseReservation(deps.db, id);
+    if (!released) {
+      // Something advanced the row past a releasable state, or it already
+      // carries settlement evidence. Not ours to delete, but the rail's
+      // rejection is worth recording against it — from ANY non-terminal state
+      // plus refund_due, which is exactly where a slow rejection lands.
+      entitlementsRepo.transition(
+        deps.db,
+        id,
+        [...NON_TERMINAL_ENTITLEMENT_STATUSES, "grant_failed_refund_due"],
+        {
+          lastError: `settlement rejected: ${outcome.reason}`,
+          now: nowIso,
+        },
+      );
+    }
     return {
       kind: "error",
       status: 402,
@@ -203,7 +432,10 @@ export async function purchaseEntitlementAccess(
     };
   }
   if (outcome.kind === "unknown") {
-    entitlementsRepo.transition(deps.db, id, ["payment_settling"], {
+    // Already settlement_unknown if the reconciler beat us here — same
+    // destination, so accept it as a from-state rather than silently failing
+    // the CAS and reporting a state we never confirmed.
+    entitlementsRepo.transition(deps.db, id, ["payment_settling", "settlement_unknown"], {
       status: "settlement_unknown",
       lastError: outcome.reason,
       nextAttemptAt: nowIso,
@@ -213,14 +445,45 @@ export async function purchaseEntitlementAccess(
   }
 
   // Settled: record the receipt + amount and move to grant_queued.
-  entitlementsRepo.transition(deps.db, id, ["payment_settling"], {
-    status: "grant_queued",
-    nanopayReceiptId: outcome.transaction,
-    amount: outcome.amount,
-    currency: outcome.currency,
-    nextAttemptAt: nowIso,
-    now: nowIso,
-  });
+  //
+  // `settlement_unknown` is an accepted from-state, and the result is CHECKED.
+  // While this request awaited the payment rail, a reconciler tick could pick
+  // the row up and move it there — it has no way to know a settle is in
+  // flight. A CAS pinned to `payment_settling` then updated nothing, and the
+  // ignored `false` meant the transaction id, amount and currency of a payment
+  // that DID settle were never written down. Money in, no grant, and no local
+  // evidence of the receipt for the manual refund.
+  const recorded = entitlementsRepo.transition(
+    deps.db,
+    id,
+    ["payment_settling", "settlement_unknown"],
+    {
+      status: "grant_queued",
+      nanopayReceiptId: outcome.transaction,
+      amount: outcome.amount,
+      currency: outcome.currency,
+      nextAttemptAt: nowIso,
+      now: nowIso,
+    },
+  );
+  if (!recorded) {
+    // The row moved somewhere neither state covers — already granted by an
+    // adoption, or terminalized as refund_due. Do not fight it for the status,
+    // but the receipt is evidence of a real payment and must be attached
+    // wherever the row ended up, or a refund gets processed with no record of
+    // what was taken.
+    entitlementsRepo.attachReceipt(deps.db, id, {
+      nanopayReceiptId: outcome.transaction,
+      amount: outcome.amount,
+      currency: outcome.currency,
+      now: nowIso,
+    });
+    // The row may have been granted by another writer BEFORE this receipt
+    // existed, and `granted` is terminal — nothing revisits it. Attaching the
+    // receipt is what makes the sale accruable, so accrue right here rather
+    // than waiting for the sweep to notice a gap that is already resolvable.
+    accrueIfEligible(earnings(deps), id);
+  }
 
   // (5)+(6)+(7) Broadcast the grant and try to confirm inline; the reconciler
   // finishes any row left in grant_queued / grant_broadcast.
@@ -325,7 +588,7 @@ export async function reconcileEntitlement(
         });
         return entitlementsRepo.byId(deps.db, id) ?? row;
       }
-      entitlementsRepo.transition(deps.db, id, ["grant_broadcast"], {
+      grantAndAccrue(earnings(deps), id, ["grant_broadcast"], {
         status: "granted",
         grantBlockNumber: receipt.blockNumber,
         grantedAt: nowIso,
@@ -345,7 +608,7 @@ export async function reconcileEntitlement(
     // truth: an earlier broadcast (or a concurrent grantor) may already have
     // landed the grant even though THIS tx hash never mined.
     if (await bestEffortAlreadyGranted(deps, row)) {
-      entitlementsRepo.transition(deps.db, id, ["grant_broadcast"], {
+      grantAndAccrue(earnings(deps), id, ["grant_broadcast"], {
         status: "granted",
         grantedAt: nowIso,
         lastError: null,
@@ -438,7 +701,7 @@ async function finalizeGrantFailure(
   }
 
   if (alreadyGranted === true) {
-    entitlementsRepo.transition(deps.db, id, [row.status], {
+    grantAndAccrue(earnings(deps), id, [row.status], {
       status: "granted",
       grantedAt: nowIso,
       lastError: null,
@@ -525,9 +788,63 @@ function pendingRow(db: Database.Database, id: number): PurchaseResult {
   return { kind: "processing", row };
 }
 
+
+/**
+ * The cohort cap for a call, read from the series its market belongs to.
+ *
+ * Registration persists `max_armed_per_call` on the series, so that is what
+ * the market was actually sized for. Returns null when the call's market or
+ * series cannot be resolved, so the caller can fall back rather than sell
+ * uncapped.
+ */
+function seriesCapForCall(
+  deps: EntitlementAccessDeps,
+  onchainCallId: string,
+): number | null {
+  const sealed = fhenixSealedCallsRepo.byOnchainCall(deps.db, {
+    chain_id: deps.grantChain.chainId,
+    contract_address: deps.grantChain.contractAddress,
+    onchain_call_id: onchainCallId,
+  });
+  if (!sealed?.call_id) return null;
+  const row = deps.db
+    .prepare("SELECT market_id FROM submissions WHERE call_id = ?")
+    .get(sealed.call_id) as { market_id?: string } | undefined;
+  const marketId = row?.market_id ?? null;
+  if (!marketId) return null;
+  const clock = marketClocksRepo.get(deps.db, marketId);
+  if (!clock) return null;
+  return marketSeriesRepo.get(deps.db, clock.series_id)?.max_armed_per_call ?? null;
+}
+
 function eligibilityError(reason: EligibilityReason): PurchaseResult {
+  if (reason === "not_sellable") {
+    return {
+      kind: "error",
+      status: 409,
+      body: {
+        error: "CallNotSellable",
+        message:
+          "this call is not proven sellable: its on-chain submission class is " +
+          "not EarlyAccess, or was never recorded",
+      },
+    };
+  }
   if (reason === "call_not_found") {
     return { kind: "error", status: 404, body: { error: "CallNotFound" } };
+  }
+  if (reason === "cohort_full") {
+    // A capacity race lost at the SECOND eligibility check (immediately before
+    // settlement) must not be reported as SaleWindowClosed — that tells the
+    // caller the sale is over when in fact the call filled up.
+    return {
+      kind: "error",
+      status: 409,
+      body: {
+        error: "CohortFull",
+        message: "this call reached its maximum number of armed subscribers",
+      },
+    };
   }
   if (reason === "not_sealed") {
     return {

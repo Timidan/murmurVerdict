@@ -58,6 +58,9 @@ function chain(opts: {
     async getBalanceWei() {
       return 1n;
     },
+    async hasGrantorRole() {
+      return true;
+    },
   };
 }
 
@@ -67,7 +70,16 @@ function accessDeps(
   now: () => Date,
   extra: Partial<EntitlementAccessDeps> = {},
 ): EntitlementAccessDeps {
-  return { db, grantChain: c, salesSafetySeconds: 180, now, ...extra };
+  // protocolFeeBps injected: the accrual path needs a split for any row that
+  // predates one, and a smoke must not depend on the ambient .env for it.
+  return {
+    db,
+    grantChain: c,
+    salesSafetySeconds: 180,
+    protocolFeeBps: 1_000,
+    now,
+    ...extra,
+  };
 }
 
 function seed(
@@ -104,7 +116,7 @@ function newDb() {
 
 const grantedView: GrantDecryptAccessView = {
   state: 1,
-  revealOpenAt: 0,
+  grantCloseAt: 0,
   binaryIndexCtHash: "0x01",
   confidenceCtHash: "0x02",
   alreadyGranted: true,
@@ -248,6 +260,64 @@ const grantedView: GrantDecryptAccessView = {
   const row = entitlementsRepo.byId(db, id);
   assert.equal(row?.status, "grant_failed_refund_due", "settlement_unknown resolves to refund_due");
   assert.equal(row?.refund_status, "refund_due");
+  db.close();
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+// Terminal refund_due rows must NOT consume the reconciler's per-tick budget.
+// They are terminal for grant work (reconcileEntitlement returns them
+// unchanged), so leaving them in the due query lets a backlog of them starve
+// real grant work forever — every tick re-reads the same dead rows.
+{
+  const { db, tmp } = newDb();
+  const clk = clock();
+  let revert = true;
+  const c = chain({
+    sendGrant: async () => {
+      if (revert) throw new Error("execution reverted: DecryptGrantWindowClosed");
+      return "0xLIVE";
+    },
+    readView: { ...grantedView, alreadyGranted: false },
+  });
+  const recon = new FhenixGrantReconciler({ db, access: accessDeps(db, c, clk.now) });
+
+  // Fill a full tick's budget with rows that terminalize to refund_due.
+  for (let i = 0; i < 10; i += 1) {
+    seed(db, "0x" + `d${i}`.padStart(2, "0").repeat(32), "grant_queued", clk.now().toISOString());
+  }
+  await recon.tick();
+  assert.equal(
+    entitlementsRepo.counts(db).grant_failed_refund_due,
+    10,
+    "seeded a full tick budget of terminal refund_due rows",
+  );
+
+  // A later, genuinely pending grant must still get picked up.
+  revert = false;
+  clk.advance(60);
+  const pending = seed(db, "0x" + "e5".repeat(32), "grant_queued", clk.now().toISOString());
+  entitlementsRepo.transition(db, pending, ["grant_queued"], {
+    status: "grant_queued",
+    nextAttemptAt: clk.now().toISOString(),
+    now: clk.now().toISOString(),
+  });
+
+  clk.advance(60);
+  const t = await recon.tick();
+  assert.equal(
+    entitlementsRepo.byId(db, pending)?.status,
+    "grant_broadcast",
+    "pending grant is not starved by terminal refund_due rows",
+  );
+  assert.equal(t.processed, 1, "only the live row is due; terminal rows are excluded");
+
+  // The refund path still sees them.
+  assert.equal(
+    entitlementsRepo.listRefundDue(db, { limit: 50 }).length,
+    10,
+    "terminal refund_due rows remain visible to the refund path",
+  );
+
   db.close();
   rmSync(tmp, { recursive: true, force: true });
 }

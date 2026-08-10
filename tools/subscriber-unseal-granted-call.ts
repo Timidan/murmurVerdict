@@ -34,6 +34,10 @@ import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { FheTypes } from "@cofhe/sdk";
 
+import { COFHE_404_RETRY_TIMEOUT_MS } from "../src/integrations/cofhe-decrypt-tuning.js";
+
+const RETRY_INTERVAL_MS = 3_000;
+
 const GETTER_ABI = parseAbi([
   "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 revealOpenAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
 ]);
@@ -83,14 +87,67 @@ async function main(): Promise<void> {
   // 3. decryptForView each handle with the self permit. The SDK runs threshold
   //    decryption then unseals the sealed output locally — plaintext never
   //    leaves this process.
-  const binaryIndex = await client
-    .decryptForView(BigInt(binaryIndexCtHash), FheTypes.Uint8)
-    .withPermit(permit as never)
-    .execute();
-  const confidenceBps = await client
-    .decryptForView(BigInt(confidenceCtHash), FheTypes.Uint16)
-    .withPermit(permit as never)
-    .execute();
+  //
+  //    Retry is REQUIRED here. After grantDecryptAccess lands on-chain the
+  //    threshold network needs ~5-30s to observe the ACL write, and until it
+  //    does it rejects the request. Two distinct rejections matter:
+  //
+  //      * 403/Forbidden — how this repo has observed ACL lag in practice
+  //        (see fhenix-reveal-worker.ts and tools/operator-blind-roundtrip.ts).
+  //        The SDK treats 403 as FATAL: isRetryableSubmitStatus covers only
+  //        204/404, so set404RetryTimeout does NOT help here. Hence the
+  //        explicit loop below.
+  //      * 404/204 — not-yet-indexed at submit. The SDK does retry these, but
+  //        only for 10s by default, which is shorter than the observed lag.
+  //
+  //    So we widen the SDK's own window AND wrap the call, covering both.
+  const deadlineMs = Date.now() + COFHE_404_RETRY_TIMEOUT_MS;
+  const decryptWithRetry = async <T>(
+    label: string,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        return await run();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Only ACL-propagation rejections are worth retrying. A genuinely
+        // ungranted wallet also 403s, but the pre-flight `alreadyGranted`
+        // check above has already ruled that out, so within the deadline a
+        // 403 here means "not indexed yet".
+        const retryable = /\b(403|forbidden|404|not found)\b/i.test(msg);
+        if (!retryable || Date.now() + RETRY_INTERVAL_MS >= deadlineMs) {
+          throw new Error(`${label} failed after ${attempt} attempt(s): ${msg}`);
+        }
+        process.stdout.write(
+          `${label}: attempt ${attempt} rejected (${msg}); threshold network likely still indexing the grant — retrying in ${RETRY_INTERVAL_MS / 1000}s\n`,
+        );
+        await new Promise((r) => setTimeout(r, RETRY_INTERVAL_MS));
+      }
+    }
+  };
+
+  //    The two handles are independent, so decrypt them concurrently rather
+  //    than sequentially — serial decryption doubles time-to-plaintext for no
+  //    reason, and on a short-horizon market that is most of the usable window.
+  const [binaryIndex, confidenceBps] = await Promise.all([
+    decryptWithRetry("binaryIndex", () =>
+      client
+        .decryptForView(BigInt(binaryIndexCtHash), FheTypes.Uint8)
+        .set404RetryTimeout(COFHE_404_RETRY_TIMEOUT_MS)
+        .withPermit(permit as never)
+        .execute(),
+    ),
+    decryptWithRetry("confidenceBps", () =>
+      client
+        .decryptForView(BigInt(confidenceCtHash), FheTypes.Uint16)
+        .set404RetryTimeout(COFHE_404_RETRY_TIMEOUT_MS)
+        .withPermit(permit as never)
+        .execute(),
+    ),
+  ]);
 
   process.stdout.write(
     `UNSEALED (local, ${account.address} only):\n` +

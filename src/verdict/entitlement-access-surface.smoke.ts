@@ -17,6 +17,48 @@ import {
   type EntitlementAccessSurfaceDeps,
 } from "./entitlement-access-surface.js";
 
+/**
+ * Eligibility now fails closed on an unknown submission class, so a sale test
+ * must seed the canonical accepted-call row that records it. An unseeded call
+ * is correctly unsellable — that is the point of the check.
+ */
+function seedEarlyAccessCall(
+  db: ReturnType<typeof openDb>,
+  chainId: number,
+  contractAddress: string,
+  onchainCallId: string,
+): void {
+  const callId = `seed-${onchainCallId.slice(2, 12)}`;
+  // These rows exist only to give eligibility a submission_class to read.
+  // Building the full agent → submission → sealed-call FK chain would be a lot
+  // of scaffolding for one column, so FKs are relaxed for the seed itself.
+  db.pragma("foreign_keys = OFF");
+  db.prepare(
+    `INSERT OR IGNORE INTO submissions
+       (call_id, agent_id, client_order_id, horizon_seconds, submitted_at,
+        accepted_at, status, schema_version, scoring_version, dedup_key)
+     VALUES (@call_id, 'agent', @call_id, 300, @now, @now, 'pending_resolution',
+        1, 1, @call_id)`,
+  ).run({ call_id: callId, now: "2026-07-20T00:00:00.000Z" });
+  db.prepare(
+    `INSERT INTO fhenix_sealed_calls
+       (call_id, chain_id, contract_address, onchain_call_id, submit_tx_hash,
+        submit_log_index, binary_index_ct_hash, confidence_ct_hash, reveal_open_at,
+        submission_class, created_at)
+     VALUES (@call_id, @chain_id, @contract_address, @onchain_call_id, @tx,
+        0, '0x01', '0x02', @reveal, 1, @now)`,
+  ).run({
+    call_id: callId,
+    chain_id: chainId,
+    contract_address: contractAddress.toLowerCase(),
+    onchain_call_id: onchainCallId.toLowerCase(),
+    tx: `0x${onchainCallId.slice(2).padEnd(64, "0").slice(0, 64)}`,
+    reveal: "2027-01-01T00:00:00.000Z",
+    now: "2026-07-20T00:00:00.000Z",
+  });
+  db.pragma("foreign_keys = ON");
+}
+
 process.stdout.write("murmur entitlement access surface smoke\n");
 
 const CHAIN_ID = 84532;
@@ -28,7 +70,7 @@ const NOW_SEC = Math.floor(NOW.getTime() / 1000);
 
 const openView: GrantDecryptAccessView = {
   state: 1,
-  revealOpenAt: NOW_SEC + 3600,
+  grantCloseAt: NOW_SEC + 3600,
   binaryIndexCtHash: "0x0000000000000000000000000000000000000000000000000000000000000abc",
   confidenceCtHash: "0x0000000000000000000000000000000000000000000000000000000000000def",
   alreadyGranted: false,
@@ -50,6 +92,9 @@ function chain(view: GrantDecryptAccessView | null): GrantChainAdapter {
     },
     async getBalanceWei() {
       return 1n;
+    },
+    async hasGrantorRole() {
+      return true;
     },
   };
 }
@@ -89,6 +134,9 @@ function deps(
     db,
     grantChain: chain(view),
     salesSafetySeconds: 180,
+    // Every sale freezes a split. Injected rather than read from the ambient
+    // environment so this smoke does not depend on the operator's .env.
+    protocolFeeBps: 1_000,
     now: () => NOW,
   };
   return {
@@ -108,6 +156,7 @@ function newDb() {
 // Bad callId → 400.
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, CALL);
   const r = await entitlementAccessResponse({
     deps: deps(db, openView, { n: 0 }),
     onchainCallId: "0xnope",
@@ -121,9 +170,10 @@ function newDb() {
 // Sale window closed → 409 before any 402 or broker authorize.
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, CALL);
   const calls = { n: 0 };
   const r = await entitlementAccessResponse({
-    deps: deps(db, { ...openView, revealOpenAt: NOW_SEC + 60 }, calls),
+    deps: deps(db, { ...openView, grantCloseAt: NOW_SEC + 60 }, calls),
     onchainCallId: CALL,
     paymentHeader: "anything",
   });
@@ -136,6 +186,7 @@ function newDb() {
 // Eligible, no payment → 402 with challenge accepts.
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, CALL);
   const r = await entitlementAccessResponse({
     deps: deps(db, openView, { n: 0 }),
     onchainCallId: CALL,
@@ -150,6 +201,7 @@ function newDb() {
 // Eligible + payment → granted 200.
 {
   const { db, tmp } = newDb();
+  seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, CALL);
   const d = deps(db, openView, { n: 0 });
   const r = await entitlementAccessResponse({
     deps: d,
@@ -159,7 +211,7 @@ function newDb() {
   assert.equal(r.status, 200);
   assert.equal((r.body as { granted: boolean }).granted, true);
 
-  // Status endpoint returns ct handles + FheTypes hints + revealOpenAt.
+  // Status endpoint returns ct handles + FheTypes hints + grantCloseAt.
   const status = await entitlementStatusResponse({
     deps: d,
     onchainCallId: CALL,
@@ -172,14 +224,14 @@ function newDb() {
       binaryIndex: { handle: string; fheType: string };
       confidenceBps: { handle: string; fheType: string };
     };
-    revealOpenAt: number;
+    grantCloseAt: number;
     grant: { onchainGranted: boolean };
   };
   assert.equal(body.status, "granted");
   assert.equal(body.ciphertexts.binaryIndex.fheType, "Uint8");
   assert.equal(body.ciphertexts.confidenceBps.fheType, "Uint16");
   assert.equal(body.ciphertexts.binaryIndex.handle, openView.binaryIndexCtHash);
-  assert.equal(body.revealOpenAt, openView.revealOpenAt);
+  assert.equal(body.grantCloseAt, openView.grantCloseAt);
   db.close();
   rmSync(tmp, { recursive: true, force: true });
 }

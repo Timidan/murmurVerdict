@@ -17,9 +17,11 @@ const pipelineId = `0x${"1".repeat(64)}`;
 const sellerAddress = `0x${"2".repeat(40)}`;
 const domainContract = `0x${"3".repeat(40)}`;
 
+// The x402 binding domain is DERIVED from the Fhenix deployment now, not
+// configured: MURMUR_NANOPAY_DOMAIN_CHAIN_ID / _DOMAIN_CONTRACT are gone. A
+// separately-set domain could only agree with the Fhenix config or bind
+// payments to a contract that is not the one being paid for.
 const ambientEnvKeys = [
-  "MURMUR_NANOPAY_DOMAIN_CHAIN_ID",
-  "MURMUR_NANOPAY_DOMAIN_CONTRACT",
   "MURMUR_NANOPAY_ENABLED",
   "MURMUR_NANOPAY_PIPELINES",
   "MURMUR_NANOPAY_SELLER_ADDRESS",
@@ -27,8 +29,6 @@ const ambientEnvKeys = [
 const priorEnv = new Map(ambientEnvKeys.map((key) => [key, process.env[key]]));
 
 process.env.MURMUR_NANOPAY_ENABLED = "true";
-process.env.MURMUR_NANOPAY_DOMAIN_CHAIN_ID = "84532";
-process.env.MURMUR_NANOPAY_DOMAIN_CONTRACT = `0x${"4".repeat(40)}`;
 process.env.MURMUR_NANOPAY_SELLER_ADDRESS = `0x${"5".repeat(40)}`;
 process.env.MURMUR_NANOPAY_PIPELINES =
   `${pipelineId}:1000:${process.env.MURMUR_NANOPAY_SELLER_ADDRESS}:84532`;
@@ -45,8 +45,8 @@ const logger = {
 try {
   const disabledConfig = loadDaemonNanopayRuntimeConfig({
     env: {},
-    fhenixChainId: null,
-    fhenixSealedVerdictsAddress: null,
+    fhenixChainId: 84532,
+    fhenixSealedVerdictsAddress: domainContract,
     logger,
   });
   const disabledRuntime = loadDaemonNanopayRuntime({
@@ -61,8 +61,8 @@ try {
     () =>
       loadDaemonNanopayRuntimeConfig({
         env: { MURMUR_NANOPAY_ENABLED: "yes" },
-        fhenixChainId: null,
-        fhenixSealedVerdictsAddress: null,
+        fhenixChainId: 84532,
+        fhenixSealedVerdictsAddress: domainContract,
         logger,
       }),
     (err) =>
@@ -75,13 +75,11 @@ try {
       loadDaemonNanopayRuntimeConfig({
         env: {
           MURMUR_NANOPAY_ENABLED: "true",
-          MURMUR_NANOPAY_DOMAIN_CHAIN_ID: "84532",
-          MURMUR_NANOPAY_DOMAIN_CONTRACT: domainContract,
           MURMUR_NANOPAY_SELLER_ADDRESS: sellerAddress,
           MURMUR_NANOPAY_NETWORK: "production",
         },
-        fhenixChainId: null,
-        fhenixSealedVerdictsAddress: null,
+        fhenixChainId: 84532,
+        fhenixSealedVerdictsAddress: domainContract,
         logger,
       }),
     (err) =>
@@ -92,14 +90,12 @@ try {
   const runtimeConfig = loadDaemonNanopayRuntimeConfig({
     env: {
       MURMUR_NANOPAY_ENABLED: "true",
-      MURMUR_NANOPAY_DOMAIN_CHAIN_ID: "84532",
-      MURMUR_NANOPAY_DOMAIN_CONTRACT: domainContract,
       MURMUR_NANOPAY_SELLER_ADDRESS: sellerAddress,
       MURMUR_NANOPAY_DEFAULT_PRICE: "$0.001",
       MURMUR_NANOPAY_PIPELINES: `${pipelineId}:1000:${sellerAddress}:84532`,
     },
-    fhenixChainId: null,
-    fhenixSealedVerdictsAddress: null,
+    fhenixChainId: 84532,
+    fhenixSealedVerdictsAddress: domainContract,
     logger,
   });
   const runtime = loadDaemonNanopayRuntime({

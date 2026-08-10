@@ -24,6 +24,8 @@ import type { CallAcceptedEvent } from "./events.js";
 import { publicAcceptedCallEvent } from "./public-event-fanout.js";
 import type { VerifiedSealedCallSubmitted } from "../integrations/fhenix-events.js";
 import { nowIso } from "./time.js";
+import { agentProviderTermsRepo } from "./repos/agent-provider-terms-repo.js";
+import { requireProtocolFeeBps } from "./protocol-fee.js";
 
 export { makeSealedCallUsage } from "./sealed-call-usage.js";
 
@@ -39,6 +41,13 @@ export interface SealedCallAcceptanceInput {
   strategy_tag?: string;
   verifiedSubmit: VerifiedSealedCallSubmitted;
   newCallId?: SealedCallIdAdapter;
+  /**
+   * Murmur's cut, in basis points, frozen onto this call alongside the
+   * provider's price. Resolved from MURMUR_PROTOCOL_FEE_BPS when omitted, and
+   * only for an agent that actually sells — a call with no terms has no split
+   * to record.
+   */
+  protocolFeeBps?: number;
   now: () => Date;
 }
 
@@ -161,6 +170,23 @@ export async function acceptSealedCall(
     accepted_at: verifiedSubmit.accepted_at,
     reveal_open_at: verifiedSubmit.reveal_open_at,
   });
+  // Read BEFORE the transaction so the snapshot below is a plain value, not a
+  // query interleaved with writes.
+  const providerTerms = agentProviderTermsRepo.get(db, agentId);
+  // The protocol fee is resolved BEFORE the transaction too, and only when this
+  // agent sells. It throws when unconfigured, and that is the point: a priced
+  // call whose fee snapshot is NULL is a sale whose split can never be
+  // reconstructed. Failing the seal costs one rejected submission; snapshotting
+  // NULL silently costs a ledger nobody can audit.
+  const providerFeeBps = providerTerms
+    ? input.protocolFeeBps ??
+      requireProtocolFeeBps(
+        process.env,
+        `agent ${agentId} sells early access, so every call it seals must ` +
+          `freeze the split it is sold under`,
+      )
+    : null;
+
   const tx = db.transaction(() => {
     submissionsRepo.acceptSealedFhenixCall(db, {
       call_id: callId,
@@ -195,7 +221,31 @@ export async function acceptSealedCall(
       binary_index_ct_hash: verifiedSubmit.binary_index_ct_hash,
       confidence_ct_hash: verifiedSubmit.confidence_ct_hash,
       reveal_open_at: verifiedSubmit.reveal_open_at,
+      // From the verified on-chain event — never client-supplied. A caller who
+      // could set this would submit late (with more information) and simply
+      // claim the call was sellable.
+      submission_class: verifiedSubmit.submission_class,
       created_at: nowIso(now()),
+      // SNAPSHOT the provider's terms as they stand right now.
+      //
+      // The owner may reprice at any moment; pricing a purchase from the live
+      // agent_provider_terms row would let that change reach calls already
+      // sold. Freezing them here is the same rule the market clock follows:
+      // terms someone armed against never move.
+      //
+      // Null when the agent sells no access — a perfectly normal call.
+      ...(providerTerms
+        ? {
+            provider_price_atoms: providerTerms.price_atoms,
+            provider_currency: providerTerms.currency,
+            provider_pricing_version: providerTerms.pricing_version,
+            provider_max_subscribers: providerTerms.max_subscribers_per_call,
+            // The split rides with the price. An operator repricing the
+            // protocol fee must not re-cut calls already on offer, for the
+            // same reason a provider's reprice must not.
+            provider_fee_bps: providerFeeBps,
+          }
+        : {}),
     });
     // Externally-resolved markets never anchor a t0 price, so a new sealed
     // call enters pending_t1 directly — the resolver's single adapter loop is

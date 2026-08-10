@@ -6,15 +6,28 @@ export interface NanopayPipelineAgentBinding {
   marketId: string;
 }
 
-export interface NanopayRuntimeConfig {
+/**
+ * The settlement RAIL: who is paid, on which network, under which binding
+ * domain. Shared by two independent products — paid inference (the nanopay
+ * route) and paid decrypt-grants (/v2/gateway/calls/:callId/access).
+ *
+ * Deliberately carries no price. Each product prices itself
+ * (MURMUR_NANOPAY_DEFAULT_PRICE / FHENIX_GRANT_PRICE_ATOMS), so a deployment
+ * that sells only grants configures the rail without inventing an inference
+ * price it will never charge.
+ */
+export interface NanopaySettlementRail {
   network: "testnet" | "mainnet";
   bindingDomain: {
     chainId: number;
     verifyingContract: `0x${string}`;
   };
   sellerAddress: `0x${string}`;
-  defaultPrice: string;
   acceptNetworks?: string[];
+}
+
+export interface NanopayRuntimeConfig extends NanopaySettlementRail {
+  defaultPrice: string;
   pipelineCatalog: Map<string, PipelineInfo>;
   pipelineAgentMap: Map<string, NanopayPipelineAgentBinding>;
 }
@@ -22,7 +35,22 @@ export interface NanopayRuntimeConfig {
 export type NanopayRuntimeDecision =
   | { kind: "disabled" }
   | { kind: "unmounted" }
+  /**
+   * The rail is configured but the inference route is NOT mounted, because no
+   * price was stated. Grants still work — they only need the rail. This is the
+   * grant-only deployment shape.
+   */
+  | { kind: "rail_only"; rail: NanopaySettlementRail }
   | { kind: "mounted"; config: NanopayRuntimeConfig };
+
+/** The settlement rail, whenever one is configured at all. */
+export function nanopaySettlementRail(
+  decision: NanopayRuntimeDecision,
+): NanopaySettlementRail | null {
+  if (decision.kind === "mounted") return decision.config;
+  if (decision.kind === "rail_only") return decision.rail;
+  return null;
+}
 
 export interface NanopayRuntimeConfigInput {
   env: NodeJS.ProcessEnv;
@@ -56,15 +84,13 @@ export function loadNanopayRuntimeConfig(
     return { kind: "disabled" };
   }
 
-  const domainChainId = Number(
-    env.MURMUR_NANOPAY_DOMAIN_CHAIN_ID ??
-      (fhenixChainId ? String(fhenixChainId) : undefined) ??
-      "0",
-  );
-  const domainContract =
-    env.MURMUR_NANOPAY_DOMAIN_CONTRACT ??
-    fhenixSealedVerdictsAddress ??
-    "";
+  // Derived, not configured. The x402 binding domain IS the murmur deployment
+  // a payment is bound to, so a separately-set chain id or contract could only
+  // ever agree with the Fhenix config or be wrong — and "wrong" here means
+  // signatures bound to a contract that is not the one being paid for.
+  // MURMUR_NANOPAY_DOMAIN_CHAIN_ID / _DOMAIN_CONTRACT are gone.
+  const domainChainId = fhenixChainId ?? 0;
+  const domainContract = fhenixSealedVerdictsAddress ?? "";
   const sellerAddress = env.MURMUR_NANOPAY_SELLER_ADDRESS ?? "";
 
   if (!domainChainId || !domainContract || !sellerAddress) {
@@ -81,37 +107,83 @@ export function loadNanopayRuntimeConfig(
   }
   if (!isHexAddress(domainContract)) {
     logger.warn(
-      `[daemon] MURMUR_NANOPAY_DOMAIN_CONTRACT not a valid 0x address (got ${domainContract}); nanopay route NOT mounted`,
+      `[daemon] the x402 binding domain contract is not a valid 0x address (got ${domainContract}); it is derived from the Fhenix deployment, so fix FHENIX_SEALED_VERDICTS_ADDRESS or run sync-deployments. nanopay route NOT mounted`,
     );
     return { kind: "unmounted" };
   }
 
   const network = parseNetwork(env.MURMUR_NANOPAY_NETWORK);
-  const defaultPrice = env.MURMUR_NANOPAY_DEFAULT_PRICE ?? "$0.001";
+  // NO DEFAULT PRICE. A hidden fallback charges real users a number nobody
+  // chose and reads as intentional in every receipt. Mounting nanopay means
+  // stating the price.
   const acceptNetworks = env.MURMUR_NANOPAY_ACCEPT_NETWORKS
     ? env.MURMUR_NANOPAY_ACCEPT_NETWORKS.split(",")
         .map((s) => s.trim())
         .filter(Boolean)
     : undefined;
 
-  let defaultPriceAtoms: bigint | null = null;
-  try {
-    defaultPriceAtoms = parseDollarPriceToUsdcAtoms(defaultPrice);
-  } catch (err) {
-    logger.warn(
-      `[daemon] MURMUR_NANOPAY_DEFAULT_PRICE "${defaultPrice}" unparseable; nanopay pipeline catalog will be empty. Reason: ${(err as Error).message}`,
+  const rail: NanopaySettlementRail = {
+    network,
+    bindingDomain: {
+      chainId: domainChainId,
+      verifyingContract: domainContract as `0x${string}`,
+    },
+    sellerAddress: sellerAddress as `0x${string}`,
+    ...(acceptNetworks !== undefined ? { acceptNetworks } : {}),
+  };
+
+  // No price → the inference route does not mount. It cannot: the router
+  // builds its payment gate eagerly, and that gate refuses to exist without a
+  // price, so mounting priceless would be a startup crash rather than a
+  // lazily-discovered 404.
+  //
+  // The RAIL is still returned. Paid decrypt-grants are a separate product on
+  // the same settlement infrastructure — they are served by
+  // /v2/gateway/calls/:callId/access and priced by FHENIX_GRANT_PRICE_ATOMS —
+  // so a grant-only deployment enables nanopay for the rail and simply states
+  // no inference price.
+  const defaultPrice = env.MURMUR_NANOPAY_DEFAULT_PRICE?.trim();
+  if (!defaultPrice) {
+    logger.log(
+      "[daemon] MURMUR_NANOPAY_DEFAULT_PRICE unset; paid-inference route NOT " +
+        "mounted. The settlement rail stays configured, so paid decrypt-grants " +
+        "still work (they price via FHENIX_GRANT_PRICE_ATOMS).",
+    );
+    return { kind: "rail_only", rail };
+  }
+  // A malformed price used to only warn, mounting an enabled but unusable
+  // service. It must parse.
+  const defaultPriceAtoms = parseDollarPriceToUsdcAtoms(defaultPrice);
+  // $0 parses, but it makes every pipeline unusable: entries must be > 0 atoms
+  // AND must equal this price, so a zero default rejects the whole catalog and
+  // mounts a route that 404s everything. Nanopay is the PAID route; free
+  // inference is not a mode it has.
+  if (defaultPriceAtoms <= 0n) {
+    throw new Error(
+      `MURMUR_NANOPAY_DEFAULT_PRICE must be greater than zero (got "${defaultPrice}"). ` +
+        "Nanopay is the paid-inference route; to serve nothing, leave " +
+        "MURMUR_NANOPAY_ENABLED unset.",
     );
   }
 
-  const pipelineCatalog =
-    defaultPriceAtoms !== null
-      ? parseNanopayPipelinesEnv(
-          env.MURMUR_NANOPAY_PIPELINES,
-          defaultPriceAtoms,
-          sellerAddress,
-          logger,
-        )
-      : new Map<string, PipelineInfo>();
+  const pipelineCatalog = parseNanopayPipelinesEnv(
+    env.MURMUR_NANOPAY_PIPELINES,
+    defaultPriceAtoms,
+    sellerAddress,
+    logger,
+  );
+  // Entries are individually warned-and-skipped, so a wholly malformed value
+  // used to degrade into "mounted, 404s everything" — the same enabled-but-
+  // unusable state a malformed price now fails on. An operator who stated
+  // pipelines meant to serve them; the per-entry warnings above say which
+  // ones were rejected and why.
+  if (env.MURMUR_NANOPAY_PIPELINES?.trim() && pipelineCatalog.size === 0) {
+    throw new Error(
+      "MURMUR_NANOPAY_PIPELINES is set but every entry was rejected — nanopay " +
+        "would mount and 404 every request. Fix the entries listed in the " +
+        "warnings above, or unset the variable.",
+    );
+  }
   const pipelineAgentMap = parseNanopayPipelineAgentMapEnv(
     env.MURMUR_NANOPAY_PIPELINE_AGENT_MAP,
     logger,
@@ -121,18 +193,7 @@ export function loadNanopayRuntimeConfig(
 
   return {
     kind: "mounted",
-    config: {
-      network,
-      bindingDomain: {
-        chainId: domainChainId,
-        verifyingContract: domainContract as `0x${string}`,
-      },
-      sellerAddress: sellerAddress as `0x${string}`,
-      defaultPrice,
-      ...(acceptNetworks !== undefined ? { acceptNetworks } : {}),
-      pipelineCatalog,
-      pipelineAgentMap,
-    },
+    config: { ...rail, defaultPrice, pipelineCatalog, pipelineAgentMap },
   };
 }
 

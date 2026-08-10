@@ -44,7 +44,17 @@ export function createNanopayPaymentGate(
     facilitatorUrl,
     description: "Murmur per-call paid inference",
   });
-  const price = deps.defaultPrice ?? "$0.001";
+  // No fallback price. The config loader already requires an explicit price
+  // when nanopay is mounted, so reaching here without one means a caller
+  // constructed the gate incorrectly — charging a made-up amount is worse than
+  // failing loudly.
+  const price = deps.defaultPrice?.trim();
+  if (!price) {
+    throw new Error(
+      "nanopay payment gate requires an explicit price — refusing to charge a " +
+        "default nobody configured",
+    );
+  }
   const challenge = gateway.require(price);
 
   return {

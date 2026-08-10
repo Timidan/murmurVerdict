@@ -4,6 +4,7 @@ import {
   http,
   nonceManager,
   parseAbi,
+  type Address,
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -13,6 +14,7 @@ import {
   parseFhenixChainIdInput,
   resolveFhenixContractAddress,
 } from "./deployments.js";
+import { SETTLEMENT_CURRENCY } from "./circle-gateway.js";
 import { createSerialBroadcastQueue } from "./fhenix-gateway-env.js";
 
 // The grantor EOA's own contract surface: grantDecryptAccess is onlyGrantor
@@ -21,7 +23,9 @@ import { createSerialBroadcastQueue } from "./fhenix-gateway-env.js";
 // key holds ONLY the grantor role — never submit (relayer) or reveal authority.
 const GRANT_ABI = parseAbi([
   "function grantDecryptAccess(bytes32 callId, address subscriber)",
-  "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 revealOpenAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
+  "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 grantCloseAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
+  // Startup preflight: prove this key actually holds the role before selling.
+  "function grantors(address) view returns (bool)",
 ]);
 
 export class FhenixGrantConfigError extends Error {
@@ -46,7 +50,14 @@ export interface GrantChainReceipt {
 export interface GrantDecryptAccessView {
   // Mirrors contract CallState: 0 None, 1 Sealed, 2 Opened, 3 Revealed, 4 Invalid.
   state: number;
-  revealOpenAt: number;
+  /**
+   * The contract's GRANT deadline (the market's submissionCloseAt), not the
+   * public reveal time. Sales must close when delivery stops being useful —
+   * once the prediction window opens, a grant is worthless to the subscriber.
+   * Using publicRevealAt here let the payment gate settle money for access the
+   * contract would reject, for the whole length of the embargo.
+   */
+  grantCloseAt: number;
   binaryIndexCtHash: string;
   confidenceCtHash: string;
   alreadyGranted: boolean;
@@ -66,6 +77,14 @@ export interface GrantChainAdapter {
     subscriber: string,
   ): Promise<GrantDecryptAccessView | null>;
   getBalanceWei(): Promise<bigint>;
+  /**
+   * Whether the configured EOA holds the on-chain grantor role.
+   *
+   * Checked at startup: without it a wrong or unauthorized key issues 402s,
+   * settles payments, and only then discovers every grant reverts NotGrantor —
+   * turning each sale into a refund obligation.
+   */
+  hasGrantorRole(): Promise<boolean>;
 }
 
 export interface FhenixGrantEnvConfig {
@@ -91,11 +110,27 @@ export interface FhenixGrantEnvConfig {
    */
   settlementUnknownMaxAttempts: number;
   /**
-   * Sales close at revealOpenAt - salesSafetySeconds. The margin must cover
+   * Sales close at grantCloseAt - salesSafetySeconds. The margin must cover
    * grant broadcast, confirmations, and enough subscriber time to decrypt
    * before the ciphertext goes public. Default 180s (Codex §6).
    */
   salesSafetySeconds: number;
+  /**
+   * Max armed consumers per call. Enforced BEFORE the 402 challenge so a full
+   * call is never charged for. Every armed consumer costs two ACL writes in
+   * the grant flow, so an unbounded cohort can exceed what one transaction
+   * can spend — and the grant then fails for everyone on that call.
+   *
+   * An OPERATIONAL SALES LIMIT, not a gas bound. Each grant is its own
+   * transaction — there is no batch-grant entrypoint — so a large cohort costs
+   * N transactions rather than risking a block limit. Size it from grantor
+   * funding and from how many grants can confirm inside the delivery budget.
+   *
+   * Must match the series' `max_armed_per_call`; eligibility prefers the
+   * persisted series value and falls back to this only when the call's market
+   * cannot be resolved.
+   */
+  maxArmedPerCall: number;
   minBalanceWei: bigint;
   /**
    * Flat, Murmur-configured access price in the settlement asset's atomic units
@@ -199,15 +234,70 @@ export function loadFhenixGrantEnvConfig(
     { min: 1 },
   );
   const salesSafetySeconds = integerEnv("FHENIX_GRANT_SALES_SAFETY_SEC", 180, env, { min: 0 });
-  const priceAtoms = env.FHENIX_GRANT_PRICE_ATOMS?.trim() || "10000"; // $0.01 USDC
-  if (!/^[0-9]+$/.test(priceAtoms) || priceAtoms === "0") {
+  // NO DEFAULT. The prior 179 came from dividing a block gas budget by a
+  // measured per-grant cost — a derivation that described a batch transaction
+  // this contract does not have. There is no defensible number to fall back
+  // on: the real ceiling is how many grant transactions the grantor can fund
+  // and confirm inside the delivery budget, which only the operator knows.
+  const maxArmedRaw = env.FHENIX_GRANT_MAX_ARMED_PER_CALL?.trim() ?? "";
+  if (!maxArmedRaw) {
+    throw new FhenixGrantConfigError(
+      "FHENIX_GRANT_MAX_ARMED_PER_CALL",
+      "is required when FHENIX_GRANT_ENABLED=true — state the maximum number " +
+        "of subscribers you will sell one call to (there is no default). Each " +
+        "grant is its own transaction, so size it from what the grantor can " +
+        "fund and confirm inside the delivery budget",
+    );
+  }
+  const maxArmedPerCall = integerEnv("FHENIX_GRANT_MAX_ARMED_PER_CALL", 0, env, { min: 1 });
+  // NO DEFAULT PRICE. A price is a commercial decision; a hidden $0.01 fallback
+  // silently charges real subscribers a number nobody chose, and reads as
+  // intentional in every log and receipt. Enabling paid grants must state it.
+  const priceAtoms = env.FHENIX_GRANT_PRICE_ATOMS?.trim() ?? "";
+  if (!priceAtoms) {
+    throw new FhenixGrantConfigError(
+      "FHENIX_GRANT_PRICE_ATOMS",
+      "is required when FHENIX_GRANT_ENABLED=true — set the access price " +
+        "explicitly in the settlement asset's atomic units (there is no default)",
+    );
+  }
+  // BigInt, not a `!== "0"` string check: that compared the literal only, so
+  // "00" and "000" passed startup and failed later at the Circle gateway —
+  // an operator sees a healthy boot and a broken payment challenge.
+  if (!/^[0-9]+$/.test(priceAtoms) || BigInt(priceAtoms) <= 0n) {
     throw new FhenixGrantConfigError(
       "FHENIX_GRANT_PRICE_ATOMS",
       "must be a positive integer atomic amount",
     );
   }
-  const currency = env.FHENIX_GRANT_CURRENCY?.trim() || "USDC";
-  const pricingVersion = env.FHENIX_GRANT_PRICING_VERSION?.trim() || "v1";
+  const currency = env.FHENIX_GRANT_CURRENCY?.trim() ?? "";
+  if (!currency) {
+    throw new FhenixGrantConfigError(
+      "FHENIX_GRANT_CURRENCY",
+      `is required when FHENIX_GRANT_ENABLED=true (${SETTLEMENT_CURRENCY})`,
+    );
+  }
+  // Must name the asset the rail actually charges. The Circle challenge always
+  // denominates in USDC atoms, so any other label here is charged as USDC and
+  // then written onto receipts under the wrong name — a mislabel on real
+  // money, caught at startup rather than at the first sale.
+  if (currency.toUpperCase() !== SETTLEMENT_CURRENCY) {
+    throw new FhenixGrantConfigError(
+      "FHENIX_GRANT_CURRENCY",
+      `must be ${SETTLEMENT_CURRENCY} — the settlement rail charges in that asset ` +
+        `and cannot honour "${currency}"`,
+    );
+  }
+  // Pricing identity binds the commercial terms a subscriber agreed to, so it
+  // fails closed alongside price and currency rather than silently becoming v1.
+  const pricingVersion = env.FHENIX_GRANT_PRICING_VERSION?.trim() ?? "";
+  if (!pricingVersion) {
+    throw new FhenixGrantConfigError(
+      "FHENIX_GRANT_PRICING_VERSION",
+      "is required when FHENIX_GRANT_ENABLED=true (e.g. v1) — it identifies " +
+        "the terms a subscriber agreed to and must be stated, not defaulted",
+    );
+  }
   const minBalanceWei = weiEnv(
     "FHENIX_GRANT_MIN_BALANCE_WEI",
     20_000_000_000_000_000n, // 0.02 ETH
@@ -240,6 +330,7 @@ export function loadFhenixGrantEnvConfig(
     grantRebroadcastDelaySeconds,
     settlementUnknownMaxAttempts,
     salesSafetySeconds,
+    maxArmedPerCall,
     minBalanceWei,
     priceAtoms,
     currency,
@@ -311,7 +402,7 @@ function createViemGrantChainAdapter(deps: {
         })) as readonly [number, bigint, string, string, boolean];
         return {
           state: Number(view[0]),
-          revealOpenAt: Number(view[1]),
+          grantCloseAt: Number(view[1]),
           binaryIndexCtHash: view[2],
           confidenceCtHash: view[3],
           alreadyGranted: view[4],
@@ -324,6 +415,13 @@ function createViemGrantChainAdapter(deps: {
       }
     },
     getBalanceWei: () => deps.publicClient.getBalance({ address: deps.account.address }),
+    hasGrantorRole: async () =>
+      (await deps.publicClient.readContract({
+        address: deps.contractAddress as Address,
+        abi: GRANT_ABI,
+        functionName: "grantors",
+        args: [deps.account.address],
+      })) as boolean,
   };
 }
 

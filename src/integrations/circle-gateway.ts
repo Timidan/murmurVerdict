@@ -23,6 +23,18 @@ import type { RequestHandler } from "express";
 
 import { canonicalHash } from "../receipts/canonical.js";
 
+/**
+ * The only asset this rail settles in.
+ *
+ * Circle Gateway batching selects the USDC asset from the facilitator's
+ * supported kinds — the amount in a challenge is always USDC atoms. Exported
+ * so surfaces that let a human name a currency validate against what will
+ * ACTUALLY be charged, rather than recording a label nothing enforces: a
+ * provider who typed "ETH" got buyers charged that number of USDC atoms and
+ * receipts stamped ETH.
+ */
+export const SETTLEMENT_CURRENCY = "USDC" as const;
+
 export interface GatewayMiddlewareConfig {
   sellerAddress: string;
   networks?: string[];
@@ -183,7 +195,7 @@ export function createGatewayMiddleware(
           typeof candidate.extra?.verifyingContract === "string",
       );
       const usdc = kind?.extra?.assets?.find(
-        (asset) => asset.symbol?.toUpperCase() === "USDC",
+        (asset) => asset.symbol?.toUpperCase() === SETTLEMENT_CURRENCY,
       );
       if (!kind || !usdc?.address || !kind.extra?.verifyingContract) {
         return null;

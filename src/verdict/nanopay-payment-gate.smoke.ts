@@ -94,10 +94,21 @@ assert.deepEqual(missingPaymentResponse.body, {
   message: "middleware did not populate payment",
 });
 
-const defaultGate = createNanopayPaymentGate(fakeDeps({}), fakeGatewayFactory);
+// There is deliberately NO default price: charging an amount nobody chose is
+// worse than failing loudly, and the config loader already requires one when
+// nanopay is mounted. This previously pinned a "$0.001" fallback.
+assert.throws(
+  () => createNanopayPaymentGate(fakeDeps({}), fakeGatewayFactory),
+  /requires an explicit price/,
+  "constructing the gate without a price must throw, not invent one",
+);
+
+const defaultGate = createNanopayPaymentGate(
+  fakeDeps({ defaultPrice: "$0.25" }),
+  fakeGatewayFactory,
+);
 assert.equal(defaultGate.facilitatorUrl, DEFAULT_TESTNET_FACILITATOR_URL);
-assert.equal(defaultGate.price, "$0.001");
-assert.equal(requiredPrices[1], "$0.001");
+assert.equal(defaultGate.price, "$0.25");
 
 process.stdout.write("nanopay payment gate smoke ok\n");
 
