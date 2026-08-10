@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { verdictApi } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
+import { InlineError } from "../components/compact/InlineError.js";
+import { SkeletonBar } from "../components/compact/PanelSkeleton.js";
+import { TimeAgo } from "../components/compact/TimeAgo.js";
+import { useSlashFocus } from "../hooks/useSlashFocus.js";
 
 interface Sender {
   ref: string;
@@ -62,7 +66,7 @@ export function RecruitersPage() {
 
       <main className="flex-1 min-h-0 flex flex-col">
         <Panel title="sender ladder" meta={rows ? `${rows.length}` : ""}>
-          {error && <div className="px-2 py-2 ck-mono ck-neg">[error] {error}</div>}
+          {error && <InlineError error={error} className="px-2 py-2 ck-mono" />}
           {!error && rows === null && <LoadingRows />}
           {!error && rows && rows.length === 0 && <EmptyState />}
           {!error && rows && rows.length > 0 && <Table rows={rows} />}
@@ -87,6 +91,11 @@ function RefLinkHelper() {
   const [handle, setHandle] = useState("");
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | null>(null);
+  const handleRef = useRef<HTMLInputElement | null>(null);
+
+  // "/" focuses this page's one field — the same terminal idiom the market
+  // grid uses. Ignored while another field owns the keystroke.
+  useSlashFocus(handleRef);
 
   useEffect(() => {
     return () => {
@@ -117,9 +126,10 @@ function RefLinkHelper() {
   return (
     <div className="flex items-center gap-2 flex-wrap pt-1.5">
       <input
+        ref={handleRef}
         value={handle}
         onChange={(e) => setHandle(sanitizeHandle(e.target.value))}
-        placeholder="your-handle"
+        placeholder="your-handle [/]"
         aria-label="your handle"
         className="w-[160px] bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
       />
@@ -194,9 +204,7 @@ function Table({ rows }: { rows: Sender[] }) {
             <span className="ck-mono ck-dim text-right tabular-nums">
               {r.agents_touched}
             </span>
-            <span className="ck-mono ck-dim text-right">
-              {r.last_at?.slice(5, 16).replace("T", " ") ?? "—"}
-            </span>
+            <TimeAgo iso={r.last_at} className="ck-mono ck-dim text-right" />
           </a>
         </li>
       ))}
@@ -206,14 +214,14 @@ function Table({ rows }: { rows: Sender[] }) {
 
 function LoadingRows() {
   return (
-    <div className="opacity-50">
+    <div>
       {Array.from({ length: 8 }).map((_, i) => (
         <div
           key={i}
           className={COLS.replace("items-center ", "") + " border-b border-[var(--color-border)]"}
         >
           {Array.from({ length: 6 }).map((__, j) => (
-            <div key={j} className="h-3 bg-[var(--color-surface)] rounded-sm" />
+            <SkeletonBar key={j} className="h-[10px]" />
           ))}
         </div>
       ))}

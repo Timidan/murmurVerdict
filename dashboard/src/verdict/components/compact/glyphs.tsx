@@ -1,13 +1,24 @@
 import type { ReactNode } from "react";
 
+import { Ik } from "../../icons.js";
+
 /**
  * Compact monochrome glyphs — replace repeated enum TEXT with a recognizable
  * mark, always with a `title` tooltip carrying the full name. All glyphs are
  * single-color (inherit `currentColor`), so they never inject brand color into
  * the "color is an event" cockpit. Sizing is via the `size` prop (px).
  *
- * Custom marks (kind, side, seal) are drawn here. The venue mark reuses the
- * grayscale /brand/tokens/polymarket.png that AssetGlyph already ships.
+ * Marks the shared set covers are drawn from it (`icons.tsx` → `Ik`), so those
+ * concepts have exactly one drawing everywhere they appear: that is `seal`, and
+ * the `agent` case of the kind mark. Those two wrappers therefore inherit `Ik`'s
+ * size contract — 16 or 32, nothing between — and pass it straight through, so a
+ * kind mark can never be the fractional size the shared set forbids. The other
+ * kinds render at the same size for one uniform column. The rest are still
+ * hand-rolled here,
+ * because `kind` and `side` are VARIANT sets (one drawing per enum value) whose
+ * other values — benchmark, attested, internal_test, up, down — have no
+ * shared-set equivalent. The venue mark reuses the grayscale
+ * /brand/tokens/polymarket.png that AssetGlyph already ships.
  */
 
 const SVG_BASE = {
@@ -47,25 +58,28 @@ function Wrap({
 /* ── Agent kind ──────────────────────────────────────────────────────────────
    agent → bot head · benchmark → ruler · attested → shield+check · internal → flask.
    Tone follows the tier semantics: agent = full ink, attested = accent (its bond
-   is an event), benchmark/internal = dim. */
+   is an event), benchmark/internal = dim.
 
-interface KindMeta {
-  label: string;
-  tone: string;
-  paths: ReactNode;
-}
+   `agent` is the one concept the shared 16-grid set covers, so it draws from
+   there. The other three have no shared-set equivalent and keep their
+   hand-rolled 24-grid geometry — see KindMeta. */
+
+/**
+ * A kind's mark is EITHER a shared-set drawing (`mark`, which renders its own
+ * <svg> and therefore replaces the 24-grid wrapper) OR inline `paths` drawn
+ * inside SVG_BASE. The arms are mutually exclusive, so adopting a shared-set
+ * drawing for one kind does not change how the others render.
+ */
+type KindMeta = { label: string; tone: string } & (
+  | { mark: (size: 16 | 32) => ReactNode; paths?: never }
+  | { paths: ReactNode; mark?: never }
+);
 
 const KIND_META: Record<string, KindMeta> = {
   agent: {
     label: "agent",
     tone: "ck-pos",
-    paths: (
-      <>
-        <path d="M12 6V3" />
-        <rect x="3" y="6" width="18" height="15" rx="3" />
-        <path d="M8 13.5h8" />
-      </>
-    ),
+    mark: (size) => <Ik name="agent" size={size} />,
   },
   benchmark: {
     label: "benchmark",
@@ -102,12 +116,13 @@ const KIND_META: Record<string, KindMeta> = {
 
 export function KindGlyph({
   kind,
-  size = 15,
+  size = 16,
   className,
   tone = true,
 }: {
   kind: string | null | undefined;
-  size?: number;
+  /** `Ik`'s contract — the agent kind draws from the shared set. */
+  size?: 16 | 32;
   className?: string;
   /** Apply the tier tone (agent=ink, attested=accent, else dim). */
   tone?: boolean;
@@ -129,9 +144,16 @@ export function KindGlyph({
       tone={tone ? meta.tone : undefined}
       className={className}
     >
-      <svg {...SVG_BASE} style={{ width: size, height: size, display: "block" }}>
-        {meta.paths}
-      </svg>
+      {/* Shared-set marks bring their own <svg> (and are aria-hidden by
+          contract — Wrap already carries role="img" + aria-label). Every other
+          kind renders through the untouched 24-grid path below. */}
+      {meta.mark ? (
+        meta.mark(size)
+      ) : (
+        <svg {...SVG_BASE} style={{ width: size, height: size, display: "block" }}>
+          {meta.paths}
+        </svg>
+      )}
     </Wrap>
   );
 }
@@ -167,15 +189,16 @@ export function SideGlyph({
   );
 }
 
-/* ── Privacy mode → seal / padlock ──────────────────────────────────────────── */
+/* ── Privacy mode → shared seal mark ────────────────────────────────────────── */
 
 export function SealGlyph({
   mode,
-  size = 14,
+  size = 16,
   className,
 }: {
   mode: string | null | undefined;
-  size?: number;
+  /** `Ik`'s contract — this mark IS the shared-set `seal` drawing. */
+  size?: 16 | 32;
   className?: string;
 }) {
   if (!mode) return null;
@@ -183,12 +206,10 @@ export function SealGlyph({
   // else shows its raw value so a new privacy mode is never silently hidden.
   const label = mode === "sealed_fhenix" ? "fhenix sealed" : mode;
   return (
+    // The wrapper keeps the accessible name (role="img" + aria-label + title);
+    // `Ik` is aria-hidden by contract, so the mark stays a single image node.
     <Wrap title={label} label={`privacy ${label}`} tone="ck-pos" className={className}>
-      <svg {...SVG_BASE} style={{ width: size, height: size, display: "block" }}>
-        <rect x="5" y="10.75" width="14" height="9.25" rx="1.75" />
-        <path d="M8 10.75V8a4 4 0 0 1 8 0v2.75" />
-        <circle cx="12" cy="15" r="1.05" fill="currentColor" stroke="none" />
-      </svg>
+      <Ik name="seal" size={size} />
     </Wrap>
   );
 }

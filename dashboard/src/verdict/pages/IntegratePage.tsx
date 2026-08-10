@@ -172,11 +172,16 @@ export function IntegratePage({ slug }: IntegratePageProps) {
 
       <main className="flex-1 px-3 py-4 flex flex-col gap-3 max-w-[820px] w-full mx-auto">
         <section>
-          <h1 className="ck-mono ck-pos text-[14px] font-bold mb-1">
+          {/* Page title, so it has to out-rank the ck-title panel headings
+              below it (18px). 21px is the shipped page-h1 size — the same one
+              MarketDetailPage's market-question h1 carries — not a new tier:
+              t-display-sm would swap the font to Doto, which inside .mmr-shell
+              is reserved for the /install rail numerals alone. */}
+          <h1 className="ck-pos text-[21px] font-bold mb-1">
             integrate · {slug}
           </h1>
           {arrivedWithFreshRuntimeKey && (
-            <p className="ck-mono ck-pos text-[10px] leading-relaxed max-w-[60ch]">
+            <p className="ck-pos text-[12px] leading-relaxed max-w-[60ch]">
               Your runtime key is wired into the snippet below — paste it into
               your agent.{" "}
               <span className="ck-neg">
@@ -186,7 +191,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             </p>
           )}
           {!arrivedWithFreshRuntimeKey && !arrivedWithRetiredApiKey && (
-            <p className="ck-mono ck-dim text-[10px] leading-relaxed max-w-[60ch]">
+            <p className="ck-dim text-[12px] leading-relaxed max-w-[60ch]">
               paste this into your agent. set <code className="ck-pos">MURMUR_RUNTIME_KEY</code>{" "}
               to a Runtime Key authorized by the agent's Controller Wallet.{" "}
               <a
@@ -207,7 +212,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           )}
           {arrivedWithRetiredApiKey && (
             <p
-              className="ck-mono text-[10px] leading-relaxed max-w-[60ch]"
+              className="text-[12px] leading-relaxed max-w-[60ch]"
               style={{ color: "var(--color-accent-ink)" }}
             >
               API keys no longer authorize agent submissions. Use a Runtime
@@ -237,7 +242,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
         ) : agentMissing ? (
           <section className="ck-frame-strong px-4 py-4">
             <p className="ck-mono ck-neg">agent {slug} not found in your account.</p>
-            <p className="ck-mono ck-dim text-[10px] mt-2">
+            <p className="ck-dim text-[12px] mt-2">
               the daemon may not have hydrated yet — try a refresh, or
               {" "}
               <a href="#/account" className="ck-pos no-underline">return to account</a>.
@@ -246,11 +251,11 @@ export function IntegratePage({ slug }: IntegratePageProps) {
         ) : (
           <section className="ck-frame px-4 py-4">
             <p className="ck-mono ck-dim">resolving agent id…</p>
-            <p className="ck-mono ck-dim text-[10px] mt-2">
+            <p className="ck-dim text-[12px] mt-2">
               snippets render once your account agent is available.
             </p>
             {agentLoading && (
-              <p className="ck-mono ck-dim text-[10px] mt-1">
+              <p className="ck-dim text-[12px] mt-1">
                 fetching /v1/account/agents…
               </p>
             )}
@@ -271,12 +276,12 @@ export function IntegratePage({ slug }: IntegratePageProps) {
               >
                 <span className="flex flex-col">
                   <span className="ck-pos">skill.md for your agent's LLM</span>
-                  <span className="ck-dim text-[10px]">
+                  <span className="ck-dim text-[12px]">
                     feed this to Claude / Cursor / GPT so it knows how to drive
                     Murmur end-to-end
                   </span>
                 </span>
-                <span className="ck-dim text-[10px]">[ open .md → ]</span>
+                <span className="ck-dim text-[12px]">[ open .md → ]</span>
               </a>
             </li>
             <li>
@@ -288,12 +293,12 @@ export function IntegratePage({ slug }: IntegratePageProps) {
               >
                 <span className="flex flex-col">
                   <span className="ck-pos">your agent's ERC-8004 card (JSON)</span>
-                  <span className="ck-dim text-[10px]">
+                  <span className="ck-dim text-[12px]">
                     machine-readable identity manifest — endpoints, services,
                     privacy posture
                   </span>
                 </span>
-                <span className="ck-dim text-[10px]">[ open json → ]</span>
+                <span className="ck-dim text-[12px]">[ open json → ]</span>
               </a>
             </li>
             <li>
@@ -305,11 +310,11 @@ export function IntegratePage({ slug }: IntegratePageProps) {
               >
                 <span className="flex flex-col">
                   <span className="ck-pos">full OpenAPI spec</span>
-                  <span className="ck-dim text-[10px]">
+                  <span className="ck-dim text-[12px]">
                     every endpoint shape your agent can call against this daemon
                   </span>
                 </span>
-                <span className="ck-dim text-[10px]">[ open json → ]</span>
+                <span className="ck-dim text-[12px]">[ open json → ]</span>
               </a>
             </li>
           </ul>
@@ -326,7 +331,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="ck-pos">public profile</span>
-                <span className="ck-dim text-[10px]">[ agent page → ]</span>
+                <span className="ck-dim text-[12px]">[ agent page → ]</span>
               </a>
             </li>
             <li>
@@ -335,7 +340,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="ck-pos">runtime keys</span>
-                <span className="ck-dim text-[10px]">[ mint / revoke → ]</span>
+                <span className="ck-dim text-[12px]">[ mint / revoke → ]</span>
               </a>
             </li>
             <li>
@@ -344,13 +349,13 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="ck-pos">controller wallet</span>
-                <span className="ck-dim text-[10px]">[ re-attest / bind → ]</span>
+                <span className="ck-dim text-[12px]">[ re-attest / bind → ]</span>
               </a>
             </li>
           </ul>
         </section>
 
-        <p className="ck-mono ck-dim text-[10px]">
+        <p className="ck-dim text-[12px]">
           key wired in? watch{" "}
           <a
             href={`#/agents/${encodeURIComponent(slug)}`}
@@ -484,7 +489,7 @@ function AgentPromptPanel({
         <span className="ck-title">agent prompt</span>
         <span className="flex items-center gap-2">
           {copyFallback && (
-            <span className="ck-mono text-[10px] ck-dim" aria-live="polite">
+            <span className="text-[12px] ck-dim" aria-live="polite">
               clipboard blocked — select + ⌘C / Ctrl-C
             </span>
           )}
@@ -500,9 +505,9 @@ function AgentPromptPanel({
         </span>
       </div>
       {loading ? (
-        <p className="ck-mono ck-dim text-[11px] px-3 py-2">resolving prompt…</p>
+        <p className="ck-dim text-[12px] px-3 py-2">resolving prompt…</p>
       ) : error ? (
-        <p className="ck-mono ck-dim text-[11px] px-3 py-2">
+        <p className="ck-dim text-[12px] px-3 py-2">
           could not load the agent prompt — the runbook is also at{" "}
           <a href="/v1/skill.md" target="_blank" rel="noreferrer" className="ck-pos no-underline">
             /v1/skill.md
@@ -511,7 +516,7 @@ function AgentPromptPanel({
         </p>
       ) : (
         <pre
-          className="ck-mono whitespace-pre overflow-auto px-3 py-2 leading-tight text-[11px]"
+          className="whitespace-pre overflow-auto px-3 py-2 leading-tight"
           style={{ maxHeight: 360 }}
         >
           {prompt}
@@ -557,7 +562,7 @@ function ConfigErrorShell({ slug }: { slug: string }) {
       <main className="flex-1 px-3 py-3 max-w-[820px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
           <p className="ck-mono ck-neg">privy not configured.</p>
-          <p className="ck-mono ck-dim mt-2 text-[10px]">
+          <p className="ck-dim mt-2 text-[12px]">
             set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local and rebuild.
           </p>
         </section>

@@ -11,6 +11,7 @@ import {
 import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
+import { InlineError } from "../components/compact/InlineError.js";
 
 /**
  * /admin/overview — the operator health cockpit. One tier above the
@@ -175,13 +176,14 @@ export function AdminOverviewPage() {
 
       <main className="flex-1 min-h-0 flex flex-col">
         {error && (
-          <div className="border-b border-[var(--color-border)] px-3 py-2 ck-mono ck-neg">
-            [error] {error}
-          </div>
+          <InlineError
+            error={error}
+            className="border-b border-[var(--color-border)] px-3 py-2 ck-mono"
+          />
         )}
 
         {!loaded && !error && (
-          <div className="px-3 py-8 ck-mono ck-dim">[loading…]</div>
+          <div className="px-3 py-8 ck-mono ck-dim">loading…</div>
         )}
 
         {loaded && <StatusBanner health={overall} cards={cards} />}
@@ -489,9 +491,10 @@ function TokenPrompt({
           </div>
           <div className="px-4 py-6 flex flex-col gap-4">
             {error && (
-              <div className="ck-frame-strong px-3 py-2 ck-mono ck-neg">
-                [error] {error}
-              </div>
+              <InlineError
+                error={error}
+                className="ck-frame-strong px-3 py-2 ck-mono"
+              />
             )}
             <form
               onSubmit={(e) => {

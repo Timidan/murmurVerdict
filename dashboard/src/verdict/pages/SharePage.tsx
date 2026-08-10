@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { verdictApi, API_BASE, type AgentProfile } from "../api.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
+import { InlineError } from "../components/compact/InlineError.js";
 
 /**
  * /#/share/:slug — the viral surface.
@@ -118,9 +119,7 @@ export function SharePage({ slug }: { slug: string }) {
       </section>
 
       <main className="flex-1 min-h-0 overflow-y-auto ck-scroll flex flex-col gap-3 p-3">
-        {error && (
-          <div className="px-3 py-2 ck-mono ck-neg">[error] {error}</div>
-        )}
+        {error && <InlineError error={error} className="px-3 py-2 ck-mono" />}
 
         {/* OG PREVIEW — full bleed */}
         <Panel title="social card" meta="1200×630">

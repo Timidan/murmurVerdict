@@ -28,7 +28,7 @@ All values from `dashboard/src/styles.css` `@theme` block.
 
 | Family | Var | Use | Constraint |
 |---|---|---|---|
-| **Doto** | `--font-display` | Display only — hero counters, mega numerals | **36px+ only** (Nothing discipline; Ndot 57 stand-in via Google Fonts variable axis) |
+| **Doto** | `--font-display` | Display only — hero counters, mega numerals | **36px+**, with exactly two sanctioned exceptions: `t-display-sm` clamp(24–30px) as the `/install` H1 tier, and `ck-steprail-num` clamp(22–30px) for the `/install` rail numerals (owner-approved 2026-08-06). Inside `.mmr-shell` the rail numerals are the ONLY Doto — everything else in the cockpit is Space Mono. (Nothing discipline; Ndot 57 stand-in via Google Fonts variable axis) |
 | **Space Grotesk** | `--font-sans` | UI, body, headings | Default sans |
 | **Space Mono** | `--font-mono` | Labels, data, ALL CAPS chrome, every numeric value | All caps for labels; `font-variant-numeric: tabular-nums` for data |
 
@@ -75,27 +75,58 @@ If you reach for a divider line, the spacing was wrong. Dividers exist only in d
 
 Subtle ease-out only. `--ease-out: cubic-bezier(0.25, 0.1, 0.25, 1)`. No spring, no bounce. Reduced-motion respected throughout.
 
-The only animation primitive on the compact shell is `nothing-breathe` — a 1.6s subtle fade for the live status dot (`compact.css:94-98`).
+Exactly one ambient animation runs on the compact shell: the live-dot glyph's transmission pulse (`compact.css`, `.ck-live-tx`), which dims and recovers the glyph's core while its chevrons swell outward on a 2.8s cycle. It is conditioned on a real open SSE connection — never on hover or a timer — and gated behind `prefers-reduced-motion`. The topbar's connection dot is a static colour indicator (success green when live, accent otherwise); it does not animate. Nothing else in the shell loops.
 
 ### 2.5 Compact shell styles
 
-When the page sits inside `.mmr-shell`, overrides at `dashboard/src/verdict/styles/compact.css`:
+When the page sits inside `.mmr-shell`, overrides at `dashboard/src/verdict/styles/compact.css`. Sizes below are the SHIPPED ones as of the 2026-08-08 type-scale notch — read from the stylesheet, not from an older table. (History: base was 11px → 13 → 15 → **16**; this table lagged three of those raises, which is why it is now derived from the CSS on every change.)
+
+**The 12px floor (hard constraint).** Nothing in the cockpit renders below 12px — no hint, timestamp, badge, column header, pinned nav tip, or step-rail title. Owner ruling, 2026-08-08. The quiet tiers sit *on* 12, never under it. If text feels too loud, do not shrink it under 12 — quiet it with ink (`ck-dim`) or tracking, or raise the tier it sits in. Sub-12px arbitrary size utilities — the 10px and 11px ones this cockpit used to carry — do not exist here and must not come back. (Described, not spelled: Tailwind v4 compiles a class name it finds in *prose* into a real rule, and this very sentence used to regenerate both of the utilities it bans. A doc must not manufacture what it forbids.) `--text-xs` is retuned to `0.8125rem` (13px) in the `@theme` block precisely so no stock Tailwind utility can duck under the floor either.
+
+**The floor is enforced, not conventional.** Two committed mechanisms, added 2026-08-09:
+
+1. **Nothing outside the app can reach the bundle.** `dashboard/src/styles.css` disables Tailwind's automatic content detection (`@import "tailwindcss" source(none)`) and declares `dashboard/src` + `dashboard/index.html` as the only `@source`s. Before this, v4 scanned from the git root, so a size written in a plan, spec or design doc compiled into shipped CSS — which is exactly how the two banned utilities kept their rules alive with zero call sites.
+2. **A sub-12px size fails a check.** `dashboard/src/verdict/type-floor.check.ts` runs in `npm run smoke:all` (and therefore `verify:readiness`) and scans the same source set the stylesheet declares. It fails on any arbitrary text-size utility, inline `fontSize`, or stylesheet `font-size`/font-size custom property that resolves under 12px, naming the file, line and value. Relative units (`em`, `%`) are out of its reach by design — see the check's header for why.
+
+#### Type ladder
+
+| Class / selector | Size | Rest |
+|---|---|---|
+| `.mmr-shell` | **16px** base | 1.4 line-height, 0.02em tracking, mono everywhere |
+| `.ck-title` (T1) | **18px** | 700, 0.01em, `--color-display`, 6px square `::before` marker — panel/section titles, the loudest chrome in the content area |
+| `.ck-mono` | **16px** | tabular-nums; beats bare `pre`/`code`/utility font-sizes (0,2,0 unlayered) |
+| `.ck-btn` | **15px** | 700, 0.03em, `4px 10px` padding, no radius, hover→`--color-display` |
+| `.ck-value-lg` / `.ck-value` / `.ck-value-sm` | **15 / 14 / 13px** | all 700 — the readout paired with a `ck-label`; declared after `.ck-mono` so it wins the equal-specificity fight |
+| `.ck-label` (T3) | **13px** | 700, 0.04em, `--color-secondary` — inline field labels |
+| `.ck-meta` | **13px** | small meta line under display titles |
+| `.ck-colhead` (T2) | **12px** | 700, 0.09em, `--color-disabled` — table column headers, quiet scaffolding. Sits ON the floor |
+| `.mmr-nav-link`, `.mmr-topbar-meta`, `.mmr-topbar-crumb` | **`--nav-font-size` = 0.78rem** (12.48px) | 400, 0 tracking, 44px target, `--nav-link-gap` 32px (68px under `hover:none`, where the pinned tips are always shown), unboxed with intent underline |
+| `.mmr-nav-tip` | **12px** | pinned/hover label; same 12px in the `hover:none` branch (padding tightens to `3px 5px`, not the size) |
+| `.ck-steprail-title`, `.ck-stephint`, `.ck-steppanel-foot` | **12px** | /install rail chrome |
+| `.ck-steprail-num` | **clamp(22px, 4vw, 30px)** | the ONE sanctioned Doto exception inside the shell (owner-approved 2026-08-06) |
+| `.mmr-shell pre` | **15px** | 1.45 line-height, zero padding — block code is primary content and sets its own register |
+| `.mmr-shell code` | **`max(0.92em, 12px)`** | inline code is a token *inside* prose, so it is RELATIVE and tracks whatever tier it lands in (16px body → 14.72; 12px hint → 12, on the floor). `.mmr-shell pre code` re-inherits the block's 15px so a `<code>` in a `<pre>` is never double-scaled |
+| `@media (max-width: 639px)` inputs | **16px** | iOS zoom-on-focus floor; kept as a belt now that the base is 16 |
+
+#### Non-type chrome
 
 | Class | Effect |
 |---|---|
-| `.mmr-shell` | 11px base, 1.35 line-height, 0.02em letter-spacing, mono everywhere |
-| `.ck-label` | 13px, 700 weight, 0.04em tracking, `--color-secondary` |
-| `.mmr-nav-link` | Canonical landing-derived nav action: Space Mono 0.72rem/400, 44px target, 32px group gap, unboxed with intent underline |
-| `.ck-num-lg` | 22px Doto-mono, tabular-nums, `--color-display` |
-| `.ck-mono` | 11px tabular-nums |
-| `.ck-pos` / `.ck-neg` / `.ck-dim` | display / accent / disabled tones |
+| `.ck-pos` / `.ck-neg` / `.ck-dim` | display / accent-ink / disabled tones — colour only, never size |
 | `.ck-frame` / `.ck-frame-strong` | hairline frame on `--color-border` / `--color-border-vis` |
-| `.ck-header` | 22px-ish header strip on `--color-surface` |
-| `.ck-btn` | 3×8px terminal button, no radius, hover→`--color-display`, active→`-translateY(1px)` |
-| `.ck-row` | grid row with hover `rgba(255,255,255,0.03)` lift |
-| `.ck-dot[-live\|-ok\|-stale]` | 5px square LED, breathe animation only when reduced-motion is OK |
+| `.ck-header` | `min-height: 31px`, `6px 8px` padding on `--color-surface` — derived, not chosen: 18px title line box + 6+6 padding + 1px border |
+| `.ck-row` | grid row, hover lift via `color-mix(in srgb, var(--color-primary), transparent 97%)` (theme-correct — the old `rgba(255,255,255,0.03)` hazed white on paper) |
+| `.ck-dot[-ok\|-stale]` | 5px square LED, static colour only — no animation |
 
-Compact = Bloomberg-terminal density. Generic dashboard tokens (32px display, 16px body) live in `styles.css` for any future hero/landing reuse outside the compact shell.
+#### Dead classes — do not re-document as live
+
+Defined in CSS, **zero `.tsx` usages** (checked 2026-08-09). They are kept only because deleting them is a separate call; treat them as removed when designing, and don't cite their sizes as precedent:
+
+`.ck-num` (16px) · `.ck-num-lg` (30px) · `.ck-badge` (12px) · `.t-subheading` (22px) · `.t-stat-num` (28px) · `.t-data` (16px) · `.pill-owner` (12px)
+
+Compact = Bloomberg-terminal density. The generic `t-*` tiers in `styles.css` (`t-display` clamp 96–200 · `t-display-md` clamp 64–128 · `t-display-sm` clamp 24–30 · `t-heading` 26 · `t-body` 17 · `t-body-sm` 16 · `t-meta` 15 · `t-button` 15 · `t-label` 13) serve the marketing/`/install` surfaces outside the compact shell.
+
+**Page titles.** A page's `<h1>` must out-rank `.ck-title` (18px), never tie or duck under it. In-shell the shipped page-h1 size is **21px** (`IntegratePage`, `MarketDetailPage`); `AgentOnboardPage` is the one exception — it wears `ck-title ck-title-ik` at 18px because it is the only heading on that page and the 24px `agent` glyph's `-3px` optical offset is derived from 18. Outside the shell, `t-display-sm` / `t-heading` carry it.
 
 ---
 
@@ -462,10 +493,10 @@ Dual theme: **dark** (default) + **paper** (cream/ink twin). Activation via `[da
 
 | Asset | Source | Used by |
 |---|---|---|
-| M waveform mark | `verdict/components/MMark.tsx` — inline SVG, 8 bar rects + 1 dot rect, geometry extracted from `murmur-verdict__full-asset-pack__final/01_mark__dark.png` via PIL | topbar (18px), splash (96px), wordmark |
+| M waveform mark | `verdict/components/MMark.tsx` — inline SVG, 8 bar rects + 1 dot rect, geometry extracted from `murmur-verdict__full-asset-pack__final/01_mark__dark.png` via PIL | topbar (28px), splash (96px via `AnimatedMark`), wordmark |
 | Wordmark | `verdict/components/Wordmark.tsx` — horizontal or stacked, composes MMark + `MURMUR.verdict` text via flex | future hero/share/recruiters/spec headers |
 | App icon (paper, dark) | `public/brand/app-icon-{paper,dark}.png` | Apple touch icon, also feeds favicon ICO generation |
-| Splash | `verdict/components/Splash.tsx` — mounts at root, removes self after first rAF, uses MMark at 96px with `.nothing-live` breathing | first-paint cold load |
+| Splash | `verdict/components/Splash.tsx` — mounts at root, fades out over 200ms after the first post-hydration frame then unmounts; renders `AnimatedMark` at 96px (`mode="once"`, no wordmark), whose motion is gated on prefers-reduced-motion in `animated-mark.css` | first-paint cold load |
 | Favicons | `public/brand/favicon-{paper,dark}.{ico,svg}` — SVG primary, ICO fallback, both swap with theme via bootstrap + applyTheme | tab icon |
 | Wordmark rasters | `public/brand/wordmark-{horizontal,stacked}-{paper,dark}.png` | reference / fallback for non-React surfaces |
 

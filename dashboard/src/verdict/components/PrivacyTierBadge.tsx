@@ -1,6 +1,6 @@
 // ─── PrivacyTierBadge — privacy-mode indicator ─────────────────────────────
 //
-// Renders the call's privacy mode as a monochrome seal/padlock glyph with a
+// Renders the call's privacy mode as a monochrome sealed-envelope glyph with a
 // tooltip carrying the name (e.g. "fhenix sealed"), instead of a text chip —
 // see components/compact/glyphs.tsx (SealGlyph). Returns null when the row
 // predates the privacy_mode column.
@@ -14,5 +14,5 @@ export interface PrivacyTierBadgeProps {
 }
 
 export function PrivacyTierBadge({ mode }: PrivacyTierBadgeProps) {
-  return <SealGlyph mode={mode} size={14} />;
+  return <SealGlyph mode={mode} size={16} />;
 }

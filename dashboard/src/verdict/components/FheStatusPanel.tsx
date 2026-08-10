@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { verdictApi, type MetaResponse } from "../api.js";
+import { InlineError } from "./compact/InlineError.js";
 
 type Posture = "sealed" | "unknown";
 
@@ -50,20 +51,21 @@ export function FheStatusPanel() {
 
   if (error) {
     return (
-      <div className="ck-mono ck-neg text-xs">
-        Privacy status unavailable — {error}
-      </div>
+      <InlineError
+        error={`privacy status unavailable — ${error}`}
+        className="ck-mono"
+      />
     );
   }
   if (!meta) {
-    return <div className="ck-mono ck-dim text-xs">Checking privacy status…</div>;
+    return <div className="ck-mono ck-dim">Checking privacy status…</div>;
   }
 
   const posture = classifyPosture(meta.privacy);
   const style = POSTURE_STYLES[posture];
 
   return (
-    <div className="border border-[var(--color-border-vis)] p-2 ck-mono text-xs flex flex-col gap-1">
+    <div className="border border-[var(--color-border-vis)] p-2 ck-mono flex flex-col gap-1">
       <span
         className={
           "ck-label inline-flex items-center self-start px-[6px] py-[1px] border " +

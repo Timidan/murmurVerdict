@@ -20,6 +20,7 @@ import {
 import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
+import { InlineError } from "../components/compact/InlineError.js";
 import { formatScore } from "../lib/score-format.js";
 
 const STATUSES: GatewayAttemptStatus[] = [
@@ -213,13 +214,14 @@ export function AdminGatewayPage() {
 
       <main className="flex-1 min-h-0 overflow-auto ck-scroll flex flex-col">
         {error && (
-          <div className="border-b border-[var(--color-border)] px-3 py-2 ck-mono ck-neg">
-            [error] {error}
-          </div>
+          <InlineError
+            error={error}
+            className="border-b border-[var(--color-border)] px-3 py-2 ck-mono"
+          />
         )}
 
         {!snapshot && !error && (
-          <div className="px-3 py-10 ck-mono ck-dim">[loading…]</div>
+          <div className="px-3 py-10 ck-mono ck-dim">loading…</div>
         )}
 
         {snapshot && (
@@ -331,8 +333,8 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1040px]">
-        <div className="grid grid-cols-[110px_130px_170px_1fr_150px_120px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1119px]">
+        <div className="grid grid-cols-[110px_209px_170px_1fr_150px_120px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>severity</span>
           <span>source</span>
           <span>kind</span>
@@ -345,7 +347,7 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
             <li
               key={row.alert_id}
               className={
-                "grid grid-cols-[110px_130px_170px_1fr_150px_120px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[110px_209px_170px_1fr_150px_120px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -356,7 +358,10 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
                 <span className="block ck-mono ck-pos">{row.title}</span>
                 <span className="block ck-mono ck-dim truncate">{row.description}</span>
               </span>
-              <span className="ck-mono ck-dim">
+              <span
+                className="ck-mono ck-dim truncate"
+                title={`${row.delivery_status} · ${row.delivery_attempts}`}
+              >
                 {row.delivery_status} · {row.delivery_attempts}
               </span>
               <span className="ck-mono text-right ck-dim">{shortDate(row.last_seen_at)}</span>
@@ -474,8 +479,8 @@ function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1040px]">
-        <div className="grid grid-cols-[120px_130px_1fr_130px_130px_90px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1084px]">
+        <div className="grid grid-cols-[147px_130px_1fr_147px_130px_90px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>wallet</span>
@@ -489,14 +494,19 @@ function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
             <li
               key={row.agent_id}
               className={
-                "grid grid-cols-[120px_130px_1fr_130px_130px_90px_90px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[147px_130px_1fr_147px_130px_90px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
               <span className={`ck-mono ${identityStatusClass(row.status)}`}>{row.status}</span>
               <span className="ck-mono ck-pos truncate">{row.agent_slug ?? row.agent_id.slice(0, 8)}</span>
               <span className="ck-mono ck-dim truncate">{shortHex(row.wallet_address)}</span>
-              <span className="ck-mono ck-dim">{row.wallet_kind}{row.provider ? `/${row.provider}` : ""}</span>
+              <span
+                className="ck-mono ck-dim truncate"
+                title={`${row.wallet_kind}${row.provider ? `/${row.provider}` : ""}`}
+              >
+                {row.wallet_kind}{row.provider ? `/${row.provider}` : ""}
+              </span>
               <span className="ck-mono text-right ck-dim">{row.reattestation_due_at ? shortDate(row.reattestation_due_at) : "—"}</span>
               <span className="ck-mono text-right">{row.active_runtime_keys}/{row.total_runtime_keys}</span>
               <span className="ck-mono text-right">{row.revoked_runtime_keys}</span>
@@ -578,8 +588,8 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1180px]">
-        <div className="grid grid-cols-[110px_120px_1fr_150px_110px_120px_1fr_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1296px]">
+        <div className="grid grid-cols-[110px_120px_1fr_150px_110px_188px_1fr_178px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>market</span>
@@ -594,14 +604,22 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
             <li
               key={row.call_id}
               className={
-                "grid grid-cols-[110px_120px_1fr_150px_110px_120px_1fr_130px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[110px_120px_1fr_150px_110px_188px_1fr_178px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
               <span className={`ck-mono ${revealStatusClass(row.reveal_status, row.overdue_grace)}`}>
                 {row.overdue_grace ? "overdue" : row.reveal_status}
               </span>
-              <span className="ck-mono ck-dim">{row.agent_slug ?? row.agent_id.slice(0, 8)}</span>
+              {/* title carries the FULL id — the cell itself already shortens
+                  a slug-less row to 8 chars, so the display expression is not
+                  the recoverable value. */}
+              <span
+                className="ck-mono ck-dim truncate"
+                title={row.agent_slug ?? row.agent_id}
+              >
+                {row.agent_slug ?? row.agent_id.slice(0, 8)}
+              </span>
               <span className="ck-mono ck-pos truncate">{row.market_id ?? "—"}</span>
               <span className="ck-mono ck-dim">{shortDate(row.reveal_open_at)}</span>
               <span className="ck-mono text-right ck-dim">{row.reveal_block_number ?? "—"}</span>
@@ -670,8 +688,8 @@ function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1060px]">
-        <div className="grid grid-cols-[1fr_120px_120px_150px_120px_120px_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1087px]">
+        <div className="grid grid-cols-[1fr_120px_147px_150px_120px_120px_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>feed</span>
           <span className="text-right">seq</span>
           <span>status</span>
@@ -685,7 +703,7 @@ function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
             <li
               key={row.incident_id}
               className={
-                "grid grid-cols-[1fr_120px_120px_150px_120px_120px_130px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[1fr_120px_147px_150px_120px_120px_130px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -783,8 +801,8 @@ function FeedAttemptTable({
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1460px]">
-        <div className="grid grid-cols-[130px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1498px]">
+        <div className="grid grid-cols-[168px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>feed</span>
@@ -803,7 +821,7 @@ function FeedAttemptTable({
             <li
               key={row.attempt_id}
               className={
-                "grid grid-cols-[130px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[168px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -861,8 +879,8 @@ function AttemptTable({
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1280px]">
-        <div className="grid grid-cols-[130px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1318px]">
+        <div className="grid grid-cols-[168px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>market</span>
@@ -879,7 +897,7 @@ function AttemptTable({
             <li
               key={row.attempt_id}
               className={
-                "grid grid-cols-[130px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[168px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -948,9 +966,7 @@ function TokenPrompt({
       <main className="flex-1 min-h-0 flex flex-col p-3">
         <Panel title="gateway token" meta="locked" className="max-w-[560px]">
           <div className="p-3 flex flex-col gap-3">
-            {error && (
-              <div className="ck-mono ck-neg">[error] {error}</div>
-            )}
+            {error && <InlineError error={error} className="ck-mono" />}
             <form
               onSubmit={(e) => {
                 e.preventDefault();

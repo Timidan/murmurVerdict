@@ -153,7 +153,7 @@ function LiveCounter({
     <section className="border-b border-[var(--color-border)] flex items-end justify-between px-4 py-3 gap-4">
       <div className="flex flex-col gap-0.5 min-w-0">
         <span className="ck-label">{label}</span>
-        <span className="ck-mono ck-dim text-[10px] truncate" title={sublabel}>
+        <span className="ck-dim text-[12px] truncate" title={sublabel}>
           {sublabel}
         </span>
       </div>

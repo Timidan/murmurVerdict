@@ -3,6 +3,8 @@ import { verdictApi, ApiError, type AdminRefSender } from "../api.js";
 import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
+import { InlineError } from "../components/compact/InlineError.js";
+import { TimeAgo } from "../components/compact/TimeAgo.js";
 
 const REFS_CRUMB = (
   <span>
@@ -99,10 +101,10 @@ export function AdminRefsPage() {
 
       <main className="flex-1 min-h-0 flex flex-col">
         <Panel title="sender board" meta={rows ? `${rows.length}` : ""}>
-          {error && <div className="px-2 py-2 ck-mono ck-neg">[error] {error}</div>}
+          {error && <InlineError error={error} className="px-2 py-2 ck-mono" />}
 
           {!rows && !error && (
-            <div className="px-3 py-8 ck-mono ck-dim">[loading…]</div>
+            <div className="px-3 py-8 ck-mono ck-dim">loading…</div>
           )}
 
           {rows && rows.length === 0 && (
@@ -147,9 +149,7 @@ export function AdminRefsPage() {
                     {r.converted}
                   </span>
                   <span className="ck-mono ck-dim text-right tabular-nums">{r.agents_touched}</span>
-                  <span className="ck-mono ck-dim text-right">
-                    {r.last_at?.slice(5, 16).replace("T", " ") ?? "—"}
-                  </span>
+                  <TimeAgo iso={r.last_at} className="ck-mono ck-dim text-right" />
                   <span className="text-right">
                     <button
                       onClick={() => remove(r.ref)}
@@ -207,7 +207,7 @@ function TokenPrompt({
               as <code className="ck-pos">X-Admin-Token</code>.
             </span>
 
-            {error && <div className="px-2 py-2 ck-mono ck-neg">[error] {error}</div>}
+            {error && <InlineError error={error} className="px-2 py-2 ck-mono" />}
 
             <form
               onSubmit={(e) => {

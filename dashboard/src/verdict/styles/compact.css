@@ -10,8 +10,11 @@
   font-family: var(--font-mono);
   /* Type scale bumped toward the (larger) marketing t-* scale — the compact
      cockpit reads at a more comfortable size app-wide while keeping the
-     terminal idiom. Base 13px -> 15px; ck-* sizes below scaled to match. */
-  font-size: 15px;
+     terminal idiom. Base 13px -> 15px -> 16px; ck-* sizes below scaled to
+     match. The 2026-08-08 notch also set a hard FLOOR: nothing in the cockpit
+     renders below 12px, so the quiet tiers (colhead, hints, timestamps,
+     badges) all sit at 12 and no rule may go under it. */
+  font-size: 16px;
   line-height: 1.4;
   letter-spacing: 0.02em;
   color: var(--color-primary);
@@ -49,17 +52,23 @@
    terminal (lowercase idiom preserved; differentiation is size + ink + tracking
    + a leading marker on titles, not a font swap).
 
-     T1  ck-title    17px · display ink · leading marker   → panel / section titles
-     ——  (body/data  15px · primary/display ink            → the content itself)
-     T3  ck-label    12px · secondary   · 0.04em           → inline field labels
-     T2  ck-colhead  11px · disabled    · 0.09em           → table column headers (quiet scaffold)
+     T1  ck-title    18px · display ink · leading marker   → panel / section titles
+     ——  (body/data  16px · primary/display ink            → the content itself)
+     T3  ck-label    13px · secondary   · 0.04em           → inline field labels
+     T2  ck-colhead  12px · disabled    · 0.09em           → table column headers (quiet scaffold)
+
+   12px is the floor for the whole cockpit (owner ruling, 2026-08-08): ck-colhead
+   sits ON it, and nothing — hint, timestamp, badge, pinned nav tip — goes under.
+
+   (Doto exception: ck-steprail-num — 900 / clamp(22-30px) / -0.02em — /install
+   rail numerals only, owner-approved 2026-08-06.)
    ──────────────────────────────────────────────────────────────────────────── */
 
 /* T1 — Panel / section title. The loudest chrome inside the content area. */
 .mmr-shell .ck-title {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1;
   letter-spacing: 0.01em;
   color: var(--color-display);
@@ -84,7 +93,7 @@
 .mmr-shell .ck-label {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.25;
   letter-spacing: 0.04em;
   color: var(--color-secondary);
@@ -95,7 +104,7 @@
 .mmr-shell .ck-colhead {
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.25;
   letter-spacing: 0.09em;
   color: var(--color-disabled);
@@ -108,7 +117,7 @@
 .mmr-shell .ck-num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 15px;
+  font-size: 16px;
   letter-spacing: 0;
 }
 
@@ -124,7 +133,7 @@
 
 .mmr-shell .ck-mono {
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 16px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -210,6 +219,139 @@
   align-self: flex-start;
 }
 
+/* Desktop nav — icon only (owner amendment, 2026-08-07). The 24px glyph IS the
+   link: no label in flow, the word lives on `aria-label` and in the tip below.
+   A square hit area gives the drawing 10px of air on every side (44×44), and
+   the underline above still spans exactly that box, so it reads as underlining
+   the icon. The mobile drawer keeps its words and is untouched. */
+.mmr-shell .mmr-nav-link--icon {
+  min-width: var(--nav-hit-area);
+}
+
+/* The shared underline spans the whole 44px hit box, which on a worded link IS
+   the word — but here the word is gone and the mark is 24px, so a full-width
+   rule reads as underlining empty space and disagrees with the focus ring
+   (inset 8px, a 28px square). Inset the rule to the same box and lift it to sit
+   just under the glyph rather than at the hit area's floor. */
+.mmr-shell .mmr-nav-link--icon::after {
+  left: 8px;
+  right: 8px;
+  bottom: 5px;
+}
+
+/* The global :focus-visible ring (styles.css, 2px @ +2 offset) would draw a
+   band straight through a tip parked under the icon. Pull it INWARD instead —
+   the same trick ck-rowlink uses below — so the ring hugs the 24px glyph
+   (44 − 2×8 = a 28px square) and can never meet the label. */
+.mmr-shell .mmr-nav-link--icon:focus-visible {
+  outline-offset: -8px;
+}
+
+/* Hover/focus label — the cockpit's `[ label ]` idiom, hung BELOW the bar.
+   Nothing in the topbar clips (no ancestor sets overflow), so the tip is free
+   to leave the header; it carries the page background and a hairline box, which
+   is what makes floating over content legible. `100%` is the link's bottom
+   edge, which sits (bar − hit area)/2 above the border, so add that slack back
+   plus 4px of air and the whole box clears the bar instead of straddling it.
+   Out of flow, so a long word never widens the nav row. */
+.mmr-shell .mmr-nav-tip {
+  position: absolute;
+  top: calc(100% + (64px - var(--nav-hit-area)) / 2 + 4px);
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 0.5ch;
+  padding: 3px 7px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--color-secondary);
+  white-space: nowrap;
+  text-decoration: none;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -2px);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.mmr-shell .mmr-nav-tip::before {
+  content: "[";
+}
+
+.mmr-shell .mmr-nav-tip::after {
+  content: "]";
+}
+
+.mmr-shell .mmr-nav-link--icon:hover .mmr-nav-tip,
+.mmr-shell .mmr-nav-link--icon:focus-visible .mmr-nav-tip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Touch at ≥1024px has no gesture that reveals a tip — no hover, no keyboard,
+   and the worded drawer only exists below `lg`. So on a hoverless pointer every
+   tip is pinned open: below the bar, with boxes, six of them read as a quiet
+   label row rather than six stuck tooltips. A permanent row needs more
+   horizontal room than 44px icons do, so the cluster spaces out to clear the
+   widest neighbours (dashboard|leaderboard); hover devices keep the tighter
+   icon rhythm and reveal one label at a time. */
+@media (hover: none) {
+  .mmr-shell .mmr-nav-cluster {
+    gap: 68px;
+  }
+  .mmr-shell .mmr-nav-link--icon .mmr-nav-tip {
+    opacity: 1;
+    transform: translate(-50%, 0);
+    /* Pinned-row width budget, re-measured for the 12px floor (2026-08-08; the
+       old note was written for a 10px tip against a 54px gap).
+
+       A tip is `[ label ]`: 2×1px border + 2×5px padding + (chars+2 brackets)
+       advances + 2 × 0.5ch flex gap. Space Mono's 0.6em advance lands on 7.0px
+       at 12px — Blink snaps this face's advance to whole pixels, so it is 7.0,
+       not the arithmetic 7.2 (measured, headless, dsf=1). The row is then
+         dashboard   (9ch):  12 + 11×7 + 7 =  96px
+         leaderboard (11ch): 12 + 13×7 + 7 = 110px
+         recruiters  (10ch): 103 · install/account (7ch): 82 · feed (4ch): 61
+       and the widest adjacent pair (dashboard|leaderboard) needs (96+110)/2 =
+       103px between link centres. A 44px link box + the 68px gap above gives
+       112 → 9.0px of gutter. Measured at 1024: gaps 9.0 / 26.5 / 40.5 / 19.5 /
+       19.5, zero overlaps, no document overflow. (64px would also clear, but
+       only by 5.0px — one font-rendering variation from touching, so the row
+       carries a real margin instead of a bare pass.)
+
+       The tighter box is load-bearing, not decoration: at the base 3px 7px
+       padding every tip is 4px wider and the same pair eats 107 of the 112,
+       leaving 5px — i.e. the padding is worth as much as 4px of gap here. Any
+       future label growth has to buy width from the gap, not from this
+       padding. */
+    padding: 3px 5px;
+    font-size: 12px;
+  }
+  /* Chord hints are a keyboard affordance; a hoverless pointer has no chord to
+     press, so it gets the pinned label alone and the row keeps its budget. */
+  .mmr-shell .mmr-nav-tip .ck-dim {
+    display: none;
+  }
+  /* The wider row has to come out of somewhere. At `lg` the crumb slot is
+     `flex-none` with a 360px cap, so it yields nothing and the bar overflows
+     (re-measured 2026-08-08 after the 68px gap: 1268px of content in a 1024px
+     viewport — 69 left + 360 capped crumb + 636 nav + 203 right). The crumb is the one
+     element here that already truncates, so on touch it becomes the flexible
+     one and gives its width to the nav. Its `truncate` class is untouched;
+     inline-flex crumb atoms hard-clip rather than ellipsize, which is the
+     ledgered T3 caveat and acceptable at touch-narrow. */
+  .mmr-shell .mmr-topbar-crumb-slot {
+    flex-shrink: 1;
+    min-width: 0;
+  }
+}
+
 .mmr-shell .mmr-theme-toggle {
   gap: 4px;
 }
@@ -218,6 +360,12 @@
   .mmr-shell .mmr-nav-link,
   .mmr-shell .mmr-nav-link::after {
     transition: none;
+  }
+  /* The tip still fades, it just never travels — translateX is centering, not
+     motion, so it stays in both states. */
+  .mmr-shell .mmr-nav-tip {
+    transform: translate(-50%, 0);
+    transition: opacity var(--dur-fast) var(--ease-out);
   }
 }
 
@@ -234,6 +382,9 @@
 .mmr-shell .ck-badge {
   font-family: var(--font-mono);
   font-weight: 700;
+  /* Deliberately NOT notched by the 2026-08-08 raise: the ladder puts badges
+     in the same quiet 12px band as colheads, hints and timestamps, and the
+     badge was already sitting there. It is on the floor, not under it. */
   font-size: 12px;
   line-height: 1;
   letter-spacing: 0.04em;
@@ -256,7 +407,12 @@
   color: var(--color-disabled);
 }
 
-/* Live status dot — only animation allowed in COMPACT. */
+/* Live status dot — a static colour swap, no motion of its own. Exactly ONE
+   ambient animation is sanctioned in COMPACT and it is the live-dot glyph's
+   transmission block at the foot of this file. It qualifies on these terms:
+   conditioned on real socket state, never on hover or on a timer, and gated
+   behind prefers-reduced-motion. Nothing else in the shell may loop — per-row
+   pulses were killed on this authority, and this dot's own breathe with them. */
 .mmr-shell .ck-dot {
   display: inline-block;
   width: 5px;
@@ -269,11 +425,6 @@
 }
 .mmr-shell .ck-dot-stale {
   background: var(--color-accent);
-}
-@media (prefers-reduced-motion: no-preference) {
-  .mmr-shell .ck-dot-live {
-    animation: nothing-breathe 1.6s var(--ease-out) infinite;
-  }
 }
 
 /* Terminal-style frame: hairline borders, no radius. */
@@ -290,9 +441,18 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* Room for the 17px ck-title (T1) — was 3px/6px for the old 13px label. */
+  /* Floor derived from the title, not chosen: box-sizing is border-box
+     shell-wide, so min-height has to carry the chrome too —
+       18px ck-title line box (T1, line-height 1)
+     + 6px + 6px padding
+     + 1px border-bottom
+     = 31px.
+     (Was 30px on the same arithmetic when the title was 17px; before that
+     3px/6px for a 13px label.) Headers whose right slot is taller than the
+     title — 16px ck-mono at 1.4 = 22.4px — set their own height and never
+     touch this floor; it exists for title-only headers. */
   padding: 6px 8px;
-  min-height: 30px;
+  min-height: 31px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
 }
@@ -304,7 +464,7 @@
   padding: 4px 10px;
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 14px;
+  font-size: 15px;
   letter-spacing: 0.03em;
   color: var(--color-primary);
   border: 1px solid var(--color-border-vis);
@@ -431,12 +591,34 @@
   border-bottom: 1px dashed var(--color-border);
 }
 
-/* Pre / code inside compact: zero padding, tighter line-height. */
-.mmr-shell pre,
+/* Block code inside compact: zero padding, tighter line-height. A <pre> is
+   primary content — a snippet the reader is meant to copy — so it sets its own
+   register absolutely and does not track the prose around it. */
+.mmr-shell pre {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+/* Inline code is a TOKEN INSIDE prose, not a block. Sizing it absolutely (it
+   shared the 15px above until 2026-08-09) made an env-var name jump 3px out of
+   a 12px hint paragraph mid-sentence. Relative instead, so it tracks whichever
+   tier it lands in — clamped to the cockpit's 12px floor, because a bare
+   0.92em would put a 12px hint's `code` at 11.04px, under the floor.
+   Resolves: 16px body -> 14.72, 15px -> 13.8, 13px/12px -> 12 (on the floor).
+   No line-height here on purpose: an inline box must not perturb the leading
+   of the paragraph it sits in. */
 .mmr-shell code {
   font-family: var(--font-mono);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: max(0.92em, 12px);
+}
+
+/* …but a <code> nested in a <pre> is block code wearing an inline tag: it
+   inherits the block's 15px rather than taking 0.92em of it. (0,1,2) beats the
+   (0,1,1) rule above; both lose to `.mmr-shell .ck-mono` (0,2,0), which is
+   what the ck-mono-carrying <pre>/<code> sites already rely on. */
+.mmr-shell pre code {
+  font-size: inherit;
 }
 
 /* ── Late-order rules (must follow .ck-mono to win equal specificity) ─────── */
@@ -447,15 +629,15 @@
    Placed after .ck-mono (same 0,2,0 specificity) so the tier's size wins on
    elements that carry both classes. */
 .mmr-shell .ck-value {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
 }
 .mmr-shell .ck-value-sm {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 .mmr-shell .ck-value-lg {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
 }
 
@@ -482,7 +664,10 @@
 }
 
 /* iOS Safari zooms the page when a focused input renders below 16px. Hold
-   form text at 16px on small viewports; the compact 15px resumes at ≥640px.
+   form text at 16px on small viewports. Since the 2026-08-08 notch the shell
+   base and .ck-mono are themselves 16px, so this block is belt-and-suspenders
+   rather than the thing doing the work — kept byte-for-byte because it is the
+   only rule that *guarantees* the floor if a future tier drops back under 16.
    The .ck-mono variants out-rank the bare .ck-mono size (0,2,1 vs 0,2,0) —
    a media query adds no specificity of its own. */
 @media (max-width: 639px) {
@@ -493,5 +678,331 @@
   .mmr-shell select.ck-mono,
   .mmr-shell textarea.ck-mono {
     font-size: 16px;
+  }
+}
+
+/* ── /install step rail ──────────────────────────────────────────────────────
+   Four tab cells (Doto numeral over an 11px title) + a fixed-height hint
+   strip + one visible step panel. Active = raised bg, accent numeral, 2px
+   accent top bar (shared with .ck-tab so the integration-surface tabs read
+   as the same family). Visited cells carry an accent dot after the numeral.
+   Hairline frames omit border-top so header/rail/strip/panel stack into one
+   fixture under the header's border-b. */
+
+.mmr-shell .ck-steprail {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-top: 0;
+}
+
+.mmr-shell .ck-steprail-cell {
+  flex: 1;
+  padding: 12px 14px 14px;
+  border-right: 1px solid var(--color-border);
+  position: relative;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+  /* Sticky topbar is 64px + its 1px border; 7px of breathing room on top. */
+  scroll-margin-top: 72px;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-steprail-cell:last-child { border-right: 0; }
+.mmr-shell .ck-steprail-cell:hover {
+  background: color-mix(in srgb, var(--color-primary), transparent 97%);
+}
+.mmr-shell .ck-steprail-cell:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.mmr-shell .ck-steprail-num {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(22px, 4vw, 30px);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--color-secondary);
+  display: block;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-steprail-title {
+  font-family: var(--font-mono);
+  display: block;
+  margin-top: 7px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--color-secondary);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-steprail-cell.ck-seen .ck-steprail-num::after {
+  /* Alt-text form: the dot is decorative, so it stays out of the accessible name. */
+  content: " ·" / "";
+  color: var(--color-accent);
+}
+.mmr-shell .ck-steprail-cell.ck-tab-active .ck-steprail-num { color: var(--color-accent); }
+.mmr-shell .ck-steprail-cell.ck-tab-active .ck-steprail-title { color: var(--color-display); }
+
+/* shared accent-topbar tab state — used by rail cells AND the integration
+   surface tabs ("give your agent murmur") */
+/* never combine ck-tab with ck-btn-bracket — both own ::after; ck-tab's (declared later) erases the "]" glyph */
+.mmr-shell .ck-tab {
+  position: relative;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-tab::after,
+.mmr-shell .ck-steprail-cell::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-tab.ck-tab-active,
+.mmr-shell .ck-steprail-cell.ck-tab-active {
+  background: var(--color-raised);
+  color: var(--color-display);
+}
+.mmr-shell .ck-tab.ck-tab-active::after,
+.mmr-shell .ck-steprail-cell.ck-tab-active::after {
+  background: var(--color-accent);
+}
+
+.mmr-shell .ck-stephint {
+  border: 1px solid var(--color-border);
+  border-top: 0;
+  min-height: 27px;
+  padding: 5px 14px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--color-secondary);
+}
+.mmr-shell .ck-stephint-text {
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-stephint-text.ck-show {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mmr-shell .ck-stephint-text { transform: none; transition-property: opacity; }
+}
+
+.mmr-shell .ck-steppanel-frame {
+  border: 1px solid var(--color-border);
+  border-top: 0;
+}
+.mmr-shell .ck-steppanel { padding: 18px 16px; }
+.mmr-shell .ck-steppanel-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid var(--color-border);
+  padding: 9px 16px;
+  font-size: 12px;
+  color: var(--color-secondary);
+}
+
+/* small meta line under display titles — real 13px (Tailwind text-[13px] loses
+   to unlayered ck-mono 16px, so the tier has to own the size itself) */
+.mmr-shell .ck-meta {
+  font-size: 13px;
+}
+
+@media (max-width: 560px) {
+  .mmr-shell .ck-steprail-cell { padding: 10px 8px 11px; }
+  /* The 9px shrink this rule used to carry is gone: 12px is the cockpit floor,
+     and the rail title is already sitting on it. Only the tighter margin
+     survives; narrow cells wrap the longest title ("confirm live") onto a
+     second line instead of going under the floor. */
+  .mmr-shell .ck-steprail-title { margin-top: 5px; }
+}
+
+/* ── icon-bearing panel titles ───────────────────────────────────────────────
+   Title-marker upgrade (icon-adoption spec, 2026-08-07): a semantic glyph
+   REPLACES the generic ::before square on titles that have one — same slot,
+   one marker per title, never two. Titles without a mapped glyph keep the
+   square.
+
+   The glyph is given NO colour of its own. Exactly like the square it replaces,
+   it follows the title's own ink through currentColor, so a toned title (e.g. a
+   destructive ck-neg modal heading) keeps a matching marker and the reserved
+   accent stays an event. (Owner ruling, 2026-08-07.) */
+.mmr-shell .ck-title.ck-title-ik {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.mmr-shell .ck-title.ck-title-ik::before { content: none; }
+
+/* Nav-tier (24px) markers in title slots overhang their line box, so the glyph
+   reads one tier up without growing the row — optical-size promotion, not row
+   growth. The offset is exactly the overhang: the T1 title's line box is 18px
+   (font-size 18, line-height 1), the glyph is 24, so it sticks out (24−18)/2 =
+   3px top and bottom and −3px margin-block cancels precisely that, leaving the
+   marker's outer box equal to the title's line box. (It was −4px against a
+   17px title, where the same cancellation would have been −3.5 and the extra
+   half-pixel bought a whole one.) Scoped by rendered width so the 16px inline
+   markers, which are already shorter than the line box, are untouched. */
+.mmr-shell .ck-title-ik svg[width="24"] { margin-block: -3px; }
+
+/* ── columns-land nav activation ─────────────────────────────────────────────
+   Owner-approved motion (2026-08-07, "i like columns land"): when a nav link
+   BECOMES active, its fill variant assembles — each top-level node (and the
+   nodes inside a single wrapping <g>) rises 2px and decelerates into place on
+   an overlapping stagger, then the accent rule grows from the left and snaps
+   home. The topbar keys the active glyph per route change, so this mount
+   animation fires on navigation only — never on initial page load. Opacity
+   and transform only; reduced motion collapses to end states. */
+.mmr-shell .mmr-nav-glyph { display: block; }
+.mmr-nav-link--activating .mmr-nav-glyph svg > :not(g),
+.mmr-nav-link--activating .mmr-nav-glyph svg > g > * {
+  opacity: 0;
+  transform: translateY(2px);
+  transform-box: fill-box;
+  animation: mmr-col-land 0.22s var(--ease-land) both;
+}
+.mmr-nav-link--activating .mmr-nav-glyph svg > :not(g):nth-child(1),
+.mmr-nav-link--activating .mmr-nav-glyph svg > g > :nth-child(1) { animation-delay: 0.06s; }
+.mmr-nav-link--activating .mmr-nav-glyph svg > :not(g):nth-child(2),
+.mmr-nav-link--activating .mmr-nav-glyph svg > g > :nth-child(2) { animation-delay: 0.13s; }
+.mmr-nav-link--activating .mmr-nav-glyph svg > :not(g):nth-child(3),
+.mmr-nav-link--activating .mmr-nav-glyph svg > g > :nth-child(3) { animation-delay: 0.2s; }
+@keyframes mmr-col-land {
+  to { opacity: 1; transform: translateY(0); }
+}
+.mmr-shell .mmr-nav-link--activating::after {
+  transform-origin: left;
+  animation: mmr-rule-grow 0.26s var(--ease-snap) 0.24s both;
+}
+@keyframes mmr-rule-grow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mmr-nav-link--activating .mmr-nav-glyph svg > :not(g),
+  .mmr-nav-link--activating .mmr-nav-glyph svg > g > * {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .mmr-shell .mmr-nav-link--activating::after {
+    animation: none;
+    transform: none;
+  }
+}
+
+/* FormulaTip on touch: hover can never fire, so tap-focus IS the gesture.
+   The trigger is tabbable and carries a no-op click handler (Safari only
+   focuses a non-form element on tap when one is present); the tap focuses it,
+   plain :focus (not just :focus-visible) reveals the tip, and tapping
+   elsewhere blurs and hides it. */
+@media (hover: none) {
+  .mmr-shell .formula-tip-trigger:focus .formula-tip {
+    opacity: 1;
+    /* Tailwind v4 compiles `translate-y-1` to the `translate` property, so the
+       resting 4px offset only clears when BOTH are neutralized — the same
+       pairing the reduced-motion gate uses (styles.css `.formula-tip`). */
+    transform: translateY(0);
+    translate: none;
+  }
+}
+
+/* Live transmission — the live-dot glyph carries the pulse itself when its
+   surface's stream is open (React sets ck-live-tx on the svg root; no stream
+   = static glyph, so the motion can never claim a liveness the socket lacks).
+   The core dims and recovers like an LED; the chevrons swell outward in
+   overlapping pulses; then the long quiet. Ambient 2.8s, opacity-only — the
+   glyph's hairlines stay on their half-grid, nothing translates.
+   Reduced motion needs no counterpart block: every animation here lives
+   inside the no-preference gate, so under `reduce` nothing is declared and
+   the glyph simply renders static at full opacity. */
+@media (prefers-reduced-motion: no-preference) {
+  .mmr-shell svg.ck-live-tx > rect {
+    animation: mmr-tx-led 2.8s var(--ease-land) infinite;
+  }
+  .mmr-shell svg.ck-live-tx > path:first-of-type {
+    animation: mmr-tx-in 2.8s var(--ease-land) infinite;
+  }
+  .mmr-shell svg.ck-live-tx > path:nth-of-type(2) {
+    animation: mmr-tx-out 2.8s var(--ease-land) infinite;
+  }
+}
+@keyframes mmr-tx-led {
+  0%, 3% { opacity: 1; }
+  6% { opacity: 0.35; }
+  12%, 100% { opacity: 1; }
+}
+@keyframes mmr-tx-in {
+  0%, 8% { opacity: 0.35; }
+  14% { opacity: 1; }
+  26%, 100% { opacity: 0.35; }
+}
+@keyframes mmr-tx-out {
+  0%, 15% { opacity: 0.2; }
+  21% { opacity: 1; }
+  34%, 100% { opacity: 0.2; }
+}
+
+/* Seal stamp — plays once when a mint modal mounts: the moment a credential
+   becomes sealed. The flap draws shut and decelerates, then the wax cell
+   arrives oversized, compresses, settles. This is an EVENT, not an ambient
+   rider: one cycle on mount and it is over, so the "nothing else in the shell
+   may loop" ruling on the ck-dot block stands untouched. Both mint modals
+   render behind a `minted &&` gate that only a successful mint opens and DONE
+   clears (RuntimeKeysPanel, ApiKeysPanel, AgentOnboardPage), so the element is
+   built fresh per seal and the animation cannot replay on a re-render.
+   Selectors read the shipped glyph (icons.tsx GLYPHS.seal): the envelope rect
+   carries no paint attributes, the flap is the only direct-child <path>, and
+   the wax cell is the only <rect> with a `fill` attribute. Dasharray 16 spans
+   the flap's 14.87 user units in one dash, so the held end state (`both`) is
+   an ordinary solid stroke — the draw leaves nothing behind. Other seal call
+   sites (CallDetail's title, the privacy-tier badge, the launch step) carry no
+   wrapper and stay static. The wrapper itself needs no box rules, on two
+   conditions that BOTH hold today: it lands as a direct child of .ck-title-ik,
+   so flex blockification already collapses it onto the 16px glyph, and
+   Tailwind preflight renders every svg display:block, so no baseline strut or
+   line box opens inside it either way — measured identical to the bare sibling
+   marker, so an inline-flex rule here would be inert. Lose either condition
+   and the wrapper needs its own display rule again. */
+.mmr-shell .mmr-seal-stamp svg > path {
+  stroke-dasharray: 16;
+  stroke-dashoffset: 16;
+  animation: mmr-seal-close 0.34s var(--ease-snap) 0.08s both;
+}
+.mmr-shell .mmr-seal-stamp svg > rect[fill] {
+  opacity: 0;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: mmr-seal-settle 0.2s var(--ease-land) 0.4s both;
+}
+@keyframes mmr-seal-close {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes mmr-seal-settle {
+  0% { opacity: 0; transform: scale(1.5); }
+  55% { opacity: 1; transform: scale(0.96); }
+  100% { opacity: 1; transform: scale(1); }
+}
+/* Reduced motion gets the finished seal, not a missing one: flap fully drawn,
+   wax present, no animation ever declared. Dropping the dasharray outright (not
+   just zeroing the offset) keeps this state solid on its own terms — it stops
+   depending on the flap staying shorter than the 16-unit dash. */
+@media (prefers-reduced-motion: reduce) {
+  .mmr-shell .mmr-seal-stamp svg > path {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+    animation: none;
+  }
+  .mmr-shell .mmr-seal-stamp svg > rect[fill] {
+    opacity: 1;
+    animation: none;
   }
 }

@@ -15,12 +15,16 @@ import { CompactTopbar } from "../components/compact/Topbar.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
+import { FormulaTip } from "../components/compact/FormulaTip.js";
 import { VenueGlyph } from "../components/compact/glyphs.js";
 import { ErrorState } from "../components/compact/ErrorState.js";
 import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
+import { TimeAgo } from "../components/compact/TimeAgo.js";
+import { Ik, IkNav } from "../icons.js";
 import { useStream } from "../hooks/useStream.js";
 import { mergeMarketAgentRow } from "../hooks/stream-merge.js";
 import { marketDisplayName, parseMarketConfig } from "../lib/market-meta.js";
+import { shortId } from "../lib/display-format.js";
 import { formatScore } from "../lib/score-format.js";
 import { isTerminalFailureStatus } from "@shared/wire-call-status";
 
@@ -155,20 +159,17 @@ export function MarketDetailPage({
   // still delivers the skeleton with null prices/volume/liquidity.
   const venue = (isVenue ? market?.venue : null) ?? null;
 
-  // Shared 30s clock. It drives the venue countdown AND the verdicts-feed
-  // time-ago labels — the feed reads nowMs on EVERY market (native ones
-  // included), so the ticker must run whenever the countdown needs it (venue +
-  // endDate) OR the feed has ≥1 row. One interval only: a single effect gated
-  // on the union condition, so a native-market feed no longer freezes at its
-  // first-render timestamp and the countdown path is unchanged.
+  // 30s clock for the venue countdown only — the verdicts feed renders its
+  // timestamps through <TimeAgo/>, which lives off the shared module-level
+  // ticker. Gated on (venue + endDate) so a market with no countdown carries
+  // no interval at all.
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const hasFeedRows = (calls?.length ?? 0) > 0;
   const needsCountdownTick = isVenue && Boolean(cfg?.endDate);
   useEffect(() => {
-    if (!needsCountdownTick && !hasFeedRows) return;
+    if (!needsCountdownTick) return;
     const id = setInterval(() => setNowMs(Date.now()), 30_000);
     return () => clearInterval(id);
-  }, [needsCountdownTick, hasFeedRows]);
+  }, [needsCountdownTick]);
 
   // Venue markets title the tab with the human question (fallback: market id);
   // restore whatever title was there before on unmount / market change.
@@ -226,10 +227,15 @@ export function MarketDetailPage({
           {/* HEADING — venue markets lead with the human question ───────── */}
           {heading !== null && (
             <section className="px-2 py-2 border-b border-[var(--color-border)]">
+              {/* Title marker at heading scale: a 16px `market` glyph is the
+                  region marker (P2). This h1 is a display heading, not a
+                  .ck-title, so it carries no ::before square to replace —
+                  one marker either way. Baseline-aligned + block flex so a
+                  balanced two-line question still wraps as it does today. */}
               <h1
-                className="ck-mono m-0"
+                className="ck-mono m-0 flex items-baseline gap-2"
                 style={{
-                  fontSize: 20,
+                  fontSize: 21,
                   fontWeight: 700,
                   lineHeight: 1.3,
                   color: "var(--color-display)",
@@ -237,6 +243,7 @@ export function MarketDetailPage({
                 }}
                 title={marketId}
               >
+                <Ik name="market" />
                 {heading}
               </h1>
             </section>
@@ -361,7 +368,11 @@ export function MarketDetailPage({
             }
           >
             <Panel
-              title="agent ladder"
+              title={
+                <>
+                  <IkNav name="leaderboard" /> agent ladder
+                </>
+              }
               meta={agents ? `${agents.length}` : ""}
               actions={
                 <a href="#/dashboard" className="ck-btn ck-btn-bracket">
@@ -379,18 +390,33 @@ export function MarketDetailPage({
             {/* RIGHT COLUMN — sealed-verdicts feed above the live tape. */}
             <div className="flex flex-col min-h-0">
               <Panel
-                title="verdicts · recent"
+                title={
+                  <>
+                    <Ik name="verdict" /> verdicts · recent
+                  </>
+                }
                 meta={calls ? `${calls.length}` : ""}
               >
                 {calls === null && <PanelSkeleton rows={5} />}
                 {calls !== null && calls.length === 0 && (
                   <div className="px-2 py-2 ck-mono ck-dim">[no calls on this market yet]</div>
                 )}
-                {calls !== null && calls.length > 0 && (
-                  <VerdictsFeed rows={calls} nowMs={nowMs} />
-                )}
+                {calls !== null && calls.length > 0 && <VerdictsFeed rows={calls} />}
               </Panel>
-              <Panel title="live tape" className="flex-1">
+              <Panel
+                title={
+                  <>
+                    {/* Transmits only while the shared SSE stream is open; a
+                        closed socket leaves the glyph static. */}
+                    <Ik
+                      name="live-dot"
+                      className={stream.status === "open" ? "ck-live-tx" : undefined}
+                    />{" "}
+                    live tape
+                  </>
+                }
+                className="flex-1"
+              >
                 <CompactLiveFeed limit={60} marketId={marketId} />
               </Panel>
             </div>
@@ -404,20 +430,45 @@ export function MarketDetailPage({
 function Ladder({ rows }: { rows: AgentMarketRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_58px_58px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="grid grid-cols-[28px_1fr_64px_64px_50px_44px_60px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
         <span>agent</span>
-        <span className="text-right">vs</span>
-        <span className="text-right">vs·lb</span>
+        {/* Formulas are the ladder's, copied from LeaderboardPage so the same
+            column never explains itself two ways. Flex wrappers keep the cells
+            right-aligned around the inline-flex tip trigger. `res` and `p` stay
+            bare: they are plain counts (wire-leaderboard AgentMarketRow —
+            `resolved_calls` / `pending_calls`), not derived quantities. */}
+        <span className="flex justify-end">
+          <FormulaTip
+            label="verdict_score"
+            formula="verdict_score = mean(call_score) - stdev(call_score) / sqrt(n)"
+          >
+            vs
+          </FormulaTip>
+        </span>
+        <span className="flex justify-end">
+          <FormulaTip
+            label="lb"
+            formula="lb = mean(call_score) - 1.6449 * standard_error(call_score)"
+          >
+            vs·lb
+          </FormulaTip>
+        </span>
         <span className="text-right">res</span>
-        <span className="text-right">wr</span>
-        <span className="text-right">trend</span>
+        <span className="flex justify-end">
+          <FormulaTip label="win_rate" formula="win rate = wins / (wins + losses)">
+            wr
+          </FormulaTip>
+        </span>
+        <span className="flex justify-end">
+          <FormulaTip label="trend" formula="trend = recent resolved call_score series" />
+        </span>
         <span className="text-right">p</span>
       </li>
       {rows.map((r, i) => (
         <li
           key={r.agent_id}
-          className="relative grid grid-cols-[28px_1fr_58px_58px_50px_44px_60px_24px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[28px_1fr_64px_64px_50px_44px_60px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           {/* Stretched row link — real box so keyboard focus lands. */}
           <a
@@ -475,7 +526,7 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
  * (existence + timestamps + agent only), so the row deliberately carries no
  * side/confidence. Newest first from the API; capped at 20, no pagination.
  */
-function VerdictsFeed({ rows, nowMs }: { rows: MarketCallRow[]; nowMs: number }) {
+function VerdictsFeed({ rows }: { rows: MarketCallRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
       {rows.slice(0, 20).map((c) => {
@@ -501,9 +552,10 @@ function VerdictsFeed({ rows, nowMs }: { rows: MarketCallRow[]; nowMs: number })
             <span className={"ck-label flex-none " + (tag.sealed ? "ck-pos" : "ck-dim")}>
               {tag.label}
             </span>
-            <span className="ck-mono ck-dim ml-auto flex-none whitespace-nowrap">
-              {formatTimeAgo(c.submitted_at ?? c.accepted_at, nowMs)}
-            </span>
+            <TimeAgo
+              iso={c.submitted_at ?? c.accepted_at}
+              className="ck-mono ck-dim ml-auto flex-none whitespace-nowrap"
+            />
           </li>
         );
       })}
@@ -601,10 +653,10 @@ function VenueCell({ url, venue }: { url: string | undefined; venue: string }) {
           target="_blank"
           rel="noopener noreferrer"
           className="ck-pos no-underline hover:opacity-80 inline-flex items-center gap-1"
-          title={`${venue} — open event ↗`}
+          title={`${venue} — open event`}
         >
           <VenueGlyph venue={venue} size={16} />
-          <span aria-hidden="true" className="ck-dim text-[10px]">↗</span>
+          <span aria-hidden="true" className="ck-dim text-[12px]">↗</span>
         </a>
       ) : (
         <VenueGlyph venue={venue} size={16} />
@@ -677,11 +729,10 @@ function venueName(m: MarketRow | null): string {
   return "venue";
 }
 
-/** Middle-truncate long ids (0x… hashes) to `0x0c4c…457f`; ids of 20 chars or
- *  fewer (all native ids) pass through untouched. */
+/** Middle-truncate long ids (0x… hashes) to `0x0c4c1f2a…457f`; short ids
+ *  pass through untouched. Delegates to the shared {@link shortId} rule. */
 function midTruncateId(id: string): string {
-  if (id.length <= 20) return id;
-  return `${id.slice(0, 6)}…${id.slice(-4)}`;
+  return shortId(id, 10, 4);
 }
 
 /** Compact countdown to an ISO close: `6d 14h` / `14h 02m` / `42m` / `ended`. */
@@ -753,19 +804,4 @@ function formatCompactUsd(n: number): string {
   if (abs >= 1e6) return unit(n / 1e6, "m");
   if (abs >= 1e3) return unit(n / 1e3, "k");
   return `$${Math.round(n)}`;
-}
-
-/** Compact relative timestamp for feed rows: 45s ago / 12m ago / 2h ago /
- *  3d ago. */
-function formatTimeAgo(iso: string | undefined, nowMs: number): string {
-  if (!iso) return "—";
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "—";
-  const s = Math.max(0, Math.floor((nowMs - t) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
 }

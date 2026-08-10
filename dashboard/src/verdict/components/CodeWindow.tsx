@@ -178,14 +178,14 @@ export function CodeWindow({
     <div className="border border-[var(--color-border)]">
       <div className="flex items-center gap-2 px-2 py-1 border-b border-[var(--color-border)]">
         <span className="ck-label ck-dim">{title ?? " "}</span>
-        <span className="ml-auto ck-mono ck-dim text-[10px]">{LANG_LABEL[lang]}</span>
+        <span className="ml-auto ck-dim text-[12px]">{LANG_LABEL[lang]}</span>
         {copyable && (
           <button className="ck-btn ck-btn-bracket" onClick={copy}>
             {copied ? "copied" : "copy"}
           </button>
         )}
       </div>
-      <pre className="ck-mono whitespace-pre overflow-x-auto px-3 py-2 leading-tight text-[11px]">
+      <pre className="whitespace-pre overflow-x-auto px-3 py-2 leading-tight">
         <HighlightedCode code={code} lang={lang} />
       </pre>
     </div>
