@@ -169,7 +169,21 @@ export function gatewayAttemptLifecycleRepo<
              broadcast_claim_token = NULL,
              updated_at = @updated_at
          WHERE attempt_id = @attempt_id
-           AND (@claim_token IS NULL OR broadcast_claim_token = @claim_token)`,
+           AND (@claim_token IS NULL OR broadcast_claim_token = @claim_token)
+           -- FIRST-WINS on the hash. A row that already has one has a
+           -- transaction out there; replacing it with a second, duplicate
+           -- write's hash (which the contract rejects, so it reverts) strands
+           -- the write that actually landed.
+           --
+           -- This is what makes the late-hash handoff race-safe: the
+           -- preBroadcast check and journalLateTxHash are two operations, so a
+           -- claimant can pass the check just before the hash appears. Here
+           -- the loser simply fails and falls into the journal path.
+           --
+           -- Harmless in the normal flow: tx_hash is NULL until the first
+           -- successful submit, and a row that has one is submitted, which is
+           -- not broadcastable.
+           AND tx_hash IS NULL`,
       ).run({ ...input, claim_token: claimToken });
       return info.changes === 1;
     },
@@ -182,6 +196,86 @@ export function gatewayAttemptLifecycleRepo<
      * error/claim state so the normal confirmation watcher can pick the row
      * up.
      */
+    /**
+     * Journal a transaction hash that WAS sent but whose guarded write lost
+     * its claim race.
+     *
+     * Records the hash and nothing else — no status change, no claim change.
+     * The obvious fallback, markReconciledSubmitted, has no claim guard and
+     * clears whatever claim exists: a slow worker A whose claim had been swept
+     * and re-taken by B would land its transaction, fail its guarded write,
+     * and then wipe B's live claim on the way out.
+     *
+     * `tx_hash IS NULL` keeps it from overwriting a hash someone else already
+     * recorded. Losing the race is not a reason to lose the transaction.
+     */
+    journalLateTxHash(
+      db: Database.Database,
+      input: { attempt_id: string; tx_hash: string; updated_at: string },
+    ): boolean {
+      return (
+        prep(
+          db,
+          `UPDATE ${table}
+           SET tx_hash = @tx_hash,
+               updated_at = @updated_at
+           WHERE attempt_id = @attempt_id
+             AND tx_hash IS NULL`,
+        ).run(input).changes > 0
+      );
+    },
+
+    /**
+     * Promote a row that ALREADY carries a journalled hash to `submitted`, so
+     * the confirmation loop picks it up.
+     *
+     * Used by the claimant that discovered an earlier worker's late hash in
+     * preBroadcast. It cannot use markSubmitted — that refuses to overwrite an
+     * existing hash, which is exactly the protection that makes the handoff
+     * race-safe — and it cannot use markReconciledSubmitted, which requires an
+     * unclaimed row while this caller holds the claim.
+     *
+     * Sets status and releases its own claim. Nothing touches tx_hash: the
+     * recorded one is the transaction that landed.
+     *
+     * `claim_token: null` is the UNCLAIMED form, used by the pre-claim check
+     * that catches a broadcastable row already carrying a hash. That is the
+     * general case — the specific ones (late journal, first-wins refusal) are
+     * just how the hash gets there. Without it, a row whose earlier write
+     * landed would be re-broadcast, the duplicate would revert during gas
+     * estimation, and the generic catch would mark it retryable forever while
+     * the landed transaction was never confirmed.
+     */
+    adoptJournalledTxHash(
+      db: Database.Database,
+      input: {
+        attempt_id: string;
+        claim_token: string | null;
+        next_attempt_at: string;
+        updated_at: string;
+      },
+    ): boolean {
+      const claimClause =
+        input.claim_token === null
+          ? "broadcast_claim_token IS NULL"
+          : "broadcast_claim_token = @claim_token";
+      return (
+        prep(
+          db,
+          `UPDATE ${table}
+           SET status = 'submitted',
+               next_attempt_at = @next_attempt_at,
+               last_error = NULL,
+               last_rpc_error = NULL,
+               broadcast_claim_token = NULL,
+               updated_at = @updated_at
+           WHERE attempt_id = @attempt_id
+             AND ${claimClause}
+             AND tx_hash IS NOT NULL`,
+        ).run(input).changes === 1
+      );
+    },
+
     markReconciledSubmitted(
       db: Database.Database,
       input: {
@@ -202,6 +296,11 @@ export function gatewayAttemptLifecycleRepo<
              broadcast_claim_token = NULL,
              updated_at = @updated_at
          WHERE attempt_id = @attempt_id
+           -- Pre-claim path: never clobber a live claim. Reconciliation
+           -- awaits an RPC read, and another tick can claim the row in
+           -- that window; clearing its token here would orphan a
+           -- broadcast that is already in flight.
+           AND broadcast_claim_token IS NULL
            AND tx_hash IS NULL`,
       ).run(input);
       return info.changes === 1;
@@ -230,6 +329,11 @@ export function gatewayAttemptLifecycleRepo<
              broadcast_claim_token = NULL,
              updated_at = @updated_at
          WHERE attempt_id = @attempt_id
+           -- Pre-claim path: never clobber a live claim. Reconciliation
+           -- awaits an RPC read, and another tick can claim the row in
+           -- that window; clearing its token here would orphan a
+           -- broadcast that is already in flight.
+           AND broadcast_claim_token IS NULL
            AND tx_hash IS NULL`,
       ).run(input);
       return info.changes === 1;
@@ -359,18 +463,106 @@ export function gatewayAttemptLifecycleRepo<
       ).run(input);
     },
 
+    /**
+     * Terminal failure.
+     *
+     * `expect_claim_token` decides whether the claim is released:
+     *
+     * - Omitted (a PRE-claim decision — revoked key, kill switch, deployment
+     *   mismatch): the update is a compare-and-set on `broadcastable AND
+     *   unclaimed`, and RETURNS FALSE if the row is claimed or has moved on.
+     *
+     *   It used to clear the claim unconditionally, which stole an in-flight
+     *   worker's claim: that worker's token-guarded markSubmitted then matched
+     *   zero rows, and a transaction that actually landed was recorded
+     *   nowhere. Simply leaving the claim alone was not enough either — the
+     *   row went terminal WITH a live claim, which the stuck-claim sweep does
+     *   not cover (it only scans broadcastable rows), so it stranded forever;
+     *   and the same write could overwrite a `submitted` row set by another
+     *   process, dropping a real transaction out of confirmation.
+     *
+     *   A claimed row is therefore left entirely to its owner, or to the
+     *   stuck-claim sweep that will release it. The caller must respect the
+     *   false return and skip rather than assume it terminalized.
+     *
+     * - `expect_status` (a POST-broadcast decision — a reverted receipt, an
+     *   acceptance failure): CAS on that exact status instead. Those rows are
+     *   `submitted`/`confirmed` and hold no claim (markSubmitted released it),
+     *   so the broadcastable-and-unclaimed predicate would match nothing and
+     *   the row would be retried forever.
+     * - Set (this caller owns the claim): the claim is released too, so a
+     *   terminal row does not sit in stuck-claim telemetry forever. The
+     *   `WHERE` clause makes it a compare-and-set — a stale token changes
+     *   nothing.
+     *
+     * Returns whether a row changed, so a caller holding a token can tell that
+     * it lost the race rather than assume it won.
+     */
     markTerminalFailure(
       db: Database.Database,
-      input: { attempt_id: string; last_error: string; updated_at: string },
-    ): void {
-      prep(
-        db,
-        `UPDATE ${table}
-         SET status = 'failed_terminal',
-             last_error = @last_error,
-             updated_at = @updated_at
-         WHERE attempt_id = @attempt_id`,
-      ).run(input);
+      input: {
+        attempt_id: string;
+        last_error: string;
+        updated_at: string;
+        expect_claim_token?: string | null;
+        expect_status?: FhenixGatewayTxStatus;
+      },
+    ): boolean {
+      const token = input.expect_claim_token ?? null;
+      if (token === null && input.expect_status) {
+        return (
+          prep(
+            db,
+            `UPDATE ${table}
+             SET status = 'failed_terminal',
+                 last_error = @last_error,
+                 updated_at = @updated_at
+             WHERE attempt_id = @attempt_id
+               AND status = @expect_status`,
+          ).run({
+            attempt_id: input.attempt_id,
+            last_error: input.last_error,
+            updated_at: input.updated_at,
+            expect_status: input.expect_status,
+          }).changes > 0
+        );
+      }
+      if (token === null) {
+        return (
+          prep(
+            db,
+            `UPDATE ${table}
+             SET status = 'failed_terminal',
+                 last_error = @last_error,
+                 updated_at = @updated_at
+             WHERE attempt_id = @attempt_id
+               AND status IN (${BROADCASTABLE_STATUS_SQL})
+               AND broadcast_claim_token IS NULL`,
+          ).run({
+            attempt_id: input.attempt_id,
+            last_error: input.last_error,
+            updated_at: input.updated_at,
+          }).changes > 0
+        );
+      }
+      return (
+        prep(
+          db,
+          `UPDATE ${table}
+           SET status = 'failed_terminal',
+               last_error = @last_error,
+               broadcast_claim_token = NULL,
+               broadcast_started_at = NULL,
+               updated_at = @updated_at
+           WHERE attempt_id = @attempt_id
+             AND broadcast_claim_token = @expect_claim_token`,
+        ).run({
+          attempt_id: input.attempt_id,
+          last_error: input.last_error,
+          updated_at: input.updated_at,
+          expect_claim_token: token,
+        }).changes > 0
+      );
     },
 
     markRetryNow(

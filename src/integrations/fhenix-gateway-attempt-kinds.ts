@@ -1,4 +1,6 @@
 import type { Address, Hex } from "viem";
+import { assertFeedRevealPolicySupported } from "../verdict/feed-availability.js";
+import { feedContractsRepo } from "../verdict/repos/feed-availability-repo.js";
 
 import type { GatewayAttemptKind } from "./fhenix-gateway-attempt-machine.js";
 import {
@@ -52,6 +54,14 @@ export function sealedCallAttemptKind(
   return {
     label: "sealed_call",
     lifecycle: fhenixGatewayTxRepo,
+    // Market-scoped: the broadcast slot re-checks the operator halt against
+    // this, so a call queued while the market was live is not still sent after
+    // an operator pulls it.
+    marketId: (attempt) => attempt.market_id,
+    deploymentOf: (attempt) => ({
+      chainId: attempt.chain_id,
+      contractAddress: attempt.contract_address,
+    }),
     reconcile: (config, attempt) =>
       reconcileSealedCallSubmit(config, {
         agentWalletAddress: attempt.agent_wallet_address,
@@ -82,6 +92,7 @@ export function sealedCallAttemptKind(
         onchain_call_id: event.onchain_call_id,
         binary_index_ct_hash: event.binary_index_ct_hash,
         confidence_ct_hash: event.confidence_ct_hash,
+        submission_class: event.submission_class,
         accepted_at: event.accepted_at,
         reveal_open_at: event.reveal_open_at,
         updated_at,
@@ -130,6 +141,24 @@ export function feedPacketAttemptKind(
 > {
   return {
     label: "feed_packet",
+    marketId: (attempt) => attempt.market_id ?? null,
+    deploymentOf: (attempt) => ({
+      chainId: attempt.chain_id,
+      contractAddress: attempt.contract_address,
+    }),
+    // Feeds narrowed to `after_resolution` only; a per-packet delay cannot be
+    // enforced against a fixed market schedule. Attempts queued before that
+    // narrowing never saw the reservation-time guard, so re-check here.
+    revalidate: (db, attempt) => {
+      const feed = feedContractsRepo.byId(db, attempt.feed_id);
+      if (!feed) return `feed ${attempt.feed_id} no longer exists`;
+      try {
+        assertFeedRevealPolicySupported(feed);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    },
     lifecycle: fhenixGatewayFeedPacketTxRepo,
     reconcile: (config, attempt) =>
       reconcileFeedPacketSubmit(config, {
@@ -148,7 +177,9 @@ export function feedPacketAttemptKind(
           attempt.agent_wallet_address as Address,
           attempt.feed_id_hash as Hex,
           attempt.market_id_hash as Hex,
-          BigInt(Math.floor(Date.parse(attempt.reveal_after) / 1000)),
+          // No reveal-time argument: the contract takes it from the market's
+          // registered publicRevealAt. `attempt.reveal_after` is still stored
+          // for reconciliation (event extraction compares against it).
           inputs.action,
           inputs.signal,
           attempt.client_nonce as Hex,

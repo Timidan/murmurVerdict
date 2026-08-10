@@ -93,6 +93,25 @@ export interface WireMarketVenueSnapshot {
 }
 
 /**
+ * The market's immutable schedule snapshot. Milliseconds since epoch, in UTC —
+ * the dashboard formats them in the viewer's own locale and timezone, and the
+ * matrix groups markets that share one window by these instants.
+ *
+ * Absent on markets that were never bound to a series (native markets, and
+ * markets discovery froze before listing). Absent means "no submission window
+ * exists", which is not the same as "the window has passed".
+ */
+export interface WireMarketClock {
+  series_id: string;
+  arm_close_at_ms: number;
+  submission_open_at_ms: number;
+  early_access_cutoff_at_ms: number;
+  submission_close_at_ms: number;
+  resolution_at_ms: number;
+  public_reveal_at_ms: number;
+}
+
+/**
  * One market row from GET /v1/markets (+ single read). Mirrors the daemon's
  * VenueEnrichedMarketRegistryRow (src/verdict/market-read-surface.ts). The
  * daemon emits more registry columns than the dashboard reads; the index
@@ -112,6 +131,8 @@ export interface WireMarketRow {
   oracles?: WireMarketOracleSummary;
   /** Venue-adapter markets ONLY — live odds/volume snapshot. */
   venue?: WireMarketVenueSnapshot;
+  /** Scheduled markets ONLY — the window instants the matrix groups by. */
+  clock?: WireMarketClock;
   // Backend may include additional registry fields; preserve them through.
   [extra: string]: unknown;
 }
