@@ -55,11 +55,9 @@ services:
       # Optional dedicated archive RPC for the watcher; empty reuses FHENIX_RPC_URL.
       FHENIX_WATCHER_RPC_URL: "${FHENIX_WATCHER_RPC_URL:-}"
       FHENIX_CHAIN_ID: "${FHENIX_CHAIN_ID:-}"
-      FHENIX_CONTRACT_ADDRESS: "${FHENIX_CONTRACT_ADDRESS:-}"
       FHENIX_EVENT_TICK_SEC: "${FHENIX_EVENT_TICK_SEC:-30}"
       # 0 = auto-derive the start block from the deployment manifest entry that
       # matches FHENIX_CONTRACT_ADDRESS; a positive value overrides it.
-      FHENIX_EVENT_START_BLOCK: "${FHENIX_EVENT_START_BLOCK:-0}"
       FHENIX_EVENT_CONFIRMATIONS: "${FHENIX_EVENT_CONFIRMATIONS:-2}"
       FHENIX_EVENT_BATCH_SIZE: "${FHENIX_EVENT_BATCH_SIZE:-1000}"
       FHENIX_REVEAL_GRACE_SEC: "${FHENIX_REVEAL_GRACE_SEC:-3600}"
@@ -86,6 +84,83 @@ services:
       # /v2/gateway/feeds/:id/packets — without these, those routes return 503.
       FHENIX_GATEWAY_ENABLED: "${FHENIX_GATEWAY_ENABLED:-false}"
       FHENIX_GATEWAY_RELAYER_PRIVATE_KEY: "${FHENIX_GATEWAY_RELAYER_PRIVATE_KEY:-}"
+      # Murmur-owned sealing accepts a PLAINTEXT verdict and seals it
+      # server-side, so the operator can read every pending prediction while it
+      # is on. Defaults to false; /v2/gateway/calls/seal returns 503 unless this
+      # is explicitly set true. Client-sealed /v2/gateway/calls is unaffected.
+      MURMUR_OWNED_SEALING_ENABLED: "${MURMUR_OWNED_SEALING_ENABLED:-false}"
+      MURMUR_ACK_FEED_REVEAL_MANUAL: "${MURMUR_ACK_FEED_REVEAL_MANUAL:-false}"
+      # Empty = derive the start block from the deployment manifest. A literal
+      # 0 is NOT "auto" — it scans from genesis.
+      # Proof-of-possession audience. The shared default is fine for a single
+      # local deployment but not where a database or key material could be
+      # cloned between environments — a signature minted for one would verify
+      # against the other.
+      MURMUR_POP_AUDIENCE: "${MURMUR_POP_AUDIENCE:-}"
+
+      # ── Paid decrypt-grant (Flow 2) ────────────────────────────────────────
+      # Compose passes an explicit allowlist and .env is NOT baked into the
+      # image, so a variable missing here never reaches the daemon — the
+      # feature then stays silently disabled no matter what the host sets.
+      # No automated refund worker exists yet — enabling grants requires
+      # acknowledging that refunds are a manual operator duty.
+      # ── Nanopay (x402 settlement) ──────────────────────────────────────────
+      # Paid decrypt-grant access mounts ONLY when BOTH the grant runtime and
+      # nanopay are enabled; otherwise the route returns 503. These were absent
+      # from Compose entirely, so a canonical deploy could bring up the grantor
+      # and reconciler while paid access stayed silently disabled.
+      # Murmur's cut of every early-access sale, in basis points (1000 = 10%).
+      # Required whenever the gateway or paid grants are on — sealing a call
+      # freezes this number onto it. No default: omitted here, the daemon
+      # refuses to start rather than inventing a split.
+      MURMUR_PROTOCOL_FEE_BPS: "${MURMUR_PROTOCOL_FEE_BPS:-}"
+      MURMUR_NANOPAY_ENABLED: "${MURMUR_NANOPAY_ENABLED:-false}"
+      MURMUR_NANOPAY_NETWORK: "${MURMUR_NANOPAY_NETWORK:-}"
+      MURMUR_NANOPAY_ACCEPT_NETWORKS: "${MURMUR_NANOPAY_ACCEPT_NETWORKS:-}"
+      MURMUR_NANOPAY_SELLER_ADDRESS: "${MURMUR_NANOPAY_SELLER_ADDRESS:-}"
+      # Required when mounted — there is deliberately no default price.
+      MURMUR_NANOPAY_DEFAULT_PRICE: "${MURMUR_NANOPAY_DEFAULT_PRICE:-}"
+      MURMUR_NANOPAY_PIPELINES: "${MURMUR_NANOPAY_PIPELINES:-}"
+      MURMUR_NANOPAY_PIPELINE_AGENT_MAP: "${MURMUR_NANOPAY_PIPELINE_AGENT_MAP:-}"
+
+      MURMUR_ACK_MANUAL_REFUNDS: "${MURMUR_ACK_MANUAL_REFUNDS:-false}"
+      FHENIX_GRANT_ENABLED: "${FHENIX_GRANT_ENABLED:-false}"
+      FHENIX_GRANT_PRIVATE_KEY: "${FHENIX_GRANT_PRIVATE_KEY:-}"
+      FHENIX_GRANT_PRICE_ATOMS: "${FHENIX_GRANT_PRICE_ATOMS:-}"
+      FHENIX_GRANT_CURRENCY: "${FHENIX_GRANT_CURRENCY:-}"
+      FHENIX_GRANT_PRICING_VERSION: "${FHENIX_GRANT_PRICING_VERSION:-}"
+      FHENIX_GRANT_MAX_ARMED_PER_CALL: "${FHENIX_GRANT_MAX_ARMED_PER_CALL:-}"
+      FHENIX_GRANT_SALES_SAFETY_SEC: "${FHENIX_GRANT_SALES_SAFETY_SEC:-180}"
+      FHENIX_GRANT_CONFIRMATIONS: "${FHENIX_GRANT_CONFIRMATIONS:-2}"
+      FHENIX_GRANT_MAX_ATTEMPTS: "${FHENIX_GRANT_MAX_ATTEMPTS:-}"
+      FHENIX_GRANT_REBROADCAST_DELAY_SEC: "${FHENIX_GRANT_REBROADCAST_DELAY_SEC:-}"
+      FHENIX_GRANT_SETTLEMENT_UNKNOWN_MAX_ATTEMPTS: "${FHENIX_GRANT_SETTLEMENT_UNKNOWN_MAX_ATTEMPTS:-}"
+      FHENIX_GRANT_MIN_BALANCE_WEI: "${FHENIX_GRANT_MIN_BALANCE_WEI:-}"
+      # Crash recovery for in-flight grants. Running grants WITHOUT this leaves
+      # settled payments stranded after a restart.
+      FHENIX_GRANT_RECONCILER_ENABLED: "${FHENIX_GRANT_RECONCILER_ENABLED:-false}"
+      FHENIX_GRANT_RECONCILER_TICK_SEC: "${FHENIX_GRANT_RECONCILER_TICK_SEC:-30}"
+
+      # ── Polymarket discovery ───────────────────────────────────────────────
+      POLYMARKET_DISCOVERY_ENABLED: "${POLYMARKET_DISCOVERY_ENABLED:-false}"
+      POLYMARKET_DISCOVERY_TICK_SEC: "${POLYMARKET_DISCOVERY_TICK_SEC:-60}"
+      POLYMARKET_DISCOVERY_LOOKAHEAD_MIN: "${POLYMARKET_DISCOVERY_LOOKAHEAD_MIN:-20}"
+      POLYMARKET_DISCOVERY_MIN_LEAD_SEC: "${POLYMARKET_DISCOVERY_MIN_LEAD_SEC:-120}"
+      POLYMARKET_DISCOVERY_QUESTION_FILTER: "${POLYMARKET_DISCOVERY_QUESTION_FILTER:-}"
+      POLYMARKET_DISCOVERY_ASSETS: "${POLYMARKET_DISCOVERY_ASSETS:-}"
+      POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC: "${POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC:-300}"
+      # Series clock — every on-chain instant derives from these.
+      POLYMARKET_DISCOVERY_SUBMISSION_OPEN_LEAD_SEC: "${POLYMARKET_DISCOVERY_SUBMISSION_OPEN_LEAD_SEC:-300}"
+      POLYMARKET_DISCOVERY_COMMIT_MARGIN_SEC: "${POLYMARKET_DISCOVERY_COMMIT_MARGIN_SEC:-60}"
+      POLYMARKET_DISCOVERY_DELIVERY_BUDGET_SEC: "${POLYMARKET_DISCOVERY_DELIVERY_BUDGET_SEC:-60}"
+      POLYMARKET_DISCOVERY_EMBARGO_SEC: "${POLYMARKET_DISCOVERY_EMBARGO_SEC:-600}"
+      POLYMARKET_DISCOVERY_SERIES_VERSION: "${POLYMARKET_DISCOVERY_SERIES_VERSION:-1}"
+      POLYMARKET_DISCOVERY_MAX_PER_TICK: "${POLYMARKET_DISCOVERY_MAX_PER_TICK:-4}"
+      POLYMARKET_DISCOVERY_MAX_PER_HOUR: "${POLYMARKET_DISCOVERY_MAX_PER_HOUR:-30}"
+      POLYMARKET_DISCOVERY_MAX_PER_DAY: "${POLYMARKET_DISCOVERY_MAX_PER_DAY:-650}"
+      POLYMARKET_DISCOVERY_MIN_BALANCE_WEI: "${POLYMARKET_DISCOVERY_MIN_BALANCE_WEI:-}"
+      POLYMARKET_DISCOVERY_WARN_BALANCE_WEI: "${POLYMARKET_DISCOVERY_WARN_BALANCE_WEI:-}"
+      POLYMARKET_DISCOVERY_MAX_REGISTER_COST_WEI: "${POLYMARKET_DISCOVERY_MAX_REGISTER_COST_WEI:-}"
       FHENIX_GATEWAY_TICK_SEC: "${FHENIX_GATEWAY_TICK_SEC:-10}"
       FHENIX_GATEWAY_CONFIRMATIONS: "${FHENIX_GATEWAY_CONFIRMATIONS:-2}"
       LIVE_CANARY_TICK_SEC: "${LIVE_CANARY_TICK_SEC:-300}"

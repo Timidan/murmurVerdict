@@ -7,6 +7,7 @@
 help:
 	@echo "Available targets:"
 	@echo "  make lean-all                  Run Lean FV gates (build + no-sorry + only-declared-axioms)"
+	@echo "                                 NOTE: the sealed-verdict model is STALE — see contracts/proofs/MurmurFV/README.md"
 	@echo "  make lean-check                Just the lake build"
 	@echo "  make lean-no-sorry             Just the sorry grep"
 	@echo "  make lean-only-declared-axioms Just the axiom whitelist check"

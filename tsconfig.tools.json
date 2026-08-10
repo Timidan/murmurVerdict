@@ -1,0 +1,29 @@
+{
+  // Typecheck-only config for `tools/`.
+  //
+  // The main tsconfig sets rootDir to src/ for the build output layout, so
+  // tools/ cannot just be added to its include list. Without this, tools are
+  // never typechecked at all — which is how the operator-blind seeder shipped
+  // referencing an undefined variable while `npm run typecheck` stayed green.
+  //
+  // NOTHING under tools/ is excluded. auto-bettor.ts and
+  // operator-blind-roundtrip.ts used to be, for a viem client-type mismatch
+  // and for Playwright's in-page `document` — both now fixed at the source
+  // (a structural client parameter, and the DOM lib below). A per-file
+  // exclusion hides every future error in that file, not just the known one.
+  //
+  // Run: npx tsc --noEmit -p tsconfig.tools.json
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    // The operator-blind round-trip runs code inside a Playwright page via
+    // page.evaluate(), so `document` is legitimately in scope there — it
+    // executes in Chromium, not in Node. Without DOM here those callbacks
+    // error, which is why both tools used to be excluded from this config
+    // wholesale. Adding the lib keeps every file in tools/ typechecked.
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["tools/**/*", "src/**/*"],
+  "exclude": ["node_modules", "dist", "dashboard"]
+}

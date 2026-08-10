@@ -1,0 +1,51 @@
+name: ci
+
+# The release gate, run on every push and PR.
+#
+# `verify:readiness` was documented as the gate but only ever ran by hand on a
+# developer machine — where forge-std is already populated, the tools tsconfig
+# is already resolvable, and a locally-created smoke file is present whether or
+# not it is tracked. Every one of those is a way for a green local run to mean
+# nothing on a clean checkout, which is exactly what CI is for.
+#
+# `submodules: recursive` is load-bearing: forge-std is a submodule and the
+# contract suite cannot compile without it.
+
+on:
+  push:
+    branches:
+      - master
+      - nothing-preview
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # One command, because it is the same command the DEPLOYMENT.md release
+      # gate names — a CI job that ran some other combination would drift from
+      # it. It covers: both typechecks (`lint`), the dashboard build, the smoke
+      # suite under SMOKE_STRICT (allowlisted failures fatal, untracked smokes
+      # fatal), and the Foundry suite behind the submodule assertion.
+      - name: Release gate
+        run: npm run verify:readiness

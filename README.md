@@ -94,9 +94,9 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 | `POST /v1/account/agents/:slug/runtime-keys` | Privy bearer + Controller Wallet signature | mint one-time-revealed Runtime Key |
 | `DELETE /v1/account/runtime-keys/:key_id` | Privy bearer | revoke a Runtime Key offchain |
 | `POST /v1/account/agents/:slug/api-keys` | Privy bearer | mint an account-scoped API key for that agent |
-| `POST /v2/gateway/calls/seal` | `X-Murmur-Runtime-Key` | Canonical hidden-output path: Murmur seals prediction intent, then relays `submitSealedFor` |
-| `POST /v2/gateway/calls` | `X-Murmur-Runtime-Key` | advanced compatibility relay for already-created CoFHE encrypted inputs |
-| `POST /v2/gateway/feeds/:feed_id/packets` | `X-Murmur-Runtime-Key` | Gateway relays already-created CoFHE feed-packet inputs through `submitFeedPacketFor` and records feed SLA |
+| `POST /v2/gateway/calls` | `X-Murmur-Runtime-Key` | **canonical private path**: the client seals locally and Murmur only ever holds CoFHE ciphertext handles |
+| `POST /v2/gateway/calls/seal` | `X-Murmur-Runtime-Key` | convenience path for providers that cannot seal locally. Takes a PLAINTEXT verdict and seals it server-side, so the operator can read every pending prediction before reveal. OFF by default (`MURMUR_OWNED_SEALING_ENABLED`); 503 otherwise |
+| `POST /v2/gateway/feeds/:feed_id/packets` | `X-Murmur-Runtime-Key` | **off by default** (503 without `MURMUR_ACK_FEED_REVEAL_MANUAL`) — Murmur has no feed reveal path yet, so an accepted packet could never be revealed. When enabled, relays CoFHE feed-packet inputs through `submitFeedPacketFor` and records feed SLA |
 | `GET /v1/feeds/:feed_id/availability` | public | hashed feed delivery evidence and refund/slash recommendations; payment execution is off |
 | `POST /v2/calls` | — | retired; returns 410 |
 | `POST /v1/feeds/:feed_id/packets` | — | retired; returns 410 |
@@ -174,11 +174,15 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
   agent-specific human-controlled wallet, then mint hashed/revocable offchain
   Runtime Keys for agent software. Runtime Keys stop authenticating if the
   human Controller Wallet re-attestation cadence lapses.
-- **Gateway-first Fhenix direction** — Runtime Keys authenticate the canonical
-  `/v2/gateway/calls/seal` path plus `/v2/gateway/feeds/:feed_id/packets`.
-  Murmur owns market-call sealing before relaying `submitSealedFor`; the
-  `/v2/gateway/calls` route remains an advanced compatibility relay for
-  already-created CoFHE inputs. Murmur also relays `submitFeedPacketFor`, and
+- **Gateway-first Fhenix direction** — Runtime Keys authenticate
+  `/v2/gateway/calls`, `/v2/gateway/calls/seal` and
+  `/v2/gateway/feeds/:feed_id/packets`. The canonical private path is
+  `/v2/gateway/calls`: the client seals locally and Murmur relays
+  `submitSealedFor` holding only ciphertext handles, which is what makes the
+  operator-blind claim true. `/v2/gateway/calls/seal` accepts a plaintext
+  verdict and seals it server-side for providers that cannot run a CoFHE
+  sealer — that trades operator-blindness away, so it is off by default and
+  enabling it is an explicit decision to trust the operator. Murmur also relays `submitFeedPacketFor`, and
   `MurmurSealedVerdicts` keeps agent identity separate from the gas-paying
   relayer. Admin Gateway routes and `/#/admin/gateway` expose queue state,
   safe retry, confirmation, stuck-attempt visibility, gas/RPC telemetry,
@@ -266,8 +270,37 @@ curl localhost:8080/v1/leaderboard | jq
 # Top of leaderboard, main tier only
 curl 'localhost:8080/v1/leaderboard?tier=main&limit=10' | jq
 
-# Canonical Gateway submit: provider sends prediction intent; Murmur validates,
-# seals binary-index/confidence through its CoFHE sealer, and relays ciphertext.
+# CANONICAL Gateway submit. You seal locally with the CoFHE SDK and send the
+# handles; Murmur relays `submitSealedFor` holding only ciphertext. This is the
+# path the operator-blind claim rests on, and it needs no feature flag.
+#
+# $MARKET_SOURCE_ID is a conditionId from /v1/markets. $CLIENT_ORDER_ID and
+# $CLIENT_NONCE must be FRESH per call — the order id is the idempotency key
+# and the nonce is part of the on-chain call id, so reusing either collides
+# with your previous call rather than creating a new one.
+#
+# The four CoFHE $VARs come from the SDK's encrypt step — `ct_hash` is a 0x
+# hex digest and `signature` is 0x hex bytes. The body is STRICT: unknown keys
+# are a 400, and utype must be 2 (euint8, binary index) and 3 (euint16,
+# confidence bps). Field names are snake_case EXCEPT inside marketRef
+# (protocol / sourceId / configVersion) — copy them exactly as shown.
+curl -X POST localhost:8080/v2/gateway/calls \
+  -H "Content-Type: application/json" \
+  -H "X-Murmur-Runtime-Key: $RUNTIME_KEY" \
+  -d "{
+    \"marketRef\": { \"protocol\": \"polymarket-gamma\", \"sourceId\": \"$MARKET_SOURCE_ID\", \"configVersion\": 1 },
+    \"client_order_id\": \"$CLIENT_ORDER_ID\",
+    \"client_nonce\": \"$CLIENT_NONCE\",
+    \"privacy_mode\": \"sealed_fhenix\",
+    \"binary_index_input\": { \"ct_hash\": \"$BINARY_CT_HASH\", \"security_zone\": 0, \"utype\": 2, \"signature\": \"$BINARY_SIG\" },
+    \"confidence_input\": { \"ct_hash\": \"$CONFIDENCE_CT_HASH\", \"security_zone\": 0, \"utype\": 3, \"signature\": \"$CONFIDENCE_SIG\" },
+    \"strategy_tag\": \"momentum\"
+  }"
+
+# SERVER-SEALED variant: you send the verdict in plaintext and Murmur seals it,
+# for providers that cannot run a CoFHE sealer. That gives the operator early
+# sight of the verdict, so it is OFF by default (MURMUR_OWNED_SEALING_ENABLED)
+# and returns 503 otherwise.
 TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 curl -X POST localhost:8080/v2/gateway/calls/seal \
   -H "Content-Type: application/json" \
@@ -349,11 +382,13 @@ The end-to-end flow for a new agent:
    handles the challenge + signing. Runtime Keys stop authenticating when
    this cadence is overdue; re-attesting restores them.
 5. **Agent software uses Runtime Keys with Murmur**. Runtime keys are
-   offchain only and authenticate `/v2/gateway/calls/seal` plus
-   `/v2/gateway/feeds/:feed_id/packets`. For market calls, Murmur seals the
-   submitted prediction intent itself before relaying `submitSealedFor`; the
-   `/v2/gateway/calls` route remains an advanced compatibility relay for
-   already-created CoFHE inputs. Feed packets still supply encrypted packet
+   offchain only and authenticate `/v2/gateway/calls`,
+   `/v2/gateway/calls/seal` and `/v2/gateway/feeds/:feed_id/packets`. For
+   market calls the canonical path is `/v2/gateway/calls`: the client seals
+   locally and Murmur relays `submitSealedFor` holding only ciphertext.
+   `/v2/gateway/calls/seal` seals server-side from a plaintext verdict for
+   providers that cannot, which gives the operator early sight of it — off by
+   default. Feed packets still supply encrypted packet
    inputs to `submitFeedPacketFor`. Murmur tracks tx attempts and accepts
    confirmed events into the scoring or feed/SLA pipeline.
    Runtime keys can be revoked with

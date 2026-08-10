@@ -1,15 +1,15 @@
 {
   "name": "murmur",
   "version": "0.1.0",
-  "description": "Murmur Verdict — public referee + scoring layer for autonomous market-prediction agents. Calls are sealed through Fhenix, resolved against canonical market outcomes, and ranked on a leaderboard.",
+  "description": "Murmur Verdict \u2014 public referee + scoring layer for autonomous market-prediction agents. Calls are sealed through Fhenix, resolved against canonical market outcomes, and ranked on a leaderboard.",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/daemon/index.ts",
     "start": "tsx src/daemon/index.ts",
     "build": "tsc --noEmit",
-    "lint": "tsc --noEmit",
-    "smoke": "tsx src/verdict/leaderboard-general-check.ts && tsx src/verdict/controller-wallet.smoke.ts && tsx src/integrations/fhenix-events.smoke.ts && tsx src/verdict/fhenix-api.smoke.ts && tsx src/integrations/fhenix-gateway.smoke.ts && tsx src/integrations/fhenix-gateway-race.smoke.ts && tsx src/integrations/live-canaries.smoke.ts && tsx src/integrations/fhenix-watcher.smoke.ts && tsx src/integrations/operator-alerts.smoke.ts && tsx src/integrations/openserv-launchpad.smoke.ts && npm run smoke:public && npm run smoke:nanopay",
+    "lint": "tsc --noEmit && npm run typecheck:tools",
+    "smoke": "tsx src/verdict/leaderboard-general.check.ts && tsx src/verdict/controller-wallet.smoke.ts && tsx src/integrations/fhenix-events.smoke.ts && tsx src/verdict/fhenix-api.smoke.ts && tsx src/integrations/fhenix-gateway.smoke.ts && tsx src/integrations/fhenix-gateway-race.smoke.ts && tsx src/integrations/live-canaries.smoke.ts && tsx src/integrations/fhenix-watcher.smoke.ts && tsx src/integrations/operator-alerts.smoke.ts && tsx src/integrations/openserv-launchpad.smoke.ts && npm run smoke:public && npm run smoke:nanopay",
     "smoke:all": "node tools/run-smokes.mjs",
     "smoke:identity": "tsx src/verdict/controller-wallet.smoke.ts",
     "smoke:fhenix": "tsx src/verdict/fhenix-api.smoke.ts",
@@ -23,15 +23,16 @@
     "smoke:openserv": "tsx src/integrations/openserv-launchpad.smoke.ts",
     "smoke:public": "tsx src/verdict/murmur-agent-card.smoke.ts && tsx src/verdict/deploy-verification-surface.smoke.ts && tsx src/verdict/public-system-surface.smoke.ts",
     "smoke:nanopay": "tsx src/daemon/nanopay-runtime.smoke.ts && tsx src/verdict/nanopay-preflight.smoke.ts && tsx src/verdict/nanopay-payment-gate.smoke.ts && tsx src/verdict/nanopay-settlement-surface.smoke.ts && tsx src/verdict/nanopay-durable-settlement.check.ts",
-    "smoke:contracts": "PATH=\"$HOME/.foundry/bin:$PATH\" forge test --root contracts",
-    "verify:readiness": "npm run build && npm run dashboard:build && npm run smoke && npm run smoke:contracts",
+    "smoke:contracts": "node tools/assert-submodules.mjs && PATH=\"$HOME/.foundry/bin:$PATH\" forge test --root contracts",
+    "verify:readiness": "npm run lint && npm run dashboard:build && SMOKE_STRICT=1 npm run smoke:all && npm run smoke:contracts",
     "deploy:contracts": "PATH=\"$HOME/.foundry/bin:$PATH\" bash -c 'cd contracts && forge script script/DeployMurmurSealedVerdicts.s.sol:DeployMurmurSealedVerdicts --rpc-url \"$BASE_RPC_URL\" --broadcast -vvv && forge script script/DeployMurmurEscrow.s.sol:DeployMurmurEscrow --rpc-url \"$BASE_RPC_URL\" --broadcast -vvv'",
     "sync:deployments": "tsx src/scripts/sync-deployments.ts",
     "verify:deployments": "tsx src/scripts/verify-deployments.ts",
     "dashboard": "vite --config dashboard/vite.config.ts",
     "dashboard:build": "vite build --config dashboard/vite.config.ts",
     "verify:deploy": "tsx tools/verify/verify-deploy.ts",
-    "outreach:thread": "tsx tools/operations/launch-thread.ts"
+    "outreach:thread": "tsx tools/operations/launch-thread.ts",
+    "typecheck:tools": "tsc --noEmit -p tsconfig.tools.json"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.0.4",
