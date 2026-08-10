@@ -8,6 +8,12 @@ import {
 } from "../account-agent-surface.js";
 import type { RequireAccount } from "../account-route-auth.js";
 import { asyncHandler } from "./async-handler.js";
+import {
+  clearProviderTerms,
+  readProviderTerms,
+  setProviderTerms,
+} from "../provider-terms-surface.js";
+import { readProviderEarnings } from "../provider-earnings-surface.js";
 
 export interface AccountAgentsRouterDeps {
   requireAccount: RequireAccount;
@@ -16,6 +22,17 @@ export interface AccountAgentsRouterDeps {
   listAgentsLimiter: RequestHandler;
   json: RequestHandler;
   newAgentId?: AccountAgentIdAdapter;
+  /**
+   * What this deployment can grant for one call inside the delivery budget.
+   * Reported back to owners so a business ceiling above it is visibly clamped
+   * rather than silently ignored.
+   */
+  deliverableCap?: number;
+  /**
+   * Murmur's cut, in basis points. Left undefined so the terms surface reads
+   * MURMUR_PROTOCOL_FEE_BPS itself; passed explicitly only by tests.
+   */
+  protocolFeeBps?: number | null;
   now: () => Date;
 }
 
@@ -28,6 +45,8 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
     listAgentsLimiter,
     json,
     newAgentId,
+    deliverableCap,
+    protocolFeeBps,
     now,
   } = deps;
 
@@ -67,5 +86,81 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
     }),
   );
 
+  // ── Provider terms: the owner prices their own signal ────────────────────
+  //
+  // Changing terms affects calls sealed FROM NOW ON. Calls already sealed keep
+  // the snapshot they were sold under, so a reprice can never alter what a
+  // subscriber already bought into.
+  const termsDeps = (req: Parameters<RequireAccount>[0], accountId: string) => ({
+    db,
+    accountId,
+    slug: String((req as unknown as { params: { slug?: string } }).params.slug ?? ""),
+    deliverableCap,
+    protocolFeeBps,
+    now,
+  });
+
+  router.get(
+    "/v1/account/agents/:slug/provider-terms",
+    listAgentsLimiter,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = readProviderTerms(termsDeps(req, resolved.account_id));
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  router.put(
+    "/v1/account/agents/:slug/provider-terms",
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = setProviderTerms({
+        ...termsDeps(req, resolved.account_id),
+        body: req.body,
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  // ── Earnings: what this agent's sales have accrued to its owner ──────────
+  //
+  // Same ownership gate as provider-terms — an agent's revenue is nobody
+  // else's business. Read-only and accrual-only: nothing here has been paid
+  // out, which is why the totals are named lifetime_accrued_*.
+  router.get(
+    "/v1/account/agents/:slug/earnings",
+    listAgentsLimiter,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const query = (req as unknown as { query: Record<string, unknown> }).query;
+      const out = readProviderEarnings({
+        db,
+        accountId: resolved.account_id,
+        slug: String(
+          (req as unknown as { params: { slug?: string } }).params.slug ?? "",
+        ),
+        limit: numeric(query.limit),
+        offset: numeric(query.offset),
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  router.delete(
+    "/v1/account/agents/:slug/provider-terms",
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = clearProviderTerms(termsDeps(req, resolved.account_id));
+      res.status(out.status).json(out.body);
+    }),
+  );
+
   return router;
+}
+
+/** Query-string integer, or undefined when absent/unparseable (the surface clamps). */
+function numeric(raw: unknown): number | undefined {
+  if (typeof raw !== "string" || !/^[0-9]+$/.test(raw)) return undefined;
+  return Number(raw);
 }

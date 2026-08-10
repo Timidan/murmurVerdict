@@ -135,6 +135,7 @@ function seedSealedCall(
     binary_index_ct_hash: BIN_CT,
     confidence_ct_hash: CONF_CT,
     reveal_open_at: revealOpenAt,
+    submission_class: 1,
     created_at: "2026-05-14T12:00:00Z",
   });
   submissionsRepo.setStatus(db, callId, "pending_t1");

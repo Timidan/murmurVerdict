@@ -27,6 +27,13 @@ export interface PublicSystemRouterDeps {
   nanopayX402Mounted?: boolean;
   now: () => Date;
   publicOrigin: MurmurPublicOrigin;
+  /**
+   * This deployment's PoP audience. Published in the skill's signing example,
+   * so it MUST match what the verifier accepts — the doc used to hardcode the
+   * default while the verifier checked a configured value, and every signature
+   * built from the published example 401'd.
+   */
+  popAudience?: string;
   requireLiveCanaries?: boolean;
 }
 
@@ -43,7 +50,7 @@ export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
 
   router.get("/v1/skill.md", (req, res) => {
     const apiBase = publicApiUrlForRequest(deps.publicOrigin, req);
-    sendPublicSystemResource(req, res, publicSkillResource(apiBase));
+    sendPublicSystemResource(req, res, publicSkillResource(apiBase, deps.popAudience));
   });
 
   router.get("/embed.js", (req, res) => {

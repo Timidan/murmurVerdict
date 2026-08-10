@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   classifyFeedPacketSla,
   inferFeedDeliveryDeadline,
+  assertFeedRevealPolicySupported,
   validateFeedPacketMarket,
 } from "./feed-availability.js";
 import { Hex20Schema, Hex32Schema } from "./fhenix-common.js";
@@ -79,10 +80,17 @@ export type FeedPacketIngestionResult =
 export function ingestFeedPacket(
   input: FeedPacketIngestionInput,
 ): FeedPacketIngestionResult {
-  validateFeedPacketMarket(input.db, input.feed, input.market_id ?? null);
+  // Duplicate detection FIRST. Market validation reads MUTABLE current status,
+  // so running it before the replay check makes a previously-accepted packet
+  // non-replayable the moment its market is frozen or retired — an idempotent
+  // retry would start failing for a packet already on-chain. New packets still
+  // get the full check below.
   const fhenixEvent = normalizeFeedPacketFhenixEvent(input.fhenix);
   const existing = feedPacketsRepo.byFhenixEvent(input.db, fhenixEvent);
   if (existing) return { kind: "idempotent", packet: existing };
+
+  assertFeedRevealPolicySupported(input.feed);
+  validateFeedPacketMarket(input.db, input.feed, input.market_id ?? null);
 
   assertFeedPacketTiming(fhenixEvent, input.now());
 

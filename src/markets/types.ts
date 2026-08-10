@@ -93,11 +93,33 @@ export interface MarketMakerAdapter {
     ctx: ObservationContext,
   ): Promise<Outcome | "pending" | "disputed">;
   /**
-   * Adapter-owned interpretation of `markets.config_json` for the reveal
-   * window. Fixed-end markets like Polymarket return their public market end
-   * time; returning `null` falls back to accepted_at + horizon_seconds.
+   * Adapter-owned interpretation of `markets.config_json` for the PUBLIC
+   * REVEAL time — when murmur unseals the verdict. This is the value the
+   * acceptance guard compares against the on-chain schedule, so it must match
+   * the contract's `publicRevealAt` exactly.
+   *
+   * For embargoed series this is market end + embargo, which is strictly LATER
+   * than when the market itself resolves. Do NOT use it as a resolution
+   * horizon — see {@link marketResolutionAt}.
+   *
+   * Returning `null` falls back to accepted_at + horizon_seconds.
    */
   expectedRevealOpenAt?(input: {
+    marketRef: MarketRef;
+    config: Record<string, unknown>;
+    acceptedAtMs: number;
+    horizonSeconds: number;
+  }): number | null;
+  /**
+   * Adapter-owned MARKET RESOLUTION time — when the venue determines the
+   * outcome. Distinct from {@link expectedRevealOpenAt}: reveal is embargoed
+   * past resolution, so a single value would make a prediction's commitment
+   * claim the market resolves at murmur's reveal deadline.
+   *
+   * Used for the commitment horizon. Returning `null` falls back to the
+   * reveal-open value, which is correct only when the embargo is zero.
+   */
+  marketResolutionAt?(input: {
     marketRef: MarketRef;
     config: Record<string, unknown>;
     acceptedAtMs: number;

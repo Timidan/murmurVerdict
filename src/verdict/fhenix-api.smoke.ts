@@ -78,6 +78,7 @@ class SmokeFhenixVerifier implements FhenixEventVerifier {
       confidence_ct_hash: input.confidence_ct_hash.toLowerCase(),
       accepted_at: input.accepted_at,
       reveal_open_at: input.reveal_open_at,
+      submission_class: 1,
       agent_wallet: input.expected_agent_wallet,
       market_id_hash: fhenixMarketIdForMurmurMarket(input.expected_market_id),
       client_nonce: "0x" + "09".repeat(32),
@@ -243,6 +244,9 @@ try {
       confidence_ct_hash: "0x" + "66".repeat(32),
       accepted_at: acceptedAt,
       reveal_open_at: revealOpenAt,
+      // NOTE: no submission_class here. It is decoded from the on-chain submit
+      // event during verification, never supplied by the client — a caller
+      // must not be able to claim its own call was sellable.
     },
     strategy_tag: "momentum",
   };

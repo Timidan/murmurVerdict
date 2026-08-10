@@ -98,7 +98,22 @@ assert.equal(parsed?.retryMaxMs, 5000);
 assert.equal(parsed?.maxAttempts, 7);
 assert.equal(parsed?.stuckAfterMs, 60_000);
 assert.equal(parsed?.broadcastTimeoutMs, 0);
-assert.equal(typeof parsed?.murmurOwnedSealer?.sealVerdict, "function");
+// Murmur-owned (plaintext-in) sealing defaults OFF: the operator must not be
+// able to read pending predictions unless someone explicitly opts in.
+assert.equal(
+  parsed?.murmurOwnedSealer,
+  null,
+  "murmur-owned sealing must be off unless explicitly enabled",
+);
+
+const parsedWithMurmurOwnedSealing = loadFhenixGatewayEnvConfig({
+  ...enabledGatewayEnv,
+  MURMUR_OWNED_SEALING_ENABLED: "true",
+});
+assert.equal(
+  typeof parsedWithMurmurOwnedSealing?.murmurOwnedSealer?.sealVerdict,
+  "function",
+);
 
 const parsedWithoutMurmurOwnedSealing = loadFhenixGatewayEnvConfig({
   ...enabledGatewayEnv,

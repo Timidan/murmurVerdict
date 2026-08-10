@@ -1,19 +1,43 @@
 # Operator-Blind FHE Round-Trip — Release-Gate Script
 
-Runtime counterpart to the Lean V1 / V2 invariants. V1 + V2 prove the *contract*
-can't leak plaintext early; this script proves the *daemon* and *dashboard* can't
-either. It runs one full sealed-call lifecycle against the live Base Sepolia
+> **NOTE:** the Lean V1 / V2 invariants model a PREVIOUS contract revision and
+> do NOT cover the current six-instant schedule contract. See
+> `contracts/proofs/MurmurFV/README.md`. This script's runtime evidence stands
+> on its own; do not present it as backed by current formal verification.
+
+Runtime counterpart to the Lean V1 / V2 invariants. Those theorems proved the
+*contract* can't make a verdict public early; this script checks that the
+*daemon's API* and the *dashboard* don't surface one either. It inspects HTTP
+responses and the rendered DOM — never the database — so read the scope note
+below before citing it. It runs one full sealed-call lifecycle against the live Base Sepolia
 deployment of `MurmurSealedVerdicts` + the local daemon + the local dashboard,
-takes three snapshots, and asserts plaintext is absent before reveal and present
-after. Implements the design at
+takes three snapshots, and asserts the plaintext sentinel is absent from those
+surfaces before reveal and present after. Implements the design at
 [`docs/superpowers/specs/2026-05-19-operator-blind-roundtrip-design.md`](../../docs/superpowers/specs/2026-05-19-operator-blind-roundtrip-design.md).
 
 This is a **release-gate** check, not CI. It requires a funded Base Sepolia EOA,
 takes ~7 minutes wall-clock, and is run by hand before any prod deploy.
 
+## What this does and does NOT demonstrate
+
+This runs against `/v2/gateway/calls/seal`, the SERVER-SEALED path, where the
+daemon receives the plaintext verdict by design. The three assertions below
+inspect the HTTP response and the rendered DOM — nothing reads SQLite. So they
+prove the daemon does not SURFACE that plaintext before reveal, through its API
+or its UI. They do NOT prove Murmur never saw it (on this path it did), and
+they do NOT prove it was never written to disk — no assertion here opens the
+database.
+
+The path where Murmur never holds plaintext is `/v2/gateway/calls`: the client
+seals locally and only ciphertext handles ever reach the daemon. That property
+lives in the client, so no server-side script can assert it.
+
+Do not cite this run as evidence of operator-blindness in general. Cite it for
+what it is: the daemon and dashboard do not leak a verdict they were handed.
+
 ## What it asserts (3 assertions across 3 snapshots)
 
-- **A1 — Daemon DB is opaque pre-reveal.**
+- **A1 — The daemon's API response is opaque pre-reveal.**
   After `/v2/gateway/calls/seal` accepts and the daemon Gateway records the submit,
   `GET /v1/calls/<callId>` returns ciphertext handles
   (`fhenix.binary_index_ct_hash`, `fhenix.confidence_ct_hash`) but no
@@ -30,7 +54,7 @@ takes ~7 minutes wall-clock, and is run by hand before any prod deploy.
   (`fhenix sealed` chip + the literal text `sealed`). A screenshot is captured
   to `screenshots/pre-<runId>.png` for human inspection.
 
-- **A3 — Daemon DB + UI carry plaintext post-publish.**
+- **A3 — The API response + UI carry plaintext post-publish.**
   After `publishReveal` lands and the daemon indexes `VerdictRevealed`, both
   the API and DOM must surface the plaintext confidence sentinel. This is the
   symmetric check: A1 + A2 without A3 could pass on a silently broken daemon
@@ -75,7 +99,7 @@ takes ~7 minutes wall-clock, and is run by hand before any prod deploy.
 | `DAEMON_URL` | base URL of the running local daemon (no trailing slash) |
 | `DASHBOARD_URL` | base URL of the running local dashboard (no trailing slash) |
 | `FHENIX_GATEWAY_ENABLED=true` | enables Gateway broadcasters in the daemon |
-| `MURMUR_OWNED_SEALING_ENABLED` | enables `/v2/gateway/calls/seal` Murmur-owned sealing; defaults to true |
+| `MURMUR_OWNED_SEALING_ENABLED=true` | **required** — this script submits `privacy_mode: "murmur_sealed_fhenix"`, and the flag now defaults to false |
 | `FHENIX_RPC_URL` / `FHENIX_CHAIN_ID` | daemon Gateway RPC configuration |
 
 Optional:

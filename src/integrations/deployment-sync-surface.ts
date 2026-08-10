@@ -1,8 +1,31 @@
 import type { DeploymentEntry } from "./deployments.js";
 
-export const MURMUR_DEPLOYMENT_ENV_KEYS_BY_CONTRACT: Record<string, string> = {
-  MurmurSealedVerdicts: "FHENIX_SEALED_VERDICTS_ADDRESS",
-  MurmurEscrow: "FHENIX_ESCROW_ADDRESS",
+/**
+ * One contract can back SEVERAL env keys. `resolveFhenixContractAddress` falls
+ * back from FHENIX_SEALED_VERDICTS_ADDRESS to the legacy
+ * FHENIX_CONTRACT_ADDRESS, so patching only the primary left the alias
+ * pointing at a DEAD deployment: correct today because the primary wins, and a
+ * trap the moment anyone clears or comments it out.
+ */
+/**
+ * Contract → env keys holding a BLOCK NUMBER.
+ *
+ * Empty, deliberately. FHENIX_EVENT_START_BLOCK and
+ * FHENIX_GATEWAY_RECONCILE_FROM_BLOCK used to live here; both were deleted in
+ * favour of reading the manifest directly. Syncing a var that shadows the
+ * manifest is a worse fix than not having the var — the value can still go
+ * stale between a redeploy and the next sync.
+ *
+ * Kept as a seam: if a future contract genuinely needs a block pinned in env,
+ * add it here and the patcher already handles it.
+ */
+export const MURMUR_DEPLOYMENT_BLOCK_ENV_KEYS_BY_CONTRACT: Record<string, string[]> = {};
+
+export const MURMUR_DEPLOYMENT_ENV_KEYS_BY_CONTRACT: Record<string, string[]> = {
+  // One name per value. FHENIX_CONTRACT_ADDRESS was a second alias for the
+  // same deployment and has been removed from the resolver entirely.
+  MurmurSealedVerdicts: ["FHENIX_SEALED_VERDICTS_ADDRESS"],
+  MurmurEscrow: ["FHENIX_ESCROW_ADDRESS"],
 };
 
 export interface DeploymentSyncBroadcastSource {
@@ -140,22 +163,41 @@ export function latestDeploymentsByContract(
 export function patchDeploymentEnvBody(input: {
   body: string;
   latest: Map<string, DeploymentEntry>;
-  envKeysByContract?: Record<string, string>;
+  envKeysByContract?: Record<string, string[]>;
+  blockEnvKeysByContract?: Record<string, string[]>;
 }): DeploymentEnvPatch {
   const envKeysByContract =
     input.envKeysByContract ?? MURMUR_DEPLOYMENT_ENV_KEYS_BY_CONTRACT;
   let body = input.body;
   const patchedKeys: string[] = [];
 
-  for (const [contractName, envKey] of Object.entries(envKeysByContract)) {
+  const blockKeysByContract =
+    input.blockEnvKeysByContract ?? MURMUR_DEPLOYMENT_BLOCK_ENV_KEYS_BY_CONTRACT;
+
+  for (const [contractName, envKeys] of Object.entries(blockKeysByContract)) {
+    const entry = input.latest.get(contractName);
+    if (!entry || typeof entry.blockNumber !== "number") continue;
+    for (const envKey of envKeys) {
+      const line = `${envKey}=${entry.blockNumber}`;
+      const matcher = new RegExp(`^${escapeRegExp(envKey)}=.*$\r?\n?`, "gm");
+      body = body.replace(matcher, "");
+      if (!body.endsWith("\n") && body.length > 0) body += "\n";
+      body += `${line}\n`;
+      patchedKeys.push(envKey);
+    }
+  }
+
+  for (const [contractName, envKeys] of Object.entries(envKeysByContract)) {
     const entry = input.latest.get(contractName);
     if (!entry) continue;
-    const line = `${envKey}=${entry.address}`;
-    const matcher = new RegExp(`^${escapeRegExp(envKey)}=.*$\\r?\\n?`, "gm");
-    body = body.replace(matcher, "");
-    if (!body.endsWith("\n") && body.length > 0) body += "\n";
-    body += `${line}\n`;
-    patchedKeys.push(envKey);
+    for (const envKey of envKeys) {
+      const line = `${envKey}=${entry.address}`;
+      const matcher = new RegExp(`^${escapeRegExp(envKey)}=.*$\\r?\\n?`, "gm");
+      body = body.replace(matcher, "");
+      if (!body.endsWith("\n") && body.length > 0) body += "\n";
+      body += `${line}\n`;
+      patchedKeys.push(envKey);
+    }
   }
 
   return { body, patchedKeys };

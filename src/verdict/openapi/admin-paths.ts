@@ -21,11 +21,24 @@ export function adminOpenApiPaths(): OpenApiPathMap {
     "/v1/admin/fhenix/backfill/feeds/{feed_id}/packets": {
       post: {
         tags: ["admin"],
-        summary: "Admin-only verified Fhenix feed-packet metadata backfill.",
+        summary: "Admin-only TRUSTED feed-packet metadata backfill (unverified).",
         description:
-          "Operator recovery route for indexing a Fhenix feed packet that already exists onchain. Agents must use /v2/gateway/feeds/{feed_id}/packets.",
+          "Operator recovery route for indexing a Fhenix feed packet. The " +
+          "supplied event metadata is INGESTED AS GIVEN — this route performs " +
+          "no receipt, log, address or chain verification, so what it records " +
+          "is exactly as trustworthy as the admin token and the operator " +
+          "typing it. It can fulfil an SLA incident, so a mistake here " +
+          "publishes delivery evidence for a packet that may not exist. It " +
+          "was previously described as 'verified', which it has never been. " +
+          "Agents must use /v2/gateway/feeds/{feed_id}/packets.",
         parameters: [{ name: "feed_id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
         responses: {
+          "503": {
+            description:
+              "Feed acceptance is off: MURMUR_ACK_FEED_REVEAL_MANUAL is not set. " +
+              "Murmur has no feed reveal path, so a packet recorded here could " +
+              "never be revealed.",
+          },
           "200": { description: "Idempotent hit" },
           "201": { description: "Backfilled feed packet metadata" },
           "400": { description: "Schema invalid or market outside feed coverage" },

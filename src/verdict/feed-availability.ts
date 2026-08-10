@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 
+import { marketClocksRepo } from "./repos/market-clocks-repo.js";
 import {
   marketsRepo,
 } from "./repos/market-registry-repo.js";
@@ -63,6 +64,43 @@ export function validateFeedCoveredMarkets(
   }
 }
 
+/**
+ * Refuse packets from a feed whose persisted reveal policy murmur can no
+ * longer honour.
+ *
+ * Feeds created before the schedule migration may carry `fixed_delay`,
+ * `after_horizon` or `manual`. A packet's reveal time now comes from its
+ * market's immutable schedule, so those promises cannot be kept. Silently
+ * ignoring them and revealing on the market's clock would break a commercial
+ * contract the feed still publicly advertises, so the feed is quarantined
+ * until its owner converts it to `after_resolution`.
+ */
+export function assertFeedRevealPolicySupported(feed: FeedContractRow): void {
+  let kind: unknown;
+  try {
+    kind = (JSON.parse(feed.reveal_policy_json) as Record<string, unknown>).kind;
+  } catch {
+    kind = "<unparseable>";
+  }
+  // Fail closed on unknown too: a malformed or absent policy is not evidence
+  // that the feed promised nothing.
+  if (kind !== "after_resolution") {
+    throw new VerdictError(
+      `feed reveal policy '${String(kind)}' is no longer supported`,
+      ERROR_CODES.schema_invalid,
+      409,
+      {
+        feed_id: feed.feed_id,
+        reveal_policy: kind,
+        remedy:
+          "a packet's reveal time now comes from its market's immutable schedule, " +
+          "so per-packet delays cannot be enforced; convert this feed to " +
+          "reveal_policy.kind='after_resolution'",
+      },
+    );
+  }
+}
+
 export function validateFeedPacketMarket(
   db: Database.Database,
   feed: FeedContractRow,
@@ -70,6 +108,26 @@ export function validateFeedPacketMarket(
 ): void {
   if (marketId === null) return;
   const market = marketsRepo.get(db, marketId);
+  // A packet's on-chain reveal time comes from the market's schedule, so the
+  // market must actually be live and carry a frozen clock. A draft or
+  // unscheduled row would fall back to a derived timestamp the contract has
+  // no matching market for.
+  if (market && market.status !== "listed") {
+    throw new VerdictError(
+      `packet market is not listed: ${marketId} (status=${market.status})`,
+      ERROR_CODES.asset_not_supported,
+      400,
+      { market_id: marketId, status: market.status },
+    );
+  }
+  if (market && !marketClocksRepo.get(db, marketId)) {
+    throw new VerdictError(
+      `packet market has no schedule snapshot: ${marketId}`,
+      ERROR_CODES.asset_not_supported,
+      400,
+      { market_id: marketId },
+    );
+  }
   if (!market) {
     throw new VerdictError(
       `unknown packet market: ${marketId}`,

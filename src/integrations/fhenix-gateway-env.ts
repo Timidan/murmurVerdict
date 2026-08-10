@@ -29,6 +29,10 @@ export interface FhenixGatewayEnvConfig {
   relayerAddress: string;
   client: FhenixGatewayClient;
   murmurOwnedSealer: MurmurOwnedCofheSealer | null;
+  /** MURMUR_ACK_FEED_REVEAL_MANUAL. Feed packet submission 503s without it. */
+  feedRevealAcknowledged: boolean;
+  /** FHENIX_RECONCILE_OLD_FROM_BLOCK; see the attempt machine's mismatch branch. */
+  reconcileOldFromBlock: number | null;
   /**
    * Owner-plane market registrar built on the SAME account, clients, and
    * broadcast queue as the Gateway relayer — the discovery ticker and the
@@ -42,10 +46,14 @@ export interface FhenixGatewayEnvConfig {
   stuckAfterMs: number;
   broadcastTimeoutMs: number;
   /**
-   * Block height the reconciliation getLogs scan starts from. Defaults to
-   * the manifest deployment block (data/deployments.json) for
-   * MurmurSealedVerdicts on this chainId; override via
-   * FHENIX_GATEWAY_RECONCILE_FROM_BLOCK for testnet redeploys.
+   * Block height the reconciliation getLogs scan starts from: the manifest
+   * deployment block for MurmurSealedVerdicts on this chainId.
+   *
+   * NOT overridable. It used to accept FHENIX_GATEWAY_RECONCILE_FROM_BLOCK
+   * "for testnet redeploys", which is precisely backwards — after a redeploy
+   * the manifest is right and the override is stale. The sibling
+   * FHENIX_EVENT_START_BLOCK did exactly that today and silently stopped the
+   * watcher from ever reaching a reveal.
    */
   reconcileFromBlock: number;
 }
@@ -104,7 +112,7 @@ export function loadFhenixGatewayEnvConfig(
   if (!contractAddress) {
     throw new FhenixGatewayEnvConfigError(
       "FHENIX_SEALED_VERDICTS_ADDRESS",
-      `FHENIX_GATEWAY_ENABLED=true but no contract address found: set FHENIX_SEALED_VERDICTS_ADDRESS, FHENIX_CONTRACT_ADDRESS, or run sync-deployments to populate data/deployments.json for chainId ${chainId}`,
+      `FHENIX_GATEWAY_ENABLED=true but no contract address found: run sync-deployments to populate data/deployments.json for chainId ${chainId}, or set FHENIX_SEALED_VERDICTS_ADDRESS`,
     );
   }
   if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
@@ -116,9 +124,31 @@ export function loadFhenixGatewayEnvConfig(
   const confirmations = integerEnv("FHENIX_GATEWAY_CONFIRMATIONS", 2, env, {
     min: 0,
   });
+  // Defaults OFF. This path accepts a PLAINTEXT verdict over HTTP and seals it
+  // server-side, so with it enabled Murmur can read every pending prediction —
+  // the operator is a non-subscriber with full early access. Client-sealed
+  // submission (`privacy_mode: "sealed_fhenix"`, CofheInput handles) is the
+  // private path and needs no flag. Enabling this is an explicit, auditable
+  // decision to trust the operator, never a default.
+  // Feed packets have no reveal path yet (see the gate in fhenix-gateway.ts).
+  // Defaults OFF so nobody builds a feed product on a value that can never be
+  // read back.
+  // Optional. Set to the PREVIOUS deployment's block after a redeploy so a
+  // write that landed on the old contract, and whose receipt was lost, can
+  // still be recovered. Without it that lookup is skipped and the attempt's
+  // terminal error says the search was not performed.
+  const reconcileOldFromBlockRaw = env.FHENIX_RECONCILE_OLD_FROM_BLOCK?.trim();
+  const reconcileOldFromBlock = reconcileOldFromBlockRaw
+    ? integerEnv("FHENIX_RECONCILE_OLD_FROM_BLOCK", 0, env, { min: 0 })
+    : null;
+  const feedRevealAcknowledged = booleanEnv(
+    env.MURMUR_ACK_FEED_REVEAL_MANUAL,
+    false,
+    "MURMUR_ACK_FEED_REVEAL_MANUAL",
+  );
   const murmurOwnedSealingEnabled = booleanEnv(
     env.MURMUR_OWNED_SEALING_ENABLED,
-    true,
+    false,
     "MURMUR_OWNED_SEALING_ENABLED",
   );
   const retryBaseMs = integerEnv("FHENIX_GATEWAY_RETRY_BASE_MS", 5_000, env, {
@@ -142,12 +172,8 @@ export function loadFhenixGatewayEnvConfig(
     env,
     { min: 1_000, allowZero: true },
   );
-  const reconcileFromBlock = integerEnv(
-    "FHENIX_GATEWAY_RECONCILE_FROM_BLOCK",
-    loadDeployment(chainId, "MurmurSealedVerdicts")?.blockNumber ?? 0,
-    env,
-    { min: 0, allowZero: true },
-  );
+  const reconcileFromBlock =
+    loadDeployment(chainId, "MurmurSealedVerdicts")?.blockNumber ?? 0;
   // One nonce-managed account + one broadcast queue for every writer on this
   // key. The Gateway's HTTP submit handlers, the gateway tick, and the market
   // discovery registrar all sign with the same EOA; without shared nonce
@@ -203,16 +229,20 @@ export function loadFhenixGatewayEnvConfig(
     contractAddress,
     relayerAddress: account.address,
     publicClient,
-    // No halt seam here: discovery market registration is daemon-owned, not
-    // an agent-credential submission, so the kill switch does not apply.
-    writeContract: (args) =>
-      broadcastQueue.run(() =>
-        walletClient.writeContract({
+    // The halt seam runs INSIDE the queue slot. Agent kill switches do not
+    // apply here (registration is daemon-owned), but an operator market halt
+    // does: registration can wait behind another relayer write for an
+    // unbounded time, and it is one-shot on-chain, so a broadcast sent after
+    // the halt permanently registers a market someone deliberately pulled.
+    writeContract: (args, opts) =>
+      broadcastQueue.run(() => {
+        opts?.preBroadcast?.();
+        return walletClient.writeContract({
           ...args,
           account,
           chain: null,
-        } as never),
-      ),
+        } as never);
+      }),
   });
   return {
     chainId,
@@ -222,6 +252,8 @@ export function loadFhenixGatewayEnvConfig(
     murmurOwnedSealer: murmurOwnedSealingEnabled
       ? new SdkMurmurOwnedCofheSealer(publicClient, walletClient)
       : null,
+    feedRevealAcknowledged,
+    reconcileOldFromBlock,
     marketRegistrar,
     confirmations,
     retryBaseMs,

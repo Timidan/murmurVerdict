@@ -45,6 +45,8 @@ export interface OracleRow {
 }
 
 export interface MarketRow {
+  /** Set when an operator pulled this market; discovery never relists over it. */
+  operator_halted_at?: string | null;
   market_id: string;
   asset_id: string;
   market_kind: MarketKind;
@@ -142,6 +144,65 @@ export const oraclesRepo = {
 };
 
 export const marketsRepo = {
+  /**
+   * Replace a market's adapter config. Used at registration to stamp series
+   * values (e.g. `embargoSec`) that the adapter reads back when computing the
+   * reveal time the acceptance guard compares against the chain.
+   */
+  setConfigJson(db: Database.Database, marketId: string, configJson: string): void {
+    db.prepare(
+      `UPDATE markets SET config_json = @config_json WHERE market_id = @market_id`,
+    ).run({ market_id: marketId, config_json: configJson });
+  },
+
+  /**
+   * Mark a market as halted by an operator, and set its status, in one write.
+   *
+   * The halt is what makes an operator's freeze survive discovery. Discovery
+   * relists a frozen market on two paths — the post-receipt transaction, and
+   * the mid-registration repair in promoteCandidate — and neither could tell
+   * an operator's halt from discovery's own repair freeze, because the ledger
+   * looks identical. This marker breaks the tie.
+   *
+   * It lives on `markets` deliberately. An earlier version put it on
+   * discovery's ledger, where an UPDATE against a market discovery had never
+   * seen matched zero rows and marked nothing at all.
+   */
+  haltByOperator(
+    db: Database.Database,
+    marketId: string,
+    status: RegistryStatus,
+    nowIso: string,
+  ): void {
+    prep(
+      db,
+      `UPDATE markets
+          SET status = @status, operator_halted_at = @now
+        WHERE market_id = @market_id`,
+    ).run({ market_id: marketId, status, now: nowIso });
+  },
+
+  /**
+   * True when an operator has halted this market. Discovery must treat it as
+   * terminal on EVERY listing path — including a halted `draft`, which is
+   * still "an operator took this out of service", not "resume it".
+   */
+  isOperatorHalted(db: Database.Database, marketId: string): boolean {
+    const row = prep(
+      db,
+      `SELECT operator_halted_at FROM markets WHERE market_id = ?`,
+    ).get(marketId) as { operator_halted_at: string | null } | undefined;
+    return Boolean(row?.operator_halted_at);
+  },
+
+  /** Lifted only by a full re-registration, which restates the schedule. */
+  clearOperatorHalt(db: Database.Database, marketId: string): void {
+    prep(
+      db,
+      `UPDATE markets SET operator_halted_at = NULL WHERE market_id = ?`,
+    ).run(marketId);
+  },
+
   list(db: Database.Database, status?: RegistryStatus): MarketRow[] {
     const sql = status
       ? `SELECT * FROM markets WHERE status = ? ORDER BY asset_id, horizon_seconds`

@@ -25,11 +25,11 @@ import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
 
 const ABI = parseAbi([
-  "function registerFixedRevealMarket(bytes32 marketId, uint64 revealAfter, bool active)",
+  "function registerMarket(bytes32 marketId, (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active) schedule)",
   "function submitSealedFor(address agent, bytes32 marketId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) binaryIndexInput, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) confidenceInput, bytes32 clientNonce) returns (bytes32 callId)",
   "function grantDecryptAccess(bytes32 callId, address subscriber)",
-  "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 revealOpenAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
-  "event SealedCallSubmitted(bytes32 indexed callId, address indexed agent, bytes32 indexed marketId, uint64 acceptedAt, uint64 revealOpenAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bytes32 clientNonce)",
+  "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 grantCloseAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
+  "event SealedCallSubmitted(bytes32 indexed callId, address indexed agent, bytes32 indexed marketId, uint64 acceptedAt, uint64 publicRevealAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bytes32 clientNonce, uint8 submissionClass)",
 ]);
 
 function env(n: string): string {
@@ -57,13 +57,30 @@ async function main(): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
   const revealAfter = nowSec + revealSec;
 
-  // 1. register a fixed-reveal market (owner == relayer here).
-  console.log(`[flow2] registerFixedRevealMarket ${marketId} revealAfter=${revealAfter} (+${revealSec}s)`);
+  // 1. register the market's six-instant schedule (owner == relayer here).
+  // Compressed for the proof run, but still strictly ordered with armCloseAt
+  // in the future, which registration enforces.
+  const schedule = {
+    // Wide enough for CoFHE SDK init + input encryption; 30s was not.
+    armCloseAt: BigInt(nowSec + 10),
+    submissionOpenAt: BigInt(nowSec + 20),
+    earlyAccessCutoffAt: BigInt(nowSec + 150),
+    submissionCloseAt: BigInt(nowSec + 180),
+    resolutionAt: BigInt(nowSec + 200),
+    publicRevealAt: BigInt(revealAfter),
+    active: true,
+  };
+  console.log(`[flow2] registerMarket ${marketId} publicRevealAt=${revealAfter} (+${revealSec}s)`);
   const regTx = await relayerWallet.writeContract({
-    address: contract, abi: ABI, functionName: "registerFixedRevealMarket",
-    args: [marketId, BigInt(revealAfter), true], chain: baseSepolia, account: relayer,
+    address: contract, abi: ABI, functionName: "registerMarket",
+    args: [marketId, schedule], chain: baseSepolia, account: relayer,
   });
   await publicClient.waitForTransactionReceipt({ hash: regTx });
+
+  // Submissions are rejected before submissionOpenAt.
+  while (BigInt(Math.floor(Date.now() / 1000)) < schedule.submissionOpenAt) {
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
 
   // 2. seal (CoFHE encrypt) + submitSealedFor.
   console.log(`[flow2] connecting @cofhe/sdk + encrypting inputs (binaryIndex=${BIN}, confidenceBps=${CONF})`);
@@ -109,12 +126,13 @@ async function main(): Promise<void> {
   const view = (await publicClient.readContract({
     address: contract, abi: ABI, functionName: "getDecryptAccess", args: [callId, subscriber],
   })) as readonly [number, bigint, string, string, boolean];
-  console.log(`[flow2] on-chain getDecryptAccess(subscriber): state=${view[0]} revealOpenAt=${view[1]} granted=${view[4]}`);
+  console.log(`[flow2] on-chain getDecryptAccess(subscriber): state=${view[0]} grantCloseAt=${view[1]} granted=${view[4]}`);
 
   console.log(`\n=== PROOF INPUTS (sealed, on-chain) ===`);
   console.log(`FLOW2_CALL_ID=${callId}`);
   console.log(`SUBMITTED binaryIndex=${BIN} confidenceBps=${CONF}`);
-  console.log(`REVEAL_OPEN_AT=${revealAfter} (grant window closes then; reveal opens then)`);
+  console.log(`PUBLIC_REVEAL_AT=${revealAfter}`);
+  console.log(`GRANT_CLOSE_AT=${schedule.submissionCloseAt} (buying closes when the prediction window opens \u2014 strictly BEFORE public reveal)`);
 }
 
 main().catch((e) => { console.error(e instanceof Error ? (e.stack ?? e.message) : String(e)); process.exit(1); });

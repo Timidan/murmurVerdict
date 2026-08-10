@@ -32,7 +32,17 @@ export interface MurmurAgentCard {
   privacy: {
     submission_modes: ["sealed_fhenix"];
     threshold_network: "fhenix";
-    operator_can_decrypt_pre_horizon: false;
+    /**
+     * NOT a boolean. It was `false`, which claimed more than the system
+     * delivers: a grantor grants to any address without on-chain proof of
+     * payment, and the operator already runs one. The value names the
+     * condition the guarantee actually rests on.
+     */
+    operator_can_decrypt_pre_horizon: "requires_owner_or_grantor_key";
+    /** Plaintext never reaches Murmur on the canonical client-sealed path. */
+    operator_holds_plaintext: "never_on_sealed_fhenix";
+    /** allowPublic is gated on the snapshotted on-chain timestamp. Unconditional. */
+    public_reveal_enforced_onchain: true;
     threat_model_url: string;
   };
   murmur_wallet?: {
@@ -99,7 +109,22 @@ export function publicMurmurAgentCard(
     privacy: {
       submission_modes: ["sealed_fhenix"],
       threshold_network: "fhenix",
-      operator_can_decrypt_pre_horizon: false,
+      // Honest, not flattering. A hardcoded `false` overstated the guarantee:
+      // grantDecryptAccess grants to ANY address the caller names, with no
+      // on-chain proof of payment, and the production operator already holds
+      // an authorized grantor key (FHENIX_GRANT_PRIVATE_KEY) — no owner
+      // transaction is needed. The HTTP broker enforces payment; a direct
+      // privileged transaction does not go through it. So "no early decrypt"
+      // holds against the operator's SERVERS and against every unprivileged
+      // party, but rests on grantor key custody for the operator themselves.
+      //
+      // What IS unconditional: the contract cannot make a verdict public
+      // before publicRevealAt (allowPublic is gated on the snapshotted
+      // timestamp), and on the canonical client-sealed path Murmur never holds
+      // plaintext at all.
+      operator_can_decrypt_pre_horizon: "requires_owner_or_grantor_key",
+      operator_holds_plaintext: "never_on_sealed_fhenix",
+      public_reveal_enforced_onchain: true,
       threat_model_url: `${apiBase}/v1/skill.md#threat-model--privacy-guarantees`,
     },
     ...(agent.wallet_address && agent.chain_id

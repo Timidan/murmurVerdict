@@ -42,14 +42,18 @@ const binaryIndexCtHash = ("0x" + "55".repeat(32)) as Hex;
 const confidenceCtHash = ("0x" + "66".repeat(32)) as Hex;
 const clientNonce = ("0x" + "77".repeat(32)) as Hex;
 const eventTopic = SEALED_CALL_SUBMITTED_TOPIC;
+// Non-indexed SealedCallSubmitted args, in order:
+//   acceptedAt, publicRevealAt, binaryIndexCtHash, confidenceCtHash,
+//   clientNonce, submissionClass
 const encodedData = encodeAbiParameters(
-  parseAbiParameters("uint64,uint64,bytes32,bytes32,bytes32"),
+  parseAbiParameters("uint64,uint64,bytes32,bytes32,bytes32,uint8"),
   [
     BigInt(Date.parse(acceptedAt) / 1000),
     BigInt(Date.parse(revealOpenAt) / 1000),
     binaryIndexCtHash,
     confidenceCtHash,
     clientNonce,
+    1, // SubmissionClass.EarlyAccess
   ],
 );
 const topics = [

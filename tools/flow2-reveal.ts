@@ -12,7 +12,7 @@ const ABI = parseAbi([
   "function openReveal(bytes32 callId)",
   "function publishReveal(bytes32 callId, uint8 binaryIndex, uint16 confidenceBps, bytes binaryIndexSignature, bytes confidenceSignature)",
   "function getCall(bytes32 callId) view returns (address agent, bytes32 marketId, uint64 acceptedAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, uint8 revealedBinaryIndex, uint16 revealedConfidenceBps, uint8 state)",
-  "function callRevealOpenAt(bytes32 callId) view returns (uint64)",
+  "function callPublicRevealAt(bytes32 callId) view returns (uint64)",
 ]);
 const env = (n: string) => { const v = process.env[n]?.trim(); if (!v) throw new Error(`missing ${n}`); return v; };
 
@@ -27,7 +27,7 @@ async function main() {
   await cofhe.connect(publicClient as never, walletClient as never);
   const permit = await cofhe.permits.createSelf({ type: "self", issuer: account.address });
 
-  const openAt = Number(await publicClient.readContract({ address: contract, abi: ABI, functionName: "callRevealOpenAt", args: [callId] }));
+  const openAt = Number(await publicClient.readContract({ address: contract, abi: ABI, functionName: "callPublicRevealAt", args: [callId] }));
   while (Math.floor(Date.now() / 1000) < openAt) {
     console.log(`[reveal] ${openAt - Math.floor(Date.now() / 1000)}s until reveal window…`);
     await new Promise((r) => setTimeout(r, 5000));

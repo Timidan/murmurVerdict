@@ -55,7 +55,13 @@ export const GatewaySealedCallBodySchema = z
 export const GatewayFeedPacketBodySchema = z
   .object({
     packet_kind: FeedPacketKindSchema,
-    market_id: MarketIdSchema.optional(),
+    // REQUIRED. The contract now takes a feed packet's reveal time from the
+    // registered market's embargo rather than from the caller, so a packet
+    // without a market has no schedule and reverts MarketNotFound. It was
+    // optional back when the caller supplied reveal_after directly — that
+    // path is gone, because it let feeds go public on their own schedule and
+    // silently bypass the embargo the call path enforces.
+    market_id: MarketIdSchema,
     sequence: z.number().int().positive().optional(),
     payload_schema: z
       .string()
@@ -67,7 +73,6 @@ export const GatewayFeedPacketBodySchema = z
     client_nonce: Hex32Schema,
     submitted_at: z.string().datetime({ offset: false }).optional(),
     delivery_deadline_at: z.string().datetime({ offset: false }).optional(),
-    reveal_after: z.string().datetime({ offset: false }).optional(),
     privacy_mode: z.literal("sealed_fhenix"),
     action_input: CofheInputSchema.refine(
       (value) => value.utype === COFHE_EUINT8_UTYPE,

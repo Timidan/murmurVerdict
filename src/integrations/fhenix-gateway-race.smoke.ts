@@ -505,13 +505,14 @@ async function main(): Promise<void> {
                 attempt.market_id_hash as Hex,
               ],
               data: encodeAbiParameters(
-                parseAbiParameters("uint64,uint64,bytes32,bytes32,bytes32"),
+                parseAbiParameters("uint64,uint64,bytes32,bytes32,bytes32,uint8"),
                 [
                   BigInt(Math.floor(Date.now() / 1000)),
                   BigInt(Math.floor(Date.now() / 1000) + 3600),
                   ("0x" + "01".repeat(32)) as Hex,
                   ("0x" + "02".repeat(32)) as Hex,
                   attempt.client_nonce as Hex,
+                  1, // SubmissionClass.EarlyAccess
                 ],
               ),
               logIndex: landedLogIndex,
@@ -640,7 +641,8 @@ async function main(): Promise<void> {
            subscriber_capacity, commercial_template, reveal_policy_json,
            refund_rule_json, slash_rule_json, created_at, updated_at)
          VALUES (?, ?, 'Race Feed', NULL, 'listed', 'polymarket', '[]', '[]', '[]',
-           NULL, '{}', NULL, 10, 'per_alert', '{}', '{}', '{}', ?, ?)`,
+           NULL, '{}', NULL, 10, 'per_alert', '{"kind":"after_resolution"}',
+           '{}', '{}', ?, ?)`,
       ).run(feedId, agentId, ts, ts);
 
       const attempt: FhenixGatewayFeedPacketTxAttemptInsert = {

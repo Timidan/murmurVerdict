@@ -40,6 +40,9 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: "confirmed gateway attempt is missing event metadata",
       updated_at: nowIso(now()),
+      // POST-broadcast: the row is `confirmed`, so it holds no claim and
+      // the pre-claim CAS would match nothing and retry it forever.
+      expect_status: "confirmed" as const,
     });
     return false;
   }
@@ -49,6 +52,9 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: `confirmed gateway attempt references unknown market ${attempt.market_id}`,
       updated_at: nowIso(now()),
+      // POST-broadcast: the row is `confirmed`, so it holds no claim and
+      // the pre-claim CAS would match nothing and retry it forever.
+      expect_status: "confirmed" as const,
     });
     return false;
   }
@@ -79,6 +85,12 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
         confidence_ct_hash: attempt.confidence_ct_hash,
         accepted_at: attempt.accepted_at,
         reveal_open_at: attempt.reveal_open_at,
+        // NULL on attempts confirmed before submission_class was recorded.
+        // 0 (None) is honest — "not decoded" — and is deliberately NOT
+        // defaulted to EarlyAccess: eligibility treats a recorded non-early
+        // class as unsellable, so inventing 1 here would sell calls the
+        // contract then refuses to grant.
+        submission_class: attempt.submission_class ?? 0,
         agent_wallet: attempt.agent_wallet_address,
         market_id_hash: attempt.market_id_hash,
         client_nonce: attempt.client_nonce,
@@ -97,6 +109,9 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: errorMessage(err),
       updated_at: nowIso(now()),
+      // POST-broadcast: the row is `confirmed`, so it holds no claim and
+      // the pre-claim CAS would match nothing and retry it forever.
+      expect_status: "confirmed" as const,
     });
     return false;
   }
@@ -121,6 +136,9 @@ export async function acceptConfirmedFeedPacketGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: "confirmed gateway feed packet attempt is missing event metadata",
       updated_at: nowIso(now()),
+      // POST-broadcast: the row is `confirmed`, so it holds no claim and
+      // the pre-claim CAS would match nothing and retry it forever.
+      expect_status: "confirmed" as const,
     });
     return false;
   }
@@ -194,6 +212,9 @@ export async function acceptConfirmedFeedPacketGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: errorMessage(err),
       updated_at: nowIso(now()),
+      // POST-broadcast: the row is `confirmed`, so it holds no claim and
+      // the pre-claim CAS would match nothing and retry it forever.
+      expect_status: "confirmed" as const,
     });
     return false;
   }

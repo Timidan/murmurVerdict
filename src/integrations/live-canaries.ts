@@ -16,6 +16,7 @@ import { nowIso } from "../verdict/time.js";
 import {
   parseFhenixAddressInput,
   parseFhenixChainIdInput,
+  resolveFhenixChainId,
   resolveFhenixContractAddress,
 } from "./deployments.js";
 
@@ -180,7 +181,7 @@ export class LiveCanaryRunner implements LiveCanaryProvider {
       return failedCheck(
         "fhenix_rpc",
         checkedAt,
-        "Fhenix contract address required for contract-code canary; set FHENIX_SEALED_VERDICTS_ADDRESS, FHENIX_CONTRACT_ADDRESS, or sync deployments",
+        "Fhenix contract address required for contract-code canary; run sync-deployments or set FHENIX_SEALED_VERDICTS_ADDRESS",
       );
     }
 
@@ -342,10 +343,29 @@ export function loadLiveCanaryConfig(
   env: NodeJS.ProcessEnv,
   opts: LoadLiveCanaryConfigOptions,
 ): LiveCanaryConfig {
+  // Which chain this deployment runs on — resolved exactly as the daemon
+  // runtime resolves it: derived from the manifest when it names one chain,
+  // refusing any explicit value that disagrees. Reading the raw var here meant
+  // an operator who correctly omitted FHENIX_CHAIN_ID got a working Fhenix
+  // runtime beside a canary that switched itself off and reported the chain
+  // unconfigured — the check disagreeing with the thing it checks.
+  //
+  // Re-raised as a LiveCanaryConfigError so this surface keeps reporting
+  // config problems keyed by the variable at fault, which its callers and the
+  // admin readiness route rely on.
+  let derivedChainId: number | null;
+  try {
+    derivedChainId = resolveFhenixChainId(env);
+  } catch (err) {
+    throw new LiveCanaryConfigError(
+      "FHENIX_CHAIN_ID",
+      err instanceof Error ? err.message.replace(/^FHENIX_CHAIN_ID: /, "") : String(err),
+    );
+  }
   const fhenixEnabled = enabledFromEnv(
     env,
     "FHENIX_CANARY_ENABLED",
-    Boolean(env.FHENIX_RPC_URL?.trim() && env.FHENIX_CHAIN_ID?.trim()),
+    Boolean(env.FHENIX_RPC_URL?.trim() && derivedChainId),
   );
   const polymarketGammaEnabled =
     opts.polymarketGammaEnabled ?? resolvePolymarketGammaEnabled(env);
@@ -355,11 +375,9 @@ export function loadLiveCanaryConfig(
     polymarketGammaEnabled,
   );
   const rpcUrl = env.FHENIX_RPC_URL?.trim() || "";
-  const expectedChainId = parseOptionalPositiveInteger(
-    env.FHENIX_CHAIN_ID,
-    "FHENIX_CHAIN_ID",
-    fhenixEnabled,
-  );
+  const expectedChainId =
+    derivedChainId ??
+    parseOptionalPositiveInteger(env.FHENIX_CHAIN_ID, "FHENIX_CHAIN_ID", fhenixEnabled);
   const contractAddress = resolveLiveCanaryFhenixContractAddress(
     env,
     expectedChainId,

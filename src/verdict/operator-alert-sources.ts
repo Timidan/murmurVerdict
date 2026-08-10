@@ -45,6 +45,11 @@ export interface OperatorAlertSourceBatch {
   alerts: OperatorAlertInput[];
 }
 
+// A registration tx unconfirmed this long is stuck, not slow. Base blocks are
+// ~2s, so minutes without a receipt means the nonce is not progressing.
+const STUCK_REGISTRATION_WARN_MS = 10 * 60_000;
+const STUCK_REGISTRATION_CRITICAL_MS = 30 * 60_000;
+
 export function collectOperatorAlertSources(
   opts: OperatorAlertSourceOptions,
 ): OperatorAlertSourceBatch[] {
@@ -297,6 +302,32 @@ function polymarketDiscoveryAlerts(
         payload: health,
       }));
     }
+  }
+  // A registration whose tx never confirmed stays `broadcasting` forever: we
+  // deliberately do NOT rebroadcast at a fresh nonce (that could gap the shared
+  // relayer lane and stall every later write), and there is no transaction
+  // manager for same-nonce replacement yet. Without this alert the state was
+  // completely silent — the tick reports success and only terminal `failed`
+  // rows were surfaced.
+  for (const row of polymarketDiscoveryRepo.listByStatus(db, "broadcasting", 50)) {
+    const startedAt = row.broadcast_started_at ?? row.updated_at;
+    const stuckMs = Date.parse(servedAt) - Date.parse(startedAt);
+    if (!Number.isFinite(stuckMs) || stuckMs < STUCK_REGISTRATION_WARN_MS) continue;
+    const stuckMin = Math.floor(stuckMs / 60_000);
+    alerts.push(alertInput({
+      source: "polymarket_discovery",
+      kind: "polymarket_discovery_registration_stuck",
+      key: `polymarket_discovery:stuck:${row.condition_id}`,
+      severity: stuckMs >= STUCK_REGISTRATION_CRITICAL_MS ? "critical" : "warning",
+      title: "Polymarket discovery registration stuck unconfirmed",
+      description:
+        `Registration for ${row.condition_id} has been broadcasting for ${stuckMin} min ` +
+        `without a receipt (tx=${row.tx_hash ?? "unknown"}). Murmur will not rebroadcast: a ` +
+        `replacement takes the next nonce on the shared relayer lane and can stall unrelated ` +
+        `writes. Resolve by replacing the transaction at its ORIGINAL nonce with a fee bump.`,
+      seenAt: servedAt,
+      payload: row,
+    }));
   }
   for (const row of polymarketDiscoveryRepo.listByStatus(db, "failed", 50)) {
     alerts.push(alertInput({

@@ -41,7 +41,19 @@ assert.equal(card.x402?.protocol, "x402");
 assert.equal(card.x402?.gateway, "circle");
 assert.equal(card.x402?.endpoint, "https://api.murmur.example/v2/nanopay/infer/{pipelineId}");
 assert.equal(card.x402?.mounted, true);
-assert.equal(card.privacy.operator_can_decrypt_pre_horizon, false);
+// NOT `false`. That claimed more than the system delivers: a grantor grants to
+// any address with no on-chain proof of payment, and the operator already holds
+// an authorized grantor key — so early operator decrypt is prevented by key
+// custody, not by the protocol. The card states the condition instead of
+// asserting a guarantee it cannot make.
+assert.equal(
+  card.privacy.operator_can_decrypt_pre_horizon,
+  "requires_owner_or_grantor_key",
+);
+assert.equal(card.privacy.operator_holds_plaintext, "never_on_sealed_fhenix");
+// This one IS unconditional: allowPublic is gated on the snapshotted on-chain
+// reveal timestamp, and registration is one-shot so it cannot be moved.
+assert.equal(card.privacy.public_reveal_enforced_onchain, true);
 assert.equal(card.privacy.threat_model_url, "https://api.murmur.example/v1/skill.md#threat-model--privacy-guarantees");
 assert.equal(card.meta.call_history_entrypoint, "https://api.murmur.example/v1/agents/card-smoke/calls");
 assert.equal("api_key_hash" in card, false);

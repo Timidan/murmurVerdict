@@ -7,7 +7,7 @@ import {
 
 const MURMUR_SEALED_VERDICTS_GATEWAY_FUNCTIONS_ABI = parseAbi([
   "function submitSealedFor(address agent,bytes32 marketId,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) binaryIndexInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) confidenceInput,bytes32 clientNonce) returns (bytes32)",
-  "function submitFeedPacketFor(address agent,bytes32 feedId,bytes32 marketId,uint64 revealAfter,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) actionInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) signalInput,bytes32 clientNonce) returns (bytes32)",
+  "function submitFeedPacketFor(address agent,bytes32 feedId,bytes32 marketId,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) actionInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) signalInput,bytes32 clientNonce) returns (bytes32)",
   // View accessors used by the reconciliation path
   // (src/integrations/fhenix-gateway-reconciliation.ts). They revert with
   // CallNotFound / PacketNotFound if the id has never been written, which
@@ -79,11 +79,11 @@ export type GatewayWriteContractArgs =
       address: Address;
       abi: typeof MURMUR_SEALED_VERDICTS_GATEWAY_ABI;
       functionName: "submitFeedPacketFor";
+      // No reveal-time argument: the contract reads it from the market.
       args: readonly [
         Address,
         Hex,
         Hex,
-        bigint,
         ContractCofheInput,
         ContractCofheInput,
         Hex,

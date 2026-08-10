@@ -48,6 +48,11 @@ import {
   submissionsRepo,
 } from "../verdict/db.js";
 import { deriveFeedRevealAfter } from "../verdict/feed-policy.js";
+import { deriveSeriesClock } from "../verdict/series-clock.js";
+import {
+  marketClocksRepo,
+  marketSeriesRepo,
+} from "../verdict/repos/market-clocks-repo.js";
 import { canonicalHash, canonicalize } from "../receipts/canonical.js";
 
 let failures = 0;
@@ -73,7 +78,21 @@ try {
   const chainId = 84532;
   const acceptedAt = "2026-05-14T12:00:00Z";
   const revealOpenAt = "2026-05-14T13:00:00Z";
-  const feedRevealAfter = "2026-05-14T13:05:00Z";
+  // The contract takes a feed packet's reveal time from the market embargo, not
+  // from the caller, so this must equal the market's publicRevealAt. The market
+  // fixtures below use endDate = revealOpenAt with no embargoSec, so the
+  // authoritative value collapses to revealOpenAt.
+  // The feed packet's reveal time now comes from the market's IMMUTABLE clock
+  // snapshot, so this must equal that snapshot's public_reveal_at_ms:
+  // endDate + embargoSec. embargoSec must be positive (clock invariant), so
+  // this is endDate + 1s, not endDate.
+  const feedRevealAfter = new Date(Date.parse(revealOpenAt) + 1_000).toISOString().replace(".000Z", "Z");
+  const smokeClockConfig = {
+    submissionOpenLeadSec: 600,
+    commitMarginSec: 60,
+    deliveryBudgetSec: 60,
+    embargoSec: 1,
+  };
   const contract = "0x2222222222222222222222222222222222222222";
   const relayer = "0x3333333333333333333333333333333333333333";
   const wallet = "0x1111111111111111111111111111111111111111";
@@ -184,6 +203,33 @@ try {
     status: "listed",
     created_at: acceptedAt,
   });
+  // Feed packets require a listed market WITH a frozen clock snapshot: the
+  // packet's on-chain reveal time comes from the market schedule, so a market
+  // without one has no schedule for the contract to match.
+  {
+    const endMs = Date.parse(revealOpenAt);
+    marketSeriesRepo.upsert(db, {
+      series_id: "polymarket:binary-3600s",
+      venue: "polymarket",
+      display_name: "gateway smoke series",
+      window_seconds: 3600,
+      clock: smokeClockConfig,
+      max_armed_per_call: 30,
+      now: acceptedAt,
+    });
+    marketClocksRepo.insert(db, {
+      market_id: marketId,
+      series_id: "polymarket:binary-3600s",
+      clock: deriveSeriesClock({
+        endDateMs: endMs,
+        windowSec: 3600,
+        config: smokeClockConfig,
+      }),
+      derived_from_end_date_ms: endMs,
+      now: acceptedAt,
+    });
+  }
+
   marketsRepo.upsertExternalMarket(db, {
     market_id: disallowedMarketId,
     asset_id: "polymarket:event",
@@ -221,7 +267,7 @@ try {
     max_latency_seconds: null,
     subscriber_capacity: 10,
     commercial_template: "capacity_capped_subscription",
-    reveal_policy: { kind: "fixed_delay", delay_seconds: 3600 },
+    reveal_policy: { kind: "after_resolution" },
     refund_rule: { kind: "credit", missed_delivery_grace: 0 },
     slash_rule: { kind: "reputation", missed_delivery_threshold: 2 },
     created_at: acceptedAt,
@@ -238,13 +284,14 @@ try {
       {
         address: contract as Address,
         data: encodeAbiParameters(
-          parseAbiParameters("uint64,uint64,bytes32,bytes32,bytes32"),
+          parseAbiParameters("uint64,uint64,bytes32,bytes32,bytes32,uint8"),
           [
             BigInt(Date.parse(acceptedAt) / 1000),
             BigInt(Date.parse(revealOpenAt) / 1000),
             binaryIndexCtHash as Hex,
             confidenceCtHash as Hex,
             clientNonce as Hex,
+            1, // SubmissionClass.EarlyAccess
           ],
         ),
         topics: [
@@ -292,7 +339,6 @@ try {
     ],
   };
   let writes = 0;
-  let lastFeedRevealAfterArg: bigint | null = null;
   const gatewayClient: FhenixGatewayClient = {
     getChainId: async () => chainId,
     getBlockNumber: async () => 22n,
@@ -302,11 +348,12 @@ try {
         assert.equal(args.args[0].toLowerCase(), wallet.toLowerCase());
         assert.equal(args.args[1], feedIdHash);
         assert.equal(args.args[2], fhenixMarketIdForMurmurMarket(marketId));
-        lastFeedRevealAfterArg = args.args[3];
+        // Index 3 is no longer a reveal timestamp — the contract reads the
+        // reveal time from the market, so the argument was removed entirely.
         assert.ok(
-          args.args[6] === feedClientNonce || args.args[6] === feedRetryClientNonce,
+          args.args[5] === feedClientNonce || args.args[5] === feedRetryClientNonce,
         );
-        return (args.args[6] === feedRetryClientNonce ? feedRetryTxHash : feedTxHash) as Hex;
+        return (args.args[5] === feedRetryClientNonce ? feedRetryTxHash : feedTxHash) as Hex;
       }
       assert.equal(args.functionName, "submitSealedFor");
       assert.equal(args.args[0].toLowerCase(), wallet.toLowerCase());
@@ -362,6 +409,10 @@ try {
     client: gatewayClient,
     confirmations: 2,
     murmurOwnedSealer: fakeMurmurOwnedSealer,
+    // The feed lane 503s without this. It is off in production because
+    // Murmur has no feed reveal path; these cases exercise the SUBMIT and
+    // SLA mechanics, which are what exists today.
+    feedRevealAcknowledged: true,
     newAttemptId: () => {
       const attemptId = `gateway-smoke-attempt-${attemptIds.length + 1}`;
       attemptIds.push(attemptId);
@@ -434,7 +485,6 @@ try {
     client_order_id: "gateway-feed-smoke-order-001",
     client_nonce: feedClientNonce,
     privacy_mode: "sealed_fhenix",
-    reveal_after: feedRevealAfter,
     action_input: {
       ct_hash: feedActionCtHash,
       security_zone: 0,
@@ -640,6 +690,39 @@ try {
     assert.equal(payload.idempotent_hit, true);
   });
 
+  // Feed packets are REFUSED by default. Murmur's reveal worker selects only
+  // sealed calls and its watcher indexes only call reveal events, so a packet
+  // accepted here earns SLA credit for a value no subscriber can ever read.
+  // The gate makes that an explicit operator decision instead of a silent one.
+  await check("feed packet submission 503s without the reveal acknowledgement", async () => {
+    const ungated = new FhenixGatewayBroadcaster({
+      db,
+      chainId,
+      contractAddress: contract,
+      relayerAddress: relayer,
+      client: gatewayClient,
+      confirmations: 2,
+      murmurOwnedSealer: fakeMurmurOwnedSealer,
+      // The production default.
+      feedRevealAcknowledged: false,
+      newAttemptId: () => "unreachable",
+      newClaimToken: () => "unreachable",
+      now: () => new Date(),
+    } as never);
+    await assert.rejects(
+      () =>
+        // The gate refuses BEFORE auth and schema validation, so the shape
+        // here does not matter — which is the point: a lane that is off must
+        // not do any work first.
+        (ungated as unknown as {
+          submitFeedPacket(params: unknown): Promise<unknown>;
+        }).submitFeedPacket({ authResult: null, feedId, bodyJson: feedBody }),
+      (err: unknown) =>
+        err instanceof Error && /no feed reveal path/.test(err.message),
+      "the refusal names the missing reveal path, not a generic error",
+    );
+  });
+
   await check("runtime key gateway feed packet submit broadcasts relayer transaction", async () => {
     const res = await fetch(`${baseUrl}/v2/gateway/feeds/${feedId}/packets`, {
       method: "POST",
@@ -672,13 +755,10 @@ try {
     const attempt = fhenixGatewayFeedPacketTxRepo.byId(db, payload.attempt_id);
     assert.equal(attempt?.feed_id_hash, feedIdHash);
     assert.equal(attempt?.broadcast_latency_ms, 0);
-    // The contract's uint64 revealAfter arg must be the stored
-    // reveal_after epoch — pins the feed lane's contractWrite mapping.
+    // reveal_after is still PERSISTED (event extraction compares the emitted
+    // reveal time against it), but it is no longer passed to the contract —
+    // the contract reads it from the market's registered schedule.
     assert.ok(attempt?.reveal_after, "feed attempt must persist reveal_after");
-    assert.equal(
-      lastFeedRevealAfterArg,
-      BigInt(Math.floor(Date.parse(attempt!.reveal_after) / 1000)),
-    );
     assert.deepEqual(consumedFeedPacketIds, []);
   });
 

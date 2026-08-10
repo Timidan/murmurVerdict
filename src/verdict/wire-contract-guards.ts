@@ -55,6 +55,7 @@ import type {
   WireMarketOracleHealth,
   WireMarketVenueSnapshot,
   WireMarketVenuePricePoint,
+  WireMarketClock,
 } from "../types/wire-market.js";
 import type { WireMetaResponse } from "../types/wire-meta.js";
 import type {
@@ -114,7 +115,10 @@ import type {
   PublicSealedCallView,
 } from "./sealed-call-public-projection.js";
 import type { TodayFeed, TodayFeedRow, TodayMover } from "./feed.js";
-import type { VenueEnrichedMarketRegistryRow } from "./market-read-surface.js";
+import type {
+  MarketClockSnapshot,
+  VenueEnrichedMarketRegistryRow,
+} from "./market-read-surface.js";
 import type {
   PublicMarketOracleSummary,
   PublicMarketOracleRef,
@@ -237,6 +241,11 @@ type _MarketOracleRef = Assert<Conforms<PublicMarketOracleRef, WireMarketOracleR
 type _MarketOracleHealth = Assert<Equals<WireMarketOracleHealth, PublicMarketOracleHealth>>;
 type _MarketVenueSnapshot = Assert<Conforms<MarketVenueSnapshot, WireMarketVenueSnapshot>>;
 type _MarketVenuePricePoint = Assert<Conforms<MarketVenuePricePoint, WireMarketVenuePricePoint>>;
+// Strong relation: the matrix's window grouping and phase machine are driven
+// entirely by these instants, so a daemon-side rename must break this build
+// rather than reach the dashboard as `undefined` and silently collapse every
+// market into one untimed group.
+type _MarketClock = Assert<Equals<WireMarketClock, MarketClockSnapshot>>;
 
 // ── Meta ────────────────────────────────────────────────────────────────────
 type _MetaResponse = Assert<Conforms<ReturnType<typeof publicMetaSurface>, WireMetaResponse>>;

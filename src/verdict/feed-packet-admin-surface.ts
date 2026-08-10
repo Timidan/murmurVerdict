@@ -58,6 +58,11 @@ export type FeedPacketBackfillResponse =
       body: { code: "not_found"; message: "feed not found" };
     }
   | {
+      /** Feeds are off: MURMUR_ACK_FEED_REVEAL_MANUAL is not set. */
+      status: 503;
+      body: { code: "feed_reveal_unavailable"; message: string };
+    }
+  | {
       status: 200;
       body: {
         schema_version: typeof SCHEMA_VERSION;
@@ -90,7 +95,25 @@ export function feedPacketBackfillResponse(input: {
   db: Database.Database;
   feedId: string;
   body: unknown;
+  /** MURMUR_ACK_FEED_REVEAL_MANUAL; see the gate below. */
+  feedRevealAcknowledged: boolean;
 } & FeedPacketAdminClock & FeedPacketAdminAdapters): FeedPacketBackfillResponse {
+  // Same fence as live submission. This route also lands packets in SLA and
+  // public feed state, so leaving it open would make the acknowledgement a
+  // formality: an operator could turn feeds off and still publish delivery
+  // evidence for a lane with no reveal path.
+  if (!input.feedRevealAcknowledged) {
+    return {
+      status: 503,
+      body: {
+        code: "feed_reveal_unavailable",
+        message:
+          "feed packet backfill is disabled: Murmur has no feed reveal path " +
+          "yet, so a packet recorded here could never be revealed. Set " +
+          "MURMUR_ACK_FEED_REVEAL_MANUAL=true to enable it.",
+      },
+    };
+  }
   const feed = feedContractsRepo.byId(input.db, input.feedId);
   if (!feed) {
     return {

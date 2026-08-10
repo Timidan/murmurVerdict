@@ -31,6 +31,7 @@ import { marketReadRouter } from "./routes/market-reads.js";
 import { publicSystemRouter } from "./routes/public-system.js";
 import { publicRankingRouter } from "./routes/public-rankings.js";
 import { marketAdminRouter } from "./routes/market-admin.js";
+import { adminEntitlementsRouter } from "./routes/admin-entitlements.js";
 import { deferredDisputeRouter } from "./routes/deferred-disputes.js";
 import {
   type OperatorFhenixLifecycleQueryDefaults,
@@ -64,6 +65,7 @@ import { createVerdictRouterRuntime } from "./verdict-router-runtime.js";
 //   POST /v1/admin/fhenix/backfill/calls
 //   POST /v1/admin/fhenix/reveals
 //   POST /v1/admin/fhenix/invalid-reveals
+//   GET  /v1/admin/entitlements/refunds
 
 export interface ApiDeps {
   db: Database.Database;
@@ -190,6 +192,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     now,
     publicOrigin: runtime.publicOrigin,
     requireLiveCanaries: deps.requireLiveCanaries,
+      popAudience: deps.popAudience,
   }));
 
   router.use(publicRankingRouter({
@@ -210,6 +213,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     newFeedId: deps.newFeedId,
     newFeedPacketId: deps.newFeedPacketId,
     newFeedSlaIncidentId: deps.newFeedSlaIncidentId,
+    feedRevealAcknowledged: deps.fhenixGateway?.feedRevealAcknowledged ?? false,
     now,
     privyAuth: deps.privyAuth,
     requireAdmin: adminAuth.requireAdmin,
@@ -254,6 +258,11 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     newAgentSecurityEventId: deps.newAgentSecurityEventId,
     now,
     requireAdminHeader: adminAuth.requireAdminHeader,
+  }));
+
+  router.use(adminEntitlementsRouter({
+    db: deps.db,
+    requireAdmin: adminAuth.requireAdmin,
   }));
 
   router.use(publicCallRouter({ db: deps.db }));

@@ -24,6 +24,7 @@ import {
   nanopayFacilitatorUrl,
   type NanopayGatewayFactory,
 } from "../verdict/nanopay-payment-gate.js";
+import { nanopaySettlementRail } from "../verdict/nanopay-config.js";
 import { createGatewayMiddleware } from "../integrations/circle-gateway.js";
 import {
   createGatewayEntitlementBroker,
@@ -61,7 +62,14 @@ export interface DaemonRuntimeAdapters {
 export interface LoadDaemonRuntimeAdaptersDeps {
   config: DaemonRuntimeConfig;
   db: Database.Database;
-  liveCanaryEnv: NodeJS.ProcessEnv;
+  /**
+   * The daemon's injected environment. Every runtime that reads env directly
+   * must take it from HERE, not from ambient process.env — startDaemon({env})
+   * exists so a deployment's configuration is the one that applies. It used to
+   * be named `liveCanaryEnv` after its first consumer, and the grant runtime's
+   * refund acknowledgement read the ambient process instead.
+   */
+  env: NodeJS.ProcessEnv;
   gatewayFeedPacketId?: FeedPacketIdAdapter;
   gatewaySealedCallId?: SealedCallIdAdapter;
   /** Circle facilitator factory Adapter for the nanopay route; defaults to
@@ -118,6 +126,9 @@ async function loadPolymarketDiscoveryEngine(deps: {
       questionFilter: discovery.questionFilter,
       assets: discovery.assets,
       windowDurationSec: discovery.windowDurationSec,
+      seriesClock: discovery.seriesClock,
+      maxArmedPerCall: discovery.maxArmedPerCall,
+      seriesVersion: discovery.seriesVersion,
       maxPerTick: discovery.maxPerTick,
       maxPerHour: discovery.maxPerHour,
       maxPerDay: discovery.maxPerDay,
@@ -134,7 +145,7 @@ export async function loadDaemonRuntimeAdapters(
   deps: LoadDaemonRuntimeAdaptersDeps,
 ): Promise<DaemonRuntimeAdapters> {
   const { config, db, schemaVersion } = deps;
-  const liveCanaryEnv = deps.liveCanaryEnv;
+  const env = deps.env;
   const logger = deps.logger ?? console;
   const now = deps.now;
   const privyAuth = createPrivyAuthVerifier(config.privyAuth);
@@ -142,6 +153,7 @@ export async function loadDaemonRuntimeAdapters(
 
   const fhenixRuntime = await loadFhenixRuntime(db, {
     config: config.fhenixRuntime,
+    env,
     gatewayFeedPacketId: deps.gatewayFeedPacketId,
     gatewaySealedCallId: deps.gatewaySealedCallId,
     logger,
@@ -161,7 +173,7 @@ export async function loadDaemonRuntimeAdapters(
     urlPolicy: config.webhookUrlPolicy,
   });
   const observability = loadOperatorObservabilityRuntime(db, schemaVersion, {
-    config: loadOperatorObservabilityRuntimeConfig(db, schemaVersion, liveCanaryEnv, {
+    config: loadOperatorObservabilityRuntimeConfig(db, schemaVersion, env, {
       fhenixSealedVerdictsAddress,
       now,
       operatorAlertSink: config.operatorAlertSink,
@@ -198,18 +210,18 @@ export async function loadDaemonRuntimeAdapters(
     }),
   });
 
-  // Flow 2 access surface: build the payment broker over the SAME nanopay
-  // payment infra (seller, facilitator, accepted networks) but a dedicated flat
-  // access price, and bind it to the grant runtime's chain adapter. Only when
-  // the grant runtime is enabled AND nanopay is mounted — otherwise the access
-  // routes stay unmounted (the durable reconciler still runs if enabled).
+  // Flow 2 access surface: build the payment broker over the SAME settlement
+  // RAIL as nanopay (seller, facilitator, accepted networks) but a dedicated
+  // flat access price, and bind it to the grant runtime's chain adapter.
+  //
+  // Requires the rail, NOT the inference route. It used to require
+  // `kind === "mounted"`, which made the documented grant-only deployment —
+  // grants enabled, no inference price — return 503 PaidAccessDisabled on
+  // every access request: the one feature it was configured to sell.
+  const rail = nanopaySettlementRail(config.nanopayRuntime);
   let entitlementAccess: EntitlementAccessSurfaceDeps | null = null;
-  if (
-    fhenixRuntime.grant &&
-    fhenixRuntime.grantAccess &&
-    config.nanopayRuntime.kind === "mounted"
-  ) {
-    const np = config.nanopayRuntime.config;
+  if (fhenixRuntime.grant && fhenixRuntime.grantAccess && rail) {
+    const np = rail;
     const gatewayFactory = deps.nanopayGatewayFactory ?? createGatewayMiddleware;
     const middleware = gatewayFactory({
       sellerAddress: np.sellerAddress,
@@ -223,6 +235,8 @@ export async function loadDaemonRuntimeAdapters(
     entitlementAccess = {
       access: fhenixRuntime.grantAccess,
       broker: createGatewayEntitlementBroker({
+        db,
+        now,
         gateway: middleware,
         network,
         sellerAddress: np.sellerAddress,

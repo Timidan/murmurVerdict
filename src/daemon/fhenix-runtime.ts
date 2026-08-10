@@ -37,6 +37,11 @@ import {
   resolveFhenixChainId,
   resolveFhenixDeploymentAddresses,
 } from "../integrations/deployments.js";
+import { fhenixSealedCallsRepo } from "../verdict/repos/fhenix-sealed-calls-repo.js";
+import {
+  parseProtocolFeeBps,
+  ProtocolFeeConfigError,
+} from "../verdict/protocol-fee.js";
 
 export interface FhenixRuntime {
   verifier: FhenixEventVerifier | null;
@@ -68,6 +73,11 @@ export interface FhenixRuntimeConfig {
   revealWorker: FhenixRevealWorkerEnvConfig | null;
   gateway: FhenixGatewayEnvConfig | null;
   grant: FhenixGrantEnvConfig | null;
+  /**
+   * Murmur's cut of an early-access sale, in basis points. null when unset,
+   * which is only allowed while both the gateway and paid grants are off.
+   */
+  protocolFeeBps: number | null;
   chainId: number | null;
   sealedVerdictsAddress: string | null;
   escrowAddress: string | null;
@@ -129,25 +139,69 @@ export function loadFhenixRuntimeConfig(
     env,
   );
 
+  // Hand the child loaders the RESOLVED chain id, not the raw environment.
+  //
+  // Each of them re-reads FHENIX_CHAIN_ID and rejects an empty value, so
+  // deriving it here and then passing `env` through unchanged meant the
+  // derivation only ever applied to this function: an operator who omitted the
+  // var — exactly what .env.example now tells them to do — got
+  // "FHENIX_CHAIN_ID is required when FHENIX_RPC_URL is set" at startup.
+  //
+  // Safe to overwrite because resolveFhenixChainId has already refused any
+  // value that disagrees with the manifest, so this can only ever restate what
+  // the operator set or supply what they left out.
+  const childEnv: NodeJS.ProcessEnv =
+    chainId === null ? env : { ...env, FHENIX_CHAIN_ID: String(chainId) };
+
+  const verifier = loadFhenixEventVerifierConfig(childEnv, {
+    contractAddress: deploymentAddresses.sealedVerdictsAddress,
+  });
+  const ingestor = loadFhenixEventIngestorConfig(childEnv, {
+    contractAddress: deploymentAddresses.sealedVerdictsAddress,
+  });
+  const revealWorker = loadFhenixRevealWorkerEnvConfig(childEnv, {
+    contractAddress: deploymentAddresses.sealedVerdictsAddress,
+    enabled: revealWorkerEnabled,
+  });
+  const gateway = loadFhenixGatewayEnvConfig(childEnv, {
+    contractAddress: deploymentAddresses.sealedVerdictsAddress,
+    enabled: gatewayEnabled,
+  });
+  const grant = loadFhenixGrantEnvConfig(childEnv, {
+    contractAddress: deploymentAddresses.sealedVerdictsAddress,
+    enabled: grantEnabled,
+  });
+
+  // Murmur's cut. Required by BOTH runtimes that can put a sale in motion:
+  //
+  //   · grants  — the obvious one; a sale settles and must be split.
+  //   · gateway — calls are SEALED here, and a seal is where the fee snapshot
+  //     is frozen onto the call. A selling call sealed while grants were off
+  //     still has to carry its split, or its later sale has nothing to
+  //     reconstruct the terms from.
+  //
+  // Checked AFTER the child loaders on purpose: a broken chain id, key or
+  // contract address is the more fundamental problem, and an operator should
+  // hear about that first rather than fixing a fee and then meeting it.
+  const protocolFeeBps = parseProtocolFeeBps(env);
+  if ((gatewayEnabled || grantEnabled) && protocolFeeBps === null) {
+    const flag = grantEnabled ? "FHENIX_GRANT_ENABLED" : "FHENIX_GATEWAY_ENABLED";
+    throw new ProtocolFeeConfigError(
+      `is required when ${flag}=true — it is murmur's cut of every early-access ` +
+        `sale, in basis points (1000 = murmur 10% / provider 90%). Sealing a ` +
+        `call freezes this number onto it, so a deployment that seals or sells ` +
+        `without one produces sales whose split cannot be reconstructed. There ` +
+        `is no default: a fee is a business decision.`,
+    );
+  }
+
   return {
-    verifier: loadFhenixEventVerifierConfig(env, {
-      contractAddress: deploymentAddresses.sealedVerdictsAddress,
-    }),
-    ingestor: loadFhenixEventIngestorConfig(env, {
-      contractAddress: deploymentAddresses.sealedVerdictsAddress,
-    }),
-    revealWorker: loadFhenixRevealWorkerEnvConfig(env, {
-      contractAddress: deploymentAddresses.sealedVerdictsAddress,
-      enabled: revealWorkerEnabled,
-    }),
-    gateway: loadFhenixGatewayEnvConfig(env, {
-      contractAddress: deploymentAddresses.sealedVerdictsAddress,
-      enabled: gatewayEnabled,
-    }),
-    grant: loadFhenixGrantEnvConfig(env, {
-      contractAddress: deploymentAddresses.sealedVerdictsAddress,
-      enabled: grantEnabled,
-    }),
+    verifier,
+    ingestor,
+    revealWorker,
+    gateway,
+    grant,
+    protocolFeeBps,
     chainId,
     sealedVerdictsAddress: deploymentAddresses.sealedVerdictsAddress,
     escrowAddress: deploymentAddresses.escrowAddress,
@@ -218,6 +272,27 @@ export async function loadFhenixRuntime(
         db,
         grantChain: config.grant.chain,
         salesSafetySeconds: config.grant.salesSafetySeconds,
+        // Producer attribution. This was declared as an optional dependency
+        // and then never supplied here, so EVERY entitlement written in
+        // production recorded producer_agent_id = NULL — the revenue split had
+        // nothing to attribute a sale to. Resolved from the sealed call, whose
+        // submission row names the owning agent; acceptance writes both in one
+        // transaction, so the join can never see half a pair.
+        resolveProducerAgentId: (onchainCallId: string) =>
+          fhenixSealedCallsRepo.producerAgentIdByOnchainCall(db, {
+            chain_id: config.grant!.chainId,
+            contract_address: config.grant!.contractAddress,
+            onchain_call_id: onchainCallId,
+          }),
+        // Murmur's cut. Only consulted for calls sealed before fees were
+        // snapshotted; every sale of a modern call carries its own split.
+        protocolFeeBps: config.protocolFeeBps ?? undefined,
+        logger,
+        // Cohort ceiling. Without this the cap is decorative — persisted on
+        // the series at registration but never consulted, so a cohort could
+        // grow past what the grantor can fund or confirm in time, and grants would
+        // fail for every subscriber on that call, after they had all paid.
+        maxArmedPerCall: config.grant.maxArmedPerCall,
         grantConfirmations: config.grant.confirmations,
         maxGrantAttempts: config.grant.maxGrantAttempts,
         grantRebroadcastDelaySeconds: config.grant.grantRebroadcastDelaySeconds,
@@ -225,6 +300,37 @@ export async function loadFhenixRuntime(
         now: opts.now,
       }
     : null;
+  // Paid grants MUST fail closed without their crash-recovery reconciler.
+  // The two flags were independent, so a paid route could be live while
+  // nothing recovered in-flight grants: a restart mid-purchase left a SETTLED
+  // payment stranded with no path to either grant or refund. Refuse to boot
+  // rather than take money we cannot make good on.
+  // There is no refund worker. `listRefundDue` exists but nothing consumes it,
+  // so a grant that fails after settlement leaves the subscriber with a
+  // database marker and no money back. Until a durable refund path ships,
+  // enabling paid grants requires an explicit acknowledgement that refunds are
+  // a MANUAL operator duty — so nobody turns this on assuming it is automatic.
+  // `opts.env`, not ambient process.env: startDaemon({env}) loads every other
+  // setting from the injected environment, so reading this one from the
+  // process made an injected grant configuration fail unless the ambient
+  // process happened to carry the acknowledgement too.
+  const env = opts.env ?? process.env;
+  if (config.grantEnabled && env.MURMUR_ACK_MANUAL_REFUNDS !== "true") {
+    throw new Error(
+      "FHENIX_GRANT_ENABLED=true requires MURMUR_ACK_MANUAL_REFUNDS=true. " +
+        "Murmur has no automated refund worker yet: a grant that fails after " +
+        "payment settles is recorded as grant_failed_refund_due and must be " +
+        "refunded BY HAND (query entitlementsRepo.listRefundDue). Set this only " +
+        "if you have an operator process to honour that.",
+    );
+  }
+  if (config.grantEnabled && !config.grantReconcilerEnabled) {
+    throw new Error(
+      "FHENIX_GRANT_ENABLED=true requires FHENIX_GRANT_RECONCILER_ENABLED=true. " +
+        "Without the reconciler a settled payment interrupted by a restart is " +
+        "never granted and never refunded.",
+    );
+  }
   const grantReconciler =
     grantAccess && config.grantReconcilerEnabled
       ? new FhenixGrantReconciler({ db, access: grantAccess, now: opts.now, logger })
@@ -292,6 +398,29 @@ export async function loadFhenixRuntime(
       }
     } catch (err) {
       logger.warn("[daemon] Fhenix grantor balance check failed:", err);
+    }
+
+    // FAIL CLOSED on the role. Unlike balance (which an operator can top up
+    // while the daemon runs), a key without the grantor role can never grant:
+    // every attempt reverts NotGrantor. Booting anyway means issuing 402s,
+    // settling payments, and turning each sale into a refund obligation.
+    let hasRole: boolean;
+    try {
+      hasRole = await config.grant.chain.hasGrantorRole();
+    } catch (err) {
+      throw new Error(
+        `[daemon] could not verify the grantor role for ${config.grant.grantorAddress} ` +
+          `on ${config.sealedVerdictsAddress}: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Refusing to start paid grants without confirming the role.`,
+      );
+    }
+    if (!hasRole) {
+      throw new Error(
+        `[daemon] FHENIX_GRANT_ENABLED=true but ${config.grant.grantorAddress} does not hold ` +
+          `the grantor role on ${config.sealedVerdictsAddress}. Every grant would revert ` +
+          `NotGrantor after the subscriber had already paid. Set GRANTOR_ADDRESS at deploy, ` +
+          `or call setGrantor for this address.`,
+      );
     }
   }
 

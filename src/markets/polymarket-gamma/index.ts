@@ -354,11 +354,38 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
     }
   }
 
+  /**
+   * PUBLIC REVEAL time = market end + series embargo.
+   *
+   * `embargoSec` is written into config_json at registration from the series
+   * clock. It defaults to 0 so markets registered before embargoes existed keep
+   * revealing at their end time — this value must match the on-chain
+   * `publicRevealAt` exactly or the acceptance guard rejects every submission.
+   */
   expectedRevealOpenAt(input: { config: Record<string, unknown> }): number | null {
-    const endDate = input.config.endDate;
+    const endMs = this.#endDateMs(input.config);
+    if (endMs === null) return null;
+    return endMs + this.#embargoSec(input.config) * 1_000;
+  }
+
+  /**
+   * MARKET RESOLUTION time = the venue's own end date, with no embargo. This is
+   * when the outcome is determined, which is what a prediction's horizon means.
+   */
+  marketResolutionAt(input: { config: Record<string, unknown> }): number | null {
+    return this.#endDateMs(input.config);
+  }
+
+  #endDateMs(config: Record<string, unknown>): number | null {
+    const endDate = config.endDate;
     if (typeof endDate !== "string") return null;
     const ms = Date.parse(endDate);
     return Number.isFinite(ms) ? ms : null;
+  }
+
+  #embargoSec(config: Record<string, unknown>): number {
+    const raw = config.embargoSec;
+    return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 ? raw : 0;
   }
 
   outcomeLabels(input: { config: Record<string, unknown> }): string[] | null {

@@ -55,6 +55,7 @@ export interface FhenixGatewayTxAttemptRow extends FhenixGatewayTxAttemptInsert 
   confidence_ct_hash: string | null;
   accepted_at: string | null;
   reveal_open_at: string | null;
+  submission_class: number | null;
   call_id: string | null;
   attempt_count: number;
   last_error: string | null;
@@ -174,6 +175,14 @@ export const fhenixGatewayTxRepo = {
       confidence_ct_hash: string;
       accepted_at: string;
       reveal_open_at: string;
+      /**
+       * On-chain SubmissionClass (1 EarlyAccess, 2 LateUnsellable). Decoded
+       * from the submit event and persisted here because reputation must
+       * distinguish the two: a provider who only ever submits in the late,
+       * unsellable window predicts with strictly more information than one
+       * who sells.
+       */
+      submission_class: number;
       updated_at: string;
     },
   ): void {
@@ -188,6 +197,7 @@ export const fhenixGatewayTxRepo = {
            confidence_ct_hash = @confidence_ct_hash,
            accepted_at = @accepted_at,
            reveal_open_at = @reveal_open_at,
+           submission_class = @submission_class,
            last_error = NULL,
            updated_at = @updated_at
        WHERE attempt_id = @attempt_id`,

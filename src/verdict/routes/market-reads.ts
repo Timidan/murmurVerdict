@@ -18,6 +18,7 @@ import {
   marketTaxonomySurface,
   sendMarketReadJsonResponse,
 } from "../market-read-surface.js";
+import { marketArchiveSurface } from "../market-archive-surface.js";
 import {
   PolymarketVenueSnapshotProvider,
   VENUE_ADAPTER_ID,
@@ -68,6 +69,27 @@ export function marketReadRouter(deps: MarketReadRouterDeps): Router {
     asyncHandler(async (_req, res) => {
       sendMarketReadJsonResponse(res, marketTaxonomySurface({
         servedAt: deps.now(),
+      }));
+    }),
+  );
+
+  // Archive search — public, read-only, keyset-paged. On /v2 rather than /v1
+  // because it is a different surface with a different shape (opaque cursor,
+  // no taxonomy envelope) and shares the versioning of the other v2 read
+  // routes the dashboard consumes (/v2/venue/*). Synchronous: it touches only
+  // the local database, never the venue.
+  router.get(
+    "/v2/markets/archive",
+    asyncHandler(async (req, res) => {
+      sendMarketReadJsonResponse(res, marketArchiveSurface({
+        db: deps.db,
+        query: {
+          q: req.query.q,
+          from: req.query.from,
+          to: req.query.to,
+          cursor: req.query.cursor,
+          limit: req.query.limit,
+        },
       }));
     }),
   );

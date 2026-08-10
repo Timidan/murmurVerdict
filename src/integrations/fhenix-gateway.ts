@@ -99,6 +99,10 @@ export interface FhenixGatewayConfig {
   relayerAddress: string;
   client: FhenixGatewayClient;
   murmurOwnedSealer?: MurmurOwnedCofheSealer | null;
+  /** MURMUR_ACK_FEED_REVEAL_MANUAL. Feed packets 503 without it. */
+  feedRevealAcknowledged?: boolean;
+  /** FHENIX_RECONCILE_OLD_FROM_BLOCK. */
+  reconcileOldFromBlock?: number | null;
   confirmations?: number;
   retryBaseMs?: number;
   retryMaxMs?: number;
@@ -148,6 +152,21 @@ export class FhenixGatewayBroadcaster {
   private readonly relayerAddress: string;
   private readonly client: FhenixGatewayClient;
   private readonly murmurOwnedSealer: MurmurOwnedCofheSealer | null;
+  /** See the feed-packet gate in submitFeedPacket. */
+  private readonly feedRevealAcknowledgedFlag: boolean;
+  /** See assertChainMatchesRpc. */
+  private chainVerified = false;
+  /** FHENIX_RECONCILE_OLD_FROM_BLOCK; null disables old-deployment recovery. */
+  private readonly reconcileOldFromBlock: number | null;
+
+  /**
+   * Whether feed packets may be accepted at all. Read by the admin backfill
+   * route so both acceptance paths answer to ONE setting rather than each
+   * reading env for itself.
+   */
+  get feedRevealAcknowledged(): boolean {
+    return this.feedRevealAcknowledgedFlag;
+  }
   private readonly confirmations: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
@@ -172,6 +191,8 @@ export class FhenixGatewayBroadcaster {
     this.relayerAddress = normalizeAddress(config.relayerAddress);
     this.client = config.client;
     this.murmurOwnedSealer = config.murmurOwnedSealer ?? null;
+    this.feedRevealAcknowledgedFlag = config.feedRevealAcknowledged ?? false;
+    this.reconcileOldFromBlock = config.reconcileOldFromBlock ?? null;
     this.confirmations = Math.max(0, Math.floor(config.confirmations ?? 2));
     this.retryBaseMs = Math.max(1_000, Math.floor(config.retryBaseMs ?? 5_000));
     this.retryMaxMs = Math.max(this.retryBaseMs, Math.floor(config.retryMaxMs ?? 120_000));
@@ -206,6 +227,7 @@ export class FhenixGatewayBroadcaster {
      *  match even though sealing output differs per call. */
     requestFingerprintOverride?: string;
   }): Promise<GatewaySubmitResult> {
+    await this.assertChainMatchesRpc();
     const parsed = GatewaySealedCallBodySchema.safeParse(params.bodyJson);
     if (!parsed.success) {
       throw new VerdictError(
@@ -386,6 +408,29 @@ export class FhenixGatewayBroadcaster {
     feedId: string;
     bodyJson: unknown;
   }): Promise<GatewayFeedPacketSubmitResult> {
+    await this.assertChainMatchesRpc();
+    // Feed packets have NO reveal path. The shared reveal worker selects only
+    // sealed calls, and the watcher indexes only VerdictRevealed /
+    // VerdictRevealInvalid — so an accepted packet earns SLA credit, sits at
+    // `pending` forever, and never becomes public. Even a hand-sent on-chain
+    // reveal would not appear in Murmur's API.
+    //
+    // Accepting into that is worse than refusing: a provider builds a feed
+    // product on delivery evidence for a value no subscriber can ever read.
+    // Requiring the acknowledgement means nobody enables it believing reveal
+    // works. Same posture as MURMUR_ACK_MANUAL_REFUNDS.
+    if (!this.feedRevealAcknowledged) {
+      throw new VerdictError(
+        "feed packets are not accepted: Murmur has no feed reveal path yet " +
+          "(the reveal worker and watcher cover sealed calls only), so a " +
+          "packet accepted here could never be revealed. Set " +
+          "MURMUR_ACK_FEED_REVEAL_MANUAL=true only if you understand that " +
+          "feed reveal is an unimplemented, manual, off-Murmur concern.",
+        ERROR_CODES.schema_invalid,
+        503,
+        { feed_id: params.feedId },
+      );
+    }
     const parsed = GatewayFeedPacketBodySchema.safeParse(params.bodyJson);
     if (!parsed.success) {
       throw new VerdictError(
@@ -454,7 +499,35 @@ export class FhenixGatewayBroadcaster {
     return feedResultFromAttempt(row, false, this.db);
   }
 
+  /**
+   * Confirm the RPC actually serves the configured chain, ONCE per process.
+   *
+   * Every deployment guard in the attempt machine compares configuration to
+   * configuration: the row's chain_id against `config.chainId`. Both come from
+   * env, so a `FHENIX_CHAIN_ID` that disagrees with the RPC behind
+   * `FHENIX_RPC_URL` passes every check and broadcasts onto the wrong chain —
+   * and `writeContract` uses `chain: null`, so viem does not catch it either.
+   * If the configured address happens to have code there, the write is real
+   * and the row's recorded chain identity is a lie.
+   *
+   * Cached because it is a network round trip on a path that runs every tick.
+   */
+  private async assertChainMatchesRpc(): Promise<void> {
+    if (this.chainVerified) return;
+    const observed = await this.client.getChainId();
+    if (observed !== this.chainId) {
+      throw new Error(
+        `Fhenix RPC serves chain ${observed} but FHENIX_CHAIN_ID is ` +
+          `${this.chainId}. Refusing to broadcast: every deployment guard ` +
+          `compares configured values, so a wrong RPC would relay onto the ` +
+          `wrong chain and record an identity that never existed.`,
+      );
+    }
+    this.chainVerified = true;
+  }
+
   async tick(): Promise<GatewayTickResult> {
+    await this.assertChainMatchesRpc();
     const counters: GatewayTickResult = {
       broadcasted: 0,
       confirmed: 0,
@@ -477,18 +550,28 @@ export class FhenixGatewayBroadcaster {
       errorMessage: "broadcast claim stuck; reset by tick sweep",
     });
     await this.tickKind(this.sealedKind, counters);
-    await this.tickKind(this.feedKind, counters);
+    // `broadcastFeeds: false` fences only the UNBROADCAST half of the feed
+    // lane. The submission gate alone was not enough: a `queued` or
+    // `failed_retryable` row reserved before the flag existed would still be
+    // picked up here and broadcast into a lane with no reveal path.
+    //
+    // Confirmation is deliberately NOT fenced — those transactions are already
+    // on-chain, and refusing to record them strands a real write and its SLA
+    // evidence without preventing anything.
+    await this.tickKind(this.feedKind, counters, {
+      broadcast: this.feedRevealAcknowledged,
+    });
     return counters;
   }
 
   private async tickKind<Row extends GatewayAttemptLifecycleRow, Event>(
     kind: GatewayAttemptKind<Row, Event>,
     counters: GatewayTickResult,
+    opts: { broadcast?: boolean } = {},
   ): Promise<void> {
-    for (const attempt of kind.lifecycle.listDueForBroadcast(
-      this.db,
-      nowIso(this.now()),
-    )) {
+    for (const attempt of opts.broadcast === false
+      ? []
+      : kind.lifecycle.listDueForBroadcast(this.db, nowIso(this.now()))) {
       const result = await broadcastGatewayAttempt(kind, {
         ...this.broadcastConfig(),
         attemptId: attempt.attempt_id,
@@ -552,8 +635,20 @@ export class FhenixGatewayBroadcaster {
   async retryAttemptNow(
     attemptId: string,
   ): Promise<GatewaySubmitResult | GatewayFeedPacketSubmitResult> {
+    await this.assertChainMatchesRpc();
     const sealed = await this.retryKind(this.sealedKind, attemptId);
     if (sealed) return sealed;
+    // Same fence as the tick. Retrying a feed attempt is a broadcast, so it
+    // must not be a way around the acknowledgement.
+    if (!this.feedRevealAcknowledged && this.feedKind.lifecycle.byId(this.db, attemptId)) {
+      throw new VerdictError(
+        "feed packet broadcasts are disabled: Murmur has no feed reveal path " +
+          "yet. Set MURMUR_ACK_FEED_REVEAL_MANUAL=true to retry this attempt.",
+        ERROR_CODES.schema_invalid,
+        503,
+        { attempt_id: attemptId },
+      );
+    }
     const feed = await this.retryKind(this.feedKind, attemptId);
     if (feed) return feed;
     throw new VerdictError(
@@ -645,6 +740,7 @@ export class FhenixGatewayBroadcaster {
       chainId: this.chainId,
       contractAddress: this.contractAddress,
       reconcileFromBlock: this.reconcileFromBlock,
+      reconcileOldFromBlock: this.reconcileOldFromBlock,
       maxAttempts: this.maxAttempts,
       retryBaseMs: this.retryBaseMs,
       retryMaxMs: this.retryMaxMs,

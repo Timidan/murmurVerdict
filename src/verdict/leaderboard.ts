@@ -77,7 +77,9 @@ function computeLeaderboardRows(
   const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
 
   // Read shared scoring facts from the leaderboard-call-facts seam; this Module
-  // keeps its own global projection (lower-bound sort, marketplace tier).
+  // keeps its own global projection (RAW verdict_score sort, marketplace
+  // tier). Market and family boards use the lower bound; global does not —
+  // see the sort-key comment below.
   const rows = queryLeaderboardCallFacts(db, { kind: "global", includeKinds });
 
   type Agg = {
@@ -114,10 +116,15 @@ function computeLeaderboardRows(
     };
     const revealDenominator =
       reveal.nonDaemon + reveal.daemonFallback + reveal.genuineMisses;
-    // Global board sorts by the lower-bound score so lucky streaks do not
-    // outrank steadier agents with stronger confidence-adjusted records.
+    // Global board sorts by RAW verdict_score. Market/family boards use the
+    // lower bound; global deliberately does not.
+    //
+    // This flag had been flipped to `true`, which silently reordered the global
+    // board — exactly the regression the tier-resolver design called out ("a
+    // swap would silently change global ordering, so the smoke must pin both").
+    // The leaderboard smoke caught it and had been failing on HEAD ever since.
     const { mainTier, sortKey } = resolveTierAndSort(summary, {
-      preferLowerBound: true,
+      preferLowerBound: false,
     });
     const tier: LeaderboardTier = mainTier ? "main" : "provisional";
     const marketplace_eligible =

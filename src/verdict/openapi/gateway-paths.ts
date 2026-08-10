@@ -38,9 +38,23 @@ export function gatewayOpenApiPaths(input: {
       post: {
         tags: ["calls"],
         summary:
-          "Canonical Murmur-owned sealing path for a hidden agent market call.",
+          "Murmur-owned sealing (convenience path — TRADES operator-blindness).",
         description:
-          "Runtime-Key-only path. The provider agent submits prediction intent only. Murmur validates policy, seals binary outcome and confidence through its configured CoFHE sealer, broadcasts `submitSealedFor` as the allowlisted relayer, confirms the tx, and indexes only ciphertext handles before reveal.",
+          "OFF by default and NOT the private path. The provider agent posts a " +
+          "PLAINTEXT verdict and Murmur seals it server-side, so while it is " +
+          "enabled the operator can read every pending prediction before " +
+          "publicRevealAt — Murmur is a non-subscriber with full early access. " +
+          "It exists for providers that cannot run a CoFHE sealer, and enabling " +
+          "it (MURMUR_OWNED_SEALING_ENABLED=true) is an explicit, auditable " +
+          "decision to trust the operator; it returns 503 otherwise.\n\n" +
+          "The canonical private path is POST /v2/gateway/calls with " +
+          "`privacy_mode: \"sealed_fhenix\"`, where the client seals locally and " +
+          "Murmur only ever holds ciphertext handles. Use that one unless you " +
+          "have a specific reason not to.\n\n" +
+          "Mechanics: Runtime-Key-only. Murmur validates policy, seals binary " +
+          "outcome and confidence through its configured CoFHE sealer, " +
+          "broadcasts `submitSealedFor` as the allowlisted relayer, confirms " +
+          "the tx, and indexes only ciphertext handles before reveal.",
         requestBody: {
           required: true,
           content: {
@@ -120,9 +134,18 @@ export function gatewayOpenApiPaths(input: {
       post: {
         tags: ["calls"],
         summary:
-          "Advanced compatibility relay for a Fhenix-sealed market call.",
+          "CANONICAL private path: relay a client-sealed Fhenix market call.",
         description:
-          "Advanced compatibility path for clients that already created CoFHE encrypted inputs. Not the canonical hidden-output path. Murmur verifies key status and policy, broadcasts `submitSealedFor` as the allowlisted relayer, confirms the tx, and indexes the accepted sealed call. Public submit-event metadata backfill is retired; operator recovery is admin-only.",
+          "The path to use. The client creates the CoFHE encrypted inputs " +
+          "locally, so Murmur never holds the plaintext verdict — that is what " +
+          "makes the operator-blind property true rather than a promise. Murmur " +
+          "verifies key status and policy, broadcasts `submitSealedFor` as the " +
+          "allowlisted relayer, confirms the tx, and indexes the accepted sealed " +
+          "call, holding only ciphertext handles throughout.\n\n" +
+          "Use /v2/gateway/calls/seal only if you cannot run a CoFHE sealer; it " +
+          "takes a plaintext verdict and gives the operator early sight of it.\n\n" +
+          "Public submit-event metadata backfill is retired; operator recovery " +
+          "is admin-only.",
         requestBody: {
           required: true,
           content: {
@@ -217,9 +240,20 @@ export function gatewayOpenApiPaths(input: {
       post: {
         tags: ["feeds"],
         summary:
-          "Canonical Gateway relay for a Fhenix-sealed long-running feed packet.",
+          "DEFAULT-OFF: relay a Fhenix feed packet (503 without MURMUR_ACK_FEED_REVEAL_MANUAL).",
         description:
-          "Runtime-Key-only feed delivery path. The agent creates CoFHE encrypted packet inputs client-side, then Murmur verifies feed ownership, feed status, Runtime Key policy, market coverage, and SLA metadata before broadcasting `submitFeedPacketFor` as the allowlisted relayer. Murmur confirms the tx and records the feed packet/SLA row without seeing plaintext feed contents pre-reveal.",
+          "DISABLED BY DEFAULT — returns 503 unless MURMUR_ACK_FEED_REVEAL_MANUAL=true. " +
+          "Murmur has no feed reveal path: the reveal worker covers sealed calls " +
+          "only and the watcher indexes only call reveal events, so a packet " +
+          "accepted here earns SLA credit for a value no subscriber can ever read " +
+          "back. Enabling it acknowledges that reveal is an unimplemented, manual, " +
+          "off-Murmur concern.\n\n" +
+          "When enabled: Runtime-Key-only feed delivery. The agent creates CoFHE " +
+          "encrypted packet inputs client-side, then Murmur verifies feed ownership, " +
+          "feed status, Runtime Key policy, market coverage, and SLA metadata before " +
+          "broadcasting `submitFeedPacketFor` as the allowlisted relayer. Packets are " +
+          "refused at or after the market resolves. Murmur confirms the tx and records " +
+          "the feed packet/SLA row without seeing plaintext feed contents pre-reveal.",
         parameters: [
           { name: "feed_id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
         ],
@@ -231,6 +265,9 @@ export function gatewayOpenApiPaths(input: {
                 type: "object",
                 required: [
                   "packet_kind",
+                  // Required: the packet's on-chain reveal time comes from the
+                  // market's schedule, so a packet with no market has none.
+                  "market_id",
                   "client_order_id",
                   "client_nonce",
                   "privacy_mode",
@@ -253,7 +290,6 @@ export function gatewayOpenApiPaths(input: {
                   },
                   submitted_at: { type: "string", format: "date-time" },
                   delivery_deadline_at: { type: "string", format: "date-time" },
-                  reveal_after: { type: "string", format: "date-time" },
                   privacy_mode: { type: "string", enum: ["sealed_fhenix"] },
                   action_input: {
                     type: "object",
@@ -302,11 +338,14 @@ export function gatewayOpenApiPaths(input: {
         tags: ["calls"],
         deprecated: true,
         summary:
-          "RETIRED. Returns 410 Gone. Submit via /v2/gateway/calls/seal with a Runtime Key instead.",
+          "RETIRED. Returns 410 Gone. Submit via /v2/gateway/calls with a Runtime Key instead.",
         description:
-          "The public submit-event metadata backfill path has been removed from agent flows. Agents submit prediction intent through the Murmur-owned sealing Gateway path. Operator recovery uses /v1/admin/fhenix/backfill/calls.",
+          "The public submit-event metadata backfill path has been removed from " +
+          "agent flows. Agents submit through the Gateway: /v2/gateway/calls " +
+          "(client-sealed, canonical) or /v2/gateway/calls/seal (server-sealed, " +
+          "off by default). Operator recovery uses /v1/admin/fhenix/backfill/calls.",
         responses: {
-          "410": { description: "Endpoint removed; use /v2/gateway/calls/seal" },
+          "410": { description: "Endpoint removed; use /v2/gateway/calls" },
         },
       },
     },

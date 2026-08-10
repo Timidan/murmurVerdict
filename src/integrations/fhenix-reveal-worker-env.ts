@@ -15,6 +15,7 @@ import {
   parseFhenixChainIdInput,
   resolveFhenixContractAddress,
 } from "./deployments.js";
+import { COFHE_404_RETRY_TIMEOUT_MS } from "./cofhe-decrypt-tuning.js";
 import { createSerialBroadcastQueue } from "./fhenix-gateway-env.js";
 import {
   RevealWrongStateError,
@@ -341,7 +342,13 @@ class CofheRevealDecryptor implements RevealDecryptor {
       }
       this.connected = true;
     }
-    const builder = this.client.decryptForTx(BigInt(ctHash));
+    // The SDK's 10s default 404 window is shorter than the ~5-30s the threshold
+    // network needs to observe the post-openReveal ACL change, so a healthy
+    // decrypt can be abandoned before the data exists. See
+    // COFHE_404_RETRY_TIMEOUT_MS.
+    const builder = this.client
+      .decryptForTx(BigInt(ctHash))
+      .set404RetryTimeout(COFHE_404_RETRY_TIMEOUT_MS);
     // The ciphertext is globally public after openReveal, so withoutPermit()
     // drops the permit lifecycle entirely when the SDK path is reliable
     // (Codex review §4); the permit path is the proven default.

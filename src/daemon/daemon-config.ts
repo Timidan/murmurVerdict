@@ -1,4 +1,8 @@
 import {
+  assertSeriesClockConfig,
+  type SeriesClockConfig,
+} from "../verdict/series-clock.js";
+import {
   DEFAULT_LOCAL_PUBLIC_ORIGIN,
   dashboardBaseUrl,
   loadMurmurPublicOrigin,
@@ -81,6 +85,9 @@ export interface PolymarketDiscoveryRuntimeConfig {
   questionFilter: string;
   assets: string[];
   windowDurationSec: number;
+  seriesClock: SeriesClockConfig;
+  maxArmedPerCall: number;
+  seriesVersion: number;
   maxPerTick: number;
   maxPerHour: number;
   maxPerDay: number;
@@ -262,6 +269,41 @@ function loadPolymarketDiscoveryRuntimeConfig(
     0,
     60 * 60,
   );
+  // Series clock constants. Every on-chain instant derives from these, so an
+  // inverted config yields a schedule that is silently unusable rather than
+  // obviously broken — assertSeriesClockConfig rejects that at boot.
+  const seriesClock: SeriesClockConfig = {
+    submissionOpenLeadSec: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_SUBMISSION_OPEN_LEAD_SEC,
+      300,
+      "POLYMARKET_DISCOVERY_SUBMISSION_OPEN_LEAD_SEC",
+      1,
+      24 * 60 * 60,
+    ),
+    commitMarginSec: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_COMMIT_MARGIN_SEC,
+      60,
+      "POLYMARKET_DISCOVERY_COMMIT_MARGIN_SEC",
+      1,
+      60 * 60,
+    ),
+    deliveryBudgetSec: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_DELIVERY_BUDGET_SEC,
+      60,
+      "POLYMARKET_DISCOVERY_DELIVERY_BUDGET_SEC",
+      1,
+      60 * 60,
+    ),
+    embargoSec: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_EMBARGO_SEC,
+      600,
+      "POLYMARKET_DISCOVERY_EMBARGO_SEC",
+      1,
+      30 * 24 * 60 * 60,
+    ),
+  };
+  assertSeriesClockConfig(seriesClock);
+
   const questionFilter =
     env.POLYMARKET_DISCOVERY_QUESTION_FILTER?.trim() || "Up or Down";
   const assets = (env.POLYMARKET_DISCOVERY_ASSETS ?? "Bitcoin,Ethereum")
@@ -281,6 +323,42 @@ function loadPolymarketDiscoveryRuntimeConfig(
       "POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC",
       60,
       24 * 60 * 60,
+    ),
+    seriesClock,
+    // Falls back to the grant cap, never to an invented number: this value is
+    // persisted as the series' max_armed_per_call and eligibility prefers it
+    // over the global env, so a discovery default that disagreed with
+    // FHENIX_GRANT_MAX_ARMED_PER_CALL would silently override the operator's
+    // stated sales limit for every market it registers.
+    // ONE source: the grant cap. POLYMARKET_DISCOVERY_MAX_ARMED_PER_CALL was a
+    // second name for the same number, and the two disagreeing meant discovery
+    // stamped a series cap that eligibility would not honour.
+    //
+    // Since per-provider terms landed this is purely a DELIVERABILITY bound —
+    // how many grants can confirm inside the delivery budget — not a sales
+    // limit. Owners set their own ceiling; this clamps it.
+    //
+    // Required only when discovery is ENABLED: it is written onto every series
+    // registered, so there is no number to guess. A daemon that never runs
+    // discovery must not be forced to state one; the unreachable placeholder
+    // is 1, the minimum, so it can never widen a cohort.
+    maxArmedPerCall: parseIntegerRange(
+      env.FHENIX_GRANT_MAX_ARMED_PER_CALL,
+      enabled ? 0 : 1,
+      "FHENIX_GRANT_MAX_ARMED_PER_CALL",
+      1,
+      500,
+    ),
+    // Bump when intentionally changing clock constants. Existing markets keep
+    // the schedule they were registered with; new markets bind to the new
+    // series. Without this, a constant change fails the preflight every tick
+    // with no legal way forward.
+    seriesVersion: parseIntegerRange(
+      env.POLYMARKET_DISCOVERY_SERIES_VERSION,
+      1,
+      "POLYMARKET_DISCOVERY_SERIES_VERSION",
+      1,
+      10_000,
     ),
     maxPerTick: parseIntegerRange(
       env.POLYMARKET_DISCOVERY_MAX_PER_TICK,
@@ -480,6 +558,19 @@ function parsePositiveSeconds(
   throw new DaemonConfigError(key, "must be a positive number of seconds");
 }
 
+/**
+ * First env value that is actually stated. Treats the empty string as absent:
+ * docker-compose renders `${FOO:-}` for an unset variable, so `a ?? b` and
+ * `a || b` behave differently in Docker than they do from a shell.
+ */
+function firstStated(...values: (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
 function parseIntegerRange(
   raw: string | undefined,
   fallback: number,
@@ -488,7 +579,18 @@ function parseIntegerRange(
   max: number,
 ): number {
   const trimmed = raw?.trim();
-  if (!trimmed) return fallback;
+  if (!trimmed) {
+    // The fallback is validated too. It used to be returned as-is, so a
+    // caller passing a sentinel like 0 (meaning "there is no default") got
+    // that sentinel silently written into config instead of an error.
+    if (!Number.isInteger(fallback) || fallback < min || fallback > max) {
+      throw new DaemonConfigError(
+        key,
+        `is required — must be an integer from ${min} to ${max} (there is no default)`,
+      );
+    }
+    return fallback;
+  }
   const value = Number(trimmed);
   if (Number.isInteger(value) && value >= min && value <= max) {
     return value;

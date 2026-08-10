@@ -124,10 +124,11 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
       agent: Address;
       marketId: Hex;
       acceptedAt: bigint;
-      revealOpenAt: bigint;
+      publicRevealAt: bigint;
       binaryIndexCtHash: Hex;
       confidenceCtHash: Hex;
       clientNonce: Hex;
+      submissionClass: number;
     };
 
     const expectedMarketIdHash = fhenixMarketIdForMurmurMarket(input.expected_market_id);
@@ -140,7 +141,8 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
       binary_index_ct_hash: lowerHex(args.binaryIndexCtHash),
       confidence_ct_hash: lowerHex(args.confidenceCtHash),
       accepted_at: unixSecondsToIso(args.acceptedAt),
-      reveal_open_at: unixSecondsToIso(args.revealOpenAt),
+      reveal_open_at: unixSecondsToIso(args.publicRevealAt),
+      submission_class: args.submissionClass,
       agent_wallet: normalizeAddress(args.agent),
       market_id_hash: lowerHex(args.marketId),
       client_nonce: lowerHex(args.clientNonce),
@@ -346,7 +348,7 @@ export function loadFhenixEventVerifierConfig(
   const contractAddress = resolveVerifierContractAddress(env, chainId, opts);
   if (!contractAddress) {
     throw new FhenixEventVerificationError(
-      "Fhenix contract address must be resolvable from FHENIX_SEALED_VERDICTS_ADDRESS, FHENIX_CONTRACT_ADDRESS, or data/deployments.json",
+      "Fhenix contract address must be resolvable from data/deployments.json or FHENIX_SEALED_VERDICTS_ADDRESS",
       "not_configured",
       { FHENIX_CHAIN_ID: String(chainId) },
     );

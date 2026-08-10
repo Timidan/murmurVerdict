@@ -19,7 +19,7 @@ import {
 // the event shape is written down exactly once. Their semantics track
 // contracts/src/MurmurSealedVerdicts.sol:88 / :118.
 export const SEALED_CALL_SUBMITTED_EVENT = parseAbiItem(
-  "event SealedCallSubmitted(bytes32 indexed callId,address indexed agent,bytes32 indexed marketId,uint64 acceptedAt,uint64 revealOpenAt,bytes32 binaryIndexCtHash,bytes32 confidenceCtHash,bytes32 clientNonce)",
+  "event SealedCallSubmitted(bytes32 indexed callId,address indexed agent,bytes32 indexed marketId,uint64 acceptedAt,uint64 publicRevealAt,bytes32 binaryIndexCtHash,bytes32 confidenceCtHash,bytes32 clientNonce,uint8 submissionClass)",
 );
 
 export const FEED_PACKET_SUBMITTED_EVENT = parseAbiItem(
@@ -87,6 +87,15 @@ export interface FhenixSealedCallSubmitMetadata {
   binary_index_ct_hash: string;
   confidence_ct_hash: string;
   accepted_at: string;
+  /**
+   * When the sealed value becomes PUBLIC — the market's resolution time plus
+   * the series embargo. Decoded from the contract's `publicRevealAt`.
+   *
+   * NOTE: the storage name is still `reveal_open_at` for now. It no longer
+   * means "the sale window closed": sales close at the market's
+   * submissionCloseAt, which is strictly earlier. Renaming the column is a
+   * separate migration; until then this is the one place the two names meet.
+   */
   reveal_open_at: string;
 }
 
@@ -129,6 +138,16 @@ export interface VerifyVerdictRevealInvalidInput extends FhenixInvalidRevealMeta
 }
 
 export interface VerifiedSealedCallSubmitted extends FhenixSealedCallSubmitMetadata {
+  /**
+   * 1 = EarlyAccess (submitted in time to be sold), 2 = LateUnsellable
+   * (refereed and scored, never granted). Mirrors the on-chain SubmissionClass
+   * enum, DECODED from the submit event.
+   *
+   * Deliberately not on the shared metadata base: it is an output of
+   * verification, never an input. A caller able to supply it could submit late
+   * — with strictly more information — and simply claim the call was sellable.
+   */
+  submission_class: number;
   agent_wallet: string;
   market_id_hash: string;
   client_nonce: string;

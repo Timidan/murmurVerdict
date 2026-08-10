@@ -90,11 +90,32 @@ try {
   for (let i = 0; i < 19; i++) insertCall(lucky, i, 0.25);
   insertCall(lucky, 19, -0.75);
 
+  // GLOBAL RANKS BY RAW SCORE. Highest average wins, full stop.
+  //
+  // This case used to assert the opposite — that `stable-agent` ranked first
+  // on its better lower bound — from a plan ("Conservative Global Leaderboard
+  // Ranking") whose test shipped while its code change did not. The two lived
+  // in the same commit as leaderboard.smoke.ts, which pins raw, and never
+  // disagreed out loud because this file was named `-check.ts`: the smoke
+  // runner discovers `.check.ts`, so it was invisible to the release gate.
+  //
+  // The ordering is deliberately kept, and this fixture is deliberately kept
+  // too: it is the case where raw and lower-bound orderings DIVERGE, so it
+  // pins the global policy exactly where a silent swap would show up.
+  // Market and family boards use the lower bound; global does not.
   const rows = getLeaderboard(db, { tier: "main", limit: 2 });
-  assert.equal(rows[0].display_slug, "stable-agent");
-  assert.equal(rows[1].display_slug, "lucky-agent");
-  assert.equal(rows[0].verdict_score! < rows[1].verdict_score!, true);
-  assert.equal(rows[0].verdict_score_lb! > rows[1].verdict_score_lb!, true);
+  assert.equal(rows[0].display_slug, "lucky-agent", "global sorts by RAW score");
+  assert.equal(rows[1].display_slug, "stable-agent");
+  assert.equal(
+    rows[0].verdict_score! > rows[1].verdict_score!,
+    true,
+    "the top row has the higher raw score",
+  );
+  assert.equal(
+    rows[0].verdict_score_lb! < rows[1].verdict_score_lb!,
+    true,
+    "...and the WORSE lower bound — which is what makes this fixture load-bearing",
+  );
 
   for (let i = 0; i < 20; i++) {
     insertCall(stable, i, 0.14, CATEGORICAL_FAMILY);
@@ -113,7 +134,9 @@ try {
   );
 
   process.stdout.write(
-    "murmur leaderboard general check\n  ok global board sorts by lower bound\n",
+    "murmur leaderboard general check\n"
+      + "  ok global board sorts by RAW score\n"
+      + "  ok market and family boards sort by lower bound\n",
   );
 } finally {
   rmSync(tmp, { recursive: true, force: true });

@@ -130,21 +130,21 @@ const feedTriggerRuleSchema = z
   })
   .strict();
 
+// Only `after_resolution` is honoured. A packet's on-chain reveal time comes
+// from its market's immutable schedule, so murmur cannot delay a packet beyond
+// that, nor reveal it sooner. `after_horizon`, `fixed_delay` and `manual` all
+// promise a reveal time murmur has no way to enforce — accepting them would
+// advertise a privacy guarantee that silently does not hold.
+//
+// This is a deliberate narrowing, not an omission: enforcing `fixed_delay`
+// per packet is impossible when the market reveal is a FIXED instant (a market
+// revealing sooner than now+delay can never satisfy it), so the honest options
+// were to drop the promise or drop the policy. We dropped the policy.
 const feedRevealPolicySchema = z
   .object({
-    kind: z.enum(["after_resolution", "after_horizon", "fixed_delay", "manual"]),
-    delay_seconds: z.number().int().min(60).optional(),
+    kind: z.enum(["after_resolution"]),
   })
-  .strict()
-  .superRefine((v, ctx) => {
-    if (v.kind === "fixed_delay" && v.delay_seconds === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "fixed_delay reveal policy requires delay_seconds",
-        path: ["delay_seconds"],
-      });
-    }
-  });
+  .strict();
 
 const feedRefundRuleSchema = z
   .object({

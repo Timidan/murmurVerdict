@@ -100,7 +100,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       gatewayFeedPacketId: opts.newFeedPacketId,
       gatewaySealedCallId: opts.newSealedCallId,
       nanopayGatewayFactory: opts.nanopayGatewayFactory,
-      liveCanaryEnv: env,
+      env: env,
       logger,
       now,
       schemaVersion: SCHEMA_VERSION,

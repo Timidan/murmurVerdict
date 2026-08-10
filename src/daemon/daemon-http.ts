@@ -160,6 +160,13 @@ export function createDaemonHttpSurface(
     newRuntimeKeyId: deps.newRuntimeKeyId,
     newRuntimeKeySecret: deps.newRuntimeKeySecret,
     newUsageEventId: deps.newUsageEventId,
+    // The grant runtime knows what it can deliver; provider-terms reports it.
+    deliverableCap: deps.entitlementAccess?.access.maxArmedPerCall,
+    // Murmur's cut, from the PARSED config rather than the ambient process, so
+    // a daemon started with an injected env prices the same way it seals.
+    // Setting terms is refused while this is null: a call sealed for a selling
+    // agent has to freeze a split, and there would be none to freeze.
+    protocolFeeBps: deps.config.fhenixRuntime.protocolFeeBps,
     now: deps.now,
   }));
 

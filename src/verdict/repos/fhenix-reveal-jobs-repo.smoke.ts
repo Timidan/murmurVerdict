@@ -62,6 +62,7 @@ function seed(callId: string, revealOpenAt: string): void {
     binary_index_ct_hash: "0x" + "aa".repeat(32),
     confidence_ct_hash: "0x" + "bb".repeat(32),
     reveal_open_at: revealOpenAt,
+    submission_class: 1,
     created_at: "2026-05-14T12:00:00Z",
   });
 }

@@ -54,6 +54,9 @@ class WatcherSmokeVerifier implements FhenixEventVerifier {
   ): Promise<VerifiedSealedCallSubmitted> {
     return {
       ...input,
+      // Decoded from the submit event by the real verifier; never taken from
+      // the caller's input.
+      submission_class: 1,
       contract_address: input.contract_address.toLowerCase(),
       onchain_call_id: input.onchain_call_id.toLowerCase(),
       submit_tx_hash: input.submit_tx_hash.toLowerCase(),
@@ -304,6 +307,7 @@ try {
       binary_index_ct_hash: "0x" + "66".repeat(32),
       confidence_ct_hash: "0x" + "66".repeat(32),
       reveal_open_at: revealOpenAt,
+      submission_class: 1,
       created_at: acceptedAt,
     });
     submissionsRepo.setStatus(db, replayCallId, "pending_t1");
@@ -349,6 +353,7 @@ try {
       binary_index_ct_hash: "0x" + hexByte.repeat(32),
       confidence_ct_hash: "0x" + hexByte.repeat(32),
       reveal_open_at: revealOpenAt,
+      submission_class: 1,
       created_at: acceptedAt,
     });
     submissionsRepo.setStatus(db, callId, "pending_t1");
@@ -506,6 +511,7 @@ try {
       binary_index_ct_hash: "0x" + params.hexByte.repeat(32),
       confidence_ct_hash: "0x" + params.hexByte.repeat(32),
       reveal_open_at: revealOpenAt,
+      submission_class: 1,
       created_at: acceptedAt,
     });
     submissionsRepo.setStatus(target, params.callId, "pending_t1");
@@ -552,8 +558,12 @@ try {
     assert.equal(cfg?.startBlock, 41870556);
     assert.equal(cfg?.watcherRpcUrl, "http://127.0.0.1:8545");
 
-    // A positive env value stays an explicit override.
-    const overridden = loadFhenixEventIngestorConfig({
+    // FHENIX_EVENT_START_BLOCK is NO LONGER an override — the manifest is the
+    // only source. It used to win, so a block left behind by a PREVIOUS
+    // deployment made the watcher scan the new contract from long before it
+    // existed: no error, and reveals that were never indexed. Observed live on
+    // 2026-08-05, which is why the override is gone rather than documented.
+    const ignoredOverride = loadFhenixEventIngestorConfig({
       FHENIX_RPC_URL: "http://127.0.0.1:8545",
       FHENIX_CHAIN_ID: String(chainId),
       FHENIX_SEALED_VERDICTS_ADDRESS: sealedAddr,
@@ -561,8 +571,12 @@ try {
       FHENIX_EVENT_START_BLOCK: "50000000",
       FHENIX_WATCHER_RPC_URL: "http://127.0.0.1:9999",
     });
-    assert.equal(overridden?.startBlock, 50_000_000);
-    assert.equal(overridden?.watcherRpcUrl, "http://127.0.0.1:9999");
+    assert.equal(
+      ignoredOverride?.startBlock,
+      41870556,
+      "the manifest block wins; a stale env override is ignored",
+    );
+    assert.equal(ignoredOverride?.watcherRpcUrl, "http://127.0.0.1:9999");
   });
 
   await check("older-address override picks the matching block, not the latest-by-name", () => {

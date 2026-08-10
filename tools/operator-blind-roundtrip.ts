@@ -3,15 +3,23 @@
  * Operator-blind FHE round-trip — release-gate script.
  *
  * Drives one full sealed-call lifecycle against the live Base Sepolia
- * deployment of MurmurSealedVerdicts AND asserts that the local daemon's
- * stored state + the local dashboard's rendered state stay opaque until
- * publishReveal lands. This is the runtime counterpart to the Lean V1 / V2
- * theorems: V1 + V2 prove the contract can't leak plaintext early; this
- * script proves the rest of the stack can't either.
+ * deployment of MurmurSealedVerdicts and asserts that the daemon's API
+ * RESPONSE and the dashboard's RENDERED DOM stay opaque until publishReveal
+ * lands.
+ *
+ * Scope, precisely: it reads HTTP and the browser DOM. It never opens SQLite,
+ * so it cannot speak to what is stored — the header used to claim "stored
+ * state", which was never what any assertion checked. And it runs against
+ * /v2/gateway/calls/seal, where the daemon is handed the plaintext by design,
+ * so it says nothing about whether Murmur SAW the verdict. It says the daemon
+ * does not SURFACE it early.
+ *
+ * (NOTE: the V1/V2 Lean theorems model a PREVIOUS contract revision and do
+ * not cover this one — see contracts/proofs/MurmurFV/README.md.)
  *
  * Five phases:
  *   0. pre-flight — env vars present, daemon + dashboard reachable.
- *   1. snapshot 0 — baseline of the daemon DB before any new call.
+ *   1. snapshot 0 — baseline of the daemon's API response before any new call.
  *   2. snapshot 1 — submit prediction intent through /v2/gateway/calls/seal,
  *      then assert daemon (A1) + DOM (A2) are opaque pre-reveal.
  *   3. contract steps — wait for reveal window, openReveal, poll cofhejs
@@ -44,6 +52,7 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { deriveAddressFromKey } from "../src/integrations/derived-addresses.js";
 import { baseSepolia } from "viem/chains";
 
 // ── @cofhe/sdk replaces the deprecated `cofhejs` package. cofhejs@0.3.1 +
@@ -112,7 +121,6 @@ function printHelp(): void {
       "  OPERATOR_BLIND_RUNTIME_KEY",
       "  DAEMON_URL",
       "  DASHBOARD_URL",
-      "  AGENT_ADDRESS",
       "",
       "Optional env:",
       "  OPERATOR_BLIND_MARKET_ID",
@@ -178,8 +186,15 @@ function preflightEnv(): PreflightEnv {
   if (!dashboardUrl) die("pre-flight", "DASHBOARD_URL is required (e.g. http://localhost:5173)");
 
   const relayerKey = relayerKeyRaw as Hex;
-  const agentRaw = (process.env.AGENT_ADDRESS ?? "").trim();
-  if (!agentRaw) die("pre-flight", "AGENT_ADDRESS is required and must match the seeded fixture wallet");
+  // Derived from the relayer key. AGENT_ADDRESS is optional and, if set, must
+  // agree — the key already determines this address, so a separate var could
+  // only duplicate it or contradict it.
+  const agentRaw = deriveAddressFromKey({
+    privateKey: relayerKeyRaw,
+    configured: process.env.AGENT_ADDRESS,
+    configuredName: "AGENT_ADDRESS",
+    keyName: "FHENIX_GATEWAY_RELAYER_PRIVATE_KEY",
+  });
   let agentAddress: Address;
   try {
     agentAddress = getAddress(agentRaw);
@@ -220,7 +235,9 @@ const ABI = parseAbi([
   "function openReveal(bytes32 callId)",
   "function publishReveal(bytes32 callId, uint8 binaryIndex, uint16 confidenceBps, bytes binaryIndexSignature, bytes confidenceSignature)",
   "function getCall(bytes32 callId) view returns (address agent, bytes32 marketId, uint64 acceptedAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, uint8 revealedBinaryIndex, uint16 revealedConfidenceBps, uint8 state)",
-  "function callRevealOpenAt(bytes32 callId) view returns (uint64)",
+  "function callPublicRevealAt(bytes32 callId) view returns (uint64)",
+  // Needed to WAIT for the submission window; see submitGatewayCall below.
+  "function markets(bytes32 marketId) view returns (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active)",
 ]);
 
 // ── threshold network direct /decrypt call (same shape as live-smoke). The
@@ -595,6 +612,61 @@ async function main() {
       public_strategy_tag: "release-gate",
     };
     const gatewayUrl = `${env.daemonUrl}/v2/gateway/calls/seal`;
+
+    // WAIT for the submission window. The fixture market is registered with a
+    // future armCloseAt (registration must complete before arming opens), so
+    // submissions are rejected until submissionOpenAt — and the contract
+    // reverts SubmissionWindowClosed once submissionCloseAt passes. This tool
+    // used to submit whenever it happened to get there, which made the gate a
+    // race against its own CoFHE init: too early reverted, and a slow init
+    // reverted at the other end.
+    // POLLED until the schedule is actually visible.
+    //
+    // The seeder registers this market moments before this script runs, and a
+    // load-balanced RPC can serve the read from a replica that has not seen
+    // the registration yet — returning an all-zero tuple. A single read then
+    // computes submissionOpenAt=0 and submissionCloseAt=0, concludes the
+    // window has closed, and fails a market that is perfectly fine. Same
+    // replica lag as the reads further down; bounded the same way.
+    const SCHEDULE_TIMEOUT_MS = 60_000;
+    const scheduleDeadline = Date.now() + SCHEDULE_TIMEOUT_MS;
+    let marketSchedule: readonly [bigint, bigint, bigint, bigint, bigint, bigint, boolean];
+    for (;;) {
+      marketSchedule = (await publicClient.readContract({
+        address: contractAddress,
+        abi: ABI,
+        functionName: "markets",
+        args: [marketId as Hex],
+      })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint, boolean];
+      // publicRevealAt is nonzero for every registered market, so a zero here
+      // means "not visible yet", never "registered with a zero schedule".
+      if (marketSchedule[5] !== 0n) break;
+      if (Date.now() > scheduleDeadline) {
+        die(
+          "gateway-submit",
+          `market ${marketId} still reads as unregistered ${
+            SCHEDULE_TIMEOUT_MS / 1000
+          }s after seeding — re-run tools/seed-operator-blind-fixtures.ts`,
+        );
+      }
+      log("market not visible on this RPC replica yet; retrying…");
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+    const submissionOpenAt = Number(marketSchedule[1]);
+    const submissionCloseAt = Number(marketSchedule[3]);
+    while (Math.floor(Date.now() / 1000) < submissionOpenAt) {
+      const wait = submissionOpenAt - Math.floor(Date.now() / 1000);
+      log(`waiting ${wait}s for the submission window to open…`);
+      await new Promise((r) => setTimeout(r, Math.min(5_000, wait * 1000)));
+    }
+    if (Math.floor(Date.now() / 1000) >= submissionCloseAt) {
+      die(
+        "gateway-submit",
+        `the fixture market's submission window closed at ${submissionCloseAt} ` +
+          `(now ${Math.floor(Date.now() / 1000)}). Re-run ` +
+          `tools/seed-operator-blind-fixtures.ts immediately before this script.`,
+      );
+    }
     log(`POST /v2/gateway/calls/seal marketId=${marketId} nonce=${clientNonce}`);
     const accepted = await submitGatewayCallAndWaitForAccepted(
       gatewayUrl,
@@ -657,7 +729,7 @@ async function main() {
     const revealOpenAt = await publicClient.readContract({
       address: contractAddress,
       abi: ABI,
-      functionName: "callRevealOpenAt",
+      functionName: "callPublicRevealAt",
       args: [onchainCallId],
     } as never) as bigint;
     const maxWaitMs = 15 * 60 * 1000;

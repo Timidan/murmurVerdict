@@ -18,6 +18,7 @@ export function feedAdminPacketRouter(deps: FeedAdminRouterDeps): Router {
       if (!deps.requireAdmin(req, res)) return;
       sendFeedPacketAdminJsonResponse(res, feedPacketBackfillResponse({
         db: deps.db,
+        feedRevealAcknowledged: deps.feedRevealAcknowledged ?? false,
         feedId: String(req.params.feed_id ?? ""),
         body: req.body,
         newPacketId: deps.newFeedPacketId,

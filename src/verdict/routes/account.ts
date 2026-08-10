@@ -59,6 +59,20 @@ export interface AccountRouterDeps {
   newRuntimeKeyId?: () => string;
   newRuntimeKeySecret?: () => string;
   newUsageEventId?: UsageEventIdAdapter;
+  /**
+   * What this deployment can grant for ONE call inside the delivery budget.
+   * Surfaced on the provider-terms route so an owner whose business ceiling
+   * exceeds it is told, rather than silently clamped.
+   */
+  deliverableCap?: number;
+  /**
+   * Murmur's cut of a sale, in basis points, as this deployment is configured.
+   * Passed from the parsed daemon config rather than re-read from the ambient
+   * process, so a daemon started with an injected env behaves the same way.
+   * `null` states outright that none is set; `undefined` leaves the surface to
+   * read MURMUR_PROTOCOL_FEE_BPS itself (direct/test construction).
+   */
+  protocolFeeBps?: number | null;
   /** HTTP route operation clock shared across account route Adapters. */
   now: () => Date;
   /**
@@ -122,6 +136,8 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     json,
     listAgentsLimiter,
     newAgentId,
+    deliverableCap: deps.deliverableCap,
+    protocolFeeBps: deps.protocolFeeBps,
     now,
   }));
 

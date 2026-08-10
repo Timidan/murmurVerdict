@@ -15,6 +15,12 @@ export type PolymarketDiscoveryStatus =
 
 export interface PolymarketDiscoveryStateRow {
   condition_id: string;
+  /**
+   * When the CURRENT broadcast attempt first went out. Unlike `updated_at`,
+   * error recording never rewrites it, so `now - broadcast_started_at` is a
+   * true cumulative stuck age. Null for rows that never broadcast.
+   */
+  broadcast_started_at: string | null;
   question: string | null;
   slug: string | null;
   end_date_epoch_s: number;
@@ -87,18 +93,40 @@ export const polymarketDiscoveryRepo = {
     ).run(row);
   },
 
+  /**
+   * Enter (or re-enter) broadcasting.
+   *
+   * `resetWatermark` restarts the stuck clock, which a genuinely NEW attempt
+   * must do: after a reverted receipt the row stays `broadcasting`, so
+   * preserving the old timestamp would make a fresh attempt inherit a
+   * warning/critical age it never earned. Leave it false when retrying the
+   * SAME in-flight transaction, where the accumulated age is the real signal.
+   */
   markBroadcasting(
     db: Database.Database,
-    args: { condition_id: string; now_iso: string },
+    args: { condition_id: string; now_iso: string; resetWatermark?: boolean },
   ): void {
     prep(
       db,
       `UPDATE polymarket_discovery_state
           SET status = 'broadcasting',
               attempt_count = attempt_count + 1,
+              -- Only set when entering broadcasting from another state, so a
+              -- retry does not reset a genuinely accumulating stuck age.
+              broadcast_started_at = CASE
+                WHEN @reset_watermark = 1 THEN @now_iso
+                ELSE COALESCE(
+                  CASE WHEN status = 'broadcasting' THEN broadcast_started_at END,
+                  @now_iso
+                )
+              END,
               updated_at = @now_iso
         WHERE condition_id = @condition_id`,
-    ).run(args);
+    ).run({
+      condition_id: args.condition_id,
+      now_iso: args.now_iso,
+      reset_watermark: args.resetWatermark ? 1 : 0,
+    });
   },
 
   /** Persist the tx hash the moment it exists, before the receipt wait. */
@@ -112,6 +140,46 @@ export const polymarketDiscoveryRepo = {
           SET tx_hash = @tx_hash, updated_at = @now_iso
         WHERE condition_id = @condition_id`,
     ).run(args);
+  },
+
+  /**
+   * Fill in `registered_onchain_at` for a registration the ledger never
+   * recorded — a receipt wait that failed on a tx that actually landed, or a
+   * market registered out-of-band. Returns true only when THIS call did the
+   * stamping, so callers can charge it to the spend caps exactly once; the
+   * `registered_onchain_at IS NULL` predicate makes a double count impossible.
+   *
+   * Deliberately narrower than markConfirmed: it preserves `listed` status and
+   * never nulls existing gas telemetry. markConfirmed means "the broadcast we
+   * were waiting on just confirmed" and owns those columns; using it to
+   * back-fill a stamp demoted already-listed rows and erased their gas
+   * numbers.
+   */
+  stampRegisteredOnchain(
+    db: Database.Database,
+    args: {
+      condition_id: string;
+      tx_hash: string | null;
+      gas_used: string | null;
+      effective_gas_price_wei: string | null;
+      now_iso: string;
+    },
+  ): boolean {
+    const res = prep(
+      db,
+      `UPDATE polymarket_discovery_state
+          SET status = CASE WHEN status = 'listed' THEN status ELSE 'confirmed' END,
+              tx_hash = COALESCE(@tx_hash, tx_hash),
+              gas_used = COALESCE(@gas_used, gas_used),
+              effective_gas_price_wei =
+                COALESCE(@effective_gas_price_wei, effective_gas_price_wei),
+              registered_onchain_at = @now_iso,
+              last_error = NULL,
+              updated_at = @now_iso
+        WHERE condition_id = @condition_id
+          AND registered_onchain_at IS NULL`,
+    ).run(args);
+    return res.changes === 1;
   },
 
   markConfirmed(

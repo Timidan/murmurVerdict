@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 63 as const;
+export const LATEST_DB_MIGRATION_VERSION = 72 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1306,9 +1306,409 @@ export function applyMigrations(db: Database.Database): void {
     db.transaction(() => {
       applyAlterTableAddColumn(db, "feed_packets", "reveal_status", MIGRATION_063_FEED_REVEAL_COLUMNS);
       db.exec(MIGRATION_063_FEED_REVEAL_JOBS);
-      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+      // Intermediate step: 064 follows in this same applyMigrations pass.
+      // Persist 63 here (not LATEST) so a crash between 063 and 064 leaves an
+      // honest schema_version that re-runs 064 on the next boot.
+      set.run("schema_version", "63");
     })();
     v = 63;
+  }
+
+  if (v < 64) {
+    // Migration 064 — market series + per-instance clock snapshot.
+    //
+    // Until now a "market" was only ever an instance, tagged with a free-text
+    // `market_family`. That cannot carry the things a recurring series owns:
+    // the schedule constants every instance derives from, and the identity a
+    // consumer's prepaid credits are scoped to. A 5-minute up/down series
+    // produces 288 instances a day; credits keyed to an instance would strand
+    // on rollover, and schedule constants copied per instance would drift.
+    //
+    // `market_series` holds the four constants validated by
+    // `assertSeriesClockConfig` (see src/verdict/series-clock.ts). They are
+    // NOT nullable and NOT per-instance: an instance that wants a different
+    // schedule is a different series.
+    //
+    // `market_clocks` is the per-instance SNAPSHOT, written once at
+    // registration and thereafter immutable. It exists because the venue can
+    // move its own end time: Gamma may shift `endDate` after we registered.
+    // Re-deriving on read would silently retime a market that consumers have
+    // already armed and providers have already submitted against. Instead the
+    // snapshot is frozen, drift is detected against it, and a drifted market
+    // is flagged and delisted rather than rebound — the schedule a consumer
+    // paid against must never change underneath them.
+    //
+    // `resolution_at_ms` is stored separately from `public_reveal_at_ms` on
+    // purpose. The first is the venue's own end time (when the outcome is
+    // determined); the second is when murmur unseals. Reveal is embargoed
+    // past resolution, so a single column would assert the market resolves at
+    // murmur's reveal deadline.
+    db.transaction(() => {
+      db.exec(MIGRATION_064_MARKET_SERIES);
+      // submission_class travels with the submit event, alongside the
+      // reveal_open_at this row already decodes from it. NULL on rows written
+      // before this migration, and 0 (None) when the log has not been decoded.
+      applyAlterTableAddColumn(
+        db,
+        "fhenix_gateway_tx_attempts",
+        "submission_class",
+        "ALTER TABLE fhenix_gateway_tx_attempts ADD COLUMN submission_class INTEGER;",
+      );
+      // Intermediate step: 065 follows in this same applyMigrations pass.
+      // Persist 64 here (not LATEST) so a crash between 064 and 065 leaves an
+      // honest schema_version that re-runs 065 on the next boot.
+      set.run("schema_version", "64");
+    })();
+    v = 64;
+  }
+
+  if (v < 65) {
+    // Migration 065 — submission_class on the CANONICAL accepted-call record.
+    //
+    // Deliberately its OWN version rather than an extension of 064: a database
+    // that already applied 064 records schema_version=64 and would skip a
+    // widened 064 block forever, leaving the column absent while inserts
+    // reference it. Shipped migrations are immutable.
+    //
+    // The gateway attempt row (064) is an audit trail; reputation reads THIS
+    // row, and direct/operator intake never creates a gateway attempt at all.
+    // Nullable because rows accepted before this migration have no recorded
+    // class — callers must treat NULL as unknown, never as EarlyAccess.
+    db.transaction(() => {
+      applyAlterTableAddColumn(
+        db,
+        "fhenix_sealed_calls",
+        "submission_class",
+        "ALTER TABLE fhenix_sealed_calls ADD COLUMN submission_class INTEGER;",
+      );
+      // Intermediate step: 066 follows in this same applyMigrations pass.
+      set.run("schema_version", "65");
+    })();
+    v = 65;
+  }
+
+  if (v < 66) {
+    // Migration 066 — durable first-broadcast watermark for discovery.
+    //
+    // Stuck-registration age was measured off `updated_at`, which every
+    // recorded error rewrites — so a row that had been stuck for hours kept
+    // reporting a few seconds and never crossed any threshold. This records
+    // when the CURRENT broadcast attempt first went out and is not touched by
+    // error recording, so the age is a real cumulative stuck time.
+    db.transaction(() => {
+      applyAlterTableAddColumn(
+        db,
+        "polymarket_discovery_state",
+        "broadcast_started_at",
+        "ALTER TABLE polymarket_discovery_state ADD COLUMN broadcast_started_at TEXT;",
+      );
+      // Backfill rows already mid-broadcast at upgrade time. Without this they
+      // keep NULL and the alert falls back to `updated_at` — the very column
+      // error recording rewrites — so an upgraded stuck row would still never
+      // accumulate a real age.
+      db.prepare(
+        `UPDATE polymarket_discovery_state
+            SET broadcast_started_at = updated_at
+          WHERE status = 'broadcasting' AND broadcast_started_at IS NULL`,
+      ).run();
+      // Intermediate step: 067 follows in this same applyMigrations pass.
+      set.run("schema_version", "66");
+    })();
+    v = 66;
+  }
+
+  if (v < 67) {
+    // Migration 067 — operator halt marker.
+    //
+    // An admin freezing a market via the status-only path could be silently
+    // undone: discovery holds a broadcast in flight across an await, and its
+    // receipt path relists on success. Its recovery path also deliberately
+    // promotes a frozen market whose ledger is mid-registration (that is how
+    // it finishes its own repair), so it had no way to tell its own repair
+    // freeze from an operator's halt.
+    //
+    // The marker lives on `markets`, NOT on polymarket_discovery_state. A
+    // market can be halted before discovery has ever seen it — a manually
+    // registered one has no ledger row at all — and an UPDATE against a
+    // missing row silently marks nothing, so the halt has to live on the row
+    // the admin path actually operates on.
+    db.transaction(() => {
+      applyAlterTableAddColumn(
+        db,
+        "markets",
+        "operator_halted_at",
+        "ALTER TABLE markets ADD COLUMN operator_halted_at TEXT;",
+      );
+      // Backfill: a market an operator already pulled must not be relisted on
+      // the first tick after this upgrade. `frozen`/`retired` are the states an
+      // operator halt produces.
+      //
+      // EVERY frozen/retired market is marked, including one whose discovery
+      // ledger is mid-registration.
+      //
+      // Pre-upgrade data cannot distinguish an operator's halt from
+      // discovery's own repair freeze — a market can be `frozen` with a
+      // `broadcasting` ledger under either. An earlier draft of this migration
+      // excluded the mid-flight rows so repairs could self-heal, but that
+      // silently relists a market an operator genuinely pulled, which is the
+      // strictly worse error: one costs an operator a single explicit
+      // re-registration to resume, the other puts a market they took down back
+      // in front of subscribers with no one aware.
+      //
+      // So: mark them all, and let resuming be deliberate. Only markets FROZEN
+      // BY DISCOVERY AFTER this upgrade are distinguishable, and those never
+      // get the marker in the first place.
+      db.prepare(
+        `UPDATE markets
+            SET operator_halted_at = created_at
+          WHERE status IN ('frozen','retired') AND operator_halted_at IS NULL`,
+      ).run();
+      // Intermediate step: 068 follows in this same applyMigrations pass.
+      set.run("schema_version", "67");
+    })();
+    v = 67;
+  }
+
+  if (v < 68) {
+    // Migration 068 — bind a settled payment to the resource it bought.
+    //
+    // The access broker computed a payload hash and a requirements hash and
+    // then discarded both (`void ...`), under a comment claiming the
+    // entitlement reservation was the real guard. It is not: the reservation
+    // is unique per (call, subscriber), so the SAME signed payment header
+    // replayed against a DIFFERENT call at the same price passed every local
+    // check. Only the facilitator's own nonce handling stood in the way.
+    //
+    // This table makes the binding real. A payload hash may be presented for
+    // exactly one resource fingerprint; presenting it for another is refused
+    // locally, before settlement.
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS entitlement_payment_bindings (
+          payload_hash      TEXT PRIMARY KEY,
+          resource_fingerprint TEXT NOT NULL,
+          requirements_hash TEXT NOT NULL,
+          created_at        TEXT NOT NULL
+        );
+      `);
+      // Intermediate step: 069 follows in this same applyMigrations pass.
+      set.run("schema_version", "68");
+    })();
+    v = 68;
+  }
+
+  if (v < 69) {
+    // Migration 069 — PER-PROVIDER commercial terms.
+    //
+    // Price and cohort size were single global env values: one price for every
+    // agent on the deployment, one cap for every call. That makes murmur the
+    // one setting the terms of somebody else's product. A provider should
+    // price their own signal and say how many subscribers they will serve.
+    //
+    // Two tables' worth of change:
+    //
+    //   agent_provider_terms — what the owner has SET. Mutable; the owner can
+    //   reprice whenever they like.
+    //
+    //   fhenix_sealed_calls.provider_* — what a specific call was SOLD under.
+    //   Snapshotted at acceptance and never updated. Without this, repricing
+    //   would retroactively change the terms of calls subscribers had already
+    //   bought into — the same failure the immutable market clock exists to
+    //   prevent, and the reason the series cohort cap is frozen per series.
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agent_provider_terms (
+          agent_id              TEXT PRIMARY KEY REFERENCES agents(agent_id),
+          -- Access price in the settlement asset's atomic units. Positive.
+          price_atoms           TEXT NOT NULL CHECK (
+                                  price_atoms GLOB '[0-9]*' AND CAST(price_atoms AS INTEGER) > 0
+                                ),
+          currency              TEXT NOT NULL,
+          -- Identifies the commercial terms a subscriber agreed to. Bump it
+          -- when the price changes so receipts stay attributable.
+          pricing_version       TEXT NOT NULL,
+          -- Owner's chosen ceiling, or NULL for "as many as murmur can serve".
+          -- Deliberately nullable: the owner sets a BUSINESS limit, and murmur
+          -- separately clamps to what it can actually deliver in the window.
+          max_subscribers_per_call INTEGER CHECK (
+                                  max_subscribers_per_call IS NULL
+                                  OR max_subscribers_per_call > 0
+                                ),
+          created_at            TEXT NOT NULL,
+          updated_at            TEXT NOT NULL
+        );
+      `);
+      for (const [col, ddl] of [
+        ["provider_price_atoms", "ALTER TABLE fhenix_sealed_calls ADD COLUMN provider_price_atoms TEXT;"],
+        ["provider_currency", "ALTER TABLE fhenix_sealed_calls ADD COLUMN provider_currency TEXT;"],
+        ["provider_pricing_version", "ALTER TABLE fhenix_sealed_calls ADD COLUMN provider_pricing_version TEXT;"],
+        ["provider_max_subscribers", "ALTER TABLE fhenix_sealed_calls ADD COLUMN provider_max_subscribers INTEGER;"],
+      ] as const) {
+        applyAlterTableAddColumn(db, "fhenix_sealed_calls", col, ddl);
+      }
+      // Left NULL on existing rows on purpose. A call sealed before this
+      // migration was sold under the deployment-wide terms, and the access
+      // path falls back to those for exactly such rows — backfilling today's
+      // env values would assert terms those calls were never offered under.
+      set.run("schema_version", "69");
+    })();
+    v = 69;
+  }
+
+  if (v < 70) {
+    // Migration 070 — tell "sealed before providers could price" apart from
+    // "this provider is not selling".
+    //
+    // 069 left provider_* NULL for both, and the access path reads NULL as
+    // "legacy row, fall back to the deployment-wide price". That made the
+    // owner's "stop selling" a no-op: clearing terms produced NULL snapshots
+    // on subsequent calls, which were then still offered for sale at the
+    // OPERATOR's price. The owner cannot price their own product if declining
+    // to price it hands the decision back to the operator.
+    //
+    // One NOT NULL flag settles it. Existing rows default to 0 — they really
+    // are legacy, and the fallback is right for them. Everything accepted from
+    // now on writes 1, so a NULL price beside it means what it says: this call
+    // is not for sale.
+    db.transaction(() => {
+      applyAlterTableAddColumn(
+        db,
+        "fhenix_sealed_calls",
+        "provider_terms_snapshotted",
+        "ALTER TABLE fhenix_sealed_calls ADD COLUMN provider_terms_snapshotted INTEGER NOT NULL DEFAULT 0;",
+      );
+      // LITERAL "70", never String(LATEST_DB_MIGRATION_VERSION).
+      //
+      // This block used to stamp the latest constant because 070 WAS the
+      // latest. The moment 071 was added, that line started recording 71 for a
+      // database that had only run 070 — and a crash between the two (or an
+      // operator killing the process mid-upgrade) would leave a DB stamped 71
+      // with none of 071's columns, skipping it forever. Every intermediate
+      // step writes its own number; only the final migration may use the
+      // constant, and it stops being allowed to the day another one lands.
+      set.run("schema_version", "70");
+    })();
+    v = 70;
+  }
+
+  if (v < 71) {
+    // Migration 071 — the provider revenue split becomes a LEDGER.
+    //
+    // Every early-access sale settled 100% to the murmur seller address and
+    // recorded nothing owed to the agent whose signal was sold. Circle pays one
+    // recipient, so the money still lands in one place; what changes is that
+    // murmur now writes down whose money it is.
+    //
+    // Three pieces, and the split between them is the whole design:
+    //
+    //   fhenix_sealed_calls.provider_fee_bps — the fee as of the SEAL. Frozen
+    //   beside the price snapshot for the same reason: an operator changing the
+    //   protocol fee must not retroactively re-cut a call already on offer.
+    //
+    //   entitlements.fee_bps_at_sale — the fee as of the SALE, stamped at
+    //   reservation. The sale is where the split freezes; a fee change while a
+    //   purchase is in flight must not alter that purchase. NULL only on rows
+    //   that predate this migration.
+    //
+    //   provider_earnings — one row per paid, granted entitlement. FINANCIAL
+    //   HISTORY: append-only, NEVER deleted, no cascade from any parent. A
+    //   deleted entitlement must not silently erase what was owed on it.
+    //
+    // Payout EXECUTION is deliberately out of scope: there is no payout journal
+    // and no payout worker. This table records accrual only, which is why the
+    // read surface names its totals "lifetime_accrued", not "owed".
+    db.transaction(() => {
+      applyAlterTableAddColumn(
+        db,
+        "fhenix_sealed_calls",
+        "provider_fee_bps",
+        `ALTER TABLE fhenix_sealed_calls ADD COLUMN provider_fee_bps INTEGER
+           CHECK (provider_fee_bps IS NULL OR (provider_fee_bps BETWEEN 0 AND 10000));`,
+      );
+      applyAlterTableAddColumn(
+        db,
+        "entitlements",
+        "fee_bps_at_sale",
+        `ALTER TABLE entitlements ADD COLUMN fee_bps_at_sale INTEGER
+           CHECK (fee_bps_at_sale IS NULL OR (fee_bps_at_sale BETWEEN 0 AND 10000));`,
+      );
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS provider_earnings (
+          -- The entitlement IS the identity. One paid, granted entitlement
+          -- accrues exactly once; no surrogate key, so a double-fire cannot
+          -- produce a second row for the same sale.
+          entitlement_id    INTEGER PRIMARY KEY REFERENCES entitlements(id),
+          -- NOT NULL on purpose. An earnings row nobody can be paid for is
+          -- worse than no row: it looks settled in every total while naming no
+          -- recipient. Unresolvable attribution is logged and left for the
+          -- audit sweep instead, so it stays visible.
+          producer_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+          chain_id          INTEGER NOT NULL,
+          contract_address  TEXT NOT NULL,
+          onchain_call_id   TEXT NOT NULL,
+          -- Atomic units as TEXT: these exceed the safe integer range in
+          -- low-decimal assets, and every total is summed in BigInt in JS.
+          -- Never SUM()/CAST() these in SQLite — that silently goes through a
+          -- 64-bit float.
+          gross_atoms       TEXT NOT NULL CHECK (gross_atoms GLOB '[0-9]*'),
+          fee_bps           INTEGER NOT NULL CHECK (fee_bps BETWEEN 0 AND 10000),
+          fee_atoms         TEXT NOT NULL CHECK (fee_atoms GLOB '[0-9]*'),
+          net_atoms         TEXT NOT NULL CHECK (net_atoms GLOB '[0-9]*'),
+          currency          TEXT NOT NULL,
+          -- 'sale_snapshot'  the split this sale actually froze
+          -- 'legacy_fallback' a row predating 071 accrued at the CURRENT fee,
+          --                   because no sale-time split was ever recorded
+          accrual_source    TEXT NOT NULL CHECK (
+                              accrual_source IN ('sale_snapshot','legacy_fallback')
+                            ),
+          accrued_at        TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_earnings_owner
+          ON provider_earnings(producer_agent_id, accrued_at);
+        CREATE INDEX IF NOT EXISTS idx_provider_earnings_call
+          ON provider_earnings(chain_id, contract_address, onchain_call_id);
+      `);
+      // LITERAL "71" — see the note in 070. This block stopped being the last
+      // one the moment 072 landed, and a crash between the two must not stamp
+      // a database 72 with none of 072's index.
+      set.run("schema_version", "71");
+    })();
+    v = 71;
+  }
+
+  if (v < 72) {
+    // Migration 072 — make the archive searchable without a table scan.
+    //
+    // `GET /v2/markets/archive` pages backwards through every market this
+    // deployment ever froze, newest end date first. That is ~7.6k rows today
+    // and grows by ~1.4k/day at the current 5-minute cadence, so the keyset
+    // page needs an index that satisfies BOTH the filter and the sort:
+    //
+    //   WHERE p.status = 'frozen'
+    //   ORDER BY p.end_date_epoch_s DESC, p.condition_id DESC
+    //
+    // The existing idx_polymarket_discovery_end_date is on the timestamp
+    // ALONE, so SQLite could use it for the range but had to re-sort for the
+    // tie-break and re-check `status` per row. This composite covers the
+    // equality, the ordered range, and the tie-break column in one structure —
+    // and because the tie-break is part of the index, the keyset cursor
+    // `(end_date_epoch_s, condition_id) < (…)` is a plain index seek.
+    //
+    // DESC is written into the index on purpose: SQLite can walk an ASC index
+    // backwards, but only when the whole ORDER BY reverses uniformly, and
+    // stating the direction here keeps the plan stable if a later query adds a
+    // mixed-direction column.
+    //
+    // Index-only, no data change: safe to re-run, nothing to backfill, and a
+    // database that stops mid-migration simply retries the CREATE INDEX.
+    db.transaction(() => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_polymarket_archive_page
+          ON polymarket_discovery_state(status, end_date_epoch_s DESC, condition_id DESC);
+      `);
+      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+    })();
+    v = 72;
   }
 }
 
@@ -3239,8 +3639,12 @@ const MIGRATION_059_ENTITLEMENTS = `
     onchain_call_id       TEXT NOT NULL,
     -- The paying subscriber, derived from the VERIFIED payer wallet (never JSON).
     subscriber_address    TEXT NOT NULL,
-    -- The producing agent (fhenix_sealed_calls.agent_id) recorded for later
-    -- accounting; v1 pays all revenue to Murmur with NO producer split.
+    -- The producing agent (fhenix_sealed_calls.agent_id). Resolved at
+    -- reservation and used as the attribution for the revenue split: murmur
+    -- keeps MURMUR_PROTOCOL_FEE_BPS of each sale and the rest accrues to this
+    -- agent's owner in provider_earnings (migration 071). Nullable here
+    -- because rows predate that resolution; accrual re-derives it from the
+    -- sealed call when it is missing, and refuses to invent one.
     producer_agent_id     TEXT,
     -- The nanopay receipt this entitlement settled against (nanopay_receipts.id
     -- as text, or the Circle transaction UUID) for reconciliation.
@@ -4573,6 +4977,71 @@ const MIGRATION_005 = `
     ON claim_challenges(target_kind, target_value, status);
 
   PRAGMA foreign_keys = ON;
+`;
+
+const MIGRATION_064_MARKET_SERIES = `
+  CREATE TABLE IF NOT EXISTS market_series (
+    series_id               TEXT PRIMARY KEY,
+    venue                   TEXT NOT NULL,
+    display_name            TEXT NOT NULL,
+    -- Prediction window length. For Polymarket up/down series this is parsed
+    -- from the question text ("7:15PM-7:20PM ET"), because Gamma's startDate
+    -- is market CREATION time, not the window start.
+    window_seconds          INTEGER NOT NULL CHECK (window_seconds > 0),
+    -- Series clock constants. Invariants enforced by assertSeriesClockConfig:
+    -- all > 0, and submission_open_lead_sec > delivery_budget_sec strictly,
+    -- or the sellable submission window is zero-length or inverted.
+    submission_open_lead_sec INTEGER NOT NULL CHECK (submission_open_lead_sec > 0),
+    commit_margin_sec        INTEGER NOT NULL CHECK (commit_margin_sec > 0),
+    delivery_budget_sec      INTEGER NOT NULL CHECK (delivery_budget_sec > 0),
+    embargo_sec              INTEGER NOT NULL CHECK (embargo_sec > 0),
+    -- Cohort ceiling: an operational sales limit, NOT a gas bound. Each grant
+    -- is its own transaction, so size it from grantor funding and from how
+    -- many grants can confirm inside the delivery budget.
+    max_armed_per_call       INTEGER NOT NULL CHECK (max_armed_per_call > 0),
+    status                   TEXT NOT NULL DEFAULT 'active'
+                               CHECK (status IN ('active','paused','delisted')),
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL,
+    CHECK (submission_open_lead_sec > delivery_budget_sec)
+  );
+
+  -- Per-instance clock SNAPSHOT. Written once at registration, immutable
+  -- thereafter. Never re-derive on read: the venue can move its own end time,
+  -- and retiming a market that consumers have armed and providers have
+  -- submitted against would change the deal underneath them. Drift is
+  -- detected against this snapshot and handled by delist+refund, never by
+  -- silent rebinding.
+  CREATE TABLE IF NOT EXISTS market_clocks (
+    market_id            TEXT PRIMARY KEY REFERENCES markets(market_id) ON DELETE CASCADE,
+    series_id            TEXT NOT NULL REFERENCES market_series(series_id),
+    arm_close_at_ms         INTEGER NOT NULL,
+    submission_open_at_ms   INTEGER NOT NULL,
+    early_access_cutoff_at_ms INTEGER NOT NULL,
+    submission_close_at_ms  INTEGER NOT NULL,
+    -- The venue's own end time: when the OUTCOME is determined.
+    resolution_at_ms        INTEGER NOT NULL,
+    -- When murmur unseals. Strictly later than resolution_at_ms by the
+    -- series embargo. Kept separate so the resolution horizon is never
+    -- confused with the reveal deadline.
+    public_reveal_at_ms     INTEGER NOT NULL,
+    -- Drift bookkeeping: the endDate this snapshot was derived from, so a
+    -- later venue change is detectable without re-deriving the schedule.
+    derived_from_end_date_ms INTEGER NOT NULL,
+    drift_detected_at       TEXT,
+    created_at              TEXT NOT NULL,
+    CHECK (arm_close_at_ms < submission_open_at_ms),
+    CHECK (submission_open_at_ms < early_access_cutoff_at_ms),
+    CHECK (early_access_cutoff_at_ms < submission_close_at_ms),
+    CHECK (submission_close_at_ms < resolution_at_ms),
+    CHECK (resolution_at_ms < public_reveal_at_ms)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_market_clocks_series
+    ON market_clocks(series_id, submission_close_at_ms);
+  -- Due-work scans: which instances are open for arming / submission now.
+  CREATE INDEX IF NOT EXISTS idx_market_clocks_arm_close
+    ON market_clocks(arm_close_at_ms);
 `;
 
 // ─── Re-export ground type for migration knowledge ───────────────────────────

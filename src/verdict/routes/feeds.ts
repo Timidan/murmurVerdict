@@ -13,6 +13,8 @@ export interface FeedRouterDeps {
   newFeedId?: FeedContractIdAdapter;
   newFeedPacketId?: FeedPacketIdAdapter;
   newFeedSlaIncidentId?: FeedSlaIncidentIdAdapter;
+  /** MURMUR_ACK_FEED_REVEAL_MANUAL; gates the admin packet backfill. */
+  feedRevealAcknowledged?: boolean;
   now: () => Date;
   privyAuth?: PrivyAuthVerifier;
   requireAdmin: (req: Request, res: Response) => boolean;
@@ -36,6 +38,7 @@ export function feedRouter(deps: FeedRouterDeps): Router {
     db: deps.db,
     newFeedPacketId: deps.newFeedPacketId,
     newFeedSlaIncidentId: deps.newFeedSlaIncidentId,
+    feedRevealAcknowledged: deps.feedRevealAcknowledged,
     now: deps.now,
     requireAdmin: deps.requireAdmin,
   }));

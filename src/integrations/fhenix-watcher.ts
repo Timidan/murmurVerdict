@@ -524,12 +524,15 @@ export function loadFhenixEventIngestorConfig(
 // the active contract, so the watcher starts at the contract's deploy block
 // (not chain genesis). A POSITIVE env value is an explicit operator override.
 function resolveWatcherStartBlock(
+  /** Only for manifestPath — the block itself is never read from env. */
   env: NodeJS.ProcessEnv,
   chainId: number,
   contractAddress: string,
 ): number {
-  const configured = configInt(env, "FHENIX_EVENT_START_BLOCK", 0, { min: 0 });
-  if (configured > 0) return configured;
+  // Manifest only. FHENIX_EVENT_START_BLOCK used to win over this, so a value
+  // left behind by a PREVIOUS deployment made the watcher scan the new
+  // contract from hundreds of thousands of blocks before it existed —
+  // no error, just reveals that were never indexed. Observed 2026-08-05.
   const entry = loadDeploymentByAddress(
     chainId,
     "MurmurSealedVerdicts",

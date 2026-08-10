@@ -56,8 +56,50 @@ try {
     kind: "invalid",
     raw: "0",
   });
-  assert.equal(resolveFhenixChainId({ FHENIX_CHAIN_ID: " 84532 " }), 84532);
-  assert.equal(resolveFhenixChainId({}), null);
+  // The chain id is DERIVED from the manifest when it describes one chain, so
+  // these cases pin an isolated manifest rather than reading the repo's real
+  // data/deployments.json — which is also why they used to expect null.
+  const emptyManifest = join(tmp, "chainid-empty.json");
+  writeFileSync(emptyManifest, "[]");
+  const oneChainManifest = join(tmp, "chainid-one.json");
+  writeFileSync(
+    oneChainManifest,
+    JSON.stringify([
+      {
+        chainId: 84532,
+        contractName: "MurmurSealedVerdicts",
+        address: `0x${"a".repeat(40)}`,
+        deployedAt: "2026-08-05T00:00:00.000Z",
+        txHash: `0x${"b".repeat(64)}`,
+        blockNumber: 1,
+      },
+    ]),
+  );
+
+  assert.equal(
+    resolveFhenixChainId({ FHENIX_CHAIN_ID: " 84532 ", DEPLOYMENTS_MANIFEST_PATH: oneChainManifest }),
+    84532,
+    "an explicit value that agrees with the manifest is accepted",
+  );
+  assert.equal(
+    resolveFhenixChainId({ DEPLOYMENTS_MANIFEST_PATH: oneChainManifest }),
+    84532,
+    "unset derives the manifest's only chain",
+  );
+  assert.equal(
+    resolveFhenixChainId({ DEPLOYMENTS_MANIFEST_PATH: emptyManifest }),
+    null,
+    "nothing to derive from, and nothing set",
+  );
+  assert.throws(
+    () =>
+      resolveFhenixChainId({
+        FHENIX_CHAIN_ID: "1",
+        DEPLOYMENTS_MANIFEST_PATH: oneChainManifest,
+      }),
+    /Refusing to guess/,
+    "a value contradicting a single-chain manifest is refused, not resolved",
+  );
   assert.throws(
     () => resolveFhenixChainId({ FHENIX_CHAIN_ID: "not-a-chain" }),
     (err) =>
@@ -81,10 +123,15 @@ try {
     sealedVerdictsAddress: overrideSealed,
     escrowAddress: overrideEscrow,
   });
-  assert.equal(resolveFhenixContractAddress(84532, {
-    ...env,
-    FHENIX_CONTRACT_ADDRESS: legacySealed,
-  }), legacySealed);
+  // FHENIX_CONTRACT_ADDRESS is NO LONGER a source. It was a second alias for
+  // the same deployment, and two names for one value meant sync-deployments
+  // could refresh one while the other kept pointing at a dead contract. A
+  // value set here is now simply ignored — the manifest answers.
+  assert.notEqual(
+    resolveFhenixContractAddress(84532, { ...env, FHENIX_CONTRACT_ADDRESS: legacySealed }),
+    legacySealed,
+    "the legacy alias must no longer override the manifest",
+  );
   assert.throws(
     () => resolveFhenixDeploymentAddresses(84532, {
       ...env,

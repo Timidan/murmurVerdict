@@ -11,7 +11,7 @@
  * it via the CLOB fallback.
  *
  * Key separation (avoids nonce contention during an unattended grind):
- *   - The DAEMON signs submitSealedFor (Gateway) + registerFixedRevealMarket
+ *   - The DAEMON signs submitSealedFor (Gateway) + registerMarket
  *     (discovery) with the owner/relayer key, nonce-coordinated in-process.
  *   - THIS tool signs openReveal + publishReveal with a SEPARATE funded EOA
  *     (BETTOR_REVEAL_KEY). openReveal/publishReveal have no access control, so a
@@ -53,12 +53,27 @@ import { getAccountForAgent } from "../src/verdict/auth/accounts.js";
 import { getControllerWalletForAgent } from "../src/verdict/auth/controller-wallets.js";
 import { mintRuntimeKey } from "../src/verdict/auth/runtime-keys.js";
 import { agentsRepo, marketsRepo, openDb } from "../src/verdict/db.js";
+import { loadDeployment } from "../src/integrations/deployments.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 
-const CONTRACT = getAddress("0x1B74A4bAb1E06Ed107780a245c85337AB9dEcD1A");
 const CHAIN_ID = 84532;
+// Resolved from the SAME manifest the daemon reads, never hardcoded. It used
+// to pin 0x1B74…, an address two deployments stale: submissions went through
+// the daemon's current contract while getCall / openReveal / publishReveal hit
+// the old one, so the tool could never reveal the calls it had just created.
+const CONTRACT = (() => {
+  const deployment = loadDeployment(CHAIN_ID, "MurmurSealedVerdicts");
+  if (!deployment) {
+    throw new Error(
+      `MurmurSealedVerdicts is not in data/deployments.json for chain ${CHAIN_ID}. ` +
+        "Run sync-deployments first — this tool must target the same contract " +
+        "as the daemon it submits through.",
+    );
+  }
+  return getAddress(deployment.address);
+})();
 const DAEMON = (process.env.DAEMON_URL ?? "http://localhost:8080").replace(/\/$/, "");
 const TARGET = Number(process.env.BETTOR_TARGET ?? "20");
 const MIN_LEAD_SEC = Number(process.env.BETTOR_MIN_LEAD_SEC ?? "150");
@@ -93,7 +108,13 @@ interface InFlight {
   question: string;
   callId: string;
   onchainCallId: Hex | null;
-  revealOpenAtSec: number;
+  /**
+   * Null until the daemon has persisted the authoritative reveal time from the
+   * on-chain submit event. The reveal loop parks the call until then: there is
+   * no safe substitute, and every guessed value that is too early makes the
+   * poller hammer openReveal against a contract that reverts.
+   */
+  revealOpenAtSec: number | null;
   binaryIndex: number;
   confidenceBps: number;
   phase: "submitted" | "opened" | "published" | "failed";
@@ -167,7 +188,9 @@ async function main(): Promise<void> {
       question,
       callId: r.call_id,
       onchainCallId: (r.onchain_call_id as Hex | null) ?? null,
-      revealOpenAtSec: r.reveal_open_at ? Math.floor(Date.parse(r.reveal_open_at) / 1000) : 0,
+      revealOpenAtSec: r.reveal_open_at
+        ? Math.floor(Date.parse(r.reveal_open_at) / 1000)
+        : null,
       binaryIndex: -1,
       confidenceBps: -1,
       phase: "submitted",
@@ -240,6 +263,16 @@ async function main(): Promise<void> {
     // ── REVEAL: for each in-flight call whose window has opened, sequentially
     for (const f of inflight.values()) {
       if (f.phase === "published" || f.phase === "failed") continue;
+      // Re-read once the daemon has indexed the submit event; until then the
+      // call has no known reveal time and must not be polled.
+      if (f.revealOpenAtSec === null) {
+        const r = db
+          .prepare("SELECT reveal_open_at FROM fhenix_sealed_calls WHERE call_id=?")
+          .get(f.callId) as { reveal_open_at?: string } | undefined;
+        const ms = r?.reveal_open_at ? Date.parse(r.reveal_open_at) : Number.NaN;
+        if (!Number.isFinite(ms)) continue;
+        f.revealOpenAtSec = Math.floor(ms / 1000);
+      }
       if (Math.floor(Date.now() / 1000) < f.revealOpenAtSec) continue;
       try {
         await revealOne(db, publicClient, walletClient, cofheClient, selfPermit, f);
@@ -343,7 +376,18 @@ async function submitOne(
     question,
     callId,
     onchainCallId,
-    revealOpenAtSec: Math.floor(endMs / 1000),
+    // Reveal is embargoed PAST market end, so endMs is premature: falling back
+    // to it made the poller hammer openReveal for the whole embargo, every
+    // attempt reverting. There is no safe substitute — null parks the call
+    // until the daemon persists the authoritative value from the on-chain
+    // submit event, which the reveal loop then picks up.
+    revealOpenAtSec: (() => {
+      const r = db
+        .prepare("SELECT reveal_open_at FROM fhenix_sealed_calls WHERE call_id=?")
+        .get(callId) as { reveal_open_at?: string } | undefined;
+      const ms = r?.reveal_open_at ? Date.parse(r.reveal_open_at) : Number.NaN;
+      return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+    })(),
     binaryIndex,
     confidenceBps,
     phase: "submitted",
@@ -353,7 +397,20 @@ async function submitOne(
 
 async function revealOne(
   db: ReturnType<typeof openDb>,
-  publicClient: ReturnType<typeof createPublicClient>,
+  // Structural, not `ReturnType<typeof createPublicClient>`: a CHAIN-typed
+  // client (createPublicClient({ chain: baseSepolia, … })) is not assignable to
+  // the un-parameterized return type — viem's getBlock transaction union
+  // differs. Naming only the two methods this uses keeps the file typechecked
+  // instead of excluded wholesale from tsconfig.tools.json.
+  publicClient: {
+    readContract: (args: {
+      address: Address;
+      abi: readonly unknown[];
+      functionName: string;
+      args: readonly unknown[];
+    }) => Promise<unknown>;
+    waitForTransactionReceipt: (args: { hash: Hex }) => Promise<unknown>;
+  },
   walletClient: ReturnType<typeof createWalletClient>,
   cofheClient: Awaited<ReturnType<typeof createCofheClient>> | ReturnType<typeof createCofheClient>,
   selfPermit: unknown,

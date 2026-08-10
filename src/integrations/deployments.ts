@@ -63,16 +63,65 @@ export function parseFhenixChainIdInput(
   return { kind: "invalid", raw: trimmed };
 }
 
+/**
+ * Which chain this deployment runs on.
+ *
+ * DERIVED from data/deployments.json when that manifest describes exactly one
+ * chain — which is the normal case, and makes FHENIX_CHAIN_ID one more copy of
+ * a fact the manifest already states. A copy is a thing that can go stale: the
+ * sibling FHENIX_EVENT_START_BLOCK did exactly that and silently stopped the
+ * watcher from indexing reveals.
+ *
+ * Still settable, for two real cases: a manifest spanning several chains (then
+ * it is REQUIRED, since nothing else disambiguates), and an operator who wants
+ * the value stated explicitly. Set and disagreeing with a single-chain
+ * manifest is refused rather than resolved — a mismatch means the operator
+ * believes they are on a different network, and picking either answer risks
+ * signing against the wrong one.
+ *
+ * The RPC is not consulted here: config loading is synchronous, and the
+ * gateway already asserts the RPC's chain matches before it broadcasts.
+ */
 export function resolveFhenixChainId(
   env: NodeJS.ProcessEnv = process.env,
 ): number | null {
   const parsed = parseFhenixChainIdInput(env.FHENIX_CHAIN_ID);
-  if (parsed.kind === "empty") return null;
-  if (parsed.kind === "chain_id") return parsed.chainId;
-  throw new FhenixDeploymentConfigError(
-    "FHENIX_CHAIN_ID",
-    "must be a positive integer",
+  if (parsed.kind === "invalid") {
+    throw new FhenixDeploymentConfigError(
+      "FHENIX_CHAIN_ID",
+      "must be a positive integer",
+    );
+  }
+
+  const manifestChains = new Set(
+    readManifest(manifestPath(env)).map((entry) => entry.chainId),
   );
+
+  if (parsed.kind === "chain_id") {
+    if (manifestChains.size === 1 && !manifestChains.has(parsed.chainId)) {
+      const [only] = [...manifestChains];
+      throw new FhenixDeploymentConfigError(
+        "FHENIX_CHAIN_ID",
+        `is ${parsed.chainId} but data/deployments.json only describes chain ` +
+          `${only}. Refusing to guess: either drop FHENIX_CHAIN_ID (it is ` +
+          `derived from the manifest) or sync the manifest for ${parsed.chainId}.`,
+      );
+    }
+    return parsed.chainId;
+  }
+
+  if (manifestChains.size === 1) {
+    const [only] = [...manifestChains];
+    return only!;
+  }
+  if (manifestChains.size > 1) {
+    throw new FhenixDeploymentConfigError(
+      "FHENIX_CHAIN_ID",
+      `is required: data/deployments.json describes ${manifestChains.size} ` +
+        `chains (${[...manifestChains].sort().join(", ")}), so it cannot be derived.`,
+    );
+  }
+  return null;
 }
 
 export function manifestPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -144,12 +193,10 @@ export function resolveFhenixContractAddress(
   );
   if (sealedVerdictsAddress) return sealedVerdictsAddress;
 
-  const legacyContractAddress = addressFromEnv(
-    env.FHENIX_CONTRACT_ADDRESS,
-    "FHENIX_CONTRACT_ADDRESS",
-  );
-  if (legacyContractAddress) return legacyContractAddress;
-
+  // FHENIX_CONTRACT_ADDRESS (a legacy alias) used to be a second source here.
+  // Two names for one value meant sync-deployments could update one and leave
+  // the other pointing at a dead contract — harmless only while the primary
+  // was set, and a live trap the moment it was cleared.
   if (chainId === undefined) return null;
   return loadDeployment(
     chainId,

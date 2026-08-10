@@ -109,10 +109,14 @@ export function publicOpenApiResource(input: {
   );
 }
 
-export function publicSkillResource(apiBase: string): PublicSystemResource {
+export function publicSkillResource(
+  apiBase: string,
+  /** This deployment's verified PoP audience — see buildSkillMarkdown. */
+  popAudience?: string,
+): PublicSystemResource {
   return publicSystemResource(
     "text/markdown; charset=utf-8",
-    buildSkillMarkdown(apiBase),
+    buildSkillMarkdown(apiBase, popAudience),
   );
 }
 

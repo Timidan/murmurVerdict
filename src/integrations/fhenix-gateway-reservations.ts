@@ -7,7 +7,9 @@ import { preflightMarketAndRateLimits } from "./fhenix-gateway-sealed-call-prefl
 import { ZERO_BYTES32, type GatewayFeedPacketBody, type GatewaySealedCallBody } from "./fhenix-gateway-schemas.js";
 import { normalizeAddress } from "./fhenix-gateway-runtime.js";
 import { gatewayCofheInputJson } from "./fhenix-gateway-cofhe-input.js";
-import { deriveFeedRevealAfter } from "../verdict/feed-policy.js";
+import { assertFeedRevealPolicySupported } from "../verdict/feed-availability.js";
+import { marketClocksRepo } from "../verdict/repos/market-clocks-repo.js";
+import { isoFromMs } from "../verdict/time.js";
 import {
   fhenixGatewayTxRepo,
   type FhenixGatewayTxAttemptRow,
@@ -301,6 +303,18 @@ export function reserveFeedPacketAttempt(params: {
   );
   validateFeedPacketMarket(params.db, params.feed, params.body.market_id ?? null);
 
+  // A persisted feed whose reveal policy murmur can no longer honour must not
+  // broadcast. Checked BEFORE the idempotent duplicate exit: a reservation that
+  // matches an existing attempt would otherwise return early and skip the
+  // guard, so a legacy fixed_delay/after_horizon/manual feed could still be
+  // retried and revealed on the market clock — breaking a promise it still
+  // publicly advertises.
+  //
+  // NOTE: attempts already queued before this narrowing are not covered here;
+  // they need a one-time audit (quarantine nonterminal attempts whose feed is
+  // not after_resolution) before enabling feeds in production.
+  assertFeedRevealPolicySupported(params.feed);
+
   const preTxFeedDuplicate = feedPacketDuplicateExit({
     db: params.db,
     agentId,
@@ -314,7 +328,53 @@ export function reserveFeedPacketAttempt(params: {
 
   const now = params.now();
   const ts = nowIso(now);
-  const revealAfter = deriveFeedRevealAfter(params.feed, params.body.reveal_after, now);
+  // The MARKET's embargo is authoritative for a feed packet's reveal time.
+  // The contract overwrites whatever is passed with market.publicRevealAt, so
+  // persisting a feed-policy-derived value here would make confirmation reject
+  // the emitted log (extraction requires emitted == persisted) and strand an
+  // attempt against a packet that WAS created on-chain.
+  //
+  // The feed's reveal policy still bounds what a feed may request, but it can
+  // no longer set the on-chain schedule.
+  const feedMarket = marketsRepo.get(params.db, params.body.market_id);
+  if (!feedMarket) {
+    throw new VerdictError(
+      "feed packet market is not registered",
+      ERROR_CODES.schema_invalid,
+      400,
+      { market_id: params.body.market_id },
+    );
+  }
+  // Read the IMMUTABLE clock snapshot, not the market's mutable config. The
+  // config can be re-stamped or stripped after registration, so recomputing
+  // from it could yield a time the on-chain market never had. The snapshot is
+  // frozen at registration and is what the chain schedule was derived from.
+  //
+  // The feed's `reveal_policy` no longer SETS this time.
+  //
+  // It used to set this timestamp. The contract now takes a packet's reveal
+  // time from the market's immutable schedule, so a per-packet policy cannot
+  // set it — and it cannot be enforced as a floor either: a policy expresses
+  // "at least N seconds after submission", while the market's reveal is a
+  // FIXED instant. Any market revealing sooner than now+N can never satisfy
+  // it, so a floor check would reject legitimate traffic rather than catch a
+  // misconfiguration.
+  //
+  // The real constraint is a registration-time one: a feed should only be
+  // attached to markets whose embargo satisfies its advertised delay. Until
+  // that check exists, `reveal_policy` is advisory metadata for feeds bound to
+  // scheduled markets, and the public schema overstates it.
+  const feedClock = marketClocksRepo.get(params.db, params.body.market_id);
+  if (!feedClock) {
+    throw new VerdictError(
+      "feed packet market has no schedule snapshot",
+      ERROR_CODES.schema_invalid,
+      400,
+      { market_id: params.body.market_id },
+    );
+  }
+  const revealAfter = isoFromMs(feedClock.public_reveal_at_ms);
+
   const revealAfterMs = Date.parse(revealAfter);
   if (!Number.isFinite(revealAfterMs) || revealAfterMs <= now.getTime()) {
     throw new VerdictError(
@@ -322,6 +382,21 @@ export function reserveFeedPacketAttempt(params: {
       ERROR_CODES.schema_invalid,
       400,
       { reveal_after: revealAfter },
+    );
+  }
+  // Packets close at RESOLUTION, not at public reveal. The window between them
+  // is the embargo, during which the outcome is already known — a packet
+  // submitted there predicts nothing and would still be counted as delivered
+  // SLA evidence. Mirrors the contract's own cutoff.
+  if (now.getTime() >= feedClock.resolution_at_ms) {
+    throw new VerdictError(
+      "feed packet window closed: the market has already resolved",
+      ERROR_CODES.schema_invalid,
+      409,
+      {
+        market_id: params.body.market_id,
+        resolution_at: isoFromMs(feedClock.resolution_at_ms),
+      },
     );
   }
 

@@ -26,6 +26,8 @@ export type GatewaySealedCallSubmitEvent = {
   confidence_ct_hash: string;
   accepted_at: string;
   reveal_open_at: string;
+  /** On-chain SubmissionClass: 1 = EarlyAccess, 2 = LateUnsellable. */
+  submission_class: number;
 };
 
 export type GatewayFeedPacketSubmitEvent = {
@@ -56,10 +58,14 @@ export function extractSealedCallSubmitEvent(
         agent: Address;
         marketId: Hex;
         acceptedAt: bigint;
-        revealOpenAt: bigint;
+        // Contract field is publicRevealAt (market resolution + series
+        // embargo). Mapped onto the still-named reveal_open_at storage field
+        // downstream; see FhenixSealedCallSubmitMetadata.
+        publicRevealAt: bigint;
         binaryIndexCtHash: Hex;
         confidenceCtHash: Hex;
         clientNonce: Hex;
+        submissionClass: number;
       };
       if (decoded.eventName !== "SealedCallSubmitted") continue;
       if (!isAddressEqual(args.agent, attempt.agent_wallet_address as Address)) continue;
@@ -72,7 +78,8 @@ export function extractSealedCallSubmitEvent(
         binary_index_ct_hash: args.binaryIndexCtHash.toLowerCase(),
         confidence_ct_hash: args.confidenceCtHash.toLowerCase(),
         accepted_at: unixSecondsToIso(args.acceptedAt),
-        reveal_open_at: unixSecondsToIso(args.revealOpenAt),
+        reveal_open_at: unixSecondsToIso(args.publicRevealAt),
+        submission_class: args.submissionClass,
       };
     } catch {
       continue;

@@ -12,7 +12,53 @@ export interface FhenixSealedCallInsert {
   binary_index_ct_hash: string;
   confidence_ct_hash: string;
   reveal_open_at: string;
+  /**
+   * On-chain SubmissionClass: 1 = EarlyAccess, 2 = LateUnsellable, 0 unknown.
+   * Canonical home for the class — reputation must read it from here, not from
+   * the gateway attempt audit row, because direct/operator intake never
+   * creates a gateway attempt.
+   */
+  submission_class: number | null;
   created_at: string;
+  /**
+   * The provider's terms AS SOLD for this call, snapshotted at acceptance.
+   *
+   * Never updated. An owner may reprice at any time; that must not reach a
+   * call a subscriber already bought into, so the access path prices from
+   * here rather than from the live agent_provider_terms row.
+   *
+   * NULL means one of two very different things, told apart by
+   * `provider_terms_snapshotted`: a legacy call sealed before providers could
+   * price (fall back to the deployment-wide price), or a provider who is not
+   * selling access at all (no sale, at any price).
+   */
+  provider_price_atoms?: string | null;
+  provider_currency?: string | null;
+  provider_pricing_version?: string | null;
+  /** Owner's business ceiling as sold; murmur still clamps to deliverability. */
+  provider_max_subscribers?: number | null;
+  /**
+   * Murmur's cut of a sale of THIS call, in basis points, frozen at the seal.
+   *
+   * Snapshotted for the same reason the price is: an operator changing
+   * MURMUR_PROTOCOL_FEE_BPS must not re-cut calls already on offer. Written
+   * whenever provider terms are snapshotted — a priced call with no fee beside
+   * it is a sale whose split nobody can reconstruct, so acceptance fails loudly
+   * rather than storing NULL here.
+   *
+   * NULL means "no terms snapshot" (not selling), or a row predating
+   * migration 071.
+   */
+  provider_fee_bps?: number | null;
+  /**
+   * 1 when this row was written by a build that snapshots provider terms, so a
+   * NULL price beside it is a deliberate "not selling" rather than an absence
+   * of information. 0 only on rows predating migration 070.
+   *
+   * Not optional at the storage layer — `insert` always writes 1. It is
+   * optional here so callers building an insert do not have to restate it.
+   */
+  provider_terms_snapshotted?: number;
 }
 
 // Normalized reveal attribution (migration 057). `reveal_source` is derived
@@ -70,26 +116,42 @@ export type FhenixSealedCallRow = FhenixSealedCallInsert & {
 
 const SEALED_CALL_COLUMNS = `call_id, chain_id, contract_address, onchain_call_id,
        submit_tx_hash, submit_log_index, binary_index_ct_hash, confidence_ct_hash,
-       reveal_open_at, created_at, opened_at, revealed_at,
+       reveal_open_at, submission_class, created_at, opened_at, revealed_at,
        reveal_tx_hash, reveal_log_index, revealed_binary_index,
        revealed_confidence, revealed_confidence_bps,
        reveal_status, invalid_reason, terminal_at,
        submit_block_number, reveal_block_number,
-       reveal_sender, reveal_source`;
+       reveal_sender, reveal_source,
+       provider_price_atoms, provider_currency, provider_pricing_version,
+       provider_max_subscribers, provider_terms_snapshotted, provider_fee_bps`;
 
 export const fhenixSealedCallsRepo = {
   insert(db: Database.Database, input: FhenixSealedCallInsert): void {
+    // Absent terms bind as NULL: an agent that does not sell early access has
+    // none, and better-sqlite3 requires every named parameter to be present.
+    const row = {
+      provider_price_atoms: null,
+      provider_currency: null,
+      provider_pricing_version: null,
+      provider_max_subscribers: null,
+      provider_fee_bps: null,
+      ...input,
+    };
     prep(
       db,
       `INSERT INTO fhenix_sealed_calls
        (call_id, chain_id, contract_address, onchain_call_id,
         submit_tx_hash, submit_log_index, binary_index_ct_hash, confidence_ct_hash,
-        reveal_open_at, created_at)
+        reveal_open_at, submission_class, created_at,
+        provider_price_atoms, provider_currency, provider_pricing_version,
+        provider_max_subscribers, provider_terms_snapshotted, provider_fee_bps)
        VALUES
        (@call_id, @chain_id, @contract_address, @onchain_call_id,
         @submit_tx_hash, @submit_log_index, @binary_index_ct_hash, @confidence_ct_hash,
-        @reveal_open_at, @created_at)`,
-    ).run(input);
+        @reveal_open_at, @submission_class, @created_at,
+        @provider_price_atoms, @provider_currency, @provider_pricing_version,
+        @provider_max_subscribers, 1, @provider_fee_bps)`,
+    ).run(row);
   },
 
   byCallId(
@@ -120,11 +182,46 @@ export const fhenixSealedCallsRepo = {
         `SELECT ${SEALED_CALL_COLUMNS}
          FROM fhenix_sealed_calls
          WHERE chain_id = @chain_id
-           AND contract_address = @contract_address
-           AND onchain_call_id = @onchain_call_id
+           AND lower(contract_address) = lower(@contract_address)
+           -- Routes accept mixed-case bytes32 while indexed ids are stored
+           -- lowercase; an exact compare silently returns no row.
+           AND lower(onchain_call_id) = lower(@onchain_call_id)
          LIMIT 1`,
       ).get(input) as FhenixSealedCallRow | undefined) ?? null
     );
+  },
+
+  /**
+   * The agent that PRODUCED an on-chain call, for revenue attribution.
+   *
+   * Joins the sealed call to its submission, which is where the owning agent
+   * lives. Acceptance writes both rows in ONE transaction, so a sealed call
+   * that exists always has its submission beside it — the join cannot see a
+   * half-written pair.
+   *
+   * Returns null when the call is unknown to this deployment (never accepted
+   * here, or accepted against a different contract). Callers must treat that as
+   * "cannot attribute", never as a reason to invent an owner.
+   */
+  producerAgentIdByOnchainCall(
+    db: Database.Database,
+    input: {
+      chain_id: number;
+      contract_address: string;
+      onchain_call_id: string;
+    },
+  ): string | null {
+    const row = prep(
+      db,
+      `SELECT s.agent_id AS agent_id
+       FROM fhenix_sealed_calls f
+       JOIN submissions s ON s.call_id = f.call_id
+       WHERE f.chain_id = @chain_id
+         AND lower(f.contract_address) = lower(@contract_address)
+         AND lower(f.onchain_call_id) = lower(@onchain_call_id)
+       LIMIT 1`,
+    ).get(input) as { agent_id?: string } | undefined;
+    return row?.agent_id ?? null;
   },
 
   attachReveal(
