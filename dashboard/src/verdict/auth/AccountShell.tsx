@@ -85,7 +85,7 @@ function AccountGuard({ children }: { children: ReactNode }) {
 function GateScreen({ label }: { label: string }) {
   return (
     <div className="mmr-shell min-h-dvh bg-[var(--color-bg)] flex items-center justify-center">
-      <span className="ck-mono ck-dim text-xs">{label}</span>
+      <span className="ck-mono ck-dim">{label}</span>
     </div>
   );
 }

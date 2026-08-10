@@ -105,7 +105,7 @@ export function parseLocation(location: LocationLike): ParsedRoute {
     return { name: "account_agent_integrate", params: { slug: agentIntegrateMatch[1] } };
   }
 
-  const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|wallet|runtime|keys))?$/.exec(path);
+  const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|pricing|wallet|runtime|keys))?$/.exec(path);
   if (agentSettingsMatch) {
     return {
       name: "account_agent_settings",

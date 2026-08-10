@@ -17,12 +17,13 @@
 //     decreasing countdown (no spinner, no banner — just dim text).
 //   · After a 429 cooldown response, swap the submit button for a dim
 //     "next change in 23h 12m 04s" + disable until the countdown clears.
-//   · Inline `× not a valid evm address` on blur with bad regex input.
+//   · Inline `[error] not a valid evm address` on blur with bad regex input.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
 import { ApiError, verdictApi, type DestinationCooldownError } from "../../api.js";
 import { useFunnelEmit } from "../../hooks/useFunnelEmit.js";
+import { InlineError } from "../compact/InlineError.js";
 
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const EVM_REGEX = /^0x[0-9a-fA-F]{40}$/;
@@ -144,14 +145,14 @@ export function DestinationAddressForm({
           const synth = new Date(Date.now() + retry * 1000 - COOLDOWN_MS);
           setLastUpdatedIso(synth.toISOString().replace(/\.\d+Z$/, "Z"));
         }
-        return "× cooldown active — see countdown below";
+        return "cooldown active — see countdown below";
       }
       if (err.status === 401 || err.status === 403)
-        return "× session expired — sign in again";
-      if (err.status === 400) return "× invalid address format";
-      if (err.status === 404) return "× agent not found";
+        return "session expired — sign in again";
+      if (err.status === 400) return "invalid address format";
+      if (err.status === 404) return "agent not found";
     }
-    return `× update failed: ${(err as Error).message ?? "unknown"}`;
+    return `update failed: ${(err as Error).message ?? "unknown"}`;
   }, []);
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -163,7 +164,7 @@ export function DestinationAddressForm({
     try {
       const token = await getAccessToken();
       if (!token) {
-        setServerError("× session expired — sign in again");
+        setServerError("session expired — sign in again");
         return;
       }
       // Send the lowercase form (backend requires it). The form
@@ -234,23 +235,18 @@ export function DestinationAddressForm({
             aria-invalid={inlineError !== null}
             aria-describedby="addr-help"
           />
-          <span id="addr-help" className="ck-mono ck-dim text-[10px]">
+          <span id="addr-help" className="ck-dim text-[12px]">
             0x + 40 hex · case-insensitive · normalized to lowercase
           </span>
           {inlineError && (
-            <span
-              className="ck-mono text-[10px]"
-              style={{ color: "var(--color-accent-ink)" }}
-            >
-              × {inlineError}
-            </span>
+            <InlineError error={inlineError} className="text-[12px]" />
           )}
         </label>
 
         {/* ── Cooldown / status row ─────────────────────────────── */}
         {cooldownActive && (
           <p
-            className="ck-mono text-[10px]"
+            className="text-[12px]"
             style={{ color: "var(--color-accent-ink)" }}
             aria-live="polite"
           >
@@ -258,18 +254,15 @@ export function DestinationAddressForm({
           </p>
         )}
         {!cooldownActive && lastUpdatedIso && (
-          <p className="ck-mono ck-pos text-[10px]" aria-live="polite">
+          <p className="ck-pos text-[12px]" aria-live="polite">
             saved · cooldown cleared
           </p>
         )}
         {serverError && (
-          <div
+          <InlineError
+            error={serverError}
             className="ck-frame-strong px-3 py-2 ck-mono"
-            style={{ color: "var(--color-accent-ink)" }}
-            role="alert"
-          >
-            {serverError}
-          </div>
+          />
         )}
 
         <div className="flex items-center gap-2 pt-2">
@@ -281,7 +274,7 @@ export function DestinationAddressForm({
           >
             update address →
           </button>
-          {submitting && <span className="ck-mono ck-dim text-[10px]">working…</span>}
+          {submitting && <span className="ck-dim text-[12px]">working…</span>}
         </div>
       </div>
     </form>

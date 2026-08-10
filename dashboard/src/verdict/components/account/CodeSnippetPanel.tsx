@@ -304,7 +304,7 @@ export function CodeSnippetPanel({
           <span className="flex items-center gap-2">
             {copyFallback && (
               <span
-                className="confirm-enter ck-mono text-[10px]"
+                className="confirm-enter text-[12px]"
                 style={{ color: "var(--color-accent-ink)" }}
                 aria-live="polite"
               >
@@ -324,7 +324,7 @@ export function CodeSnippetPanel({
       )}
       <pre
         key={active}
-        className="snippet-fade ck-mono whitespace-pre overflow-x-auto px-3 py-2 leading-tight text-[11px]"
+        className="snippet-fade whitespace-pre overflow-x-auto px-3 py-2 leading-tight"
       >
         <HighlightedCode
           code={body}

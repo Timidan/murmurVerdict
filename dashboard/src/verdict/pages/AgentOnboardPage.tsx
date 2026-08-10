@@ -36,7 +36,9 @@ import {
   useWallets,
   type ConnectedWallet,
 } from "@privy-io/react-auth";
+import { Ik, IkNav } from "../icons.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
+import { InlineError } from "../components/compact/InlineError.js";
 import { RuntimeKeyMintModal } from "../components/account/RuntimeKeyMintModal.js";
 import { generateRuntimeKeySigningKeypair } from "../lib/runtime-key-signing.js";
 import { useAccount } from "../hooks/useAccount.js";
@@ -318,7 +320,7 @@ export function AgentOnboardPage() {
           disabled={inFlight}
           autoFocus
           className={
-            "border bg-[var(--color-bg)] ck-mono text-sm px-3 py-2 " +
+            "border bg-[var(--color-bg)] ck-mono px-3 py-2 " +
             (slug.length === 0 || slugValid
               ? "border-[var(--color-border-vis)]"
               : "border-[var(--color-accent-ink)]")
@@ -345,14 +347,22 @@ export function AgentOnboardPage() {
           onClick={() => void submit()}
           disabled={!canSubmit}
           className={
-            "self-start t-button border border-[var(--color-display)] " +
+            "self-start t-button inline-flex items-center gap-1.5 " +
+            "border border-[var(--color-display)] " +
             "text-[var(--color-display)] px-4 py-2 hover:bg-[var(--color-display)] " +
             "hover:text-[var(--color-bg)] disabled:opacity-50 " +
             "disabled:cursor-not-allowed press-feedback ck-mono"
           }
           title={!daemonChainId || !embeddedWallet ? "Getting ready…" : ""}
         >
-          {inFlight ? phaseLabel(phase) : "Create agent"}
+          {inFlight ? (
+            phaseLabel(phase)
+          ) : (
+            <>
+              <Ik name="agent" />
+              Create agent
+            </>
+          )}
         </button>
         <span className="ck-dim text-xs">
           Your wallet will ask for two signature approvals: the first binds it
@@ -362,9 +372,9 @@ export function AgentOnboardPage() {
         {!embeddedWallet && !inFlight && (
           <span className="ck-dim text-xs">Setting up your signing key…</span>
         )}
-        {error && <span className="ck-neg text-xs">{error}</span>}
+        {error && <InlineError error={error} className="text-xs" />}
         {strandedSlug && (
-          <div className="border border-[var(--color-accent-ink)] p-3 ck-mono text-xs flex flex-col gap-2 mt-1">
+          <div className="border border-[var(--color-accent-ink)] p-3 ck-mono flex flex-col gap-2 mt-1">
             <span className="ck-neg">
               We created{" "}
               <span className="ck-pos">{strandedSlug}</span> but couldn't
@@ -409,7 +419,11 @@ function Shell({ children }: { children: React.ReactNode }) {
         }
       />
       <main className="flex-1 max-w-2xl w-full self-center p-4 flex flex-col gap-4">
-        <h1 className="ck-title">Create an agent</h1>
+        {/* ck-title-ik: the `agent` glyph REPLACES the generic ::before
+            square — one marker per title, never two. */}
+        <h1 className="ck-title ck-title-ik">
+          <IkNav name="agent" /> Create an agent
+        </h1>
         <p className="ck-dim text-sm">
           Pick a handle. We'll generate a secret key your bot will use.
         </p>

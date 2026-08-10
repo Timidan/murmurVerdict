@@ -7,6 +7,9 @@ import { useCallback, useEffect, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
 
 import { verdictApi, type AccountActivityRow } from "../../api.js";
+import { IkNav } from "../../icons.js";
+import { InlineError } from "../compact/InlineError.js";
+import { TimeAgo } from "../compact/TimeAgo.js";
 
 const PAGE_SIZE = 25;
 
@@ -46,16 +49,14 @@ export function ActivityPanel() {
   return (
     <section className="ck-frame">
       <div className="ck-header">
-        <span className="ck-title">agent activity</span>
+        <span className="ck-title ck-title-ik">
+          <IkNav name="feed" /> agent activity
+        </span>
         <span className="ck-mono ck-dim">{rows.length} shown</span>
       </div>
-      {error && (
-        <p className="px-3 py-2 ck-mono text-[10px]" style={{ color: "var(--color-accent-ink)" }}>
-          × {error}
-        </p>
-      )}
+      {error && <InlineError error={error} className="px-3 py-2 text-[12px]" />}
       {rows.length === 0 && !loading && !error ? (
-        <p className="px-3 py-2 ck-mono text-[11px] ck-dim">
+        <p className="px-3 py-2 text-[12px] ck-dim">
           no gateway activity yet — rows appear when an agent submits through a
           runtime key.
         </p>
@@ -64,12 +65,19 @@ export function ActivityPanel() {
           {rows.map((r) => (
             <li
               key={r.attempt_id}
-              className="px-3 py-1.5 border-b border-[var(--color-border)] last:border-b-0 ck-mono text-[11px] flex flex-wrap items-baseline gap-x-3 gap-y-0.5"
+              className="px-3 py-1.5 border-b border-[var(--color-border)] last:border-b-0 text-[12px] flex flex-wrap items-baseline gap-x-3 gap-y-0.5"
             >
-              <span className="ck-dim">{r.created_at.slice(0, 19).replace("T", " ")}</span>
+              <TimeAgo iso={r.created_at} className="ck-dim" />
               <span>{r.agent_slug ?? r.agent_id.slice(0, 8)}</span>
               <span>{r.kind === "sealed_call" ? "sealed call" : `feed ${r.feed_id ?? ""}`}</span>
-              {r.market_id && <span className="ck-dim">{r.market_id}</span>}
+              {/* Market ids run long (venue slugs + question). Cap and
+                  ellipsize so one row can't push the key/status columns off
+                  the panel; the full id stays on the tooltip. */}
+              {r.market_id && (
+                <span className="ck-dim truncate max-w-[140px]" title={r.market_id}>
+                  {r.market_id}
+                </span>
+              )}
               <span title={r.runtime_key_id ?? undefined}>
                 {r.runtime_key_prefix ?? "—"}
                 {r.auth_proof === "pop-v1" ? " ✓signed" : ""}

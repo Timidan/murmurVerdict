@@ -17,6 +17,7 @@
 import { useEffect, useMemo } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
 import { DestinationAddressForm } from "../components/account/DestinationAddressForm.js";
+import { ProviderTermsPanel } from "../components/account/ProviderTermsPanel.js";
 import { ApiKeysPanel } from "../components/account/ApiKeysPanel.js";
 import { ControllerWalletPanel } from "../components/account/ControllerWalletPanel.js";
 import { RuntimeKeysPanel } from "../components/account/RuntimeKeysPanel.js";
@@ -24,7 +25,12 @@ import { TierBadge } from "../components/TierBadge.js";
 import { useAccount } from "../hooks/useAccount.js";
 import type { AgentKind, AccountAgent } from "../api.js";
 
-export type AgentSettingsTab = "payout" | "wallet" | "runtime" | "keys";
+export type AgentSettingsTab =
+  | "payout"
+  | "pricing"
+  | "wallet"
+  | "runtime"
+  | "keys";
 
 export interface AgentSettingsPageProps {
   slug: string;
@@ -122,6 +128,9 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           <TabLink slug={slug} tab="payout" active={tab === "payout"}>
             payout
           </TabLink>
+          <TabLink slug={slug} tab="pricing" active={tab === "pricing"}>
+            pricing
+          </TabLink>
           <TabLink slug={slug} tab="wallet" active={tab === "wallet"}>
             wallet
           </TabLink>
@@ -150,6 +159,8 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             updatedAt={agent?.destination_address_updated_at ?? null}
             onSaved={() => void account.refreshAgents()}
           />
+        ) : tab === "pricing" ? (
+          <ProviderTermsPanel key={slug} slug={slug} />
         ) : tab === "wallet" ? (
           <ControllerWalletPanel
             key={slug}
@@ -183,7 +194,7 @@ function ReattestHeaderChip({
     return (
       <a
         href={walletTabHref}
-        className="ck-mono text-[10px] ck-neg no-underline hover:underline"
+        className="text-[12px] ck-neg no-underline hover:underline"
         title="bind a controller wallet to mint runtime keys"
       >
         × bind wallet
@@ -194,7 +205,7 @@ function ReattestHeaderChip({
     return (
       <a
         href={walletTabHref}
-        className="ck-mono text-[10px] ck-neg no-underline hover:underline"
+        className="text-[12px] ck-neg no-underline hover:underline"
         title="re-attestation overdue; runtime keys won't authenticate"
       >
         × re-attest now →
@@ -207,7 +218,7 @@ function ReattestHeaderChip({
     : 0;
   return (
     <span
-      className="ck-mono text-[10px] ck-dim"
+      className="text-[12px] ck-dim"
       title={`re-attest by ${controllerWallet.reattestation_due_at.slice(0, 10)}`}
     >
       re-attest {days <= 0 ? "today" : days === 1 ? "in 1d" : `in ${days}d`}
@@ -251,7 +262,7 @@ function NotFoundShell({ slug }: { slug: string }) {
       >
         × agent <span className="ck-pos">{slug}</span> not found on this account.
       </p>
-      <p className="ck-mono ck-dim mt-2 text-[10px]">
+      <p className="ck-dim mt-2 text-[12px]">
         either you don&apos;t own this slug or the agents list hasn&apos;t
         loaded yet. <a href="#/account" className="underline">return to account</a>.
       </p>
@@ -279,7 +290,7 @@ function ConfigErrorShell() {
       <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
           <p className="ck-mono ck-neg">privy not configured.</p>
-          <p className="ck-mono ck-dim mt-2 text-[10px]">
+          <p className="ck-dim mt-2 text-[12px]">
             set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local and rebuild.
           </p>
         </section>

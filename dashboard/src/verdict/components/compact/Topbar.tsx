@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStream } from "../../hooks/useStream.js";
+import { IkNav, type NavIconName } from "../../icons.js";
 import { ThemeToggle } from "../ThemeToggle.js";
 import { MMark } from "../MMark.js";
 import { MobileNav, isNavItemActive, type NavItem } from "./MobileNav.js";
+import { NAV_CHORDS } from "./nav-chords.js";
 
 interface CompactTopbarProps {
   /** Free-text crumb shown after the system identifier (e.g. "LB / TIER:ALL"). */
@@ -16,14 +18,57 @@ interface CompactTopbarProps {
  * clicks stay in-app (no full reload, SSE connection survives) — the same
  * client-side navigation every data row already uses.
  */
-const NAV_LINKS: NavItem[] = [
+const NAV_LINKS = [
   { href: "/dashboard", label: "dashboard" },
   { href: "/leaderboard", label: "leaderboard" },
   { href: "/today", label: "feed" },
   { href: "/install", label: "install" },
   { href: "/recruiters", label: "recruiters" },
   { href: "/account", label: "account" },
-];
+] as const satisfies readonly NavItem[];
+
+/** The routes above, as a union — the key type that makes NAV_ICONS total. */
+type NavHref = (typeof NAV_LINKS)[number]["href"];
+
+/**
+ * Desktop nav glyphs, keyed by route so a reworded label can never silently
+ * orphan its glyph. The desktop bar is icon-ONLY (owner amendment, 2026-08-07):
+ * the label moves to `aria-label` plus a hover/focus tip, so this map is TOTAL —
+ * every NAV_LINKS route must appear here or its link renders blank. Keying it
+ * on `NavHref` (not `string`) makes the compiler enforce that: adding a nav
+ * route without its glyph is now a type error, not a blank link at runtime. It
+ * stays local to the desktop topbar on purpose: <MobileNav/> renders the same
+ * NAV_LINKS as a text-only drawer list (small screens keep their words), and
+ * NavItem stays icon-free so the two surfaces can't drift into needing the same
+ * prop for different reasons.
+ *
+ * The values name glyphs on the NAV tier (24-grid, hairline-outline/fill pair)
+ * — not the 16-grid inline set. The six concepts are spelled identically in
+ * both tiers, so the type is what keeps this honest: `NavIconName` only admits
+ * a name that NAV_GLYPHS actually draws.
+ */
+const NAV_ICONS: Record<NavHref, NavIconName> = {
+  "/dashboard": "market",
+  "/leaderboard": "leaderboard",
+  "/today": "feed",
+  "/install": "confirm-live",
+  "/recruiters": "badge",
+  "/account": "agent",
+};
+
+/**
+ * Route chords, keyed on route exactly like NAV_ICONS above: `g` then this key
+ * jumps here. The bar only TEACHES the shortcut (in the nav tip); the listener
+ * lives in <GlobalShortcuts/> at the router root, because the chords have to
+ * work on surfaces that never render this bar.
+ *
+ * Both sides read the same `NAV_CHORDS` literal, so there is nothing to keep in
+ * step by hand. This annotated assignment is the load-bearing line: widening
+ * `NAV_CHORDS` to `Record<NavHref, string>` is what makes the map TOTAL over
+ * the nav routes, so adding a route to NAV_LINKS without giving it a chord is a
+ * type error here rather than a tip that silently reads "· gundefined".
+ */
+const CHORD_KEY: Record<NavHref, string> = NAV_CHORDS;
 
 /**
  * Shared app chrome — 64px tall, single live-state dot, MMark glyph,
@@ -40,6 +85,19 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
   const [now, setNow] = useState(() => new Date());
   const currentPath = useActiveNavPath();
 
+  // Columns-land activation (owner-approved motion, 2026-08-07): the newly
+  // active link's fill assembles only on a route CHANGE. Initial mount keeps
+  // stamp 0 so page load never animates (house rule); each change bumps the
+  // stamp, which keys the active glyph so the CSS mount animation replays.
+  const prevPath = useRef(currentPath);
+  const [activationStamp, setActivationStamp] = useState(0);
+  useEffect(() => {
+    if (prevPath.current !== currentPath) {
+      prevPath.current = currentPath;
+      setActivationStamp((s) => s + 1);
+    }
+  }, [currentPath]);
+
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
@@ -52,7 +110,7 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
           aria-hidden
           className={
             "w-[5px] h-[5px] " +
-            (live ? "bg-[var(--color-success)] ck-dot-live" : "bg-[var(--color-accent)]")
+            (live ? "bg-[var(--color-success)]" : "bg-[var(--color-accent)]")
           }
         />
         <a
@@ -64,7 +122,7 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
         </a>
       </div>
       {crumb && (
-        <div className="min-w-0 flex flex-1 lg:flex-none lg:max-w-[360px] items-center pr-3 overflow-hidden">
+        <div className="mmr-topbar-crumb-slot min-w-0 flex flex-1 lg:flex-none lg:max-w-[360px] items-center pr-3 overflow-hidden">
           <span className="mmr-topbar-crumb truncate min-w-0">{crumb}</span>
         </div>
       )}
@@ -77,9 +135,10 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
             key={l.href}
             href={l.href}
             active={isNavItemActive(l.href, currentPath)}
-          >
-            {l.label}
-          </CompactNavLink>
+            icon={NAV_ICONS[l.href]}
+            label={l.label}
+            activationStamp={activationStamp}
+          />
         ))}
       </nav>
       <div className="ml-auto shrink-0 flex h-full items-center gap-4 pr-4">
@@ -100,7 +159,9 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
           {live ? "live" : "offline"}
         </span>
         <div className="lg:hidden flex items-center h-full">
-          <MobileNav links={NAV_LINKS} currentPath={currentPath} />
+          {/* NAV_LINKS is a readonly tuple (see above); MobileNav takes a
+              plain NavItem[], so hand it a mutable copy. */}
+          <MobileNav links={[...NAV_LINKS]} currentPath={currentPath} />
         </div>
       </div>
     </header>
@@ -139,22 +200,55 @@ function normalizeNavPath(): string {
   return path === "/launch" ? "/install" : path;
 }
 
+/**
+ * One desktop nav destination: the glyph alone, drawn on the nav tier's native
+ * 24 grid so it renders 1px-hard without `crispEdges`. The word it replaces
+ * lives in two places — `aria-label` for assistive tech, and a bracketed tip
+ * that fades in under the icon on hover/focus-visible (CSS only, see
+ * `.mmr-nav-tip`). The tip is aria-hidden so the name is announced once — and
+ * it is also where the route chord is taught (`· gd`), dimmed so the word
+ * still reads first. `aria-label` stays the bare word: the chord is a visual
+ * affordance for a pointer/keyboard user who can see the bar, not part of the
+ * link's accessible name.
+ *
+ * `active` is the single route truth for this link: the same boolean drives
+ * `aria-current="page"` (which the CSS underline keys off) and the glyph's
+ * filled state, so the mark and the rule can never disagree about where you are.
+ */
 function CompactNavLink({
   href,
   active,
-  children,
+  icon,
+  label,
+  activationStamp = 0,
 }: {
-  href: string;
+  /** Narrower than `string` so `CHORD_KEY[href]` is a total lookup. */
+  href: NavHref;
   active?: boolean;
-  children: React.ReactNode;
+  icon: NavIconName;
+  label: string;
+  /** Bumped by the topbar on every route change; keys the active glyph so its
+      columns-land assembly replays. 0 = initial load, which never animates. */
+  activationStamp?: number;
 }) {
+  const activating = Boolean(active) && activationStamp > 0;
   return (
     <a
       href={`#${href}`}
       aria-current={active ? "page" : undefined}
-      className="mmr-nav-link"
+      aria-label={label}
+      className={
+        "mmr-nav-link mmr-nav-link--icon" +
+        (activating ? " mmr-nav-link--activating" : "")
+      }
     >
-      {children}
+      <span key={active ? activationStamp : -1} className="mmr-nav-glyph">
+        <IkNav name={icon} active={active} />
+      </span>
+      <span className="mmr-nav-tip" aria-hidden="true">
+        {label}
+        <span className="ck-dim"> · g{CHORD_KEY[href]}</span>
+      </span>
     </a>
   );
 }

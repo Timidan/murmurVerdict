@@ -5,16 +5,22 @@
 // place the API ever surfaces the raw runtime key.
 //
 // Same friction-load posture as the API-key modal: danger banner, checkbox-
-// guarded DONE, no click-outside dismiss. The reveal is a TABBED ONE-BOX:
+// guarded DONE, and dismissal by click-outside or Escape explicitly NOT
+// honored (footgun prevention — the key is unrecoverable once this unmounts).
+// The reveal is a TABBED ONE-BOX:
 // [ AGENT PROMPT ] [ KEY ] [ .ENV ] over a single scrolling content box with
 // one [ copy ] button — the same bracketed tab-strip idiom as CodeSnippetPanel.
 // AGENT PROMPT is the personalized operate-only runbook with the key baked in,
 // so the operator can paste ONE thing and their agent knows how to run.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RuntimeKeyMintResponse } from "../../api.js";
+import { Ik } from "../../icons.js";
 import { stashJustMinted } from "../../pages/IntegratePage.js";
 import { fetchAgentPromptTemplate, injectRuntimeKey } from "../../lib/agent-prompt.js";
+import { shortId } from "../../lib/display-format.js";
+import { TimeAgo } from "../compact/TimeAgo.js";
+import { useFocusTrap } from "../compact/useFocusTrap.js";
 
 export interface RuntimeKeyMintModalProps {
   /** Mint response — `secret` is the plaintext (one-time) runtime key. */
@@ -88,11 +94,26 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
     };
   }, []);
 
+  // Block Escape — by spec, the user MUST tick the checkbox + click DONE.
+  // Same capturing window listener as the sibling ApiKeyMintModal, for the
+  // same reason: the runtime key is revealed exactly once, so a reflex Esc
+  // would unmount the modal and destroy a credential with no recovery path.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   // Focus lifecycle — same pattern as compact/MobileNav: move focus into
   // the dialog on mount (first copy button, panel as fallback) and return
-  // it to the previously-focused element on unmount. Escape / click-outside
-  // dismissal stays deliberately blocked — the one-time secret must be
-  // acknowledged via the checkbox + done.
+  // it to the previously-focused element on unmount. Escape stays blocked
+  // (effect above) and click-outside is never wired — only the focus
+  // handling is added here.
   useEffect(() => {
     const prevFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -102,24 +123,9 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
     };
   }, []);
 
-  // Lightweight focus trap — keep Tab / Shift+Tab within the dialog
-  // (ported from compact/MobileNav).
-  const onPanelKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key !== "Tab" || !panelRef.current) return;
-    const focusables = panelRef.current.querySelectorAll<HTMLElement>(
-      "a[href], button:not([disabled]), input:not([disabled])",
-    );
-    if (focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
+  // Keep Tab / Shift+Tab within the dialog. The panel is mounted for this
+  // component's whole life, so the trap is unconditionally active.
+  useFocusTrap(panelRef);
 
   // Stash the just-minted secret for the integrate page handoff. The
   // envelope auto-expires after 5 min and is single-use (consumeJustMinted
@@ -200,18 +206,24 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
       <section
         ref={panelRef}
         tabIndex={-1}
-        onKeyDown={onPanelKeyDown}
         className="modal-enter-panel ck-frame-strong w-full max-w-[640px] bg-[var(--color-bg)] p-4 flex flex-col gap-3"
       >
         <header className="flex items-center justify-between">
-          <h3 id="runtime-key-mint-title" className="ck-title">
-            new runtime key
+          <h3 id="runtime-key-mint-title" className="ck-title ck-title-ik">
+            <Ik name="runtime-key" /> new runtime key
+            {/* Seal stamp — the credential is sealed the instant this modal
+                mounts, so the glyph plays its one-shot close here and then
+                holds. Trailing, so the leading runtime-key marker keeps the
+                ck-title-ik convention; ink is inherited, never set. */}
+            <span className="mmr-seal-stamp" aria-hidden="true">
+              <Ik name="seal" size={16} />
+            </span>
           </h3>
-          <span className="ck-mono text-[10px] ck-dim">prefix · {result.runtime_key_prefix}</span>
+          <span className="text-[12px] ck-dim">prefix · {result.runtime_key_prefix}</span>
         </header>
 
         <p
-          className="ck-mono text-[11px] leading-snug"
+          className="text-[12px] leading-snug"
           style={{ color: "var(--color-accent-ink)" }}
         >
           ⚠ shown once — copy the agent prompt (the key is baked in) and store it
@@ -239,7 +251,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
             </span>
             <span className="flex items-center gap-2">
               {copyFallback && (
-                <span className="ck-mono text-[10px] ck-dim" aria-live="polite">
+                <span className="text-[12px] ck-dim" aria-live="polite">
                   clipboard blocked — select + ⌘C / Ctrl-C
                 </span>
               )}
@@ -258,10 +270,10 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
 
           {active === "prompt" ? (
             promptLoading ? (
-              <p className="ck-mono ck-dim text-[11px] px-3 py-2">resolving prompt…</p>
+              <p className="ck-dim text-[12px] px-3 py-2">resolving prompt…</p>
             ) : (
               <pre
-                className="ck-mono whitespace-pre overflow-auto px-3 py-2 leading-tight text-[11px]"
+                className="whitespace-pre overflow-auto px-3 py-2 leading-tight"
                 style={{ maxHeight: 240 }}
               >
                 {promptText}
@@ -269,14 +281,14 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
             )
           ) : active === "key" ? (
             <pre
-              className="ck-mono whitespace-pre-wrap break-all select-all overflow-auto px-3 py-2 leading-tight text-[12px]"
+              className="whitespace-pre-wrap break-all select-all overflow-auto px-3 py-2 leading-tight"
               style={{ maxHeight: 240, userSelect: "all" }}
             >
               {result.secret}
             </pre>
           ) : (
             <pre
-              className="ck-mono whitespace-pre-wrap break-all select-all overflow-auto px-3 py-2 leading-tight text-[11px]"
+              className="whitespace-pre-wrap break-all select-all overflow-auto px-3 py-2 leading-tight"
               style={{ maxHeight: 240, userSelect: "all" }}
             >
               {envLine}
@@ -285,14 +297,14 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
         </div>
 
         {/* META ───────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-2 ck-mono text-[11px]">
-          <KV k="created" v={result.created_at.slice(0, 19).replace("T", " ")} />
+        <div className="grid grid-cols-2 gap-2 text-[12px]">
+          <KV k="created" v={<TimeAgo iso={result.created_at} />} />
           <KV
             k="expires"
-            v={result.expires_at ? result.expires_at.slice(0, 19).replace("T", " ") : "never"}
+            v={result.expires_at ? <TimeAgo iso={result.expires_at} /> : "never"}
             tone={result.expires_at ? "pos" : "dim"}
           />
-          <KV k="policy hash" v={result.policy_hash.slice(0, 16) + "…"} title={result.policy_hash} />
+          <KV k="policy hash" v={shortId(result.policy_hash, 12, 4)} title={result.policy_hash} />
           <KV
             k="request signing"
             v={signingPrivateKey ? "on — signing key in .ENV tab (shown once)" : "off (bearer only)"}
@@ -302,7 +314,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
         </div>
 
         {/* CONFIRM + DONE ─────────────────────────────────────── */}
-        <label className="ck-mono text-[11px] flex items-center gap-2 mt-2">
+        <label className="text-[12px] flex items-center gap-2 mt-2">
           <input
             type="checkbox"
             checked={saved}
@@ -340,10 +352,10 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
   );
 }
 
-function KV({ k, v, tone, title }: { k: string; v: string; tone?: "dim" | "neg" | "pos"; title?: string }) {
+function KV({ k, v, tone, title }: { k: string; v: ReactNode; tone?: "dim" | "neg" | "pos"; title?: string }) {
   const toneClass = tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
   return (
-    <div className="grid grid-cols-[100px_1fr] gap-2">
+    <div className="grid grid-cols-[130px_1fr] gap-2">
       <span className="ck-label">{k}</span>
       <span className={`${toneClass} truncate`} title={title}>{v}</span>
     </div>

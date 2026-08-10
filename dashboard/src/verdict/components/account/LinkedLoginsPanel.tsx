@@ -19,10 +19,29 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useLinkAccount,
-  PrivyErrorCode,
+  type PrivyErrorCode,
   type LinkedAccountWithMetadata,
 } from "@privy-io/react-auth";
 import { useAccount } from "../../hooks/useAccount.js";
+import { Ik } from "../../icons.js";
+import { shortId } from "../../lib/display-format.js";
+
+/**
+ * The PrivyErrorCode values this panel branches on.
+ *
+ * Spelled out rather than imported as a value: `PrivyErrorCode` is a
+ * TypeScript enum that exists in Privy's .d.ts but NOT in its ESM runtime
+ * bundle, so importing it as a value typechecks and then fails the production
+ * build with "PrivyErrorCode is not exported". The `satisfies` clause keeps
+ * these pinned to the real union — a renamed or removed code fails the
+ * typecheck instead of silently never matching.
+ */
+const PRIVY_ERROR = {
+  userExitedLinkFlow: "exited_link_flow",
+  cannotLinkMoreOfType: "cannot_link_more_of_type",
+  linkedToAnotherUser: "linked_to_another_user",
+  accountTransferRequired: "account_transfer_required",
+} as const satisfies Record<string, PrivyErrorCode>;
 
 /** The three login methods this panel can attach. Drives pending + buttons. */
 type LinkKind = "email" | "google" | "wallet";
@@ -50,8 +69,7 @@ interface Note {
 
 /** `0xabcdef…1234` — enough to recognize, short enough to sit in a row. */
 function truncateAddress(addr: string): string {
-  if (addr.length <= 12) return addr;
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+  return shortId(addr, 6, 4);
 }
 
 /**
@@ -142,18 +160,18 @@ export function LinkedLoginsPanel() {
   const onError = useCallback((code: PrivyErrorCode) => {
     // Always release the latch on error, regardless of the reason.
     setPending(null);
-    if (code === PrivyErrorCode.USER_EXITED_LINK_FLOW) {
+    if (code === PRIVY_ERROR.userExitedLinkFlow) {
       // User closed the modal — neutral, not a failure. Show nothing.
       setNote(null);
       return;
     }
-    if (code === PrivyErrorCode.CANNOT_LINK_MORE_OF_TYPE) {
+    if (code === PRIVY_ERROR.cannotLinkMoreOfType) {
       setNote({ text: "already linked.", tone: "dim" });
       return;
     }
     if (
-      code === PrivyErrorCode.LINKED_TO_ANOTHER_USER ||
-      code === PrivyErrorCode.ACCOUNT_TRANSFER_REQUIRED
+      code === PRIVY_ERROR.linkedToAnotherUser ||
+      code === PRIVY_ERROR.accountTransferRequired
     ) {
       // Do NOT promise a merge/transfer — reparenting is out of scope.
       setNote({
@@ -219,13 +237,15 @@ export function LinkedLoginsPanel() {
   return (
     <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
-        <span className="ck-title">linked logins</span>
+        <span className="ck-title ck-title-ik">
+          <Ik name="link" /> linked logins
+        </span>
         <span className="ck-mono ck-dim">{usable.length} linked</span>
       </div>
 
       {showNudge && (
         <div className="px-3 py-2 flex items-start justify-between gap-3 border-b border-[var(--color-border)]">
-          <p className="ck-mono ck-dim text-[10px] max-w-[48ch]">
+          <p className="ck-dim text-[12px] max-w-[48ch]">
             link your other logins so your agents stay under one account.
           </p>
           <button
@@ -242,7 +262,7 @@ export function LinkedLoginsPanel() {
       {usable.length === 0 ? (
         <div className="px-4 py-6 flex flex-col items-start gap-2">
           <p className="ck-mono ck-dim">no independent logins yet.</p>
-          <p className="ck-mono ck-dim text-[10px] max-w-[48ch]">
+          <p className="ck-dim text-[12px] max-w-[48ch]">
             link an email, google, or wallet below so you can always get back
             into this same account.
           </p>
@@ -254,7 +274,7 @@ export function LinkedLoginsPanel() {
               key={u.key}
               className="grid grid-cols-[64px_1fr] items-center px-3 py-2 gap-3"
             >
-              <span className="ck-mono ck-dim text-[10px] uppercase">{u.label}</span>
+              <span className="ck-dim text-[12px] uppercase">{u.label}</span>
               <span className="ck-mono ck-pos truncate" title={u.title}>
                 {u.display}
               </span>
@@ -293,15 +313,16 @@ export function LinkedLoginsPanel() {
           className="ck-btn ck-btn-bracket ck-pos"
           aria-label="link wallet"
         >
+          <Ik name="controller-wallet" />
           + wallet
         </button>
 
         {pending && (
-          <span className="ck-mono ck-dim text-[10px]">linking {pending}…</span>
+          <span className="ck-dim text-[12px]">linking {pending}…</span>
         )}
         {note && (
           <span
-            className={note.tone === "dim" ? "ck-mono ck-dim text-[10px]" : "ck-mono text-[10px]"}
+            className={note.tone === "dim" ? "ck-dim text-[12px]" : "text-[12px]"}
             style={note.tone === "accent" ? { color: "var(--color-accent-ink)" } : undefined}
             role={note.tone === "accent" ? "alert" : undefined}
           >

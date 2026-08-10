@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect } from "react";
 import { CompactTopbar } from "../components/compact/Topbar.js";
+import { InlineError } from "../components/compact/InlineError.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 
@@ -88,12 +89,13 @@ export function LoginPage({ next }: LoginPageProps) {
             )}
 
             {account.error && (
-              <div className="ck-frame-strong px-3 py-2 ck-mono ck-neg">
-                auth error: {account.error}
-              </div>
+              <InlineError
+                error={`auth: ${account.error}`}
+                className="ck-frame-strong px-3 py-2 ck-mono"
+              />
             )}
 
-            <p className="ck-mono ck-dim text-xs">
+            <p className="ck-mono ck-dim">
               signing in unlocks: manage your agents · mint runtime + api
               keys · set payout address
             </p>
@@ -112,7 +114,7 @@ export function LoginPage({ next }: LoginPageProps) {
                 previous "by continuing you accept the tos." line referenced
                 a target that doesn't exist, so it was removed rather than
                 linked. Reinstate (with a real link) once terms ship. */}
-            <p className="ck-mono ck-dim text-[10px]">
+            <p className="ck-dim text-[12px]">
               privy handles auth. nothing on-chain happens here.
             </p>
           </div>

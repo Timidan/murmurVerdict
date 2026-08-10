@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ThemeToggle } from "../ThemeToggle.js";
+import { useFocusTrap } from "./useFocusTrap.js";
 
 export interface NavItem {
   /** Route path (e.g. /leaderboard) — rendered as a `#/…` hash link. */
@@ -80,23 +81,9 @@ export function MobileNav({
     };
   }, [open, close]);
 
-  // Lightweight focus trap — keep Tab / Shift+Tab within the open panel.
-  const onPanelKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key !== "Tab" || !panelRef.current) return;
-    const focusables = panelRef.current.querySelectorAll<HTMLElement>(
-      "a[href], button:not([disabled])",
-    );
-    if (focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
+  // Keep Tab / Shift+Tab within the open panel. `open` is what re-binds the
+  // trap: the panel only exists in the DOM while the drawer is open.
+  useFocusTrap(panelRef, open);
 
   return (
     <>
@@ -125,7 +112,6 @@ export function MobileNav({
             role="dialog"
             aria-modal="true"
             aria-label="menu"
-            onKeyDown={onPanelKeyDown}
             className="drawer-enter-panel absolute top-0 right-0 h-full w-[78%] max-w-[320px] flex flex-col bg-[var(--color-bg)] border-l border-[var(--color-border)]"
           >
             <div className="h-[64px] shrink-0 flex items-center justify-between border-b border-[var(--color-border)] px-4">

@@ -19,6 +19,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MintApiKeyResponse } from "../../api.js";
+import { Ik } from "../../icons.js";
+import { useFocusTrap } from "../compact/useFocusTrap.js";
 
 export interface ApiKeyMintModalProps {
   /** The mint response. `secret` is the plaintext key (one-time). */
@@ -86,24 +88,9 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
     };
   }, []);
 
-  // Lightweight focus trap — keep Tab / Shift+Tab within the dialog
-  // (ported from compact/MobileNav).
-  const onPanelKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key !== "Tab" || !panelRef.current) return;
-    const focusables = panelRef.current.querySelectorAll<HTMLElement>(
-      "a[href], button:not([disabled]), input:not([disabled])",
-    );
-    if (focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
+  // Keep Tab / Shift+Tab within the dialog. The panel is mounted for this
+  // component's whole life, so the trap is unconditionally active.
+  useFocusTrap(panelRef);
 
   const copyToClipboard = useCallback(async (text: string, which: "raw" | "env") => {
     // Codex P2 fix — gate "copied" feedback on an actual successful write.
@@ -142,12 +129,21 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
       <div
         ref={panelRef}
         tabIndex={-1}
-        onKeyDown={onPanelKeyDown}
         className="modal-enter-panel ck-frame-strong w-full max-w-[560px] bg-[var(--color-bg)]"
       >
         <div className="ck-header">
-          <span id="mint-modal-title" className="ck-title ck-neg">
-            ⚠ api key · one-time reveal
+          {/* Title-marker upgrade (P2): the api glyph replaces the generic
+              ::before square. The ⚠ that follows is the error-prefix text
+              idiom, not a second marker; both sit in the title's ck-neg ink. */}
+          <span id="mint-modal-title" className="ck-title ck-neg ck-title-ik">
+            <Ik name="api" /> ⚠ api key · one-time reveal
+            {/* Seal stamp — the credential is sealed the instant this modal
+                mounts, so the glyph plays its one-shot close here and then
+                holds. Trailing, so the leading api marker keeps its slot; the
+                seal inherits the title's ck-neg ink like the ⚠ does. */}
+            <span className="mmr-seal-stamp" aria-hidden="true">
+              <Ik name="seal" size={16} />
+            </span>
           </span>
           <span className="ck-mono ck-dim">{slug}</span>
         </div>
@@ -159,7 +155,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
           >
             ⚠ key revealed once — copy it now.
           </p>
-          <p className="ck-mono ck-dim text-[10px] leading-relaxed">
+          <p className="ck-dim text-[12px] leading-relaxed">
             store it in your secrets manager or environment now. murmur stores
             only a hash — there is no recovery path. if you lose it, rotate
             via your account page and mint a fresh one.
@@ -193,14 +189,14 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
           </div>
 
           {copiedAt && (
-            <p className="confirm-enter ck-mono ck-pos text-[10px]" aria-live="polite">
+            <p className="confirm-enter ck-pos text-[12px]" aria-live="polite">
               copied {copiedAt === "env" ? ".env line" : "key"} · 3s
             </p>
           )}
 
           {copyFallback && (
             <p
-              className="ck-mono text-[10px]"
+              className="text-[12px]"
               style={{ color: "var(--color-accent-ink)" }}
               aria-live="polite"
             >
@@ -218,7 +214,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
             <span className="ck-mono ck-dim leading-relaxed">
               i have saved this key somewhere safe.
               <br />
-              <span className="text-[10px]">
+              <span className="text-[12px]">
                 checking this box enables the done button. unchecking it again
                 does not retroactively undo the mint — the key is already
                 active.

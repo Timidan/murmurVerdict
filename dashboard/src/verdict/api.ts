@@ -222,10 +222,32 @@ export interface AccountActivityRow {
   updated_at: string;
 }
 
-async function get<T>(path: string, headers?: HeaderMap): Promise<T> {
-  const init: RequestInit = headers ? { headers } : {};
+/**
+ * `signal` lets a caller cancel an in-flight read. Required by anything that
+ * re-issues on every keystroke (the archive search): without it, a slow early
+ * response resolves after a fast later one and overwrites fresher results.
+ * An aborted fetch rejects with a DOMException named "AbortError" — callers
+ * swallow that name rather than rendering it as a failure.
+ *
+ * The failure body is carried on `ApiError.rawBody` (same as `post`) so
+ * structured server codes like `archive_query_invalid` are readable by the
+ * caller. The MESSAGE format is unchanged on purpose — existing call sites
+ * match on it.
+ */
+async function get<T>(
+  path: string,
+  headers?: HeaderMap,
+  signal?: AbortSignal,
+): Promise<T> {
+  const init: RequestInit = {
+    ...(headers ? { headers } : {}),
+    ...(signal ? { signal } : {}),
+  };
   const res = await fetch(`${API_URL}${path}`, init);
-  if (!res.ok) throw new ApiError(`GET ${path} → ${res.status}`, res.status);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`GET ${path} → ${res.status}`, res.status, text);
+  }
   return (await res.json()) as T;
 }
 
@@ -282,6 +304,20 @@ async function postNoContent(
   }
 }
 
+async function put<T>(path: string, body: unknown, headers?: HeaderMap): Promise<T> {
+  const merged: HeaderMap = { "content-type": "application/json", ...(headers ?? {}) };
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "PUT",
+    headers: merged,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`PUT ${path} → ${res.status}: ${text}`, res.status, text);
+  }
+  return (await res.json()) as T;
+}
+
 async function del<T>(path: string, headers?: HeaderMap, body?: unknown): Promise<T> {
   const merged: HeaderMap | undefined = body === undefined
     ? headers
@@ -311,6 +347,52 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.rawBody = rawBody;
   }
+}
+
+/**
+ * One archived market from GET /v2/markets/archive.
+ *
+ * Shaped by the endpoint, not by the registry: an archived market is a
+ * question, a slug, the instant it ended and its venue artwork. It carries no
+ * odds, no leaderboard and no config blob — this is a search result, and
+ * anything more is a click away on the market page.
+ */
+export interface ArchivedMarketRow {
+  market_id: string;
+  question: string | null;
+  slug: string | null;
+  /** ISO instant the venue's window ended. */
+  ended_at: string;
+  icon_url: string | null;
+  /** True when murmur actually ran a sealed window on this market. */
+  sealed_window: boolean;
+}
+
+export interface MarketArchivePage {
+  schema_version: number;
+  results: ArchivedMarketRow[];
+  /** Feed back as `cursor` for the next page; null when this is the last. */
+  next_cursor: string | null;
+  has_more: boolean;
+  returned: number;
+}
+
+export interface ProviderTermsView {
+  schema_version: number;
+  /** False when the owner has not set terms — no access is sold. */
+  selling: boolean;
+  price_atoms?: string;
+  currency?: string;
+  pricing_version?: string;
+  /** The owner's ceiling; null means "as many as murmur can serve". */
+  max_subscribers_per_call?: number | null;
+  /** What this deployment can grant inside the delivery budget. */
+  deliverable_max_subscribers_per_call: number | null;
+  /** min(owner, deliverable) — what is actually sold. */
+  effective_max_subscribers_per_call?: number | null;
+  clamped_by_deliverability?: boolean;
+  notice?: string;
+  updated_at?: string;
 }
 
 export const verdictApi = {
@@ -524,6 +606,44 @@ export const verdictApi = {
       served_at: string;
     }>(
       `/v1/markets${q ? `?${q}` : ""}`,
+    );
+  },
+  /**
+   * Archive search — GET /v2/markets/archive. Keyset-paged over every market
+   * this deployment has frozen, newest end time first.
+   *
+   * The server REQUIRES either a search term of two or more characters or a
+   * date bound, and answers anything else with 400 `archive_query_invalid`
+   * (400 `archive_cursor_invalid` for a page token it did not issue). Both
+   * arrive as ApiError with the status carried — the search view renders the
+   * message inline rather than treating it as a failed request.
+   *
+   * `signal` is not optional in practice: results update per keystroke, and
+   * without an AbortController a slow early response lands after a fast late
+   * one and overwrites it.
+   */
+  marketsArchive: (
+    opts: {
+      q?: string;
+      /** Epoch seconds, or an ISO-8601 instant. */
+      from?: number | string;
+      to?: number | string;
+      cursor?: string;
+      limit?: number;
+    } = {},
+    signal?: AbortSignal,
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.q) params.set("q", opts.q);
+    if (opts.from !== undefined) params.set("from", String(opts.from));
+    if (opts.to !== undefined) params.set("to", String(opts.to));
+    if (opts.cursor) params.set("cursor", opts.cursor);
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    const q = params.toString();
+    return get<MarketArchivePage>(
+      `/v2/markets/archive${q ? `?${q}` : ""}`,
+      undefined,
+      signal,
     );
   },
   /**
@@ -785,6 +905,41 @@ export const verdictApi = {
       { Authorization: `Bearer ${privyToken}` },
     ),
 
+  /**
+   * The agent owner's own commercial terms for early decrypt access.
+   *
+   * `effective_max_subscribers_per_call` is what murmur will actually sell:
+   * min(the owner's ceiling, what this deployment can grant inside the
+   * delivery budget). When those differ the response carries `notice`.
+   */
+  getProviderTerms: (privyToken: string, slug: string) =>
+    get<ProviderTermsView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  putProviderTerms: (
+    privyToken: string,
+    slug: string,
+    body: {
+      price_atoms: string;
+      currency: string;
+      pricing_version: string;
+      max_subscribers_per_call: number | null;
+    },
+  ) =>
+    put<ProviderTermsView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms`,
+      body,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  deleteProviderTerms: (privyToken: string, slug: string) =>
+    del<ProviderTermsView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
   getKillSwitch: (privyToken: string) =>
     get<{ engaged: boolean; disabled_at: string | null }>(
       `/v1/account/kill-switch`,
@@ -934,6 +1089,24 @@ export async function fetchMarketsGrid(
 ): Promise<Array<{ market_id: string; agents: AgentMarketRow[] }>> {
   const r = await verdictApi.marketsGrid(opts);
   return r.markets;
+}
+
+/**
+ * Archive search — one page. Pass the previous page's `next_cursor` to walk
+ * backwards through time; pass a fresh `AbortSignal` per query so a stale
+ * response can never overwrite a newer one.
+ */
+export async function fetchArchivedMarkets(
+  opts: {
+    q?: string;
+    from?: number | string;
+    to?: number | string;
+    cursor?: string;
+    limit?: number;
+  },
+  signal?: AbortSignal,
+): Promise<MarketArchivePage> {
+  return verdictApi.marketsArchive(opts, signal);
 }
 
 export async function fetchAgentGrid(

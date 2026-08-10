@@ -12,10 +12,14 @@
 // the dashboard never composes the message itself. That keeps the binding
 // invariants entirely server-controlled.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePrivy, useSignMessage, useWallets, useCreateWallet } from "@privy-io/react-auth";
 import { verdictApi, type AccountAgent } from "../../api.js";
 import { getAccessToken } from "@privy-io/react-auth";
+import { Ik } from "../../icons.js";
+import { shortId } from "../../lib/display-format.js";
+import { InlineError } from "../compact/InlineError.js";
+import { TimeAgo } from "../compact/TimeAgo.js";
 
 // The daemon enforces that the Controller Wallet binding's chain_id equals
 // the Fhenix event chain (src/verdict/fhenix-common.ts:73-99). The previous
@@ -179,8 +183,8 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
     // prop, so only the parent fetch matters). useAccount.refreshAgents
     // catches internally today, so the defensive try below is unlikely
     // to fire — kept so a future change to the hook's error posture
-    // surfaces here instead of as an unhandled rejection. Banner
-    // renderer adds the `× ` prefix, so the message stays plain.
+    // surfaces here instead of as an unhandled rejection. InlineError
+    // adds the `[error] ` prefix, so the message stays plain.
     try {
       await onAgentChanged?.();
     } catch (e) {
@@ -231,7 +235,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
     }
     setBusy("idle");
     // Re-attest succeeded — see bind() comment for the defensive catch
-    // rationale. Banner renderer adds the `× ` prefix.
+    // rationale. InlineError adds the `[error] ` prefix.
     try {
       await onAgentChanged?.();
     } catch (e) {
@@ -245,13 +249,15 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
   return (
     <section className="ck-frame w-full max-w-[720px] px-4 py-4 flex flex-col gap-3">
       <header className="flex items-center justify-between">
-        <h3 className="ck-title">controller wallet</h3>
+        <h3 className="ck-title ck-title-ik">
+          <Ik name="controller-wallet" /> controller wallet
+        </h3>
         <StateBadge state={state} />
       </header>
 
       {state === "unbound" && (
         <>
-          <p className="ck-mono ck-dim text-[11px]">
+          <p className="ck-dim text-[12px]">
             no wallet bound yet. binding signs a one-time message that authorizes
             this account to mint runtime keys for {slug}. uses your Privy
             embedded wallet — no MetaMask, no gas.
@@ -261,7 +267,12 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
             onClick={bind}
             disabled={busy !== "idle" || !ready}
           >
-            {busy === "idle" ? "bind controller wallet" : busyLabel(busy)}
+            {/* The glyph names the OBJECT this button acts on, which doesn't
+                change while the signature is in flight — so it sits outside
+                the busy branch and only the label swaps. Hoisted out of the
+                ternary, the mark also stops flickering on every phase. */}
+            <Ik name="controller-wallet" />
+            {busy === "idle" ? "bind controller wallet" : <BusyLabel busy={busy} />}
           </button>
         </>
       )}
@@ -276,19 +287,19 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
             v={cw.chain_id}
             tone={daemonChainId && cw.chain_id !== daemonChainId ? "neg" : undefined}
           />
-          <KV k="bound" v={cw.created_at.slice(0, 19).replace("T", " ")} />
+          <KV k="bound" v={<TimeAgo iso={cw.created_at} />} />
           <KV
             k="last attested"
-            v={cw.last_attested_at.slice(0, 19).replace("T", " ")}
+            v={<TimeAgo iso={cw.last_attested_at} />}
           />
           <KV
             k="re-attest due"
-            v={cw.reattestation_due_at.slice(0, 19).replace("T", " ")}
+            v={<TimeAgo iso={cw.reattestation_due_at} />}
             tone={state === "overdue" ? "neg" : "dim"}
           />
           {daemonChainId && cw.chain_id !== daemonChainId && (
             <>
-              <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent-ink)" }}>
+              <p className="text-[12px]" style={{ color: "var(--color-accent-ink)" }}>
                 × wrong chain. this controller is bound to {cw.chain_id} but the
                 daemon is on {daemonChainId}. runtime-key submissions will be
                 rejected by the gateway. re-bind on the daemon chain to recover.
@@ -298,13 +309,14 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
                 onClick={bind}
                 disabled={busy !== "idle" || !ready}
               >
-                {busy === "idle" ? "rebind on " + daemonChainId : busyLabel(busy)}
+                <Ik name="controller-wallet" />
+                {busy === "idle" ? "rebind on " + daemonChainId : <BusyLabel busy={busy} />}
               </button>
             </>
           )}
           {state === "overdue" && (
             <>
-              <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent-ink)" }}>
+              <p className="text-[12px]" style={{ color: "var(--color-accent-ink)" }}>
                 × re-attestation overdue. sign a fresh attestation message to
                 keep runtime-key minting available.
               </p>
@@ -313,18 +325,15 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
                 onClick={reattest}
                 disabled={busy !== "idle" || !ready}
               >
-                {busy === "idle" ? "re-attest now" : busyLabel(busy)}
+                <Ik name="attest" />
+                {busy === "idle" ? "re-attest now" : <BusyLabel busy={busy} />}
               </button>
             </>
           )}
         </>
       )}
 
-      {error && (
-        <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent-ink)" }}>
-          × {error}
-        </p>
-      )}
+      {error && <InlineError error={error} className="text-[12px]" />}
     </section>
   );
 }
@@ -336,9 +345,17 @@ function busyLabel(b: BusyState): string {
   return "…";
 }
 
+/**
+ * The busy branch shared by all three signing CTAs — text only. Each CTA keeps
+ * its own object glyph mounted outside this branch, so the mark never changes
+ * mid-flight and the phase label is the only thing that moves.
+ */
+function BusyLabel({ busy }: { busy: BusyState }) {
+  return <>{busyLabel(busy)}</>;
+}
+
 function shortAddr(addr: string): string {
-  if (addr.length < 14) return addr;
-  return `${addr.slice(0, 8)}…${addr.slice(-6)}`;
+  return shortId(addr, 8, 6);
 }
 
 function sameAddress(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -352,13 +369,13 @@ function StateBadge({ state }: { state: "unbound" | "bound" | "overdue" }) {
     overdue: { label: "overdue", tone: "ck-neg" },
   };
   const { label, tone } = map[state];
-  return <span className={`ck-mono text-[10px] uppercase ${tone}`}>{label}</span>;
+  return <span className={`text-[12px] uppercase ${tone}`}>{label}</span>;
 }
 
-function KV({ k, v, tone, title }: { k: string; v: string; tone?: "dim" | "neg"; title?: string }) {
+function KV({ k, v, tone, title }: { k: string; v: ReactNode; tone?: "dim" | "neg"; title?: string }) {
   const toneClass = tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
   return (
-    <div className="grid grid-cols-[120px_1fr] gap-2 ck-mono text-[11px]">
+    <div className="grid grid-cols-[120px_1fr] gap-2 text-[12px]">
       <span className="ck-label">{k}</span>
       <span className={`${toneClass} truncate`} title={title}>{v}</span>
     </div>

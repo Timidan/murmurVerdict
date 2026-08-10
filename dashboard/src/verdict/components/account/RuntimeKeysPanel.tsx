@@ -20,6 +20,9 @@ import {
   type RuntimeKeyRow,
   type RuntimeKeyMintResponse,
 } from "../../api.js";
+import { Ik } from "../../icons.js";
+import { InlineError } from "../compact/InlineError.js";
+import { TimeAgo } from "../compact/TimeAgo.js";
 import { RuntimeKeyMintModal } from "./RuntimeKeyMintModal.js";
 import { generateRuntimeKeySigningKeypair } from "../../lib/runtime-key-signing.js";
 
@@ -59,7 +62,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("× session expired — sign in again");
+        setError("session expired — sign in again");
         return;
       }
       const { keys } = await verdictApi.getRuntimeKeys(token, slug);
@@ -90,14 +93,14 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     if (!canMint || !cw) return;
     if (!controllerWalletConnected) {
       setError(
-        "× connect the bound controller wallet in Privy before signing the runtime-key authorization",
+        "connect the bound controller wallet in Privy before signing the runtime-key authorization",
       );
       return;
     }
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("× session expired — sign in again");
+        setError("session expired — sign in again");
         return;
       }
       // PoP: the keypair must exist BEFORE the challenge so its public half
@@ -149,7 +152,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("× session expired — sign in again");
+        setError("session expired — sign in again");
         return;
       }
       setBusy("revoking");
@@ -166,14 +169,16 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   return (
     <section className="ck-frame w-full max-w-[720px] px-4 py-4 flex flex-col gap-3">
       <header className="flex items-center justify-between">
-        <h3 className="ck-title">runtime keys · {slug}</h3>
-        <span className="ck-mono text-[10px] ck-dim">
+        <h3 className="ck-title ck-title-ik">
+          <Ik name="runtime-key" /> runtime keys · {slug}
+        </h3>
+        <span className="text-[12px] ck-dim">
           {keys.filter((k) => !k.revoked_at).length} active · {keys.filter((k) => k.revoked_at).length} revoked
         </span>
       </header>
 
       {!cw && (
-        <p className="ck-mono text-[11px] ck-dim">
+        <p className="text-[12px] ck-dim">
           bind a controller wallet first — runtime keys are authorized by the
           wallet's signature.{" "}
           <a
@@ -187,7 +192,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
       {cw?.reattestation_overdue && (
         <p
-          className="ck-mono text-[11px]"
+          className="text-[12px]"
           style={{ color: "var(--color-accent-ink)" }}
         >
           × controller wallet re-attestation overdue — the daemon will
@@ -205,7 +210,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       {loading && <p className="ck-mono ck-dim">loading…</p>}
 
       {!loading && keys.length === 0 && cw && (
-        <p className="ck-mono ck-dim text-[11px]">
+        <p className="ck-dim text-[12px]">
           no runtime keys minted yet. mint one to start submitting calls
           through the Gateway.
         </p>
@@ -213,7 +218,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
       {!loading && keys.length > 0 && (
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
-          <li className="grid grid-cols-[140px_1fr_120px_60px] gap-2 ck-colhead">
+          <li className="grid grid-cols-[140px_1fr_120px_142px] gap-2 ck-colhead">
             <span>prefix</span>
             <span>policy</span>
             <span>created</span>
@@ -225,7 +230,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
             return (
               <li
                 key={k.runtime_key_id}
-                className="grid grid-cols-[140px_1fr_120px_60px] gap-2 ck-mono text-[11px] items-center px-1 py-1 border-b border-[var(--color-border)]"
+                className="grid grid-cols-[140px_1fr_120px_142px] gap-2 text-[12px] items-center px-1 py-1 border-b border-[var(--color-border)]"
               >
                 <span className={`${tone} truncate`} title={k.runtime_key_id}>
                   {k.runtime_key_prefix}
@@ -236,12 +241,10 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
                 >
                   {k.label ?? "—"} · h:{k.policy_hash.slice(0, 8)}
                 </span>
-                <span className="ck-dim text-[10px]">
-                  {k.created_at.slice(0, 10)}
-                </span>
+                <TimeAgo iso={k.created_at} className="ck-dim text-[12px]" />
                 <span className="text-right">
                   {revoked ? (
-                    <span className="ck-dim text-[10px]">revoked</span>
+                    <span className="ck-dim text-[12px]">revoked</span>
                   ) : confirmId === k.runtime_key_id ? (
                     <span className="confirm-enter inline-flex items-center gap-2">
                       <button
@@ -279,7 +282,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
       {confirmId && (
         <p
-          className="ck-mono text-[10px]"
+          className="text-[12px]"
           style={{ color: "var(--color-accent-ink)" }}
         >
           revoke{" "}
@@ -291,7 +294,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       )}
 
       {cw && (
-        <label className="ck-mono text-[10px] flex items-center gap-1.5 self-start cursor-pointer select-none">
+        <label className="text-[12px] flex items-center gap-1.5 self-start cursor-pointer select-none">
           <input
             type="checkbox"
             checked={popEnabled}
@@ -317,14 +320,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
         </button>
       )}
 
-      {error && (
-        <p
-          className="ck-mono text-[11px]"
-          style={{ color: "var(--color-accent-ink)" }}
-        >
-          × {error}
-        </p>
-      )}
+      {error && <InlineError error={error} className="text-[12px]" />}
 
       {minted && (
         <RuntimeKeyMintModal

@@ -1,6 +1,7 @@
 import { useEffect, useState, lazy, Suspense } from "react";
 import { parseLocation } from "./route.js";
 import { DetailDrawerProvider, DetailDrawer, useDetailDrawer } from "./components/compact/DetailDrawer.js";
+import { GlobalShortcuts } from "./components/compact/GlobalShortcuts.js";
 
 const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ default: m.TodayPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
@@ -14,7 +15,10 @@ const AdminOverviewPage = lazy(() => import("./pages/AdminOverviewPage.js").then
 // into the landing/leaderboard bundles.
 const AccountPage = lazy(() => import("./pages/AccountPage.js").then((m) => ({ default: m.AccountPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage.js").then((m) => ({ default: m.LoginPage })));
-// Phase 7c — per-agent settings shell (payout + keys sub-tabs).
+// Phase 7c — per-agent settings shell (payout + pricing + keys sub-tabs).
+// The tab union is IMPORTED, not restated: a tab added to the page but
+// missing from a local copy here would silently fall through to "payout".
+import type { AgentSettingsTab } from "./pages/AgentSettingsPage.js";
 const AgentSettingsPage = lazy(() =>
   import("./pages/AgentSettingsPage.js").then((m) => ({
     default: m.AgentSettingsPage,
@@ -114,7 +118,7 @@ export function VerdictRouter() {
     <Suspense
       fallback={
         <div className="mmr-shell min-h-dvh bg-[var(--color-bg)] flex items-center justify-center">
-          <span className="ck-mono ck-dim text-xs">loading…</span>
+          <span className="ck-mono ck-dim">loading…</span>
         </div>
       }
     >
@@ -143,7 +147,7 @@ export function VerdictRouter() {
           {route.name === "account_agent_settings" && (
             <AgentSettingsPage
               slug={route.params!.slug}
-              tab={(route.params!.tab as "payout" | "wallet" | "runtime" | "keys") ?? "payout"}
+              tab={(route.params!.tab as AgentSettingsTab) ?? "payout"}
             />
           )}
           {route.name === "account_agent_integrate" && (
@@ -157,6 +161,11 @@ export function VerdictRouter() {
       {route.name === "not_found" && <NotFoundPage path={route.params?.path} />}
     </Suspense>
     </BackgroundInert>
+      {/* Route chords (`g` + key). Mounted here, once, as a sibling of the
+          drawer: it renders nothing and listens on `window`, so it must sit
+          outside <BackgroundInert/> — an inert subtree is exactly what the
+          keyboard layer should still work behind. */}
+      <GlobalShortcuts />
       <DetailDrawer />
     </DetailDrawerProvider>
   );

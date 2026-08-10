@@ -3,26 +3,46 @@
 // revoked/rotated credentials — re-mint to resume, which for runtime keys
 // means a fresh controller-wallet signature.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
 
 import { verdictApi } from "../../api.js";
+import { Ik } from "../../icons.js";
+import { InlineError } from "../compact/InlineError.js";
+import { TimeAgo } from "../compact/TimeAgo.js";
 
-const CONFIRM_TIMEOUT_MS = 8_000;
+/**
+ * The word the operator must type to re-arm the account. Case-sensitive —
+ * surrounding whitespace is forgiven (a pasted or auto-spaced word still
+ * counts as typing it), but a different word never is. UI gate only: the
+ * request payload does not carry this.
+ */
+const RELEASE_PHRASE = "release";
+
+/** Matches the shared input styling used by DestinationAddressForm. */
+const INPUT_CLASS =
+  "ck-mono bg-transparent border border-[var(--color-border-vis)] px-2 py-1 outline-none focus:border-[var(--color-display)] disabled:opacity-50 disabled:cursor-not-allowed";
 
 export function KillSwitchPanel() {
   const [engaged, setEngaged] = useState<boolean | null>(null);
   const [disabledAt, setDisabledAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [releaseInput, setReleaseInput] = useState("");
   const [lastCounts, setLastCounts] = useState<string | null>(null);
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const token = await getAccessToken();
-      if (!token) return;
+      // A silent return here left `engaged` at null forever: the status chip
+      // stuck on "…" and the engage button permanently disabled, with nothing
+      // saying why. Say it — same wording as DestinationAddressForm, and
+      // nothing clears this state before the operator acts on it (refresh
+      // runs once on mount; engage/release clear it only as they retry).
+      if (!token) {
+        setError("session expired — sign in again");
+        return;
+      }
       const state = await verdictApi.getKillSwitch(token);
       setEngaged(state.engaged);
       setDisabledAt(state.disabled_at);
@@ -33,19 +53,11 @@ export function KillSwitchPanel() {
 
   useEffect(() => {
     void refresh();
-    return () => {
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    };
   }, [refresh]);
 
+  // One click. An emergency stop that asks a second question is a stop that
+  // arrives late; the damage this undoes is worse than a stray click.
   const engage = useCallback(async () => {
-    if (!confirming) {
-      setConfirming(true);
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-      confirmTimerRef.current = setTimeout(() => setConfirming(false), CONFIRM_TIMEOUT_MS);
-      return;
-    }
-    setConfirming(false);
     setBusy(true);
     setError(null);
     try {
@@ -62,9 +74,13 @@ export function KillSwitchPanel() {
     } finally {
       setBusy(false);
     }
-  }, [confirming]);
+  }, []);
 
+  // Re-arming the account is the deliberate direction: it only runs once the
+  // operator has typed the word out. The gate re-arms on the way out either
+  // way — a failed release has to be re-typed, not re-clicked.
   const release = useCallback(async () => {
+    if (releaseInput.trim() !== RELEASE_PHRASE) return;
     setBusy(true);
     setError(null);
     try {
@@ -78,13 +94,16 @@ export function KillSwitchPanel() {
       setError((e as Error)?.message ?? "unknown error");
     } finally {
       setBusy(false);
+      setReleaseInput("");
     }
-  }, []);
+  }, [releaseInput]);
 
   return (
     <section className="ck-frame">
       <div className="ck-header">
-        <span className="ck-title">agent kill switch</span>
+        <span className="ck-title ck-title-ik">
+          <Ik name="kill-switch" /> agent kill switch
+        </span>
         <span className="ck-mono ck-dim">
           {engaged === null ? "…" : engaged ? "ENGAGED" : "off"}
         </span>
@@ -92,24 +111,47 @@ export function KillSwitchPanel() {
       <div className="px-3 py-2 flex flex-col gap-2">
         {engaged ? (
           <>
-            <p className="ck-mono text-[11px]" style={{ color: "var(--color-accent-ink)" }}>
-              engaged {disabledAt ? disabledAt.slice(0, 19).replace("T", " ") : ""} — every
+            <p className="text-[12px]" style={{ color: "var(--color-accent-ink)" }}>
+              engaged {disabledAt ? <TimeAgo iso={disabledAt} /> : ""} — every
               agent credential is blocked: dispatch 403s, minting is frozen, queued
               gateway attempts terminate before broadcast.
               {lastCounts ? ` ${lastCounts}.` : ""}
             </p>
-            <button
-              type="button"
-              className="ck-btn ck-btn-bracket self-start"
-              onClick={() => void release()}
-              disabled={busy}
+            <form
+              className="flex flex-col gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void release();
+              }}
             >
-              release — resume minting (dead keys stay dead)
-            </button>
+              <input
+                type="text"
+                value={releaseInput}
+                onChange={(e) => setReleaseInput(e.currentTarget.value)}
+                placeholder='type "release" to confirm'
+                // The accessible name has to carry the word itself: an
+                // aria-label suppresses the placeholder from the a11y tree,
+                // so "release confirmation" alone would leave a screen-reader
+                // user with a dead button and no way to discover the password.
+                aria-label='type the word "release" to confirm'
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                disabled={busy}
+                className={`${INPUT_CLASS} max-w-[28ch]`}
+              />
+              <button
+                type="submit"
+                className="ck-btn ck-btn-bracket self-start"
+                disabled={busy || releaseInput.trim() !== RELEASE_PHRASE}
+              >
+                release — resume minting (dead keys stay dead)
+              </button>
+            </form>
           </>
         ) : (
           <>
-            <p className="ck-mono text-[11px] ck-dim">
+            <p className="text-[12px] ck-dim">
               one click disables every agent credential on this account: revokes all
               runtime keys, rotates all api keys, freezes minting, and stops queued
               gateway attempts. release later requires this dashboard; re-minting a
@@ -117,20 +159,16 @@ export function KillSwitchPanel() {
             </p>
             <button
               type="button"
-              className="ck-btn ck-btn-bracket self-start"
-              style={confirming ? { color: "var(--color-accent-ink)" } : undefined}
+              className="ck-btn ck-btn-bracket ck-btn-accent self-start"
               onClick={() => void engage()}
               disabled={busy || engaged === null}
             >
-              {confirming ? "click again to disable ALL agent access" : "engage kill switch"}
+              <Ik name="kill-switch" />
+              engage kill switch
             </button>
           </>
         )}
-        {error && (
-          <p className="ck-mono text-[10px]" style={{ color: "var(--color-accent-ink)" }}>
-            × {error}
-          </p>
-        )}
+        {error && <InlineError error={error} className="text-[12px]" />}
       </div>
     </section>
   );

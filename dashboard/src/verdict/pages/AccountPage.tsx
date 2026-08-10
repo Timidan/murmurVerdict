@@ -15,7 +15,9 @@
 // #/account/agent/:slug.
 
 import { useEffect } from "react";
+import { Ik, IkNav } from "../icons.js";
 import { CompactTopbar } from "../components/compact/Topbar.js";
+import { InlineError } from "../components/compact/InlineError.js";
 import { TierBadge } from "../components/TierBadge.js";
 import { FheStatusPanel } from "../components/FheStatusPanel.js";
 import { LinkedLoginsPanel } from "../components/account/LinkedLoginsPanel.js";
@@ -136,10 +138,13 @@ export function AccountPage() {
       <main className="flex-1 px-3 py-3 flex flex-col gap-3 max-w-[960px] w-full mx-auto">
         <section className="ck-frame">
           <div className="ck-header">
-            <span className="ck-title">your agents</span>
+            <span className="ck-title ck-title-ik">
+              <IkNav name="agent" /> your agents
+            </span>
             <span className="flex items-center gap-3">
               <span className="ck-mono ck-dim">{account.agents.length} owned</span>
               <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
+                <Ik name="agent" />
                 + add agent
               </a>
               <button
@@ -153,9 +158,10 @@ export function AccountPage() {
           </div>
 
           {account.error && (
-            <div className="px-3 py-2 ck-mono ck-neg border-b border-[var(--color-border)]">
-              error: {account.error}
-            </div>
+            <InlineError
+              error={account.error}
+              className="px-3 py-2 ck-mono border-b border-[var(--color-border)]"
+            />
           )}
 
           {account.loading && account.agents.length === 0 ? (
@@ -194,7 +200,7 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
               <div className="ck-mono ck-pos truncate">
                 {a.display_slug ?? a.agent_id.slice(0, 12)}
               </div>
-              <div className="ck-mono ck-dim truncate text-[10px]">
+              <div className="ck-dim truncate text-[12px]">
                 {a.display_name ?? "—"}
               </div>
             </div>
@@ -231,7 +237,7 @@ function ReattestChip({
     return (
       <a
         href={walletHref}
-        className="ck-mono text-[10px] ck-neg no-underline hover:underline"
+        className="text-[12px] ck-neg no-underline hover:underline"
         title="no controller wallet bound; runtime-key mint will fail"
       >
         × no wallet
@@ -242,7 +248,7 @@ function ReattestChip({
     return (
       <a
         href={walletHref}
-        className="ck-mono text-[10px] ck-neg no-underline hover:underline"
+        className="text-[12px] ck-neg no-underline hover:underline"
         title="re-attestation overdue; runtime keys won't authenticate"
       >
         × re-attest →
@@ -252,10 +258,11 @@ function ReattestChip({
   const days = daysUntil(controllerWallet.reattestation_due_at);
   return (
     <span
-      className="ck-mono text-[10px] ck-dim"
+      className="text-[12px] ck-dim"
       title={`re-attest by ${controllerWallet.reattestation_due_at.slice(0, 10)}`}
     >
-      re-attest {days <= 0 ? "today" : days === 1 ? "in 1d" : `in ${days}d`}
+      re-attest{" "}
+      {days <= 0 ? "today" : days === 1 ? "in 1d" : `in ${days}d`}
     </span>
   );
 }
@@ -271,12 +278,13 @@ function EmptyState() {
   return (
     <div className="px-4 py-8 flex flex-col items-start gap-3">
       <p className="ck-mono ck-dim">no agents yet.</p>
-      <p className="ck-mono ck-dim text-[10px] max-w-[40ch]">
+      <p className="ck-dim text-[12px] max-w-[40ch]">
         pick a handle for your agent on the next page, approve two wallet
         signatures, and copy the one-time runtime key into your bot.
         takes about a minute.
       </p>
       <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
+        <Ik name="agent" />
         + add agent
       </a>
     </div>
@@ -319,7 +327,7 @@ function ConfigErrorShell() {
       <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
           <p className="ck-mono ck-neg">privy not configured.</p>
-          <p className="ck-mono ck-dim mt-2 text-[10px]">
+          <p className="ck-dim mt-2 text-[12px]">
             set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local and rebuild.
           </p>
         </section>
