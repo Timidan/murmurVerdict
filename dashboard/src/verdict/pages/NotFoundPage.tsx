@@ -1,4 +1,4 @@
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { RecoveryLinks } from "../components/compact/ErrorState.js";
 
 interface NotFoundPageProps {
@@ -15,8 +15,8 @@ interface NotFoundPageProps {
 export function NotFoundPage({ path }: NotFoundPageProps) {
   const attempted = path && path.length > 0 ? path : window.location.pathname;
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb="404" />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb>404</TopbarCrumb>
       <main className="px-2 py-3 ck-mono">
         <div className="ck-label ck-dim mb-1">404</div>
         {/* T1 (18px) — same fix as <ErrorState/>: at `ck-value-lg` (15px) this
@@ -26,7 +26,7 @@ export function NotFoundPage({ path }: NotFoundPageProps) {
           {attempted}
         </div>
         <p className="ck-mono ck-dim mt-1 leading-tight">
-          Nothing is routed at this address — check the URL, or jump back in below.
+          Nothing lives at this address. Check the URL, or use a link below.
         </p>
         <div className="mt-2">
           <RecoveryLinks />

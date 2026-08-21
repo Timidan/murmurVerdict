@@ -2,17 +2,27 @@ import type { KeyboardEvent, ReactNode } from "react";
 
 interface FormulaTipProps {
   label: string;
+  /**
+   * Plain-language definition, one short active sentence. This is what the
+   * reader actually needs; the formula below it is the proof, not the answer.
+   * See dashboard/COPY.md §5 ("tooltip pattern").
+   */
+  plain?: string;
   formula: string;
   children?: ReactNode;
   className?: string;
 }
 
 /**
- * Tiny stat-header formula tooltip for COMPACT surfaces.
- * Hover/focus-visible show the formula; Escape blurs the trigger.
+ * Tiny stat-header definition tooltip for COMPACT surfaces.
+ * Hover/focus-visible show the definition; Escape blurs the trigger.
+ *
+ * The trigger mark is `ⓘ`, never `?`: a question mark next to a number reads
+ * as "value unknown" (owner report, 2026-08-09 — `vs ?`, `wr ?`, `trend ?`).
  */
 export function FormulaTip({
   label,
+  plain,
   formula,
   children = label,
   className = "",
@@ -27,7 +37,7 @@ export function FormulaTip({
   return (
     <span
       tabIndex={0}
-      aria-label={`${label} formula: ${formula}`}
+      aria-label={plain ? `${label} — ${plain} ${formula}` : `${label} formula: ${formula}`}
       onKeyDown={onKeyDown}
       onClick={
         // Safari only treats a non-form element as tappable-focusable when it
@@ -47,7 +57,7 @@ export function FormulaTip({
     >
       <span className="ck-label">{children}</span>
       <span aria-hidden="true" className="ck-dim text-[12px] leading-none">
-        ?
+        ⓘ
       </span>
       <span
         aria-hidden="true"
@@ -59,15 +69,26 @@ export function FormulaTip({
           "duration-[140ms] ease-out"
         }
       >
-        {formula}
+        {plain ? (
+          <>
+            <span className="block">{plain}</span>
+            <span className="block ck-dim mt-1">{formula}</span>
+          </>
+        ) : (
+          formula
+        )}
       </span>
     </span>
   );
 }
 
-export function withFormulaTip(label: string, formula: string): ReactNode {
+export function withFormulaTip(
+  label: string,
+  formula: string,
+  plain?: string,
+): ReactNode {
   return (
-    <FormulaTip label={label} formula={formula}>
+    <FormulaTip label={label} plain={plain} formula={formula}>
       {label}
     </FormulaTip>
   );

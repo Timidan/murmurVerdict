@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { verdictApi, API_BASE, type AgentProfile } from "../api.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 
@@ -91,15 +91,11 @@ export function SharePage({ slug }: { slug: string }) {
   };
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             share <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{slug}</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       {/* HERO STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-3 flex flex-col gap-1">
@@ -112,8 +108,8 @@ export function SharePage({ slug }: { slug: string }) {
         </span>
         {ref && (
           <span className="ck-mono ck-dim max-w-[70ch]">
-            <span className="ck-pos">@{ref}</span> shared this verdict with you.
-            Score updates live; receipts are independently verifiable.
+            <span className="ck-pos">@{ref}</span> shared this record with you.
+            The score updates live, and anyone can check the evidence.
           </span>
         )}
       </section>
@@ -144,7 +140,7 @@ export function SharePage({ slug }: { slug: string }) {
         </Panel>
 
         {/* SHARE ACTIONS */}
-        <Panel title="broadcast">
+        <Panel title="share it">
           <div className="p-3 flex flex-wrap items-center gap-4">
             <a
               href={tweetUrl}
@@ -173,13 +169,13 @@ export function SharePage({ slug }: { slug: string }) {
 
         {/* EMBED SNIPPETS */}
         <Snippet
-          title="markdown · readme / github"
+          title="markdown — for a readme or GitHub"
           value={markdownEmbed}
           copied={copied === "markdown"}
           onCopy={() => copy("markdown", markdownEmbed)}
         />
         <Snippet
-          title="html · notion / discord / web"
+          title="html — for Notion, Discord, or a web page"
           value={htmlEmbed}
           copied={copied === "html"}
           onCopy={() => copy("html", htmlEmbed)}

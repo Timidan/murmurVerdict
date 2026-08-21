@@ -62,8 +62,12 @@ export function CallDetail({
   // plaintext — and it ignored that early decrypt access rests on grantor key
   // custody. The same overclaim was corrected in the agent card, README,
   // OpenAPI and skill doc; this was the copy actual users read.
-  const subjectLabel = !data ? "" : "operator-blind";
-  const outcomeText = !data ? "" : data.resolution ? data.resolution.outcome : "pend";
+  const subjectLabel = !data ? "" : "sealed";
+  const outcomeText = !data
+    ? ""
+    : data.resolution
+      ? outcomeWord(data.resolution.outcome)
+      : "pending";
   const outcomeTone = !data
     ? "ck-dim"
     : !data.resolution
@@ -109,30 +113,30 @@ export function CallDetail({
         <>
           <div className={statWrap}>
             <Stat
-              label="subject"
+              label="privacy"
               value={subjectLabel}
               mono
-              title="operator-blind — the sealed value is not readable here, and the contract cannot make it public before the market's reveal instant. On the canonical client-sealed path murmur never holds the plaintext at all; on the server-sealed /seal path it does, by design. See the threat model."
+              title="The call is sealed. Murmur cannot show it here, and the contract cannot publish it before the market's reveal time. On the standard path the agent seals the call in its own runtime, so murmur never holds the plain text. On the optional /seal path murmur does hold it, by design."
             />
             <Stat label="outcome" value={outcomeText} tone={outcomeTone} />
             <Stat
               label="score"
               value={formatScore(data.resolution?.call_score, { decimals: 4 })}
               mono
-              title="call_score — Brier-style skill term for this resolved call"
+              title="How good this call was. It pays the agent for being right and confident, and charges it for being wrong and confident."
             />
           </div>
 
           <Panel
             title={
               <>
-                <Ik name="verdict" /> submission
+                <Ik name="verdict" /> the call
               </>
             }
             className={panelCls}
           >
             <Kv
-              k="call_id"
+              k="call id"
               v={
                 <span title={data.submission.call_id}>
                   {shortId(data.submission.call_id, 8, 5)}
@@ -141,7 +145,7 @@ export function CallDetail({
               mono
             />
             <Kv
-              k="agent_id"
+              k="agent id"
               v={
                 <span title={data.submission.agent_id}>
                   {shortId(data.submission.agent_id, 8, 5)}
@@ -151,13 +155,13 @@ export function CallDetail({
             />
             {data.submission.privacy_mode && (
               <div className="flex items-center justify-between px-2 py-1">
-                <span className="ck-label ck-dim">privacy_mode</span>
+                <span className="ck-label ck-dim">privacy</span>
                 <PrivacyTierBadge mode={data.submission.privacy_mode} />
               </div>
             )}
             {data.submission.commit_hash && (
               <Kv
-                k="commit_hash"
+                k="commit hash"
                 v={
                   <span title={data.submission.commit_hash}>
                     {shortId(data.submission.commit_hash, 8, 5)}
@@ -199,79 +203,106 @@ export function CallDetail({
               </>
             )}
             {data.submission.submitted_at && (
-              <Kv k="submitted_at" v={<TimeAgo iso={data.submission.submitted_at} />} />
+              <Kv
+                k="sent"
+                v={<TimeAgo iso={data.submission.submitted_at} />}
+                title="when the agent sent this call"
+              />
             )}
-            <Kv k="accepted_at" v={<TimeAgo iso={data.submission.accepted_at} />} />
+            <Kv
+              k="accepted"
+              v={<TimeAgo iso={data.submission.accepted_at} />}
+              title="when murmur accepted the call and sealed it"
+            />
             {data.submission.strategy_tag && (
-              <Kv k="strategy_tag" v={data.submission.strategy_tag} />
+              <Kv k="strategy" v={data.submission.strategy_tag} />
             )}
           </Panel>
 
           <Panel
             title={
               <>
-                <Ik name="resolve" /> anchor · resolution
+                <Ik name="resolve" /> resolution
               </>
             }
             className={panelCls}
           >
-            {data.t0 ? (
+            {/* PRICE-ANCHOR ROWS — legacy native-price calls only.
+                Murmur is a pure referee on external venues: a venue call has no
+                anchor, no anchor price and no price feed, so the old
+                "t0: awaiting anchor" placeholder promised machinery that is
+                never coming for it. The whole block is gated on the data now,
+                and the empty branch is gone. */}
+            {data.t0 && (
               <>
                 <Kv
-                  k="t0"
+                  k="anchor time"
                   v={<TimeAgo iso={data.t0.t0} />}
-                  title="anchor open — timestamp the oracle price was observed when the call opened"
+                  title="when the price was read at the start of this call"
                 />
                 <Kv
-                  k="p0"
+                  k="anchor price"
                   v={data.t0.p0}
-                  title="anchor price — oracle price at t0, the baseline the return is measured from"
+                  title="the starting price this call is measured from"
                 />
                 <Kv
-                  k="t0_feed"
+                  k="price source"
                   v={data.t0.feed}
-                  title="oracle feed that supplied the t0 anchor price (e.g. chainlink:base:ETH-USD)"
+                  title="the price feed that gave the anchor price"
                 />
+                <KvDivider />
               </>
-            ) : (
-              <Kv k="t0" v="awaiting anchor" tone="ck-dim" />
             )}
-            <KvDivider />
             {data.resolution ? (
               <>
                 <Kv
-                  k="t1"
+                  k="market closed"
                   v={<TimeAgo iso={data.resolution.t1} />}
-                  title="resolution time — horizon-close timestamp the call was settled at"
+                  title="when the market closed and the call became scorable"
                 />
-                <Kv
-                  k="p1"
-                  v={data.resolution.p1 ?? "—"}
-                  title="resolution price — oracle price at t1, compared against p0 to score the call (native-price only)"
-                />
-                <Kv
-                  k="t1_feed"
-                  v={data.resolution.t1_feed ?? "—"}
-                  title="oracle feed that supplied the t1 resolution price (native-price only)"
-                />
-                {data.resolution.call_score !== null && (
+                {/* Same rule as the anchor block: a venue call carries no
+                    closing price and no feed, so the rows only appear when the
+                    daemon actually has them. */}
+                {data.resolution.p1 !== null && data.resolution.p1 !== undefined && (
                   <Kv
-                    k="call_score"
-                    v={formatScore(data.resolution.call_score, { decimals: 4 })}
-                    title="call_score — Brier-style skill term for this resolved call"
+                    k="closing price"
+                    v={data.resolution.p1}
+                    title="the closing price, compared against the anchor price to score the call"
                   />
                 )}
-                <Kv k="resolved_at" v={<TimeAgo iso={data.resolution.resolved_at} />} />
+                {data.resolution.t1_feed !== null && data.resolution.t1_feed !== undefined && (
+                  <Kv
+                    k="price source"
+                    v={data.resolution.t1_feed}
+                    title="the price feed that gave the closing price"
+                  />
+                )}
+                {data.resolution.call_score !== null && (
+                  <Kv
+                    k="score"
+                    v={formatScore(data.resolution.call_score, { decimals: 4 })}
+                    title="How good this call was. It pays the agent for being right and confident, and charges it for being wrong and confident."
+                  />
+                )}
+                <Kv
+                  k="scored"
+                  v={<TimeAgo iso={data.resolution.resolved_at} />}
+                  title="when murmur scored this call"
+                />
               </>
             ) : (
-              <Kv k="t1" v="awaiting resolution" tone="ck-dim" />
+              <Kv
+                k="scored"
+                v="not yet — the market has not settled"
+                tone="ck-dim"
+              />
             )}
           </Panel>
 
           <Panel
             title={
               <>
-                <Ik name="seal" /> identity evidence
+                <Ik name="seal" /> on-chain proof
               </>
             }
             className={page ? undefined : "-mt-px"}
@@ -295,42 +326,45 @@ export function CallDetail({
                   mono
                 />
                 <Kv
-                  k="onchain_call_id"
+                  k="on-chain call id"
                   v={
                     <span className="ck-mono ck-pos" title={data.fhenix.onchain_call_id}>
                       {shortId(data.fhenix.onchain_call_id, 9, 6)}
                     </span>
                   }
                   mono
-                  title="on-chain sealed-call id emitted by the Fhenix gateway contract when the verdict was sealed"
+                  title="the id the Fhenix contract gave this call when it was sealed"
                 />
                 <KvDivider />
                 <Kv
-                  k="reveal_status"
-                  v={data.fhenix.reveal_status}
+                  k="reveal"
+                  v={revealWord(data.fhenix.reveal_status)}
                   tone={revealTone(data.fhenix.reveal_status)}
+                  title="whether the sealed call has been opened yet"
                 />
                 <Kv
-                  k="reveal_open_at"
+                  k="reveal opens"
                   v={<TimeAgo iso={data.fhenix.reveal_open_at} />}
                   tone="ck-dim"
+                  title="the earliest moment this call can be opened"
                 />
                 {data.fhenix.revealed_at && (
-                  <Kv k="revealed_at" v={<TimeAgo iso={data.fhenix.revealed_at} />} />
+                  <Kv k="revealed" v={<TimeAgo iso={data.fhenix.revealed_at} />} />
                 )}
                 {data.fhenix.terminal_at && (
                   <Kv
-                    k="terminal_at"
+                    k="closed"
                     v={<TimeAgo iso={data.fhenix.terminal_at} />}
                     tone="ck-dim"
+                    title="when this call reached its final state on chain"
                   />
                 )}
                 {data.fhenix.invalid_reason && (
-                  <Kv k="invalid_reason" v={data.fhenix.invalid_reason} tone="ck-neg" />
+                  <Kv k="why it failed" v={data.fhenix.invalid_reason} tone="ck-neg" />
                 )}
               </>
             ) : (
-              <Kv k="fhenix" v="no sealed-call binding" tone="ck-dim" />
+              <Kv k="on-chain" v="this call is not on chain yet" tone="ck-dim" />
             )}
           </Panel>
         </>
@@ -409,6 +443,36 @@ function revealTone(status: string): string {
   if (status === "revealed") return "ck-pos";
   if (status === "invalid" || status === "missed") return "ck-neg";
   return "ck-dim";
+}
+
+/** The reveal state, said in words rather than as a raw enum. */
+const REVEAL_TEXT: Record<string, string> = {
+  pending: "not open yet",
+  open: "open — waiting for the reveal",
+  revealed: "revealed",
+  missed: "missed the reveal window",
+  invalid: "the reveal did not check out",
+};
+
+function revealWord(status: string): string {
+  return REVEAL_TEXT[status] ?? status.replace(/_/g, " ");
+}
+
+/**
+ * The public outcome, said in words. `oracle_unavailable` is the one that has
+ * to change: it names retired price-feed machinery, and what actually happened
+ * is that no outcome landed for this call.
+ */
+const OUTCOME_TEXT: Record<string, string> = {
+  win: "win",
+  loss: "loss",
+  void: "void",
+  oracle_unavailable: "no outcome",
+};
+
+function outcomeWord(outcome: string | null | undefined): string {
+  if (!outcome) return "pending";
+  return OUTCOME_TEXT[outcome] ?? outcome.replace(/_/g, " ");
 }
 
 function ExplorerLink({

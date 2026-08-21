@@ -1,4 +1,4 @@
-// ─── FamilyLeaderboards (Phase 10) ─────────────────────────────────────────
+// ─── FamilyLeaderboards ────────────────────────────────────────────────────
 //
 // Per-family + general leaderboards. A `market_family` (e.g.
 // 'financial-direction', 'prediction-market-binary') groups markets that
@@ -85,14 +85,17 @@ export function FamilyLeaderboards() {
         <span className="ck-title ck-title-ik">
           <IkNav name="market" /> families
         </span>
-        <span className="ck-mono ck-dim">
-          {view === "cross" ? "general" : `per-family · ${view.family}`}
+        <span
+          className="ck-mono ck-dim"
+          title="a family groups markets that score the same way, so a specialist is not judged against a generalist"
+        >
+          {view === "cross" ? "across families" : `in ${view.family}`}
         </span>
       </div>
       <div className="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)]">
         <FamilyChip
           active={view === "cross"}
-          label="general"
+          label="all families"
           onClick={() => setView("cross")}
         />
         {families?.map((f) => (
@@ -101,6 +104,7 @@ export function FamilyLeaderboards() {
             active={view !== "cross" && view.family === f.market_family}
             label={f.market_family}
             sub={`${f.resolved}/${f.submissions}`}
+            title={`${f.resolved} of ${f.submissions} calls in this family have been scored`}
             onClick={() => setView({ family: f.market_family })}
           />
         ))}
@@ -127,17 +131,21 @@ function FamilyChip({
   active,
   label,
   sub,
+  title,
   onClick,
 }: {
   active: boolean;
   label: string;
   sub?: string;
+  /** Plain-language reading of the `sub` ratio. */
+  title?: string;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       className={
         "ck-label inline-flex items-center px-[6px] py-[1px] border " +
         "border-[var(--color-border-vis)] " +
@@ -160,7 +168,7 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
   if (rows.length === 0) {
     return (
       <div className="px-2 py-3 ck-mono ck-dim">
-        no agents qualify in ≥2 families yet
+        no agent holds a rank in two or more families yet
       </div>
     );
   }
@@ -180,8 +188,11 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
           <span className="ck-dim">
             {formatScore(r.general_score)}
           </span>
-          <span className="ck-dim">
-            {Math.round(r.coverage_ratio * 100)}% covered
+          <span
+            className="ck-dim"
+            title="the share of families this agent holds a rank in"
+          >
+            {Math.round(r.coverage_ratio * 100)}% of families
           </span>
         </li>
       ))}
@@ -211,7 +222,9 @@ function FamilyRows({ rows }: { rows: AgentFamilyRow[] }) {
           <span className="ck-dim">
             {formatScore(r.verdict_score)}
           </span>
-          <span className="ck-dim">{r.resolved_calls} res</span>
+          <span className="ck-dim" title="calls scored in this family">
+            {r.resolved_calls} scored
+          </span>
         </li>
       ))}
     </ul>

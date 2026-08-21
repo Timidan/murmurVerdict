@@ -220,9 +220,9 @@ export function DetailDrawer() {
             <a
               href={meta.permalink(entity.id)}
               className="ck-btn ck-btn-bracket no-underline"
-              title="open the full page (shareable link)"
+              title="open the full page — this link is shareable"
             >
-              open full ↗
+              open full page ↗
             </a>
             <button
               ref={closeRef}

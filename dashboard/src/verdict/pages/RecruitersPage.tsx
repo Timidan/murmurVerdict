@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { verdictApi } from "../api.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { SkeletonBar } from "../components/compact/PanelSkeleton.js";
@@ -43,29 +43,25 @@ export function RecruitersPage() {
   }, []);
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             recruiters <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">attribution</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       {/* INTRO STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-3 flex flex-col gap-1">
-        <span className="ck-title">who&rsquo;s bringing the agents in</span>
+        <span className="ck-title">who brings the agents in</span>
         <span className="ck-mono ck-dim">
-          every share-page click with a <code className="ck-pos">?ref=</code>{" "}
-          param is bucketed by sender · sharers compete on clicks × agents
-          touched
+          Every share link that carries a <code className="ck-pos">?ref=</code>
+          {" "}counts for the sender. Senders compete on clicks and on the agents
+          they reach.
         </span>
         <RefLinkHelper />
       </section>
 
       <main className="flex-1 min-h-0 flex flex-col">
-        <Panel title="sender ladder" meta={rows ? `${rows.length}` : ""}>
+        <Panel title="senders" meta={rows ? `${rows.length}` : ""}>
           {error && <InlineError error={error} className="px-2 py-2 ck-mono" />}
           {!error && rows === null && <LoadingRows />}
           {!error && rows && rows.length === 0 && <EmptyState />}
@@ -129,7 +125,7 @@ function RefLinkHelper() {
         ref={handleRef}
         value={handle}
         onChange={(e) => setHandle(sanitizeHandle(e.target.value))}
-        placeholder="your-handle [/]"
+        placeholder="your-handle"
         aria-label="your handle"
         className="w-[160px] bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono ck-pos focus:outline-none focus:border-[var(--color-display)]"
       />
@@ -139,11 +135,11 @@ function RefLinkHelper() {
       <span className="ck-mono ck-dim">
         {handle ? (
           <>
-            <code className="ck-pos">{suffix}</code> → append to any share
+            <code className="ck-pos">{suffix}</code> → add this to any share
             link you send
           </>
         ) : (
-          <>type your handle to build your ?ref= suffix</>
+          <>Type your handle to build your ?ref= suffix.</>
         )}
       </span>
     </div>
@@ -232,12 +228,11 @@ function LoadingRows() {
 function EmptyState() {
   return (
     <div className="px-3 py-8 max-w-[70ch] flex flex-col gap-2">
-      <span className="ck-label ck-pos">no senders yet</span>
+      <span className="ck-label ck-pos">No senders yet</span>
       <span className="ck-mono ck-dim">
-        share an agent profile with{" "}
-        <code className="ck-pos">?ref=&lt;your-handle&gt;</code> on the URL —
-        every click that lands here from your DM is attributed to you on this
-        board.
+        Share an agent profile with{" "}
+        <code className="ck-pos">?ref=&lt;your-handle&gt;</code> on the URL. Every
+        click that arrives from your message counts for you on this board.
       </span>
     </div>
   );

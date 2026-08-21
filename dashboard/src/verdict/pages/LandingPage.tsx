@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { CompactMarketsGrid } from "../components/compact/MarketsGrid.js";
@@ -19,7 +19,7 @@ export function LandingPage() {
   const { stats, status } = useStream();
   const emitFunnel = useFunnelEmit();
 
-  // Phase 7d — funnel pageview. Best-effort: only fires when Privy is
+  // funnel pageview. Best-effort: only fires when Privy is
   // configured + the user has a session. Anonymous visitors are dropped
   // on the floor by useFunnelEmit until a future buffer-on-signin pass.
   useEffect(() => {
@@ -27,8 +27,9 @@ export function LandingPage() {
   }, [emitFunnel]);
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb="home / overview" />
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Span wrap lets the touch crumb rule ellipsize it (bare text cannot). */}
+      <TopbarCrumb><span>home / overview</span></TopbarCrumb>
 
       {/* LIVE COUNTER ─────────────────────────────────────────────
           V14 decision #2 — `/` is an instrument-cluster animated landing
@@ -37,18 +38,18 @@ export function LandingPage() {
           ~10s without rerouting the page. */}
       <LiveCounter
         value={stats?.resolved_24h ?? null}
-        label="verdicts · 24h"
+        label="verdicts scored · last 24h"
         sublabel={
           stats
-            ? `acc ${stats.accepted_24h} · win ${stats.wins_24h} · loss ${stats.losses_24h} · void ${stats.void_24h}`
+            ? `${stats.accepted_24h} sealed · ${stats.wins_24h} wins · ${stats.losses_24h} losses · ${stats.void_24h} void`
             : // No stats yet: don't imply the daemon is up and quiet when the
               // stream is actually down. "awaiting first tick" is honest only
               // while connecting/open; a dead socket gets an honest sublabel.
               status === "closed"
-              ? "stream offline"
+              ? "the live stream is offline"
               : status === "reconnecting"
                 ? "reconnecting…"
-                : "awaiting first tick"
+                : "waiting for the first update"
         }
       />
 
@@ -61,7 +62,7 @@ export function LandingPage() {
           title="live tape"
           meta={
             stats
-              ? `${stats.accepted_24h + stats.resolved_24h} evt/24h`
+              ? `${stats.accepted_24h + stats.resolved_24h} in 24h`
               : ""
           }
           className="lg:border-r-0"
@@ -69,7 +70,7 @@ export function LandingPage() {
           <CompactLiveFeed limit={50} />
         </Panel>
         <Panel
-          title="markets matrix"
+          title="markets"
           actions={
             <span className="flex items-center gap-1">
               <a href="#/install" className="ck-btn ck-btn-bracket">
@@ -111,24 +112,6 @@ export function LandingPage() {
         </Panel>
       </main>
 
-      {/* FOOTER STATUS ────────────────────────────────────────── */}
-      <footer className="flex items-center gap-3 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">
-        <span>
-          <span className="ck-pos">chainlink</span> +{" "}
-          <span className="ck-pos">pyth</span>
-        </span>
-        <span className="ck-dim">·</span>
-        <span>base</span>
-        <span className="ck-dim">·</span>
-        <a
-          href="https://github.com/Timidan/murmur"
-          target="_blank"
-          rel="noreferrer"
-          className="ck-mono ck-dim hover:ck-pos no-underline"
-        >
-          github
-        </a>
-      </footer>
     </div>
   );
 }

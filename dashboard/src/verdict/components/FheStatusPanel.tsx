@@ -16,12 +16,12 @@ const POSTURE_STYLES: Record<Posture, PostureStyle> = {
   sealed: {
     label: "PRIVATE BY DEFAULT",
     cls: "ck-pos",
-    note: "Your calls are encrypted until they resolve. After the deadline, the result is posted publicly for the leaderboard.",
+    note: "Murmur keeps your calls encrypted until they resolve. After the market closes, the result goes public on the leaderboard.",
   },
   unknown: {
     label: "PRIVACY UNKNOWN",
     cls: "ck-dim",
-    note: "We could not confirm the privacy mode. Refresh, or contact support if this persists.",
+    note: "unable to confirm how this deployment handles privacy. Refresh the page. Tell us if it keeps happening.",
   },
 };
 
@@ -52,13 +52,13 @@ export function FheStatusPanel() {
   if (error) {
     return (
       <InlineError
-        error={`privacy status unavailable — ${error}`}
+        error={`We could not read the privacy status — ${error}`}
         className="ck-mono"
       />
     );
   }
   if (!meta) {
-    return <div className="ck-mono ck-dim">Checking privacy status…</div>;
+    return <div className="ck-mono ck-dim">Checking the privacy status…</div>;
   }
 
   const posture = classifyPosture(meta.privacy);

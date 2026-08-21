@@ -168,3 +168,56 @@ export function describeCountdown(msRemaining: number): string {
   }
   return parts.length > 0 ? parts.join(" ") : "0 seconds";
 }
+
+/* ── Local calendar days ─────────────────────────────────────────────────────
+   A history grouped by day has to group by the READER's day. Grouping on the
+   ISO string's first ten characters groups by UTC, which puts a 7pm call in
+   New York on tomorrow's pile — the same bug rule 1 above exists to prevent,
+   one level up. The formatter cache lives beside its two siblings for the
+   reason stated at the top of this file. */
+
+const dayFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dayFormatter(): Intl.DateTimeFormat {
+  const key = localeKey();
+  let cached = dayFormatters.get(key);
+  if (!cached) {
+    cached = new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    dayFormatters.set(key, cached);
+  }
+  return cached;
+}
+
+/**
+ * The viewer's own calendar day for an instant, as a sortable key —
+ * "2026-07-20". Local by construction: `getFullYear`/`getMonth`/`getDate` read
+ * the runtime's zone, the same zone every label in this module speaks.
+ *
+ * Returns null on an unparseable input, so a caller decides what an undated
+ * row looks like instead of inheriting a fabricated day.
+ */
+export function localDayKey(
+  iso: string | number | null | undefined,
+): string | null {
+  const date = toDate(iso);
+  if (date === null) return null;
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Short local day label — "jul 20". Lowercased into the cockpit's chrome voice;
+ * `Intl` still picks the month name and the word order, so a reader in another
+ * locale gets their own form rather than an English one.
+ */
+export function formatLocalDayLabel(
+  iso: string | number | null | undefined,
+): string | null {
+  const date = toDate(iso);
+  if (date === null) return null;
+  return dayFormatter().format(date).toLowerCase();
+}

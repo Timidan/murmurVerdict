@@ -245,8 +245,8 @@ export function MarketsArchiveSearch({
           </button>
         )}
         <span id={helpId} className="ck-dim ck-meta basis-full">
-          two or more characters, or pick a day. matches the venue question and
-          slug.
+          Type two or more characters, or pick a day. Murmur matches the venue
+          question and the slug.
         </span>
       </form>
 
@@ -269,7 +269,7 @@ export function MarketsArchiveSearch({
         {!state.error && state.settledFor !== null && visible.length === 0 && (
           <p className="px-2 py-2 ck-mono ck-dim">
             {state.rows.length > 0
-              ? "[no results for the selected assets]"
+              ? "[no results for the assets you picked]"
               : "[no archived markets found]"}
           </p>
         )}

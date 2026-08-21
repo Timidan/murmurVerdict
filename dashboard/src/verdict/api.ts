@@ -198,7 +198,7 @@ import type {
   WireFeedSlaTickResponse as FeedSlaTickResponse,
 } from "@shared/wire-operator";
 
-// Phase 7a — `get`/`post` accept optional extra headers so account-area
+// `get`/`post` accept optional extra headers so account-area
 // callers can attach `Authorization: Bearer <privy_jwt>` without breaking
 // the existing call-sites (they continue to omit the second arg).
 type HeaderMap = Record<string, string>;
@@ -265,7 +265,7 @@ async function post<T>(path: string, body: unknown, headers?: HeaderMap): Promis
   return (await res.json()) as T;
 }
 
-// Phase 7c — PATCH + DELETE helpers, mirroring `post`/`get` so the
+// PATCH + DELETE helpers, mirroring `post`/`get` so the
 // account-settings page can issue payout updates + key rotations through
 // the same headers-aware client surface.
 async function patch<T>(path: string, body: unknown, headers?: HeaderMap): Promise<T> {
@@ -283,7 +283,7 @@ async function patch<T>(path: string, body: unknown, headers?: HeaderMap): Promi
 }
 
 /**
- * Phase 7d — POST helper for endpoints that return 204 No Content. The
+ * POST helper for endpoints that return 204 No Content. The
  * generic `post<T>` always calls `.json()`, which throws on an empty
  * body. The funnel-emit route is the only 204-returning caller today.
  */
@@ -366,6 +366,10 @@ export interface ArchivedMarketRow {
   icon_url: string | null;
   /** True when murmur actually ran a sealed window on this market. */
   sealed_window: boolean;
+  /** Provider key ("polymarket-gamma"). Archive is Polymarket-only today. */
+  provider?: string;
+  /** The venue's own top-level category, or null when it published none. */
+  category_label?: string | null;
 }
 
 export interface MarketArchivePage {
@@ -395,6 +399,230 @@ export interface ProviderTermsView {
   updated_at?: string;
 }
 
+/* ── Earnings + payouts ─────────────────────────────────────────────────── */
+
+/** One early-access sale of this agent's calls. */
+export interface ProviderEarningRow {
+  entitlement_id: number;
+  onchain_call_id: string;
+  chain_id: number;
+  contract_address: string;
+  gross_atoms: string;
+  fee_atoms: string;
+  net_atoms: string;
+  fee_bps: number;
+  currency: string;
+  accrual_source: "sale_snapshot" | "legacy_fallback";
+  accrued_at: string;
+}
+
+/**
+ * Per-currency money, both sides.
+ *
+ * `balance_atoms` is SIGNED. `owed_atoms` and `overpaid_atoms` are its two
+ * halves, split so a caller cannot accidentally render a negative balance as
+ * zero: exactly one of them is ever non-zero.
+ */
+export interface ProviderEarningsTotal {
+  currency: string;
+  sales: number;
+  lifetime_accrued_gross: string;
+  lifetime_accrued_fee: string;
+  lifetime_accrued_net: string;
+  payout_entries: number;
+  lifetime_paid_gross: string;
+  lifetime_paid_reversed: string;
+  lifetime_paid_net: string;
+  balance_atoms: string;
+  owed_atoms: string;
+  overpaid_atoms: string;
+}
+
+export interface ProviderEarningsView {
+  schema_version: number;
+  agent_slug: string;
+  sales: ProviderEarningRow[];
+  totals: ProviderEarningsTotal[];
+  page: { limit: number; offset: number; returned: number };
+  payouts: { automated: boolean; note: string };
+}
+
+/** One entry in the payout journal. Amounts are always positive. */
+export interface ProviderPayoutRow {
+  id: number;
+  agent_slug: string;
+  /** 'reversal' subtracts. The sign lives here, never in the amount. */
+  entry_type: "payout" | "reversal";
+  currency: string;
+  amount_atoms: string;
+  tx_ref: string;
+  payout_method: string;
+  destination_ref: string;
+  note: string | null;
+  earnings_cutoff_at: string;
+  created_at: string;
+}
+
+export interface ProviderPayoutsView {
+  schema_version: number;
+  agent_slug: string;
+  payouts: ProviderPayoutRow[];
+  totals: Array<{
+    currency: string;
+    entries: number;
+    net_paid_atoms: string;
+    paid_atoms: string;
+    reversed_atoms: string;
+  }>;
+  page: { limit: number; offset: number; returned: number };
+}
+
+/* ── Reveals ────────────────────────────────────────────────────────────── */
+
+/**
+ * "pending" and "unknown" are NOT the same absence. "pending" means nobody has
+ * revealed the call yet, so it is still the agent's job. "unknown" means it
+ * WAS revealed and murmur has no record of who did it (a call sealed before
+ * reveal attribution existed).
+ */
+export type AccountRevealSource =
+  | "agent"
+  | "daemon_fallback"
+  | "unattributed_external"
+  | "unknown"
+  | "pending";
+
+export interface AccountRevealRow {
+  call_id: string;
+  onchain_call_id: string;
+  chain_id: number;
+  reveal_open_at: string;
+  /** null when this deployment runs no fallback worker. */
+  deadline: string | null;
+  reveal_status: string;
+  revealed_at: string | null;
+  reveal_source: AccountRevealSource;
+}
+
+export interface AccountRevealsView {
+  schema_version: number;
+  agent_slug: string;
+  reveals: AccountRevealRow[];
+  fallback: {
+    enabled: boolean;
+    grace_seconds: number | null;
+    note: string;
+  };
+  page: { limit: number; offset: number; returned: number };
+}
+
+/* ── Profile + lifecycle ────────────────────────────────────────────────── */
+
+export interface AgentProfileUpdateResponse {
+  schema_version: number;
+  agent: {
+    agent_id: string;
+    display_slug: string;
+    display_name: string;
+    bio: string | null;
+    retired_at: string | null;
+  };
+  slug_immutable: boolean;
+}
+
+export interface AgentRetirementResponse {
+  schema_version: number;
+  agent_slug: string;
+  retired: boolean;
+  already_retired?: boolean;
+  already_active?: boolean;
+  retired_at: string | null;
+  effect?: string;
+}
+
+/** GET /v1/account/session — the session plus the closed-account marker. */
+export interface AccountSessionState {
+  account_id: string;
+  created: boolean;
+  privy_user_id: string;
+  deactivated: boolean;
+  deactivated_at: string | null;
+}
+
+export interface AccountDeactivateResponse {
+  schema_version: number;
+  deactivated: boolean;
+  already_deactivated: boolean;
+  deactivated_at: string;
+  runtime_keys_revoked: number;
+  api_keys_rotated: number;
+  agents_retired: number;
+  reactivation: string;
+}
+
+/* ── Webhooks ───────────────────────────────────────────────────────────── */
+
+export interface AccountWebhookRow {
+  id: string;
+  agent_slug: string;
+  url: string;
+  created_at: string;
+  last_delivery_at: string | null;
+  last_status: number | null;
+  delivery_count: number;
+  failure_count: number;
+  disabled: boolean;
+}
+
+export interface CreateWebhookResponse {
+  id: string;
+  agent_slug: string | null;
+  url: string;
+  /** Returned once, at creation. It is never retrievable again. */
+  secret: string;
+  created_at: string;
+  verify_signature: {
+    algorithm: string;
+    header: string;
+    body: string;
+    [key: string]: unknown;
+  };
+}
+
+/* ── Wallet purchases ───────────────────────────────────────────────────── */
+
+export interface WalletPurchaseRow {
+  onchain_call_id: string;
+  status: string;
+  amount: string | null;
+  currency: string | null;
+  grant_tx_hash: string | null;
+  granted_at: string | null;
+  created_at: string;
+  producer_agent_slug: string | null;
+  reveal_open_at: string | null;
+  refund_status?: string | null;
+  payment_confirmed?: boolean;
+  /**
+   * 'unknown' means murmur has no settlement receipt for this row — NOT that
+   * the payment failed. The UI states it as unknown for that reason.
+   */
+  payment_status?: "confirmed" | "unknown";
+}
+
+export interface WalletPurchasesView {
+  schema_version: number;
+  chain_id: number;
+  contract_address: string;
+  subscriber: string;
+  authenticated: boolean;
+  /** 'granted_only' says WHY rows may be missing from an unsigned read. */
+  scope: "full_history" | "granted_only";
+  purchases: WalletPurchaseRow[];
+  next_cursor: string | null;
+  page: { limit: number; returned: number };
+}
+
 export const verdictApi = {
   apiUrl: API_URL,
   meta: () => get<MetaResponse>("/v1/meta"),
@@ -422,7 +650,7 @@ export const verdictApi = {
       `/v1/agents/${encodeURIComponent(slug)}/calls?limit=${limit}`,
     ),
   call: (call_id: string) => get<FullCall>(`/v1/calls/${encodeURIComponent(call_id)}`),
-  // Wave 1 — claimInit / claimFinalize verdictApi methods removed
+  // claimInit / claimFinalize verdictApi methods removed
   // alongside the deleted /v1/agents/:slug/claim/* routes.
   todayFeed: () => get<TodayFeed>(`/v1/feed/today`),
   feedAvailability: (feed_id: string) =>
@@ -703,7 +931,7 @@ export const verdictApi = {
       `/v1/markets/${encodeURIComponent(market_id)}/calls${q ? `?${q}` : ""}`,
     );
   },
-  // Phase 10 — family + cross-family LBs.
+  // Family + cross-family leaderboards.
   families: () =>
     get<{
       families: Array<{
@@ -800,7 +1028,7 @@ export const verdictApi = {
   /**
    * List API keys for an agent (metadata only — no plaintext). Returns
    * both active and rotated keys so the panel can show full history;
-   * the caller decides what to render. Backed by the additive Phase 7c
+   * the caller decides what to render. Backed by the additive
    * GET /v1/account/agents/:slug/api-keys route.
    */
   getApiKeys: (privyToken: string, slug: string) =>
@@ -1033,7 +1261,150 @@ export const verdictApi = {
       attributes ? { kind, attributes } : { kind },
       { Authorization: `Bearer ${privyToken}` },
     ),
+
+  /* ── Earnings, payouts, reveals, profile, lifecycle ─────────────────── */
+
+  /**
+   * What this agent's sales accrued, what murmur recorded as paid, and the
+   * balance between them. `balance_atoms` is SIGNED: a negative balance means
+   * murmur overpaid, and the UI states that rather than hiding it.
+   */
+  getAgentEarnings: (privyToken: string, slug: string) =>
+    get<ProviderEarningsView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/earnings`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /** The payout journal for one agent, newest first. Append-only, read-only. */
+  getAgentPayouts: (privyToken: string, slug: string) =>
+    get<ProviderPayoutsView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/payouts`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * The reveal duty list. `fallback.grace_seconds` is what this deployment
+   * configured, not a constant — `deadline` is null when no fallback worker
+   * runs here.
+   */
+  getAgentReveals: (privyToken: string, slug: string) =>
+    get<AccountRevealsView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/reveals`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * Edit the two fields an owner may change. The handle is not one of them:
+   * it lives in URLs and receipts, so the backend refuses it outright.
+   * `bio: null` clears the bio; an omitted field is left alone.
+   */
+  patchAgentProfile: (
+    privyToken: string,
+    slug: string,
+    body: { display_name?: string; bio?: string | null },
+  ) =>
+    patch<AgentProfileUpdateResponse>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/profile`,
+      body,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  postAgentRetire: (privyToken: string, slug: string) =>
+    post<AgentRetirementResponse>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/retire`,
+      {},
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  postAgentUnretire: (privyToken: string, slug: string) =>
+    post<AgentRetirementResponse>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/unretire`,
+      {},
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * Read the session, INCLUDING whether the account is closed.
+   *
+   * The one account route a closed account may still call. Every other one
+   * answers 403, which on its own is indistinguishable from an outage — this
+   * is how the dashboard learns to render the closed screen instead.
+   */
+  getAccountSession: (privyToken: string) =>
+    get<AccountSessionState>("/v1/account/session", {
+      Authorization: `Bearer ${privyToken}`,
+    }),
+
+  /** Close the account. Terminal — there is no reactivate call to pair with it. */
+  postAccountDeactivate: (privyToken: string) =>
+    post<AccountDeactivateResponse>(
+      "/v1/account/deactivate",
+      { confirm: ACCOUNT_DEACTIVATE_CONFIRM },
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /* ── Webhooks ─────────────────────────────────────────────────────────── */
+
+  /**
+   * Create a subscription. The `secret` in the response is the ONLY time the
+   * signing key is ever returned — same one-shot contract as a minted key.
+   */
+  postWebhook: (privyToken: string, body: { agent_slug: string; url: string }) =>
+    post<CreateWebhookResponse>("/v1/webhooks", body, {
+      Authorization: `Bearer ${privyToken}`,
+    }),
+
+  /** Every subscription on agents this account owns. Never carries the secret. */
+  getAccountWebhooks: (privyToken: string) =>
+    get<{ webhooks: AccountWebhookRow[] }>("/v1/account/webhooks", {
+      Authorization: `Bearer ${privyToken}`,
+    }),
+
+  /** Remove one, by ownership rather than by secret. */
+  deleteAccountWebhook: (privyToken: string, id: string) =>
+    del<{ deleted: boolean; id: string }>(
+      `/v1/account/webhooks/${encodeURIComponent(id)}`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /* ── Purchases made by a controller wallet ────────────────────────────── */
+
+  /**
+   * A wallet's own early-access purchases.
+   *
+   * Unsigned, this returns granted rows only — they mirror on-chain grants
+   * anyone can already read. A signature over
+   * `murmur:purchases:<address>:<unix>` unlocks the full history, including
+   * in-flight and refund-owed rows, because that is a private record of what
+   * somebody tried to buy and what went wrong.
+   */
+  getWalletPurchases: (
+    subscriber: string,
+    auth?: { unixSeconds: number; signature: string },
+    opts: { limit?: number; cursor?: string } = {},
+  ) => {
+    const params = new URLSearchParams({ subscriber });
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.cursor) params.set("cursor", opts.cursor);
+    return get<WalletPurchasesView>(
+      `/v2/gateway/entitlements?${params.toString()}`,
+      auth
+        ? { "X-Murmur-Subscriber-Auth": `${auth.unixSeconds}:${auth.signature}` }
+        : undefined,
+    );
+  },
 };
+
+/** The phrase POST /v1/account/deactivate requires. Mirrors the backend const. */
+export const ACCOUNT_DEACTIVATE_CONFIRM = "close-my-account";
+
+/** The message a wallet signs to unlock its full purchase history. */
+export function purchasesAuthMessage(
+  address: string,
+  unixSeconds: number,
+): string {
+  return `murmur:purchases:${address.toLowerCase()}:${unixSeconds}`;
+}
 
 /* ── Top-level convenience exports ─────────────────────────────────────── */
 // Mirror the daemon-facing names from V14_HANDOFF so subagent-driven code

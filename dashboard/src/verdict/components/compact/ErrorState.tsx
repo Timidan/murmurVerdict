@@ -21,11 +21,11 @@ interface ErrorStateProps {
 export function ErrorState({ kind, what, id, detail }: ErrorStateProps) {
   const status = kind === "not_found" ? "404" : "error";
   const headline =
-    kind === "not_found" ? `${what} not found` : `couldn't load this ${what}`;
+    kind === "not_found" ? `${what} not found` : `we could not load this ${what}`;
   const oneLiner =
     kind === "not_found"
-      ? `Nothing is registered under this ${what} id — it may be retired, renamed, or mistyped.`
-      : `The request didn't go through. This is usually transient — retry, or head back below.`;
+      ? `Nothing is registered under this ${what} id. It may be retired, renamed, or mistyped.`
+      : `The request did not go through. This usually clears up on its own. Try again, or use a link below.`;
 
   return (
     <div className="px-2 py-3 ck-mono">

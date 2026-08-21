@@ -481,3 +481,164 @@ details[open] > .details-fade {
   text-transform: lowercase;
   color: var(--color-display);
 }
+
+/* Logo loader — animated WebP with a real alpha channel. No blend mode: a
+   blend needs an unbroken path to the page background, which any overlay
+   (position + z-index) breaks by forming a stacking context. */
+.mmr-logo-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: transparent;
+  /* Held back ~350ms so fast navigations never flash a loader. */
+  animation: mmr-loader-in 0s linear 350ms both;
+}
+@keyframes mmr-loader-in { from { visibility: hidden; } to { visibility: visible; } }
+.mmr-logo-loader img {
+  width: min(var(--loader-w, 420px), 70vw);
+  height: auto;
+}
+/* Dots are white; on the cream theme they must darken. invert preserves alpha,
+   hue-rotate puts the accent dot back to red instead of cyan. */
+[data-theme="paper"] .mmr-logo-loader img { filter: invert(1) hue-rotate(180deg); }
+.mmr-logo-loader .mmr-logo-loader-still { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .mmr-logo-loader .mmr-logo-loader-anim { display: none; }
+  .mmr-logo-loader .mmr-logo-loader-still { display: block; }
+}
+
+/* Sting backdrop, set by the head bootstrap before first paint so the black
+   entrance never flashes the theme background first. Splash clears it. */
+:root[data-sting],
+:root[data-sting] body { background: #000; }
+
+/* Held back ~350ms so fast navigations never flash a loader. Animates
+   VISIBILITY, not opacity: an opacity animation forms a stacking context, which
+   traps the video's blend against transparent black and paints the field as a
+   solid box. */
+.mmr-logo-loader { animation: mmr-loader-in 0s linear 350ms both; }
+@keyframes mmr-loader-in { from { visibility: hidden; } to { visibility: visible; } }
+
+/* Danger section — collapsed by default; the summary is the whole affordance. */
+.mmr-danger { border-color: var(--color-border-vis); }
+.mmr-danger-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  gap: 8px;
+}
+.mmr-danger-summary::-webkit-details-marker { display: none; }
+/* Drawn, not typed: a glyph here would depend on the stylesheet's charset. */
+.mmr-disclosure-marker {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  flex: none;
+}
+.mmr-disclosure-marker::before,
+.mmr-disclosure-marker::after {
+  content: "";
+  position: absolute;
+  inset: 50% 0 auto 0;
+  height: 1px;
+  background: var(--color-secondary);
+}
+.mmr-disclosure-marker::after { transform: rotate(90deg); }
+[open] > * > .mmr-disclosure-marker::after, [open] > .mmr-disclosure-marker::after { transform: rotate(0deg); }
+summary:hover .mmr-disclosure-marker::before,
+summary:hover .mmr-disclosure-marker::after { background: var(--color-display); }
+.mmr-danger[open] { border-color: var(--color-accent-ink); }
+
+/* Brand sting — full-bleed entrance, landing route, first visit only. */
+.mmr-sting {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  opacity: 1;
+}
+.mmr-sting[data-leaving] { opacity: 0; }
+.mmr-sting video {
+  width: min(100vw, 178vh);
+  height: auto;
+  display: block;
+}
+.mmr-sting-skip {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  /* 44px minimum: this is the only escape from a 5s full-screen takeover. */
+  min-width: 64px;
+  min-height: 44px;
+  padding: 6px 14px;
+  border: 1px solid rgba(232, 232, 232, 0.28);
+  background: transparent;
+  color: rgba(232, 232, 232, 0.72);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.mmr-sting-skip:hover,
+.mmr-sting-skip:focus-visible { color: #fff; border-color: rgba(232, 232, 232, 0.6); }
+
+/* Crumb slot is always present so pages can portal into it; only earns its
+   left margin once something is actually in it. */
+.mmr-topbar-crumb-slot:not(:empty) { margin-left: 4px; }
+
+/* Asset filter — unboxed, straight on the canvas. Same idiom as the topbar nav:
+   state is carried by ink plus an intent underline, never by a fill or border. */
+.mmr-asset-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--color-secondary);
+  cursor: pointer;
+  transition: color 160ms var(--ease-out);
+}
+.mmr-asset-chip::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 220ms var(--ease-out);
+}
+.mmr-asset-chip:hover,
+.mmr-asset-chip:focus-visible,
+.mmr-asset-chip.is-on { color: var(--color-display); }
+.mmr-asset-chip:hover::after,
+.mmr-asset-chip:focus-visible::after,
+.mmr-asset-chip.is-on::after { transform: scaleX(1); transform-origin: left; }
+/* Unselected assets read as dimmed marks, not as disabled controls. */
+.mmr-asset-chip:not(.is-on) img,
+.mmr-asset-chip:not(.is-on) span[aria-hidden] { opacity: 0.45; }
+@media (prefers-reduced-motion: reduce) {
+  .mmr-asset-chip,
+  .mmr-asset-chip::after { transition: none; }
+}
+
+/* Resolved time-window disclosure — the whole header row is the affordance. */
+.mmr-window-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  min-height: 34px;
+}
+.mmr-window-summary::-webkit-details-marker { display: none; }
