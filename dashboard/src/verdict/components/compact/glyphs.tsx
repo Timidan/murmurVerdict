@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { Ik } from "../../icons.js";
+import { Ik, IkNav } from "../../icons.js";
 
 /**
  * Compact monochrome glyphs — replace repeated enum TEXT with a recognizable
@@ -71,7 +71,7 @@ function Wrap({
  * drawing for one kind does not change how the others render.
  */
 type KindMeta = { label: string; tone: string } & (
-  | { mark: (size: 16 | 32) => ReactNode; paths?: never }
+  | { mark: (size: 16 | 24 | 32 | 48) => ReactNode; paths?: never }
   | { paths: ReactNode; mark?: never }
 );
 
@@ -79,7 +79,14 @@ const KIND_META: Record<string, KindMeta> = {
   agent: {
     label: "agent",
     tone: "ck-pos",
-    mark: (size) => <Ik name="agent" size={size} />,
+    // 24/48 route through the nav tier: same silhouette, drawn FOR 24 (48 is
+    // its integer 2×) — Ik's 16/32 guard stays intact for the hand-drawn grid.
+    mark: (size) =>
+      size === 16 || size === 32 ? (
+        <Ik name="agent" size={size} />
+      ) : (
+        <IkNav name="agent" size={size} />
+      ),
   },
   benchmark: {
     label: "benchmark",
@@ -121,8 +128,9 @@ export function KindGlyph({
   tone = true,
 }: {
   kind: string | null | undefined;
-  /** `Ik`'s contract — the agent kind draws from the shared set. */
-  size?: 16 | 32;
+  /** 16/32 per `Ik`'s contract, plus 24 — these paths are 24-grid natively,
+   *  so 24 is their 1:1 render (the hero-tile size). */
+  size?: 16 | 24 | 32 | 48;
   className?: string;
   /** Apply the tier tone (agent=ink, attested=accent, else dim). */
   tone?: boolean;

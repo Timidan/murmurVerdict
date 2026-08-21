@@ -8,8 +8,8 @@ import {
   type AgentMarketRow,
   type AgentProfile,
 } from "../api.js";
-import { Ik, IkNav } from "../icons.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { Ik, IkNav, IkHero, type HeroIconName } from "../icons.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { FormulaTip } from "../components/compact/FormulaTip.js";
@@ -17,7 +17,7 @@ import { ErrorState } from "../components/compact/ErrorState.js";
 import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
 import { useDetailDrawer, isPlainLeftClick } from "../components/compact/DetailDrawer.js";
 import { KindGlyph } from "../components/compact/glyphs.js";
-import { TimeAgo } from "../components/compact/TimeAgo.js";
+import { CallHistory } from "../components/compact/CallHistory.js";
 import { formatScore } from "../lib/score-format.js";
 import { shortId } from "../lib/display-format.js";
 import {
@@ -157,15 +157,11 @@ export function AgentPage({ slug }: { slug: string }) {
       : null;
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             agents <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{agent?.display_slug ?? slug}</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       <h1 className="sr-only">agent {agent?.display_name ?? `@${slug}`}</h1>
 
@@ -185,44 +181,48 @@ export function AgentPage({ slug }: { slug: string }) {
             <RCell label="kind" value={<KindGlyph kind={agent.kind} />} tone={kindTone(agent.kind)} />
             <RCell
               label={
+                /* Not a 30-day window: the fetch batch is the newest ≤100
+                   CALLS and the value averages the scored rows within it. The
+                   plain line states that actual window, no date predicate. */
                 <FormulaTip
-                  label="avg score"
-                  formula="avg score = sum(resolved call_score) / resolved calls"
-                >
-                  {/* Not a 30-day window: the fetch batch is the newest ≤100
-                      CALLS and the value averages the scored rows within it.
-                      Label + title state that actual window, no date
-                      predicate. */}
-                  <span title="avg over scored calls within the latest 100">
-                    verdict·recent
-                  </span>
-                </FormulaTip>
+                  label="recent score"
+                  plain="the average score across this agent's scored calls, within its latest 100 calls."
+                  formula="recent score = sum(call score) / scored calls"
+                />
               }
               value={stats ? formatScore(stats.avgScore) : "—"}
               tone={(stats?.avgScore ?? 0) >= 0 ? "pos" : "neg"}
             />
             <RCell
               label={
-                <FormulaTip label="win rate" formula="win rate = wins / (wins + losses)">
-                  wr
-                </FormulaTip>
+                <FormulaTip
+                  label="win%"
+                  plain="wins as a share of wins plus losses. Void calls are left out."
+                  formula="win % = wins / (wins + losses)"
+                />
               }
               value={stats ? formatWR(stats.winRate) : "—"}
             />
-            <RCell label="res" value={stats ? String(stats.resolved).padStart(2, "0") : "—"} />
             <RCell
-              label="pend"
-              value={stats ? String(stats.pending).padStart(2, "0") : "—"}
+              label="scored"
+              value={stats ? String(stats.resolved) : "—"}
+              title="calls that finished and earned a score"
+            />
+            <RCell
+              label="open"
+              value={stats ? String(stats.pending) : "—"}
               tone="dim"
+              title="calls that are sealed and have not resolved yet"
             />
             <RCell
               label={
                 <FormulaTip
-                  label="streak"
-                  formula="streak = consecutive wins from newest call until first loss"
+                  label="win streak"
+                  plain="wins in a row, counting back from the newest call."
+                  formula="win streak = wins from the newest call until the first loss"
                 />
               }
-              value={stats ? `${stats.streak}w` : "—"}
+              value={stats ? String(stats.streak) : "—"}
             />
           </section>
 
@@ -273,22 +273,22 @@ export function AgentPage({ slug }: { slug: string }) {
               {calls !== null && calls.length === 0 && (
                 <div className="px-2 py-2 ck-mono ck-dim">[no calls yet]</div>
               )}
-              {calls !== null && calls.length > 0 && <CallTable calls={calls} />}
+              {calls !== null && calls.length > 0 && <CallHistory calls={calls} />}
             </Panel>
 
             <Panel
-              title={<><IkNav name="market" /> market heat</>}
-              meta={grid ? `${grid.length} mkts` : ""}
+              title={<><IkNav name="market" /> markets</>}
+              meta={grid ? `${grid.length}` : ""}
               className="lg:border-r-0"
             >
               {grid === null && <PanelSkeleton rows={5} />}
               {grid !== null && grid.length === 0 && (
-                <div className="px-2 py-2 ck-mono ck-dim">[no per-market data]</div>
+                <div className="px-2 py-2 ck-mono ck-dim">[no market results yet]</div>
               )}
               {grid !== null && grid.length > 0 && <GridTable rows={grid} />}
             </Panel>
 
-            <Panel title={<><Ik name="verdict" /> detail · scores</>}>
+            <Panel title={<><Ik name="verdict" /> summary</>}>
               <SidebarStats stats={stats} agent={agent} />
             </Panel>
           </main>
@@ -298,85 +298,8 @@ export function AgentPage({ slug }: { slug: string }) {
   );
 }
 
-function CallTable({ calls }: { calls: AgentCallRow[] }) {
-  const { open } = useDetailDrawer();
-  return (
-    <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[104px_14px_1fr_54px_32px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
-        <span>time</span>
-        <span aria-hidden="true"></span>
-        <span>note<span className="sr-only"> (each row sealed)</span></span>
-        <span className="text-right">out</span>
-        <span aria-hidden="true"></span>
-      </li>
-      {calls.map((c) => {
-        // Pending Fhenix-sealed verdicts are not public; the compact row
-        // stays blind until the post-horizon reveal. A single seal glyph
-        // signals "sealed/private" without the three-token placeholder noise.
-        const note = formatNote(c);
-        const outLabel = formatOutcome(c);
-        return (
-          <li
-            key={c.call_id}
-            className="relative grid grid-cols-[104px_14px_1fr_54px_32px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
-          >
-            {/* Stretched row link — a real box (unlike display:contents) so
-                keyboard focus lands and the ring outlines the whole row. */}
-            <a
-              href={`#/calls/${c.call_id}`}
-              aria-label={`open call ${c.call_id.slice(0, 8)} · ${outLabel}`}
-              onClick={(e) => {
-                if (isPlainLeftClick(e)) {
-                  e.preventDefault();
-                  open("call", c.call_id);
-                }
-              }}
-              className="ck-rowlink"
-            />
-            <TimeAgo
-              iso={c.submitted_at ?? c.accepted_at}
-              className="ck-mono ck-dim truncate"
-            />
-            <span aria-hidden="true" className="ck-dim">▪</span>
-            <span className="ck-mono ck-dim truncate">{note}</span>
-            <span
-              className={
-                "ck-mono text-right " +
-                (c.outcome === "win"
-                  ? "ck-pos"
-                  : c.outcome === "loss"
-                    ? "ck-neg"
-                    : "ck-dim")
-              }
-            >
-              {outLabel}
-            </span>
-            <VerifyCallLink callId={c.call_id} />
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function VerifyCallLink({ callId }: { callId: string }) {
-  const shortCallId = callId.slice(0, 8);
-  return (
-    <a
-      href={`#/calls/${callId}`}
-      aria-label={`verify call ${shortCallId}`}
-      className={
-        // relative z-[1] lifts the chip above the row's stretched link overlay.
-        "t-meta relative z-[1] justify-self-end border border-[var(--color-border-vis)] px-1 " +
-        "text-[12px] leading-[14px] text-[var(--color-secondary)] no-underline " +
-        "hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
-        "hover:border-[var(--color-display)]"
-      }
-    >
-      [V]
-    </a>
-  );
-}
+/* The call log lives in components/compact/CallHistory.tsx — the flat 100-row
+   list it replaced said the same thing a hundred times over. */
 
 function GridTable({ rows }: { rows: AgentMarketRow[] }) {
   const { open } = useDetailDrawer();
@@ -384,9 +307,9 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
     <ul className="m-0 p-0 list-none">
       <li className="grid grid-cols-[1fr_64px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>market</span>
-        <span className="text-right">vs</span>
-        <span className="text-right">wr</span>
-        <span className="text-right">trend</span>
+        <span className="text-right" title="the agent's score on this market">score</span>
+        <span className="text-right" title="wins as a share of wins plus losses">win %</span>
+        <span className="text-right" title="the last few call scores, oldest first">trend</span>
       </li>
       {rows.map((r) => (
         <li
@@ -455,10 +378,12 @@ function OwnerAuthorizedPill({ explorerUrl }: { explorerUrl: string | null }) {
     "hover:border-[var(--color-display)]";
 
   const content = <span>owner verified</span>;
+  const explain =
+    "a controller wallet signed for this profile, so a real owner stands behind it";
 
   if (!explorerUrl) {
     return (
-      <span className={className} title="controller wallet is bound to this public profile">
+      <span className={className} title={explain}>
         {content}
       </span>
     );
@@ -470,13 +395,43 @@ function OwnerAuthorizedPill({ explorerUrl }: { explorerUrl: string | null }) {
       target="_blank"
       rel="noreferrer"
       className={className}
-      title="controller wallet is bound to this public profile"
+      title={explain}
     >
       {content}
     </a>
   );
 }
 
+/**
+ * Tile ink. Wins take the palette's one green; losses the accent the cockpit
+ * already reads as "against you". Everything else stays on the monochrome
+ * ladder — colour is still an event, and the word in the tooltip is what
+ * actually carries the meaning. The tone rides the tile, so glyph and value
+ * are always the same colour.
+ */
+const TILE_TONE = {
+  win: "text-[var(--color-success)]",
+  neg: "ck-neg",
+  ink: "ck-pos",
+  dim: "ck-dim",
+} as const;
+
+type TileTone = keyof typeof TILE_TONE;
+
+/**
+ * The summary panel — a 3-column grid of icon tiles (owner-approved
+ * 2026-08-10), not the 11-row key/value stack it replaced. Each of those rows
+ * spent a 92px track on a word the tile's own glyph can say, and eleven small
+ * facts ran ~300px tall — taller than the sidecar, so the last of them sat
+ * below the fold. The same eleven facts now fit in ~190px.
+ *
+ * The label left the SCREEN, not the accessible tree. Every tile carries the
+ * stat name twice over: an sr-only span ahead of its value, so a screen reader
+ * still hears "wins 26", and a native `title` with the plain-language
+ * definition for a hovering mouse. `win %` and `avg score` keep the FormulaTip
+ * they have always had, its trigger now the tile's glyph — the definition
+ * still opens on hover AND on keyboard focus.
+ */
 function SidebarStats({
   stats,
   agent,
@@ -484,72 +439,227 @@ function SidebarStats({
   stats: AgentStats | null;
   agent: AgentProfile;
 }) {
+  /** A tally, or an em-dash while the call log is still loading. */
+  const n = (v: number | undefined) => (v === undefined ? "—" : String(v));
+  /** A zero rests at dim — a green 0 or a red 0 shouts about nothing. */
+  const countTone = (v: number | undefined, on: TileTone): TileTone => (v ? on : "dim");
+
   return (
-    <div className="flex flex-col">
-      <FactRow label="wins" value={stats ? String(stats.wins) : "—"} tone="pos" />
-      <FactRow label="losses" value={stats ? String(stats.losses) : "—"} tone="neg" />
-      {/* void = settled-but-unscored (void / oracle_unavailable); failed =
-          terminal reveal/rejection failures; other = non-outcome rows outside
-          the canonical pending set (submitted, preflighted, unresolved
-          disputed). All three are excluded from the verdict average, win rate
-          AND the pend count, so each gets its own dim tally. */}
-      <FactRow label="void" value={stats ? String(stats.voids) : "—"} tone="dim" />
-      <FactRow label="failed" value={stats ? String(stats.failed) : "—"} tone="dim" />
-      <FactRow label="other" value={stats ? String(stats.other) : "—"} tone="dim" />
-      <FactRow
-        label="verdict"
-        value={stats ? formatScore(stats.avgScore) : "—"}
-        tone={(stats?.avgScore ?? 0) >= 0 ? "pos" : "neg"}
-      />
-      <FactRow label="wr" value={stats ? formatWR(stats.winRate) : "—"} />
-      <FactRow label="streak" value={stats ? `${stats.streak}w` : "—"} />
-      <FactRow label="total" value={stats ? String(stats.total) : "—"} tone="dim" />
-      <FactRow label="kind" value={<KindGlyph kind={agent.kind} />} tone="dim" />
-      <FactRow
-        label="chain"
-        value={humanChain(agent.chain_id)}
-        tone="dim"
-      />
-      <div className="px-2 py-2 ck-mono ck-dim leading-tight border-t border-[var(--color-border)]">
-        {/* Wave 3 — collapsed enum. shadow/verified notes dropped alongside
-            the deleted tiers. `agent` is the canonical Privy-owned default
-            and gets the main-tier-eligible note. */}
-        {agent.kind === "agent" && (
-          <span>agent · owned through Privy · can reach the main tier</span>
-        )}
-        {agent.kind === "benchmark" && (
-          <span>benchmark · a comparison agent we maintain</span>
-        )}
-        {agent.kind === "attested" && (
-          <span>attested · backed by an Olas bond · sentinel tier</span>
-        )}
-        {agent.kind === "internal_test" && (
-          <span>internal · test agent, operators only</span>
-        )}
+    <div className="flex flex-col @container">
+      {/* gap-px over a border-coloured backdrop draws every interior hairline
+          in one declaration — the house grid idiom (AdminOverviewPage).
+          Container-queried columns, because the panel's own width is what
+          matters: the lg sidecar is 256px while the same panel spans the page
+          on mobile. Two columns until the PANEL clears 300px, three after —
+          a glyph-beside-value row needs ~110px per tile. */}
+      <div className="grid grid-cols-2 @[560px]:grid-cols-3 gap-px bg-[var(--color-border)]">
+        <StatTile
+          icon="outcome-win"
+          label="wins"
+          value={n(stats?.wins)}
+          tone={countTone(stats?.wins, "win")}
+          title="calls that resolved as a win"
+        />
+        <StatTile
+          icon="outcome-loss"
+          label="losses"
+          value={n(stats?.losses)}
+          tone={countTone(stats?.losses, "neg")}
+          title="calls that resolved as a loss"
+        />
+        <StatTile
+          icon="win-rate"
+          label="win %"
+          value={stats ? formatWR(stats.winRate) : "—"}
+          tip={{
+            // Word for word the ribbon's win% tip: one definition, stated
+            // identically everywhere the number appears.
+            plain: "wins as a share of wins plus losses. Void calls are left out.",
+            formula: "win % = wins / (wins + losses)",
+          }}
+        />
+
+        <StatTile
+          icon="avg-score"
+          label="avg score"
+          value={stats ? formatScore(stats.avgScore) : "—"}
+          tone={(stats?.avgScore ?? 0) >= 0 ? "ink" : "neg"}
+          tip={{
+            plain: "the average score across this agent's scored calls.",
+            formula: "avg score = sum(call score) / scored calls",
+          }}
+          /* Column 1 — the tip box has to hang from the left edge or it walks
+             straight off the side of a ~105px tile. */
+          tipAlign="start"
+        />
+        <StatTile
+          icon="win-streak"
+          label="win streak"
+          value={n(stats?.streak)}
+          tone={countTone(stats?.streak, "ink")}
+          title="wins in a row, counting back from the newest call"
+        />
+        <StatTile
+          icon="all-calls"
+          label="all calls"
+          value={n(stats?.total)}
+          tone="dim"
+          title="every call this agent has made"
+        />
+
+        {/* void = settled-but-unscored (void / oracle_unavailable); failed =
+            terminal reveal/rejection failures; other = non-outcome rows outside
+            the canonical pending set (submitted, preflighted, unresolved
+            disputed). All three are excluded from the average score, win rate
+            AND the open count, so each keeps its own dim tally. */}
+        <StatTile
+          icon="outcome-void"
+          label="void"
+          value={n(stats?.voids)}
+          tone="dim"
+          title="calls that settled with no winner, so they earn no score"
+        />
+        <StatTile
+          icon="outcome-failed"
+          label="failed"
+          value={n(stats?.failed)}
+          tone="dim"
+          title="calls murmur rejected, or that missed their reveal"
+        />
+        <StatTile
+          icon="outcome-other"
+          label="other"
+          value={n(stats?.other)}
+          tone="dim"
+          title="calls in any other state — sent, checked, or under dispute"
+        />
+
+        {/* The kind mark IS the datum, so it stands in for the stat glyph and
+            brings its own accessible name (role="img" + aria-label "kind
+            <kind>") — the one tile that needs no sr-only stand-in. `chain`
+            then takes the row's spare cell rather than leaving it blank:
+            BASE SEPOLIA is twelve characters and will not fit one track. */}
+        <StatTile
+          mark={(size) => <KindGlyph kind={agent.kind} size={size} />}
+          label="kind"
+          value={agent.kind.replace("_", " ")}
+          tone="dim"
+          title={KIND_EXPLAINER[agent.kind] ?? "what sort of agent this is"}
+        />
+        <StatTile
+          icon="chain"
+          label="chain"
+          value={humanChain(agent.chain_id)}
+          tone="dim"
+          title="the chain this agent's calls settle on"
+          span2
+        />
       </div>
     </div>
   );
 }
 
-function FactRow({
+/** What each kind means — lives in the kind tile's tooltip, not a paragraph
+ *  under the grid: the tile already names the kind, so a strip restating it
+ *  in prose was the label creeping back in (owner flag, 2026-08-12). */
+const KIND_EXPLAINER: Record<string, string> = {
+  agent: "agent — a person owns it through their sign-in. It can hold a rank.",
+  benchmark: "benchmark — murmur runs this one so you have something to compare against.",
+  attested: "attested — an Olas bond backs this agent.",
+  internal_test: "internal — a test agent. Operators only.",
+};
+
+/**
+ * One summary tile: the stat's glyph beside its value, centered on one line.
+ * The glyph IS the label, so the name has to arrive by other means — and it
+ * does, twice: an sr-only span ahead of the value for assistive tech, `title`
+ * for a hovering mouse. That pairing is the rule for any icon-only cell; a
+ * tile that drops either one is unnamed, not minimal.
+ *
+ * Beside, not stacked: hero glyphs carry different internal masses (a gauge
+ * sits high, an ellipsis is a 3px band), so a stacked value never lands the
+ * same optical distance from its mark twice — the pair reads misaligned tile
+ * to tile (owner flag, 2026-08-12). Centering both on one row pins them to a
+ * shared axis. The width this needs comes from the grid, which drops to two
+ * container-queried columns when the panel is narrow.
+ */
+function StatTile({
+  icon,
+  mark,
   label,
   value,
-  tone = "default",
+  tone = "ink",
+  title,
+  tip,
+  tipAlign = "end",
+  span2 = false,
 }: {
+  /** Hero-tier glyph naming the stat — the tile's subject. */
+  icon?: HeroIconName;
+  /** A glyph that IS the datum (the kind mark), drawn instead of `icon`.
+   *  Size-aware for the same reason the icon renders twice below. */
+  mark?: (size: 24 | 48) => ReactNode;
   label: string;
   value: ReactNode;
-  tone?: "pos" | "neg" | "dim" | "default";
+  tone?: TileTone;
+  /** Plain-language definition, shown on hover. */
+  title?: string;
+  /** Hangs a FormulaTip off the glyph — plain sentence first, formula second. */
+  tip?: { plain: string; formula: string };
+  /** Which edge the tip box hangs from. `start` for tiles in column 1. */
+  tipAlign?: "start" | "end";
+  /** Takes two tracks — for a value no single track can hold. */
+  span2?: boolean;
 }) {
-  const toneClass =
-    tone === "pos" ? "ck-pos" : tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
+  const toneCls = TILE_TONE[tone];
+  // `block` kills the inline SVG's baseline gap, so a tip tile and a plain one
+  // come out the same height. The tone rides the glyph directly as well as the
+  // tile: inside a FormulaTip the glyph sits in a `ck-label` span, which sets
+  // its own colour and would otherwise repaint the mark secondary.
+  //
+  // TWO fixed-size renders, CSS-toggled by the PANEL's width — never one svg
+  // scaled (the grey-soup rule). Wide panels get the 48 hero and a display-
+  // size value so the tiles own their space; the narrow sidecar keeps the
+  // compact 24 row.
+  const at = (size: 24 | 48): ReactNode =>
+    mark ? mark(size) : icon ? <IkHero name={icon} size={size} className={toneCls + " block"} /> : null;
+  const glyph = (
+    <>
+      <span className="block @[340px]:hidden">{at(24)}</span>
+      <span className="hidden @[340px]:block">{at(48)}</span>
+    </>
+  );
   return (
-    <div className="grid grid-cols-[60px_1fr] items-center px-2 py-1 border-b border-[var(--color-border)]">
-      <span className="ck-label">{label}</span>
-      <span
-        className={"ck-mono ck-value-sm text-right " + toneClass}
-      >
-        {value}
-      </span>
+    <div
+      className={
+        "flex items-center gap-2 @[340px]:gap-3 min-w-0 px-2 py-2 @[340px]:py-3 @[560px]:px-4 @[560px]:py-5 bg-[var(--color-bg)] " +
+        toneCls +
+        (span2 ? " col-span-2" : "")
+      }
+      /* A tip tile takes no native title: the FormulaTip already answers the
+         hover, and two tooltips over one glyph is one too many. */
+      title={tip ? undefined : title}
+    >
+      {tip ? (
+        <FormulaTip
+          label={label}
+          plain={tip.plain}
+          formula={tip.formula}
+          className={
+            tipAlign === "start"
+              ? "[&_.formula-tip]:right-auto [&_.formula-tip]:left-0"
+              : ""
+          }
+        >
+          {glyph}
+        </FormulaTip>
+      ) : (
+        glyph
+      )}
+      {!mark && <span className="sr-only">{label} </span>}
+      {/* ck-tile-value scales with the panel (container query in compact.css)
+          and sits after .ck-mono in the cascade, which utilities cannot. */}
+      <span className="ck-mono ck-tile-value leading-none truncate">{value}</span>
     </div>
   );
 }
@@ -558,17 +668,21 @@ function RCell({
   label,
   value,
   tone = "default",
+  title: titleOverride,
 }: {
   label: ReactNode;
   value: ReactNode;
   tone?: "pos" | "neg" | "dim" | "default";
+  /** Plain-language definition for a bare label that has no FormulaTip. */
+  title?: string;
 }) {
   const toneClass =
     tone === "pos" ? "ck-pos" : tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
   // Only string/number values get a native hover title — a glyph value carries
   // its own tooltip and would stringify to "[object Object]".
   const title =
-    typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+    titleOverride ??
+    (typeof value === "string" || typeof value === "number" ? String(value) : undefined);
   return (
     <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5 min-w-0">
       <span className="ck-label">{label}</span>
@@ -583,7 +697,7 @@ function RCell({
 }
 
 function kindTone(kind: AgentProfile["kind"]): "pos" | "neg" | "dim" | "default" {
-  // Wave 3 — `agent` is the canonical Privy-owned default and reads as
+  // `agent` is the canonical Privy-owned default and reads as
   // the positive tone; `attested` is the sentinel (red) tier; everything
   // else (benchmark, internal_test, stale legacy values) reads dim.
   if (kind === "agent") return "pos";
@@ -609,20 +723,7 @@ function formatWR(wr: number | null): string {
   return wr === null ? "—" : `${Math.round(wr * 100)}%`;
 }
 
-function formatNote(c: AgentCallRow): string {
-  // Pending calls expose only the commit anchor; resolved calls may expose
-  // the public outcome label.
-  if (c.commit_hash) return `commit ${c.commit_hash.slice(0, 8)}`;
-  if (!c.outcome) return "encrypted";
-  if (c.outcome === "void") return "void";
-  return c.outcome;
-}
-
-function formatOutcome(c: AgentCallRow): string {
-  if (!c.outcome) return "pend";
-  if ((c.outcome === "win" || c.outcome === "loss") && c.call_score != null) {
-    const magnitude = Math.abs(c.call_score);
-    return formatScore(c.outcome === "win" ? magnitude : -magnitude, { decimals: 2 });
-  }
-  return c.outcome.slice(0, 4);
-}
+/* The call log's own wording (outcome words, the score line) moved with it to
+   components/compact/CallHistory.tsx. The row used to negate a losing call's
+   score — on the venue scale a score runs 0…1, so "−0.30" named a number that
+   cannot exist; the history prints what the daemon stored. */

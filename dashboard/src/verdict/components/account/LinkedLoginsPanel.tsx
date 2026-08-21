@@ -19,11 +19,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useLinkAccount,
+  useWallets,
   type PrivyErrorCode,
   type LinkedAccountWithMetadata,
 } from "@privy-io/react-auth";
 import { useAccount } from "../../hooks/useAccount.js";
-import { Ik } from "../../icons.js";
+import { Ik, IkBrand, type BrandMarkName } from "../../icons.js";
 import { shortId } from "../../lib/display-format.js";
 
 /**
@@ -32,19 +33,29 @@ import { shortId } from "../../lib/display-format.js";
  * Spelled out rather than imported as a value: `PrivyErrorCode` is a
  * TypeScript enum that exists in Privy's .d.ts but NOT in its ESM runtime
  * bundle, so importing it as a value typechecks and then fails the production
- * build with "PrivyErrorCode is not exported". The `satisfies` clause keeps
- * these pinned to the real union — a renamed or removed code fails the
- * typecheck instead of silently never matching.
+ * build with "PrivyErrorCode is not exported". `${PrivyErrorCode}` is the
+ * type-only escape hatch: string enums are nominal, so a literal never
+ * satisfies the enum type itself, but the template-literal form yields the
+ * union of its VALUES — which literals do satisfy, and which still fails the
+ * typecheck if Privy renames or removes a code.
  */
 const PRIVY_ERROR = {
   userExitedLinkFlow: "exited_link_flow",
   cannotLinkMoreOfType: "cannot_link_more_of_type",
   linkedToAnotherUser: "linked_to_another_user",
   accountTransferRequired: "account_transfer_required",
-} as const satisfies Record<string, PrivyErrorCode>;
+} as const satisfies Record<string, `${PrivyErrorCode}`>;
 
 /** The three login methods this panel can attach. Drives pending + buttons. */
 type LinkKind = "email" | "google" | "wallet";
+
+/** Each login kind's mark: Google's real logo; house glyphs for the rest.
+ *  A wallet whose own logo is available overrides this (see `walletIcons`). */
+const BRAND_FOR_KIND: Record<LinkKind, BrandMarkName> = {
+  email: "email",
+  google: "google",
+  wallet: "wallet",
+};
 
 /** A single usable (independent) login identity, normalized for display. */
 interface UsableLogin {
@@ -59,6 +70,8 @@ interface UsableLogin {
   title: string;
   /** Fingerprint token (type + address/identity) — order-stable. */
   fp: string;
+  /** Lower-cased address, wallet rows only — the key into `walletIcons`. */
+  address?: string;
 }
 
 /** A transient note shown under the action buttons. */
@@ -115,6 +128,7 @@ function computeUsableLogins(
         display: truncateAddress(acct.address),
         title: acct.address,
         fp: `wallet:${acct.address}`,
+        address: acct.address.toLowerCase(),
       });
     }
     // smart_wallet, passkey, phone, and other entry types are intentionally
@@ -135,6 +149,26 @@ export function LinkedLoginsPanel() {
     () => computeUsableLogins(account.linkedAccounts),
     [account.linkedAccounts],
   );
+
+  // The wallet's OWN logo, by address. Wallets announce their artwork through
+  // EIP-6963 and Privy surfaces it as `meta.icon`, so a MetaMask row shows the
+  // real fox and a Rainbow row the real Rainbow — current, and never a
+  // hand-drawn lookalike (owner ruling 2026-08-12: logos must be real).
+  //
+  // Only wallets connected in THIS session announce themselves, so a linked
+  // wallet the reader has not reconnected falls back to the house glyph. That
+  // is the honest outcome: a generic mark claims nothing, a guessed one lies.
+  const { wallets } = useWallets();
+  const walletIcons = useMemo(() => {
+    const map = new Map<string, { icon: string; name: string }>();
+    for (const w of wallets) {
+      const icon = w.meta?.icon;
+      if (typeof icon === "string" && icon.length > 0) {
+        map.set(w.address.toLowerCase(), { icon, name: w.meta?.name ?? "wallet" });
+      }
+    }
+    return map;
+  }, [wallets]);
 
   // Order-stable fingerprint of the usable set. When a link succeeds, the
   // user object gains an entry and this string changes — our signal that the
@@ -157,7 +191,7 @@ export function LinkedLoginsPanel() {
     setNote(null);
   }, []);
 
-  const onError = useCallback((code: PrivyErrorCode) => {
+  const onError = useCallback((code: `${PrivyErrorCode}`) => {
     // Always release the latch on error, regardless of the reason.
     setPending(null);
     if (code === PRIVY_ERROR.userExitedLinkFlow) {
@@ -166,7 +200,7 @@ export function LinkedLoginsPanel() {
       return;
     }
     if (code === PRIVY_ERROR.cannotLinkMoreOfType) {
-      setNote({ text: "already linked.", tone: "dim" });
+      setNote({ text: "That login is already linked.", tone: "dim" });
       return;
     }
     if (
@@ -175,13 +209,13 @@ export function LinkedLoginsPanel() {
     ) {
       // Do NOT promise a merge/transfer — reparenting is out of scope.
       setNote({
-        text: "that login is already tied to a different account.",
+        text: "That login already belongs to a different account.",
         tone: "dim",
       });
       return;
     }
     // must_be_authenticated, failed_to_link_account, and anything else.
-    setNote({ text: "couldn't link — try again.", tone: "accent" });
+    setNote({ text: "unable to link that. try again.", tone: "accent" });
   }, []);
 
   const callbacks = useMemo(() => ({ onSuccess, onError }), [onSuccess, onError]);
@@ -246,13 +280,13 @@ export function LinkedLoginsPanel() {
       {showNudge && (
         <div className="px-3 py-2 flex items-start justify-between gap-3 border-b border-[var(--color-border)]">
           <p className="ck-dim text-[12px] max-w-[48ch]">
-            link your other logins so your agents stay under one account.
+            Link your other logins so all your agents stay on one account.
           </p>
           <button
             type="button"
             onClick={dismissNudge}
             className="ck-btn ck-btn-bracket ck-dim shrink-0"
-            aria-label="dismiss prompt"
+            aria-label="dismiss this note"
           >
             dismiss
           </button>
@@ -261,10 +295,10 @@ export function LinkedLoginsPanel() {
 
       {usable.length === 0 ? (
         <div className="px-4 py-6 flex flex-col items-start gap-2">
-          <p className="ck-mono ck-dim">no independent logins yet.</p>
+          <p className="ck-mono ck-dim">No logins linked yet.</p>
           <p className="ck-dim text-[12px] max-w-[48ch]">
-            link an email, google, or wallet below so you can always get back
-            into this same account.
+            Link an email address, a Google account, or a wallet below. Any of
+            them will bring you back to this same account.
           </p>
         </div>
       ) : (
@@ -272,9 +306,12 @@ export function LinkedLoginsPanel() {
           {usable.map((u) => (
             <li
               key={u.key}
-              className="grid grid-cols-[64px_1fr] items-center px-3 py-2 gap-3"
+              className="grid grid-cols-[28px_1fr] items-center px-3 py-2 gap-3"
             >
-              <span className="ck-dim text-[12px] uppercase">{u.label}</span>
+              {/* The provider's real mark carries the kind; its name lives in
+                  the tooltip and on the sr-only span (owner ruling 2026-08-12:
+                  a component an icon can replace becomes the icon). */}
+              <LoginMark login={u} walletIcons={walletIcons} />
               <span className="ck-mono ck-pos truncate" title={u.title}>
                 {u.display}
               </span>
@@ -318,7 +355,7 @@ export function LinkedLoginsPanel() {
         </button>
 
         {pending && (
-          <span className="ck-dim text-[12px]">linking {pending}…</span>
+          <span className="ck-dim text-[12px]">Linking your {pending}…</span>
         )}
         {note && (
           <span
@@ -331,5 +368,45 @@ export function LinkedLoginsPanel() {
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * One login's mark.
+ *
+ * A wallet that announced its own artwork renders THAT — the genuine logo the
+ * wallet ships, not our approximation of it. Everything else falls back to the
+ * house brand set, which is honest about being generic.
+ *
+ * The image is 20px and square-cropped so a wallet shipping a wide or padded
+ * asset still lands on the same optical grid as the drawn marks beside it.
+ */
+function LoginMark({
+  login,
+  walletIcons,
+}: {
+  login: UsableLogin;
+  walletIcons: ReadonlyMap<string, { icon: string; name: string }>;
+}) {
+  const own = login.address ? walletIcons.get(login.address) : undefined;
+  if (own) {
+    return (
+      <span className="inline-flex" title={own.name}>
+        <img
+          src={own.icon}
+          alt=""
+          width={20}
+          height={20}
+          className="w-5 h-5 object-contain flex-none"
+        />
+        <span className="sr-only">{own.name}</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex ck-dim" title={login.label}>
+      <IkBrand name={BRAND_FOR_KIND[login.kind]} />
+      <span className="sr-only">{login.label}</span>
+    </span>
   );
 }
