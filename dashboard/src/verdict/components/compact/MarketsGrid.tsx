@@ -13,7 +13,22 @@ import {
   marketAssetSymbol,
   assetSymbolFromSlugOrQuestion,
   parseMarketConfig,
+  marketGrouping,
+  providerLabel,
+  filterableMarket,
+  type MarketGrouping,
 } from "../../lib/market-meta.js";
+import {
+  ALL_CHECKED,
+  filterMarkets,
+  marketFilterFromQuery,
+  marketFilterOptions,
+  marketFilterToQuery,
+  pruneFilterState,
+  UNCATEGORISED,
+  type MarketFilterState,
+} from "../../lib/market-filters.js";
+import { MarketFilterBar } from "./MarketFilterBar.js";
 import {
   formatLocalDateTime,
   formatLocalTimeLabel,
@@ -21,6 +36,8 @@ import {
 import {
   groupMarketsByWindow,
   marketWindowPhase,
+  countdownOwnerKey,
+  type MarketWindowGroup,
   startOfLocalDayEpochS,
   type MarketWindowPhase,
 } from "../../lib/market-windows.js";
@@ -67,7 +84,16 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     hasMore: boolean;
   } | null>(null);
   const [view, setView] = useState<MatrixView>(() => readViewFromLocation());
-  const [assets, setAssets] = useState<ReadonlySet<string> | null>(null);
+  // The checkable tiers (venue → category → series → market), URL-backed so a
+  // narrowed board is shareable and survives refresh. Toggles replaceState
+  // rather than push: a chip is a refinement of this address, not a new one.
+  const [filter, setFilter] = useState<MarketFilterState>(() =>
+    readFilterFromLocation(),
+  );
+  const applyFilter = useCallback((next: MarketFilterState) => {
+    setFilter(next);
+    writeFilterToLocation(next);
+  }, []);
 
   const { markets: venueMarkets, resolutions } = useVenueStream();
   const { open } = useDetailDrawer();
@@ -79,10 +105,14 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
   // hijack a keystroke the reader may not have meant as navigation.
   useSlashFocus(searchRef);
 
-  // The URL is the source of truth for the view. A link click updates it via
-  // pushState (no reload); Back/Forward and a pasted address re-sync here.
+  // The URL is the source of truth for the view AND the filter tiers. A link
+  // click updates it via pushState (no reload); Back/Forward and a pasted
+  // address re-sync here.
   useEffect(() => {
-    const sync = () => setView(readViewFromLocation());
+    const sync = () => {
+      setView(readViewFromLocation());
+      setFilter(readFilterFromLocation());
+    };
     window.addEventListener("hashchange", sync);
     window.addEventListener("popstate", sync);
     return () => {
@@ -91,31 +121,70 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     };
   }, []);
 
+  // The registry is re-fetched on a cadence, not loaded once. New five-minute
+  // windows register continuously; a one-shot fetch meant the live board only
+  // learned about them on a full page reload (review finding #2). Sixty
+  // seconds matches the discovery tick, and a venue frame that mentions a
+  // market this list has never seen triggers an immediate refresh — that is
+  // the earliest possible signal a new window exists.
+  const marketsRef = useRef<MarketRow[]>([]);
+  const registryFetchInFlight = useRef(false);
+  const refreshRegistry = useCallback(async (): Promise<void> => {
+    if (registryFetchInFlight.current) return;
+    registryFetchInFlight.current = true;
+    try {
+      const rows = await fetchMarkets({ status: "listed" });
+      marketsRef.current = rows;
+      setMarkets(rows);
+      setError(null);
+    } finally {
+      registryFetchInFlight.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     let cancel = false;
     setError(null);
 
-    const fetchOnce = async (): Promise<MarketRow[]> => {
+    const initial = async (): Promise<void> => {
       try {
-        return await fetchMarkets({ status: "listed" });
-      } catch (firstErr) {
+        await refreshRegistry();
+      } catch {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        if (cancel) throw firstErr;
-        return await fetchMarkets({ status: "listed" });
+        if (cancel) return;
+        try {
+          await refreshRegistry();
+        } catch (e) {
+          // The raw ApiError reads "GET /v2/markets → 500". The board
+          // already retries every minute; say that instead.
+          if (!cancel) {
+            setError("the markets board did not load. murmur retries every minute.");
+          }
+        }
       }
     };
+    void initial();
 
-    fetchOnce()
-      .then((rows) => {
-        if (!cancel) setMarkets(rows);
-      })
-      .catch((e: Error) => {
-        if (!cancel) setError(e.message);
-      });
+    const interval = window.setInterval(() => {
+      // A background refresh that fails keeps the board on its last good
+      // rows; the next tick tries again.
+      void refreshRegistry().catch(() => {});
+    }, 60_000);
     return () => {
       cancel = true;
+      window.clearInterval(interval);
     };
-  }, []);
+  }, [refreshRegistry]);
+
+  // A market the venue stream knows but the registry list does not = a window
+  // registered since the last fetch. Refresh now rather than in up to 60s.
+  useEffect(() => {
+    const known = new Set(marketsRef.current.map((m) => m.market_id));
+    const unknown = Object.keys(venueMarkets).some((id) => !known.has(id));
+    if (unknown && marketsRef.current.length > 0) {
+      void refreshRegistry().catch(() => {});
+    }
+  }, [venueMarkets, refreshRegistry]);
 
   // Today's settled windows. Fetched on mount rather than on tab open because
   // the header count states it ("10 live · 23 resolved today") — a number the
@@ -151,37 +220,141 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
 
   const liveMarkets = useMemo(() => markets ?? [], [markets]);
 
-  // The chip set is DERIVED from the markets on screen, never a hardcoded list
-  // of five tickers. The venue decides which assets it runs; a constant here
-  // would quietly drop a sixth the day one appears, and show five dead chips
-  // the day one is retired.
-  const assetOptions = useMemo(
-    () => deriveAssetOptions(liveMarkets, resolvedToday?.rows ?? []),
-    [liveMarkets, resolvedToday],
+  // ── Filter tiers ──────────────────────────────────────────────────────────
+  // Each live row flattened to its tier coordinates once; the bar, the board
+  // and the URL all read the same projection.
+  const projected = useMemo(
+    () => liveMarkets.map((m) => ({ market: m, coords: filterableMarket(m) })),
+    [liveMarkets],
+  );
+  const filterRows = useMemo(() => projected.map((p) => p.coords), [projected]);
+  // Ghost selections (a checked market whose windows all retired) prune at
+  // derivation rather than in an effect, so the board and the bar can never
+  // disagree for a frame.
+  const effectiveFilter = useMemo(
+    () => pruneFilterState(filter, marketFilterOptions(filterRows, filter)),
+    [filterRows, filter],
+  );
+  const visibleMarkets = useMemo(() => {
+    const survivors = new Set(filterMarkets(filterRows, effectiveFilter));
+    return projected.filter((p) => survivors.has(p.coords)).map((p) => p.market);
+  }, [projected, filterRows, effectiveFilter]);
+
+  // Market-tier chip artwork. Only symbol-labelled leaves carry a glyph, so
+  // membership doubles as "this leaf is an asset" for the symbol narrowing
+  // the archive surfaces need.
+  const iconByMarketKey = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const p of projected) {
+      if (marketAssetSymbol(p.market) === null) continue;
+      if (!map.get(p.coords.marketKey)) {
+        map.set(p.coords.marketKey, parseMarketConfig(p.market)?.icon_url ?? null);
+      }
+    }
+    return map;
+  }, [projected]);
+
+  // ── Hierarchy: provider → category buckets ────────────────────────────────
+  // Live rows normalize client-side (adapter_id + config); archived rows
+  // arrive pre-normalized from the server. Same shape, so both boards group
+  // identically. Built from the FILTERED rows: the grid mirrors the bar.
+  const liveBuckets = useMemo(() => {
+    const map = new Map<string, { key: string; grouping: MarketGrouping; markets: MarketRow[] }>();
+    for (const m of visibleMarkets) {
+      const g = marketGrouping(m);
+      const key = `${g.provider_key}//${g.category_label ?? "uncategorized"}`;
+      const bucket = map.get(key);
+      if (bucket) bucket.markets.push(m);
+      else map.set(key, { key, grouping: g, markets: [m] });
+    }
+    return [...map.values()];
+  }, [visibleMarkets]);
+
+  const resolvedBuckets = useMemo(() => {
+    const rows = resolvedToday?.rows ?? [];
+    const map = new Map<string, { key: string; grouping: MarketGrouping; rows: ArchivedMarketRow[] }>();
+    for (const row of rows) {
+      const providerKey = row.provider ?? "unknown";
+      const key = `${providerKey}//${row.category_label ?? "uncategorized"}`;
+      const bucket = map.get(key);
+      if (bucket) bucket.rows.push(row);
+      else
+        map.set(key, {
+          key,
+          grouping: {
+            provider_key: providerKey,
+            provider_label: providerLabel(providerKey),
+            category_label: row.category_label ?? null,
+          },
+          rows: [row],
+        });
+    }
+    return [...map.values()];
+  }, [resolvedToday]);
+
+  // Resolved buckets narrowed by the venue + category tiers. Those two map
+  // 1:1 onto archived rows; the market tier narrows by symbol further down,
+  // and series has no archived counterpart to filter on.
+  const resolvedVisibleBuckets = useMemo(
+    () =>
+      resolvedBuckets.filter(
+        (b) =>
+          (effectiveFilter.venues === null ||
+            effectiveFilter.venues.has(b.grouping.provider_key)) &&
+          (effectiveFilter.categories === null ||
+            effectiveFilter.categories.has(
+              b.grouping.category_label ?? UNCATEGORISED,
+            )),
+      ),
+    [resolvedBuckets, effectiveFilter],
   );
 
-  const filteredLive = useMemo(
-    () =>
-      assets === null
-        ? liveMarkets
-        : liveMarkets.filter((m) => {
-            const symbol = marketAssetSymbol(m);
-            return symbol !== null && assets.has(symbol);
-          }),
-    [liveMarkets, assets],
-  );
-
-  const { groups, unscheduled } = useMemo(
-    () =>
-      groupMarketsByWindow(
-        filteredLive,
+  const bucketWindows = useMemo(() => {
+    const out = new Map<
+      string,
+      { groups: MarketWindowGroup<MarketRow>[]; unscheduled: MarketRow[] }
+    >();
+    for (const bucket of liveBuckets) {
+      // Bucket rows already passed the tiers; grouping is all that is left.
+      const { groups, unscheduled } = groupMarketsByWindow(
+        bucket.markets,
         (m) => m.clock ?? null,
         "soonest",
-      ),
-    [filteredLive],
+      );
+      out.set(bucket.key, {
+        groups: limit ? groups.slice(0, limit) : groups,
+        unscheduled,
+      });
+    }
+    return out;
+  }, [liveBuckets, limit]);
+
+  // Flat view of every bucket's visible windows — the phase announcement and
+  // empty-state logic care about totals, not the hierarchy.
+  const visibleGroups = useMemo(
+    () => [...bucketWindows.values()].flatMap((w) => w.groups),
+    [bucketWindows],
+  );
+  const unscheduled = useMemo(
+    () => [...bucketWindows.values()].flatMap((w) => w.unscheduled),
+    [bucketWindows],
   );
 
-  const visibleGroups = limit ? groups.slice(0, limit) : groups;
+  // Archive surfaces (resolved rows, search) narrow by asset SYMBOL — the one
+  // coordinate an archived row still carries. Checked symbol-labelled leaves
+  // translate directly; a checked question-market has no archived analogue and
+  // contributes nothing.
+  const symbolFilter = useMemo((): ReadonlySet<string> | null => {
+    if (effectiveFilter.markets === null) return null;
+    const labelByKey = new Map(filterRows.map((f) => [f.marketKey, f.marketLabel]));
+    const symbols = new Set<string>();
+    for (const key of effectiveFilter.markets) {
+      if (!iconByMarketKey.has(key)) continue;
+      const label = labelByKey.get(key);
+      if (label) symbols.add(label);
+    }
+    return symbols.size > 0 ? symbols : null;
+  }, [effectiveFilter, filterRows, iconByMarketKey]);
 
   // The whole cohort settles together, so ONE resolution in the group means
   // the window is over — the remaining four are moments behind it, and showing
@@ -223,12 +396,6 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
         resolvedToday={resolvedToday}
       />
 
-      <AssetFilterChips
-        options={assetOptions}
-        selected={assets}
-        onToggle={(symbol) => setAssets((prev) => toggleAsset(prev, symbol, assetOptions))}
-      />
-
       {/* ONE stable polite region for the whole matrix. It announces phase
           TRANSITIONS only — "1:25 window: submissions closed" — never the
           ticking countdown, which would speak once a second forever. */}
@@ -236,40 +403,106 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
         {announcement}
       </p>
 
-      {view === "search" ? (
-        <MarketsArchiveSearch assetFilter={assets} inputRef={searchRef} />
-      ) : view === "resolved" ? (
-        <ResolvedBoard
-          page={resolvedToday}
-          assets={assets}
-          resolutions={resolutions}
+      {/* The tiers govern live and resolved alike; search carries its own
+          name + date controls and takes only the symbol narrowing. */}
+      {view !== "search" && (
+        <MarketFilterBar
+          rows={filterRows}
+          state={effectiveFilter}
+          iconByMarketKey={iconByMarketKey}
+          onChange={applyFilter}
         />
+      )}
+
+      {view === "search" ? (
+        <MarketsArchiveSearch assetFilter={symbolFilter} inputRef={searchRef} />
+      ) : view === "resolved" ? (
+        resolvedVisibleBuckets.length === 0 ? (
+          <ResolvedBoard page={resolvedToday} rows={[]} resolutions={resolutions} />
+        ) : (
+          <div>
+            {groupBucketsByProvider(resolvedVisibleBuckets).map(
+              ({ providerKey, providerName, buckets }, _i, providers) => (
+                <section key={providerKey} aria-label={`Provider ${providerName}`}>
+                  {providers.length > 1 && <ProviderHeader label={providerName} />}
+                  {buckets.map((bucket) => (
+                    <section
+                      key={bucket.key}
+                      aria-label={`Category ${bucket.grouping.category_label ?? UNCATEGORISED}`}
+                    >
+                      {buckets.length > 1 && (
+                        <CategoryHeader
+                          label={bucket.grouping.category_label ?? UNCATEGORISED}
+                        />
+                      )}
+                      <ResolvedBoard
+                        page={resolvedToday}
+                        rows={filterArchivedRows(bucket.rows, symbolFilter)}
+                        resolutions={resolutions}
+                      />
+                    </section>
+                  ))}
+                </section>
+              ),
+            )}
+          </div>
+        )
       ) : error ? (
         <InlineError error={error} className="px-2 py-2 ck-mono" />
       ) : markets === null ? (
         <MarketsSkeleton />
       ) : visibleGroups.length === 0 && unscheduled.length === 0 ? (
-        <EmptyLive hasMarkets={liveMarkets.length > 0} onClear={() => setAssets(null)} />
+        <EmptyLive
+          hasMarkets={liveMarkets.length > 0}
+          onClear={() => applyFilter(ALL_CHECKED)}
+        />
       ) : (
         <div>
-          {visibleGroups.map((group) => (
-            <MarketWindowGroupPanel
-              key={group.key}
-              group={group}
-              phase={phaseOf(group)}
-              nowMs={nowMs}
-              venueMarkets={venueMarkets}
-              venueResolutions={resolutions}
-              onOpenMarket={(marketId) => open("market", marketId)}
-            />
-          ))}
+          {/* The grid mirrors the bar: a venue header when more than one venue
+              is showing, a category header when the venue's categories branch.
+              The same branch test drives both, so they can never disagree. */}
+          {groupBucketsByProvider(liveBuckets).map(
+            ({ providerKey, providerName, buckets }, _i, providers) => (
+              <section key={providerKey} aria-label={`Provider ${providerName}`}>
+                {providers.length > 1 && <ProviderHeader label={providerName} />}
+                {buckets.map((bucket) => (
+                  <section
+                    key={bucket.key}
+                    aria-label={`Category ${bucket.grouping.category_label ?? UNCATEGORISED}`}
+                  >
+                    {buckets.length > 1 && (
+                      <CategoryHeader
+                        label={bucket.grouping.category_label ?? UNCATEGORISED}
+                      />
+                    )}
+                    {(() => {
+                      const groups = bucketWindows.get(bucket.key)?.groups ?? [];
+                      const clockKey = countdownOwnerKey(groups, phaseOf);
+                      return groups.map((group) => (
+                        <MarketWindowGroupPanel
+                          key={group.key}
+                          group={group}
+                          phase={phaseOf(group)}
+                          nowMs={nowMs}
+                          showCountdown={group.key === clockKey}
+                          venueMarkets={venueMarkets}
+                          venueResolutions={resolutions}
+                          onOpenMarket={(marketId) => open("market", marketId)}
+                        />
+                      ));
+                    })()}
+                  </section>
+                ))}
+              </section>
+            ),
+          )}
           {unscheduled.length > 0 && (
             <section
-              aria-label="Markets with no window"
+              aria-label="Markets that have no window yet"
               className="border-b border-[var(--color-border)]"
             >
               <header className="px-2 py-1 bg-[var(--color-surface)]">
-                <h3 className="ck-mono ck-dim m-0">no window bound</h3>
+                <h3 className="ck-mono ck-dim m-0">no window yet</h3>
               </header>
               <ul className="m-0 p-0 list-none">
                 {unscheduled.map((market) => (
@@ -333,7 +566,7 @@ function MatrixHeader({
               onPick(option);
             }}
             className={
-              "ck-mono min-h-[40px] inline-flex items-center px-3 no-underline " +
+              "ck-mono min-h-[40px] max-lg:min-h-[44px] inline-flex items-center px-3 no-underline " +
               "border border-[var(--color-border)] -ml-px first:ml-0 " +
               "focus-visible:outline-offset-[-2px] motion-safe:transition-colors " +
               (option === view
@@ -362,63 +595,6 @@ function MatrixHeader({
   );
 }
 
-// ─── Asset filter ───────────────────────────────────────────────────────────
-
-interface AssetOption {
-  symbol: string;
-  iconUrl: string | null;
-}
-
-/**
- * Toggle chips.
- *
- * `aria-pressed` because these are toggles, not navigation — the same control
- * in two states, which is exactly what the attribute is for. The pressed state
- * is FILLED vs outlined, not tinted: a colour-only distinction is invisible to
- * a large fraction of readers and disappears entirely in a high-contrast
- * theme.
- */
-function AssetFilterChips({
-  options,
-  selected,
-  onToggle,
-}: {
-  options: AssetOption[];
-  selected: ReadonlySet<string> | null;
-  onToggle: (symbol: string) => void;
-}) {
-  if (options.length === 0) return null;
-  return (
-    <div
-      role="group"
-      aria-label="Filter by asset"
-      className="flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-[var(--color-border)]"
-    >
-      {options.map((option) => {
-        const pressed = selected === null || selected.has(option.symbol);
-        return (
-          <button
-            key={option.symbol}
-            type="button"
-            aria-pressed={pressed}
-            onClick={() => onToggle(option.symbol)}
-            className={
-              "ck-mono inline-flex items-center gap-1.5 min-h-[40px] px-2.5 " +
-              "border cursor-pointer motion-safe:transition-colors " +
-              (pressed
-                ? "bg-[var(--color-display)] text-[var(--color-bg)] border-[var(--color-display)]"
-                : "bg-transparent text-[var(--color-secondary)] border-[var(--color-border-vis)]")
-            }
-          >
-            <MarketAssetIcon iconUrl={option.iconUrl} symbol={option.symbol} />
-            {option.symbol}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 // ─── Resolved board ─────────────────────────────────────────────────────────
 
 /**
@@ -435,11 +611,12 @@ function AssetFilterChips({
  */
 function ResolvedBoard({
   page,
-  assets,
+  rows,
   resolutions,
 }: {
   page: { rows: ArchivedMarketRow[]; hasMore: boolean } | null;
-  assets: ReadonlySet<string> | null;
+  /** Pre-filtered by the caller's (provider, category, chips) scope. */
+  rows: ArchivedMarketRow[];
   resolutions: Record<string, WireVenueResolutionRow>;
 }) {
   if (page === null) {
@@ -449,17 +626,11 @@ function ResolvedBoard({
       </p>
     );
   }
-  const rows = assets === null
-    ? page.rows
-    : page.rows.filter((row) => {
-        const symbol = assetSymbolFromSlugOrQuestion(row.slug, row.question);
-        return symbol !== null && assets.has(symbol);
-      });
   if (rows.length === 0) {
     return (
       <p className="px-2 py-2 ck-mono ck-dim">
         {page.rows.length > 0
-          ? "[no resolved markets for the selected assets]"
+          ? "[no resolved markets match your filters]"
           : "[nothing has resolved today yet]"}
       </p>
     );
@@ -477,12 +648,14 @@ function ResolvedBoard({
   return (
     <div>
       {[...byInstant.entries()].map(([endedAt, bucket]) => (
-        <section
+        <details
           key={endedAt}
           aria-label={`Resolved ${formatLocalTimeLabel(endedAt) ?? endedAt}`}
           className="border-b border-[var(--color-border-vis)]"
         >
-          <header className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 bg-[var(--color-surface)]">
+          {/* Collapsed by default: a settled window is history, so the board
+              opens as a scannable index of windows rather than 50 rows. */}
+          <summary className="mmr-window-summary flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 bg-[var(--color-surface)]">
             <h3 className="ck-mono ck-pos font-bold m-0">
               <time
                 dateTime={endedAt}
@@ -492,7 +665,11 @@ function ResolvedBoard({
               </time>
             </h3>
             <span className="ck-badge ck-dim">{PHASE_TEXT.resolved}</span>
-          </header>
+            <span className="ck-mono ck-dim">
+              {bucket.length} {bucket.length === 1 ? "market" : "markets"}
+            </span>
+            <span className="mmr-disclosure-marker ml-auto" aria-hidden="true" />
+          </summary>
           <ul className="m-0 p-0 list-none">
             {bucket.map((row) => (
               <ArchivedMarketLinkRow
@@ -503,11 +680,11 @@ function ResolvedBoard({
               />
             ))}
           </ul>
-        </section>
+        </details>
       ))}
       {page.hasMore && (
         <p className="px-2 py-2 ck-mono ck-dim m-0">
-          showing the most recent 50 — use search for the rest
+          Showing the most recent 50. Use search for the rest.
         </p>
       )}
     </div>
@@ -527,8 +704,8 @@ function EmptyLive({
     <div className="px-2 py-2 flex flex-wrap items-center gap-2 ck-mono ck-dim">
       <span>
         {hasMarkets
-          ? "[no live markets for the selected assets]"
-          : "[no markets listed]"}
+          ? "[no live markets match your filters]"
+          : "[no markets are open right now]"}
       </span>
       {hasMarkets && (
         <button
@@ -536,7 +713,7 @@ function EmptyLive({
           onClick={onClear}
           className="ck-btn ck-btn-bracket min-h-[40px]"
         >
-          show all assets
+          clear filters
         </button>
       )}
     </div>
@@ -648,18 +825,33 @@ function usePhaseTransitionAnnouncement(
   return announcement;
 }
 
-const PHASE_ANNOUNCEMENT: Record<MarketWindowPhase, string> = {
-  upcoming: "scheduled",
-  open: "open for calls",
-  sealed: "submissions closed",
-  resolved: "resolved",
-};
+// Reuses the visible badge labels so what is heard matches what is shown.
+const PHASE_ANNOUNCEMENT = PHASE_TEXT;
 
 // ─── View param ─────────────────────────────────────────────────────────────
 
 function readViewFromLocation(): MatrixView {
   const raw = readRouteQuery(window.location).get(VIEW_PARAM);
   return VIEWS.includes(raw as MatrixView) ? (raw as MatrixView) : "live";
+}
+
+// ─── Filter params ──────────────────────────────────────────────────────────
+
+const FILTER_PARAMS = ["venue", "category", "series", "market"] as const;
+
+function readFilterFromLocation(): MarketFilterState {
+  const params = readRouteQuery(window.location);
+  return marketFilterFromQuery((key) => params.get(key));
+}
+
+/** replaceState, not push: a chip refines this address, it is not a new one. */
+function writeFilterToLocation(state: MarketFilterState): void {
+  const params = readRouteQuery(window.location);
+  for (const param of FILTER_PARAMS) params.delete(param);
+  for (const [param, value] of Object.entries(marketFilterToQuery(state))) {
+    params.set(param, value);
+  }
+  window.history.replaceState(null, "", buildRouteQueryUrl(window.location, params));
 }
 
 /**
@@ -674,61 +866,62 @@ function viewHref(view: MatrixView): string {
   return buildRouteQueryUrl(window.location, params);
 }
 
-// ─── Asset options ──────────────────────────────────────────────────────────
+// ─── Hierarchy sections ─────────────────────────────────────────────────────
 
-/** Venue order first, then anything new, alphabetically. Stable across renders. */
-const ASSET_ORDER = ["BTC", "ETH", "SOL", "XRP", "DOGE"] as const;
-
-function deriveAssetOptions(
-  live: readonly MarketRow[],
-  resolved: readonly ArchivedMarketRow[],
-): AssetOption[] {
-  const icons = new Map<string, string | null>();
-  for (const market of live) {
-    const symbol = marketAssetSymbol(market);
-    if (symbol === null) continue;
-    if (!icons.get(symbol)) {
-      icons.set(symbol, parseMarketConfig(market)?.icon_url ?? null);
-    }
-  }
-  for (const row of resolved) {
-    const symbol = assetSymbolFromSlugOrQuestion(row.slug, row.question);
-    if (symbol === null) continue;
-    if (!icons.get(symbol)) icons.set(symbol, row.icon_url);
-  }
-  return [...icons.entries()]
-    .map(([symbol, iconUrl]) => ({ symbol, iconUrl }))
-    .sort((a, b) => {
-      const ai = ASSET_ORDER.indexOf(a.symbol as (typeof ASSET_ORDER)[number]);
-      const bi = ASSET_ORDER.indexOf(b.symbol as (typeof ASSET_ORDER)[number]);
-      if (ai !== -1 && bi !== -1) return ai - bi;
-      if (ai !== -1) return -1;
-      if (bi !== -1) return 1;
-      return a.symbol.localeCompare(b.symbol);
-    });
+interface ProviderGroup<B extends { grouping: MarketGrouping }> {
+  providerKey: string;
+  providerName: string;
+  buckets: B[];
 }
 
-/**
- * `null` means "all", which is the resting state — not a full Set, so a new
- * asset appearing mid-session is included rather than silently filtered out.
- * Un-pressing the last remaining chip returns to "all" instead of leaving an
- * empty board with no obvious way back.
- */
-function toggleAsset(
-  current: ReadonlySet<string> | null,
-  symbol: string,
-  options: AssetOption[],
-): ReadonlySet<string> | null {
-  if (current === null) {
-    // First press narrows to everything EXCEPT the one just un-pressed.
-    const next = new Set(options.map((o) => o.symbol));
-    next.delete(symbol);
-    return next.size === 0 ? null : next;
+/** Stable provider-ordered view of category buckets. */
+function groupBucketsByProvider<B extends { grouping: MarketGrouping }>(
+  buckets: B[],
+): ProviderGroup<B>[] {
+  const map = new Map<string, ProviderGroup<B>>();
+  for (const bucket of buckets) {
+    const key = bucket.grouping.provider_key;
+    const group = map.get(key);
+    if (group) group.buckets.push(bucket);
+    else
+      map.set(key, {
+        providerKey: key,
+        providerName: bucket.grouping.provider_label,
+        buckets: [bucket],
+      });
   }
-  const next = new Set(current);
-  if (next.has(symbol)) next.delete(symbol);
-  else next.add(symbol);
-  if (next.size === 0) return null;
-  if (next.size === options.length) return null;
-  return next;
+  return [...map.values()];
+}
+
+/** Provider tier — the venue the markets live on. Rendered only when more
+ *  than one venue is showing; the filter bar names the venue otherwise. */
+function ProviderHeader({ label }: { label: string }) {
+  return (
+    <header className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--color-border-vis)] bg-[var(--color-surface)]">
+      <h3 className="ck-mono ck-pos font-bold m-0">{label}</h3>
+    </header>
+  );
+}
+
+/** Category tier — the venue's own top-level tag, or "uncategorised". Never
+ *  murmur's taxonomy class: that names settlement, not subject. Rendered only
+ *  when the venue's categories branch, mirroring the filter bar. */
+function CategoryHeader({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-x-3 px-2 py-1 border-b border-[var(--color-border)]">
+      <h4 className="ck-mono m-0 lowercase text-[var(--color-primary)]">{label}</h4>
+    </div>
+  );
+}
+
+/** Archived rows narrowed by the market tier's checked symbols. */
+function filterArchivedRows(
+  rows: ArchivedMarketRow[],
+  selection: ReadonlySet<string> | null,
+): ArchivedMarketRow[] {
+  if (selection === null) return rows;
+  return rows.filter((row) => {
+    const symbol = assetSymbolFromSlugOrQuestion(row.slug, row.question);
+    return symbol !== null && selection.has(symbol);
+  });
 }

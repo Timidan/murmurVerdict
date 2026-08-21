@@ -167,11 +167,23 @@ Lives at `dashboard/src/verdict/components/compact/`.
 
 | Component | Purpose | Used by |
 |---|---|---|
-| `CompactTopbar` | 64px shared chrome — MMark, context crumb, landing-canonical unboxed nav, UTC clock, theme, live status | every compact page |
+| `CompactTopbar` | 64px shared chrome — MMark, context crumb, landing-canonical unboxed nav, UTC clock, theme, live status. Mounted ONCE by `Router`'s `AppShell`, outside `<Suspense>`, so it never unmounts. **Three-column invariant** — see below | the persistent shell |
+
+**The topbar is persistent (2026-08-10).** `AppShell` in `Router.tsx` mounts it once, above the Suspense boundary; pages render content only. Before this every one of 18 pages rendered its own, so each navigation destroyed and rebuilt the bar — which dropped and reopened the SSE stream every time (measured: one fresh `/v1/stream` per nav click), flashed `live → offline → live`, and blanked the chrome entirely during a cold chunk fetch. It also meant the owner-approved "columns land" activation motion had **never once fired**: the effect compares against the previous route, and a bar that remounts has no previous route. Pages send their crumb through `<TopbarCrumb/>`, which portals into a slot in the persistent bar, so per-page loading and error branches keep their own crumbs.
+
+**Topbar three-column invariant (2026-08-10).** The bar is `[left rail flex-1 basis-0] [nav shrink-0] [right rail flex-1 basis-0]`, and both rails carry the *same* horizontal padding (28px). That is what pins the nav glyph row to the viewport centre.
+
+It used to be `[logo][crumb][nav flex-1 justify-center][right]`, which centred the nav in whatever space the crumb and right cluster left over — so the nav moved whenever either changed width. Measured before the fix: **65px** of drift in the first icon's x across the five nav routes (crumb `install` 65px → `recruiters /attribution` 196px), plus an 11px slide each time the live/offline readout changed width. Nav destinations that land somewhere different on every page are not a nav bar.
+
+Two rules keep it honest, and both are load-bearing:
+- **Rails grow, nav doesn't.** Putting a width on the nav, or dropping `basis-0` from a rail, re-opens the drift.
+- **Equal rail padding.** Under `border-box`, a `flex-basis: 0` item cannot resolve below its own horizontal padding, so unequal padding gives the rails unequal floors and pushes the nav off-centre (it was 6px off at 28px vs 16px). Change one side's padding and you must change the other.
+
+Only the left rail gets `min-w-0`: it absorbs any squeeze by truncating the crumb, so the right rail's fixed-size chrome never compresses.
 | `Panel` | Hairline-framed labeled region with header strip | leaderboard, live tape, markets matrix panels |
 | `CompactMiniLB` | Top-N leaderboard rendered as `ck-row` grid with sparklines | landing |
 | `CompactLiveFeed` | Tape of recent SSE events | landing |
-| `CompactMarketsGrid` | Per-(asset, horizon) market matrix | landing, market detail back-link |
+| `CompactMarketsGrid` | Market matrix behind the checkable filter tiers (owner sign-off 2026-08-11): **venue → category → series → market**, each a multi-select row of checkbox chips (`MarketFilterBar` + lib/market-filters.ts; subtractive model — null = all checked, the old `toggleAsset` semantics). Checked = on the board. Only what murmur carries is offered; upper tiers narrow lower options; ghost selections prune silently; selection lives in the URL (`venue`/`category`/`series`/`market` params, replaceState). A tier holding one value renders as a plain label ("a tier earns a row only when it branches"); the series tier stays hidden while Gamma's per-asset series map 1:1 onto market leaves. The grid mirrors the bar: venue/category section headers appear only when >1 is showing. Category = the venue's own top-level tag (`venue_category`, matched against `POLYMARKET_TOP_LEVEL_TAGS` precedence, canonical labels, displayed lowercase), or "uncategorised" — never murmur's taxonomy class, which names settlement, not subject (owner ruling 2026-08-11). Market leaf identity = `series_slug` so a checked market follows its rolling windows. Archive rows (`/v2/markets/archive`: `provider`/`category_label`) narrow by venue+category tiers and by checked symbol leaves. Search tab stays flat: name (`q`) + ended-on date, server-side | landing, market detail back-link |
 | `MetricCell` | Single stat cell (label + value) for ribbon strips | many |
 | `Sparkline` | 30-day score trend SVG, no axes, hairline | leaderboard rows |
 
@@ -496,9 +508,21 @@ Dual theme: **dark** (default) + **paper** (cream/ink twin). Activation via `[da
 | M waveform mark | `verdict/components/MMark.tsx` — inline SVG, 8 bar rects + 1 dot rect, geometry extracted from `murmur-verdict__full-asset-pack__final/01_mark__dark.png` via PIL | topbar (28px), splash (96px via `AnimatedMark`), wordmark |
 | Wordmark | `verdict/components/Wordmark.tsx` — horizontal or stacked, composes MMark + `MURMUR.verdict` text via flex | future hero/share/recruiters/spec headers |
 | App icon (paper, dark) | `public/brand/app-icon-{paper,dark}.png` | Apple touch icon, also feeds favicon ICO generation |
-| Splash | `verdict/components/Splash.tsx` — mounts at root, fades out over 200ms after the first post-hydration frame then unmounts; renders `AnimatedMark` at 96px (`mode="once"`, no wordmark), whose motion is gated on prefers-reduced-motion in `animated-mark.css` | first-paint cold load |
+| Brand sting | `verdict/components/Splash.tsx` — full-bleed `logo-sting.mp4` (5.06s), landing route + first visit only (`murmur.sting.seen`), dismissed on end/interaction/skip/7s timeout; skipped entirely under reduced motion | landing entrance |
+| Logo loader | `verdict/components/LogoLoader.tsx` — looping `logo-loop.mp4` (0.70s). Held invisible for 350ms by a CSS animation delay, so waits shorter than that never flash a loader at all — only a real wait shows one | Suspense fallback, auth gate, admin + settings loads |
 | Favicons | `public/brand/favicon-{paper,dark}.{ico,svg}` — SVG primary, ICO fallback, both swap with theme via bootstrap + applyTheme | tab icon |
 | Wordmark rasters | `public/brand/wordmark-{horizontal,stacked}-{paper,dark}.png` | reference / fallback for non-React surfaces |
+
+**Logo motion assets** (`public/brand/`, encoded from `assets/murmur-logo-sting.mp4`):
+`logo-sting.mp4` is the full 5.06s entrance; `logo-loop.mp4` is a seamless 0.70s
+window (source 0.57–1.27s — frame 0 is black, so a naive 0–1s loop blinks).
+Both are muted and have their black point crushed to pure `#000`, which is what
+lets `mix-blend-mode: screen` (dark) and `invert(1) hue-rotate(180deg)` +
+`multiply` (paper) render the video field as exactly the page background in
+either theme. The sting's black backdrop is painted by the `index.html`
+bootstrap via `:root[data-sting]` before first paint — React cannot mount
+early enough, so without it the first visit flashed the theme background and
+then slammed to black. `AnimatedMark` is now used only by the `/logo` dev route.
 
 Mark bars render with `currentColor` (inherits from parent text color → flips with theme); verdict dot is pinned to `var(--color-accent)` (brand red, same in both themes).
 
@@ -516,3 +540,45 @@ Used on three marketing routes:
 - `#/spec`
 
 Dense data routes (landing, leaderboard, today, calls, markets, agent, launch, admin) do NOT get the pattern — they keep the clean canvas. Dark mode shows no pattern (the asset pack ships paper-only).
+
+---
+
+## 14. Icon sourcing
+
+`dashboard/src/verdict/icons.tsx` is the source of truth — read its header
+comment for the full reasoning. Summary:
+
+Original grammar: every icon hand-drawn, 16-grid inline / 24-grid nav,
+square-cap/miter-join, 1px hairline, half-grid pixel-snapped. Still the rule
+for anything drawn from scratch.
+
+**2026-08-10 sourcing pass.** The owner wanted new/replacement icons that fit
+the *design system* (monochrome, dual dark/paper theme, restrained motion,
+technical-but-not-sterile) rather than the hand-drawn set's own drawing
+grammar. Evaluated Lucide (9/10 textbook fit, rejected as too saturated —
+default behind shadcn/ui and most current dark-mode SaaS) and Solar Icons
+(arguably more saturated than Lucide within crypto/trading-dashboard
+templates specifically) before landing on **Streamline's "Sharp Line"**
+style — hard miter joins, square caps, no rounding, explicitly *not*
+Streamline's own flagship "Core" style (self-described as "the Helvetica of
+icons," i.e. deliberately generic).
+
+16 of the 27 inline concepts and 2 of the 6 nav destinations (`agent`,
+`badge`) now use real Streamline Sharp geometry (CC BY 4.0 — attribution in
+`THIRD_PARTY_NOTICES.md`). The rest stayed hand-drawn on purpose: no real
+Streamline icon exists for `seal` / `confirm-live` / `dispute` / `webhook` /
+`x402` (murmur-specific concepts a general icon library doesn't cover),
+`mcp`'s only candidate collides with `link`, `leaderboard`'s only candidate
+was a wrong-domain UN-SDG-style icon, `copy`'s candidate implied a link
+specifically (narrower than actual usage), and `live-dot` — despite a
+reasonable match existing — stays hand-drawn because its exact path
+structure (two chevrons + one core rect, in order) is what
+`compact.css`'s `.ck-live-tx` transmission-pulse animation targets; the app's
+one ambient animation was not worth risking for an icon swap.
+
+Mixed-grid rendering: `Ik` picks viewBox/stroke-width per glyph
+(16-grid/1px hand-drawn vs. 24-grid/1.5px Streamline — the same relative
+weight, so both read as one family at any shared render size).
+`STREAMLINE_ICON_NAMES` / `NAV_STREAMLINE_ICON_NAMES` (exported from
+`icons.tsx`) are the single source of truth for which glyphs came from
+where; `icons.smoke.ts` branches its pixel-snap guards off them.
