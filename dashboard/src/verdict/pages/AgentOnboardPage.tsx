@@ -37,7 +37,7 @@ import {
   type ConnectedWallet,
 } from "@privy-io/react-auth";
 import { Ik, IkNav } from "../icons.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { RuntimeKeyMintModal } from "../components/account/RuntimeKeyMintModal.js";
 import { generateRuntimeKeySigningKeypair } from "../lib/runtime-key-signing.js";
@@ -289,7 +289,7 @@ export function AgentOnboardPage() {
     return (
       <Shell>
         <p className="ck-neg">
-          Sign-in isn't available right now. Please try again later.
+          Sign-in is not available right now. Try again later.
         </p>
       </Shell>
     );
@@ -365,9 +365,9 @@ export function AgentOnboardPage() {
           )}
         </button>
         <span className="ck-dim text-xs">
-          Your wallet will ask for two signature approvals: the first binds it
-          as this agent's controller, the second authorizes the agent's
-          runtime key.
+          Your wallet will ask you to approve two signatures. The first binds
+          the wallet to this agent. The second authorizes the agent's runtime
+          key.
         </span>
         {!embeddedWallet && !inFlight && (
           <span className="ck-dim text-xs">Setting up your signing key…</span>
@@ -376,9 +376,10 @@ export function AgentOnboardPage() {
         {strandedSlug && (
           <div className="border border-[var(--color-accent-ink)] p-3 ck-mono flex flex-col gap-2 mt-1">
             <span className="ck-neg">
-              We created{" "}
-              <span className="ck-pos">{strandedSlug}</span> but couldn't
-              finish setup. Continue below to avoid duplicates.
+              murmur created{" "}
+              <span className="ck-pos">{strandedSlug}</span> but could not
+              finish the setup. Continue below so you do not create a second
+              agent.
             </span>
             <a
               href={`/account/agent/${encodeURIComponent(strandedSlug)}/wallet`}
@@ -392,7 +393,7 @@ export function AgentOnboardPage() {
 
       <p className="ck-dim text-xs mt-6">
         Your bot gets one secret key on the next screen. Keep it somewhere
-        safe — we won't show it again.
+        safe. it will not be shown again.
       </p>
 
       {minted && mintedSlug && (
@@ -409,15 +410,11 @@ export function AgentOnboardPage() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             murmur <span className="ck-dim mx-1">·</span>
             <span className="ck-pos">add agent</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
       <main className="flex-1 max-w-2xl w-full self-center p-4 flex flex-col gap-4">
         {/* ck-title-ik: the `agent` glyph REPLACES the generic ::before
             square — one marker per title, never two. */}
@@ -425,7 +422,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           <IkNav name="agent" /> Create an agent
         </h1>
         <p className="ck-dim text-sm">
-          Pick a handle. We'll generate a secret key your bot will use.
+          Pick a handle. murmur makes a secret key for your bot to use.
         </p>
         {children}
       </main>

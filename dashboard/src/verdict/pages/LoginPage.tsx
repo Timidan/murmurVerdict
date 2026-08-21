@@ -1,15 +1,15 @@
-// ─── LoginPage — public sign-in shell at #/account/login (Phase 7a) ────────
+// ─── LoginPage — public sign-in shell at #/account/login ───────────────────
 //
 // Renders the Nothing mmr-shell sign-in surface. Privy's hosted login
 // modal is invoked via `useAccount().signIn()`. After successful auth we
 // navigate to the `?next=…` deep-link if present, else default to /account.
 //
-// Phase 7b will swap the placeholder methods row for a richer presentation
+// A later pass swaps the placeholder methods row for a richer presentation
 // (Google / email / passkey icons + wallet escape-hatch). For now we ship a
 // single "[ SIGN IN ]" CTA — the modal itself shows the method picker.
 
 import { useCallback, useEffect } from "react";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
@@ -38,7 +38,7 @@ export function LoginPage({ next }: LoginPageProps) {
   }, [account.isAuthenticated, next]);
 
   /**
-   * Phase 7d — fire privy.modal_opened on the sign-in click. The actual
+   * fire privy.modal_opened on the sign-in click. The actual
    * Privy hosted modal opens inside account.signIn(); we emit BEFORE
    * invoking it so a slow-network funnel event doesn't gate the modal.
    *
@@ -56,48 +56,44 @@ export function LoginPage({ next }: LoginPageProps) {
   }, [account, emitFunnel]);
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             account <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">sign in</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       <main className="flex-1 flex items-center justify-center px-4">
         <section className="ck-frame w-full max-w-[480px]">
           <div className="ck-header">
-            <span className="ck-title">sign in · no wallet required</span>
+            <span className="ck-title">sign in — you do not need a wallet</span>
             <span className="ck-mono ck-dim">privy</span>
           </div>
 
           <div className="px-4 py-6 flex flex-col gap-4">
             <p className="ck-mono ck-dim leading-relaxed">
-              no wallet required.
+              You do not need a wallet.
               <br />
-              no kyc.
+              You do not need to prove your identity.
               <br />
-              your code talks to murmur via api key.
+              Your code talks to murmur with a runtime key.
             </p>
 
             {!account.configured && (
               <div className="ck-frame-strong px-3 py-2 ck-mono ck-neg">
-                privy not configured — set VITE_PRIVY_APP_ID and rebuild.
+                Sign-in is not configured. Set VITE_PRIVY_APP_ID, then build again.
               </div>
             )}
 
             {account.error && (
               <InlineError
-                error={`auth: ${account.error}`}
+                error={`sign-in: ${account.error}`}
                 className="ck-frame-strong px-3 py-2 ck-mono"
               />
             )}
 
             <p className="ck-mono ck-dim">
-              signing in unlocks: manage your agents · mint runtime + api
-              keys · set payout address
+              Sign in to manage your agents, mint runtime and api keys, and set
+              your payout address.
             </p>
 
             <button
@@ -115,7 +111,7 @@ export function LoginPage({ next }: LoginPageProps) {
                 a target that doesn't exist, so it was removed rather than
                 linked. Reinstate (with a real link) once terms ship. */}
             <p className="ck-dim text-[12px]">
-              privy handles auth. nothing on-chain happens here.
+              Privy handles sign-in. Nothing goes on chain here.
             </p>
           </div>
         </section>

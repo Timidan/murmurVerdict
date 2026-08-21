@@ -1,15 +1,16 @@
 import { useEffect, type ReactNode } from "react";
 import { PrivyProvider } from "./PrivyProvider.js";
 import { AccountProvider, useAccount } from "../hooks/useAccount.js";
+import { LogoLoader } from "../components/LogoLoader.js";
 
 /**
  * Mounts the Privy SDK + the shared <AccountProvider> once for the entire
  * `/account/*` area. PrivyProvider keeps the SDK chunk outside the
- * landing/leaderboard/today bundles (Codex P2 from Phase 7a). AccountProvider
+ * landing/leaderboard/today bundles. AccountProvider
  * hoists useAccount's session+agents state so every sibling panel reads
  * from the same context — without it, sibling panels (ControllerWalletPanel,
  * RuntimeKeysPanel) each got independent state and refreshes didn't
- * propagate (codex MAJOR on Wave B; the callback-prop interim it required
+ * propagate (the callback-prop interim it required
  * is now redundant but kept for backward compatibility).
  *
  * <AccountGuard> centralizes the unauthenticated redirect for every
@@ -73,7 +74,7 @@ function AccountGuard({ children }: { children: ReactNode }) {
   // signed-out state. Unconfigured Privy reports ready=true immediately,
   // so this branch only shows while a configured Privy SDK boots.
   if (!isLoginRoute && !account.ready) {
-    return <GateScreen label="loading…" />;
+    return <GateScreen />;
   }
   if (blocked) {
     return <GateScreen label="redirecting to sign in…" />;
@@ -82,10 +83,12 @@ function AccountGuard({ children }: { children: ReactNode }) {
 }
 
 /** Quiet full-viewport line in the compact idiom — no spinner, no chrome. */
-function GateScreen({ label }: { label: string }) {
+function GateScreen({ label }: { label?: string }) {
   return (
-    <div className="mmr-shell min-h-dvh bg-[var(--color-bg)] flex items-center justify-center">
-      <span className="ck-mono ck-dim">{label}</span>
+    <div className="flex-1 flex flex-col gap-3 items-center justify-center">
+      <LogoLoader label={label ?? "Loading"} />
+      {/* Only the redirect case says anything the mark does not already say. */}
+      {label && <span className="ck-mono ck-dim">{label}</span>}
     </div>
   );
 }

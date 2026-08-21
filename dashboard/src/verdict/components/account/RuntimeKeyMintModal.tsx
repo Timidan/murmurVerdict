@@ -210,7 +210,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
       >
         <header className="flex items-center justify-between">
           <h3 id="runtime-key-mint-title" className="ck-title ck-title-ik">
-            <Ik name="runtime-key" /> new runtime key
+            <Ik name="runtime-key" /> your new runtime key
             {/* Seal stamp — the credential is sealed the instant this modal
                 mounts, so the glyph plays its one-shot close here and then
                 holds. Trailing, so the leading runtime-key marker keeps the
@@ -219,16 +219,16 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
               <Ik name="seal" size={16} />
             </span>
           </h3>
-          <span className="text-[12px] ck-dim">prefix · {result.runtime_key_prefix}</span>
+          <span className="text-[12px] ck-dim">key · {result.runtime_key_prefix}</span>
         </header>
 
         <p
           className="text-[12px] leading-snug"
           style={{ color: "var(--color-accent-ink)" }}
         >
-          ⚠ shown once — copy the agent prompt (the key is baked in) and store it
-          where your agent runs. this key will NOT be shown again; anyone with it
-          can submit calls on behalf of {slug}.
+          ⚠ Shown once. Copy the agent prompt — the key is already in it — and
+          store it where your agent runs. Murmur will not show this key again.
+          Anyone who holds it can send calls as {slug}.
         </p>
 
         {/* TABBED ONE-BOX ─────────────────────────────────────── */}
@@ -252,7 +252,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
             <span className="flex items-center gap-2">
               {copyFallback && (
                 <span className="text-[12px] ck-dim" aria-live="polite">
-                  clipboard blocked — select + ⌘C / Ctrl-C
+                  The clipboard is blocked. Select the text and press ⌘C or Ctrl-C.
                 </span>
               )}
               <button
@@ -270,7 +270,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
 
           {active === "prompt" ? (
             promptLoading ? (
-              <p className="ck-dim text-[12px] px-3 py-2">resolving prompt…</p>
+              <p className="ck-dim text-[12px] px-3 py-2">Loading the prompt…</p>
             ) : (
               <pre
                 className="whitespace-pre overflow-auto px-3 py-2 leading-tight"
@@ -307,7 +307,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
           <KV k="policy hash" v={shortId(result.policy_hash, 12, 4)} title={result.policy_hash} />
           <KV
             k="request signing"
-            v={signingPrivateKey ? "on — signing key in .ENV tab (shown once)" : "off (bearer only)"}
+            v={signingPrivateKey ? "on — the signing key is in the .ENV tab, shown once" : "off — the key alone is enough"}
             tone={signingPrivateKey ? "pos" : "dim"}
           />
           {result.warning && <KV k="note" v={result.warning} tone="neg" />}
@@ -332,11 +332,11 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
             type="button"
             title={
               saved
-                ? "open the integrate guide for this agent (skill.md + sample code + next steps)"
-                : "save the key, then open the integrate guide"
+                ? "open the setup guide for this agent — the skill file, sample code, and what to do next"
+                : "save the key first, then open the setup guide"
             }
           >
-            open integrate guide →
+            open the setup guide →
           </button>
           <button
             className="ck-btn ck-btn-bracket ck-pos"
@@ -344,7 +344,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
             disabled={!saved}
             type="button"
           >
-            {saved ? "done" : "done · save the key first"}
+            {saved ? "done" : "save the key first"}
           </button>
         </div>
       </section>

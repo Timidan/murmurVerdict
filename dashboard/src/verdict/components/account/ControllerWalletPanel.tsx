@@ -1,4 +1,4 @@
-// ─── ControllerWalletPanel — Surface 2 Wave 1 ─────────────────────────────
+// ─── ControllerWalletPanel ────────────────────────────────────────────────
 //
 // Renders the per-agent Controller Wallet binding panel inside the agent
 // settings tab strip. Three states:
@@ -97,7 +97,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
   } | null> {
     if (!daemonChainId) {
       setError(
-        "daemon has not reported its Fhenix chain yet; reload after the daemon is configured",
+        "The daemon has not reported its chain yet. Reload once it is configured.",
       );
       return null;
     }
@@ -126,7 +126,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
         provider: "privy",
       };
     } catch (e) {
-      setError((e as Error)?.message ?? "could not provision embedded wallet");
+      setError((e as Error)?.message ?? "unable to create a wallet. retry, or reload the page.");
       return null;
     }
   }
@@ -134,14 +134,14 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
   async function bind() {
     setError(null);
     if (!ready || !authenticated) {
-      setError("sign in with Privy first");
+      setError("Sign in first.");
       return;
     }
     const wallet = await ensureControllerWallet();
     if (!wallet) return;
     const token = await getAccessToken();
     if (!token) {
-      setError("could not get Privy access token");
+      setError("Your session expired. Sign in again.");
       return;
     }
     try {
@@ -172,7 +172,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
     } catch (e) {
       // Frame the raw daemon detail in plain words — operators are devs,
       // the detail is useful, but the failure should read as a sentence.
-      setError(`bind failed — ${(e as Error)?.message ?? "unknown error"}`);
+      setError(`We could not bind the wallet — ${(e as Error)?.message ?? "unknown error"}`);
       setBusy("idle");
       return;
     }
@@ -189,7 +189,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       await onAgentChanged?.();
     } catch (e) {
       setError(
-        "bind succeeded but agent refresh failed — reload the page to see the latest state: " +
+        "The wallet is bound, but this page could not refresh. Reload it to see the latest state: " +
           ((e as Error)?.message ?? "unknown"),
       );
     }
@@ -203,13 +203,13 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
     );
     if (!connectedControllerWallet) {
       setError(
-        "connect the bound controller wallet in Privy before signing re-attestation",
+        "Connect the bound controller wallet first. It has to sign this.",
       );
       return;
     }
     const token = await getAccessToken();
     if (!token) {
-      setError("could not get Privy access token");
+      setError("Your session expired. Sign in again.");
       return;
     }
     try {
@@ -229,7 +229,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
         signature,
       });
     } catch (e) {
-      setError(`re-attest failed — ${(e as Error)?.message ?? "unknown error"}`);
+      setError(`We could not renew the signature — ${(e as Error)?.message ?? "unknown error"}`);
       setBusy("idle");
       return;
     }
@@ -240,7 +240,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       await onAgentChanged?.();
     } catch (e) {
       setError(
-        "re-attest succeeded but agent refresh failed — reload the page to see the latest state: " +
+        "The signature is renewed, but this page could not refresh. Reload it to see the latest state: " +
           ((e as Error)?.message ?? "unknown"),
       );
     }
@@ -258,9 +258,10 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       {state === "unbound" && (
         <>
           <p className="ck-dim text-[12px]">
-            no wallet bound yet. binding signs a one-time message that authorizes
-            this account to mint runtime keys for {slug}. uses your Privy
-            embedded wallet — no MetaMask, no gas.
+            No wallet is bound yet. You sign one message, and that lets this
+            account mint runtime keys for {slug}. It signs with your murmur
+            wallet, or your connected wallet if you have one. A signature only,
+            never a transaction.
           </p>
           <button
             className="ck-btn ck-btn-bracket self-start"
@@ -272,7 +273,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
                 the busy branch and only the label swaps. Hoisted out of the
                 ternary, the mark also stops flickering on every phase. */}
             <Ik name="controller-wallet" />
-            {busy === "idle" ? "bind controller wallet" : <BusyLabel busy={busy} />}
+            {busy === "idle" ? "bind a controller wallet" : <BusyLabel busy={busy} />}
           </button>
         </>
       )}
@@ -289,20 +290,20 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
           />
           <KV k="bound" v={<TimeAgo iso={cw.created_at} />} />
           <KV
-            k="last attested"
+            k="last signed"
             v={<TimeAgo iso={cw.last_attested_at} />}
           />
           <KV
-            k="re-attest due"
+            k="sign again by"
             v={<TimeAgo iso={cw.reattestation_due_at} />}
             tone={state === "overdue" ? "neg" : "dim"}
           />
           {daemonChainId && cw.chain_id !== daemonChainId && (
             <>
               <p className="text-[12px]" style={{ color: "var(--color-accent-ink)" }}>
-                × wrong chain. this controller is bound to {cw.chain_id} but the
-                daemon is on {daemonChainId}. runtime-key submissions will be
-                rejected by the gateway. re-bind on the daemon chain to recover.
+                × Wrong chain. This wallet is bound to {cw.chain_id}, but the
+                daemon runs on {daemonChainId}. The gateway will reject calls
+                from its keys. Bind the wallet again on the daemon's chain.
               </p>
               <button
                 className="ck-btn ck-btn-bracket self-start"
@@ -310,15 +311,37 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
                 disabled={busy !== "idle" || !ready}
               >
                 <Ik name="controller-wallet" />
-                {busy === "idle" ? "rebind on " + daemonChainId : <BusyLabel busy={busy} />}
+                {busy === "idle" ? "bind again on " + daemonChainId : <BusyLabel busy={busy} />}
+              </button>
+            </>
+          )}
+          {state === "bound" && (
+            <>
+              {/* Re-signing early was possible in the API and impossible in the
+                  UI: the button only existed once the wallet was already
+                  overdue, which is the one moment an owner would rather not be
+                  discovering it. Same challenge + sign flow as the overdue
+                  path; only the framing changes. */}
+              <p className="ck-dim text-[12px]">
+                You can sign again at any time. It resets the clock and keeps
+                your runtime keys minting without a gap.
+              </p>
+              <button
+                className="ck-btn ck-btn-bracket self-start"
+                onClick={reattest}
+                disabled={busy !== "idle" || !ready}
+                title="sign a fresh attestation for this controller wallet"
+              >
+                <Ik name="attest" />
+                {busy === "idle" ? "sign again now" : <BusyLabel busy={busy} />}
               </button>
             </>
           )}
           {state === "overdue" && (
             <>
               <p className="text-[12px]" style={{ color: "var(--color-accent-ink)" }}>
-                × re-attestation overdue. sign a fresh attestation message to
-                keep runtime-key minting available.
+                × This wallet needs a fresh signature. Sign one to keep minting
+                runtime keys.
               </p>
               <button
                 className="ck-btn ck-btn-bracket self-start"
@@ -326,7 +349,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
                 disabled={busy !== "idle" || !ready}
               >
                 <Ik name="attest" />
-                {busy === "idle" ? "re-attest now" : <BusyLabel busy={busy} />}
+                {busy === "idle" ? "sign now" : <BusyLabel busy={busy} />}
               </button>
             </>
           )}
@@ -339,9 +362,9 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
 }
 
 function busyLabel(b: BusyState): string {
-  if (b === "challenging") return "fetching challenge…";
-  if (b === "signing") return "waiting for signature…";
-  if (b === "submitting") return "submitting…";
+  if (b === "challenging") return "Preparing…";
+  if (b === "signing") return "Approve in your wallet…";
+  if (b === "submitting") return "Saving…";
   return "…";
 }
 
@@ -366,7 +389,7 @@ function StateBadge({ state }: { state: "unbound" | "bound" | "overdue" }) {
   const map: Record<typeof state, { label: string; tone: string }> = {
     unbound: { label: "not bound", tone: "ck-dim" },
     bound: { label: "bound", tone: "ck-pos" },
-    overdue: { label: "overdue", tone: "ck-neg" },
+    overdue: { label: "needs a signature", tone: "ck-neg" },
   };
   const { label, tone } = map[state];
   return <span className={`text-[12px] uppercase ${tone}`}>{label}</span>;

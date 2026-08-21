@@ -30,6 +30,12 @@ export function KillSwitchPanel() {
   const [error, setError] = useState<string | null>(null);
   const [releaseInput, setReleaseInput] = useState("");
   const [lastCounts, setLastCounts] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  // Collapsed by default, but never hide an account that is actually frozen.
+  useEffect(() => {
+    if (engaged) setOpen(true);
+  }, [engaged]);
 
   const refresh = useCallback(async () => {
     try {
@@ -40,7 +46,7 @@ export function KillSwitchPanel() {
       // nothing clears this state before the operator acts on it (refresh
       // runs once on mount; engage/release clear it only as they retry).
       if (!token) {
-        setError("session expired — sign in again");
+        setError("Your session expired. Sign in again.");
         return;
       }
       const state = await verdictApi.getKillSwitch(token);
@@ -62,12 +68,12 @@ export function KillSwitchPanel() {
     setError(null);
     try {
       const token = await getAccessToken();
-      if (!token) throw new Error("session expired — sign in again");
+      if (!token) throw new Error("Your session expired. Sign in again.");
       const result = await verdictApi.postKillSwitch(token);
       setEngaged(true);
       setDisabledAt(result.disabled_at);
       setLastCounts(
-        `${result.runtime_keys_revoked} runtime keys revoked · ${result.api_keys_rotated} api keys rotated`,
+        `murmur revoked ${result.runtime_keys_revoked} runtime ${result.runtime_keys_revoked === 1 ? "key" : "keys"} and rotated ${result.api_keys_rotated} api ${result.api_keys_rotated === 1 ? "key" : "keys"}`,
       );
     } catch (e) {
       setError((e as Error)?.message ?? "unknown error");
@@ -85,7 +91,7 @@ export function KillSwitchPanel() {
     setError(null);
     try {
       const token = await getAccessToken();
-      if (!token) throw new Error("session expired — sign in again");
+      if (!token) throw new Error("Your session expired. Sign in again.");
       await verdictApi.postKillSwitchRelease(token);
       setEngaged(false);
       setDisabledAt(null);
@@ -99,22 +105,29 @@ export function KillSwitchPanel() {
   }, [releaseInput]);
 
   return (
-    <section className="ck-frame">
-      <div className="ck-header">
+    <details
+      className="ck-frame mmr-danger"
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      <summary className="ck-header mmr-danger-summary">
         <span className="ck-title ck-title-ik">
           <Ik name="kill-switch" /> agent kill switch
         </span>
-        <span className="ck-mono ck-dim">
-          {engaged === null ? "…" : engaged ? "ENGAGED" : "off"}
+        <span className="flex items-center gap-2">
+          <span className={"ck-mono " + (engaged ? "ck-neg" : "ck-dim")}>
+            {engaged === null ? "…" : engaged ? "ENGAGED" : "off"}
+          </span>
+          <span className="mmr-disclosure-marker" aria-hidden="true" />
         </span>
-      </div>
+      </summary>
       <div className="px-3 py-2 flex flex-col gap-2">
         {engaged ? (
           <>
             <p className="text-[12px]" style={{ color: "var(--color-accent-ink)" }}>
-              engaged {disabledAt ? <TimeAgo iso={disabledAt} /> : ""} — every
-              agent credential is blocked: dispatch 403s, minting is frozen, queued
-              gateway attempts terminate before broadcast.
+              Engaged {disabledAt ? <TimeAgo iso={disabledAt} /> : ""}. Every
+              credential on this account is blocked. Agents cannot send calls,
+              you cannot mint keys, and queued calls stop before they broadcast.
               {lastCounts ? ` ${lastCounts}.` : ""}
             </p>
             <form
@@ -124,16 +137,19 @@ export function KillSwitchPanel() {
                 void release();
               }}
             >
+              {/* Visible label, not a placeholder: the instruction for the
+                  account's most destructive control must survive the first
+                  keypress. It also names the word, so it is the accessible
+                  name too and no aria-label is needed. */}
+              <label htmlFor="kill-switch-release" className="ck-label">
+                type release to confirm
+              </label>
               <input
+                id="kill-switch-release"
                 type="text"
                 value={releaseInput}
                 onChange={(e) => setReleaseInput(e.currentTarget.value)}
-                placeholder='type "release" to confirm'
-                // The accessible name has to carry the word itself: an
-                // aria-label suppresses the placeholder from the a11y tree,
-                // so "release confirmation" alone would leave a screen-reader
-                // user with a dead button and no way to discover the password.
-                aria-label='type the word "release" to confirm'
+                placeholder="release"
                 autoComplete="off"
                 autoCapitalize="off"
                 spellCheck={false}
@@ -145,17 +161,17 @@ export function KillSwitchPanel() {
                 className="ck-btn ck-btn-bracket self-start"
                 disabled={busy || releaseInput.trim() !== RELEASE_PHRASE}
               >
-                release — resume minting (dead keys stay dead)
+                release the kill switch. minting resumes; revoked keys stay dead.
               </button>
             </form>
           </>
         ) : (
           <>
             <p className="text-[12px] ck-dim">
-              one click disables every agent credential on this account: revokes all
-              runtime keys, rotates all api keys, freezes minting, and stops queued
-              gateway attempts. release later requires this dashboard; re-minting a
-              runtime key still needs a controller-wallet signature.
+              One click blocks every agent credential on this account. It revokes
+              all runtime keys, rotates all api keys, stops minting, and cancels
+              queued calls. You release it from this page. Minting a new runtime
+              key still needs a controller-wallet signature.
             </p>
             <button
               type="button"
@@ -164,12 +180,12 @@ export function KillSwitchPanel() {
               disabled={busy || engaged === null}
             >
               <Ik name="kill-switch" />
-              engage kill switch
+              engage the kill switch
             </button>
           </>
         )}
         {error && <InlineError error={error} className="text-[12px]" />}
       </div>
-    </section>
+    </details>
   );
 }

@@ -25,7 +25,7 @@ export function ActivityPanel() {
       setError(null);
       try {
         const token = await getAccessToken();
-        if (!token) throw new Error("session expired — sign in again");
+        if (!token) throw new Error("Your session expired. Sign in again.");
         const page = await verdictApi.getAccountActivity(token, {
           limit: PAGE_SIZE,
           before: cursor?.before,
@@ -57,8 +57,8 @@ export function ActivityPanel() {
       {error && <InlineError error={error} className="px-3 py-2 text-[12px]" />}
       {rows.length === 0 && !loading && !error ? (
         <p className="px-3 py-2 text-[12px] ck-dim">
-          no gateway activity yet — rows appear when an agent submits through a
-          runtime key.
+          No activity yet. A row appears each time an agent sends something
+          through the gateway with a runtime key.
         </p>
       ) : (
         <ul className="flex flex-col">
@@ -69,7 +69,7 @@ export function ActivityPanel() {
             >
               <TimeAgo iso={r.created_at} className="ck-dim" />
               <span>{r.agent_slug ?? r.agent_id.slice(0, 8)}</span>
-              <span>{r.kind === "sealed_call" ? "sealed call" : `feed ${r.feed_id ?? ""}`}</span>
+              <span>{r.kind === "sealed_call" ? "sealed call" : `feed packet ${r.feed_id ?? ""}`}</span>
               {/* Market ids run long (venue slugs + question). Cap and
                   ellipsize so one row can't push the key/status columns off
                   the panel; the full id stays on the tooltip. */}
@@ -80,7 +80,7 @@ export function ActivityPanel() {
               )}
               <span title={r.runtime_key_id ?? undefined}>
                 {r.runtime_key_prefix ?? "—"}
-                {r.auth_proof === "pop-v1" ? " ✓signed" : ""}
+                {r.auth_proof === "pop-v1" ? " ✓ signed" : ""}
               </span>
               <span
                 className={r.status.startsWith("failed") ? "" : "ck-dim"}

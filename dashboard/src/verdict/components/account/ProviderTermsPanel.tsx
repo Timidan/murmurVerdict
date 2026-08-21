@@ -59,7 +59,10 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
   const refresh = useCallback(async () => {
     try {
       const token = await getAccessToken();
-      if (!token) return;
+      if (!token) {
+        setError("session expired. sign in again to load your terms.");
+        return;
+      }
       const view = await verdictApi.getProviderTerms(token, slug);
       setTerms(view);
       setPrice(atomsToDisplay(view.price_atoms));
@@ -81,22 +84,22 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
     setSaved(null);
     const atoms = displayToAtoms(price);
     if (!atoms) {
-      setError("price must be greater than zero, with at most 6 decimal places");
+      setError("Enter a price above zero, with 6 decimal places at most.");
       return;
     }
     if (!version.trim()) {
-      setError("pricing version is required — it stamps which terms a subscriber agreed to");
+      setError("Enter a pricing version. It records which terms each subscriber agreed to.");
       return;
     }
     const parsedMax = maxSubs.trim() === "" ? null : Number(maxSubs);
     if (parsedMax !== null && (!Number.isInteger(parsedMax) || parsedMax <= 0)) {
-      setError("subscriber limit must be a whole number above zero, or blank for no limit");
+      setError("Enter a whole number above zero, or leave it blank for no limit.");
       return;
     }
     setBusy(true);
     try {
       const token = await getAccessToken();
-      if (!token) throw new Error("not signed in");
+      if (!token) throw new Error("You are not signed in.");
       const view = await verdictApi.putProviderTerms(token, slug, {
         price_atoms: atoms,
         currency: "USDC",
@@ -104,7 +107,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
         max_subscribers_per_call: parsedMax,
       });
       setTerms(view);
-      setSaved("saved — applies to calls sealed from now on");
+      setSaved("Saved. This applies to calls you seal from now on.");
     } catch (e) {
       setError((e as Error)?.message ?? "unknown error");
     } finally {
@@ -118,13 +121,13 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
     setBusy(true);
     try {
       const token = await getAccessToken();
-      if (!token) throw new Error("not signed in");
+      if (!token) throw new Error("You are not signed in.");
       const view = await verdictApi.deleteProviderTerms(token, slug);
       setTerms(view);
       setPrice("");
       setVersion("");
       setMaxSubs("");
-      setSaved("no longer selling access on new calls");
+      setSaved("You are no longer selling access on new calls.");
     } catch (e) {
       setError((e as Error)?.message ?? "unknown error");
     } finally {
@@ -145,9 +148,9 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
 
       <div className="px-4 py-4 flex flex-col gap-4">
         <p className="ck-dim text-[12px]">
-          What a subscriber pays to decrypt your call before it becomes public.
-          You set this — murmur only referees. Changes apply to calls sealed
-          from now on; calls already sold keep the terms they were sold under.
+          This is what a subscriber pays to read your call before it becomes
+          public. You set the price. Murmur only referees. A change applies to
+          calls you seal from now on. Calls already sold keep their old terms.
         </p>
 
         <label className="flex flex-col gap-1">
@@ -174,8 +177,8 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
             className={INPUT_CLASS}
           />
           <span className="ck-dim text-[12px]">
-            bump when you change the price — it records which terms each
-            subscriber agreed to, so past receipts stay attributable
+            Raise this whenever you change the price. It records which terms
+            each subscriber agreed to, so old receipts still add up.
           </span>
         </label>
 
@@ -192,10 +195,10 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
           />
           {terms?.deliverable_max_subscribers_per_call != null && (
             <span className="ck-dim text-[12px]">
-              this deployment delivers{" "}
-              {terms.deliverable_max_subscribers_per_call} grants per call
-              before the market opens — each grant is its own transaction.
-              leave blank to serve that many.
+              This deployment can serve{" "}
+              {terms.deliverable_max_subscribers_per_call} subscribers per call
+              before the market opens. Each one is its own transaction. Leave
+              this blank to serve that many.
             </span>
           )}
           {terms?.clamped_by_deliverability && terms.notice && (
@@ -204,8 +207,8 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
           )}
           {terms?.selling && !terms.clamped_by_deliverability && (
             <span className="ck-pos text-[12px]">
-              selling up to {terms.effective_max_subscribers_per_call ?? "—"}{" "}
-              per call
+              You are selling up to{" "}
+              {terms.effective_max_subscribers_per_call ?? "—"} per call.
             </span>
           )}
         </label>

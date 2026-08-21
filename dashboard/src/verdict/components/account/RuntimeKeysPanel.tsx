@@ -62,13 +62,13 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("session expired — sign in again");
+        setError("Your session expired. Sign in again.");
         return;
       }
       const { keys } = await verdictApi.getRuntimeKeys(token, slug);
       setKeys(keys);
     } catch (e) {
-      setError((e as Error)?.message ?? "failed to load runtime keys");
+      setError((e as Error)?.message ?? "unable to load your runtime keys. retry, or reload the page.");
     } finally {
       setLoading(false);
     }
@@ -93,14 +93,14 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     if (!canMint || !cw) return;
     if (!controllerWalletConnected) {
       setError(
-        "connect the bound controller wallet in Privy before signing the runtime-key authorization",
+        "Connect the bound controller wallet first. It has to sign the runtime-key authorization.",
       );
       return;
     }
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("session expired — sign in again");
+        setError("Your session expired. Sign in again.");
         return;
       }
       // PoP: the keypair must exist BEFORE the challenge so its public half
@@ -130,7 +130,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     } catch (e) {
       // Frame the raw daemon detail in plain words — operators are devs,
       // the detail is useful, but the failure should read as a sentence.
-      setError(`mint failed — ${(e as Error)?.message ?? "unknown error"}`);
+      setError(`unable to mint the key. ${(e as Error)?.message ?? "unknown error"}`);
     } finally {
       setBusy("idle");
     }
@@ -152,7 +152,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("session expired — sign in again");
+        setError("Your session expired. Sign in again.");
         return;
       }
       setBusy("revoking");
@@ -160,7 +160,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       setConfirmId(null);
       await refresh();
     } catch (e) {
-      setError(`revoke failed — ${(e as Error)?.message ?? "unknown error"}`);
+      setError(`We could not revoke the key — ${(e as Error)?.message ?? "unknown error"}`);
     } finally {
       setBusy("idle");
     }
@@ -179,13 +179,13 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
       {!cw && (
         <p className="text-[12px] ck-dim">
-          bind a controller wallet first — runtime keys are authorized by the
-          wallet's signature.{" "}
+          Bind a controller wallet first. That wallet signs every runtime key
+          you mint.{" "}
           <a
             href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
             className="ck-pos no-underline underline-offset-2 hover:underline"
           >
-            go to wallet →
+            bind a wallet →
           </a>
         </p>
       )}
@@ -195,32 +195,32 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
           className="text-[12px]"
           style={{ color: "var(--color-accent-ink)" }}
         >
-          × controller wallet re-attestation overdue — the daemon will
-          reject mint with 409 until you sign a fresh attestation.{" "}
+          × Your controller wallet needs a fresh signature. Until you sign
+          one, murmur cannot mint a key for this agent.{" "}
           <a
             href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
             className="underline underline-offset-2"
             style={{ color: "var(--color-accent-ink)" }}
           >
-            re-attest now →
+            sign now →
           </a>
         </p>
       )}
 
-      {loading && <p className="ck-mono ck-dim">loading…</p>}
+      {loading && <p className="ck-mono ck-dim">Loading your keys…</p>}
 
       {!loading && keys.length === 0 && cw && (
         <p className="ck-dim text-[12px]">
-          no runtime keys minted yet. mint one to start submitting calls
-          through the Gateway.
+          No runtime keys yet. Mint one so your agent can send calls through
+          the gateway.
         </p>
       )}
 
       {!loading && keys.length > 0 && (
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
           <li className="grid grid-cols-[140px_1fr_120px_142px] gap-2 ck-colhead">
-            <span>prefix</span>
-            <span>policy</span>
+            <span>key</span>
+            <span>label</span>
             <span>created</span>
             <span className="text-right"></span>
           </li>
@@ -288,8 +288,8 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
           revoke{" "}
           {keys.find((k) => k.runtime_key_id === confirmId)?.runtime_key_prefix ??
             "this key"}
-          ? the agent stops authenticating immediately — its next call 401s.
-          mint a new key to resume.
+          ? The agent stops working at once — its next call is rejected. Mint a
+          new key to start it again.
         </p>
       )}
 
@@ -301,8 +301,8 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
             onChange={(e) => setPopEnabled(e.target.checked)}
             disabled={busy !== "idle"}
           />
-          require request signatures (PoP) — a leaked bearer key alone can't
-          authenticate
+          Sign every request. If someone steals the key alone, it will not
+          work.
         </label>
       )}
       {cw && (
@@ -312,11 +312,11 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
           disabled={busy !== "idle" || !canMint}
           title={
             cw.reattestation_overdue
-              ? "re-attestation overdue — re-attest in the wallet tab to mint"
+              ? "Your controller wallet needs a fresh signature. Sign one on the wallet tab to mint a key."
               : undefined
           }
         >
-          {busy === "idle" ? "+ mint runtime key" : busyLabel(busy)}
+          {busy === "idle" ? "+ mint a runtime key" : busyLabel(busy)}
         </button>
       )}
 
@@ -339,10 +339,10 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 }
 
 function busyLabel(b: BusyState): string {
-  if (b === "challenging") return "fetching challenge…";
-  if (b === "signing") return "waiting for signature…";
-  if (b === "submitting") return "minting…";
-  if (b === "revoking") return "revoking…";
+  if (b === "challenging") return "Preparing…";
+  if (b === "signing") return "Approve in your wallet…";
+  if (b === "submitting") return "Minting…";
+  if (b === "revoking") return "Revoking…";
   return "…";
 }
 

@@ -1,4 +1,4 @@
-// ─── ApiKeysPanel — list + rotate + mint api keys (Phase 7c) ───────────────
+// ─── ApiKeysPanel — list + rotate + mint api keys ──────────────────────────
 //
 // Lives at #/account/agent/:slug/keys. Pulls metadata via
 // GET /v1/account/agents/:slug/api-keys (api_key_id + created_at + label
@@ -57,13 +57,13 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("session expired — sign in again");
+        setError("Your session expired. Sign in again.");
         return;
       }
       const { keys: rows } = await verdictApi.getApiKeys(token, slug);
       setKeys(rows);
     } catch (e) {
-      setError((e as Error).message ?? "fetch failed");
+      setError((e as Error).message ?? "unable to load your api keys. retry, or reload the page.");
     } finally {
       setLoading(false);
     }
@@ -99,18 +99,18 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("session expired — sign in again");
+        setError("Your session expired. Sign in again.");
         return;
       }
       await verdictApi.deleteApiKey(token, id);
       await refresh();
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        setError("session expired — sign in again");
+        setError("Your session expired. Sign in again.");
       } else if (e instanceof ApiError && e.status === 429) {
-        setError("rate limited — wait a minute and retry");
+        setError("Too many requests. Wait a minute and try again.");
       } else {
-        setError(`rotate failed: ${(e as Error).message ?? "unknown"}`);
+        setError(`We could not rotate the key: ${(e as Error).message ?? "unknown"}`);
       }
     } finally {
       setRotatingId(null);
@@ -123,7 +123,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
     try {
       const token = await getAccessToken();
       if (!token) {
-        setMintError("session expired — sign in again");
+        setMintError("Your session expired. Sign in again.");
         return;
       }
       const result = await verdictApi.postMintApiKey(token, slug);
@@ -131,12 +131,12 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.status === 401 || e.status === 403)
-          setMintError("session expired — sign in again");
+          setMintError("Your session expired. Sign in again.");
         else if (e.status === 429)
-          setMintError("rate limited — wait a minute and retry");
-        else setMintError(`mint failed: ${e.message}`);
+          setMintError("Too many requests. Wait a minute and try again.");
+        else setMintError(`We could not mint the key: ${e.message}`);
       } else {
-        setMintError(`mint failed: ${(e as Error).message ?? "unknown"}`);
+        setMintError(`We could not mint the key: ${(e as Error).message ?? "unknown"}`);
       }
     } finally {
       setMinting(false);
@@ -187,7 +187,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
               </span>
               <div className="flex items-center gap-2 justify-self-end">
                 {rotatingId === k.api_key_id ? (
-                  <span className="ck-dim text-[12px]">rotating…</span>
+                  <span className="ck-dim text-[12px]">Rotating…</span>
                 ) : confirmId === k.api_key_id ? (
                   <span className="confirm-enter inline-flex items-center gap-2">
                     <button
@@ -228,14 +228,14 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
           className="px-3 py-2 text-[12px] border-t border-[var(--color-border)]"
           style={{ color: "var(--color-accent-ink)" }}
         >
-          rotate api_key {confirmId.slice(0, 12)}? old keys 401 within 1s.
+          Rotate the key {confirmId.slice(0, 12)}? The old key stops working within a second.
         </p>
       )}
 
       {rotated.length > 0 && (
         <details className="border-t border-[var(--color-border)]">
           <summary className="px-3 py-2 ck-label ck-dim cursor-pointer select-none">
-            rotated · {rotated.length}
+            rotated keys · {rotated.length}
           </summary>
           <ul className="details-fade divide-y divide-[var(--color-border)]">
             {rotated.map((k) => (
@@ -266,9 +266,9 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
           className="ck-btn ck-btn-bracket ck-pos disabled:opacity-40 disabled:cursor-not-allowed"
           aria-label="mint new key"
         >
-          + mint new key
+          + mint a new key
         </button>
-        {minting && <span className="ck-dim text-[12px]">working…</span>}
+        {minting && <span className="ck-dim text-[12px]">Minting…</span>}
         {mintError && <InlineError error={mintError} className="text-[12px]" />}
       </div>
 
@@ -286,9 +286,9 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
 function EmptyState() {
   return (
     <div className="px-4 py-6 flex flex-col items-start gap-2">
-      <p className="ck-mono ck-dim">no active keys.</p>
+      <p className="ck-mono ck-dim">No active keys.</p>
       <p className="ck-dim text-[12px] max-w-[40ch]">
-        mint a key below to start submitting calls. the plaintext shows once.
+        Mint a key below so your agent can send calls. Murmur shows the key once.
       </p>
     </div>
   );

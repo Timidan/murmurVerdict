@@ -9,9 +9,10 @@ import {
   type OperatorAlertsSnapshot,
 } from "../api.js";
 import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
+import { LogoLoader } from "../components/LogoLoader.js";
 
 /**
  * /admin/overview — the operator health cockpit. One tier above the
@@ -61,7 +62,9 @@ export function AdminOverviewPage() {
       setFeedSla(sla);
       setLoaded(true);
     } catch (e) {
-      setError((e as Error).message);
+      setError(
+        `the overview did not load. retry, or check the daemon. (${(e as Error).message})`,
+      );
     } finally {
       setBusy((prev) => (prev === "load" ? null : prev));
     }
@@ -137,15 +140,11 @@ export function AdminOverviewPage() {
   const overall = overallHealth(cards.map((c) => c.health));
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             admin <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">overview</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       {/* CONTROL STRIP ───────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-2 flex items-center justify-between flex-wrap gap-2">
@@ -183,7 +182,7 @@ export function AdminOverviewPage() {
         )}
 
         {!loaded && !error && (
-          <div className="px-3 py-8 ck-mono ck-dim">loading…</div>
+          <div className="px-3 py-8 flex justify-center"><LogoLoader width={300} /></div>
         )}
 
         {loaded && <StatusBanner health={overall} cards={cards} />}
@@ -347,7 +346,7 @@ function feedSlaCard(s: FeedSlaAdminResponse | null): OverviewCard {
   return {
     title: "feed SLA",
     health,
-    status: sum.open_incidents > 0 ? `${sum.open_incidents} incidents` : "all on time",
+    status: sum.open_incidents > 0 ? `${sum.open_incidents} ${sum.open_incidents === 1 ? "incident" : "incidents"}` : "all on time",
     stats: [
       { label: "open", value: sum.open_incidents, tone: sum.open_incidents > 0 ? "neg" : "dim" },
       { label: "refund recs", value: sum.refund_recommendations, tone: sum.refund_recommendations > 0 ? "neg" : "dim" },
@@ -474,19 +473,15 @@ function TokenPrompt({
   }, []);
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             admin <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">overview</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
       <main className="flex-1 flex items-center justify-center px-4">
         <section className="ck-frame w-full max-w-[480px]">
           <div className="ck-header">
-            <span className="ck-label ck-pos">operator token</span>
+            <span className="ck-label ck-pos">admin token</span>
             <span className="ck-mono ck-dim">admin</span>
           </div>
           <div className="px-4 py-6 flex flex-col gap-4">

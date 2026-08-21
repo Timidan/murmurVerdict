@@ -44,7 +44,6 @@ export interface StreamSnapshot {
 
 const RECENT_CAP = 60;
 
-// ─── Module-level singleton ──────────────────────────────────────────────────
 //
 // Earlier versions opened one EventSource per `useStream()` call. The landing
 // page renders ~6 widgets that each subscribe, so a single tab held ~6 SSE
@@ -142,6 +141,10 @@ function disconnect(): void {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  if (disconnectTimer) {
+    clearTimeout(disconnectTimer);
+    disconnectTimer = null;
+  }
   es?.close();
   es = null;
   attempt = 0;
@@ -149,6 +152,20 @@ function disconnect(): void {
     snapshot = { ...snapshot, status: "closed" };
     // No broadcast() — the last subscriber just unmounted; nobody to notify.
   }
+}
+
+/** Hold the socket across route changes — every page remounts its own subscriber. */
+const DISCONNECT_GRACE_MS = 5_000;
+let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Arm the deferred teardown. Idempotent. */
+function scheduleDisconnect(): void {
+  if (disconnectTimer) return;
+  disconnectTimer = setTimeout(() => {
+    disconnectTimer = null;
+    // Re-check: a page that mounted during the window owns the stream now.
+    if (subscribers.size === 0) disconnect();
+  }, DISCONNECT_GRACE_MS);
 }
 
 /**
@@ -165,15 +182,20 @@ export function useStream(): StreamSnapshot {
   useEffect(() => {
     const sub = (s: StreamSnapshot) => setLocal(s);
     subscribers.add(sub);
+    // Claim a socket still held open from a route handover.
+    if (disconnectTimer) {
+      clearTimeout(disconnectTimer);
+      disconnectTimer = null;
+    }
     if (subscribers.size === 1) {
-      connect();
+      connect(); // no-op if the socket survived the handover
     } else {
       // Hand the new subscriber the latest snapshot immediately.
       setLocal(snapshot);
     }
     return () => {
       subscribers.delete(sub);
-      if (subscribers.size === 0) disconnect();
+      if (subscribers.size === 0) scheduleDisconnect();
     };
   }, []);
 

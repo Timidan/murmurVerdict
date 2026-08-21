@@ -1,10 +1,10 @@
-// ─── AgentSettingsPage — per-agent settings shell (Phase 7c) ───────────────
+// ─── AgentSettingsPage — per-agent settings shell ──────────────────────────
 //
 // Route: #/account/agent/:slug   (default tab = payout)
 //        #/account/agent/:slug/payout
 //        #/account/agent/:slug/keys
 //
-// Auth-gated via AccountShell (Phase 7a). Sub-tabs are HASH-driven, not
+// Auth-gated via AccountShell. Sub-tabs are HASH-driven, not
 // React state, so deep-linking + back/forward navigation work exactly the
 // way they do for the rest of the dashboard. The Router owns the `tab`
 // param; we just dispatch on it.
@@ -15,19 +15,26 @@
 //   · ApiKeysPanel (list + rotate + mint)
 
 import { useEffect, useMemo } from "react";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { DestinationAddressForm } from "../components/account/DestinationAddressForm.js";
 import { ProviderTermsPanel } from "../components/account/ProviderTermsPanel.js";
+import { EarningsPanel } from "../components/account/EarningsPanel.js";
+import { RevealsPanel } from "../components/account/RevealsPanel.js";
+import { AgentProfilePanel } from "../components/account/AgentProfilePanel.js";
+import { AgentDangerZone } from "../components/account/AgentDangerZone.js";
 import { ApiKeysPanel } from "../components/account/ApiKeysPanel.js";
 import { ControllerWalletPanel } from "../components/account/ControllerWalletPanel.js";
 import { RuntimeKeysPanel } from "../components/account/RuntimeKeysPanel.js";
 import { TierBadge } from "../components/TierBadge.js";
 import { useAccount } from "../hooks/useAccount.js";
 import type { AgentKind, AccountAgent } from "../api.js";
+import { LogoLoader } from "../components/LogoLoader.js";
 
 export type AgentSettingsTab =
   | "payout"
   | "pricing"
+  | "earnings"
+  | "reveals"
   | "wallet"
   | "runtime"
   | "keys";
@@ -71,10 +78,8 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
   const agentMissing = !account.loading && !agent;
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             <a href="#/account" className="ck-dim hover:ck-pos no-underline">
               account
             </a>
@@ -85,9 +90,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             >
               {slug}
             </a>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       <main className="flex-1 px-3 py-4 flex flex-col items-center gap-4">
         {/* ── Agent header ─────────────────────────────────────────── */}
@@ -104,14 +107,14 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             <a
               href={`#/account/agent/${encodeURIComponent(slug)}/integrate`}
               className="ck-btn ck-btn-bracket"
-              title="integration snippets"
+              title="setup guide and code samples"
             >
               integrate
             </a>
             <a
               href={`#/agents/${encodeURIComponent(slug)}`}
               className="ck-btn ck-btn-bracket"
-              title="public profile"
+              title="the public page for this agent"
             >
               view public →
             </a>
@@ -130,6 +133,12 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           </TabLink>
           <TabLink slug={slug} tab="pricing" active={tab === "pricing"}>
             pricing
+          </TabLink>
+          <TabLink slug={slug} tab="earnings" active={tab === "earnings"}>
+            earnings
+          </TabLink>
+          <TabLink slug={slug} tab="reveals" active={tab === "reveals"}>
+            reveals
           </TabLink>
           <TabLink slug={slug} tab="wallet" active={tab === "wallet"}>
             wallet
@@ -161,6 +170,10 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           />
         ) : tab === "pricing" ? (
           <ProviderTermsPanel key={slug} slug={slug} />
+        ) : tab === "earnings" ? (
+          <EarningsPanel key={slug} slug={slug} />
+        ) : tab === "reveals" ? (
+          <RevealsPanel key={slug} slug={slug} />
         ) : tab === "wallet" ? (
           <ControllerWalletPanel
             key={slug}
@@ -172,6 +185,27 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           <RuntimeKeysPanel key={slug} slug={slug} agent={agent} />
         ) : (
           <ApiKeysPanel key={slug} slug={slug} />
+        )}
+
+        {/* Profile and retirement sit BELOW the tab body, not inside a tab of
+            their own: they are the agent's identity and its off switch, and
+            both belong wherever the owner already is. Retirement carries the
+            danger styling; editing a name does not. */}
+        {!agentMissing && (
+          <>
+            <AgentProfilePanel
+              key={`profile-${slug}`}
+              slug={slug}
+              agent={agent}
+              onSaved={() => void account.refreshAgents()}
+            />
+            <AgentDangerZone
+              key={`danger-${slug}`}
+              slug={slug}
+              retiredAt={agent?.retired_at ?? null}
+              onChanged={() => void account.refreshAgents()}
+            />
+          </>
         )}
       </main>
     </div>
@@ -195,9 +229,9 @@ function ReattestHeaderChip({
       <a
         href={walletTabHref}
         className="text-[12px] ck-neg no-underline hover:underline"
-        title="bind a controller wallet to mint runtime keys"
+        title="bind a controller wallet before you mint a runtime key"
       >
-        × bind wallet
+        × bind a wallet
       </a>
     );
   }
@@ -206,9 +240,9 @@ function ReattestHeaderChip({
       <a
         href={walletTabHref}
         className="text-[12px] ck-neg no-underline hover:underline"
-        title="re-attestation overdue; runtime keys won't authenticate"
+        title="this wallet needs a fresh signature, or its runtime keys stop working"
       >
-        × re-attest now →
+        × sign again →
       </a>
     );
   }
@@ -219,9 +253,9 @@ function ReattestHeaderChip({
   return (
     <span
       className="text-[12px] ck-dim"
-      title={`re-attest by ${controllerWallet.reattestation_due_at.slice(0, 10)}`}
+      title={`sign again by ${controllerWallet.reattestation_due_at.slice(0, 10)}`}
     >
-      re-attest {days <= 0 ? "today" : days === 1 ? "in 1d" : `in ${days}d`}
+      sign again {days <= 0 ? "today" : days === 1 ? "in 1 day" : `in ${days} days`}
     </span>
   );
 }
@@ -260,11 +294,11 @@ function NotFoundShell({ slug }: { slug: string }) {
         className="ck-mono"
         style={{ color: "var(--color-accent-ink)" }}
       >
-        × agent <span className="ck-pos">{slug}</span> not found on this account.
+        × We cannot find the agent <span className="ck-pos">{slug}</span> on this account.
       </p>
       <p className="ck-dim mt-2 text-[12px]">
-        either you don&apos;t own this slug or the agents list hasn&apos;t
-        loaded yet. <a href="#/account" className="underline">return to account</a>.
+        Either you do not own this handle, or your agents have not loaded yet.{" "}
+        <a href="#/account" className="underline">Go back to your account</a>.
       </p>
     </section>
   );
@@ -272,11 +306,11 @@ function NotFoundShell({ slug }: { slug: string }) {
 
 function LoadingShell({ slug }: { slug: string }) {
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-pos">{slug}</span>} />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span className="ck-pos">{slug}</span></TopbarCrumb>
       <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
         <div className="ck-frame px-4 py-6">
-          <p className="ck-mono ck-dim">loading…</p>
+          <div className="flex justify-center py-6"><LogoLoader width={300} /></div>
         </div>
       </main>
     </div>
@@ -285,13 +319,13 @@ function LoadingShell({ slug }: { slug: string }) {
 
 function ConfigErrorShell() {
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-neg">settings · unconfigured</span>} />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span className="ck-neg">settings · not configured</span></TopbarCrumb>
       <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
-          <p className="ck-mono ck-neg">privy not configured.</p>
+          <p className="ck-mono ck-neg">Sign-in is not configured.</p>
           <p className="ck-dim mt-2 text-[12px]">
-            set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local and rebuild.
+            Set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local, then build again.
           </p>
         </section>
       </main>

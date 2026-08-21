@@ -1,4 +1,4 @@
-// ─── CodeSnippetPanel — tabbed multi-language snippet renderer (Phase 7d) ──
+// ─── CodeSnippetPanel — tabbed multi-language snippet renderer ─────────────
 //
 // Three use sites planned (V2 §7 onboarding research):
 //   1. `IntegratePage` — reached via the [ integrate ] button on the
@@ -8,7 +8,7 @@
 //   2. `LaunchPage` — public install track. The user is NOT
 //      authenticated, so the panel always renders the env-var fallback
 //      for MURMUR_RUNTIME_KEY.
-//   3. `AgentProfilePage` (Phase 12+) — public profile shows env-var-only
+//   3. `AgentProfilePage` — public profile shows env-var-only
 //      snippets keyed to the agent's id so visitors who own that agent
 //      know exactly what to wire up.
 //
@@ -232,7 +232,7 @@ export function CodeSnippetPanel({
     langs.includes(initialLanguage) ? initialLanguage : langs[0]!,
   );
 
-  // Codex P2 (carried over from ApiKeyMintModal pattern): only set "copied"
+  // Same as ApiKeyMintModal: only set "copied"
   // feedback after writeText resolves; surface a manual-copy hint when
   // the clipboard API is unavailable or rejected. False-positive copies
   // on snippet panels are less catastrophic than on a one-time key, but
@@ -317,7 +317,7 @@ export function CodeSnippetPanel({
               className="ck-btn ck-btn-bracket"
               aria-label={`copy ${TAB_LABEL[active]} snippet`}
             >
-              {copied ? "COPIED" : "COPY"}
+              {copied ? "copied" : "copy"}
             </button>
           </span>
         </div>

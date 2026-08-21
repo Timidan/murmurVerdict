@@ -18,10 +18,11 @@ import {
   type OperatorAlertsSnapshot,
 } from "../api.js";
 import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { formatScore } from "../lib/score-format.js";
+import { LogoLoader } from "../components/LogoLoader.js";
 
 const STATUSES: GatewayAttemptStatus[] = [
   "queued",
@@ -68,7 +69,9 @@ export function AdminGatewayPage() {
       setIdentity(identitySnapshot);
       setAlerts(operatorAlerts);
     } catch (e) {
-      setError((e as Error).message);
+      setError(
+        `the gateway snapshot did not load. retry, or check the daemon. (${(e as Error).message})`,
+      );
     } finally {
       setBusy((prev) => (prev === "load" ? null : prev));
     }
@@ -179,15 +182,11 @@ export function AdminGatewayPage() {
   }
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             admin <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">gateway</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       {/* CONTROL STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-2 flex items-center justify-between gap-3 flex-wrap">
@@ -221,7 +220,7 @@ export function AdminGatewayPage() {
         )}
 
         {!snapshot && !error && (
-          <div className="px-3 py-10 ck-mono ck-dim">loading…</div>
+          <div className="px-3 py-8 flex justify-center"><LogoLoader width={300} /></div>
         )}
 
         {snapshot && (
@@ -954,17 +953,13 @@ function TokenPrompt({
   }, []);
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             admin <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">gateway</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
       <main className="flex-1 min-h-0 flex flex-col p-3">
-        <Panel title="gateway token" meta="locked" className="max-w-[560px]">
+        <Panel title="admin token" meta="locked" className="max-w-[560px]">
           <div className="p-3 flex flex-col gap-3">
             {error && <InlineError error={error} className="ck-mono" />}
             <form

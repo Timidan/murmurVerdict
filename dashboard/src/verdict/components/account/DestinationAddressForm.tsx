@@ -1,4 +1,4 @@
-// ─── DestinationAddressForm — payout target editor (Phase 7c Step d) ───────
+// ─── DestinationAddressForm — payout target editor ─────────────────────────
 //
 // Lives at #/account/agent/:slug/payout. Lets the casual-tier operator
 // bind/update the EVM address that scored-call settlement proceeds
@@ -110,7 +110,7 @@ export function DestinationAddressForm({
     const v = input.trim();
     if (v.length === 0) return { ok: false, reason: "required" as const };
     if (!EVM_REGEX.test(v))
-      return { ok: false, reason: "not a valid evm address" as const };
+      return { ok: false, reason: "That is not a valid EVM address." as const };
     return { ok: true as const };
   }, [input]);
 
@@ -145,14 +145,14 @@ export function DestinationAddressForm({
           const synth = new Date(Date.now() + retry * 1000 - COOLDOWN_MS);
           setLastUpdatedIso(synth.toISOString().replace(/\.\d+Z$/, "Z"));
         }
-        return "cooldown active — see countdown below";
+        return "You changed this recently. See the countdown below.";
       }
       if (err.status === 401 || err.status === 403)
-        return "session expired — sign in again";
-      if (err.status === 400) return "invalid address format";
-      if (err.status === 404) return "agent not found";
+        return "Your session expired. Sign in again.";
+      if (err.status === 400) return "That is not a valid address.";
+      if (err.status === 404) return "We cannot find that agent.";
     }
-    return `update failed: ${(err as Error).message ?? "unknown"}`;
+    return `We could not save the address: ${(err as Error).message ?? "unknown"}`;
   }, []);
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -164,7 +164,7 @@ export function DestinationAddressForm({
     try {
       const token = await getAccessToken();
       if (!token) {
-        setServerError("session expired — sign in again");
+        setServerError("Your session expired. Sign in again.");
         return;
       }
       // Send the lowercase form (backend requires it). The form
@@ -175,7 +175,7 @@ export function DestinationAddressForm({
       setLastUpdatedIso(res.destination_address_updated_at);
       setInput("");
       setTouched(false);
-      // Phase 7d funnel emit — fire-and-forget after the patch round
+      // Funnel emit — fire-and-forget after the patch round
       // trip succeeds. We don't include the address itself (PII-adjacent
       // — a payout address is on-chain public but the funnel store
       // doesn't need it to derive conversion). The slug attribute lets
@@ -197,7 +197,7 @@ export function DestinationAddressForm({
       noValidate
     >
       <div className="ck-header">
-        <span className="ck-title">payout destination · casual tier</span>
+        <span className="ck-title">where your payouts go</span>
         <span className="ck-mono ck-dim">{slug}</span>
       </div>
 
@@ -213,7 +213,7 @@ export function DestinationAddressForm({
               {shownAddress}
             </code>
           ) : (
-            <span className="ck-mono ck-dim">not set — funds parked</span>
+            <span className="ck-mono ck-dim">not set — murmur holds the funds</span>
           )}
         </div>
 
@@ -236,7 +236,7 @@ export function DestinationAddressForm({
             aria-describedby="addr-help"
           />
           <span id="addr-help" className="ck-dim text-[12px]">
-            0x + 40 hex · case-insensitive · normalized to lowercase
+            An EVM address: 0x and 40 hex characters. Case does not matter.
           </span>
           {inlineError && (
             <InlineError error={inlineError} className="text-[12px]" />
@@ -250,12 +250,12 @@ export function DestinationAddressForm({
             style={{ color: "var(--color-accent-ink)" }}
             aria-live="polite"
           >
-            next change allowed in {formatDuration(remaining)}
+            You can change this again in {formatDuration(remaining)}.
           </p>
         )}
         {!cooldownActive && lastUpdatedIso && (
           <p className="ck-pos text-[12px]" aria-live="polite">
-            saved · cooldown cleared
+            Saved. You can change it again now.
           </p>
         )}
         {serverError && (
@@ -272,9 +272,9 @@ export function DestinationAddressForm({
             className="ck-btn ck-btn-bracket ck-pos justify-center disabled:opacity-40 disabled:cursor-not-allowed"
             aria-label="update address"
           >
-            update address →
+            save the address →
           </button>
-          {submitting && <span className="ck-dim text-[12px]">working…</span>}
+          {submitting && <span className="ck-dim text-[12px]">Saving…</span>}
         </div>
       </div>
     </form>

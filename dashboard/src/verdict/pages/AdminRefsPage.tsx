@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { verdictApi, ApiError, type AdminRefSender } from "../api.js";
 import { readAdminToken, writeAdminToken, clearAdminToken } from "../admin-session.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { TimeAgo } from "../components/compact/TimeAgo.js";
+import { LogoLoader } from "../components/LogoLoader.js";
 
 const REFS_CRUMB = (
   <span>
@@ -83,8 +84,8 @@ export function AdminRefsPage() {
   if (!token) return <TokenPrompt value={tokenInput} onChange={setTokenInput} onSubmit={submit} error={error} />;
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={REFS_CRUMB} />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb>{REFS_CRUMB}</TopbarCrumb>
 
       {/* INTRO STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-3 flex items-center justify-between gap-4 flex-wrap">
@@ -104,7 +105,7 @@ export function AdminRefsPage() {
           {error && <InlineError error={error} className="px-2 py-2 ck-mono" />}
 
           {!rows && !error && (
-            <div className="px-3 py-8 ck-mono ck-dim">loading…</div>
+            <div className="px-3 py-8 flex justify-center"><LogoLoader width={300} /></div>
           )}
 
           {rows && rows.length === 0 && (
@@ -195,8 +196,8 @@ function TokenPrompt({
   }, []);
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={REFS_CRUMB} />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb>{REFS_CRUMB}</TopbarCrumb>
       <main className="flex-1 min-h-0 flex flex-col">
         <Panel title="admin token" meta="locked">
           <div className="px-3 py-3 max-w-[70ch] flex flex-col gap-3">

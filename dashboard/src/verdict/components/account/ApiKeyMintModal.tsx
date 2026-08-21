@@ -1,4 +1,4 @@
-// ─── ApiKeyMintModal — one-time plaintext key reveal (Phase 7b) ─────────────
+// ─── ApiKeyMintModal — one-time plaintext key reveal ────────────────────────
 //
 // Renders once on a successful POST /v1/account/agents/:slug/api-keys. The
 // plaintext `secret` is the ONE place the API ever returns the raw key, so
@@ -37,7 +37,7 @@ export interface ApiKeyMintModalProps {
 export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) {
   const [saved, setSaved] = useState(false);
   const [copiedAt, setCopiedAt] = useState<"raw" | "env" | null>(null);
-  // Codex P2 fix — when navigator.clipboard is unavailable (insecure
+  // When navigator.clipboard is unavailable (insecure
   // origins, certain webviews) writeText() silently failed but the UI
   // still claimed success. The key is one-time, so a false "copied"
   // could trick the user into dismissing without saving. When we can't
@@ -93,7 +93,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
   useFocusTrap(panelRef);
 
   const copyToClipboard = useCallback(async (text: string, which: "raw" | "env") => {
-    // Codex P2 fix — gate "copied" feedback on an actual successful write.
+    // Gate "copied" feedback on an actual successful write.
     // Pre-flight check + try/catch around writeText; on either branch fail
     // we flip to copyFallback so the UI shows a manual-copy hint and the
     // saved-checkbox conscience doesn't ride on a no-op success message.
@@ -136,7 +136,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               ::before square. The ⚠ that follows is the error-prefix text
               idiom, not a second marker; both sit in the title's ck-neg ink. */}
           <span id="mint-modal-title" className="ck-title ck-neg ck-title-ik">
-            <Ik name="api" /> ⚠ api key · one-time reveal
+            <Ik name="api" /> ⚠ your new api key
             {/* Seal stamp — the credential is sealed the instant this modal
                 mounts, so the glyph plays its one-shot close here and then
                 holds. Trailing, so the leading api marker keeps its slot; the
@@ -153,12 +153,12 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
             className="ck-mono ck-neg leading-relaxed"
             style={{ color: "var(--color-accent-ink)" }}
           >
-            ⚠ key revealed once — copy it now.
+            ⚠ Shown once. Copy it now.
           </p>
           <p className="ck-dim text-[12px] leading-relaxed">
-            store it in your secrets manager or environment now. murmur stores
-            only a hash — there is no recovery path. if you lose it, rotate
-            via your account page and mint a fresh one.
+            Put it in your secrets manager or your environment now. Murmur
+            stores only a hash, so there is no way to get it back. If you lose
+            it, rotate the key on your account page and mint a new one.
           </p>
 
           <div
@@ -190,7 +190,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
 
           {copiedAt && (
             <p className="confirm-enter ck-pos text-[12px]" aria-live="polite">
-              copied {copiedAt === "env" ? ".env line" : "key"} · 3s
+              Copied the {copiedAt === "env" ? ".env line" : "key"}.
             </p>
           )}
 
@@ -200,7 +200,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               style={{ color: "var(--color-accent-ink)" }}
               aria-live="polite"
             >
-              × clipboard blocked — triple-click the key above and Cmd-C / Ctrl-C.
+              × The clipboard is blocked. Triple-click the key above, then press ⌘C or Ctrl-C.
             </p>
           )}
 
@@ -212,12 +212,11 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
               className="mt-[3px]"
             />
             <span className="ck-mono ck-dim leading-relaxed">
-              i have saved this key somewhere safe.
+              I have saved this key somewhere safe.
               <br />
               <span className="text-[12px]">
-                checking this box enables the done button. unchecking it again
-                does not retroactively undo the mint — the key is already
-                active.
+                This box unlocks the done button. Clearing it does not undo the
+                mint — the key is already live.
               </span>
             </span>
           </label>

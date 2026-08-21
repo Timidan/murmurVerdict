@@ -1,4 +1,4 @@
-// ─── AccountPage — authed dashboard shell at #/account (Phase 7a) ──────────
+// ─── AccountPage — authed dashboard shell at #/account ─────────────────────
 //
 // Auth-gated. Redirects unauthenticated visitors to /account/login with the
 // current hash preserved as `?next=`. Once authed, renders:
@@ -16,19 +16,25 @@
 
 import { useEffect } from "react";
 import { Ik, IkNav } from "../icons.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { TierBadge } from "../components/TierBadge.js";
 import { FheStatusPanel } from "../components/FheStatusPanel.js";
 import { LinkedLoginsPanel } from "../components/account/LinkedLoginsPanel.js";
 import { ActivityPanel } from "../components/account/ActivityPanel.js";
 import { KillSwitchPanel } from "../components/account/KillSwitchPanel.js";
+import { WebhooksPanel } from "../components/account/WebhooksPanel.js";
+import { PurchasesPanel } from "../components/account/PurchasesPanel.js";
+import {
+  AccountClosedScreen,
+  DeactivateAccountPanel,
+} from "../components/account/DeactivateAccountPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import type { AccountAgent, AgentKind } from "../api.js";
 
 /**
- * Phase 7d — read `?ref=<source>` from the hash query so we can attribute
+ * read `?ref=<source>` from the hash query so we can attribute
  * funnel events to their entry point. Same defensive hash-parsing pattern
  * as Router.tsx's parseNext().
  */
@@ -66,7 +72,7 @@ export function AccountPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account.isAuthenticated]);
 
-  // Phase 7d — fire compete.clicked only when the user actually arrived
+  // fire compete.clicked only when the user actually arrived
   // from the landing-page CTA. Two paths converge here:
   //
   //   1. Already-signed-in users hit `/account?ref=landing-cta` directly
@@ -74,7 +80,7 @@ export function AccountPage() {
   //   2. Unauth users bounce through `/account/login?next=/account` which
   //      strips the `?ref=` before they land here. The CTA persists a
   //      `murmur_funnel_compete_pending` latch in localStorage at click
-  //      time (codex P2 fix); we consume it post-auth.
+  //      time; we consume it post-auth.
   //
   // Either path emits exactly one compete.clicked per CTA click attempt.
   useEffect(() => {
@@ -118,11 +124,28 @@ export function AccountPage() {
     return <LoadingShell />;
   }
 
+  // A closed account gets the terminal screen and nothing else. Every panel
+  // below would 403 anyway; rendering them would only produce a wall of
+  // identical errors with no explanation among them.
+  if (account.deactivated) {
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
+        <TopbarCrumb>
+          <span className="ck-neg">account · closed</span>
+        </TopbarCrumb>
+        <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
+          <AccountClosedScreen
+            deactivatedAt={account.deactivatedAt}
+            onSignOut={() => void account.signOut()}
+          />
+        </main>
+      </div>
+    );
+  }
+
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             murmur <span className="ck-dim mx-1">·</span>
             <span className="ck-pos">account</span>
             {account.email && (
@@ -131,9 +154,7 @@ export function AccountPage() {
                 <span className="ck-mono ck-dim">{account.email}</span>
               </>
             )}
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       <main className="flex-1 px-3 py-3 flex flex-col gap-3 max-w-[960px] w-full mx-auto">
         <section className="ck-frame">
@@ -145,7 +166,7 @@ export function AccountPage() {
               <span className="ck-mono ck-dim">{account.agents.length} owned</span>
               <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
                 <Ik name="agent" />
-                + add agent
+                + add an agent
               </a>
               <button
                 type="button"
@@ -173,8 +194,21 @@ export function AccountPage() {
           )}
         </section>
         <LinkedLoginsPanel />
+        <WebhooksPanel agents={account.agents} />
+        <PurchasesPanel agents={account.agents} />
         <ActivityPanel />
         <KillSwitchPanel />
+        {/* Closing the account sits BELOW the kill switch on purpose. They
+            read as neighbours and they are not: one is a pause with a release
+            button, the other has no undo. Ordering them pause-then-close puts
+            the reversible control in the path first. */}
+        <DeactivateAccountPanel
+          onClosed={() => {
+            // Re-enter the bootstrap so the terminal screen renders from the
+            // server's own answer rather than from local optimism.
+            window.location.reload();
+          }}
+        />
         <FheStatusPanel />
       </main>
     </div>
@@ -187,7 +221,7 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
       {agents.map((a) => {
         // Settings page is the most common entry point (set payout, mint
         // additional keys). Fall back to agent_id when the slug hasn't
-        // hydrated yet — same defensive posture as Phase 7a.
+        // hydrated yet.
         const slugOrId = a.display_slug ?? a.agent_id;
         const settingsHref = `#/account/agent/${encodeURIComponent(slugOrId)}/payout`;
         const walletHref = `#/account/agent/${encodeURIComponent(slugOrId)}/wallet`;
@@ -238,7 +272,7 @@ function ReattestChip({
       <a
         href={walletHref}
         className="text-[12px] ck-neg no-underline hover:underline"
-        title="no controller wallet bound; runtime-key mint will fail"
+        title="no controller wallet is bound, so you cannot mint a runtime key"
       >
         × no wallet
       </a>
@@ -249,9 +283,9 @@ function ReattestChip({
       <a
         href={walletHref}
         className="text-[12px] ck-neg no-underline hover:underline"
-        title="re-attestation overdue; runtime keys won't authenticate"
+        title="this wallet needs a fresh signature, or its runtime keys stop working"
       >
-        × re-attest →
+        × sign again →
       </a>
     );
   }
@@ -259,10 +293,10 @@ function ReattestChip({
   return (
     <span
       className="text-[12px] ck-dim"
-      title={`re-attest by ${controllerWallet.reattestation_due_at.slice(0, 10)}`}
+      title={`sign again by ${controllerWallet.reattestation_due_at.slice(0, 10)}`}
     >
-      re-attest{" "}
-      {days <= 0 ? "today" : days === 1 ? "in 1d" : `in ${days}d`}
+      sign again{" "}
+      {days <= 0 ? "today" : days === 1 ? "in 1 day" : `in ${days} days`}
     </span>
   );
 }
@@ -277,15 +311,14 @@ function daysUntil(iso: string): number {
 function EmptyState() {
   return (
     <div className="px-4 py-8 flex flex-col items-start gap-3">
-      <p className="ck-mono ck-dim">no agents yet.</p>
+      <p className="ck-mono ck-dim">No agents yet.</p>
       <p className="ck-dim text-[12px] max-w-[40ch]">
-        pick a handle for your agent on the next page, approve two wallet
-        signatures, and copy the one-time runtime key into your bot.
-        takes about a minute.
+        On the next page you pick a handle, approve two wallet signatures, and
+        copy the runtime key into your bot. It takes about a minute.
       </p>
       <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
         <Ik name="agent" />
-        + add agent
+        + add an agent
       </a>
     </div>
   );
@@ -311,8 +344,8 @@ function SkeletonRows() {
 
 function LoadingShell() {
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-pos">account</span>} />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span className="ck-pos">account</span></TopbarCrumb>
       <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
         <SkeletonRows />
       </main>
@@ -322,13 +355,13 @@ function LoadingShell() {
 
 function ConfigErrorShell() {
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb={<span className="ck-neg">account · unconfigured</span>} />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span className="ck-neg">account · not configured</span></TopbarCrumb>
       <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
-          <p className="ck-mono ck-neg">privy not configured.</p>
+          <p className="ck-mono ck-neg">Sign-in is not configured.</p>
           <p className="ck-dim mt-2 text-[12px]">
-            set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local and rebuild.
+            Set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local, then build again.
           </p>
         </section>
       </main>
