@@ -124,6 +124,10 @@ interface AccountIdentityRow {
   account_id: string;
   email: string | null;
   primary_login_method: string | null;
+  /** Kill switch. Reversible — but a merge must not reverse it. */
+  agent_credentials_disabled_at: string | null;
+  /** Account closed by its owner (migration 073). Terminal. */
+  deactivated_at: string | null;
 }
 
 function resolveByPrivyUserId(
@@ -132,10 +136,25 @@ function resolveByPrivyUserId(
 ): AccountIdentityRow | null {
   const row = db
     .prepare(
-      "SELECT account_id, email, primary_login_method FROM accounts WHERE privy_user_id = ?",
+      `SELECT account_id, email, primary_login_method,
+              agent_credentials_disabled_at, deactivated_at
+         FROM accounts WHERE privy_user_id = ?`,
     )
     .get(privyUserId) as AccountIdentityRow | undefined;
   return row ?? null;
+}
+
+/**
+ * The earlier of two timestamps, ignoring nulls. Null when both are null.
+ *
+ * Used to carry a lockout across a merge: whichever side locked first is when
+ * this identity stopped being usable, and that is the honest timestamp for the
+ * survivor to keep.
+ */
+function earlierMarker(a: string | null, b: string | null): string | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return a <= b ? a : b;
 }
 
 /**
@@ -209,6 +228,23 @@ export function reparentAccount(
 
       // 5. Destination exists → MERGE. Move each child table's source-owned rows
       //    onto the destination account, recording how many moved.
+      // Credentials do not survive a change of hands (security review R2).
+      // The source's runtime keys are revoked and its api keys rotated BEFORE
+      // the ownership move, with their own reason — deliberately NOT via
+      // engageAccountKillSwitch, which would stamp a disabled-marker that the
+      // fail-closed merge below would then impose on a destination that never
+      // chose it. Owners re-mint deliberately after a merge.
+      const reparentTs = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+      db.prepare(
+        `UPDATE agent_runtime_keys
+         SET revoked_at = ?, revoke_reason = 'account_reparent'
+         WHERE account_id = ? AND revoked_at IS NULL`,
+      ).run(reparentTs, source.account_id);
+      db.prepare(
+        `UPDATE api_keys SET rotated_at = ?
+         WHERE account_id = ? AND rotated_at IS NULL`,
+      ).run(reparentTs, source.account_id);
+
       const moved: Record<string, number> = {};
       for (const table of OWNERSHIP_CHILD_TABLES) {
         const result = db
@@ -221,6 +257,23 @@ export function reparentAccount(
 
       // Backfill the destination's profile from the source ONLY where the
       // destination is blank — a populated destination field always wins.
+      //
+      // FAIL-CLOSED on the two lockout markers, which is the opposite rule.
+      //
+      // Profile fields merge permissively because a blank email is an absence.
+      // A kill switch or a closed account is not an absence; it is a decision,
+      // and a merge that dropped it would let an owner un-close an account by
+      // transferring a login onto it — a route that never asked anyone whether
+      // reopening was intended. So the survivor inherits EITHER side's marker,
+      // stamped at whichever moment came first.
+      const mergedDisabledAt = earlierMarker(
+        source.agent_credentials_disabled_at,
+        dest.agent_credentials_disabled_at,
+      );
+      const mergedDeactivatedAt = earlierMarker(
+        source.deactivated_at,
+        dest.deactivated_at,
+      );
       db.prepare(
         `UPDATE accounts
             SET email = CASE
@@ -230,13 +283,32 @@ export function reparentAccount(
                 primary_login_method = CASE
                   WHEN primary_login_method IS NULL OR trim(primary_login_method) = '' THEN @srcLogin
                   ELSE primary_login_method
-                END
+                END,
+                agent_credentials_disabled_at = @mergedDisabledAt,
+                deactivated_at = @mergedDeactivatedAt
           WHERE account_id = @toId`,
       ).run({
         srcEmail: source.email,
         srcLogin: source.primary_login_method,
+        mergedDisabledAt,
+        mergedDeactivatedAt,
         toId: dest.account_id,
       });
+
+      // A closed account owns no working agents. The agents that just moved
+      // here came from (or joined) a closed account, so retire everything the
+      // survivor now owns — including the destination's own agents, which are
+      // equally covered by the surviving closed state.
+      if (mergedDeactivatedAt) {
+        db.prepare(
+          `UPDATE agents
+              SET retired_at = @ts
+            WHERE retired_at IS NULL
+              AND agent_id IN (
+                SELECT agent_id FROM account_agents WHERE account_id = @toId
+              )`,
+        ).run({ ts: mergedDeactivatedAt, toId: dest.account_id });
+      }
 
       // Assert no source-owned rows remain before deleting the source account
       // (else the ON DELETE CASCADE would silently erase them).

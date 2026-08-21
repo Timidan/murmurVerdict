@@ -11,6 +11,13 @@ export interface AccountRow {
   primary_login_method: string | null;
   created_at: string;
   last_seen_at: string;
+  /** Kill switch — reversible from the release route. */
+  agent_credentials_disabled_at?: string | null;
+  /**
+   * The owner closed the account (migration 073). Terminal: there is no
+   * reactivation route, and clearing the kill switch does not clear this.
+   */
+  deactivated_at?: string | null;
 }
 
 export interface AccountAgentLink {
@@ -42,14 +49,22 @@ export function getOrCreateAccount(
   const txn = db.transaction(() => {
     const existing = db
       .prepare(
-        "SELECT account_id FROM accounts WHERE privy_user_id = ?",
+        "SELECT account_id, deactivated_at FROM accounts WHERE privy_user_id = ?",
       )
-      .get(claims.privy_user_id) as { account_id: string } | undefined;
+      .get(claims.privy_user_id) as
+      | { account_id: string; deactivated_at: string | null }
+      | undefined;
 
     if (existing) {
-      db.prepare(
-        "UPDATE accounts SET last_seen_at = ? WHERE account_id = ?",
-      ).run(stripIso(input.resolvedAt), existing.account_id);
+      // A closed account resolves but is never TOUCHED: last_seen_at means
+      // "last activity while open", and a stream of refused requests after
+      // closure must not keep rewriting it — the terminal state is part of
+      // the audit story.
+      if (!existing.deactivated_at) {
+        db.prepare(
+          "UPDATE accounts SET last_seen_at = ? WHERE account_id = ?",
+        ).run(stripIso(input.resolvedAt), existing.account_id);
+      }
       return { account_id: existing.account_id, created: false };
     }
 
@@ -225,7 +240,11 @@ export interface AccountAgentSetupRow {
   linked_at: string;
   display_slug: string | null;
   display_name: string | null;
+  /** The public description. Editable at PATCH /agents/:slug/profile. */
+  bio: string | null;
   kind: string | null;
+  /** Set once the owner retires the agent (migration 073). */
+  retired_at: string | null;
   wallet_address: string | null;
   chain_id: string | null;
   destination_address: string | null;
@@ -238,7 +257,9 @@ interface RawAccountAgentSetupRow {
   linked_at: string;
   display_slug: string | null;
   display_name: string | null;
+  bio: string | null;
   kind: string | null;
+  retired_at: string | null;
   wallet_address: string | null;
   chain_id: string | null;
   destination_address: string | null;
@@ -270,7 +291,9 @@ export function listAccountAgentsWithSetup(
          aa.created_at                      AS linked_at,
          a.display_slug                     AS display_slug,
          a.display_name                     AS display_name,
+         a.bio                              AS bio,
          a.kind                             AS kind,
+         a.retired_at                       AS retired_at,
          a.wallet_address                   AS wallet_address,
          a.chain_id                         AS chain_id,
          a.destination_address              AS destination_address,
@@ -302,7 +325,9 @@ export function listAccountAgentsWithSetup(
     linked_at: row.linked_at,
     display_slug: row.display_slug,
     display_name: row.display_name,
+    bio: row.bio,
     kind: row.kind,
+    retired_at: row.retired_at,
     wallet_address: row.wallet_address,
     chain_id: row.chain_id,
     destination_address: row.destination_address,

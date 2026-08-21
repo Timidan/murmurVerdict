@@ -1,4 +1,4 @@
-// ─── useAccount — Privy session + Murmur backend bridge (Phase 7a) ──────────
+// ─── useAccount — Privy session + Murmur backend bridge ─────────────────────
 //
 // Combines:
 //   1) Privy auth state (`usePrivy()` → user, ready, authenticated, login, logout)
@@ -14,7 +14,7 @@
 //
 // Before the lift, each `useAccount()` call instantiated its OWN useState
 // engine. ControllerWalletPanel's refresh wouldn't propagate to its
-// sibling RuntimeKeysPanel (codex MAJOR on Wave B). The interim fix was
+// sibling RuntimeKeysPanel. The interim fix was
 // to pass `onAgentChanged` callbacks; the provider supersedes that.
 
 import {
@@ -51,6 +51,17 @@ export interface UseAccountResult {
   loading: boolean;
   /** Most recent error from the backend session/list calls. */
   error: string | null;
+  /**
+   * True once murmur says this account is closed (migration 073).
+   *
+   * A closed account is refused on every account route except
+   * GET /v1/account/session, so the bootstrap's POST fails with 403 and the
+   * agent list never loads. Without this flag the dashboard would render an
+   * empty page and an error string — indistinguishable from an outage. With
+   * it, AccountPage renders the terminal screen instead.
+   */
+  deactivated: boolean;
+  deactivatedAt: string | null;
   /** Privy DID-style user identifier, when authenticated. */
   userId: string | null;
   /** Best-effort email surfaced by Privy on the user object. */
@@ -84,7 +95,7 @@ function useAccountState(): UseAccountResult {
   // it returns a no-op default that reports `ready: false`. But to keep
   // the hook order stable we never branch on `configured` before calling.
   const privy = usePrivy();
-  // Phase 7d — useFunnelEmit is hook-stable and returns a memoized callback;
+  // useFunnelEmit is hook-stable and returns a memoized callback;
   // it never re-fires its own emits across renders (dedupe is internal).
   const emitFunnel = useFunnelEmit();
 
@@ -92,6 +103,8 @@ function useAccountState(): UseAccountResult {
   const [agents, setAgents] = useState<AccountAgent[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [deactivated, setDeactivated] = useState<boolean>(false);
+  const [deactivatedAt, setDeactivatedAt] = useState<string | null>(null);
 
   // Guard against duplicate /session POSTs across StrictMode double-renders
   // and rapid re-auth toggles. We only run the bootstrap once per
@@ -148,10 +161,10 @@ function useAccountState(): UseAccountResult {
         const s = await verdictApi.postAccountSession(token);
         if (cancelled) return;
         setSession(s);
-        // Phase 7d — fire privy.signed_in once per authenticated edge.
+        // fire privy.signed_in once per authenticated edge.
         //
         // Now that AccountProvider mounts a single useAccountState per
-        // AccountShell, the per-mount inflation Codex P2 originally
+        // AccountShell, the per-mount inflation that originally
         // fixed is no longer possible: there is exactly one instance
         // for the whole /account/* tree. We keep the localStorage
         // latch as a defense-in-depth measure in case AccountShell is
@@ -185,7 +198,31 @@ function useAccountState(): UseAccountResult {
         // so the second pass retries and populates the list.
         bootstrappedRef.current = did;
       } catch (e) {
-        if (!cancelled) setError((e as Error).message ?? "session_failed");
+        if (cancelled) return;
+        // The POST is a write and a closed account is refused on it, like
+        // every other account write. GET /v1/account/session is the one route
+        // that stays open, and it is the only way to tell "you closed this"
+        // apart from "murmur is down". Ask it before reporting a failure.
+        try {
+          const token = await getAccessToken();
+          const state = token ? await verdictApi.getAccountSession(token) : null;
+          if (cancelled) return;
+          if (state?.deactivated) {
+            setDeactivated(true);
+            setDeactivatedAt(state.deactivated_at);
+            setSession({
+              account_id: state.account_id,
+              created: state.created,
+              privy_user_id: state.privy_user_id,
+            });
+            setError(null);
+            return;
+          }
+        } catch {
+          // Fall through to the original failure — the closed-account probe
+          // is a refinement of the message, never a new failure mode.
+        }
+        setError((e as Error).message ?? "session_failed");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -207,6 +244,8 @@ function useAccountState(): UseAccountResult {
     bootstrappedRef.current = null;
     setSession(null);
     setAgents([]);
+    setDeactivated(false);
+    setDeactivatedAt(null);
   }, [configured, privy]);
 
   const email = useMemo<string | null>(() => {
@@ -234,6 +273,8 @@ function useAccountState(): UseAccountResult {
     agents,
     loading,
     error,
+    deactivated,
+    deactivatedAt,
     userId: privy.user?.id ?? null,
     email,
     linkedAccounts: privy.user?.linkedAccounts ?? [],

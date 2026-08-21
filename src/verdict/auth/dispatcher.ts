@@ -18,6 +18,7 @@
 import type Database from "better-sqlite3";
 import type { AgentKind } from "../schema.js";
 import { ERROR_CODES, VerdictError } from "../schema.js";
+import { assertAccountActive } from "./account-lifecycle.js";
 import { agentsRepo } from "../repos/agents-repo.js";
 import {
   assertAgentCredentialsEnabled,
@@ -133,6 +134,11 @@ export function __resolveCasualIdentity(
   // contract rather than an inline call choice.
   const account_id = resolveAccountForClaims(db, claims, { mode: "read" }).account_id ?? undefined;
 
+  // A closed account authenticates but acts on NOTHING. Enforced here — the
+  // one place every dispatcher-authed Privy route passes (feeds, gateway) —
+  // so a route added tomorrow inherits the refusal instead of remembering it.
+  if (account_id) assertAccountActive(db, account_id);
+
   // ─── Path A: explicit slug provided ──────────────────────────
   if (slug) {
     const agent = agentsRepo.bySlug(db, slug);
@@ -146,7 +152,7 @@ export function __resolveCasualIdentity(
         404,
       );
     }
-    // Ownership enforcement — the heart of BLOCKER #3. Must run
+    // Ownership enforcement. Must run
     // BEFORE we return anything, and must NOT fall through to
     // other auth modes if it fails.
     if (!account_id) {

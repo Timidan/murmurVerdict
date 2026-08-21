@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 72 as const;
+export const LATEST_DB_MIGRATION_VERSION = 73 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -103,7 +103,7 @@ export function applyMigrations(db: Database.Database): void {
 
   if (v < 12) {
     // P4 Phase A — append-only market_config_history. No FK cascade,
-    // no rebuild. Codex audit fix: wrap DDL + schema_meta bump in a
+    // no rebuild. DDL + schema_meta bump share one
     // single transaction so a crash between them can't leave the table
     // created with schema_version still at 11 (next openDb would
     // re-run and fail on duplicate CREATE).
@@ -143,25 +143,11 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 15) {
-    // BLOCKER #5 fix — V2 §7.5 / Phase E cleanup, decoupled.
-    //
-    // STRUCTURAL part (this migration): rebuild submissions to relax
-    // NOT NULL on {side, asset_id, horizon_hours, confidence,
-    // rationale, strategy_tag}. ALWAYS runs — this is a pure schema
-    // change, not destructive, and downstream code paths now expect
-    // those columns to be nullable on committed-mode rows.
-    //
-    // DESTRUCTIVE part (moved out): the actual plaintext scrub now
-    // lives in src/verdict/phase-e-cleanup.ts and runs at boot when
-    // MURMUR_PHASE_E_CLEANUP=1. Idempotent — operators can flip the
-    // env at any time and the next boot picks up the work, vs the
-    // prior single-shot trap where the env had to be set on the
-    // SAME boot that crossed schema 15.
-    //
-    // The rebuild step uses applyTableRebuildMigration for the same FK +
-    // PRAGMA + transaction discipline as 010 / 013. Tables tuple is
-    // ['submissions', 'submissions_v4'] — distinct from 010's
-    // 'submissions_v3' name so a half-applied 010 retry can't collide.
+    // Relax NOT NULL on the plaintext market-signal columns; committed-mode
+    // rows leave them empty. The destructive plaintext scrub is NOT here — it
+    // lives in phase-e-cleanup.ts behind MURMUR_PHASE_E_CLEANUP so operators
+    // can flip the env on any boot, not only the one that crosses schema 15.
+    // Temp name differs from 010's so a half-applied 010 retry can't collide.
     applyTableRebuildMigration(
       db,
       MIGRATION_015,
@@ -174,17 +160,10 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 16) {
-    // V2 §2.1 / §2.2 / §3.2 — additive v2 commitment + outcome storage
-    // columns on submissions, t1_resolutions, and markets. Pure ADD COLUMN
-    // (no CHECK constraint changes), so no table rebuild needed. Same
-    // wrap-in-transaction discipline as MIGRATION_014: DDL + index DDL +
-    // backfill UPDATE + schema_meta bump all atomic against a crash mid-run.
-    //
-    // Columns are JSON-bag fields validated at write-time inside the
-    // MarketMakerAdapter (Phase 4); no Zod / DB CHECK constraints here.
-    // Per V2 §7.7 risk 4, adapter_id and market_family are operator-curated
-    // but kept open (no closed enum) so future families don't require a
-    // schema migration.
+    // Additive v2 commitment + outcome columns. DDL, backfill and the version
+    // bump share one transaction. The JSON bags are validated at write time in
+    // the adapter; adapter_id / market_family stay open (no CHECK) so a new
+    // market family never needs a migration.
     db.transaction(() => {
       db.exec(MIGRATION_016);
       set.run("schema_version", "16");
@@ -193,31 +172,16 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 17) {
-    // V2 §7.1 (casual tier scaffold) — accounts, account_agents, api_keys.
+    // accounts (one per Privy user), account_agents, api_keys.
     //
-    // Scope:
-    //   - accounts: one row per Privy user (PRIMARY KEY = uuid; UNIQUE on
-    //     privy_user_id which is the Privy DID like 'did:privy:xxxx').
-    //   - account_agents: many-to-many bridge so a single account can later
-    //     own multiple agents. v2.0 enforces one account per agent in the
-    //     code path (see auth/accounts.ts getAccountForAgent), but the
-    //     schema permits the future shape where co-owned agents become
-    //     possible. Using a bridge table now avoids a third migration when
-    //     we relax the policy.
-    //   - api_keys: scoped per (account_id, agent_id) pair. Replaces the
-    //     legacy single-key-per-agent model in agents.api_key_hash. The
-    //     legacy column is left intact (we don't rebuild agents here) so
-    //     existing benchmark agents keep authenticating until Phase 4 cuts
-    //     the dispatcher over.
+    // account_agents is a bridge table even though one-account-per-agent is
+    // the policy today — relaxing that later then costs no migration.
+    // agents.api_key_hash is deliberately left intact so benchmark agents keep
+    // authenticating until the dispatcher cuts over.
     //
-    // Hash discipline: api_keys.api_key_hash stores sha256(secret) — same
-    // primitive as agents.api_key_hash. Plaintext is returned exactly once
-    // by mintApiKey() and never persisted. Rotation is soft: rotated_at
-    // populated → key invalid (verifyApiKey() filters WHERE rotated_at
-    // IS NULL). This keeps audit history without cascading deletes.
-    //
-    // Idempotency: pure additive. CREATE TABLE IF NOT EXISTS guards on
-    // every statement so a partial-apply retry is safe.
+    // Keys store sha256(secret); plaintext is returned once by mintApiKey and
+    // never persisted. Rotation is soft — rotated_at set means invalid — so
+    // the audit trail survives.
     db.transaction(() => {
       db.exec(MIGRATION_017);
       set.run("schema_version", "17");
@@ -226,24 +190,9 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 18) {
-    // V2 Phase 5 — receipts.kind allows 'resolution_v2' for the universal
-    // payout-vector receipt sibling.
-    //
-    // The Phase 5 resolver dual-writes a v2 resolution receipt alongside
-    // the legacy 'resolution' receipt so verifiers can recompute against
-    // either canonical chain. The legacy CHECK constraint at MIGRATION_001
-    // permits only ('acceptance','resolution','re_resolution') — adding
-    // 'resolution_v2' requires a table rebuild because SQLite cannot
-    // ALTER a CHECK in place.
-    //
-    // Idempotency: pure rebuild. The DROP TABLE IF EXISTS receipts_v18
-    // guard at the top survives partial-apply retries; the data copy is
-    // INSERT-from-original so existing receipts (acceptance / resolution /
-    // re_resolution) round-trip byte-for-byte.
-    //
-    // Recovery: routed through applyTableRebuildMigration so a crash
-    // mid-rebuild reaches the standard recover path. See the helper's
-    // doc comment for the four (original, temp) state recoveries.
+    // Allow receipts.kind = 'resolution_v2' so the resolver can dual-write the
+    // payout-vector receipt beside the legacy one. A rebuild, not an ALTER —
+    // SQLite cannot change a CHECK in place.
     applyTableRebuildMigration(
       db,
       MIGRATION_018,
@@ -256,26 +205,10 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 19) {
-    // V2 BLOCKER #4 — one-account-per-agent enforced at the DB level.
-    //
-    // Migration 017 modeled account_agents as a many-to-many bridge with
-    // PRIMARY KEY (account_id, agent_id) but NO uniqueness on agent_id
-    // alone. Phase 7 intent (V2 §7.1) is one-owner-per-agent; the v2.0
-    // policy was being enforced only at the code layer. Rebuild the
-    // table with UNIQUE(agent_id) so the constraint is authoritative
-    // and concurrent linkAgentToAccount() calls cannot race.
-    //
-    // Defensive dedup: Phase 7 hasn't shipped, so production should
-    // have zero duplicate agent_id rows. The INSERT-from-original step
-    // selects the row with MIN(created_at) per agent_id, so if a future
-    // hotfix lands BEFORE this deploys and we somehow accumulated
-    // duplicates, the FIRST owner wins and the table rebuild succeeds
-    // rather than aborting on the new UNIQUE constraint.
-    //
-    // Recovery: routed through applyTableRebuildMigration for the same
-    // FK + transaction discipline as 010/013/015/018. Tables tuple is
-    // ['account_agents','account_agents_v19'] — distinct from 017's
-    // table name so a half-applied retry can't collide.
+    // UNIQUE(agent_id) on account_agents so one-owner-per-agent is enforced by
+    // the DB, not just by linkAgentToAccount — which could otherwise race.
+    // The copy takes MIN(created_at) per agent_id, so if duplicates ever exist
+    // the first owner wins instead of the rebuild aborting on the constraint.
     applyTableRebuildMigration(
       db,
       MIGRATION_019,
@@ -288,25 +221,10 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 20) {
-    // Wave 4b — drop the receipts subsystem.
-    //
-    // Receipts were a hackathon-era artifact for the Filecoin sponsor track.
-    // The call + reveal + resolution rows are the canonical source of truth;
-    // the receipts table only doubled DB write volume.
-    //
-    // Two changes in one migration:
-    //   1. DROP receipts table entirely.
-    //   2. Rebuild disputes to key on target_call_id (FK to submissions.call_id)
-    //      instead of target_resolution_receipt_hash + new_resolution_receipt_hash.
-    //
-    // The disputes rebuild uses the SQLite "create new, copy, drop, rename"
-    // pattern. For each existing dispute row we resolve the receipt_hash → call_id
-    // by joining the legacy receipts table (still present until the DROP at the
-    // end of this migration body). Rows whose receipt_hash no longer resolves
-    // (orphaned legacy data) are dropped with a warning.
-    //
-    // Recovery: routed through applyTableRebuildMigration so a crash mid-rebuild
-    // recovers via the standard four-state pre-transaction inspection.
+    // Drop receipts (the call + reveal + resolution rows are canonical) and
+    // rekey disputes onto target_call_id. The dispute copy resolves each old
+    // receipt_hash → call_id by joining receipts, which is why the DROP comes
+    // last; orphaned rows that no longer resolve are dropped with a warning.
     applyTableRebuildMigration(
       db,
       MIGRATION_020,
@@ -319,35 +237,16 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 21) {
-    // Wave 4d — drop the preflights table.
-    //
-    // preflights was Santiment-derived risk metadata stamped at acceptance
-    // (murmur_score, murmur_playbook, risk_flags_json, data_freshness_seconds,
-    // market_regime). Wave 4b-2 retired the Santiment integration; the
-    // INSERT call site was removed at that time and the table has been
-    // vestigial ever since — zero writers, zero readers, but the DDL still
-    // shipped in MIGRATION_001 so every install carries an empty table.
-    //
-    // Single DROP — no data migration required (no rows to preserve), no FK
-    // dependents (preflights references submissions ON DELETE CASCADE, not
-    // the other direction). Idempotent via IF EXISTS.
+    // preflights held Santiment risk metadata. That integration is gone and the
+    // table has had no writers or readers since; nothing FKs into it.
     db.exec("DROP TABLE IF EXISTS preflights;");
     v = 21;
     set.run("schema_version", String(v));
   }
 
   if (v < 22) {
-    // Migration 022 — RESERVED NO-OP.
-    //
-    // Codex Z0 review P2-C fix: the original plan reserved 022 for an
-    // optional Phase 10 family-leaderboard cache that never shipped, and
-    // jumping from 021 → 023 left a gap. Any future migration trying to
-    // claim 022 would never run on DBs that booted under Z0 (the
-    // `if (v < 22)` check would be false at v=23+).
-    //
-    // The fix: claim 022 as a deliberate no-op so the ladder is dense.
-    // Phase 10's family-leaderboard cache (if it ever lands) MUST take
-    // a slot AFTER the FHE block (current top is Z5's 027 — so >=028).
+    // RESERVED NO-OP. Claimed so the ladder stays dense: a DB that already
+    // booted past 22 would skip any migration later assigned to this slot.
     v = 22;
     set.run("schema_version", String(v));
   }
@@ -389,76 +288,25 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 28) {
-    // Phase 11 — Polymarket Gamma adapter (Tier 1).
-    //
-    // Adds `external_market_sync_state`, the per-conditionId poll-state
-    // table the Polymarket sync ticker writes to. Holds:
-    //   - poll cadence bookkeeping (last_polled_at / next_poll_at)
-    //   - observed status (`pending` | `disputed` | `resolved` | `404` |
-    //     `error`) — sourced from a fresh Gamma fetch
-    //   - consecutive failure counter for the MARKET_DISAPPEARED alert
-    //     (24× 404 in a row)
-    //   - one-shot alert timestamps so each operator alert fires exactly
-    //     once per market lifetime
-    //
-    // Pure additive — no ALTER TABLE, no rebuild. Resolution state itself
-    // continues to live on `t1_resolutions` like every other adapter; this
-    // table is purely the ticker's scratch pad.
-    //
-    // FK on `market_id` cascades on delete so retiring a market cleans
-    // the sync row too. Indexes:
-    //   - adapter_id: per-adapter sweep (the ticker filters on
-    //     `adapter_id = 'polymarket-gamma'`)
-    //   - next_poll_at (partial; NOT NULL): the ticker's primary
-    //     scheduling read.
+    // external_market_sync_state — the Polymarket ticker's scratch pad: poll
+    // cadence, observed status, the consecutive-404 counter behind the
+    // MARKET_DISAPPEARED alert, and one-shot alert stamps. Resolution state
+    // still lives on t1_resolutions like every other adapter.
     db.exec(MIGRATION_028);
     v = 28;
     set.run("schema_version", String(v));
   }
 
   if (v < 29) {
-    // Phase 11.5 prep — registry groundwork for external (non-native-price)
-    // market adapters.
+    // Widen the oracles.kind CHECK to admit 'external_adapter', then seed the
+    // synthetic Polymarket asset + oracle. A rebuild because SQLite cannot
+    // replace a CHECK in place. Later adapters (Kalshi, Drift) reuse
+    // 'external_adapter' with their own oracle_id and need no migration.
     //
-    // Two-part: (a) recreate `oracles` with a broader `kind` CHECK so
-    // 'external_adapter' is a legal value; (b) seed one synthetic asset
-    // + one synthetic oracle for Polymarket. Future external adapters
-    // (Kalshi, Drift, etc.) reuse the same 'external_adapter' value
-    // with their own oracle_id — no further migration needed when adding
-    // a new adapter family at the registry layer.
-    //
-    // Why a table rebuild on oracles: SQLite ALTER TABLE doesn't support
-    // dropping or replacing a CHECK constraint. The applyTableRebuildMigration
-    // helper (BEGIN..COMMIT around the rename pattern, with foreign_keys=OFF)
-    // safely recreates oracles, preserving existing rows (chainlink-base-*,
-    // pyth-pull-*).
-    //
-    // ── Scope boundary ──
-    //
-    // Wave 4a — the four unblock points called out by this migration's
-    // original scope boundary have landed:
-    //   1. MarketIdSchema accepts '0x[hex64]' Polymarket conditionIds
-    //      alongside the legacy '<asset>.<horizon>' shape.
-    //   2. AssetIdSchema is now an open '<chain>:<asset>:<quote>' or
-    //      '<protocol>:<kind>' regex (admits 'polymarket:event').
-    //   3. AcceptedCallSchema's plaintext market-signal fields became
-    //      optional in Wave 3b; the resolver consumes Commitment/Outcome
-    //      JSON instead.
-    //   4. The per-asset rate limiter (countCallsForAgentAssetWindow)
-    //      was removed in Wave 3b; rate-limiting is per-market only.
-    // The synthetic Polymarket asset + oracle seeded below remain the
-    // anchor rows that external-market `markets` inserts reference, so
-    // the NOT NULL FKs on `markets.asset_id` and
-    // `markets.primary_oracle_id` are satisfied without rewriting the
-    // markets table.
-    // Concatenating the seed into the rebuild SQL keeps both inside the
-    // same BEGIN..COMMIT as the schema_version bump — codex bundle review
-    // MAJOR #1 fix. The original split (rebuild → schema_version=29 → seed
-    // outside the transaction) had a crash window: a process crash between
-    // commit and `db.exec(SEED)` would leave schema_version=29 with the
-    // seed never run, and the next boot's `if (v < 29)` guard would skip
-    // the entire block forever. INSERT OR IGNORE in the seed plus the
-    // transaction guarantee means a re-run after rollback is idempotent.
+    // The seed rows are the anchors that external `markets` inserts FK to, so
+    // they must land in the SAME transaction as the version bump: a crash
+    // between the two would leave v=29 with no seed and the guard would skip
+    // it forever. Hence the concatenation below rather than a second exec.
     applyTableRebuildMigration(
       db,
       MIGRATION_029_ORACLES_REBUILD + MIGRATION_029_SEED,
@@ -476,57 +324,20 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 31) {
-    // Wave 3 reshape — operator-blind invariant + collapsed agent.kind enum.
+    // The operator-blind reshape: drop six emptied tables, drop the four
+    // plaintext market-signal columns (the last DB-level leakage paths — an
+    // FHE-only submit keeps everything load-bearing inside the Commitment
+    // ciphertext), collapse agents.kind to four values, and reserve
+    // program_version on both tables.
     //
-    // Four moves bundled (codex-greenlit consolidated reshape):
-    //   1. Drop six dead tables emptied by Wave 1/3a:
-    //        verified_identities, claim_challenges, oracle_policies,
-    //        call_reveals, call_private_envelopes, disputes.
-    //      The old public-identity onboarding tables, shadow scraping,
-    //      and disputes runtime are gone. No app code touches them anymore.
-    //   2. Drop four plaintext market-signal columns from submissions:
-    //        side, asset_id, horizon_hours, confidence.
-    //      These were the only DB-level leakage paths the operator could
-    //      see today. FHE-only submit means everything load-bearing for
-    //      scoring lives inside the Commitment ciphertext + the resolved
-    //      Outcome row; the four columns survived only as placeholders
-    //      to satisfy code paths now excised. Native-price's
-    //      observeResolution stopped taking `side` in Wave 3b (BUY-
-    //      perspective fallback), so the column is finally orphaned.
-    //   3. Rebuild agents.kind CHECK to the collapsed enum
-    //        ('benchmark','agent','internal_test','attested').
-    //      Maps any legacy 'casual'/'shadow'/'verified'/'wallet_only'
-    //      rows to 'agent' so dashboards + leaderboard renderers can
-    //      drop the deprecated branches (Wave 3a already collapsed the
-    //      dashboard enum).
-    //   4. Add agents.program_version + submissions.program_version
-    //      (default 1). Reserves the wire-shape upgrade slot for future
-    //      scorer/program versions per V2 §6.3; additive now so a later
-    //      bump doesn't require another migration.
+    // Four sub-steps, each idempotent on its own so a crashed run converges.
+    // The CASE-WHEN enum remap is a no-op on already-remapped data — none of
+    // the WHEN branches match a modern value.
     //
-    // Crash safety — four sub-steps, each independently idempotent so a
-    // crashed run converges on retry:
-    //   (a) Dead-table drops: DROP IF EXISTS; safe to re-run.
-    //   (b) ALTER ADD COLUMN: routed through applyAlterTableAddColumn so
-    //       a partial state is reconciled by re-checking
-    //       PRAGMA table_info() at boot (codex Z2 review FAIL #4 fix).
-    //   (c) Agents rebuild: applyTableRebuildMigration with its
-    //       (original, temp) crash-recovery protocol. The CASE-WHEN
-    //       remap is itself idempotent — running it twice on already-
-    //       remapped data is a no-op because none of the WHEN branches
-    //       match the modern enum values.
-    //   (d) Submissions rebuild: applyTableRebuildMigration too. The
-    //       schema_version=31 bump rides inside this second rebuild's
-    //       transaction so the boundary is well-defined: either the
-    //       whole Wave-3 step landed (v=31) or it didn't (v=30, retry
-    //       on next boot).
-    //
-    // Why no single applyTableRebuildMigration covers both: the helper
-    // accepts a single (original, temp) tuple and the two rebuilds need
-    // distinct temp names. The agents rebuild therefore uses a no-op
-    // bumpSchemaVersion; the schema_version bump rides with submissions.
-    // Each rebuild remains crash-recoverable on its own thanks to the
-    // (a)–(c) idempotency above.
+    // Two rebuilds, not one, because the helper takes a single (original,
+    // temp) tuple and the temp names must differ. The agents rebuild bumps
+    // nothing; the schema_version=31 bump rides inside the submissions
+    // transaction, so the boundary is all-or-nothing.
     db.exec(MIGRATION_031_DROP_DEAD_TABLES);
     applyAlterTableAddColumn(
       db,
@@ -558,40 +369,22 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 32) {
-    // Wave 5 — agent_security_events: append-only audit log for
-    // operator/admin actions that mutate an agent's ownership or a
-    // sensitive registry slot. Emitters live next to the call sites
-    // (admin routes + admin-claim CLI) so a forensic timeline can be
-    // reconstructed without grep'ing application logs.
+    // agent_security_events — append-only audit log for admin actions that
+    // move an agent's ownership or a sensitive registry slot.
     //
-    // Rows are intentionally NOT FK'd to agents.agent_id — the audit
-    // log must survive an admin-driven CASCADE delete of the agent
-    // row itself. The agent_id column carries the same string for
-    // forensics; lookup paths LEFT JOIN agents when they need the
-    // current row.
-    //
-    // Pure additive (CREATE TABLE IF NOT EXISTS), so it is safe to
-    // re-run on a half-applied state.
+    // Deliberately NOT FK'd to agents.agent_id: the log has to survive an
+    // admin-driven CASCADE delete of the agent itself. Readers LEFT JOIN
+    // agents when they need the live row.
     db.exec(MIGRATION_032);
     v = 32;
     set.run("schema_version", String(v));
   }
 
   if (v < 33) {
-    // Local-smoke discovery — Wave 4b's `marketsRepo.upsertExternalMarket`
-    // inserts into `markets.config_json` and the resolver reads
-    // `marketRow.config_json` to spread Polymarket's conditionId into
-    // the adapter observation context. The MarketRow TS type declared
-    // the column but no migration ever added it (codex P11's review
-    // expected MIGRATION_016 to land it; it didn't). Without this
-    // column, the Polymarket admin upsert + every resolver tick that
-    // hits a Polymarket row fail at runtime with `no such column:
-    // config_json`.
-    //
-    // Idempotent via applyAlterTableAddColumn — re-runs on a crashed
-    // boot are no-ops. NOT NULL DEFAULT '{}' so existing native-price
-    // markets land with the same empty-object shape the resolver's
-    // parseMarketConfigJson helper already handles.
+    // markets.config_json — the MarketRow type declared it but no migration
+    // ever added it, so the Polymarket upsert and every resolver tick that
+    // touched a Polymarket row failed with `no such column`. NOT NULL DEFAULT
+    // '{}' lands native-price rows in the shape parseMarketConfigJson expects.
     applyAlterTableAddColumn(
       db,
       "markets",
@@ -890,61 +683,32 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 51) {
-    // Wave L.A — Nanopayments via Circle Gateway middleware. New table
-    // `nanopay_receipts` persists the composite idempotency key + status
-    // state machine + full Fhenix anchor binding for every paid inference
-    // call served via the `/v2/nanopay/infer` rail.
+    // nanopay_receipts — one row per paid inference call on /v2/nanopay/infer.
     //
-    // Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
+    // The settling_intent row is written BEFORE Circle /v1/x402/settle, so a
+    // crash mid-settle leaves something to reconcile rather than free-serving.
     //
-    // Status state machine: settling → settled | failed | settlement_unknown.
-    // `settling_intent` row written BEFORE Circle /v1/x402/settle so a
-    // daemon crash mid-settle leaves a row to reconcile (full reconciliation
-    // cron is Phase 3; Phase 1 ships testnet MVP that surfaces stuck rows
-    // for operator inspection — never free-serves).
+    // Idempotency is composite because EIP-3009 nonces are unique per payer,
+    // not globally: payer + source domain + both content hashes. The
+    // pre-settle lookup turns "same payer+nonce, different payload" into a
+    // 409 before Circle is ever called.
     //
-    // Composite idempotency:
-    //   (payer, eip3009_nonce, source_domain, payment_payload_hash, payment_requirements_hash)
-    // UNIQUE indexed. EIP-3009 nonces are unique per-payer, not globally,
-    // so the composite includes payer + the verifying-contract source
-    // domain + content hashes to detect "same payer+nonce, different
-    // payload" → 409 Conflict (the pre-settle DB lookup catches this
-    // before calling Circle).
-    //
-    // Phase 1b update (v52): the `eip3009_nonce` column is renamed to
-    // `payment_handle` because the SDK-pivot flow stores Circle's
-    // transaction UUID there, not the raw EIP-3009 nonce. See v52 block
-    // below.
-    //
-    // Binding fields persisted as binding_json (Fhenix anchor tuple) and
-    // reveal_artifact_json (the revealed signal once horizon opens). Single-
-    // stream invariant: served signal == sealed-Fhenix-anchored signal.
+    // binding_json / reveal_artifact_json carry the single-stream invariant:
+    // the served signal is the sealed-Fhenix-anchored signal.
     db.exec(MIGRATION_051_NANOPAY_RECEIPTS);
     v = 51;
     set.run("schema_version", String(v));
   }
 
   if (v < 52) {
-    // Wave L.A Phase 1b — rename `nanopay_receipts.eip3009_nonce` →
-    // `payment_handle`. The Phase 1 column name was a semantic lie:
-    // the SDK middleware consumes + verifies the EIP-3009 nonce before
-    // the daemon handler runs, so what we actually store there is
-    // Circle's transaction UUID (the "payment handle"). See
-    // `src/verdict/routes/nanopay.ts` Phase 1 comment for the deferral
-    // note.
+    // Rename eip3009_nonce → payment_handle: the SDK middleware verifies and
+    // consumes the nonce before the handler runs, so the column actually holds
+    // Circle's transaction UUID. The index is dropped and recreated because
+    // RENAME COLUMN rewrites the definition but not the index name.
     //
-    // SQLite ALTER TABLE RENAME COLUMN (3.25.0+) auto-rewrites the
-    // index definition's referenced column, but does not rename the
-    // index itself. We drop + recreate so the index name stops
-    // perpetuating the old semantics.
-    //
-    // Wrapped in db.transaction() because a crash AFTER the rename but
-    // BEFORE the schema_version bump would leave the next boot
-    // attempting to rename a column that no longer exists — startup
-    // failure with no recovery path. The wrap makes the rename + index
-    // swap + version bump atomic.
-    //
-    // Design note: docs/superpowers/specs/2026-05-24-wave-l-a-phase-1b-design.md
+    // Transactional: a crash after the rename but before the version bump
+    // would leave the next boot renaming a column that no longer exists, with
+    // no recovery path.
     const migrateTo52 = db.transaction(() => {
       db.exec(`
         ALTER TABLE nanopay_receipts RENAME COLUMN eip3009_nonce TO payment_handle;
@@ -960,16 +724,8 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 53) {
-    // Fix 3 (testnet hardening 2026-06-01) — extend the agent_security_events
-    // kind CHECK constraint with two new event kinds for operator audit:
-    //   - admin_fhenix_gateway_retry: emitted when an operator forces a
-    //     Fhenix gateway broadcast attempt to retry now.
-    //   - admin_fhenix_feed_packet_backfill: emitted when an operator
-    //     backfills a Fhenix feed packet via the admin ingest route.
-    //
-    // SQLite CHECK constraints are CLOSED — adding new values requires a
-    // table rebuild. We use applyTableRebuildMigration (the same helper
-    // migrations 010/011 use) so the rebuild is crash-safe.
+    // Admit two operator-audit event kinds: admin_fhenix_gateway_retry and
+    // admin_fhenix_feed_packet_backfill. A rebuild — SQLite CHECKs are closed.
     applyTableRebuildMigration(
       db,
       MIGRATION_053,
@@ -982,27 +738,16 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 54) {
-    // Multi-agent ownership fix (2026-06-03) — the controller-wallet table
-    // shipped with `UNIQUE(wallet_address, chain_id)`, which enforced a
-    // 1-wallet-per-1-agent rule. The user-facing model is actually
-    // 1-wallet-per-Privy-account → N agents under that account, so we
-    // drop the global uniqueness and let the application layer
-    // (controller-wallets.ts:188) gate cross-account collisions via a
-    // SELECT ... WHERE account_id != ? AND agent_id != ? precheck.
-    //
-    // SQLite has no DROP CONSTRAINT statement, so the only path is a
-    // table rebuild. applyTableRebuildMigration uses the same atomic
-    // helper migrations 010/011/053 use; the rename + index recreation
-    // happen as one transactional unit, with a rebuilt-table fallback if
-    // the daemon crashes mid-migration. `agent_id` remains the PRIMARY
-    // KEY so each agent still has at most one binding.
+    // Drop UNIQUE(wallet_address, chain_id): the real model is one wallet per
+    // Privy account across N agents, so cross-account collisions are gated in
+    // controller-wallets.ts instead. agent_id stays PRIMARY KEY, so an agent
+    // still has at most one binding. A rebuild — SQLite has no DROP CONSTRAINT.
     applyTableRebuildMigration(
       db,
       MIGRATION_054,
       () => {
-        // Intermediate step: 055 follows in this same applyMigrations pass.
-        // Persist 54 here (not LATEST) so a crash between 054 and 055 leaves
-        // an honest schema_version that re-runs 055 on the next boot.
+        // Persist 54, not LATEST: a crash before 055 must leave an honest
+        // version that re-runs 055 on the next boot.
         set.run("schema_version", "54");
       },
       ["agent_controller_wallets", "agent_controller_wallets_v054"],
@@ -1017,9 +762,7 @@ export function applyMigrations(db: Database.Database): void {
       db,
       MIGRATION_055_T1_RESOLUTIONS_NULLABLE_EVIDENCE,
       () => {
-        // Intermediate step: 056 follows in this same applyMigrations pass.
-        // Persist 55 here (not LATEST) so a crash between 055 and 056 leaves
-        // an honest schema_version that re-runs 056 on the next boot.
+        // Persist 55, not LATEST — see the 054 block.
         set.run("schema_version", "55");
       },
       ["t1_resolutions", "t1_resolutions_v055"],
@@ -1028,143 +771,87 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 56) {
-    // Migration 056 — Polymarket discovery ledger + health row.
-    //
-    // `polymarket_discovery_state` is the durable per-conditionId record of
-    // the auto-discovery ticker's registration attempts: state-machine status
-    // (draft → broadcasting → confirmed → listed, with frozen/failed exits),
-    // end-time, tx hash, error/attempt bookkeeping, and gas telemetry. It
-    // survives daemon crashes so a broadcast whose receipt was lost can be
-    // reconciled against on-chain state instead of re-spending gas, and the
-    // per-hour / per-day registration caps are counted from it.
-    //
-    // `polymarket_discovery_health` is a single-row tick heartbeat the
-    // operator-alert scanner reads (stale ticks, relayer balance posture).
-    //
-    // Pure additive — CREATE TABLE IF NOT EXISTS, safe to re-run.
+    // polymarket_discovery_state — the durable per-conditionId ledger of the
+    // discovery ticker's registration attempts. It survives a crash so a
+    // broadcast whose receipt was lost is reconciled against chain state
+    // instead of re-spending gas, and the rate caps are counted from it.
+    // polymarket_discovery_health is the single-row tick heartbeat the alert
+    // scanner reads.
     db.transaction(() => {
       db.exec(MIGRATION_056_POLYMARKET_DISCOVERY);
-      // Intermediate step: 057 follows in this same applyMigrations pass.
-      // Persist 56 here (not LATEST) so a crash between 056 and 057 leaves an
-      // honest schema_version that re-runs 057 on the next boot.
       set.run("schema_version", "56");
     })();
     v = 56;
   }
 
   if (v < 57) {
-    // Migration 057 — durable fallback reveal jobs + reveal attribution.
+    // fhenix_reveal_jobs — one row per sealed call the fallback reveal worker
+    // owns after the agent grace window. It persists tx hashes, partial
+    // threshold-decrypt results and phase so a restart never re-opens or
+    // re-publishes a call whose receipt was lost.
     //
-    // `fhenix_reveal_jobs` is the crash-durable per-call state machine for the
-    // murmur-owned fallback reveal worker (src/integrations/fhenix-reveal-
-    // worker.ts). One row per sealed call the worker has become responsible
-    // for after the agent grace window; it persists open/publish tx hashes,
-    // partial threshold-decrypt results, backoff timing, and the phase so a
-    // restart never re-opens or re-publishes a call whose receipt was lost.
-    //
-    // The two new `fhenix_sealed_calls` columns are normalized reveal
-    // attribution evidence, written atomically when a reveal is ingested:
-    //   - reveal_sender: the successful publishReveal tx `from` (lowercased).
-    //   - reveal_source: agent | daemon_fallback | unattributed_external,
-    //     classified from that sender. Powers honest daemon_fallback_reveals
-    //     and reveal_reliability on the leaderboard instead of the old
-    //     hardcoded zero. NULL on rows revealed before this migration
-    //     (historical backfill would require an RPC sweep of receipt.from).
-    //
-    // Pure additive — ADD COLUMN + CREATE TABLE IF NOT EXISTS, safe to re-run.
+    // reveal_sender / reveal_source on fhenix_sealed_calls are the attribution
+    // evidence behind honest daemon_fallback_reveals and reveal_reliability.
+    // NULL on rows revealed before this migration — backfilling would need an
+    // RPC sweep of every receipt.from.
     db.transaction(() => {
       db.exec(MIGRATION_057_FHENIX_REVEAL_JOBS);
-      // Intermediate step: 058 follows in this same applyMigrations pass.
-      // Persist 57 here (not LATEST) so a crash between 057 and 058 leaves an
-      // honest schema_version that re-runs 058 on the next boot.
       set.run("schema_version", "57");
     })();
     v = 57;
   }
 
   if (v < 58) {
-    // Migration 058 — reveal-worker self-heal watermark + legacy `missed` reset.
+    // tx_broadcast_at is the reveal worker's broadcast watermark. Without it a
+    // dropped or nonce-gapped tx — which never produces a receipt — is
+    // indistinguishable from one still mining, and the worker waits forever.
+    // Past the staleness threshold it re-broadcasts and unsticks the EOA nonce.
     //
-    // `tx_broadcast_at` is the crash-durable broadcast watermark for the reveal
-    // worker's currently-pending open/publish tx. Without it a dropped /
-    // nonce-gapped tx (which never produces a receipt) is indistinguishable
-    // from a still-mining one, so the worker would wait on a null receipt
-    // forever and never re-broadcast. The worker re-broadcasts once
-    // `now - tx_broadcast_at` exceeds its staleness threshold, self-healing a
-    // stuck reveal EOA nonce instead of stranding the call (which is revealable
-    // forever). See src/integrations/fhenix-reveal-worker.ts.
-    //
-    // The `missed` reset recovers legacy rows the OLD time-only terminalization
-    // path auto-marked before it was replaced by worker-health alerts. Every
-    // such row has revealed_at IS NULL and is still on-chain revealable (a call
-    // has no reveal expiry), so it is returned to `pending` for the fallback
-    // worker to seed and for reveal ingestion to attach. `missed` is now
-    // reserved for a manually-established irrecoverable condition, so only
-    // still-revealable auto-missed rows are reset here.
-    //
-    // Pure additive — ADD COLUMN + idempotent UPDATE, safe to re-run.
+    // The `missed` reset recovers rows the old time-only terminalization path
+    // auto-marked. Calls have no reveal expiry, so those rows are still
+    // revealable and go back to `pending`. `missed` now means a manually
+    // established irrecoverable condition, nothing else.
     db.transaction(() => {
       db.exec(MIGRATION_058_REVEAL_WORKER_SELFHEAL);
-      // Persist 58 (not LATEST) so a crash before 059 re-runs 059 next boot.
       set.run("schema_version", "58");
     })();
     v = 58;
   }
 
   if (v < 59) {
-    // Migration 059 — Flow 2 paid private decrypt-grant entitlements.
+    // entitlements — the state machine for a subscriber paying for early
+    // private decrypt access to a sealed call. The UNIQUE reservation is
+    // inserted BEFORE settlement, so two concurrent payment nonces cannot
+    // double-buy the same (call, subscriber) and charge twice.
     //
-    // `entitlements` is the crash-durable state machine for a subscriber who
-    // pays (off-chain nanopay/x402) to receive EARLY private decrypt access to
-    // an agent's sealed call, before the public reveal. Exactly one row per
-    // (chain_id, contract_address, onchain_call_id, subscriber_address): the
-    // UNIQUE reservation is inserted BEFORE settlement so two concurrent
-    // payment nonces cannot double-buy the same (call, subscriber) and charge
-    // twice. `status` mirrors the ordered payment→reserve→settle→grant→confirm
-    // path from the access route (src/verdict/entitlement-access-surface.ts)
-    // and the grant reconciler (src/integrations/fhenix-grant-reconciler.ts).
-    // A settled payment is NEVER relabeled a plain failure — a grant that
-    // cannot be broadcast/confirmed becomes grant_failed_refund_due so the
-    // operator/reconciler owes a refund. See
-    // contracts/src/MurmurSealedVerdicts.sol grantDecryptAccess for the
-    // on-chain window enforcement this pairs with.
-    //
-    // Pure additive — CREATE TABLE IF NOT EXISTS, safe to re-run.
+    // A settled payment is NEVER relabeled a plain failure: a grant that can't
+    // be broadcast or confirmed becomes grant_failed_refund_due, so a refund
+    // stays owed. Pairs with grantDecryptAccess on the contract.
     db.transaction(() => {
       db.exec(MIGRATION_059_ENTITLEMENTS);
-      // Persist 59 (not LATEST) so a crash before 060 re-runs 060 next boot.
       set.run("schema_version", "59");
     })();
     v = 59;
   }
 
   if (v < 60) {
-    // Migration 060 — agent-auth hardening (PayBox competitive review,
-    // codex-reviewed 2026-08-02). Four independent pieces, one version:
+    // Agent-auth hardening, four independent pieces on one version:
     //
     //   1. agent_runtime_key_nonces — consumed (runtime_key_id, nonce) pairs
-    //      for murmur-rk (v2) proof-of-possession replay prevention. No FK to
-    //      agent_runtime_keys: keys are soft-revoked (never deleted), and an
-    //      FK would tax every authenticated request for a cascade that can't
-    //      fire. Rows are pruned lazily on each verify (retention 600s).
+    //      for proof-of-possession replay prevention. No FK: keys are
+    //      soft-revoked, so the cascade could never fire and would only tax
+    //      every authenticated request. Pruned lazily on verify.
     //   2. request_fingerprint + auth_proof on both gateway attempt tables.
-    //      fingerprint = sha256 of the canonicalized semantic request body,
-    //      compared on every client_order_id duplicate exit so an idempotent
-    //      200 can never be returned for DIFFERENT content ("any changed
-    //      parameter = new request"). auth_proof records how the reserving
-    //      request authenticated ('pop-v1' or NULL bearer-only), so
-    //      acceptance-time audit attribution reflects what actually happened.
+    //      The fingerprint is compared on every client_order_id duplicate
+    //      exit, so an idempotent 200 can never be returned for DIFFERENT
+    //      content. auth_proof records how the reserving request actually
+    //      authenticated.
     //   3. accounts.agent_credentials_disabled_at — the account kill switch.
-    //      Checked at dispatch (runtime + api key), both key mints, and
-    //      gateway attempt claiming; a bulk revoke alone is not durable
-    //      because API-key mint is Privy-gated only.
-    //   4. agent_security_events rebuild (SQLite CHECK can't be ALTERed) to
-    //      admit the two kill-switch event kinds. Mirrors the closed enum in
-    //      schema.ts AgentSecurityEventKindSchema — both surfaces must move
-    //      together, by design.
-    //
-    // ALTERs are idempotent via applyAlterTableAddColumn; CREATEs use IF NOT
-    // EXISTS; the rebuild drops its scratch table first — safe to re-run.
+    //      A bulk revoke alone is not durable, because API-key mint is
+    //      Privy-gated only.
+    //   4. agent_security_events rebuild for the two kill-switch kinds. It
+    //      mirrors AgentSecurityEventKindSchema in schema.ts; both surfaces
+    //      move together, by design.
     applyAlterTableAddColumn(
       db,
       "fhenix_gateway_tx_attempts",
@@ -1198,49 +885,29 @@ export function applyMigrations(db: Database.Database): void {
     db.transaction(() => {
       db.exec(MIGRATION_060_RUNTIME_KEY_POP_NONCES);
       db.exec(MIGRATION_060_SECURITY_EVENT_KINDS);
-      // Persist 60 (not LATEST) so a crash before 061 re-runs 061 next boot.
       set.run("schema_version", "60");
     })();
     v = 60;
   }
 
   if (v < 61) {
-    // Migration 061 — retire the native-price / financial-direction
-    // registry surface. Murmur is a PURE REFEREE over external prediction
-    // venues (Polymarket today): agents seal a call, the external venue
-    // resolves it, Murmur seals/reveals/scores. Murmur never authors a
-    // market and never resolves an outcome itself, so the self-resolving
-    // native-price machinery (Chainlink/Pyth readers, t0/t1 price
-    // anchoring, signed-return outcomes) is gone from the runtime.
+    // Retire the native-price registry surface. Murmur is a pure referee over
+    // external venues: it never authors a market and never resolves an
+    // outcome, so the self-resolving machinery is gone from the runtime.
     //
-    // This migration is DATA-ONLY and append-only, per the repo's
-    // migration discipline:
+    // Data-only. Markets native by ANY of their four markers (market_kind,
+    // scoring_kind, adapter_id, market_family) flip to status='retired', the
+    // terminal status both acceptsSubmissions() and resolverShouldTick()
+    // refuse. The predicate is deliberately wider than the live data so a
+    // hand-seeded row cannot survive as a live market.
     //
-    //   1. Every market that is native/self-resolving by any of its four
-    //      independent markers (market_kind, scoring_kind, adapter_id,
-    //      market_family) is moved to status='retired'. `retired` is the
-    //      terminal registry status: acceptsSubmissions() refuses it and
-    //      resolverShouldTick() stops walking it. On the live DB this is
-    //      exactly one row (a frozen direction_binary ETH market with zero
-    //      submissions); the wider predicate is defensive so an operator's
-    //      hand-seeded row cannot survive the removal as a live market.
-    //   2. Every price-feed oracle registry row (chainlink_evm / pyth_pull
-    //      / pyth_solana) is moved to status='retired'. The synthetic
-    //      'polymarket-gamma-oracle' row (kind='external_adapter') is
-    //      deliberately NOT touched — markets.primary_oracle_id is still
-    //      NOT NULL with an FK into oracles, and Polymarket market
-    //      registration writes that synthetic dependency on every upsert.
+    // Price-feed oracles retire too, but NOT the synthetic
+    // 'polymarket-gamma-oracle' row: markets.primary_oracle_id is NOT NULL
+    // with an FK into oracles, and every Polymarket upsert writes it.
     //
-    // Explicitly NOT done here (and never in a later migration either):
-    //   · No table rebuild. The physical `t0_anchors` table, the `assets`
-    //     rows, and t1_resolutions' p1 / t1_feed / signed_return columns
-    //     stay exactly as migrations 008–055 left them. They are legacy
-    //     PERSISTED evidence for historical rows and must stay readable.
-    //   · No row deletes here. Retirement is a status flip. (MIGRATION_062
-    //     later removes the unreferenced native rows entirely — see there.)
-    //
-    // Idempotent — both statements are status UPDATEs guarded on
-    // `status <> 'retired'`, safe to re-run.
+    // No rebuild and no deletes here. t0_anchors, the assets rows, and
+    // t1_resolutions' price-anchor columns are legacy persisted evidence and
+    // must stay readable.
     db.transaction(() => {
       db.exec(MIGRATION_061_RETIRE_NATIVE_PRICE_REGISTRY);
       set.run("schema_version", "61");
@@ -1249,28 +916,14 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 62) {
-    // Migration 062 — DELETE the retired native-price registry rows.
+    // Delete what 061 retired. Guarded, never blind: a native market row goes
+    // only when no submission references it, so a deployment that did take
+    // native calls keeps its history and simply leaves those rows retired.
+    // Oracle and asset rows go only once no market points at them.
     //
-    // 061 retired them; this removes them. Murmur relies entirely on
-    // external venues now, so a catalogue of markets murmur would have had
-    // to resolve itself is dead weight: it pollutes operator queries and
-    // market listings, and it is the only reason the registry schema still
-    // had to tolerate self-resolving shapes.
-    //
-    // Deletion is GUARDED, never blind. A native market row is removed only
-    // when nothing references it (no submissions), so any deployment that
-    // did take native calls keeps its history and its market rows — there
-    // the rows simply stay retired, exactly as 061 left them. Oracle and
-    // asset rows are removed only once no market row still points at them.
-    //
-    // Deliberately preserved:
-    //   · the synthetic 'polymarket-gamma-oracle' / 'polymarket:event' rows
-    //     (markets.primary_oracle_id and .asset_id are NOT NULL with FKs,
-    //     and external registration writes them on every upsert),
-    //   · the physical t0_anchors table and t1_resolutions' p1 / t1_feed /
-    //     signed_return columns — legacy persisted evidence stays readable.
-    //
-    // Idempotent: re-running finds nothing left to delete.
+    // Preserved: the synthetic polymarket oracle/asset rows (NOT NULL FKs
+    // rewritten on every upsert), t0_anchors, and t1_resolutions' price-anchor
+    // columns.
     db.transaction(() => {
       db.exec(MIGRATION_062_DROP_UNREFERENCED_NATIVE_ROWS);
       set.run("schema_version", "62");
@@ -1279,70 +932,47 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 63) {
-    // Migration 063 — feed-packet reveal lifecycle.
+    // Feed-packet reveal lifecycle. The contract always had the reveal calls
+    // and events, but the daemon had no columns, jobs table or watcher for
+    // them — so a producer could take payment for a feed and never disclose a
+    // packet, the same withholding hole the call path already closed.
     //
-    // A sealed feed packet could be SUBMITTED but never revealed: the
-    // contract has had openFeedPacketReveal / publishFeedPacketReveal and
-    // the FeedPacketRevealed / FeedPacketRevealInvalid events all along, but
-    // the daemon had no reveal columns, no jobs table and no watcher
-    // streams for them. That is the same withholding hole the call path
-    // closed — a producer could accept payment for a feed and simply never
-    // disclose a packet.
+    // agent_wallet_address is captured at SUBMISSION time, so attribution
+    // survives a controller-wallet rotation.
     //
-    // feed_packets gains terminal reveal evidence (status, plaintext,
-    // tx/log/block, sender and attribution) mirroring fhenix_sealed_calls.
-    // `agent_wallet_address` is captured at SUBMISSION time so attribution
-    // cannot be misread after a controller-wallet rotation.
+    // Reveal jobs get their own table rather than a discriminator on
+    // fhenix_reveal_jobs, whose primary key is a real FK to
+    // fhenix_sealed_calls; sharing would mean a polymorphic key and a rebuild
+    // of a populated table. One worker drives both.
     //
-    // Reveal jobs live in their OWN table rather than gaining a target-kind
-    // discriminator on fhenix_reveal_jobs: that table's primary key is a
-    // real FK to fhenix_sealed_calls, so a shared table would need a
-    // polymorphic key and a rebuild of a populated table. The worker keeps
-    // one signer and one serial queue and drives both tables.
-    //
-    // There is deliberately no time-based 'missed' status: a sealed packet,
-    // like a sealed call, has no on-chain reveal expiry and stays revealable
-    // indefinitely. Liveness gaps surface as operator alerts instead.
+    // No time-based 'missed' status: a sealed packet has no on-chain reveal
+    // expiry. Liveness gaps surface as operator alerts.
     db.transaction(() => {
       applyAlterTableAddColumn(db, "feed_packets", "reveal_status", MIGRATION_063_FEED_REVEAL_COLUMNS);
       db.exec(MIGRATION_063_FEED_REVEAL_JOBS);
-      // Intermediate step: 064 follows in this same applyMigrations pass.
-      // Persist 63 here (not LATEST) so a crash between 063 and 064 leaves an
-      // honest schema_version that re-runs 064 on the next boot.
       set.run("schema_version", "63");
     })();
     v = 63;
   }
 
   if (v < 64) {
-    // Migration 064 — market series + per-instance clock snapshot.
+    // market_series + market_clocks. A market used to be only an instance, so
+    // nothing could own what a recurring series owns: the schedule constants
+    // every instance derives from, and the identity prepaid credits scope to.
+    // At 288 instances a day, credits keyed to an instance strand on rollover.
     //
-    // Until now a "market" was only ever an instance, tagged with a free-text
-    // `market_family`. That cannot carry the things a recurring series owns:
-    // the schedule constants every instance derives from, and the identity a
-    // consumer's prepaid credits are scoped to. A 5-minute up/down series
-    // produces 288 instances a day; credits keyed to an instance would strand
-    // on rollover, and schedule constants copied per instance would drift.
+    // The series constants are NOT nullable and NOT per-instance — an instance
+    // wanting a different schedule is a different series.
     //
-    // `market_series` holds the four constants validated by
-    // `assertSeriesClockConfig` (see src/verdict/series-clock.ts). They are
-    // NOT nullable and NOT per-instance: an instance that wants a different
-    // schedule is a different series.
+    // market_clocks is the per-instance snapshot, written once at registration
+    // and immutable after. Gamma can shift `endDate` under us; re-deriving on
+    // read would silently retime a market consumers already armed against.
+    // Drift is detected against the snapshot and the market is delisted rather
+    // than rebound — a schedule someone paid against must never move.
     //
-    // `market_clocks` is the per-instance SNAPSHOT, written once at
-    // registration and thereafter immutable. It exists because the venue can
-    // move its own end time: Gamma may shift `endDate` after we registered.
-    // Re-deriving on read would silently retime a market that consumers have
-    // already armed and providers have already submitted against. Instead the
-    // snapshot is frozen, drift is detected against it, and a drifted market
-    // is flagged and delisted rather than rebound — the schedule a consumer
-    // paid against must never change underneath them.
-    //
-    // `resolution_at_ms` is stored separately from `public_reveal_at_ms` on
-    // purpose. The first is the venue's own end time (when the outcome is
-    // determined); the second is when murmur unseals. Reveal is embargoed
-    // past resolution, so a single column would assert the market resolves at
-    // murmur's reveal deadline.
+    // resolution_at_ms is separate from public_reveal_at_ms on purpose: the
+    // venue determines the outcome, murmur unseals later. One column would
+    // assert the market resolves at murmur's reveal deadline.
     db.transaction(() => {
       db.exec(MIGRATION_064_MARKET_SERIES);
       // submission_class travels with the submit event, alongside the
@@ -1354,26 +984,19 @@ export function applyMigrations(db: Database.Database): void {
         "submission_class",
         "ALTER TABLE fhenix_gateway_tx_attempts ADD COLUMN submission_class INTEGER;",
       );
-      // Intermediate step: 065 follows in this same applyMigrations pass.
-      // Persist 64 here (not LATEST) so a crash between 064 and 065 leaves an
-      // honest schema_version that re-runs 065 on the next boot.
       set.run("schema_version", "64");
     })();
     v = 64;
   }
 
   if (v < 65) {
-    // Migration 065 — submission_class on the CANONICAL accepted-call record.
+    // submission_class on the canonical accepted-call record. Its own version,
+    // not a widened 064: a DB already at 64 would skip the widened block
+    // forever. Shipped migrations are immutable.
     //
-    // Deliberately its OWN version rather than an extension of 064: a database
-    // that already applied 064 records schema_version=64 and would skip a
-    // widened 064 block forever, leaving the column absent while inserts
-    // reference it. Shipped migrations are immutable.
-    //
-    // The gateway attempt row (064) is an audit trail; reputation reads THIS
-    // row, and direct/operator intake never creates a gateway attempt at all.
-    // Nullable because rows accepted before this migration have no recorded
-    // class — callers must treat NULL as unknown, never as EarlyAccess.
+    // 064's gateway row is an audit trail; reputation reads THIS row, and
+    // direct/operator intake never creates a gateway attempt at all. NULL means
+    // unknown — never treat it as EarlyAccess.
     db.transaction(() => {
       applyAlterTableAddColumn(
         db,
@@ -1381,20 +1004,16 @@ export function applyMigrations(db: Database.Database): void {
         "submission_class",
         "ALTER TABLE fhenix_sealed_calls ADD COLUMN submission_class INTEGER;",
       );
-      // Intermediate step: 066 follows in this same applyMigrations pass.
       set.run("schema_version", "65");
     })();
     v = 65;
   }
 
   if (v < 66) {
-    // Migration 066 — durable first-broadcast watermark for discovery.
-    //
     // Stuck-registration age was measured off `updated_at`, which every
-    // recorded error rewrites — so a row that had been stuck for hours kept
-    // reporting a few seconds and never crossed any threshold. This records
-    // when the CURRENT broadcast attempt first went out and is not touched by
-    // error recording, so the age is a real cumulative stuck time.
+    // recorded error rewrites — a row stuck for hours kept reporting seconds
+    // and never crossed a threshold. This watermark is not touched by error
+    // recording, so the age is real cumulative stuck time.
     db.transaction(() => {
       applyAlterTableAddColumn(
         db,
@@ -1402,36 +1021,27 @@ export function applyMigrations(db: Database.Database): void {
         "broadcast_started_at",
         "ALTER TABLE polymarket_discovery_state ADD COLUMN broadcast_started_at TEXT;",
       );
-      // Backfill rows already mid-broadcast at upgrade time. Without this they
-      // keep NULL and the alert falls back to `updated_at` — the very column
-      // error recording rewrites — so an upgraded stuck row would still never
-      // accumulate a real age.
+      // Backfill rows already mid-broadcast, or they keep NULL and the alert
+      // falls back to the same rewritten `updated_at`.
       db.prepare(
         `UPDATE polymarket_discovery_state
             SET broadcast_started_at = updated_at
           WHERE status = 'broadcasting' AND broadcast_started_at IS NULL`,
       ).run();
-      // Intermediate step: 067 follows in this same applyMigrations pass.
       set.run("schema_version", "66");
     })();
     v = 66;
   }
 
   if (v < 67) {
-    // Migration 067 — operator halt marker.
+    // An admin freeze could be silently undone: discovery holds a broadcast
+    // across an await and relists on receipt, and its recovery path promotes a
+    // frozen mid-registration market on purpose — so it could not tell its own
+    // repair freeze from an operator's halt.
     //
-    // An admin freezing a market via the status-only path could be silently
-    // undone: discovery holds a broadcast in flight across an await, and its
-    // receipt path relists on success. Its recovery path also deliberately
-    // promotes a frozen market whose ledger is mid-registration (that is how
-    // it finishes its own repair), so it had no way to tell its own repair
-    // freeze from an operator's halt.
-    //
-    // The marker lives on `markets`, NOT on polymarket_discovery_state. A
-    // market can be halted before discovery has ever seen it — a manually
-    // registered one has no ledger row at all — and an UPDATE against a
-    // missing row silently marks nothing, so the halt has to live on the row
-    // the admin path actually operates on.
+    // The marker lives on `markets`, not on the discovery ledger: a market can
+    // be halted before discovery ever sees it, and an UPDATE against a missing
+    // ledger row would silently mark nothing.
     db.transaction(() => {
       applyAlterTableAddColumn(
         db,
@@ -1439,49 +1049,29 @@ export function applyMigrations(db: Database.Database): void {
         "operator_halted_at",
         "ALTER TABLE markets ADD COLUMN operator_halted_at TEXT;",
       );
-      // Backfill: a market an operator already pulled must not be relisted on
-      // the first tick after this upgrade. `frozen`/`retired` are the states an
-      // operator halt produces.
-      //
-      // EVERY frozen/retired market is marked, including one whose discovery
-      // ledger is mid-registration.
-      //
-      // Pre-upgrade data cannot distinguish an operator's halt from
-      // discovery's own repair freeze — a market can be `frozen` with a
-      // `broadcasting` ledger under either. An earlier draft of this migration
-      // excluded the mid-flight rows so repairs could self-heal, but that
-      // silently relists a market an operator genuinely pulled, which is the
-      // strictly worse error: one costs an operator a single explicit
-      // re-registration to resume, the other puts a market they took down back
-      // in front of subscribers with no one aware.
-      //
-      // So: mark them all, and let resuming be deliberate. Only markets FROZEN
-      // BY DISCOVERY AFTER this upgrade are distinguishable, and those never
-      // get the marker in the first place.
+      // Mark EVERY frozen/retired market, mid-registration ones included.
+      // Pre-upgrade data cannot tell an operator halt from discovery's own
+      // repair freeze, and of the two errors, relisting a market an operator
+      // genuinely pulled is the worse one: the other costs a single explicit
+      // re-registration. Only markets frozen by discovery AFTER this upgrade
+      // are distinguishable, and they never get the marker.
       db.prepare(
         `UPDATE markets
             SET operator_halted_at = created_at
           WHERE status IN ('frozen','retired') AND operator_halted_at IS NULL`,
       ).run();
-      // Intermediate step: 068 follows in this same applyMigrations pass.
       set.run("schema_version", "67");
     })();
     v = 67;
   }
 
   if (v < 68) {
-    // Migration 068 — bind a settled payment to the resource it bought.
-    //
-    // The access broker computed a payload hash and a requirements hash and
-    // then discarded both (`void ...`), under a comment claiming the
-    // entitlement reservation was the real guard. It is not: the reservation
-    // is unique per (call, subscriber), so the SAME signed payment header
-    // replayed against a DIFFERENT call at the same price passed every local
-    // check. Only the facilitator's own nonce handling stood in the way.
-    //
-    // This table makes the binding real. A payload hash may be presented for
-    // exactly one resource fingerprint; presenting it for another is refused
-    // locally, before settlement.
+    // Bind a settled payment to the resource it bought. The reservation alone
+    // is not the guard people assumed: it is unique per (call, subscriber), so
+    // the SAME signed payment header replayed against a DIFFERENT call at the
+    // same price passed every local check, leaving only the facilitator's nonce
+    // handling in the way. A payload hash now belongs to exactly one resource
+    // fingerprint, and a mismatch is refused before settlement.
     db.transaction(() => {
       db.exec(`
         CREATE TABLE IF NOT EXISTS entitlement_payment_bindings (
@@ -1491,30 +1081,20 @@ export function applyMigrations(db: Database.Database): void {
           created_at        TEXT NOT NULL
         );
       `);
-      // Intermediate step: 069 follows in this same applyMigrations pass.
       set.run("schema_version", "68");
     })();
     v = 68;
   }
 
   if (v < 69) {
-    // Migration 069 — PER-PROVIDER commercial terms.
+    // Per-provider commercial terms. Price and cohort size were global env
+    // values, which made murmur the one setting the terms of somebody else's
+    // product.
     //
-    // Price and cohort size were single global env values: one price for every
-    // agent on the deployment, one cap for every call. That makes murmur the
-    // one setting the terms of somebody else's product. A provider should
-    // price their own signal and say how many subscribers they will serve.
-    //
-    // Two tables' worth of change:
-    //
-    //   agent_provider_terms — what the owner has SET. Mutable; the owner can
-    //   reprice whenever they like.
-    //
-    //   fhenix_sealed_calls.provider_* — what a specific call was SOLD under.
-    //   Snapshotted at acceptance and never updated. Without this, repricing
-    //   would retroactively change the terms of calls subscribers had already
-    //   bought into — the same failure the immutable market clock exists to
-    //   prevent, and the reason the series cohort cap is frozen per series.
+    // agent_provider_terms is what the owner has SET — mutable, repriceable.
+    // fhenix_sealed_calls.provider_* is what a call was SOLD under, snapshotted
+    // at acceptance and never updated; otherwise a reprice would retroactively
+    // change terms subscribers already bought into.
     db.transaction(() => {
       db.exec(`
         CREATE TABLE IF NOT EXISTS agent_provider_terms (
@@ -1556,20 +1136,11 @@ export function applyMigrations(db: Database.Database): void {
   }
 
   if (v < 70) {
-    // Migration 070 — tell "sealed before providers could price" apart from
-    // "this provider is not selling".
-    //
+    // Tell "sealed before providers could price" apart from "not selling".
     // 069 left provider_* NULL for both, and the access path reads NULL as
-    // "legacy row, fall back to the deployment-wide price". That made the
-    // owner's "stop selling" a no-op: clearing terms produced NULL snapshots
-    // on subsequent calls, which were then still offered for sale at the
-    // OPERATOR's price. The owner cannot price their own product if declining
-    // to price it hands the decision back to the operator.
-    //
-    // One NOT NULL flag settles it. Existing rows default to 0 — they really
-    // are legacy, and the fallback is right for them. Everything accepted from
-    // now on writes 1, so a NULL price beside it means what it says: this call
-    // is not for sale.
+    // legacy — so clearing terms silently kept selling at the OPERATOR's price.
+    // Existing rows default to 0 and keep the fallback; everything accepted
+    // from now on writes 1, so a NULL price beside it means not for sale.
     db.transaction(() => {
       applyAlterTableAddColumn(
         db,
@@ -1577,46 +1148,28 @@ export function applyMigrations(db: Database.Database): void {
         "provider_terms_snapshotted",
         "ALTER TABLE fhenix_sealed_calls ADD COLUMN provider_terms_snapshotted INTEGER NOT NULL DEFAULT 0;",
       );
-      // LITERAL "70", never String(LATEST_DB_MIGRATION_VERSION).
-      //
-      // This block used to stamp the latest constant because 070 WAS the
-      // latest. The moment 071 was added, that line started recording 71 for a
-      // database that had only run 070 — and a crash between the two (or an
-      // operator killing the process mid-upgrade) would leave a DB stamped 71
-      // with none of 071's columns, skipping it forever. Every intermediate
-      // step writes its own number; only the final migration may use the
-      // constant, and it stops being allowed to the day another one lands.
+      // LITERAL "70", never String(LATEST_DB_MIGRATION_VERSION). This block
+      // used to stamp the constant back when it was last; once 071 landed, a
+      // crash between the two would stamp a DB 71 with none of 071's columns
+      // and skip it forever. Every intermediate step writes its own number.
       set.run("schema_version", "70");
     })();
     v = 70;
   }
 
   if (v < 71) {
-    // Migration 071 — the provider revenue split becomes a LEDGER.
+    // The provider revenue split becomes a ledger. Circle still pays one
+    // recipient; what changes is that murmur writes down whose money it is.
     //
-    // Every early-access sale settled 100% to the murmur seller address and
-    // recorded nothing owed to the agent whose signal was sold. Circle pays one
-    // recipient, so the money still lands in one place; what changes is that
-    // murmur now writes down whose money it is.
+    // provider_fee_bps is the fee as of the SEAL, frozen beside the price so an
+    // operator cannot re-cut a call already on offer. fee_bps_at_sale is the
+    // fee as of the SALE, stamped at reservation, so a fee change mid-purchase
+    // does not alter that purchase. provider_earnings is one row per paid,
+    // granted entitlement — append-only financial history, never deleted, no
+    // cascade from any parent.
     //
-    // Three pieces, and the split between them is the whole design:
-    //
-    //   fhenix_sealed_calls.provider_fee_bps — the fee as of the SEAL. Frozen
-    //   beside the price snapshot for the same reason: an operator changing the
-    //   protocol fee must not retroactively re-cut a call already on offer.
-    //
-    //   entitlements.fee_bps_at_sale — the fee as of the SALE, stamped at
-    //   reservation. The sale is where the split freezes; a fee change while a
-    //   purchase is in flight must not alter that purchase. NULL only on rows
-    //   that predate this migration.
-    //
-    //   provider_earnings — one row per paid, granted entitlement. FINANCIAL
-    //   HISTORY: append-only, NEVER deleted, no cascade from any parent. A
-    //   deleted entitlement must not silently erase what was owed on it.
-    //
-    // Payout EXECUTION is deliberately out of scope: there is no payout journal
-    // and no payout worker. This table records accrual only, which is why the
-    // read surface names its totals "lifetime_accrued", not "owed".
+    // Accrual only: there is no payout worker yet, which is why the read
+    // surface says "lifetime_accrued", not "owed".
     db.transaction(() => {
       applyAlterTableAddColumn(
         db,
@@ -1668,36 +1221,21 @@ export function applyMigrations(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS idx_provider_earnings_call
           ON provider_earnings(chain_id, contract_address, onchain_call_id);
       `);
-      // LITERAL "71" — see the note in 070. This block stopped being the last
-      // one the moment 072 landed, and a crash between the two must not stamp
-      // a database 72 with none of 072's index.
+      // LITERAL "71" — see the note in 070.
       set.run("schema_version", "71");
     })();
     v = 71;
   }
 
   if (v < 72) {
-    // Migration 072 — make the archive searchable without a table scan.
+    // Make the archive keyset page a plain index seek. The archive filters on
+    // status and orders by (end_date_epoch_s DESC, condition_id DESC); the
+    // existing index covers the timestamp alone, so SQLite re-sorted for the
+    // tie-break and re-checked status per row. This composite covers all three.
     //
-    // `GET /v2/markets/archive` pages backwards through every market this
-    // deployment ever froze, newest end date first. That is ~7.6k rows today
-    // and grows by ~1.4k/day at the current 5-minute cadence, so the keyset
-    // page needs an index that satisfies BOTH the filter and the sort:
-    //
-    //   WHERE p.status = 'frozen'
-    //   ORDER BY p.end_date_epoch_s DESC, p.condition_id DESC
-    //
-    // The existing idx_polymarket_discovery_end_date is on the timestamp
-    // ALONE, so SQLite could use it for the range but had to re-sort for the
-    // tie-break and re-check `status` per row. This composite covers the
-    // equality, the ordered range, and the tie-break column in one structure —
-    // and because the tie-break is part of the index, the keyset cursor
-    // `(end_date_epoch_s, condition_id) < (…)` is a plain index seek.
-    //
-    // DESC is written into the index on purpose: SQLite can walk an ASC index
-    // backwards, but only when the whole ORDER BY reverses uniformly, and
-    // stating the direction here keeps the plan stable if a later query adds a
-    // mixed-direction column.
+    // DESC is written in on purpose: SQLite walks an ASC index backwards only
+    // when the whole ORDER BY reverses uniformly, and stating it keeps the plan
+    // stable if a later query adds a mixed-direction column.
     //
     // Index-only, no data change: safe to re-run, nothing to backfill, and a
     // database that stops mid-migration simply retries the CREATE INDEX.
@@ -1706,59 +1244,129 @@ export function applyMigrations(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS idx_polymarket_archive_page
           ON polymarket_discovery_state(status, end_date_epoch_s DESC, condition_id DESC);
       `);
-      set.run("schema_version", String(LATEST_DB_MIGRATION_VERSION));
+      // LITERAL "72" — see the note in 070.
+      set.run("schema_version", "72");
     })();
     v = 72;
+  }
+
+  if (v < 73) {
+    // The payout journal 071 said it was not. With it, a balance is computable:
+    // accrued minus paid.
+    //
+    // provider_payouts is append-only in SQL, not by convention — the triggers
+    // RAISE on UPDATE and DELETE, same as market_config_history. Correcting a
+    // payout means writing a 'reversal' row; a journal you can edit is a
+    // journal nobody can audit.
+    //
+    // amount_atoms is always positive and the sign lives in entry_type,
+    // otherwise "payout of -5" and "reversal of 5" both exist and sum
+    // differently depending on the query. Its GLOB pair is stricter than 071's
+    // because GLOB anchors only at the start, so '1abc' passes and BigInt()
+    // throws at read time, long after the bad row landed. 071 stays as it
+    // shipped — an applied migration is immutable.
+    //
+    // destination_ref snapshots where the money went; the agent's destination
+    // address is mutable, so resolving it live would rewrite history on the
+    // next repoint. earnings_cutoff_at is audit context only — balances come
+    // from the full accrual and payout sets, since a cutoff-scoped balance
+    // would drop a sale that accrued late into an earlier period.
+    //
+    // UNIQUE(producer_agent_id, currency, tx_ref) makes the writer retry-safe:
+    // a re-POSTed transfer replays the existing row instead of paying twice.
+    // ON DELETE RESTRICT, not CASCADE — deleting an agent must fail while it
+    // has payout history.
+    //
+    // accounts.deactivated_at is terminal and independent of
+    // agent_credentials_disabled_at: the kill switch has a release route, and
+    // releasing it must never reopen a closed account.
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS provider_payouts (
+          id                INTEGER PRIMARY KEY,
+          producer_agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+          -- 'payout'   money moved to the provider
+          -- 'reversal' a previous payout came back (clawback, failed transfer)
+          entry_type        TEXT NOT NULL CHECK (entry_type IN ('payout','reversal')),
+          currency          TEXT NOT NULL,
+          -- Positive atomic units as TEXT, summed in BigInt in JS. Never
+          -- SUM()/CAST() this in SQLite — it goes through a 64-bit float.
+          amount_atoms      TEXT NOT NULL CHECK (
+                              amount_atoms GLOB '[1-9]*'
+                              AND amount_atoms NOT GLOB '*[^0-9]*'
+                            ),
+          -- The operator's handle on the movement: a transfer hash, a bank
+          -- reference, an internal batch id. Also the idempotency key.
+          tx_ref            TEXT NOT NULL,
+          payout_method     TEXT NOT NULL,
+          -- Snapshot of WHERE it went, taken at the time it went there.
+          destination_ref   TEXT NOT NULL,
+          note              TEXT,
+          -- Audit context: what period this settled. Never arithmetic.
+          earnings_cutoff_at TEXT NOT NULL CHECK (earnings_cutoff_at <= created_at),
+          created_at        TEXT NOT NULL,
+          UNIQUE (producer_agent_id, currency, tx_ref)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_payouts_owner
+          ON provider_payouts(producer_agent_id, created_at);
+
+        -- Append-only in SQL. Same precedent as market_config_history (012).
+        CREATE TRIGGER IF NOT EXISTS provider_payouts_no_update
+          BEFORE UPDATE ON provider_payouts
+          BEGIN
+            SELECT RAISE(FAIL, 'provider_payouts is append-only: write a reversal row');
+          END;
+        CREATE TRIGGER IF NOT EXISTS provider_payouts_no_delete
+          BEFORE DELETE ON provider_payouts
+          BEGIN
+            SELECT RAISE(FAIL, 'provider_payouts is append-only: write a reversal row');
+          END;
+      `);
+      applyAlterTableAddColumn(
+        db,
+        "agents",
+        "retired_at",
+        "ALTER TABLE agents ADD COLUMN retired_at TEXT;",
+      );
+      applyAlterTableAddColumn(
+        db,
+        "accounts",
+        "deactivated_at",
+        "ALTER TABLE accounts ADD COLUMN deactivated_at TEXT;",
+      );
+      // EVERY migration stamps its own literal version. LATEST is the loop
+      // bound, never a stamp — bumping it for N+1 makes a crash between N and
+      // N+1 record N+1 as applied.
+      set.run("schema_version", "73");
+    })();
+    v = 73;
   }
 }
 
 /**
- * P3 Phase 2c+ — atomic table-rebuild migration helper. Codex audit fix.
+ * Atomic table-rebuild helper.
  *
- * Pre-fix: migrations 010 and 011 contained `PRAGMA foreign_keys=OFF` +
- * raw DDL + `PRAGMA foreign_keys=ON` in a single .exec() string. SQLite's
- * .exec() runs each semicolon-delimited statement INDEPENDENTLY (no
- * implicit transaction), so a process crash mid-migration could leave
- * the rebuild table half-populated — at worst, the original table dropped
- * but the rename never completed. Permanent data loss.
+ * `.exec()` runs each semicolon-delimited statement independently, with no
+ * implicit transaction, so a raw rebuild string can crash with the original
+ * dropped and the rename never done — permanent data loss. Here the rebuild
+ * and the version bump share one BEGIN/COMMIT, the FK pragma is toggled
+ * outside it (SQLite no-ops the pragma inside a transaction) and restored in
+ * `finally`, and every migration body starts with `DROP TABLE IF EXISTS
+ * <temp>` so a retry does not trip on an orphan.
  *
- * Post-fix:
- *   1. PRAGMA off — must live OUTSIDE any transaction (SQLite no-ops it
- *      inside one).
- *   2. better-sqlite3's transaction wrapper runs the whole rebuild +
- *      schema_meta bump under one BEGIN/COMMIT. Any error rolls back.
- *      A process crash before COMMIT also rolls back on next open.
- *   3. PRAGMA on in `finally` so we never leave a connection with FK
- *      enforcement disabled, even when an error escapes.
- *   4. Migration SQL bodies start with `DROP TABLE IF EXISTS <_v>`
- *      so a retry after a half-applied rebuild doesn't fail on the
- *      orphan temp table.
+ * Before the transaction, the four (original, temp) states a crash can leave:
  *
- * Pre-transaction recovery (Codex audit follow-up):
- * Before entering the transaction we inspect the database for the four
- * possible (original, temp) table states the migration's rebuild pattern
- * can leave behind after a crash:
+ *   1. original, no temp — clean. Run.
+ *   2. both — interrupted before the temp was renamed or dropped. The body's
+ *      leading DROP handles it. Run.
+ *   3. temp only — RECOVERABLE: the crash landed between DROP original and
+ *      RENAME temp, so the temp holds the only copy. Rename it back first.
+ *   4. neither — CATASTROPHIC. Refuse, rather than silently rebuilding an
+ *      empty table; restore from backup.
  *
- *   1. original EXISTS, temp MISSING — clean state. Run normal migration.
- *   2. original EXISTS, temp EXISTS  — previous run was interrupted before
- *      the temp got renamed/dropped. The migration's leading
- *      `DROP TABLE IF EXISTS <temp>` will clean it up safely. Continue.
- *   3. original MISSING, temp EXISTS — RECOVERABLE. The previous run
- *      crashed AFTER `DROP TABLE <original>` but BEFORE
- *      `ALTER TABLE <temp> RENAME TO <original>`. The temp table holds
- *      the only copy of the data. We rename it back to <original> here
- *      (one statement, atomic in SQLite) BEFORE the migration runs, so
- *      the migration's `DROP TABLE IF EXISTS <temp>` becomes a no-op
- *      and its INSERT-from-original step finds the data again.
- *   4. original MISSING, temp MISSING — CATASTROPHIC. Both tables are
- *      gone. We refuse to run rather than silently produce an empty
- *      rebuilt table; the operator must restore from backup.
- *
- * Note: state #3's rename is intentionally OUTSIDE the foreign_keys=OFF
- * block and OUTSIDE the transaction. ALTER TABLE … RENAME is already
- * atomic on its own, and we want recovery to be observable in the
- * sqlite_master state we re-check for state #1 vs #2 once the rename
- * lands.
+ * State 3's rename stays outside the pragma block and the transaction: ALTER
+ * TABLE … RENAME is atomic on its own, and recovery should be observable in
+ * the sqlite_master state re-checked afterwards.
  */
 export function applyTableRebuildMigration(
   db: Database.Database,
@@ -1782,11 +1390,8 @@ export function applyTableRebuildMigration(
   }
 
   if (!originalPresent && tempPresent) {
-    // Recoverable orphan from a previous crashed rebuild — rename the
-    // temp table back to the original so the migration's INSERT step
-    // finds the data. Bare identifier interpolation is safe here: the
-    // names come from compile-time string-literal tuples in the call
-    // sites, not user input.
+    // Interpolation is safe: the names are compile-time literals at the call
+    // sites, never user input.
     db.exec(`ALTER TABLE ${temp} RENAME TO ${original};`);
   }
 
@@ -1945,11 +1550,8 @@ const MIGRATION_001 = `
 
 // ─── Migration 002 — outreach attribution ────────────────────────────────────
 //
-// Records every share-page click that arrives with a ?ref=<sender> param.
-// The (ref, agent_slug) pair is what makes attribution interesting — it lets
-// an agent profile surface "discovered by @sender" once a sender's clicks
-// converge on the same agent. We do NOT store any IP / fingerprint; the
-// counter is per (ref, slug) bucket, monotonically increasing.
+// Every share-page click carrying ?ref=<sender>, counted per (ref, slug)
+// bucket. No IP, no fingerprint — the bucket counter is the whole record.
 
 const MIGRATION_002 = `
   CREATE TABLE ref_clicks (
@@ -1966,11 +1568,9 @@ const MIGRATION_002 = `
 
 // ─── Migration 003 — webhook subscriptions ───────────────────────────────────
 //
-// Lets clients (Discord / Telegram bots, OpenServ workflows, Zapier, custom
-// servers) subscribe to call.accepted and call.resolved events for one
-// agent (or all agents). Each delivery is signed HMAC-SHA256(secret, body).
-// Failure count + last-delivery timestamps surfaced so subscribers can
-// self-debug.
+// call.accepted / call.resolved subscriptions, per agent or across all.
+// Each delivery is signed HMAC-SHA256(secret, body); failure count and
+// last-delivery stamps are surfaced so subscribers can self-debug.
 
 const MIGRATION_003 = `
   CREATE TABLE webhooks (
@@ -2001,31 +1601,12 @@ const MIGRATION_004 = `
 
 // ─── Migration 006 — privacy schema foundation (additive) ──────────────────
 //
-// P2 (privacy work) groundwork. Strategy: ship the new shape ALONGSIDE the
-// existing plaintext columns so the daemon keeps working at every commit,
-// then move query sites over phase-by-phase. Plaintext columns on the
-// `submissions` table are NOT touched here — Phase A is purely additive.
+// The commit/envelope shape, added ALONGSIDE the existing plaintext columns
+// so the daemon keeps working while query sites move over.
 //
-// What this migration does:
-//   1. Adds three privacy columns to `submissions`:
-//        - privacy_mode TEXT — discriminator for the call envelope
-//          (historical cleartext/commit modes and future modes)
-//        - commit_hash TEXT — keccak256 of the canonical commit preimage,
-//          NULL for legacy rows
-//        - commit_scheme TEXT — version tag of the commit preimage
-//          schema, e.g. "murmur-verdict-v0.2-commit@1"
-//   2. Backfills existing rows to the historical cleartext privacy mode.
-//   3. CREATEs `call_private_envelopes` (encrypted-to-daemon body, empty
-//      until Phase B writes to it).
-//   4. CREATEs `call_reveals` (plaintext after agent-or-fallback reveal,
-//      empty until Phase C writes to it).
-//   5. Adds an index on commit_hash so verifier-side commit checks stay
-//      O(1).
-//
-// NO CHECK constraints on privacy_mode / commit_scheme / encrypted_body_alg
-// / commit_preimage_schema / revealed_via — the v0.3 fhEVM port introduces
-// new strings (e.g. encrypted_body_alg='fhevm-euint', revealed_via=
-// 'fhevm_compute') without a migration. Codex's compatibility note.
+// No CHECK constraints on privacy_mode / commit_scheme / encrypted_body_alg /
+// commit_preimage_schema / revealed_via, on purpose: the fhEVM port
+// introduces new values for all of them without needing a migration.
 const MIGRATION_006 = `
   ALTER TABLE submissions ADD COLUMN privacy_mode TEXT;
   ALTER TABLE submissions ADD COLUMN commit_hash TEXT;
@@ -2071,18 +1652,13 @@ const MIGRATION_006 = `
 
 // ─── Migration 007 — drand/tlock envelope alongside age (D21) ───────────────
 //
-// Phase B-3 adds a SECOND envelope per committed-mode submission: a
-// drand/tlock ciphertext bound to a future drand round. Once that round
-// is past, anyone can decrypt the envelope using the released drand
-// beacon — no daemon participation required. Closes the selective-
-// reveal attack vector and removes the operator from the trusted set.
+// A second envelope per committed submission: a drand/tlock ciphertext bound
+// to a future round. Once that round passes anyone can decrypt it from the
+// released beacon, which removes the operator from the trusted set and closes
+// the selective-reveal hole.
 //
-// All columns are NULL-able because:
-//   1. Existing committed envelopes (Phase B-2) don't have drand bindings.
-//   2. drand integration is opt-in via MURMUR_DRAND_ENABLED — when
-//      disabled, only the age envelope is written.
-//   3. v0.3 fhEVM may bind to FHE-derived state instead of drand;
-//      keeping drand_* nullable avoids forcing a rebuild.
+// Every column is nullable — the integration is opt-in, older envelopes have
+// no drand binding, and a later scheme may bind to FHE state instead.
 const MIGRATION_007 = `
   ALTER TABLE call_private_envelopes ADD COLUMN drand_chain_hash TEXT;
   ALTER TABLE call_private_envelopes ADD COLUMN drand_round INTEGER;
@@ -2095,52 +1671,19 @@ const MIGRATION_007 = `
 
 // ─── Migration 008 — multi-asset / multi-market registry + market_kind ────
 //
-// Reframe: today the system is a single market (ETH on Base, four horizons,
-// direction-only). v0.2.5 introduces a registry-driven matrix:
-//   - `assets`  (BTC, ETH, SOL, BNB; oracle metadata; status)
-//   - `oracles` (per-asset Chainlink + Pyth bindings; adapter dispatch)
-//   - `markets` (asset × horizon × market_kind; oracle policy per-market)
+// Turns a single hard-coded market into a registry: assets × oracles ×
+// markets, so adding one is data rather than code. market_kind and the
+// nullable prediction_* columns are reserved from the start so proximity
+// markets never need a rebuild.
 //
-// Adding a new asset/market becomes data, not code. `market_kind` is reserved
-// from the start so the same table holds today's direction_binary calls AND
-// future price_point / price_bracket / depeg_threshold markets without a
-// schema migration. Reserved submission columns (prediction_value,
-// prediction_low, prediction_high, round_id) sit nullable for the same
-// reason — no rebuild when proximity markets land.
+// submissions.market_id is nullable: NULL means a legacy direction call keyed
+// on (asset_id, horizon_hours), and read-time helpers synthesize an id for it
+// so old receipts never have to be rewritten.
 //
-// Submissions gain `market_id` + `market_config_version`. Existing rows stay
-// valid: market_id=NULL means a legacy direction call keyed on
-// (asset_id, horizon_hours). Read-time helpers synthesize market_id for
-// legacy rows ("eth.1h", "eth.4h", "eth.24h", "eth.168h") so feed/leaderboard
-// can present a unified view without rewriting old receipts.
+// Status enum: draft (registered, submissions blocked) | listed | frozen
+// (resumable; pending calls still resolve) | retired (terminal).
 //
-// Status enum: draft | listed | frozen | retired.
-//   - draft:    in registry but submissions blocked (e.g. operator hasn't
-//               verified Chainlink feed address yet)
-//   - listed:   active, accepts submissions
-//   - frozen:   paused (oracle degraded), can resume; existing pending
-//               calls continue to resolve
-//   - retired:  terminal, never resumes; history preserved for audits
-//
-// Seed data:
-//   - 4 assets (eth, btc, sol, bnb)
-//   - 7 oracles (chainlink-base for eth/btc/sol; pyth-base for all four)
-//   - 24 markets (4 assets × 6 horizons {5m, 15m, 1h, 4h, 24h, 7d}).
-//     Only ETH at {1h, 4h, 24h, 7d} starts `listed` — those match today's
-//     resolver capabilities. New short horizons (5m/15m on ETH, all
-//     horizons on BTC/SOL/BNB) start `draft` until operator validates the
-//     feed and the resolver upgrade lands.
-//
-// Oracle policy per Codex audit:
-//   - <60m horizons: Pyth-pull primary (sub-second), no Chainlink fallback
-//   - ≥60m horizons: Chainlink primary (heartbeat-bounded, on-chain finality),
-//     Pyth fallback (matches v0.2 behavior)
-//
-// Void bands per Codex audit:
-//   - ≤15m: 0.0003 (3 bps) — 5m ETH RMS is ~5-10 bps; 20 bps would void ~99%
-//   - ≥1h:  0.002  (20 bps) — matches v0.2 default
-//   These are starting points; markets.void_band is per-row so operators
-//   can refine without a migration.
+// void_band is per-row so operators can retune without a migration.
 const MIGRATION_008 = `
   CREATE TABLE assets (
     asset_id                 TEXT PRIMARY KEY,
@@ -2250,17 +1793,9 @@ const MIGRATION_008 = `
      '{"price_id":"0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f"}', 'listed', '2026-05-08T00:00:00Z');
 
   -- ─── Seed: markets ─────────────────────────────────────────────────────
-  -- Direction-binary markets only at v0.2.5. ETH at 1h/4h/24h/7d starts
-  -- 'listed' (matches today's resolver). Everything else 'draft' until
-  -- operator validates and the sub-hour resolver upgrade lands.
-  --
-  -- Oracle policy:
-  --   <60m: Pyth primary, no Chainlink fallback (Chainlink heartbeat too coarse)
-  --   ≥60m: Chainlink primary, Pyth fallback (where Chainlink feed exists)
-  --   BNB: Pyth-only at every horizon (no Chainlink Base)
-  --
-  -- Void bands: 0.0003 for ≤15m, 0.002 for ≥1h.
-  -- t0 grace: 60s for sub-hour, 120s for ≥1h. Extended: 2× grace.
+  -- Only ETH at 1h/4h/24h/7d starts 'listed'; everything else waits in
+  -- 'draft'. Sub-hour horizons are Pyth-only — the Chainlink Base heartbeat
+  -- is too coarse — as is BNB at every horizon.
 
   -- ETH markets (4 listed + 2 draft for short horizons)
   INSERT OR IGNORE INTO markets (market_id, asset_id, market_kind, horizon_seconds, primary_oracle_id, fallback_oracle_id, primary_max_staleness_sec, fallback_max_staleness_sec, t0_grace_seconds, t0_extended_grace_seconds, void_band, round_cadence_seconds, scoring_kind, market_config_version, status, notes, created_at) VALUES
@@ -2301,26 +1836,15 @@ const MIGRATION_008 = `
 
 // ─── Migration 009 — backfill market_id on legacy ETH submissions ──────────
 //
-// Migration 008 added `submissions.market_id` as a nullable column. Phase 1
-// of the markets-registry wiring (P3) backfills the unambiguous mappings so
-// every read path can join on submissions.market_id directly without falling
-// back to legacyIdFor() at runtime.
+// Backfills the unambiguous (base:ETH:USD, horizon_hours) → market_id
+// mappings so read paths join directly instead of calling legacyIdFor().
 //
-// Backfill rule (Codex P3 D7):
-//   base:ETH:USD + horizon_hours=1   → market_id='eth.1h'
-//   base:ETH:USD + horizon_hours=4   → market_id='eth.4h'
-//   base:ETH:USD + horizon_hours=24  → market_id='eth.24h'
-//   base:ETH:USD + horizon_hours=168 → market_id='eth.7d'
+// market_config_version is stamped from the market row as it stands when this
+// runs, on purpose: scoring honors the per-submission stamp, so a later config
+// bump cannot retroactively rescore legacy calls.
 //
-// market_config_version is stamped from the market row at the time the
-// migration runs. This is intentional: the resolver / scoring path will
-// honor the per-submission stamp going forward, so a config bump after the
-// backfill date won't retroactively change how legacy calls are scored.
-//
-// Receipts / commit-preimages / envelopes are NOT touched. The legacy v1+v2
-// receipts already issued for these calls keep their original schemas and
-// hashes; they simply now point at a row that has a market_id alongside the
-// (asset_id, horizon_hours) tuple that's still in the receipt subject.
+// Receipts and envelopes are untouched — their hashes still cover the
+// (asset_id, horizon_hours) tuple in the subject.
 const MIGRATION_009 = `
   UPDATE submissions
   SET
@@ -2357,34 +1881,10 @@ const MIGRATION_009 = `
 
 // ─── Migration 010 — submissions table rebuild for sub-hour markets ────────
 //
-// Two coupled changes that both need a table rebuild (SQLite can't ALTER
-// CHECK constraints in place):
-//   1. Drop the legacy CHECK (horizon_hours IN (1,4,24,168)). Sub-hour
-//      markets (5m, 15m) need horizon_hours=0 to be insertable; the old
-//      constraint blocked it. New constraint: horizon_hours >= 0.
-//   2. Add horizon_seconds INTEGER NOT NULL as the canonical horizon
-//      value going forward. horizon_hours is retained for back-compat
-//      with v1 receipt subjects that embed it, but consumers should
-//      prefer horizon_seconds (no precision loss for sub-hour markets).
-//
-// Backfill rule: existing rows have horizon_hours ∈ {1,4,24,168}, so
-// horizon_seconds = horizon_hours * 3600. New writes (post-migration)
-// stamp horizon_seconds directly from markets.horizon_seconds at
-// acceptance. After this, horizon_seconds is the CANONICAL field and
-// horizon_hours is the back-compat surface.
-//
-// FK cascade: submissions has dependents (preflights, oracle_policies,
-// t0_anchors, t1_resolutions, receipts, call_private_envelopes,
-// call_reveals). PRAGMA foreign_keys = OFF for the rebuild — same
-// pattern as migration 005's agents rebuild.
-//
-// What this DOESN'T do:
-//   - Sub-hour markets are still 'draft' (no operator flip)
-//   - T0PolicySchema still requires fallback_feed (BNB markets still
-//     'draft', sub-hour markets need a fallback story before they go
-//     live — likely a Pyth-only relaxation in a follow-on phase)
-//   - Resolver tick frequency unchanged (the sub-hour scaling concern
-//     is deferred until we have meaningful sub-hour traffic)
+// Drops the CHECK pinning horizon_hours to {1,4,24,168} — sub-hour markets
+// need 0 — and adds horizon_seconds as the canonical value. horizon_hours
+// survives only because v1 receipt subjects embed it; prefer horizon_seconds,
+// which has no precision loss below an hour.
 const MIGRATION_010 = `
   -- Idempotent retry guard: an interrupted earlier attempt could have left
   -- this temp table behind. Drop before recreating so a fresh transaction
@@ -2455,19 +1955,10 @@ const MIGRATION_010 = `
 
 // ─── Migration 011 — oracle_policies fallback columns nullable ─────────────
 //
-// Phase 2d unlock: sub-hour markets are Pyth-only (Codex audit — Chainlink
-// Base heartbeat is too coarse for 5m/15m horizons). T0PolicySchema now
-// permits omitted fallback fields, but the per-call oracle_policies row
-// still has fallback_feed + fallback_max_staleness_sec NOT NULL from
-// migration 001. Rebuild the table to allow NULLs, preserving every
-// existing row's data byte-identically (all hour-aligned ETH calls have
-// real fallback values; the relaxation only matters for new sub-hour
-// calls).
-//
-// Same FK-cascade pattern as migrations 005 + 010: PRAGMA foreign_keys
-// off, copy, drop, rename, indexes, on. oracle_policies has no
-// dependent tables that reference IT (only submissions has dependents),
-// so this is a clean rebuild.
+// Sub-hour markets are Pyth-only, so a per-call policy row may legitimately
+// have no fallback. Relaxes the NOT NULL that migration 001 put on
+// fallback_feed and fallback_max_staleness_sec; existing rows copy through
+// unchanged.
 const MIGRATION_011 = `
   -- Same atomicity discipline as 010: idempotent retry guard, JS-side
   -- PRAGMA + transaction wrapper.
@@ -2500,20 +1991,13 @@ const MIGRATION_011 = `
 
 // ─── Migration 012 — market_config_history (append-only, P4) ───────────────
 //
-// Phase 4 Codex audit: bumpConfig overwrites the live markets row, but the
-// per-call oracle_policies snapshot only captures the OPV2 fields we picked.
-// For audit-time replay (a verifier reconstructing "what did market X look
-// like at config_version=3?"), we need a versioned history.
+// bumpConfig overwrites the live markets row, and the per-call policy
+// snapshot only holds the fields it picked — so nothing could answer "what did
+// market X look like at config_version=3?". One row per (market_id, version),
+// append-only, enforced by triggers.
 //
-// Shape: one row per (market_id, market_config_version). snapshot_json
-// carries the replay-relevant config: asset_id, market_kind,
-// horizon_seconds, oracle ids, staleness limits, T0 grace fields,
-// void_band, round_cadence_seconds, scoring_kind, market_config_version.
-// Append-only — no UPDATE / DELETE. Triggers enforce that.
-//
-// Seeded from current markets so version=N for every existing row already
-// has a history entry. Future bumpConfig calls append the NEW version
-// inside the same transaction as the markets UPDATE.
+// Seeded from current markets, so every existing version already has an entry.
+// bumpConfig appends the new version inside the markets UPDATE transaction.
 const MIGRATION_012 = `
   -- Idempotent on retry: an interrupted previous attempt left the JS-side
   -- schema_version at 11 but the SQL DDL might have partially run. With
@@ -2574,26 +2058,11 @@ const MIGRATION_012 = `
 
 // ─── Migration 013 — agents.kind extension for tiered identity (V2 §7.5) ───
 //
-// Adds 'casual' and 'attested' to the agents.kind CHECK constraint so the
-// new identity tiers from V2_DECISION_RECORD §7.1 can register. SQLite
-// cannot ALTER a CHECK constraint in place; same table-rebuild pattern as
-// migrations 005 (the previous agents.kind extension that added
-// 'wallet_only') and 010 (the submissions rebuild for sub-hour markets).
+// Admits 'casual' and 'attested' into the agents.kind CHECK. A rebuild —
+// SQLite cannot ALTER a CHECK in place.
 //
-// Foreign keys INTO agents from migration 001 / 005:
-//   verified_identities.agent_id  ON DELETE CASCADE
-//   submissions.agent_id          ON DELETE CASCADE
-//   claim_challenges.agent_id     ON DELETE CASCADE
-//   usage_events.agent_id         ON DELETE SET NULL
-// SQLite resolves FK targets by table NAME at validation time, not at FK
-// creation time, so renaming agents_v3 -> agents leaves the dependent FKs
-// pointing at the rebuilt table automatically. PRAGMA foreign_keys = OFF
-// during the rebuild (managed by applyTableRebuildMigration) prevents
-// transient enforcement errors during the DROP+RENAME window.
-//
-// Indexes recreated post-rename: idx_agents_kind (from 001) and
-// idx_agents_wallet (from 005). The leading DROP TABLE IF EXISTS
-// agents_v3 is the same idempotent retry guard used by 010/011.
+// The inbound FKs need no fixing: SQLite resolves FK targets by table NAME at
+// validation time, so renaming agents_v3 → agents repoints them automatically.
 const MIGRATION_013 = `
   DROP TABLE IF EXISTS agents_v3;
 
@@ -2621,24 +2090,12 @@ const MIGRATION_013 = `
 
 // ─── Migration 014 — agents.destination_address (V2 §7.4) ──────────────────
 //
-// Pure additive change: operators declare a `destination_address` (any EVM
-// address) as a payout-routing target. They do NOT sign with it. The 24h
-// cooldown described in V2_DECISION_RECORD §7.4 is enforced in JS at the
-// repo update fn, not in SQL — keeping cooldown logic in code lets us
-// extend it (e.g. require email confirmation per change) without another
-// migration. The destination_address_updated_at timestamp column is the
-// state that cooldown logic reads.
+// A payout-routing target the operator declares but never signs with.
 //
-// Format constraint (lowercase 0x + 40 hex) is intentionally NOT in the
-// SQL CHECK. Reason: viem's getAddress() normalization runs at the API
-// edge (matches the pattern used for agents.wallet_address — see
-// schema.ts WalletAddressSchema). Adding a SQL CHECK would either
-// duplicate that validation or make backfills awkward when a mixed-case
-// address slips past the API edge during dev.
-//
-// Index: partial on destination_address WHERE NOT NULL — most agents
-// won't take payments and won't set this. Same partial-index pattern as
-// idx_agents_wallet from migration 005.
+// The 24h cooldown lives in JS, not SQL, so it can grow extra conditions
+// without another migration; destination_address_updated_at is the state it
+// reads. The address format is likewise unconstrained here — getAddress()
+// normalizes at the API edge, same as wallet_address.
 const MIGRATION_014 = `
   ALTER TABLE agents ADD COLUMN destination_address TEXT;
   ALTER TABLE agents ADD COLUMN destination_address_updated_at TEXT;
@@ -2647,52 +2104,14 @@ const MIGRATION_014 = `
 
 // ─── Migration 015 — Phase E cleanup (env-gated, V2 §7.5) ──────────────────
 //
-// Closes the DB-operator-sees-everything gap from STATE_OF_MURMUR.md §3.5
-// and Phase 1 of V2_DECISION_RECORD §4. Committed-mode submissions ship
-// their plaintext fields ({side, asset_id, horizon_hours, confidence,
-// rationale, strategy_tag}) only inside `call_reveals` post-reveal; the
-// raw `submissions` row should not retain those values once the call is
-// past the acceptance window. This migration NULLs them out for any
-// committed-mode row that has moved past 'accepted'/'pending_t0' status.
+// A committed-mode submission keeps its plaintext only in call_reveals after
+// the reveal, so the raw submissions row should not retain it past the
+// acceptance window. This rebuild relaxes what the scrub needs: side,
+// asset_id, horizon_hours and confidence become nullable and lose their
+// CHECKs. horizon_seconds stays NOT NULL — the resolver computes T1 from it.
 //
-// Why env-gated: forward-only nullification is destructive (legacy
-// committed-mode rows lose their plaintext). Operators must opt-in by
-// setting MURMUR_PHASE_E_CLEANUP=1 on the deploy that crosses schema
-// version 15. Once schema_version reaches 15 the migration won't re-run,
-// so the gate is single-use.
-//
-// CHECK constraint relaxation: the existing submissions table (rebuilt by
-// migration 010) requires {side, asset_id, horizon_hours, confidence}
-// NOT NULL. The UPDATE below would fail the NOT NULL on side and the
-// CHECK on confidence (>= 0.51). The rebuild here:
-//   - relaxes side, asset_id, horizon_hours, confidence to NULL-able
-//   - drops the side CHECK ('BUY','SELL') so NULL is permitted
-//   - drops the confidence CHECK (>= 0.51 AND <= 0.95) — same reason
-//   - keeps horizon_seconds NOT NULL (we don't NULL it; it's the
-//     canonical horizon field per migration 010 and is used by the
-//     resolver post-acceptance to compute T1)
-// Existing historical cleartext rows still satisfy the relaxed constraints
-// because they had real values before, so the INSERT-from-original
-// step copies them through unchanged.
-//
-// Status filter: rows in 'accepted' or 'pending_t0' are the t0-anchoring
-// window — the daemon may still need {side, asset_id, horizon_hours,
-// confidence} during T0 anchor recovery. We leave those alone. Anything
-// past pending_t0 (pending_t1, resolved, disputed, re_resolved, rejected)
-// has its plaintext mirrored into call_reveals (or never needed it for
-// rejected) and is safe to wipe.
-//
-// FK dependents: same set as migration 010 (preflights, oracle_policies,
-// t0_anchors, t1_resolutions, receipts, call_private_envelopes,
-// call_reveals). Same FK-OFF discipline via applyTableRebuildMigration.
-//
-// Indexes recreated post-rename: same set migration 010 created.
-//
-// Idempotency: re-running on a fresh DB with the env gate set produces a
-// no-op UPDATE (no committed-mode rows past pending_t0 exist) but still
-// performs the rebuild. The applyMigrations `if (v < 15)` guard prevents
-// re-execution on subsequent opens — this is the actual idempotency
-// boundary.
+// Rows still in 'accepted' or 'pending_t0' are deliberately left alone: T0
+// anchor recovery may still need those fields.
 const MIGRATION_015 = `
   DROP TABLE IF EXISTS submissions_v4;
 
@@ -2756,83 +2175,22 @@ const MIGRATION_015 = `
   CREATE INDEX idx_submissions_market ON submissions(market_id) WHERE market_id IS NOT NULL;
   CREATE INDEX idx_submissions_round ON submissions(round_id) WHERE round_id IS NOT NULL;
 
-  -- BLOCKER #5 fix: the destructive Phase-E plaintext scrub UPDATE has
-  -- been moved OUT of this migration into src/verdict/phase-e-cleanup.ts.
-  -- Migration 015 now only does the structural rebuild (NOT NULL relaxed
-  -- on side/asset_id/horizon_hours/confidence/rationale/strategy_tag).
-  -- The scrub runs at boot when MURMUR_PHASE_E_CLEANUP=1 and is
-  -- idempotent — operators can flip the env at any time and the next
-  -- boot will catch up, vs the prior single-shot schema-version trap.
+  -- Structural rebuild only. The destructive plaintext scrub lives in
+  -- phase-e-cleanup.ts, behind MURMUR_PHASE_E_CLEANUP.
 `;
 
-// ─── Migration 016 — v2 commitment + outcome storage columns (V2 §2.1/§2.2/§3.2)
+// ─── Migration 016 — v2 commitment + outcome storage columns ────────────────
 //
-// Adds the universal-Outcome / universal-Commitment storage shape on top of
-// the existing v1 columns. Phase 4 reads/writes these from the v2 submission
-// surface; legacy v1 calls keep their {side, asset_id, horizon_hours,
-// confidence} surface and the new columns stay NULL.
+// The universal Commitment / Outcome shape, added on top of the v1 columns.
+// Legacy v1 calls keep their old surface and leave every new column NULL.
 //
-// Submissions (5 cols, all nullable):
-//   - commitment_json        — full canonical Commitment JSON (V2 §2.2).
-//                              NULL for legacy v1 calls.
-//   - predicted_outcome_json — the predictedOutcome block from the
-//                              Commitment (kind + payoutNumerators as
-//                              bigint strings + payoutDenominator).
-//                              NULL for legacy.
-//   - outcome_labels_json    — adapter-supplied label strings ('UP','DOWN',
-//                              'YES','NO',...) corresponding 1:1 to each
-//                              payoutNumerators position. Render-only —
-//                              NEVER load-bearing for scoring (V2 §2.3).
-//                              NULL for legacy.
-//   - adapter_id             — MarketMakerAdapter.name owning the market_id
-//                              (V2 §2.4). Backfill below: market_id
-//                              IS NOT NULL → 'native-price'. Pre-MIGRATION_009
-//                              rows where market_id IS NULL stay NULL.
-//   - market_family          — adapter.marketFamily denormalized for fast
-//                              leaderboard family filtering (V2 §3.2 risk 4).
-//                              Backfill below: adapter_id='native-price' →
-//                              'financial-direction'. Else NULL.
+// markets.adapter_id is the source of truth; submissions.adapter_id and
+// market_family denormalize from it so leaderboard family filters and resolver
+// dispatch are index seeks rather than table scans.
 //
-// Submissions indexes:
-//   - idx_submissions_market_family — partial; speeds family filters on
-//                                     leaderboard reads.
-//   - idx_submissions_adapter       — partial; lets the resolver dispatch by
-//                                     adapter without scanning the full table.
-//
-// t1_resolutions (2 cols, both nullable):
-//   - resolved_outcome_json — full Outcome JSON the adapter returned (kind,
-//                             payoutNumerators stringified, denominator,
-//                             scalarValue if any, evidence). NULL for legacy
-//                             resolutions written before v2.
-//   - payout_vector_json    — convenience: just the payoutNumerators array
-//                             as a JSON string (e.g. '["1","0"]'). Lets the
-//                             leaderboard skip a JSON parse on the hot path.
-//                             NULL for legacy.
-//   No new indexes — t1_resolutions is already PK'd on call_id, which is
-//   the only access path the resolver / scoring / leaderboard use.
-//
-// Markets (2 cols, both nullable; backfilled to 'native-price' /
-// 'financial-direction' for every existing row):
-//   - adapter_id    — actual source of truth at the MARKET level;
-//                     submissions.adapter_id denormalizes from here.
-//   - market_family — same idea. Independent of the existing market_kind
-//                     column from MIGRATION_008 (kept untouched).
-//
-// Backfill (in-migration, after the ALTER TABLE block):
-//   submissions:
-//     market_id IS NOT NULL AND adapter_id IS NULL
-//       → adapter_id='native-price', market_family='financial-direction'
-//   markets (every existing row):
-//     adapter_id IS NULL
-//       → adapter_id='native-price', market_family='financial-direction'
-//
-// Idempotency: the applyMigrations(`if (v < 16)`) guard is the
-// idempotency boundary — schema_version 16 is set inside the same
-// transaction as the DDL, so the migration can never run twice.
-//
-// No CHECK constraint on adapter_id / market_family per V2 §7.7 risk 4
-// (taxonomy is operator-curated but kept open so new families don't
-// require a schema migration).
+// outcome_labels_json is RENDER-ONLY and never load-bearing for scoring.
+// payout_vector_json duplicates the numerators so the leaderboard can skip a
+// JSON parse on the hot path.
 const MIGRATION_016 = `
   ALTER TABLE submissions ADD COLUMN commitment_json TEXT;
   ALTER TABLE submissions ADD COLUMN predicted_outcome_json TEXT;
@@ -2870,21 +2228,9 @@ const MIGRATION_016 = `
      AND adapter_id IS NULL;
 `;
 
-// ─── Migration 017 — Phase 7 casual-tier auth scaffold ──────────────────────
+// ─── Migration 017 — casual-tier auth scaffold ──────────────────────────────
 //
-// Three new tables for the Privy-backed casual identity tier:
-//   - accounts: one row per Privy user; UNIQUE on privy_user_id (the DID).
-//   - account_agents: many-to-many bridge for future co-ownership; v2.0
-//     enforces one-account-per-agent at the code layer.
-//   - api_keys: per (account, agent) pair, replaces the legacy single
-//     agents.api_key_hash column for account-owned agents. The legacy column
-//     stays in place so benchmark agents keep working until Phase 4 cuts the
-//     dispatcher over.
-//
-// Hash discipline: api_key_hash stores sha256(secret); plaintext returned
-// once by mintApiKey() and never persisted. Soft rotation via rotated_at.
-//
-// Idempotency: pure additive (CREATE TABLE IF NOT EXISTS); safe on retry.
+// See the v<17 block in applyMigrations for the shape and the reasoning.
 const MIGRATION_017 = `
   CREATE TABLE IF NOT EXISTS accounts (
     account_id            TEXT PRIMARY KEY,
@@ -2918,20 +2264,11 @@ const MIGRATION_017 = `
   CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id) WHERE rotated_at IS NULL;
 `;
 
-// ─── Migration 018 — receipts.kind allows 'resolution_v2' (Phase 5) ─────────
+// ─── Migration 018 — receipts.kind allows 'resolution_v2' ───────────────────
 //
-// The Phase 5 resolver dual-writes a universal payout-vector receipt
-// alongside the legacy 'resolution' receipt. The CHECK constraint at
-// MIGRATION_001 only permits ('acceptance','resolution','re_resolution');
-// SQLite cannot ALTER a CHECK in place, so this is a rebuild migration
-// routed through applyTableRebuildMigration.
-//
-// Receipts is referenced FROM (no FKs target it as parent), so the
-// rebuild copies every row byte-identically and recreates the original
-// index. No data loss, no schema drift.
-//
-// Phase 6 will reconcile the two receipt kinds into a single canonical
-// chain — for v0.2 we keep both so the legacy verify path stays untouched.
+// Nothing FKs into receipts, so the rebuild copies every row through and
+// recreates the one index. Both receipt kinds are kept so the legacy verify
+// path stays untouched.
 const MIGRATION_018 = `
   DROP TABLE IF EXISTS receipts_v18;
 
@@ -2956,22 +2293,11 @@ const MIGRATION_018 = `
   CREATE INDEX idx_receipts_call_kind ON receipts(call_id, kind);
 `;
 
-// ─── Migration 019 — UNIQUE(agent_id) on account_agents (BLOCKER #4) ────────
+// ─── Migration 019 — UNIQUE(agent_id) on account_agents ─────────────────────
 //
-// Phase 7 / V2 §7.1 invariant: one account per agent. Migration 017 left
-// the constraint at the code layer only (PRIMARY KEY on the pair, no
-// uniqueness on agent_id alone), so a concurrent or buggy
-// linkAgentToAccount() could create a second link before the code-layer
-// pre-check fires. This rebuild makes the DB authoritative.
-//
-// Dedup tactic: Phase 7 hasn't shipped, so production should have zero
-// duplicate agent_id rows. We still select MIN(created_at) per agent_id
-// in the copy step so an unexpected duplicate (e.g. mid-migration hotfix
-// retry) doesn't abort the whole migration on the new UNIQUE constraint.
-//
-// PRIMARY KEY (account_id, agent_id) is preserved alongside UNIQUE(agent_id)
-// so existing read paths (the dispatcher's pair-lookup, etc.) keep working
-// byte-identically. The FK targets (accounts, agents) stay the same.
+// The pair PRIMARY KEY is kept alongside the new UNIQUE(agent_id) so the
+// dispatcher's pair-lookup keeps working unchanged. See the v<19 block for
+// why the copy takes MIN(created_at).
 const MIGRATION_019 = `
   DROP TABLE IF EXISTS account_agents_v19;
 
@@ -2996,29 +2322,14 @@ const MIGRATION_019 = `
   CREATE INDEX idx_account_agents_agent ON account_agents(agent_id);
 `;
 
-// ─── Migration 020 — Wave 4b: drop receipts + rekey disputes on call_id ────
+// ─── Migration 020 — drop receipts + rekey disputes on call_id ──────────────
 //
-// The receipts table doubled DB write volume for every accept and resolve
-// (Filecoin sponsor-track artifact). Calls + reveals + resolutions are the
-// canonical evidence trail; receipts add nothing the call_id chain doesn't
-// already cover.
+// Drops receipts and rekeys disputes onto target_call_id; the resolve path
+// now updates t1_resolutions in place instead of chaining a second receipt.
 //
-// Two changes:
-//   1. DROP TABLE receipts (and its index).
-//   2. Rebuild disputes:
-//        - target_resolution_receipt_hash → target_call_id (FK to submissions)
-//        - drop new_resolution_receipt_hash entirely; the dispute resolve
-//          path now updates t1_resolutions in-place instead of chaining a
-//          second receipt row.
-//
-// Disputes data migration: the legacy receipt_hash columns are resolved
-// to call_id by joining the still-present receipts table BEFORE we drop
-// it. Orphan dispute rows (receipt_hash that no longer matches anything)
-// are dropped — the only acceptable failure mode for a hackathon-era
-// table that's never had a non-test row land in production.
-//
-// Order matters: disputes data copy must happen BEFORE the receipts DROP,
-// since the copy joins receipts to resolve receipt_hash → call_id.
+// ORDER MATTERS: the disputes copy joins receipts to resolve
+// receipt_hash → call_id, so it must run before the DROP. Dispute rows whose
+// hash no longer resolves are dropped.
 const MIGRATION_020 = `
   DROP TABLE IF EXISTS disputes_v20;
 
@@ -3052,7 +2363,7 @@ const MIGRATION_020 = `
 // Fhenix-sealed verdicts are now canonical, so fresh DBs skip those tables
 // and existing DBs shed them in migrations 034 and 036.
 
-// ─── Migration 028 — Polymarket sync state (Phase 11) ──────────────────────
+// ─── Migration 028 — Polymarket sync state ──────────────────────────────────
 //
 // Per-conditionId scratch pad for the Polymarket Gamma sync ticker. Every
 // row is owned by exactly one markets entry (FK ON DELETE CASCADE) and
@@ -3080,20 +2391,7 @@ const MIGRATION_028 = `
 
 // ─── Migration 029 — Polymarket-registerable oracles + synthetic seed ──────
 //
-// Rebuilds `oracles` to widen the `kind` CHECK with 'external_adapter'.
-// SQLite cannot drop a CHECK in place, so we use the same
-// applyTableRebuildMigration pattern that migrations 010/011 used for
-// the submissions rebuild. The temp table is `oracles_v029`.
-//
-// Then seeds one synthetic asset ('polymarket:event') and one synthetic
-// oracle ('polymarket-gamma-oracle'). All Polymarket conditionIds
-// registered via the admin route will reference these two rows so the
-// existing NOT NULL constraints on `markets.asset_id` and
-// `markets.primary_oracle_id` are satisfied without rewriting `markets`.
-//
-// The oracle row stays at kind='external_adapter' so any future external
-// adapter (Kalshi, Drift, etc.) reuses the same legal CHECK value with
-// its own oracle_id.
+// See the v<29 block in applyMigrations for the reasoning.
 const MIGRATION_029_ORACLES_REBUILD = `
   DROP TABLE IF EXISTS oracles_v029;
   CREATE TABLE oracles_v029 (
@@ -3116,16 +2414,9 @@ const MIGRATION_029_ORACLES_REBUILD = `
   CREATE INDEX idx_oracles_status ON oracles(status);
 `;
 
-// Seed is CONCATENATED into the rebuild SQL above so both run inside
-// the same BEGIN..COMMIT as the schema_version=29 bump (codex bundle
-// review MAJOR #1 fix at db.ts:584). A crash mid-block rolls back the
-// entire migration; the `if (v < 29)` guard re-runs everything on
-// the next boot. INSERT OR IGNORE makes that retry idempotent.
-//
-// Future authors: changes to the synthetic Polymarket asset/oracle
-// rows must use an explicit UPDATE / UPSERT migration — re-running
-// this seed appends nothing because INSERT OR IGNORE silently skips
-// existing rows.
+// Concatenated into the rebuild above so both share one BEGIN..COMMIT with
+// the version bump. Changing these synthetic rows later needs an explicit
+// UPDATE migration — INSERT OR IGNORE silently skips rows that already exist.
 const MIGRATION_029_SEED = `
   INSERT OR IGNORE INTO assets (asset_id, display_short, display_name, native_chain, pyth_feed_id, chainlink_base_address, decimals_hint, status, notes, created_at) VALUES
     ('polymarket:event', 'pmevent', 'Polymarket Event', 'polygon',
@@ -3139,21 +2430,11 @@ const MIGRATION_029_SEED = `
      'listed', '2026-05-12T00:00:00Z');
 `;
 
-// ─── Migration 031 — Wave 3 reshape ─────────────────────────────────────────
+// ─── Migration 031 — operator-blind reshape ─────────────────────────────────
 //
-// See the prose in applyMigrations() above. Three SQL constants:
-//   - MIGRATION_031_DROP_DEAD_TABLES: six DROP IF EXISTS for the tables
-//     emptied by Wave 1/3a.
-//   - MIGRATION_031_AGENTS_REBUILD: agents.kind CHECK collapse to four
-//     values, with CASE-WHEN remap of legacy enum members to 'agent'.
-//     Preserves all other columns (wallet_address/chain_id from
-//     MIGRATION_005, destination_address/destination_address_updated_at
-//     from MIGRATION_014, program_version added by the v<31 ALTERs).
-//   - MIGRATION_031_SUBMISSIONS_REBUILD: drops side/asset_id/horizon_hours/
-//     confidence. Recreates every index that survived the column drop
-//     (idx_submissions_asset_horizon is gone — the two columns it
-//     covered are no longer in the table; the resolver pages on
-//     horizon_seconds + market_id now).
+// See the v<31 block in applyMigrations. idx_submissions_asset_horizon is
+// deliberately not recreated — the columns it covered are gone, and the
+// resolver pages on horizon_seconds + market_id now.
 const MIGRATION_031_DROP_DEAD_TABLES = `
   DROP TABLE IF EXISTS verified_identities;
   DROP TABLE IF EXISTS claim_challenges;
@@ -3281,17 +2562,9 @@ const MIGRATION_031_SUBMISSIONS_REBUILD = `
 
 // ─── Migration 032 — agent_security_events ─────────────────────────────────
 //
-// Append-only audit log for admin/operator actions that mutate an agent's
-// ownership or a sensitive registry slot. Rows are intentionally NOT
-// FK'd to `agents` — an admin-driven CASCADE delete of the agent must
-// not erase the forensic trail. The string `agent_id` column carries the
-// same value for join purposes; lookup paths LEFT JOIN when they need
-// the current agent row.
-//
-// CHECK on `kind` keeps a closed taxonomy at the SQL layer so any
-// emitter that adds a new event class also adds a row here (and to
-// AgentSecurityEventKindSchema in schema.ts). Pure additive — safe to
-// re-run via CREATE TABLE IF NOT EXISTS.
+// See the v<32 block for why there is no FK to agents. The CHECK on `kind`
+// keeps the taxonomy closed at the SQL layer, so a new event class has to be
+// added here AND to AgentSecurityEventKindSchema in schema.ts.
 const MIGRATION_032 = `
   CREATE TABLE IF NOT EXISTS agent_security_events (
     event_id     TEXT PRIMARY KEY,
@@ -3320,13 +2593,8 @@ const MIGRATION_032 = `
     ON agent_security_events(kind);
   CREATE INDEX IF NOT EXISTS idx_agent_security_events_created
     ON agent_security_events(created_at DESC);
-  -- Wave 5 codex review MINOR — partial expression index for
-  -- post-incident Polymarket lookups. The most common forensic query is
-  -- "who upserted conditionId X?", which previously required a full
-  -- table scan with payload_json LIKE. SQLite's json_extract on the
-  -- payload returns the conditionId for admin_polymarket_upsert rows
-  -- (and NULL elsewhere); the partial index ON the typed expression
-  -- keeps storage cheap (only matching rows are indexed).
+  -- Partial expression index for "who upserted conditionId X?", which was a
+  -- full scan with payload_json LIKE. Only matching rows are indexed.
   CREATE INDEX IF NOT EXISTS idx_agent_security_events_polymarket_condition
     ON agent_security_events(json_extract(payload_json, '$.conditionId'))
     WHERE kind = 'admin_polymarket_upsert';
@@ -3350,16 +2618,9 @@ const MIGRATION_032 = `
 
 // ─── Migration 053 — extend agent_security_events.kind CHECK ────────────────
 //
-// Adds two new event kinds used by the Fix 3 operator-audit emitters:
-//   - admin_fhenix_gateway_retry
-//   - admin_fhenix_feed_packet_backfill
-//
-// SQLite CHECK constraints are closed; we have to rebuild the table to
-// extend them. Triggers must be dropped first because the rebuild itself
-// performs an INSERT … SELECT into a fresh table, and the existing
-// trg_agent_security_events_no_update / no_delete would not block an
-// INSERT, but recreating them after the rename matters so the append-only
-// invariant survives the migration. Indexes are recreated too.
+// Adds admin_fhenix_gateway_retry and admin_fhenix_feed_packet_backfill.
+// The append-only triggers are dropped and recreated around the rebuild so the
+// invariant survives the rename.
 const MIGRATION_053 = `
   DROP TRIGGER IF EXISTS trg_agent_security_events_no_update;
   DROP TRIGGER IF EXISTS trg_agent_security_events_no_delete;
@@ -3421,17 +2682,7 @@ const MIGRATION_053 = `
 
 // ─── Migration 054 — drop UNIQUE(wallet_address, chain_id) ─────────────────
 //
-// The shipped agent_controller_wallets table at migration 042 carried
-// `UNIQUE(wallet_address, chain_id)`, enforcing 1-wallet-per-1-agent. The
-// product model is actually 1-wallet-per-Privy-account → N agents under that
-// account, so we rebuild the table without that constraint. Cross-account
-// uniqueness is now enforced by the application precheck in
-// controller-wallets.ts (SELECT … WHERE account_id != ? AND agent_id != ?).
-//
-// SQLite has no DROP CONSTRAINT, so we rebuild. agent_id stays as the
-// PRIMARY KEY so each agent still has at most one binding. Indexes are
-// recreated to match the original schema. No triggers existed on this
-// table, so no trigger drop/recreate dance is needed.
+// See the v<54 block in applyMigrations for the reasoning.
 const MIGRATION_054 = `
   DROP TABLE IF EXISTS agent_controller_wallets_v054;
   CREATE TABLE agent_controller_wallets_v054 (
@@ -4689,16 +3940,12 @@ const MIGRATION_051_NANOPAY_RECEIPTS = `
     failure_reason                  TEXT
   );
 
-  -- Prefix-level UNIQUE on (payer, eip3009_nonce, source_domain) is
-  -- the load-bearing race protection. EIP-3009 nonces are unique
-  -- per-(payer, verifying-contract); the source_domain captures the
-  -- verifying contract. So at most ONE row per (payer, nonce, source)
-  -- is correct semantics. Concurrent inserts with the same prefix but
-  -- different payload/requirements hashes (e.g. attacker trying to
-  -- get a second settle attempt for the same authorization) will fail
-  -- with SQLITE_CONSTRAINT_UNIQUE. The route handler catches this and
-  -- re-reads, comparing hashes to decide cached-replay vs 409 conflict.
-  -- (Per codex audit 2026-05-23.)
+  -- Load-bearing race protection. EIP-3009 nonces are unique per (payer,
+  -- verifying contract), and source_domain captures the contract, so exactly
+  -- one row per prefix is correct. A concurrent insert with the same prefix but
+  -- different hashes — a second settle attempt on one authorization — fails
+  -- with SQLITE_CONSTRAINT_UNIQUE; the handler re-reads and compares hashes to
+  -- decide cached-replay vs 409.
   CREATE UNIQUE INDEX IF NOT EXISTS idx_nanopay_receipts_payer_nonce_domain
     ON nanopay_receipts(payer, eip3009_nonce, source_domain);
 
@@ -4786,18 +4033,9 @@ const MIGRATION_060_SECURITY_EVENT_KINDS = `
 
 // ─── Migration 061 — retire the native-price registry surface ───────────────
 //
-// See the prose in applyMigrations() above. Data-only: two idempotent status
-// UPDATEs, no DDL, no rebuild, no deletes.
-//
-// The market predicate is deliberately four-way redundant. A native market is
-// identifiable by ANY of market_kind / scoring_kind / adapter_id /
-// market_family, and the four columns were introduced across different
-// migrations (008, 016, 029) — an old hand-seeded row may carry only some of
-// them. OR-ing all four means no self-resolving market can survive as
-// `listed`.
-//
-// `event_binary` + `multinomial_brier` rows are untouched: those are the
-// external Polymarket markets that carry all 44 live resolutions.
+// See the v<61 block in applyMigrations. The four-way OR is deliberate: the
+// marker columns arrived across migrations 008/016/029, so an old hand-seeded
+// row may carry only some of them.
 const MIGRATION_063_FEED_REVEAL_COLUMNS = `
   ALTER TABLE feed_packets ADD COLUMN reveal_status TEXT NOT NULL DEFAULT 'pending'
     CHECK (reveal_status IN ('pending','revealed','invalid'));
@@ -4936,20 +4174,9 @@ function applyAlterTableAddColumn(
 
 // ─── Migration 005 — wallet binding + wallet_only tier + claim indexes ──────
 //
-// Three things at once:
-//   1. agents gains `wallet_address` + `chain_id` as top-level columns so
-//      reputation without a verified_identities join on every profile read.
-//   2. agents.kind enum originally extended to include wallet-owned agents.
-//      SQLite CHECK constraints can't be ALTERed in place, so this migration
-//      rebuilt the agents table.
-//   3. claim_challenges gains supporting indexes for (status, expires_at)
-//      GC and (target_kind, target_value, status) lookups; abuse forensics
-//      now has the right shape.
-//
-// Foreign keys from submissions/verified_identities/usage_events all point
-// AT agents — we toggle FK enforcement off for the rebuild and back on
-// after rename. None of those tables hold FK references INTO the agents
-// rebuild that need recreation.
+// Hoists wallet_address + chain_id onto agents so a profile read needs no
+// verified_identities join, widens the kind CHECK for wallet-owned agents
+// (hence the rebuild), and indexes claim_challenges for GC and lookup.
 const MIGRATION_005 = `
   PRAGMA foreign_keys = OFF;
 

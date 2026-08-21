@@ -30,6 +30,24 @@ export interface WebhookAuthIdentity {
  * and the route-auth smoke can drive every branch with a fake verifier
  * (no minted Privy token required).
  */
+/**
+ * A closed or kill-switched account gets the module's uniform null (→ 401),
+ * matching its anti-enumeration posture: refusal here looks identical to no
+ * credentials at all. Both auth tiers pass through this single check — the
+ * kill switch previously did not reach this path at all (security review
+ * R1/R2), which let rotated-away accounts keep managing webhooks.
+ */
+function accountLockedOut(db: Database.Database, accountId: string): boolean {
+  const row = db
+    .prepare(
+      "SELECT deactivated_at, agent_credentials_disabled_at FROM accounts WHERE account_id = ?",
+    )
+    .get(accountId) as
+    | { deactivated_at: string | null; agent_credentials_disabled_at: string | null }
+    | undefined;
+  return Boolean(row?.deactivated_at || row?.agent_credentials_disabled_at);
+}
+
 export async function authenticateWebhookAccount(
   req: Request,
   deps: { db: Database.Database; privyAuth?: PrivyAuthVerifier },
@@ -42,6 +60,7 @@ export async function authenticateWebhookAccount(
     // creds still succeeds.
     const { account_id } = resolveAccountForClaims(deps.db, claims, { mode: "read" });
     if (account_id) {
+      if (accountLockedOut(deps.db, account_id)) return null;
       return { account_id, auth_mode: "privy" };
     }
   }
@@ -50,6 +69,7 @@ export async function authenticateWebhookAccount(
   if (apiKey) {
     const accountKey = verifyApiKey(deps.db, apiKey);
     if (accountKey) {
+      if (accountLockedOut(deps.db, accountKey.account_id)) return null;
       return { account_id: accountKey.account_id, auth_mode: "api_key" };
     }
   }

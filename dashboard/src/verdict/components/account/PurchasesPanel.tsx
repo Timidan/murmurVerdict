@@ -1,0 +1,225 @@
+// Purchases made by your controller wallet.
+//
+// Two tiers, and the panel is explicit about which one it is showing.
+//
+//   unsigned  granted rows only. Each one mirrors an on-chain grant anybody
+//             can already read, so murmur serves them without proof.
+//   signed    everything, including purchases that stalled and money that is
+//             owed back. That is a private operational record of what somebody
+//             tried to buy and what went wrong, so it takes a signature from
+//             the wallet itself.
+//
+// The signature is over `murmur:purchases:<address>:<unix>` and unlocks a read
+// of the signer's OWN history and nothing else. It is not a transaction, and
+// the copy says so before asking for it.
+//
+// `payment_status: 'unknown'` is rendered as the word "unknown". It means
+// murmur holds no settlement receipt for that row — NOT that the payment
+// failed — and softening it either way would be a guess about somebody's money.
+
+import { useCallback, useState } from "react";
+import { useSignMessage, useWallets } from "@privy-io/react-auth";
+
+import {
+  purchasesAuthMessage,
+  verdictApi,
+  type AccountAgent,
+  type WalletPurchaseRow,
+  type WalletPurchasesView,
+} from "../../api.js";
+import { Ik } from "../../icons.js";
+import { formatAtoms } from "../../lib/atoms-format.js";
+import { formatLocalDateTime } from "../../lib/date-time-format.js";
+import { shortId } from "../../lib/display-format.js";
+import { InlineError } from "../compact/InlineError.js";
+
+export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
+  const { wallets } = useWallets();
+  const { signMessage } = useSignMessage();
+  const [view, setView] = useState<WalletPurchasesView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // The controller wallet bound to any of this account's agents is the wallet
+  // that would have paid. Prefer a connected one, because only a connected
+  // wallet can sign.
+  const boundAddresses = agents
+    .map((a) => a.controller_wallet?.wallet_address)
+    .filter((a): a is string => Boolean(a));
+  const connected =
+    wallets.find((w) =>
+      boundAddresses.some((b) => b.toLowerCase() === w.address.toLowerCase()),
+    ) ??
+    wallets.find((w) => w.walletClientType === "privy") ??
+    wallets[0] ??
+    null;
+  const address = connected?.address ?? boundAddresses[0] ?? null;
+
+  const load = useCallback(
+    async (signed: boolean) => {
+      if (!address) {
+        setError("Bind a controller wallet first. It is the wallet that pays.");
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        if (!signed) {
+          setView(await verdictApi.getWalletPurchases(address));
+          return;
+        }
+        if (!connected) {
+          setError("Connect the wallet that paid. It has to sign this.");
+          return;
+        }
+        const unixSeconds = Math.floor(Date.now() / 1000);
+        // Pin the signer to the wallet whose history we are asking for —
+        // Privy otherwise defaults to embedded HD index 0, which would sign
+        // for a different address and be rejected.
+        const { signature } = await signMessage(
+          { message: purchasesAuthMessage(connected.address, unixSeconds) },
+          { address: connected.address },
+        );
+        setView(
+          await verdictApi.getWalletPurchases(connected.address, {
+            unixSeconds,
+            signature,
+          }),
+        );
+      } catch (e) {
+        setError((e as Error)?.message ?? "unknown error");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [address, connected, signMessage],
+  );
+
+  return (
+    <section className="ck-frame">
+      <div className="ck-header">
+        <span className="ck-title ck-title-ik">
+          <Ik name="x402" /> purchases
+        </span>
+        <span className="ck-mono ck-dim">
+          {view ? (view.authenticated ? "full history" : "granted only") : "…"}
+        </span>
+      </div>
+
+      <div className="px-3 py-3 flex flex-col gap-3">
+        <p className="ck-dim text-[12px]">
+          Calls your controller wallet paid to read early. Murmur shows granted
+          purchases to anyone, because each one is already on chain. Sign a
+          message to see the rest: what stalled, and what is owed back.
+        </p>
+
+        {address ? (
+          <p className="ck-dim text-[12px]">
+            wallet <span className="ck-mono" title={address}>{shortId(address, 8, 6)}</span>
+          </p>
+        ) : (
+          <p className="ck-mono ck-dim">No controller wallet is bound yet.</p>
+        )}
+
+        <span className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="ck-btn ck-btn-bracket"
+            onClick={() => void load(false)}
+            disabled={busy || !address}
+          >
+            <Ik name="all-calls" />
+            show granted purchases
+          </button>
+          <button
+            type="button"
+            className="ck-btn ck-btn-bracket ck-pos"
+            onClick={() => void load(true)}
+            disabled={busy || !connected}
+            title="signs a message. It is not a transaction and moves no money."
+          >
+            <Ik name="attest" />
+            sign to show everything
+          </button>
+        </span>
+
+        {error && <InlineError error={error} className="text-[12px]" />}
+
+        {view && view.purchases.length === 0 && (
+          <p className="ck-mono ck-dim">
+            {view.authenticated
+              ? "This wallet has bought nothing."
+              : "No granted purchases. Sign to check for ones still in flight."}
+          </p>
+        )}
+
+        {view && view.purchases.length > 0 && (
+          <>
+            {!view.authenticated && (
+              <p className="ck-dim text-[12px]">
+                Granted purchases only. Purchases still in flight, and any money
+                owed back, are hidden until you sign.
+              </p>
+            )}
+            <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
+              {view.purchases.map((row) => (
+                <PurchaseRow key={`${row.onchain_call_id}-${row.created_at}`} row={row} />
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function PurchaseRow({ row }: { row: WalletPurchaseRow }) {
+  const granted = row.status === "granted";
+  const refundOwed =
+    row.refund_status !== null &&
+    row.refund_status !== undefined &&
+    row.refund_status !== "none";
+  return (
+    <li className="grid grid-cols-[1fr_auto] items-baseline gap-3 px-3 py-2">
+      <span className="min-w-0">
+        <span className="ck-mono truncate block" title={row.onchain_call_id}>
+          {shortId(row.onchain_call_id)}
+        </span>
+        <span className="ck-dim text-[12px]">
+          {row.producer_agent_slug ? `${row.producer_agent_slug} · ` : ""}
+          {formatLocalDateTime(row.created_at) ?? row.created_at}
+        </span>
+      </span>
+      <span className="text-right flex flex-col items-end">
+        <span className="ck-mono">
+          {row.amount
+            ? `${formatAtoms(row.amount, row.currency)} ${row.currency ?? ""}`
+            : "—"}
+        </span>
+        <span className={`text-[12px] ${granted ? "ck-pos" : "ck-dim"}`}>
+          {granted ? "granted" : row.status}
+        </span>
+        {row.payment_status && (
+          <span
+            className={
+              "text-[12px] " +
+              (row.payment_status === "confirmed" ? "ck-dim" : "ck-neg")
+            }
+            title={
+              row.payment_status === "confirmed"
+                ? "Murmur holds a settlement receipt for this payment."
+                : "Murmur holds no settlement receipt for this row. That does not mean the payment failed — it means murmur cannot confirm it."
+            }
+          >
+            payment {row.payment_status}
+          </span>
+        )}
+        {refundOwed && (
+          <span className="ck-neg text-[12px]" title="the operator sends refunds by hand">
+            refund {row.refund_status}
+          </span>
+        )}
+      </span>
+    </li>
+  );
+}

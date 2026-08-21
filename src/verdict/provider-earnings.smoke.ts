@@ -657,11 +657,28 @@ async function buy(
     false,
     "nothing here has been paid, and the payload says so",
   );
-  assert.equal(
-    Object.keys(view.body.totals[0]!).some((k) => /owed|balance/i.test(k)),
-    false,
-    "never 'owed' — there is no payout journal to make that claim true",
-  );
+  // Migration 073 added the payout journal, so "owed" became a claim murmur
+  // can actually make: accrued minus paid. This assertion used to be the
+  // opposite — it forbade the word entirely — and it was right to, because
+  // until there was a journal an "owed" figure would have kept asserting a
+  // debt an operator had already settled by hand.
+  //
+  // With no payout rows recorded, the whole accrual is still outstanding, and
+  // `overpaid_atoms` is "0" rather than absent: the two fields are the halves
+  // of one signed balance, and both are always present so a reader cannot mistake
+  // a missing key for a zero.
+  {
+    const usdcTotal = view.body.totals[0] as unknown as {
+      owed_atoms: string;
+      overpaid_atoms: string;
+      balance_atoms: string;
+      lifetime_paid_net: string;
+    };
+    assert.equal(usdcTotal.lifetime_paid_net, "0");
+    assert.equal(usdcTotal.balance_atoms, "16212958658533788300");
+    assert.equal(usdcTotal.owed_atoms, "16212958658533788300");
+    assert.equal(usdcTotal.overpaid_atoms, "0");
+  }
 
   // Another account cannot read it.
   assert.throws(

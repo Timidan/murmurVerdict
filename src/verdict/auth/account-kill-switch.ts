@@ -1,7 +1,7 @@
 // ─── Account kill switch ─────────────────────────────────────────────────────
 //
 // One account-level timestamp is the enforcement primitive; the bulk
-// revoke/rotate is bookkeeping (per codex review 2026-08-02: revoke-all alone
+// revoke/rotate is bookkeeping (revoke-all alone
 // is not durable because API-key mint is Privy-gated only, so a compromised
 // Privy session could immediately re-mint). While engaged:
 //   - runtime-key and API-key dispatch reject (dispatcher),
@@ -126,6 +126,29 @@ export function releaseAccountKillSwitch(
   const nowIso = input.now().toISOString();
   let result: ReleaseKillSwitchResult | null = null;
   db.transaction(() => {
+    // A CLOSED account can never be reopened from here.
+    //
+    // Deactivation (migration 073) engages this switch as one of its
+    // consequences, so without this guard the release route — which exists to
+    // clear agent_credentials_disabled_at — would re-arm minting on an account
+    // the owner had closed. The two states are stored in separate columns for
+    // exactly this reason; read the other one before clearing this one.
+    //
+    // Read inline rather than through account-lifecycle.ts, which imports this
+    // module: one column, no import cycle.
+    const deactivatedAt = (
+      db
+        .prepare("SELECT deactivated_at FROM accounts WHERE account_id = ?")
+        .get(input.account_id) as { deactivated_at: string | null } | undefined
+    )?.deactivated_at ?? null;
+    if (deactivatedAt) {
+      throw new VerdictError(
+        "this account is closed. Releasing the kill switch cannot reopen it.",
+        ERROR_CODES.account_deactivated,
+        403,
+        { deactivated_at: deactivatedAt },
+      );
+    }
     const existing = agentCredentialsDisabledAt(db, input.account_id);
     if (!existing) {
       result = { was_engaged: false, released_at: null };

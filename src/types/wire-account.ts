@@ -30,7 +30,14 @@ export interface WireAccountAgent {
   linked_at: string;
   display_slug: string | null;
   display_name: string | null;
+  /** The public description. Editable at PATCH /agents/:slug/profile. */
+  bio: string | null;
   kind: string | null;
+  /**
+   * Set once the owner retires this agent: it takes no new calls, while its
+   * record, its history and its earnings stay exactly as they are.
+   */
+  retired_at: string | null;
   wallet_address: string | null;
   chain_id: string | null;
   controller_wallet: WireControllerWalletSummary | null;
