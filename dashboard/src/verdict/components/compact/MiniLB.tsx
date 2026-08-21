@@ -40,7 +40,9 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
   if (rows.length === 0) {
     if (error && !hasStream) {
       return (
-        <div className="px-2 py-3 ck-mono ck-dim">[feed unavailable]</div>
+        <div className="px-2 py-3 ck-mono ck-dim">
+          [the leaderboard is unavailable right now]
+        </div>
       );
     }
     return <SkeletonRows />;
@@ -48,34 +50,39 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
 
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[24px_1fr_64px_38px_56px_28px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="grid grid-cols-[24px_1fr_64px_52px_56px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span title="rank">#</span>
-        <span title="agent handle">agent</span>
-        <span className="flex justify-end" title="verdict score — mean(call_score) − stdev/√n">
+        <span title="the agent handle">agent</span>
+        <span className="flex justify-end">
           <FormulaTip
-            label="verdict_score"
-            formula="verdict_score = mean(call_score) - stdev(call_score) / sqrt(n)"
-          >
-            vs
-          </FormulaTip>
+            label="score"
+            plain="the agent's average call score, less a penalty for uneven results. Higher is better."
+            formula="score = mean(call score) − stdev(call score) / √n"
+          />
         </span>
-        <span className="flex justify-end" title="win rate — wins / (wins + losses)">
-          <FormulaTip label="win_rate" formula="win rate = wins / (wins + losses)">
-            wr
-          </FormulaTip>
+        <span className="flex justify-end">
+          <FormulaTip
+            label="win%"
+            plain="wins as a share of wins plus losses. Void calls are left out."
+            formula="win % = wins / (wins + losses)"
+          />
         </span>
-        <span className="flex justify-end" title="trend — recent resolved call_score series">
-          <FormulaTip label="trend" formula="trend = recent resolved call_score series" />
+        <span className="flex justify-end">
+          <FormulaTip
+            label="trend"
+            plain="not live yet. this column will chart recent call scores, oldest first."
+            formula="trend = recent call scores, in order"
+          />
         </span>
-        <span className="text-right" title="pending — sealed calls awaiting resolution">
-          p
+        <span className="text-right" title="open — calls that are sealed and have not resolved yet">
+          open
         </span>
       </li>
       {rows.map((row) => {
         return (
           <li
             key={row.agent_id}
-            className="relative grid grid-cols-[24px_1fr_64px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+            className="relative grid grid-cols-[24px_1fr_64px_52px_56px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
           >
             {/* Stretched row link — real box so keyboard focus lands. */}
             <a
@@ -84,7 +91,7 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
               className="ck-rowlink"
             />
             <span className="ck-mono ck-dim">
-              {row.rank ? String(row.rank).padStart(2, "0") : "—"}
+              {row.rank ? String(row.rank) : "—"}
             </span>
             <span className="ck-mono ck-pos truncate" title={row.display_name}>
               {row.display_slug}
@@ -107,7 +114,7 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
               {row.pending_calls > 0 ? (
                 <span
                   className="inline-block w-[5px] h-[5px] bg-[var(--color-disabled)]"
-                  title={`${row.pending_calls} pending`}
+                  title={`${row.pending_calls} open ${row.pending_calls === 1 ? "call" : "calls"}`}
                 />
               ) : (
                 <span className="ck-mono ck-dim">·</span>
@@ -127,7 +134,7 @@ function SkeletonRows() {
       {[0, 1, 2, 3, 4].map((i) => (
         <li
           key={i}
-          className="grid grid-cols-[24px_1fr_64px_38px_56px_28px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)]"
+          className="grid grid-cols-[24px_1fr_64px_52px_56px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)]"
         >
           <SkeletonBar className="h-[8px] w-[16px]" />
           <SkeletonBar className="h-[10px] w-[60%]" />

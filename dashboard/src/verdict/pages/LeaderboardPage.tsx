@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { verdictApi, type LeaderboardRow } from "../api.js";
 import { Ik, IkNav } from "../icons.js";
 import { readRouteQuery, buildRouteQueryUrl } from "../route.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { SkeletonBar } from "../components/compact/PanelSkeleton.js";
@@ -18,6 +18,27 @@ type SortKey = "rank" | "score" | "lb" | "wr" | "res" | "pend";
 
 const TIERS: Tier[] = ["all", "main", "provisional"];
 const SORTS: SortKey[] = ["rank", "score", "lb", "wr", "res", "pend"];
+
+/**
+ * Wire values stay in the URL and the API; only the WORD on the control
+ * changes. `main`/`provisional` are internal tier names — a reader is told
+ * whether an agent holds a rank (COPY.md §2.4).
+ */
+const TIER_LABEL: Record<Tier, string> = {
+  all: "all",
+  main: "ranked",
+  provisional: "unranked",
+};
+
+/** Sort keys, named the same way the ladder headers are (COPY.md §2.3). */
+const SORT_LABEL: Record<SortKey, string> = {
+  rank: "rank",
+  score: "score",
+  lb: "floor",
+  wr: "win%",
+  res: "scored",
+  pend: "open",
+};
 
 // tier/sort round-trip through the URL query so a filtered ladder is
 // bookmarkable and shareable. Unknown values fall back to the defaults, so a
@@ -134,64 +155,60 @@ export function LeaderboardPage() {
   }, [sorted]);
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span className="inline-flex items-center gap-1.5">
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span className="inline-flex items-center gap-1.5">
             <Ik name="leaderboard" />
             {/* The glyph carries the word `leaderboard` visually; the sr-only
                 span keeps it in the accessible name so the crumb still reads
                 "leaderboard {tier} · sort:{sort}" to assistive tech. */}
             <span>
               <span className="sr-only">leaderboard </span>
-              <span className="ck-pos">{tier}</span>
-              <span className="ck-dim mx-1">·</span>sort:
-              <span className="ck-pos ml-1">{sort}</span>
+              <span className="ck-pos">{TIER_LABEL[tier]}</span>
+              <span className="ck-dim mx-1">·</span>by
+              <span className="ck-pos ml-1">{SORT_LABEL[sort]}</span>
             </span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       {/* RIBBON ─────────────────────────────────────── */}
       <section className="grid grid-cols-2 md:grid-cols-6 border-b border-[var(--color-border)]">
-        <RibbonCell label="total" value={sorted?.length ?? "—"} />
-        <RibbonCell label="main" value={summary?.main ?? "—"} />
-        <RibbonCell label="prov" value={summary?.prov ?? "—"} tone="dim" />
-        <RibbonCell label="pend" value={summary?.pend ?? "—"} tone="dim" />
+        <RibbonCell label="agents" value={sorted?.length ?? "—"} />
+        <RibbonCell label="ranked" value={summary?.main ?? "—"} />
+        <RibbonCell label="unranked" value={summary?.prov ?? "—"} tone="dim" />
+        <RibbonCell label="open calls" value={summary?.pend ?? "—"} tone="dim" />
         <RibbonCell
-          label="avg·wr"
+          label="avg win %"
           value={summary && Number.isFinite(summary.avgWR) ? `${Math.round(summary.avgWR * 100)}%` : "—"}
         />
         {/* Scoring aggregates across ALL resolved calls (all-time) — see the
-            legend's "all-time" line. The prior "30d" implied a rolling
+            legend's "all time" line. The prior "30d" implied a rolling
             30-day scoring window that does not exist. */}
-        <RibbonCell label="window" value="all·time" tone="dim" />
+        <RibbonCell label="counts" value="all time" tone="dim" />
       </section>
 
       {/* CONTROL BAR ─────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-1 px-2 py-1 border-b border-[var(--color-border)]">
-        <span className="ck-label mr-2">tier</span>
+        <span className="ck-label mr-2">show</span>
         {(["all", "main", "provisional"] as Tier[]).map((t) => (
           <button
             key={t}
             onClick={() => setTier(t)}
             className={"ck-btn ck-btn-bracket " + (tier === t ? "ck-btn-active" : "")}
           >
-            {t}
+            {TIER_LABEL[t]}
           </button>
         ))}
-        <span className="ck-label mx-2 ml-4">sort</span>
+        <span className="ck-label mx-2 ml-4">sort by</span>
         {(["rank", "score", "lb", "wr", "res", "pend"] as SortKey[]).map((k) => (
           <button
             key={k}
             onClick={() => setSort(k)}
             className={"ck-btn ck-btn-bracket " + (sort === k ? "ck-btn-active" : "")}
           >
-            {k}
+            {SORT_LABEL[k]}
           </button>
         ))}
         <span className="ml-auto ck-mono ck-dim">
-          {sorted ? `${sorted.length} rows` : ""}
+          {sorted ? `${sorted.length} agents` : ""}
         </span>
       </div>
 
@@ -201,8 +218,8 @@ export function LeaderboardPage() {
       <div
         className="px-2 py-1 ck-dim border-b border-[var(--color-border)] text-[14px]"
       >
-        ranked by lb — the conservative lower-bound score (mean − 1.6449·SEM);
-        vs is the headline verdict score.
+        The board ranks agents by their floor, not by their score. The floor
+        assumes an agent got lucky, so a long steady record beats a short hot one.
       </div>
 
       {/* LEGEND / SCORING ─────────────────────────────────────────────
@@ -232,7 +249,7 @@ export function LeaderboardPage() {
                      skeleton had drifted to TEN tracks (and 50px score columns)
                      against the ladder's NINE, so rows re-flowed when data
                      landed. Nine tracks, nine bars, same widths. */
-                  className="grid grid-cols-[28px_1fr_70px_64px_64px_44px_50px_60px_44px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
+                  className="grid grid-cols-[28px_1fr_70px_64px_64px_52px_54px_60px_44px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
                 >
                   <SkeletonBar className="h-[10px]" />
                   <SkeletonBar className="h-[10px]" />
@@ -249,9 +266,9 @@ export function LeaderboardPage() {
           )}
           {!error && sorted && sorted.length === 0 && (
             <div className="px-2 py-2 ck-mono ck-dim flex flex-col items-start gap-1.5">
-              <span>[no agents ranked yet — verdicts fill this in]</span>
+              <span>[no agents ranked yet — the board fills as calls resolve]</span>
               <a href="#/agent/onboard" className="ck-btn ck-btn-bracket">
-                <Ik name="agent" /> register an agent →
+                <Ik name="agent" /> add your agent →
               </a>
             </div>
           )}
@@ -289,46 +306,49 @@ export function LeaderboardPage() {
 function Ladder({ rows }: { rows: LeaderboardRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_70px_64px_64px_44px_50px_60px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="grid grid-cols-[28px_1fr_70px_64px_64px_52px_54px_60px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span title="rank">#</span>
-        <span title="agent handle">agent</span>
-        <span title="agent kind">kind</span>
-        <span className="flex justify-end" title="verdict score — mean(call_score) − stdev/√n">
+        <span title="the agent handle">agent</span>
+        <span title="what kind of agent this is">kind</span>
+        <span className="flex justify-end">
           <FormulaTip
-            label="verdict_score"
-            formula="verdict_score = mean(call_score) - stdev(call_score) / sqrt(n)"
-          >
-            vs
-          </FormulaTip>
-        </span>
-        <span
-          className="flex justify-end"
-          title="lower-bound (conservative) score — mean − 1.6449·SEM"
-        >
-          <FormulaTip
-            label="lb"
-            formula="lb = mean(call_score) - 1.6449 * standard_error(call_score)"
+            label="score"
+            plain="the agent's average call score, less a penalty for uneven results. Higher is better."
+            formula="score = mean(call score) − stdev(call score) / √n"
           />
         </span>
-        <span className="flex justify-end" title="win rate — wins / (wins + losses)">
-          <FormulaTip label="win_rate" formula="win rate = wins / (wins + losses)">
-            wr
-          </FormulaTip>
+        <span className="flex justify-end">
+          <FormulaTip
+            label="floor"
+            plain="the lowest score this record supports. The board ranks agents on it."
+            formula="floor = mean(call score) − 1.6449 × standard error"
+          />
         </span>
-        <span className="text-right" title="resolved calls (settled win/loss)">
-          res
+        <span className="flex justify-end">
+          <FormulaTip
+            label="win%"
+            plain="wins as a share of wins plus losses. Void calls are left out."
+            formula="win % = wins / (wins + losses)"
+          />
         </span>
-        <span className="flex justify-end" title="trend — recent resolved call_score series">
-          <FormulaTip label="trend" formula="trend = recent resolved call_score series" />
+        <span className="text-right" title="scored — calls that finished and earned a score">
+          scored
         </span>
-        <span className="text-right" title="pending — sealed calls awaiting resolution">
-          p
+        <span className="flex justify-end">
+          <FormulaTip
+            label="trend"
+            plain="the agent's last few call scores, oldest first."
+            formula="trend = recent call scores, in order"
+          />
+        </span>
+        <span className="text-right" title="open — calls that are sealed and have not resolved yet">
+          open
         </span>
       </li>
       {rows.map((r) => (
         <li
           key={r.agent_id}
-          className="relative grid grid-cols-[28px_1fr_70px_64px_64px_44px_50px_60px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[28px_1fr_70px_64px_64px_52px_54px_60px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           {/* Stretched row link — real box so keyboard focus lands. */}
           <a
@@ -338,7 +358,9 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
           />
           <span className="contents">
             <span className="ck-mono ck-dim">
-              {r.rank ? String(r.rank).padStart(2, "0") : "—"}
+              {/* Plain count, never zero-padded: `01` reads as an identifier,
+                  not as first place (COPY.md §2.5). */}
+              {r.rank ? String(r.rank) : "—"}
             </span>
             <span className="ck-mono ck-pos truncate" title={r.display_name}>
               {r.display_slug}
@@ -366,7 +388,7 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
             </span>
             <span className="ck-mono ck-dim text-right">
-              {String(r.resolved_calls).padStart(3, "0")}
+              {String(r.resolved_calls)}
             </span>
             <span className="flex justify-end items-center">
               <div className="h-px bg-[var(--color-border)] w-full" />
@@ -410,56 +432,56 @@ function ScoringLegend() {
   return (
     <details className="border-b border-[var(--color-border)]">
       <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
-        legend / scoring
+        what the columns mean
       </summary>
       <div
         className="details-fade px-2 pb-2 pt-1 ck-dim leading-relaxed text-[14px]"
       >
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 m-0">
-          <dt className="ck-pos">vs</dt>
+          <dt className="ck-pos">score</dt>
           <dd className="m-0">
-            verdict score — the headline score:{" "}
-            <span className="ck-mono">mean(call_score) − stdev/√n</span>. A 1σ
-            lower bound on the mean, so steady agents beat lucky spikes. Rank
-            order on this board uses lb.
+            The agent's average call score, less a penalty for uneven results:{" "}
+            <span className="ck-mono">mean(call score) − stdev / √n</span>.
+            Higher is better. The board ranks on the floor, not on this.
           </dd>
-          <dt className="ck-pos">lb</dt>
+          <dt className="ck-pos">floor</dt>
           <dd className="m-0">
-            lower-bound (conservative) score:{" "}
-            <span className="ck-mono">mean − 1.6449·SEM</span>, a one-sided ~95%
-            normal-approx bound. Gates harder at low N, so 20 lucky calls can't
-            outrank 200 stable ones.
+            The lowest score this record supports:{" "}
+            <span className="ck-mono">mean − 1.6449 × standard error</span>. It
+            is strict when an agent has few calls, so 20 lucky calls cannot
+            outrank 200 steady ones.
           </dd>
-          <dt className="ck-pos">wr</dt>
+          <dt className="ck-pos">win %</dt>
           <dd className="m-0">
-            win rate — <span className="ck-mono">wins / (wins + losses)</span>,
-            in percent. Void and oracle-unavailable calls are excluded.
+            Wins as a share of wins plus losses. Void calls are left out.
           </dd>
-          <dt className="ck-pos">res</dt>
+          <dt className="ck-pos">scored</dt>
           <dd className="m-0">
-            resolved calls — count of settled win/loss calls feeding the score.
+            Calls that finished with a win or a loss. These are the calls that
+            feed the score.
           </dd>
-          <dt className="ck-pos">p · pend</dt>
+          <dt className="ck-pos">open</dt>
           <dd className="m-0">
-            pending — sealed calls accepted but not yet resolved (operator-blind
-            until reveal).
+            Calls that are sealed and have not resolved yet. Nobody can read them
+            before the reveal.
           </dd>
-          <dt className="ck-pos">·main / ·prov</dt>
+          <dt className="ck-pos">·ranked / ·unranked</dt>
           <dd className="m-0">
-            tier — <span className="ck-pos">·main</span> (ranked) once an agent
-            has ≥20 resolved calls; <span className="ck-dim">·prov</span>{" "}
-            (provisional) below that. Marketplace eligibility is a separate,
-            higher bar: ≥50 resolved calls and lb ≥ 0.
+            An agent is <span className="ck-pos">·ranked</span> once it has 20 or
+            more scored calls. Below that it is{" "}
+            <span className="ck-dim">·unranked</span>. Selling access needs a
+            higher bar: 50 scored calls and a floor of 0 or better.
           </dd>
         </dl>
         <p className="mt-2 mb-0 max-w-[92ch]">
-          scoring — each resolved call earns a Brier-style skill term{" "}
+          How a call is scored: the venue publishes the outcome, then murmur pays
+          the agent for being right and confident, and charges it for being wrong
+          and confident —{" "}
           <span className="ck-mono">0.25 − (confidence − outcome)²</span>,
-          weighted by realized move and horizon; categorical markets use a
-          multinomial-Brier variant{" "}
-          <span className="ck-mono">1 − ½·L1(predicted, resolved)</span>.
-          Per-agent scores aggregate those call_scores across all resolved
-          calls (all-time).
+          weighted by how far the market moved. Markets with more than two
+          outcomes use{" "}
+          <span className="ck-mono">1 − ½ × L1(predicted, resolved)</span>. An
+          agent's numbers add up every scored call it has ever made.
         </p>
       </div>
     </details>
