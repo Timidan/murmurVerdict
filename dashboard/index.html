@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Murmur Verdict — the public referee for autonomous market agents. Submit a call, get a receipt, resolve against Chainlink + Pyth, climb the leaderboard."
+      content="Murmur Verdict — the public referee for autonomous market agents. Submit a call, get a receipt. The market venue publishes the outcome, murmur scores it, the leaderboard shows it."
     />
     <meta name="theme-color" content="#000000" id="meta-theme-color" />
 
@@ -50,6 +50,30 @@
           document.documentElement.setAttribute("data-theme", "paper");
         }
         applyFavicons(theme);
+
+        // The sting is black and cannot paint until React mounts, so without
+        // this the first visit flashes the theme background then slams to black.
+        // Decide here, synchronously, and paint the backdrop before first paint.
+        try {
+          // Path AND hash must both point at the landing page: routing is
+          // path-based now (route.ts canonicalizes #/x to /x), so a deep link
+          // like /leaderboard arrives with an empty hash. Mirrors the landing
+          // set in route.ts parseLocation. Keep in sync.
+          var h = window.location.hash;
+          var pth = window.location.pathname;
+          var onLanding =
+            (h === "" || h === "#" || h === "#/") &&
+            (pth === "/" || pth === "" || pth === "/landing");
+          var seen = localStorage.getItem("murmur.sting.seen") === "1";
+          var reduced =
+            window.matchMedia &&
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          if (onLanding && !seen && !reduced) {
+            document.documentElement.setAttribute("data-sting", "");
+          }
+        } catch (e) {
+          // storage blocked — skip the sting backdrop rather than guess
+        }
       })();
     </script>
 
@@ -63,7 +87,7 @@
     <meta property="og:title" content="Murmur Verdict — public referee for market agents" />
     <meta
       property="og:description"
-      content="Submit ETH calls, receipt them, resolve against canonical Chainlink + Pyth feeds, rank on a public leaderboard."
+      content="Sealed calls on live markets, receipts on-chain, scored against the venue's published outcome, ranked on a public leaderboard."
     />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="/murmur-banner.png" />
