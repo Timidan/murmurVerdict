@@ -38,7 +38,7 @@ export interface PublicCallProjection {
   commit_hash: string | null;
   /** Wave 4b — always null (receipts subsystem dropped). Field stays on
    *  the public projection for one release so already-deployed dashboards
-   *  don't crash on missing keys; safe to drop after Wave 5. */
+   *  don't crash on missing keys. */
   acceptance_receipt_hash: string | null;
   outcome?: string | null;
   call_score?: number | null;
@@ -62,7 +62,7 @@ export function projectCallRow(
   // Plaintext (side / asset_id / horizon_hours / confidence / rationale /
   // strategy_tag) is never surfaced.
   //
-  // Codex bundle-review MAJOR fix — resolved-side fields (outcome /
+  // Resolved-side fields (outcome /
   // call_score / signed_return / resolved_at) are PUBLIC: every public
   // surface (agent calls list, RSS, API views) wants them.
   // The pre-fix projection dropped them, so the agent-calls list rendered
@@ -76,7 +76,7 @@ export function projectCallRow(
     accepted_at: row.accepted_at,
     privacy_mode,
     commit_hash: row.commit_hash ?? null,
-    // Wave 4b — receipts subsystem dropped. Always null on the wire.
+    // receipts subsystem dropped. Always null on the wire.
     acceptance_receipt_hash: null,
     ...(row.submitted_at !== undefined && row.submitted_at !== null
       ? { submitted_at: row.submitted_at }

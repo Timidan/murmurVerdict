@@ -8,7 +8,7 @@
  * exposed as N independent binary markets; categorical fusion is Tier 2.
  * On-chain CTF fallback is Tier 3.
  *
- * Cardinal rule (V2_REVIEW BLOCKER #1):
+ * Cardinal rule:
  *   `observeResolution` MUST NEVER throw. Every Gamma / parser / schema
  *   failure collapses to `'pending'` plus an error-coded log line — a
  *   thrown exception aborts the resolver tick, freezing every market on
@@ -49,13 +49,11 @@ export {
   POLYMARKET_CONDITION_ID_REGEX,
 } from "./config.js";
 
-// ─── Constants ──────────────────────────────────────────────────────────────
-
 export const ADAPTER_NAME = "polymarket-gamma" as const;
 export const ADAPTER_VERSION = "1.1.0" as const;
 export const MARKET_FAMILY = "prediction-market-binary" as const;
 
-// ─── Schemas (V2_REVIEW BLOCKER #1: `.passthrough()` everywhere) ───────────
+// ─── Schemas — `.passthrough()` everywhere ─────────────────────────────────
 
 /**
  * Narrows the universal {@link CommitmentSchema}:

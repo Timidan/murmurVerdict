@@ -144,7 +144,7 @@ function computeLeaderboardRows(
       win_rate: summary.win_rate,
       pending_calls: summary.pending_calls,
       last_resolved_at: summary.last_resolved_at,
-      // Redefined (Codex review §6): fraction of reveals that did NOT need the
+      // Redefined: fraction of reveals that did NOT need the
       // murmur fallback. An invalid decrypted value was still publicly
       // REVEALED, so it counts as non-withholding, not a miss.
       reveal_reliability:

@@ -103,7 +103,7 @@ export function resolverShouldTick(market: MarketRow): boolean {
 }
 
 /**
- * Dedup bucket size in seconds — Codex P3 D2. Floor at 5 minutes so 5m / 15m
+ * Dedup bucket size in seconds. Floor at 5 minutes so 5m / 15m
  * markets don't degrade dedup into a no-op spam control.
  *
  * | horizon | bucket |
@@ -154,7 +154,7 @@ export function buildMarketDedupKey(args: {
 }
 
 /**
- * Per-market daily cap (Codex P3 D3), in addition to the per-agent active cap
+ * Per-market daily cap, in addition to the per-agent active cap
  * (5). Uniform across every external market: with markets minted per venue
  * event there is no privileged market to widen the cap for.
  */

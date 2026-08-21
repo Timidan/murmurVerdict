@@ -38,7 +38,6 @@ export interface VenueStreamSnapshot {
   ts: string | null;
 }
 
-// ─── Module-level singleton ──────────────────────────────────────────────────
 //
 // Same architecture as useStream.ts, and for the same reason: one EventSource
 // per TAB, not per component. Several widgets read venue prices, and the

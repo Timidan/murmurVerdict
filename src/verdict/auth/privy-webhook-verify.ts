@@ -1,41 +1,20 @@
-// ─── Privy inbound webhook verification (Login method transfer) ──────────────
+// ─── Privy inbound webhook verification (login-method transfer) ──────────────
 //
-// Privy's "Login method transfer" (dashboard: Users → transfer login method)
-// fires a signed `user.transferred_account` webhook and DELETES the source
-// Privy user. This adapter receives the raw request body + svix headers, runs
-// them through the official @privy-io/node SDK's svix signature check, and
-// normalizes the one event Murmur cares about into a tiny transfer descriptor.
+// A login-method transfer fires a signed `user.transferred_account` webhook and
+// DELETES the source Privy user. This adapter runs the raw body + svix headers
+// through the SDK's signature check and normalizes the one event murmur cares
+// about into a transfer descriptor.
 //
-// SDK shape (verified against @privy-io/node@0.18.0 in this worktree — see
-// node_modules/@privy-io/node/public-api/services/webhooks.d.ts and
-// node_modules/@privy-io/node/public-api/PrivyClient.d.ts):
+// The payload MUST be the raw JSON string and the svix headers must keep their
+// casing. Verification throws on a bad signature or a timestamp outside svix's
+// 5-minute tolerance. Read the DIDs off event.fromUser.id / event.toUser.id —
+// there is no `transferred_account` field.
 //
-//   const privy = new PrivyClient({ appId, appSecret, webhookSigningSecret });
-//   const event = privy.webhooks().verify({
-//     payload: rawBodyUtf8String,            // MUST be the raw JSON string
-//     headers: {                             // svix headers, unchanged casing
-//       "svix-id": ...,
-//       "svix-timestamp": ...,
-//       "svix-signature": ...,
-//     },
-//   });
-//   // throws InvalidWebhookError on bad signature / stale timestamp
-//   //   (svix enforces a 5-minute timestamp tolerance)
-//   // event: WebhookPayload (a discriminated union on `type`).
+// Pass the dashboard signing secret UNCHANGED, `whsec_` prefix and all: the
+// SDK strips and base64-decodes it internally.
 //
-// For a transfer the payload is UserTransferredAccountWebhookPayload:
-//   { type: "user.transferred_account", account, deletedUser: true,
-//     fromUser: { id }, toUser: User }
-// We read event.fromUser.id (source DID) and event.toUser.id (destination DID).
-// There is NO `transferred_account` field.
-//
-// Signing secret: the dashboard endpoint secret is `whsec_<base64>`. Pass it
-// UNCHANGED — the SDK's svix.Webhook strips the `whsec_` prefix and base64-
-// decodes internally. Do not pre-strip or pre-decode it here.
-//
-// Dynamic import: mirrors auth/privy.ts. Keeping @privy-io/node (and its
-// hpke / jose / svix transitive deps) out of the static import graph means a
-// deploy that never enables the transfer receiver doesn't pay to load them.
+// Dynamic import, mirroring auth/privy.ts — a deploy that never enables the
+// transfer receiver shouldn't pay to load hpke/jose/svix.
 
 import type { PrivyClient as PrivyClientType } from "@privy-io/node";
 

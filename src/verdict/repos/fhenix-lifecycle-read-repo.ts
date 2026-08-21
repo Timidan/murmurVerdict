@@ -38,7 +38,7 @@ export interface FhenixLifecycleCursorRow {
 }
 
 /**
- * Wave L.A Phase 1b — latest sealed-Fhenix call for a (agent, market)
+ * Latest sealed-Fhenix call for a (agent, market)
  * pair, used by the Nanopayments resolver to bind a paid request to
  * the most recent anchored signal. Returns the columns the binding
  * tuple needs from `fhenix_sealed_calls` + `submissions`, joined on
@@ -132,7 +132,7 @@ export const fhenixLifecycleReadRepo = {
   },
 
   /**
-   * Wave L.A Phase 1b — used by the Nanopayments resolver
+   * Used by the Nanopayments resolver
    * (`resolveLatestSealedCall`) to find the latest **servable**
    * sealed call for a (agent, market) pair. Returns the columns
    * needed to build a `FhenixAnchorTuple` plus the binding metadata.
@@ -141,7 +141,7 @@ export const fhenixLifecycleReadRepo = {
    *   - `s.commit_hash IS NOT NULL` / `s.commit_scheme IS NOT NULL`:
    *     the binding tuple requires both; rows missing them pre-date
    *     the commit-hash backfill and aren't bindable.
-   *   - `f.reveal_status IN ('pending','revealed')`: codex audit
+   *   - `f.reveal_status IN ('pending','revealed')`:
    *     2026-05-24 — `'invalid'` / `'missed'` rows are terminal-bad
    *     and the reveal can never resolve, so binding to them would
    *     guarantee the buyer pays for a signal that never resolves.

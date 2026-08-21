@@ -1,89 +1,28 @@
-// ─── Privy access-token verification (V2 §7.1 casual tier) ──────────────────
+// ─── Privy access-token verification ────────────────────────────────────────
 //
-// Verifies a Privy-issued access token via the official @privy-io/node SDK
-// and returns a normalized claims object the dispatcher can route on, or
-// `null` if Privy auth is disabled / the token is invalid.
+// Verifies a Privy access token through @privy-io/node and returns normalized
+// claims, or `null` when Privy auth is off or the token is bad. Null, not a
+// throw, because the dispatcher falls through to API-key auth — an exception
+// here would make every client route around it. Privy unreachable with a cold
+// key cache also yields null, so the surface fails closed.
 //
-// SDK shape (verified against @privy-io/node@0.18.0 installed in this
-// worktree — see node_modules/@privy-io/node/lib/auth.d.ts and
-// node_modules/@privy-io/node/public-api/services/utils/auth.d.ts):
+// Uses PrivyClient rather than the standalone verifyAccessToken so the parsed
+// JWKS is cached on the instance instead of re-imported per request, and so
+// the same client can later hydrate email via users().get().
 //
-//   import { PrivyClient } from "@privy-io/node";
-//   const privy = new PrivyClient({
-//     appId: process.env.PRIVY_APP_ID,
-//     appSecret: process.env.PRIVY_APP_SECRET,
-//     // PRIVY_VERIFICATION_KEY is OMITTED — see "JWKS by default" below.
-//   });
-//   const claims = await privy.utils().auth().verifyAccessToken(accessToken);
-//   // claims => { app_id, issuer, issued_at, expiration, session_id, user_id }
+// With no PRIVY_VERIFICATION_KEY set — the recommended shape — the constructor
+// builds a remote-JWKS getter against Privy's own endpoint (60m cache, 10m
+// cooldown, so unknown-kid floods can't hammer them) and picks up Privy's key
+// rotations on its own. Setting the PEM instead pins the verifier to one key.
+// PRIVY_APP_SECRET is required either way: PrivyClient demands it even for
+// verify-only flows.
 //
-// We chose the PrivyClient form (not the standalone `verifyAccessToken`
-// function) for two reasons:
-//   1) It caches the parsed JWKS / verification key on the client instance
-//      so per-request verification doesn't re-parse the SPKI string. The
-//      standalone form re-imports the key on every call.
-//   2) Phase 4 will need privy.users().get({id_token}) to hydrate email
-//      lazily (the access token doesn't carry email — see §"What's NOT in
-//      the access token" below). Sharing one client keeps that wiring
-//      trivial when we add it.
+// The access token carries app_id, issuer, issued_at, expiration, session_id
+// and user_id — NOT email or login_method. Those live in the identity token.
 //
-// JWKS by default:
-//   When `jwtVerificationKey` is undefined, PrivyClient's constructor calls
-//   `createPrivyAppJWKS` (node_modules/@privy-io/node/lib/auth.js) which
-//   creates a `jose` remote-JWKS getter pointed at
-//   `<apiUrl>/v1/apps/<appId>/jwks.json` with `cacheMaxAge: 60 min` and
-//   `cooldownDuration: 10 min`. The cache age caps how long a successful
-//   fetch is reused; the cooldown throttles refetches when a presented
-//   token references an unknown `kid` (so a flood of unknown-kid tokens
-//   can't hammer Privy with refetches). That means we no longer paste a
-//   PEM at deploy time, and key rotations by Privy are picked up
-//   automatically within one cache window. The verifier function returned
-//   is plugged into the same `jose.jwtVerify` call the static-PEM path
-//   uses, so verification semantics are identical. If Privy is
-//   unreachable AND the cache is cold, verify throws → null → 401 (fail
-//   closed — desired for an auth surface).
-//
-// Why we don't throw on invalid tokens:
-//   The dispatcher (auth/dispatcher.ts) needs to fall through to API-key
-//   auth when a Privy token isn't present or doesn't verify. Throwing here
-//   would force every existing client to route around an exception. `null`
-//   lets the dispatcher try the next auth mode cleanly.
-//
-// Config contract:
-//   PRIVY_APP_ID            — required: the Privy application ID.
-//   PRIVY_APP_SECRET        — required: the server-side secret. The SDK
-//                             constructor demands it even for verify-only
-//                             flows because PrivyClient is one object that
-//                             also supports user-management API calls.
-//   PRIVY_VERIFICATION_KEY  — optional: PEM-encoded SPKI public key from
-//                             the Privy dashboard (Configuration → App
-//                             settings → JWT / Token verification). When
-//                             set, pins the verifier to this exact key and
-//                             skips the JWKS endpoint — useful for tying
-//                             a deploy to a specific Privy key against
-//                             upstream-compromise scenarios. When unset
-//                             (recommended for ordinary deploys), the SDK
-//                             fetches + caches the JWKS automatically.
-//
-// What's NOT in the access token:
-//   The Privy access token only carries: app_id, issuer, issued_at,
-//   expiration, session_id, user_id (the DID). It does NOT carry email
-//   or login_method. Those live in the IDENTITY token (separate JWT,
-//   verified via privy.users().get({id_token})) or behind an API call.
-//   For this scaffold we surface DID + sid + exp only. Phase 4 will
-//   wire identity-token verification when the dashboard needs to display
-//   the email.
-//
-// Replay / CSRF posture:
-//   - Privy tokens have a short exp (typically 1h). The SDK enforces
-//     `exp` for us via jose.jwtVerify under the hood.
-//   - The token is a Bearer credential — anyone in possession can present
-//     it. CSRF mitigation is the responsibility of the dispatcher's
-//     calling context (browser flows must use SameSite cookies; CLI
-//     flows present the token directly via Authorization header).
-//   - There is NO server-side nonce table for access tokens. If we need
-//     replay protection beyond the JWT exp, that lives in Phase 8's
-//     EIP-712 nonce design, not here.
+// The token is a bearer credential with a short exp and no server-side nonce
+// table. CSRF is the calling context's problem: SameSite cookies for browser
+// flows, an Authorization header for CLI ones.
 
 import type { PrivyClient as PrivyClientType } from "@privy-io/node";
 
@@ -96,7 +35,7 @@ export interface PrivyClaims {
   expires_at: string;
   /**
    * Optional — derived if available. The access token does NOT carry an
-   * email; this stays undefined in the scaffold. Phase 4's identity-token
+   * email; this stays undefined here. Identity-token
    * verifier (privy.users().get({id_token})) can populate it.
    */
   email?: string;

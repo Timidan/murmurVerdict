@@ -107,5 +107,5 @@ export type {
   WebhookRow,
 } from "./repos/webhooks-repo.js";
 
-// Wave 3 — DisputeGrounds re-export removed alongside the disputes
-// runtime (deleted in Wave 3a, table dropped by MIGRATION_031).
+// DisputeGrounds re-export removed alongside the disputes
+// runtime (table dropped by MIGRATION_031).

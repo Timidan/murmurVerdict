@@ -11,7 +11,7 @@
  * and `umaResolutionStatuses` as JSON-encoded STRINGS rather than arrays.
  * Every parse helper here does `JSON.parse(field)` then re-validates the
  * shape; a malformed JSON string returns 'pending' rather than throwing
- * so the resolver tick survives schema drift (V2_REVIEW BLOCKER #1).
+ * so the resolver tick survives schema drift.
  *
  * Cite: RESEARCH_polymarket_gamma_adapter.md §1, §2.1, §8.
  */
@@ -246,8 +246,7 @@ export function resolvedAtSeconds(
  * global key — slug is mutable, id is internal).
  *
  * NEVER throws. Every error path collapses to a sentinel + (in callers)
- * a logged error code; the resolver tick depends on this invariant
- * (V2_REVIEW BLOCKER #1, RESEARCH §8).
+ * a logged error code; the resolver tick depends on this invariant.
  */
 export function gammaMarketToOutcome(
   snapshot: GammaMarketSnapshot,

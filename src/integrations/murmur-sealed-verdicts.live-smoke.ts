@@ -1,12 +1,8 @@
 /**
  * Live smoke: CoFHE full-lifecycle round-trip against Base Sepolia.
  *
- * KNOWN BLOCKER RESOLVED (2026-05-20): commit 59dacbe migrated the sibling
- * operator-blind live script from deprecated cofhejs@0.3.1 to @cofhe/sdk@0.5.2.
- * cofhejs shipped node-tfhe@0.11.1, which could not deserialize the Fhenix
- * testnet's TFHE 0.5 CompactPkeCrs key format; @cofhe/sdk@0.5.2 ships
- * node-tfhe@1.5.3, which works against the current Base Sepolia testnet keys.
- * This smoke now follows that SDK path.
+ * Uses @cofhe/sdk, not the deprecated cofhejs: cofhejs ships node-tfhe@0.11.1,
+ * which cannot deserialize the testnet's TFHE 0.5 CompactPkeCrs key format.
  *
  * Discovered cofhejs@0.3.1 API surface (cofhejs/node):
  *   - cofhejs.initializeWithViem(params)

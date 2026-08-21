@@ -14,7 +14,7 @@
  * An adapter this daemon does not register cannot mint or settle a call —
  * see requireMintableExternalMarket in ../external-market-guard.ts.
  *
- * Cite: V2_IMPLEMENTATION_PLAN.md "Phase 3 MarketMaker Adapter Framework",
+ * Cite: V2_IMPLEMENTATION_PLAN.md "MarketMaker Adapter Framework",
  *       V2_DECISION_RECORD.md §2.4.
  */
 

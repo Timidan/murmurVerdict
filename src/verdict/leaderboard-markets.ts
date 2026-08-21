@@ -52,7 +52,7 @@ type ComputedAgentMarketRow = AgentMarketRow & { _sortKey: number };
  * resolved-count threshold -- an agent with 200 ETH-1h calls but 3 BTC-1h
  * calls is provisional on BTC-1h.
  *
- * P3 reframe rationale (Codex audit): "An agent with 200 BTC_24H calls
+ * P3 reframe rationale: "An agent with 200 BTC_24H calls
  * and 3 SOL_5M calls should not appear as a SOL_5M leader." -- this query
  * makes that physical.
  */

@@ -180,7 +180,7 @@ function fhenixLifecycleAlerts(
   servedAt: string,
   revealGraceSec = DEFAULT_REVEAL_GRACE_SEC,
 ): OperatorAlertInput[] {
-  // Graduated worker-health alerting (Codex review §10) — the old automatic
+  // Graduated worker-health alerting — the old automatic
   // time-only `missed` terminalization is gone. An overdue-past-grace pending
   // call warns; still unrevealed REVEAL_ESCALATE_AFTER_SEC later it escalates
   // to critical. This fires whether or not the fallback worker is enabled, so

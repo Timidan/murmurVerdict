@@ -87,7 +87,7 @@ export async function acceptSealedCall(
   // Shared by the pre-insert duplicate branch AND unique-race recovery: both
   // must prove the existing call is the SAME sealed Fhenix event before
   // returning an idempotent 200 (a blind recovery return let two concurrent
-  // DIFFERENT bodies both report success — codex review 2026-08-02).
+  // DIFFERENT bodies both report success.
   const replayFromExisting = (existingCallId: string): AcceptSealedCallResult => {
     const existingCtx = submissionsRepo.loadResolverContext(db, existingCallId);
     if (existingCtx?.privacy_mode !== "sealed_fhenix") {

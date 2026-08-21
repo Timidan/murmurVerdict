@@ -32,8 +32,6 @@ import {
 } from "../../verdict/market-adapter-config.js";
 import { isoFromMs } from "../../verdict/time.js";
 
-// ─── Constants ──────────────────────────────────────────────────────────────
-
 export const VENUE_ADAPTER_ID = "polymarket-gamma" as const;
 const DEFAULT_TTL_MS = 60_000;
 const DEFAULT_FETCH_BUDGET_MS = 2_000;
@@ -159,8 +157,6 @@ export class PolymarketVenueSnapshotProvider
   cacheSize(): number {
     return this.cache.size;
   }
-
-  // ─── Internal ─────────────────────────────────────────────────────────────
 
   private async liveFieldsWithinBudget(
     marketId: string,

@@ -3,12 +3,9 @@ import type Database from "better-sqlite3";
 import { nowIso } from "../time.js";
 
 /**
- * Per codex audit 2026-05-23: payer and source_domain identifiers
- * must be normalized to lowercase before insert AND lookup so case
- * variants don't bypass the prefix UNIQUE / break replay detection.
- * Payer addresses are EVM 0x... strings (case-insensitive); the
- * source_domain is `chainId:contractAddress` and the contract
- * address part is also case-insensitive.
+ * payer and source_domain must be lowercased before insert AND lookup, or a
+ * case variant slips past the prefix UNIQUE and breaks replay detection. Both
+ * carry case-insensitive EVM addresses.
  */
 function normalizePayer(payer: string): string {
   return payer.toLowerCase();
@@ -19,39 +16,16 @@ function normalizeSourceDomain(sourceDomain: string): string {
 }
 
 /**
- * Wave L.A — Nanopayments via Circle Gateway middleware. Receipts repo.
+ * Nanopayments receipts. Persists the composite idempotency key, the status
+ * state machine, and the Fhenix anchor binding for every paid-inference call
+ * served via POST /v2/nanopay/infer.
  *
- * Persists the composite idempotency key, status state machine, and
- * full Fhenix anchor binding for every paid-inference call served via
- * the `POST /v2/nanopay/infer` rail.
+ * insertSettlingIntent writes its row BEFORE Circle /settle, so a crash
+ * mid-settle leaves something to reconcile rather than free-serving.
  *
- * Design notes:
- *   - Phase 1: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
- *   - Phase 1b (this file's payment_handle rename):
- *     docs/superpowers/specs/2026-05-24-wave-l-a-phase-1b-design.md
- *
- * Phase 1 (testnet MVP) responsibilities:
- *   - insertSettlingIntent: write row BEFORE calling Circle /settle so
- *     a crash mid-settle leaves a row to reconcile.
- *   - markSettled: transition settling → settled, persist Circle's
- *     transaction UUID + reveal artifact (if reveal already open).
- *   - markFailed: transition settling → failed.
- *   - findByCompositeKey: exact composite-key lookup (cached-response
- *     path on replay).
- *   - findByPayerHandleDomain: partial-key lookup for pre-settle
- *     conflict detection (returns 0 or 1 row).
- *
- * Phase 3 will add:
- *   - findStuckSettlingOlderThan: reconciliation cron query.
- *   - markSettlementUnknown: terminal state after N failed reconciles.
- *   - patchRevealArtifact: update reveal_artifact_json when horizon opens.
- *
- * The column was historically renamed from `eip3009_nonce` to the more
- * general `payment_handle` in migration v52. The durable payment path can
- * once again see the signed nonce and stores it here; Circle's transaction
- * UUID remains in its dedicated `circle_transaction_uuid` column. Keeping
- * the general column name avoids a reversing migration while preserving the
- * prefix-idempotency semantics.
+ * `payment_handle` is the old `eip3009_nonce` column, renamed in v52. It holds
+ * the signed nonce again; Circle's transaction UUID has its own column. The
+ * general name stays so no reversing migration is needed.
  */
 export interface NanopayReceiptRow {
   readonly id: number;

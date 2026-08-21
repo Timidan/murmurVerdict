@@ -2,8 +2,7 @@ import type { FhenixRevealSource } from "./repos/fhenix-sealed-calls-repo.js";
 
 // publishReveal is permissionless, so the reveal-event `agent` field is always
 // the original call's agent — it does NOT identify who broadcast the reveal.
-// Authoritative attribution therefore uses the successful publish tx `from`
-// (Codex review §6):
+// Authoritative attribution therefore uses the successful publish tx `from`:
 //   from == the murmur fallback reveal EOA        -> daemon_fallback
 //   from == the agent's registered controller EOA -> agent (provable self-reveal)
 //   any other sender                              -> unattributed_external

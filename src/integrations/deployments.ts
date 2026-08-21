@@ -193,7 +193,6 @@ export function resolveFhenixContractAddress(
   );
   if (sealedVerdictsAddress) return sealedVerdictsAddress;
 
-  // FHENIX_CONTRACT_ADDRESS (a legacy alias) used to be a second source here.
   // Two names for one value meant sync-deployments could update one and leave
   // the other pointing at a dead contract — harmless only while the primary
   // was set, and a live trap the moment it was cleared.

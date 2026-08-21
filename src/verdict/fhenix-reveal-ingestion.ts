@@ -312,8 +312,7 @@ export async function attachInvalidFhenixReveal(
       }, deps.now),
     );
     // An invalid decrypted value was still PUBLICLY REVEALED — record the
-    // publish attribution so it counts toward disclosure, not withholding
-    // (Codex review §6).
+    // publish attribution so it counts toward disclosure, not withholding.
     usageRepo.emit(
       deps.db,
       makeRevealUsage(ctx.agent_id, "fhenix_reveal_published", {

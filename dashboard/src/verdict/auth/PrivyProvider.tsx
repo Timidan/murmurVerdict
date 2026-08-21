@@ -1,4 +1,4 @@
-// ─── Privy provider wrapper for the dashboard (Phase 7a) ────────────────────
+// ─── Privy provider wrapper for the dashboard ───────────────────────────────
 //
 // Wraps the underlying `@privy-io/react-auth` <PrivyProvider> with:
 //   1) Env-driven `appId` (read from VITE_PRIVY_APP_ID).

@@ -9,7 +9,7 @@
 //   murmur-rk-v2\n<audience>\n<runtime_key_id>\n<timestamp>\n<nonce>\n
 //   <METHOD>\n<path-and-query>\n<raw-body-sha256>
 //
-// Design notes (per codex reviews 2026-08-02):
+// Design notes:
 //   - The audience is a CONFIGURED deployment identifier, never the inbound
 //     Host header (proxies rewrite it), so signatures can't cross deployments.
 //   - runtime_key_id in the string stops cross-key reuse when one signing

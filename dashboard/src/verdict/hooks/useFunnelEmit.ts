@@ -1,4 +1,4 @@
-// ─── useFunnelEmit — fire-and-forget onboarding funnel emit (Phase 7d) ─────
+// ─── useFunnelEmit — fire-and-forget onboarding funnel emit ────────────────
 //
 // Single entry point for "emit a funnel event from a page". Wraps three
 // concerns the call-sites otherwise duplicate:
@@ -39,7 +39,7 @@ import { useCallback, useRef } from "react";
 import { isPrivyConfigured } from "../auth/privy-config.js";
 import { verdictApi, type FunnelEventKind } from "../api.js";
 
-// Codex P2 fix — earlier we statically imported `getAccessToken` from
+// Do not statically import `getAccessToken` from
 // `@privy-io/react-auth`, which dragged the entire Privy SDK into any
 // chunk that referenced this hook. LandingPage in particular pulled
 // the ~2MB Privy bundle onto the public-route entrypoint just to fire
@@ -60,7 +60,7 @@ async function loadGetAccessToken(): Promise<() => Promise<string | null>> {
  * "landing → compete" funnel measurement).
  *
  * Until the route supports anonymous emits we hold them in a client-side
- * buffer; once the user signs in, a future Phase 8 sweep can flush. For
+ * buffer; once the user signs in, a later sweep can flush it. For
  * 7d we just no-op the unauthenticated path so the prod build doesn't
  * spew 401s into the console.
  */

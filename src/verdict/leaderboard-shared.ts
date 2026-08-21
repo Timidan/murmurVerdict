@@ -98,7 +98,7 @@ export function publicRankedLeaderboardRows<Row>(
   });
 }
 
-// Wave 3 collapse -- the leaderboard's default audience is every kind that
+// The leaderboard's default audience is every kind that
 // represents a marketplace-eligible reputation surface: operator-owned agents
 // plus benchmarks plus attested agents. `internal_test` stays off the board.
 export const DEFAULT_KINDS: AgentKind[] = ["agent", "benchmark", "attested"];

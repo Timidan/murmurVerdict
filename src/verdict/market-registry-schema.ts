@@ -88,7 +88,7 @@ export const SCORING_KINDS = [
 export const ScoringKindSchema = z.enum(SCORING_KINDS);
 export type ScoringKind = z.infer<typeof ScoringKindSchema>;
 
-// Wave 4a — MIGRATION_029 widened the SQL CHECK on `oracles.kind` to
+// MIGRATION_029 widened the SQL CHECK on `oracles.kind` to
 // include 'external_adapter' for adapter-resolved markets (Polymarket
 // Gamma is the first such adapter; future Kalshi / Drift / event-feed
 // adapters reuse the same value with their own oracle_id). The Zod enum

@@ -6,7 +6,7 @@ import "./verdict/styles/animated-mark.css";
 import { VerdictRouter } from "./verdict/Router.js";
 import { Splash } from "./verdict/components/Splash.js";
 
-// Codex P2 from Phase 7a review: Privy SDK was being loaded on every
+// The Privy SDK was being loaded on every
 // route via a top-level <PrivyProvider> wrap. The provider now mounts
 // only when the router resolves an /account/* route — see
 // dashboard/src/verdict/auth/AccountShell.tsx, lazy-imported from

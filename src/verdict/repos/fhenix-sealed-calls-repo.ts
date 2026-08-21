@@ -297,7 +297,7 @@ export const fhenixSealedCallsRepo = {
   // worker decides the action from getCall(...) at the safe head (verifying the
   // stored ct handles), never from these columns. `submissions.status` is NOT
   // joined here: the public-reveal obligation survives an inconsistent internal
-  // status (Codex review §1).
+  // status.
   listRevealCandidates(
     db: Database.Database,
     input: {

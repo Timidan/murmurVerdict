@@ -27,7 +27,7 @@ export type {
   VerdictEvent,
 } from "../types/events.js";
 
-// Compile-time guard (codex option iii): the wire `WireAgentKind` copy in
+// Compile-time guard: the wire `WireAgentKind` copy in
 // src/types/events.ts MUST stay identical to the canonical `AgentKind`
 // (schema.ts AgentKindSchema). A future enum addition makes this assertion
 // fail the BACKEND build, forcing the shared wire type to be updated rather

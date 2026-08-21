@@ -40,7 +40,7 @@ export interface CallAcceptedEvent {
   /** Retained for older clients; always null. */
   acceptance_receipt_hash?: string;
   accepted_at: string;
-  // Phase 10 / Z4-extra discriminators — Polymarket and other
+  // Polymarket and other
   // non-native-price adapters land on the same SSE channel; subscribers
   // use these to route render without inferring from the optional
   // plaintext block. NEVER load-bearing for any privacy guarantee.
@@ -75,11 +75,11 @@ export interface CallResolvedEvent {
   signed_return?: string | null;
   call_score: number | null;
   resolved_at: string;
-  // Phase 10 / Z4-extra discriminators — see CallAcceptedEvent.
+  // See CallAcceptedEvent.
   adapter_id?: string;
   market_family?: string;
   market_id?: string;
-  // Phase 5 — universal payout-vector additive fields. Populated only when
+  // universal payout-vector additive fields. Populated only when
   // the resolver dispatched through an adapter that produced the v2 outcome
   // shape. Legacy subscribers reading just `outcome`/`call_score` keep working.
   /** Wire-shape Outcome (kind + payoutNumerators stringified +

@@ -9,7 +9,7 @@
  *   - Bootstrap: pre-seeding accounts for benchmark / internal_test
  *     agents the operator runs directly.
  *
- * Wave 5 — every successful claim appends an `admin_claim` row to
+ * every successful claim appends an `admin_claim` row to
  * `agent_security_events`. The event is the canonical forensic trail;
  * stdout logging here is auxiliary.
  *

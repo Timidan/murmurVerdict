@@ -11,7 +11,7 @@
  * This module deliberately does not infer settlement after a transport
  * error. Authoritative reconciliation remains a separate operational path.
  *
- * Pivot rationale (codex audit 2026-05-23): the previous hand-rolled
+ * Pivot rationale: the previous hand-rolled
  * client was repeatedly catching wire-format mismatches — wrong
  * settle body shape, wrong response field names, wrong transfer/search
  * filter names, missing `success` check, wrong EIP-712 domain for

@@ -1,100 +1,28 @@
 /**
- * Venue ticker HTTP surface — public, read-only, venue-owned.
+ * Venue ticker HTTP surface — public, read-only, no auth. Both routes are
+ * display surfaces; nothing here reaches the resolver. Payload shapes and the
+ * rules a renderer must honor live in src/types/wire-venue.ts.
  *
- *   GET /v2/venue/stream                    SSE, batched venue ticks
- *   GET /v2/venue/live?market=0x…&market=…  snapshot for initial paint
+ * Deliberately NOT on `/v1/stream`: that surface fans every event to every
+ * consumer and ignores the result of `res.write()`, so a slow reader buffers
+ * into the daemon's heap. Venue ticks are the highest-rate stream murmur emits,
+ * so they get their own route with a bounded queue.
  *
- * Deliberately NOT mounted on `/v1/stream`. That surface fans every event to
- * every consumer including public embeds, and its write path ignores the
- * result of `res.write()` entirely — so a slow reader silently buffers into
- * the daemon's heap. Venue ticks are the highest-rate stream murmur emits
- * (~5 order-book updates/second/market before coalescing), so they get their
- * own route with their own bounded queue — and a reader that overruns it is
- * disconnected rather than quietly trimmed, because these frames carry state
- * transitions a later frame cannot restate.
+ * GET /v2/venue/stream — text/event-stream. 503 `venue_ticker_unavailable` when
+ * the ticker is off. Otherwise the FIRST frame is a full-snapshot `venue_tick`
+ * carrying both maps; later frames are deltas every 2s, plus `venue_resolution`
+ * frames as they occur and a `: heartbeat` comment every 25s. A client that
+ * merges the first frame keeps markets and resolutions the daemon dropped.
  *
- * Both routes are display surfaces. Nothing here reaches the resolver.
+ * A reader that overruns the queue is DISCONNECTED, not silently trimmed:
+ * these frames carry one-shot transitions (`removed[]`, resolutions) a later
+ * frame cannot restate. Reconnect and take the snapshot again.
  *
- * ─── THE CONTRACT (stable; the dashboard consumes it verbatim) ─────────────
- *
- * GET /v2/venue/stream — `text/event-stream`, public, no auth.
- *   503 {"code":"venue_ticker_unavailable","message":…} when the ticker is
- *   off or stopped. Otherwise the FIRST frame is always a full-snapshot
- *   `venue_tick` carrying the whole current cache — both maps, markets AND
- *   resolutions — then one `venue_tick` per batch interval (2s) carrying only
- *   what changed, plus `venue_resolution` frames as they occur, plus a
- *   `: heartbeat` comment every 25s.
- *
- *     event: venue_tick
- *     data: {
- *       "ts": "2026-08-10T04:41:03.412Z",           // ISO, millisecond
- *       "markets": [{
- *         "market_id": "0x…64hex",                  // == Polymarket conditionId
- *         "freshness": "live" | "warming" | "stale",
- *         "updated_at": "2026-08-10T04:41:02.318Z" | null,
- *         "outcomes": [{
- *           "label": "Up",                          // the VENUE's own label
- *           "token_id": "110946…",                  // CLOB token id, decimal
- *           "price": 0.505 | null,                  // mid, else last trade
- *           "best_bid": 0.5 | null,
- *           "best_ask": 0.51 | null,
- *           "last_trade_price": 0.5 | null
- *         }, … ]
- *       }, … ],
- *       "removed": ["0x…", …],                      // DELTA frames only
- *       "resolutions": [ <venue_resolution row>, …] // SNAPSHOT frame only
- *     }
- *
- *     event: venue_resolution
- *     data: {
- *       "market_id": "0x…64hex",
- *       "outcome_labels": ["Up","Down"],            // stored payout order
- *       "outcome_prices": [1, 0],                   // aligned, sums to 1
- *       "resolved_at": "2026-08-10T04:45:03Z",      // the VENUE's stamp
- *       "winning_label": "Up" | null,               // null on a 50-50/void
- *       "source": "gamma" | "clob"
- *     }
- *
- *   Notes the UI must honor:
- *     · `outcomes` is NOT YES/NO. Labels are arbitrary venue strings and are
- *       already in the stored payout-vector order — render them, do not map.
- *     · Both outcomes are quoted independently. Never derive one side as
- *       1 − the other; a wide or one-sided book makes that wrong.
- *     · The first frame REPLACES both maps; later frames merge markets, apply
- *       `removed[]` as deletions, and upsert resolutions. A client that merges
- *       the first frame keeps markets and resolutions the daemon dropped.
- *     · `price` is null until a book arrives. `freshness` is one field per
- *       market rolled up from every outcome's every QUOTE FIELD: `'warming'`
- *       while any outcome has never been answered, `'stale'` while any non-null
- *       number predates a transport failure, `'live'` only once every number on
- *       screen arrived after it. Reconnecting does not make a market live —
- *       receiving the data does; one outcome never vouches for the other, and
- *       a `last_trade_price` never vouches for `best_bid`/`best_ask`. A frame
- *       whose values all fail validation refreshes nothing.
- *     · `venue_resolution` is idempotent and may repeat across daemon
- *       restarts — upsert by `market_id`.
- *     · A client that cannot keep up is CLOSED, not silently trimmed: the
- *       stream carries one-shot state transitions (`removed[]`, resolutions)
- *       that cannot be re-derived from a later frame. Reconnect and take the
- *       snapshot again.
- *
- * GET /v2/venue/live — `application/json`, public, no auth.
- *   `?market=0x…` repeats, and commas inside one value also split. Omit it
- *   entirely to get every tracked market. Any value that is not a 32-byte hex
- *   condition id ⇒ 400 {"code":"invalid_market_id",…}. Ids dedupe, and at
- *   most 50 are answered.
- *
- *     200 {
- *       "ts": "2026-08-10T04:41:03.412Z",
- *       "markets": [ <same row as venue_tick>,
- *                    {"market_id":"0x…","freshness":"unknown"} ],
- *       "resolutions": [ <same row as venue_resolution> ],
- *       "truncated": false
- *     }
- *
- *   `freshness:"unknown"` is a well-formed id this daemon does not track
- *   (never registered, out of the tracked window, or operator-halted). It
- *   carries no `outcomes` and no `updated_at`.
+ * GET /v2/venue/live — application/json. `?market=` repeats, and commas inside
+ * one value also split. Omit it for every tracked market. A value that is not a
+ * 32-byte hex condition id is a 400 `invalid_market_id`. Ids dedupe, at most 50
+ * are answered, and `freshness:"unknown"` means a well-formed id this daemon
+ * does not track.
  */
 
 import { Router } from "express";
@@ -388,8 +316,6 @@ export function venueTickerRouter(deps: VenueTickerRouterDeps): Router {
 
   return router;
 }
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
 
 export const VENUE_SNAPSHOT_CAP = VENUE_SNAPSHOT_MAX_MARKETS;
 

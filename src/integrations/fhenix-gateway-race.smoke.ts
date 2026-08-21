@@ -257,7 +257,7 @@ async function main(): Promise<void> {
     });
 
     // ── 4. markSubmitted refuses to write after claim was swept ─────
-    // Closes the scenario codex flagged: a slow writeContract outlives
+    // The scenario this closes: a slow writeContract outlives
     // stuckAfterMs, the sweep reclaims, another writer takes the row,
     // then the original writer's markSubmitted returns LATE. Without
     // the claim-token guard the late mark would clobber the new

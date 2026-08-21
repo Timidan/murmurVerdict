@@ -39,7 +39,7 @@ export interface NanopayRouterDeps {
    * Default per-call price in dollar string form (e.g. "$0.001"),
    * used as the `gateway.require(price)` argument. The SDK
    * converts this to USDC atomic units via its money-parser
-   * registry. Phase 1: pipelines all share the same default; Phase 2
+   * registry. Pipelines all share the same default today; per-pipeline
    * will switch to per-pipeline pricing.
    *
    * Note: pipeline-specific pricing requires generating one middleware

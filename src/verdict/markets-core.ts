@@ -2,7 +2,7 @@
  * Universal commitment + outcome primitives for the v2 multi-market architecture.
  *
  * Cite: `.claude/architecture/V2_DECISION_RECORD.md` §2.1 (Outcome), §2.2
- * (Commitment), §2.3 (Score). The codex audit and the market-pattern subagent
+ * (Commitment), §2.3 (Score). The audit and the market-pattern research
  * converged on the same primitive: a **CTF payout-vector** with a
  * `sourceProtocol` tag. Every decision-market protocol either emits one
  * natively (Polymarket / CTF / Gnosis) or trivially packs into one

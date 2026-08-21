@@ -227,7 +227,7 @@ export class FhenixRevealWorker {
       }
 
       // Verify the on-chain ct handles equal the stored handles before we ever
-      // act on a Sealed/Opened call (Codex review §1).
+      // act on a Sealed/Opened call.
       if (call.state === CALL_STATE.Sealed || call.state === CALL_STATE.Opened) {
         const sealed = fhenixSealedCallsRepo.byCallId(this.db, job.call_id);
         if (!sealed) {

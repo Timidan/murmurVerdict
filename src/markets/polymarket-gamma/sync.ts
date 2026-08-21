@@ -48,8 +48,6 @@ const TICK_BUDGET = 50; // max rows scanned per tick (resolver-side budget)
 // selection without ever scheduling a poll.
 const POLL_RESOLVED_FREEZE_MS = 365 * 24 * 60 * 60 * 1000;
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
 export interface SyncStateRow {
   market_id: string;
   adapter_id: string;
@@ -82,8 +80,6 @@ export interface SyncTickResult {
   polled: number;
   alerts: number;
 }
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
 
 function nowIsoFromMs(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");

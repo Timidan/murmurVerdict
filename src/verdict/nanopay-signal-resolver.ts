@@ -49,8 +49,8 @@ export function createNanopaySignalResolver(
       commitScheme: row.commit_scheme,
       commitHash: row.commit_hash,
     };
-    // Phase 1b returns revealArtifact=null regardless. Materializing the
-    // artifact when `fhenix_sealed_calls.revealed_at IS NOT NULL` is Phase 3
+    // revealArtifact is null regardless. Materializing the
+    // artifact when `fhenix_sealed_calls.revealed_at IS NOT NULL` is later
     // reconciler work.
     return { anchor, revealArtifact: null };
   };

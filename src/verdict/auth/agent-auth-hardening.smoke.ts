@@ -1,7 +1,6 @@
 // ─── Agent-auth hardening smoke ──────────────────────────────────────────────
 //
-// Pins the two security mechanisms added after the PayBox competitive review
-// (codex-reviewed 2026-08-02):
+// Pins the two security mechanisms added after the PayBox competitive review:
 //
 //   A. Proof-of-possession runtime keys (murmur-rk-v2): a key whose
 //      controller-signed policy carries signing_pubkey REQUIRES a valid

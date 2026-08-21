@@ -8,8 +8,7 @@
  * adapter declares its commitment / market-config Zod schemas, observes the
  * resolution the venue published, and scores calls. Murmur never authors a
  * market and never decides an outcome itself, so there is no self-resolving
- * adapter here. Wave 4b retired the receipts subsystem; call + reveal +
- * resolution rows are the canonical evidence.
+ * adapter here. Call + reveal + resolution rows are the canonical evidence.
  *
  * Only the type primitives + an in-memory registry live here; concrete
  * adapters are siblings (`src/markets/polymarket-gamma/`, ...).
@@ -21,7 +20,7 @@ import type { Commitment, MarketRef, Outcome } from "../verdict/markets-core.js"
 // ─── MarketRef ───────────────────────────────────────────────────────────────
 
 // FIX 7 — single source of truth. The duplicate definition this file used
-// to carry has been replaced with a re-export from markets-core. Adapters
+// re-exported from markets-core. Adapters
 // importing `MarketRef` from this module continue to compile byte-identically
 // — same name, same shape — but every consumer now agrees on one type.
 export type { MarketRef } from "../verdict/markets-core.js";
@@ -50,13 +49,9 @@ export type ObservationContext = Record<string, unknown>;
  * → Outcome) on resolve. `score` runs adapter-private scoring on top of the
  * shared {@link Commitment} / {@link Outcome} primitives.
  *
- * Wave 4d note: this interface used to carry `acceptCommitment` /
- * `verifyReceipt` / `AcceptanceReceipt`, leftover from the pre-Wave-4b
- * receipts model. The receipts subsystem was retired in Wave 4b; the
- * call + reveal + resolution rows are the canonical evidence. The adapter
- * surface is now exactly "observe resolution" + "score the resolved outcome"
- * — both of which the resolver dispatches through {@link MarketMakerRegistry}
- * so cross-adapter dispatch stays load-bearing.
+ * The surface is exactly "observe resolution" plus "score the resolved
+ * outcome", both dispatched through {@link MarketMakerRegistry} so
+ * cross-adapter dispatch stays load-bearing.
  *
  * `marketFamily` is open-set so future families can land without a core bump,
  * but Murmur curates an allowlist (`'prediction-market-binary' |

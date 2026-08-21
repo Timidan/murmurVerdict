@@ -13,7 +13,7 @@ export type {
 } from "../nanopay-types.js";
 
 /**
- * Wave L.A Phase 1 — Nanopayments HTTP route (SDK-pivot edition).
+ * Nanopayments HTTP route.
  *
  * Mounts `POST /v2/nanopay/infer/:pipelineId` on the daemon. The
  * `@circle-fin/x402-batching/server` owns canonical requirement discovery,

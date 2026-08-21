@@ -30,7 +30,7 @@ export function accountFunnelEventsRouter(
     now,
   } = deps;
 
-  // POST /v1/account/events - thin allowlisted funnel-event emit (Phase 7d).
+  // POST /v1/account/events - thin allowlisted funnel-event emit.
   //
   // Account-scoped audit trail for the Maya onboarding loop. The dashboard
   // fires one event per UX step (landing.viewed -> compete.clicked -> ... ->

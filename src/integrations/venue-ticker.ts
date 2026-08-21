@@ -2,88 +2,39 @@
  * Venue ticker — live Polymarket order-book + resolution feed for the
  * dashboard market board. DISPLAY ONLY.
  *
- * ─── Pure-referee boundary (structural, enforced by a smoke) ───────────────
+ * PURE-REFEREE BOUNDARY, asserted in both directions by
+ * venue-ticker-referee.smoke.ts: no resolver module may import this file, and
+ * this file imports none. It also avoids the adapter's Gamma/CLOB singletons,
+ * so a display outage, a rate limit or a poisoned cache here can never reach a
+ * scored verdict. Only pure leaves are shared — the config parser and the two
+ * transforms. HTTP clients are shared as CLASSES; the instances are private,
+ * with a much shorter cache TTL than the resolver wants.
  *
- * Murmur's own resolution comes exclusively from the resolver
- * (`src/verdict/resolver.ts` → `src/verdict/resolution-lifecycle.ts` →
- * the venue adapter registry). This module NEVER participates in it:
+ * CLOB websocket quirks, established by live probe against mainnet. Little of
+ * this is documented upstream:
  *
- *   · nothing under `src/verdict/resolver*` or `src/verdict/resolution-
- *     lifecycle*` may import this file;
- *   · this file imports no resolver module;
- *   · it does not use the adapter's module-level Gamma/CLOB singletons
- *     (`setDefaultPolymarketClient`), so a display outage, a rate limit, or
- *     a poisoned cache here cannot reach a scored verdict.
- *
- * `src/integrations/venue-ticker-referee.smoke.ts` asserts both directions.
- * It shares only pure leaves with the adapter: config parsing
- * (`markets/polymarket-gamma/config.ts`), the pure Gamma transform
- * (`transform.ts`), and the pure CLOB transform (`clob-transform.ts`).
- * The HTTP clients are shared as CLASSES; the instances are private to this
- * ticker (with a much shorter active-cache TTL than the resolver wants).
- *
- * ─── Verified websocket protocol (live probe, 2026-08-10, mainnet CLOB) ────
- *
- * Endpoint: `wss://ws-subscriptions-clob.polymarket.com/ws/market`.
- * Public, key-less, read-only.
- *
- *  1. SUBSCRIBE — send ONE json text frame right after `open`:
- *       {"type":"market","assets_ids":["<tokenId>", …]}
- *     `assets_ids` are CLOB token ids (decimal strings), NOT condition ids.
- *
- *  2. INITIAL BOOK — the server answers immediately with a JSON **array**
- *     holding one `book` object per subscribed asset:
- *       {market, asset_id, timestamp:"<ms>", hash, tick_size:"0.01",
- *        last_trade_price:"0.500", event_type:"book",
- *        bids:[{price,size},…], asks:[{price,size},…]}
- *     Observed ordering was bids ascending / asks descending, so this module
- *     computes best bid as max(bid.price) and best ask as min(ask.price)
- *     rather than trusting index 0. Book frames also RECUR mid-stream (as
- *     single-element arrays) after larger trades, so the handler must accept
- *     an array of any length at any time, not only on subscribe.
- *
- *  3. price_change — a single JSON **object** (not an array) carrying a
- *     batch for one market:
- *       {market, timestamp:"<ms>", event_type:"price_change",
- *        price_changes:[{asset_id, price, size, side,
- *                        hash, best_bid, best_ask}, …]}
- *     `price` / `size` / `side` describe the level that changed — they are
- *     NOT the market price. `best_bid`/`best_ask` are the live top of book
- *     and are the only quote fields this module reads.
- *
- *  4. last_trade_price — a single JSON object:
- *       {market, asset_id, price, size, fee_rate_bps, side,
- *        timestamp, event_type:"last_trade_price"}
- *
- *  5. KEEPALIVE IS REQUIRED. The server answers a `PING` **text** frame with
- *     a `PONG` text frame. A probe socket that never pinged and received no
- *     data was closed by the server at ~126s with code 1006, so a quiet
- *     subscription dies without a keepalive. This module pings every 10s and
- *     treats an unanswered PING as a dead socket.
- *
- *  6. RESUBSCRIBE IS NOT SUPPORTED. Sending a second `{"type":"market",…}`
- *     frame on a live socket answers with the text `INVALID OPERATION` and
- *     the original subscription stays. Changing the tracked set therefore
- *     REQUIRES a reconnect, which is what `syncTrackedSet` does whenever the
- *     tracked signature changes.
- *
- *  7. An empty `assets_ids` array is accepted and simply yields no data, so
- *     "nothing tracked" is represented by keeping the socket closed.
- *
- *  8. VOLUME. An 80-asset subscription (the 40-market cap) is accepted and
- *     produced ~380 frames/second across ~12 active markets. That is why the
- *     transport coalesces: consumers get ONE batched frame per interval,
- *     never the raw feed.
- *
- * ─── Resolution ────────────────────────────────────────────────────────────
+ *  · `assets_ids` in the subscribe frame are CLOB token ids, not condition ids.
+ *  · Observed book ordering was bids ascending / asks descending, so best bid
+ *    is max(bid.price) and best ask is min(ask.price) — index 0 is not safe.
+ *  · Book frames RECUR mid-stream as single-element arrays after larger
+ *    trades, so an array of any length can arrive at any time.
+ *  · In a price_change batch, `price`/`size`/`side` describe the level that
+ *    changed and are NOT the market price. Only best_bid/best_ask are read.
+ *  · KEEPALIVE IS REQUIRED: a quiet socket that never PINGs is closed by the
+ *    server at ~126s with 1006. Ping every 10s; an unanswered PING is death.
+ *  · RESUBSCRIBE IS NOT SUPPORTED — a second subscribe frame answers `INVALID
+ *    OPERATION` and leaves the original subscription. Changing the tracked set
+ *    requires a reconnect, which is what syncTrackedSet does.
+ *  · An empty `assets_ids` is accepted and yields nothing, so "tracking
+ *    nothing" is represented by keeping the socket closed instead.
+ *  · An 80-asset subscription produced ~380 frames/second. Hence the
+ *    coalescing: consumers get one batched frame per interval, never the feed.
  *
  * The websocket does not announce resolution. Markets past their
- * `market_clocks.resolution_at_ms` are polled (staggered, ≤2 in flight):
- * Gamma first, and on Gamma absence — which is NORMAL for 5-minute
- * micro-markets, Gamma drops them minutes after close — the read-only CLOB
- * market endpoint. Both are mapped by the SAME pure transforms the resolver
- * uses, and `resolved_at` always comes from the venue's own stamp
- * (`resolvedAtSeconds`), never from poll time.
+ * resolution_at_ms are polled, Gamma first, falling back to the CLOB market
+ * endpoint — Gamma absence is NORMAL for 5-minute markets, which it drops
+ * minutes after close. `resolved_at` always comes from the venue's own stamp,
+ * never from poll time.
  */
 
 import type Database from "better-sqlite3";
@@ -100,8 +51,6 @@ import {
 import { POLYMARKET_CONDITION_ID_REGEX } from "../markets/polymarket-gamma/config.js";
 import { gammaMarketToOutcome } from "../markets/polymarket-gamma/transform.js";
 import { isoFromMs } from "../verdict/time.js";
-
-// ─── Constants ──────────────────────────────────────────────────────────────
 
 export const VENUE_TICKER_ADAPTER_ID = "polymarket-gamma" as const;
 export const VENUE_WS_URL =
@@ -330,8 +279,6 @@ interface VenueSocket {
 }
 
 type VenueSocketFactory = (url: string) => VenueSocket;
-
-// ─── Implementation ─────────────────────────────────────────────────────────
 
 export class VenueTicker implements VenueTickerReader {
   private readonly db: Database.Database;

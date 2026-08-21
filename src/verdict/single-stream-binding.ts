@@ -189,7 +189,7 @@ export function bindingFromReceipt(row: NanopayReceiptRow): NanopayBinding {
  * responses carry `revealArtifact: null` and clients can poll until
  * the horizon opens.
  *
- * Phase 1: the artifact shape mirrors what the existing daemon's
+ * The artifact shape mirrors what the existing daemon's
  * sealed-call reveal pipeline produces. We keep it as `unknown` here
  * so this helper module stays free of the wider reveal-decoding
  * dependency surface; the route handler does the structured assembly.

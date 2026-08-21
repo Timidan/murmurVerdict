@@ -27,7 +27,7 @@ import {
 
 // The reveal EOA's own contract surface. openReveal / publishReveal are
 // permissionless (any funded key) — the dedicated key needs no privilege, it
-// only keeps the worker off the relayer key's nonce (Codex review §3).
+// only keeps the worker off the relayer key's nonce.
 const REVEAL_ABI = parseAbi([
   "function openReveal(bytes32 callId)",
   "function publishReveal(bytes32 callId, uint8 binaryIndex, uint16 confidenceBps, bytes binaryIndexSignature, bytes confidenceSignature)",
@@ -350,8 +350,8 @@ class CofheRevealDecryptor implements RevealDecryptor {
       .decryptForTx(BigInt(ctHash))
       .set404RetryTimeout(COFHE_404_RETRY_TIMEOUT_MS);
     // The ciphertext is globally public after openReveal, so withoutPermit()
-    // drops the permit lifecycle entirely when the SDK path is reliable
-    // (Codex review §4); the permit path is the proven default.
+    // drops the permit lifecycle entirely when the SDK path is reliable; the
+    // permit path is the proven default.
     const exec = this.withoutPermit
       ? builder.withoutPermit()
       : builder.withPermit(this.permit as never);

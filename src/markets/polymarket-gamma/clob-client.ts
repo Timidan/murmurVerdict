@@ -28,8 +28,6 @@
 import { z } from "zod";
 import type { FetchFnLike, PolymarketGammaTimers } from "./client.js";
 
-// ─── Constants ──────────────────────────────────────────────────────────────
-
 const DEFAULT_BASE_URL = "https://clob.polymarket.com";
 const DEFAULT_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_RETRIES = 2; // 1 retry
@@ -68,8 +66,6 @@ export const clobMarketSnapshotSchema = z
 export type ClobMarketSnapshot = z.infer<typeof clobMarketSnapshotSchema>;
 export type ClobToken = z.infer<typeof clobTokenSchema>;
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
 export interface PolymarketClobClientOpts {
   /** Override the CLOB base URL (smoke fixtures point at a stub). */
   baseUrl?: string;
@@ -101,8 +97,6 @@ export interface ClobFetchResult {
   /** Stable error code on failure paths; null on success. */
   error: string | null;
 }
-
-// ─── Implementation ─────────────────────────────────────────────────────────
 
 export class PolymarketClobClient {
   private readonly baseUrl: string;
@@ -184,8 +178,6 @@ export class PolymarketClobClient {
   cacheSize(): number {
     return this.cache.size;
   }
-
-  // ─── Internal ─────────────────────────────────────────────────────────────
 
   private async fetchAndCache(conditionId: string): Promise<ClobFetchResult> {
     let lastError: string = "unknown";

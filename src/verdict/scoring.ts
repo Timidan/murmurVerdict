@@ -20,7 +20,7 @@ import type { MarketMakerAdapter } from "../markets/types.js";
 //   verdict_score = mean(call_score) - stdev(call_score) / sqrt(resolved_calls)
 // (= 1-sigma lower bound of the mean; rewards consistency.)
 //
-// Codex ranking-research recommendation D24: marketplace consumers
+// Ranking research: marketplace consumers
 // should sort by a lower confidence bound on the mean instead of the raw
 // mean. The math here is `mean − 1.6449·sem` — a one-sided 95%
 // normal-approx lower bound (sometimes loosely called Wilson-style, but
@@ -118,7 +118,7 @@ export interface ScoreOutcomeVectorResult {
  * multinomial-Brier shell from markets-core.callScore, mapping the two
  * non-scoring cases to the legacy `call_score = null` contract.
  *
- * Order of checks (Codex review v5 P2 #2):
+ * Order of checks:
  *
  *   0. adapter abstained — `outcome.kind === 'invalid'`            → null, void
  *      Outcome is structurally a non-score regardless of the
