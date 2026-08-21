@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { CallAcceptedEvent } from "../types/events.js";
 import { parseBooleanToken } from "../verdict/env-grammar.js";
 import {
   loadFhenixEventVerifierConfig,
@@ -29,7 +30,9 @@ import {
 } from "../integrations/fhenix-reveal-worker-env.js";
 import {
   loadFhenixGrantEnvConfig,
+  loadFhenixSaleTermsEnv,
   type FhenixGrantEnvConfig,
+  type FhenixSaleTermsEnv,
 } from "../integrations/fhenix-grant-env.js";
 import { FhenixGrantReconciler } from "../integrations/fhenix-grant-reconciler.js";
 import type { EntitlementAccessDeps } from "../verdict/entitlement-access.js";
@@ -65,6 +68,13 @@ export interface FhenixRuntime {
   grantReconciler: { tick: () => Promise<unknown> } | null;
   chainId: number | null;
   sealedVerdictsAddress: string | null;
+  /**
+   * Deployment-wide access terms + sales safety margin, resolved whether or
+   * not paid grants are enabled here. The public sellable listing needs them
+   * on a seal-only daemon too: the same legacy call must carry the same price
+   * whichever process is asked about it.
+   */
+  saleTerms: FhenixSaleTermsEnv;
 }
 
 export interface FhenixRuntimeConfig {
@@ -86,6 +96,8 @@ export interface FhenixRuntimeConfig {
   grantEnabled: boolean;
   grantReconcilerEnabled: boolean;
   rpcConfigured: boolean;
+  /** See FhenixRuntime.saleTerms — parsed independently of grantEnabled. */
+  saleTerms: FhenixSaleTermsEnv;
 }
 
 export interface FhenixRuntimeOptions {
@@ -96,6 +108,8 @@ export interface FhenixRuntimeOptions {
   gatewayClaimToken?: () => string;
   gatewayFeedPacketId?: FeedPacketIdAdapter;
   gatewaySealedCallId?: SealedCallIdAdapter;
+  /** Live bus, forwarded to the gateway so accepted calls reach subscribers. */
+  events?: { emit: (event: CallAcceptedEvent) => void };
   logger?: Pick<Console, "log" | "warn">;
   now: () => Date;
 }
@@ -210,6 +224,10 @@ export function loadFhenixRuntimeConfig(
     grantEnabled,
     grantReconcilerEnabled,
     rpcConfigured: Boolean(env.FHENIX_RPC_URL?.trim()),
+    // Read from `env`, not from the strict grant loader: those terms must be
+    // resolvable when FHENIX_GRANT_ENABLED is false, and the strict loader
+    // returns null wholesale in that case.
+    saleTerms: loadFhenixSaleTermsEnv(env),
   };
 }
 
@@ -261,6 +279,7 @@ export async function loadFhenixRuntime(
         newClaimToken: opts.gatewayClaimToken,
         newFeedPacketId: opts.gatewayFeedPacketId,
         newSealedCallId: opts.gatewaySealedCallId,
+        events: opts.events,
         now: opts.now,
       })
     : null;
@@ -359,7 +378,7 @@ export async function loadFhenixRuntime(
   );
 
   // Fail-soft funded-worker check: sealed submissions accepted without an
-  // active, funded fallback worker must be surfaced (Codex review §12). The
+  // active, funded fallback worker must be surfaced. The
   // config already fails CLOSED on a mis-set key; here we only warn on low
   // balance so a fresh key can still be topped up before its first reveal.
   if (config.revealWorker) {
@@ -435,6 +454,7 @@ export async function loadFhenixRuntime(
     grantReconciler,
     chainId: config.chainId,
     sealedVerdictsAddress: config.sealedVerdictsAddress,
+    saleTerms: config.saleTerms,
   };
 }
 

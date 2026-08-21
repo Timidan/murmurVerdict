@@ -117,6 +117,9 @@ try {
       grantEnabled: false,
       grantReconcilerEnabled: false,
       rpcConfigured: false,
+      // A seal-only daemon: no deployment-wide price, default safety margin.
+      // The sellable listing excludes legacy rows rather than invent one.
+      saleTerms: { legacyTerms: null, salesSafetySeconds: 180 },
     },
     gatewayTimers: {
       setTimeout: () => "gateway-timer",

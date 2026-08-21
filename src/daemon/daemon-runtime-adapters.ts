@@ -16,6 +16,7 @@ import { polymarketDiscoveryRepo } from "../verdict/repos/polymarket-discovery-r
 import { nowIso } from "../verdict/time.js";
 import type { DaemonRuntimeConfig } from "./daemon-config.js";
 import { loadFhenixRuntime } from "./fhenix-runtime.js";
+import type { FhenixSaleTermsEnv } from "../integrations/fhenix-grant-env.js";
 import {
   loadDaemonNanopayRuntime,
   type DaemonNanopayRuntime,
@@ -47,6 +48,12 @@ export interface DaemonRuntimeAdapters {
   /** Flow 2 paid decrypt-access HTTP surface deps; null unless the grant
    *  runtime is enabled AND nanopay payment infra is mounted. */
   entitlementAccess: EntitlementAccessSurfaceDeps | null;
+  /**
+   * Deployment-wide access terms + sales safety margin for the public sellable
+   * listing. Present whether or not paid grants are enabled — a seal-only
+   * daemon still has to price the calls it lists.
+   */
+  fhenixSaleTerms: FhenixSaleTermsEnv;
   fhenixSealedVerdictsAddress: string | null;
   fhenixVerifier: FhenixEventVerifier | null;
   liveCanaries: LiveCanaryProvider;
@@ -156,6 +163,9 @@ export async function loadDaemonRuntimeAdapters(
     env,
     gatewayFeedPacketId: deps.gatewayFeedPacketId,
     gatewaySealedCallId: deps.gatewaySealedCallId,
+    // The bus is constructed above; handing it to the Fhenix runtime is what
+    // connects agent-submitted calls to the live tape and to webhooks.
+    events,
     logger,
     now,
   });
@@ -258,6 +268,7 @@ export async function loadDaemonRuntimeAdapters(
     fhenixRevealWorker: fhenixRuntime.revealWorker,
     fhenixGrantReconciler: fhenixRuntime.grantReconciler,
     entitlementAccess,
+    fhenixSaleTerms: fhenixRuntime.saleTerms,
     fhenixSealedVerdictsAddress,
     fhenixVerifier: fhenixRuntime.verifier,
     liveCanaries: observability.liveCanaries,

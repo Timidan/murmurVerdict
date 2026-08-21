@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { assertAgentAcceptingCalls } from "../verdict/auth/account-lifecycle.js";
 import {
   broadcastGatewayAttempt,
   confirmGatewayAttempt,
@@ -49,6 +50,7 @@ import {
   makeAgentSecurityEvent,
 } from "../verdict/agent-security-event.js";
 import { agentSecurityEventsRepo } from "../verdict/repos/agent-security-events-repo.js";
+import type { CallAcceptedEvent } from "../types/events.js";
 import { agentsRepo } from "../verdict/repos/agents-repo.js";
 import { feedContractsRepo } from "../verdict/repos/feed-availability-repo.js";
 import type { FeedPacketIdAdapter } from "../verdict/feed-packet-ingestion.js";
@@ -99,6 +101,12 @@ export interface FhenixGatewayConfig {
   relayerAddress: string;
   client: FhenixGatewayClient;
   murmurOwnedSealer?: MurmurOwnedCofheSealer | null;
+  /**
+   * Live event bus. Acceptance emits `call.accepted` onto it — without this
+   * the gateway (the only path an agent submits through) never reaches the
+   * live tape or `call.accepted` webhooks.
+   */
+  events?: { emit: (event: CallAcceptedEvent) => void };
   /** MURMUR_ACK_FEED_REVEAL_MANUAL. Feed packets 503 without it. */
   feedRevealAcknowledged?: boolean;
   /** FHENIX_RECONCILE_OLD_FROM_BLOCK. */
@@ -213,6 +221,7 @@ export class FhenixGatewayBroadcaster {
     this.now = config.now;
     this.sealedKind = sealedCallAttemptKind({
       newSealedCallId: this.newSealedCallId,
+      events: config.events,
     });
     this.feedKind = feedPacketAttemptKind({
       newFeedPacketId: this.newFeedPacketId,
@@ -391,6 +400,10 @@ export class FhenixGatewayBroadcaster {
       };
     }
 
+    // Cheap pre-check only — the reservation transaction remains the
+    // authority. Sealing is the expensive step (CoFHE round-trip), and a
+    // retired agent should be refused before murmur pays that cost.
+    assertAgentAcceptingCalls(this.db, runtimeIdentity.agent_id);
     const sealed = await this.murmurOwnedSealer.sealVerdict(parsed.data.verdict);
     return this.submitSealedCall({
       authResult: params.authResult,
@@ -679,7 +692,7 @@ export class FhenixGatewayBroadcaster {
     // transaction as the queue-state mutation so the forensic record
     // and the state change commit together. Resolve agent_id from the
     // attempt's wallet so listForAgent surfaces the retry in the agent's
-    // own security timeline (codex audit finding).
+    // own security timeline.
     // agents.chain_id is CAIP-2 (schema.ts ChainIdSchema), so the lookup
     // must use the eip155 form — a bare numeric string never matches.
     const agent = agentsRepo.byWallet(

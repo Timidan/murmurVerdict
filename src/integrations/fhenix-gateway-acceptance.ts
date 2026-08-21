@@ -19,11 +19,22 @@ import { runtimeKeyAcceptanceAuthIdentity } from "../verdict/auth/runtime-author
 import { classifyFeedPacketSla } from "../verdict/feed-availability.js";
 import type { FeedPacketIdAdapter } from "../verdict/feed-packet-ingestion.js";
 import type { SealedCallIdAdapter } from "../verdict/sealed-call-acceptance.js";
+import type { CallAcceptedEvent } from "../types/events.js";
 
 export async function acceptConfirmedSealedCallGatewayAttempt(params: {
   db: Database.Database;
   attempt: FhenixGatewayTxAttemptRow;
   newCallId?: SealedCallIdAdapter;
+  /**
+   * The live event bus. Acceptance BUILDS a `call.accepted` event and this
+   * path used to drop it on the floor — and since the gateway is the only
+   * route an agent can submit through, that meant no agent-submitted call
+   * ever reached the bus. Two things silently depended on it: the live tape
+   * (which backfills over REST, so it looked merely quiet rather than
+   * broken) and `call.accepted` webhook deliveries, which could never fire
+   * at all. Optional so tests and the reconciler can accept without one.
+   */
+  events?: { emit: (event: CallAcceptedEvent) => void };
   now: () => Date;
 }): Promise<boolean> {
   const { db, attempt, now } = params;
@@ -103,6 +114,10 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
       call_id: result.body.call_id,
       updated_at: nowIso(now()),
     });
+    // AFTER the durable write. The bus is in-process and non-durable, so a
+    // subscriber that misses this frame recovers by reading REST; a row that
+    // never got marked accepted would not.
+    if (result.event) params.events?.emit(result.event);
     return true;
   } catch (err) {
     fhenixGatewayTxRepo.markTerminalFailure(db, {

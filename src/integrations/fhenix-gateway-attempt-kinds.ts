@@ -1,4 +1,5 @@
 import type { Address, Hex } from "viem";
+import type { CallAcceptedEvent } from "../types/events.js";
 import { assertFeedRevealPolicySupported } from "../verdict/feed-availability.js";
 import { feedContractsRepo } from "../verdict/repos/feed-availability-repo.js";
 
@@ -49,7 +50,11 @@ import type { SealedCallIdAdapter } from "../verdict/sealed-call-acceptance.js";
  */
 
 export function sealedCallAttemptKind(
-  opts: { newSealedCallId?: SealedCallIdAdapter } = {},
+  opts: {
+    newSealedCallId?: SealedCallIdAdapter;
+    /** Live bus; acceptance emits `call.accepted` onto it. */
+    events?: { emit: (event: CallAcceptedEvent) => void };
+  } = {},
 ): GatewayAttemptKind<FhenixGatewayTxAttemptRow, GatewaySealedCallSubmitEvent> {
   return {
     label: "sealed_call",
@@ -103,6 +108,7 @@ export function sealedCallAttemptKind(
         db,
         attempt,
         newCallId: opts.newSealedCallId,
+        events: opts.events,
         now,
       }),
     terminal: {
