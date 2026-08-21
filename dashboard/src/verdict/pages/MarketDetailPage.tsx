@@ -24,6 +24,7 @@ import { mergeMarketAgentRow } from "../hooks/stream-merge.js";
 import { marketDisplayName, parseMarketConfig } from "../lib/market-meta.js";
 import { formatLocalTimeLabel } from "../lib/date-time-format.js";
 import { shortId } from "../lib/display-format.js";
+import { setDocumentTitle } from "../lib/route-meta.js";
 import { formatScore } from "../lib/score-format.js";
 import { isTerminalFailureStatus } from "@shared/wire-call-status";
 
@@ -171,16 +172,14 @@ export function MarketDetailPage({
   }, [needsCountdownTick]);
 
   // Venue markets title the tab with the human question (fallback: market id);
-  // restore whatever title was there before on unmount / market change.
+  // Refines the router-stamped title once the market's question is known.
   useEffect(() => {
     // In drawer mode the market isn't the page, so it must not hijack the tab.
     if (isDrawer || !market || !isVenueMarket(market)) return;
-    const prev = document.title;
     const question = parseMarketConfig(market)?.question;
-    document.title = `${question ?? market.market_id} · murmur`;
-    return () => {
-      document.title = prev;
-    };
+    setDocumentTitle(`${question ?? market.market_id} · murmur`);
+    // No restore on unmount: the router re-stamps the title on every route
+    // change, so restoring here would hand the NEXT route this one's title.
   }, [market]);
 
   const horizon = market ? formatHorizon(market.horizon_seconds) : "—";

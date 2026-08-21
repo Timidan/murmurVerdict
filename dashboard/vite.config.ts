@@ -3,8 +3,44 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
+/**
+ * Absolute share-card URLs.
+ *
+ * `og:image` and `twitter:image` MUST be absolute: Twitter, Slack, Discord and
+ * most other unfurlers fetch them without a document base, so a root-relative
+ * `/murmur-banner.png` resolves against their own host and the card silently
+ * renders with no image. Same for `og:url`.
+ *
+ * The origin is a build-time input and is INTENTIONALLY unset by default —
+ * the same discipline MURMUR_DASHBOARD_URL follows in .env.example. A
+ * self-hosted deploy must not inherit somebody else's origin, and a wrong
+ * absolute URL is worse than a relative one. Unset leaves the tags exactly as
+ * authored; set it and every og/twitter URL is rewritten absolute.
+ */
+function absoluteShareUrls(siteUrl: string | undefined) {
+  const origin = (siteUrl ?? "").trim().replace(/\/+$/, "");
+  return {
+    name: "murmur-absolute-share-urls",
+    transformIndexHtml(html: string) {
+      if (origin === "") return html;
+      const rewritten = html.replace(
+        /(<meta\s+(?:property|name)="(?:og:image|twitter:image)"\s+content=")(\/[^"]*)(")/g,
+        (_m, head: string, path: string, tail: string) => `${head}${origin}${path}${tail}`,
+      );
+      // og:url states the page's own canonical address; without an origin
+      // there is nothing true to say, which is why it is added here.
+      return rewritten.includes('property="og:url"')
+        ? rewritten
+        : rewritten.replace(
+            /(<meta\s+property="og:title")/,
+            `<meta property="og:url" content="${origin}/" />\n    $1`,
+          );
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), absoluteShareUrls(process.env.VITE_SITE_URL)],
   root: path.resolve(__dirname),
   resolve: {
     alias: {

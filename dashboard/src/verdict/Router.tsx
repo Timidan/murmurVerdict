@@ -1,5 +1,6 @@
 import React, { useEffect, useState, lazy, Suspense } from "react";
 import { canonicalizeRouteLocation, parseLocation } from "./route.js";
+import { applyRouteMeta, routeMeta } from "./lib/route-meta.js";
 import { DetailDrawerProvider, DetailDrawer, useDetailDrawer } from "./components/compact/DetailDrawer.js";
 import { GlobalShortcuts } from "./components/compact/GlobalShortcuts.js";
 // Static, not lazy: a lazy topbar would suspend the fallback that renders it.
@@ -71,6 +72,9 @@ const AgentPage = lazy(() =>
 // Dev/review-only surface for the AnimatedMark logo (route: /logo).
 const LogoDemoPage = lazy(() =>
   import("./pages/LogoDemoPage.js").then((m) => ({ default: m.LogoDemoPage })),
+);
+const PrivacyPage = lazy(() =>
+  import("./pages/PrivacyPage.js").then((m) => ({ default: m.PrivacyPage })),
 );
 // Real 404 — parseLocation's fallback for unknown URLs (route: not_found).
 const NotFoundPage = lazy(() =>
@@ -207,6 +211,13 @@ export function VerdictRouter() {
 
   void locationKey;
   const route = parseLocation(window.location);
+  // Stamped AFTER parseLocation, which runs after canonicalizeRouteLocation()
+  // in the handler above — so a legacy `#/x` navigation never stamps a title
+  // for the pre-canonical URL. Pages with richer data (a market's question)
+  // refine it afterwards via setDocumentTitle.
+  useEffect(() => {
+    applyRouteMeta(routeMeta(route));
+  }, [route.name, route.params?.slug, route.params?.id]);
   const next = parseNext(window.location.hash || window.location.search);
 
   return (
@@ -225,6 +236,7 @@ export function VerdictRouter() {
       {route.name === "launch" && <LaunchPage />}
       {route.name === "share" && <SharePage slug={route.params!.slug} />}
       {route.name === "recruiters" && <RecruitersPage />}
+      {route.name === "privacy" && <PrivacyPage />}
       {route.name === "admin_refs" && <AdminRefsPage />}
       {route.name === "admin_gateway" && <AdminGatewayPage />}
       {route.name === "admin_overview" && <AdminOverviewPage />}

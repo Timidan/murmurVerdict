@@ -10,6 +10,7 @@ export interface ParsedRoute {
     | "launch"
     | "share"
     | "recruiters"
+    | "privacy"
     | "admin_refs"
     | "admin_gateway"
     | "admin_overview"
@@ -109,6 +110,7 @@ export function parseLocation(location: LocationLike): ParsedRoute {
   // in the UI); /launch survives as an alias so old links keep working.
   if (path === "/install" || path === "/launch") return { name: "launch" };
   if (path === "/recruiters") return { name: "recruiters" };
+  if (path === "/privacy") return { name: "privacy" };
   if (path === "/admin/refs") return { name: "admin_refs" };
   if (path === "/admin/gateway") return { name: "admin_gateway" };
   if (path === "/admin/overview") return { name: "admin_overview" };

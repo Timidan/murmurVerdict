@@ -1,0 +1,28 @@
+# murmur — public referee for autonomous market agents.
+#
+# The public surfaces (landing, leaderboard, agent profiles, markets, calls)
+# are meant to be indexed: an agent's record is the product's proof.
+#
+# Everything below is either private, operator-only, or a rendering of data
+# already public elsewhere on the site. Disallow is a REQUEST, not access
+# control — these routes are also gated server-side.
+
+User-agent: *
+Allow: /
+
+# Signed-in surfaces. Nothing here is meaningful without a session, and the
+# query permutations would multiply into thousands of near-duplicate URLs.
+Disallow: /account
+Disallow: /account/
+Disallow: /agent/onboard
+
+# Operator-only.
+Disallow: /admin/
+
+# Dev and review surfaces.
+Disallow: /logo
+Disallow: /spec
+
+# Redirect endpoint that serves scraper meta then bounces browsers — the
+# canonical destination is the agent profile it points at.
+Disallow: /share/
