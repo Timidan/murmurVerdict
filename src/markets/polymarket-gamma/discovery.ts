@@ -57,8 +57,6 @@ import { isoFromMs, nowIso } from "../../verdict/time.js";
 import type { FetchWindowInput, FetchWindowResult } from "./client.js";
 import { parseOutcomeLabels, type GammaMarketSnapshot } from "./transform.js";
 
-// ─── Constants ──────────────────────────────────────────────────────────────
-
 const CONDITION_ID_REGEX = /^0x[0-9a-f]{64}$/;
 const MAX_BROADCAST_ATTEMPTS = 5;
 /**
@@ -120,6 +118,13 @@ export interface PolymarketDiscoveryGammaSource {
   fetchMarketByConditionId(
     conditionId: string,
   ): Promise<{ snapshot: GammaMarketSnapshot | null; error: string | null }>;
+  /** Fill in `events[0].tags` (the venue category source) that `/markets`
+   *  omits. Called once per market actually registered, never on the window
+   *  walk. Optional and best-effort: absent or failing, the market registers
+   *  uncategorised rather than not at all. */
+  enrichSnapshotEventTags?(
+    snapshot: GammaMarketSnapshot,
+  ): Promise<GammaMarketSnapshot>;
 }
 
 export interface PolymarketDiscoveryEngineDeps {
@@ -1005,6 +1010,17 @@ export class PolymarketDiscoveryEngine {
           now_iso,
         );
         return false;
+      }
+    }
+    if (this.gamma.enrichSnapshotEventTags) {
+      // Window-walk snapshots carry `tags: null`; the category lives on
+      // `/events/<id>`. One extra request per REGISTRATION, not per walk.
+      // The port contract says nonfatal; the catch enforces it on ports that
+      // forget — a grouping label must never cost a market its registration.
+      try {
+        snapshot = await this.gamma.enrichSnapshotEventTags(snapshot);
+      } catch {
+        // registers uncategorised
       }
     }
     const gammaLookup: PolymarketMarketRegistrationGammaAdapter = {

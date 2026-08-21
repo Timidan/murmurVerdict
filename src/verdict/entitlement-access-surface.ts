@@ -6,6 +6,7 @@ import {
   type GatewayPaymentRequirements,
 } from "../integrations/circle-gateway.js";
 import { canonicalize } from "../receipts/canonical.js";
+import { termsFromSnapshot, type CallTerms } from "./call-sale-terms.js";
 import {
   checkEntitlementEligibility,
   purchaseEntitlementAccess,
@@ -84,28 +85,17 @@ export interface EntitlementAccessSurfaceDeps {
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
-export interface CallTerms {
-  priceAtoms: string;
-  currency: string;
-  pricingVersion: string;
-}
+export type { CallTerms };
 
 /**
  * The terms THIS call is sold under, or null when it is not for sale.
  *
- * From the call's own snapshot when it has one — the provider's price as it
- * stood when the call was sealed. An owner repricing afterwards must not
- * change what a buyer is charged for a call already on offer, and must not
- * make a purchase in flight disagree with the challenge it answered.
- *
- * A missing snapshot means one of two opposite things, and
- * `provider_terms_snapshotted` is what separates them:
- *
- *   flag 0 — sealed before providers could price themselves. It really was
- *            sold under the deployment-wide terms, so fall back to them.
- *   flag 1 — the owner set no terms, or cleared them. NOT FOR SALE. Falling
- *            back here would sell an owner's signal at the operator's price
- *            straight after they pressed "stop selling".
+ * The rules themselves live in `termsFromSnapshot` (call-sale-terms.ts) — a
+ * pure resolver shared with the public sellable listing, so the storefront and
+ * the checkout can never disagree about a call's price or about whether it is
+ * on offer at all. This function is the payment path's binding of that
+ * resolver: it supplies the call's snapshot from the grant deployment's own
+ * rows, and this deployment's configured terms as the legacy fallback.
  */
 export function termsFor(
   deps: EntitlementAccessSurfaceDeps,
@@ -116,19 +106,11 @@ export function termsFor(
     contract_address: deps.access.grantChain.contractAddress,
     onchain_call_id: onchainCallId,
   });
-  if (call?.provider_price_atoms && call.provider_currency && call.provider_pricing_version) {
-    return {
-      priceAtoms: call.provider_price_atoms,
-      currency: call.provider_currency,
-      pricingVersion: call.provider_pricing_version,
-    };
-  }
-  if (call && call.provider_terms_snapshotted === 1) return null;
-  return {
+  return termsFromSnapshot(call, {
     priceAtoms: deps.priceAtoms,
     currency: deps.currency,
     pricingVersion: deps.pricingVersion,
-  };
+  });
 }
 
 function bindingFor(
@@ -150,7 +132,7 @@ function bindingFor(
  * POST handler body. `paymentHeader` is the raw PAYMENT-SIGNATURE value (or
  * undefined for the initial unpaid request → 402 challenge). Eligibility is
  * validated BEFORE the 402 so a buyer is never challenged for a call whose sale
- * window has already closed (Codex §3).
+ * window has already closed.
  */
 export async function entitlementAccessResponse(input: {
   deps: EntitlementAccessSurfaceDeps;

@@ -74,6 +74,14 @@ export interface DaemonRuntimeConfig {
   webhookUrlPolicy: WebhookUrlPolicy;
   operatorFhenixLifecycleQueryDefaults: OperatorFhenixLifecycleQueryDefaults;
   polymarketDiscovery: PolymarketDiscoveryRuntimeConfig;
+  /**
+   * Live venue ticker (websocket order book + resolution feed for the public
+   * market board). DERIVED, never a required var: it is on exactly when
+   * discovery is on — a deployment that registers no Polymarket markets has
+   * nothing to stream — and `MURMUR_VENUE_TICKER_ENABLED=false` is the
+   * explicit opt-out for keeping discovery while dropping the socket.
+   */
+  venueTickerEnabled: boolean;
   intervals: DaemonTickerIntervals;
 }
 
@@ -224,6 +232,10 @@ export function loadDaemonRuntimeConfig(
       ),
     },
     polymarketDiscovery,
+    venueTickerEnabled:
+      polymarketDiscovery.enabled &&
+      parseBooleanToken(env.MURMUR_VENUE_TICKER_ENABLED, { yesNo: true }) !==
+        false,
     intervals: {
       resolverMs: resolverTickSec * 1000,
       fhenixEventMs: fhenixEventTickSec * 1000,

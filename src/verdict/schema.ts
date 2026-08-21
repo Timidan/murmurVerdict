@@ -10,29 +10,17 @@ export const SCORING_VERSION = 1 as const;
 
 // ─── Identity ────────────────────────────────────────────────────────────────
 
-// Wave 3 collapse — the agent.kind taxonomy compresses to four values now
-// that the off-platform reputation pipes (verified/wallet_only via X/
-// Telegram/wallet claim) and the shadow scraping pipeline are gone. Murmur
-// reputation only accrues from on-platform FHE calls, so a single 'agent'
-// kind covers everyone who submits via the Runtime Key Gateway; the other three are
+// Reputation only accrues from on-platform FHE calls, so one 'agent' kind
+// covers everyone submitting through the gateway and the other three are
 // system-internal markers.
 //
-// Mapping handled in MIGRATION_031: legacy 'casual'/'shadow'/'verified'/
-// 'wallet_only' rows all → 'agent'. The dashboard collapse in Wave 3a
-// already renders the new enum.
-//
-//   benchmark    — Murmur-run baseline strategies (e.g. constant BUY/SELL,
-//                  trend-follow). Excluded from the marketplace; sit at
-//                  the top of the leaderboard as anchor rows.
-//   agent        — every operator-owned, FHE-submitting agent. Identity is
-//                  Privy-bound at the account level; the on-platform
-//                  prediction history is the only reputation surface.
-//   internal_test — Murmur-side QA agents, never marketplace-eligible.
-//   attested     — Olas Service Registry bond + Safe multisig governance.
-//                  Strong non-transferability (forfeits the OLAS bond on
-//                  transfer). Sits on top of the same on-platform record
-//                  as a regular `agent`; attestation is an additional
-//                  trust band, not a separate reputation pool.
+//   benchmark     — murmur-run baselines. Not marketplace-eligible; they sit
+//                   at the top of the leaderboard as anchor rows.
+//   agent         — every operator-owned, FHE-submitting agent. Privy-bound at
+//                   the account level; its call history is the only reputation.
+//   internal_test — QA agents, never marketplace-eligible.
+//   attested      — Olas bond + Safe multisig. An additional trust band over
+//                   the same record as `agent`, not a separate pool.
 export const AgentKindSchema = z.enum([
   "benchmark",
   "agent",
@@ -108,10 +96,6 @@ export const CallStatusSchema = z.enum([
 ]);
 export type CallStatus = z.infer<typeof CallStatusSchema>;
 
-// Wave 4b-2 — VerdictPreflight + MarketRegime were Santiment-derived
-// decoration stamped onto every accepted call. The resolver never consulted
-// them. The preflight struct, the /v1/market/preflight endpoint, the
-// preflights table, and the entire scout → analyst pipeline are removed.
 // Murmur is a pure referee: the external venue resolves its own market and
 // murmur scores the sealed call against that outcome.
 
@@ -132,10 +116,8 @@ export const OutcomeSchema = z.enum([
 ]);
 export type Outcome = z.infer<typeof OutcomeSchema>;
 
-// Wave 4b — receipt payload schemas (AcceptanceReceiptPayloadSchema,
-// ResolutionReceiptPayloadSchema and their v1/v2 variants) were dropped
-// alongside the receipts table. SCHEMA_VERSION + SCORING_VERSION below
-// are still the canonical stamps for resolution rows and call envelopes.
+// SCHEMA_VERSION + SCORING_VERSION below are the canonical stamps for
+// resolution rows and call envelopes.
 
 // ─── Leaderboard view ────────────────────────────────────────────────────────
 
@@ -200,16 +182,10 @@ export const UsageEventKindSchema = z.enum([
   "claim_initiated",
   "claim_completed",
   "shadow_card_posted",
-  // V2 §7.4 + §7.7 risk-1 — every destination_address mutation is recorded
-  // here so the 24h cooldown enforcement has a full audit trail. Emitted by
-  // the PATCH /v1/account/agents/:slug/destination-address handler after a
-  // successful setDestinationAddress call.
+  // Every destination_address mutation, so the 24h cooldown has an audit trail.
   "destination_address_updated",
-  // Phase 7d — Maya onboarding funnel events emitted by the dashboard via
-  // POST /v1/account/events. account-scoped (agent_id is nullable on this
-  // table), used to measure where casual-tier signups drop off between
-  // first landing-pageview and first call submission. The allowlist is
-  // also enforced server-side in the route handler; keep both in sync.
+  // Onboarding funnel, emitted by the dashboard via POST /v1/account/events.
+  // The route handler enforces the same allowlist — keep both in sync.
   "landing.viewed",
   "compete.clicked",
   "privy.modal_opened",
@@ -217,10 +193,8 @@ export const UsageEventKindSchema = z.enum([
   "agent.created",
   "api_key.minted",
   "destination.set",
-  // Future waves (resolver-side hooks) — kinds reserved here so the
-  // schema doesn't have to migrate when those land. Emit sites are not
-  // wired in 7d, but the allowlist accepts them so the frontend can
-  // start probing without a server roll.
+  // Reserved resolver-side hooks. No emit sites yet, but the allowlist accepts
+  // them so the frontend can probe without a server roll.
   "call.first_submitted",
   "call.first_resolved",
   "call.tenth_submitted",
@@ -245,7 +219,7 @@ export const UsageEventSchema = z
   .strict();
 export type UsageEvent = z.infer<typeof UsageEventSchema>;
 
-// ─── Agent security events (Wave 5) ──────────────────────────────────────────
+// ─── Agent security events ───────────────────────────────────────────────────
 //
 // Append-only audit log for admin/operator actions that mutate an agent's
 // ownership or a sensitive registry slot. The closed enum mirrors the SQL
@@ -261,13 +235,13 @@ export const AgentSecurityEventKindSchema = z.enum([
   "admin_polymarket_upsert",
   // Operator transitioned a registry market between
   // draft/listed/frozen/retired via an admin route. Not wired in
-  // Wave 5 itself; reserved here so the taxonomy stays stable.
+  // reserved here so the taxonomy stays stable.
   "admin_market_status_change",
   // Operator deleted a ref_clicks bucket via DELETE /v1/refs/:ref.
   "admin_ref_delete",
   // Operator detached an agent from an account via the admin-claim
   // CLI's `--unlink` flag (recovery path for a slug that was claimed
-  // to the wrong account). Not wired in Wave 5; reserved for a v0.3
+  // to the wrong account). Not wired yet; reserved for a v0.3
   // follow-up.
   "admin_account_unlink",
   // Operator forced a Fhenix gateway broadcast attempt to retry now via
@@ -334,7 +308,7 @@ export type DisputeStatus = z.infer<typeof DisputeStatusSchema>;
 export const DisputeSchema = z
   .object({
     dispute_id: z.string().uuid(),
-    // Wave 4b — disputes now key on the call_id directly (FK to submissions).
+    // disputes now key on the call_id directly (FK to submissions).
     // Prior shape used target_resolution_receipt_hash + new_resolution_receipt_hash;
     // both went away with the receipts table.
     target_call_id: z.string().uuid(),
@@ -382,7 +356,7 @@ export const ERROR_CODES = {
   /**
    * Hard ownership conflict — the agent_id requested for link is already
    * owned by a DIFFERENT account. Surfaced as 409 by POST
-   * /v1/account/agents (BLOCKER #4). Distinct from agent_not_authorized
+   * /v1/account/agents. Distinct from agent_not_authorized
    * because the caller's auth is valid; the resource is just claimed.
    */
   agent_already_owned_by_another_account: "agent_already_owned_by_another_account",
@@ -400,6 +374,20 @@ export const ERROR_CODES = {
    * rejects with this code until the account re-enables agent access. 403.
    */
   agent_credentials_disabled: "agent_credentials_disabled",
+  /**
+   * The owner retired this agent (agents.retired_at, migration 073). It takes
+   * no NEW calls. Everything else keeps working: its record stays public, its
+   * history stays readable, and its keys still read. 409 — the request is well
+   * formed and authorized; the agent is simply finished.
+   */
+  agent_retired: "agent_retired",
+  /**
+   * The owner closed this account (accounts.deactivated_at, migration 073).
+   * Terminal, and enforced INDEPENDENTLY of the kill switch: releasing the
+   * kill switch clears agent_credentials_disabled_at and must never reopen a
+   * closed account. 403.
+   */
+  account_deactivated: "account_deactivated",
   /** Operator admin surface is disabled (VERDICT_ADMIN_TOKEN not set). 503. */
   admin_disabled: "admin_disabled",
   /** Admin route auth rejected the supplied/absent admin token. 403. */

@@ -14,6 +14,7 @@ const agent: AgentRow = {
   bio: "Public card bio",
   created_at: "2026-05-27T12:00:00Z",
   api_key_hash: "private-hash",
+  retired_at: null,
   wallet_address: "0x2222222222222222222222222222222222222222",
   chain_id: "eip155:8453",
 };
@@ -78,6 +79,7 @@ const benchmark: AgentRow = {
   display_name: "Bench Card",
   created_at: "2026-05-27T12:05:00Z",
   api_key_hash: "private-hash",
+  retired_at: null,
 };
 const benchmarkCard = publicMurmurAgentCard({
   agent: benchmark,

@@ -8,7 +8,7 @@
     "dev": "tsx watch src/daemon/index.ts",
     "start": "tsx src/daemon/index.ts",
     "build": "tsc --noEmit",
-    "lint": "tsc --noEmit && npm run typecheck:tools",
+    "lint": "tsc --noEmit && npm run typecheck:tools && npm run typecheck:dashboard",
     "smoke": "tsx src/verdict/leaderboard-general.check.ts && tsx src/verdict/controller-wallet.smoke.ts && tsx src/integrations/fhenix-events.smoke.ts && tsx src/verdict/fhenix-api.smoke.ts && tsx src/integrations/fhenix-gateway.smoke.ts && tsx src/integrations/fhenix-gateway-race.smoke.ts && tsx src/integrations/live-canaries.smoke.ts && tsx src/integrations/fhenix-watcher.smoke.ts && tsx src/integrations/operator-alerts.smoke.ts && tsx src/integrations/openserv-launchpad.smoke.ts && npm run smoke:public && npm run smoke:nanopay",
     "smoke:all": "node tools/run-smokes.mjs",
     "smoke:identity": "tsx src/verdict/controller-wallet.smoke.ts",
@@ -32,7 +32,8 @@
     "dashboard:build": "vite build --config dashboard/vite.config.ts",
     "verify:deploy": "tsx tools/verify/verify-deploy.ts",
     "outreach:thread": "tsx tools/operations/launch-thread.ts",
-    "typecheck:tools": "tsc --noEmit -p tsconfig.tools.json"
+    "typecheck:tools": "tsc --noEmit -p tsconfig.tools.json",
+    "typecheck:dashboard": "tsc --noEmit -p dashboard"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.0.4",

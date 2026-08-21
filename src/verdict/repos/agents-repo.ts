@@ -5,6 +5,12 @@ import type { AgentKind, AgentProfile } from "../schema.js";
 
 export interface AgentRow extends AgentProfile {
   api_key_hash: string | null;
+  /**
+   * When the owner retired this agent (migration 073), or null while it is
+   * still working. Retirement stops NEW calls; it never touches the record
+   * already on the board, and never touches the earnings the record earned.
+   */
+  retired_at: string | null;
 }
 
 export const agentsRepo = {
@@ -74,6 +80,73 @@ export const agentsRepo = {
     return row ? hydrateAgent(row) : null;
   },
 
+  /**
+   * The one read the gateway hot path takes. Deliberately NOT `byId` — the
+   * reservation runs inside a BEGIN IMMEDIATE and only needs one column, so it
+   * does not pay for a full row hydration per attempt.
+   */
+  retiredAt(db: Database.Database, agent_id: string): string | null {
+    const row = prep(
+      db,
+      "SELECT retired_at FROM agents WHERE agent_id = ?",
+    ).get(agent_id) as { retired_at: string | null } | undefined;
+    return row?.retired_at ?? null;
+  },
+
+  /**
+   * Set or clear the retirement marker. Returns true iff the state changed, so
+   * the caller can make retire/unretire idempotent without a second read.
+   *
+   * The WHERE clause carries the current state on purpose: two concurrent
+   * retires cannot both report "you retired it".
+   */
+  setRetiredAt(
+    db: Database.Database,
+    agent_id: string,
+    retired_at: string | null,
+  ): boolean {
+    const info = retired_at === null
+      ? prep(
+          db,
+          "UPDATE agents SET retired_at = NULL WHERE agent_id = ? AND retired_at IS NOT NULL",
+        ).run(agent_id)
+      : prep(
+          db,
+          "UPDATE agents SET retired_at = ? WHERE agent_id = ? AND retired_at IS NULL",
+        ).run(retired_at, agent_id);
+    return info.changes > 0;
+  },
+
+  /**
+   * Edit the two fields an owner may change after creation.
+   *
+   * display_slug is NOT here and never will be: it is the agent's identity in
+   * every URL, every receipt, and every webhook subscription (webhooks key on
+   * agent_slug, not agent_id), while the financial tables key on agent_id.
+   * Renaming the slug would silently orphan the first set.
+   */
+  updateProfile(
+    db: Database.Database,
+    agent_id: string,
+    fields: { display_name?: string; bio?: string | null },
+  ): void {
+    const sets: string[] = [];
+    const params: Record<string, unknown> = { agent_id };
+    if (fields.display_name !== undefined) {
+      sets.push("display_name = @display_name");
+      params.display_name = fields.display_name;
+    }
+    if (fields.bio !== undefined) {
+      sets.push("bio = @bio");
+      params.bio = fields.bio;
+    }
+    if (sets.length === 0) return;
+    prep(
+      db,
+      `UPDATE agents SET ${sets.join(", ")} WHERE agent_id = @agent_id`,
+    ).run(params);
+  },
+
   countActiveCallsForAgent(db: Database.Database, agent_id: string): number {
     const row = prep(
       db,
@@ -119,6 +192,7 @@ interface RawAgentRow {
   api_key_hash: string | null;
   wallet_address: string | null;
   chain_id: string | null;
+  retired_at: string | null;
 }
 
 function hydrateAgent(row: RawAgentRow): AgentRow {
@@ -130,6 +204,11 @@ function hydrateAgent(row: RawAgentRow): AgentRow {
     bio: row.bio ?? undefined,
     created_at: row.created_at,
     api_key_hash: row.api_key_hash,
+    // `?? null` rather than a bare read: `SELECT *` on a database that has not
+    // reached 073 yet returns no such key at all, and `undefined` here would
+    // read as "not retired" in one place and blow up a strict comparison in
+    // another. One shape, always.
+    retired_at: row.retired_at ?? null,
     ...(row.wallet_address ? { wallet_address: row.wallet_address } : {}),
     ...(row.chain_id ? { chain_id: row.chain_id } : {}),
   };

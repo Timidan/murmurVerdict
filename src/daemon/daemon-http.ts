@@ -4,7 +4,10 @@ import type Database from "better-sqlite3";
 
 import type { FhenixEventVerifier } from "../integrations/fhenix-events.js";
 import type { FhenixGatewayBroadcaster } from "../integrations/fhenix-gateway.js";
+import type { FhenixSaleTermsEnv } from "../integrations/fhenix-grant-env.js";
 import type { LiveCanaryProvider } from "../integrations/live-canaries.js";
+import type { VenueTickerReader } from "../integrations/venue-ticker.js";
+import { venueTickerRouter } from "../integrations/venue-ticker-surface.js";
 import { createVerdictRouter } from "../verdict/api.js";
 import type { EntitlementAccessSurfaceDeps } from "../verdict/entitlement-access-surface.js";
 import { createVerdictErrorHandler } from "../verdict/verdict-error-surface.js";
@@ -47,6 +50,12 @@ export interface DaemonHttpSurfaceDeps {
   privyAuth?: PrivyAuthVerifier | null;
   fhenixChainId: number | null;
   fhenixSealedVerdictsAddress: string | null;
+  /**
+   * Deployment-wide access terms + sales safety margin for the public sellable
+   * listing, parsed from the daemon's INJECTED env (the router is handed
+   * `env: {}` below, so it cannot derive these itself).
+   */
+  fhenixSaleTerms?: FhenixSaleTermsEnv;
   liveCanaries: LiveCanaryProvider;
   marketRegistrationGammaLookup?: PolymarketMarketRegistrationGammaAdapter;
   newAccountId?: AccountIdAdapter;
@@ -68,6 +77,13 @@ export interface DaemonHttpSurfaceDeps {
   operatorAlertSink?: OperatorAlertSinkConfig | null;
   nanopayRuntime?: DaemonNanopayRuntime | null;
   entitlementAccess?: EntitlementAccessSurfaceDeps | null;
+  /**
+   * Narrow read handle on the live venue ticker. Constructed inert before the
+   * surface so the two `/v2/venue/*` routes can close over it, then started
+   * after the server listens. `null` (or a ticker that is not running) makes
+   * both routes answer 503.
+   */
+  venueTicker?: VenueTickerReader | null;
 }
 
 export function createDaemonHttpSurface(
@@ -123,6 +139,7 @@ export function createDaemonHttpSurface(
       publicOrigin: deps.config.publicOrigin,
       fhenixChainId: deps.fhenixChainId,
       fhenixSealedVerdictsAddress: deps.fhenixSealedVerdictsAddress,
+      saleTerms: deps.fhenixSaleTerms,
       marketRegistrationGammaLookup: deps.marketRegistrationGammaLookup,
       nanopayX402Mounted: Boolean(deps.nanopayRuntime),
       newAgentSecurityEventId: deps.newAgentSecurityEventId,
@@ -167,8 +184,21 @@ export function createDaemonHttpSurface(
     // Setting terms is refused while this is null: a call sealed for a selling
     // agent has to freeze a split, and there would be none to freeze.
     protocolFeeBps: deps.config.fhenixRuntime.protocolFeeBps,
+    // The agent-exclusive reveal window, as THIS deployment configured it.
+    // Threaded from the parsed reveal-worker config rather than re-read from
+    // the ambient env, and left null when no worker runs — the reveals surface
+    // then reports no deadline instead of printing the loader's 300s default
+    // as though it were policy.
+    revealGraceSeconds: deps.config.fhenixRuntime.revealWorker?.graceSeconds ?? null,
     now: deps.now,
   }));
+
+  // Venue ticker read surface. Its own route + its own bounded write path;
+  // deliberately not folded into `/v1/stream`, whose fan-out reaches every
+  // public consumer and ignores backpressure.
+  app.use(
+    venueTickerRouter({ reader: deps.venueTicker ?? null }),
+  );
 
   mountNanopayRuntime(app, deps.nanopayRuntime);
 

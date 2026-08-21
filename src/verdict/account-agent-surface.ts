@@ -136,7 +136,9 @@ export function listAccountAgentsResponse(
       linked_at: string;
       display_slug: string | null;
       display_name: string | null;
+      bio: string | null;
       kind: string | null;
+      retired_at: string | null;
       wallet_address: string | null;
       chain_id: string | null;
       controller_wallet: ReturnType<typeof publicControllerWalletRow> | null;
@@ -156,7 +158,9 @@ export function listAccountAgentsResponse(
     linked_at: row.linked_at,
     display_slug: row.display_slug,
     display_name: row.display_name,
+    bio: row.bio,
     kind: row.kind,
+    retired_at: row.retired_at,
     wallet_address: row.wallet_address,
     chain_id: row.chain_id,
     controller_wallet: row.controller_wallet

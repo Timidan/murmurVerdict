@@ -4,6 +4,7 @@ import express from "express";
 import type Database from "better-sqlite3";
 import type { FhenixGatewayBroadcaster } from "../../integrations/fhenix-gateway.js";
 import type { PrivyAuthVerifier } from "../auth/privy.js";
+import { DEFAULT_SALES_SAFETY_SECONDS } from "../../integrations/fhenix-grant-env.js";
 import {
   gatewayFeedPacketSubmissionResponse,
   gatewayMurmurSealedCallSubmissionResponse,
@@ -23,6 +24,13 @@ import {
   entitlementStatusResponse,
   type EntitlementAccessSurfaceDeps,
 } from "../entitlement-access-surface.js";
+import { gatewayAttemptResponse } from "../gateway-attempt-surface.js";
+import { listSellableCallsResponse } from "../gateway-sellable-surface.js";
+import {
+  listSubscriberPurchasesResponse,
+  SUBSCRIBER_AUTH_HEADER,
+} from "../gateway-purchases-surface.js";
+import type { CallTerms } from "../call-sale-terms.js";
 import { asyncHandler } from "./async-handler.js";
 
 export interface GatewayRouterDeps {
@@ -35,6 +43,16 @@ export interface GatewayRouterDeps {
   entitlementAccess?: EntitlementAccessSurfaceDeps | null;
   /** Deployment-specific runtime-key PoP audience (MURMUR_POP_AUDIENCE). */
   popAudience?: string;
+  /**
+   * The deployment the public read surfaces are scoped to. Independent of the
+   * grant runtime: a seal-only daemon still has a chain + contract, and must
+   * still refuse to list another deployment's rows.
+   */
+  fhenixChain?: { chainId: number; sealedVerdictsAddress: string | null } | null;
+  /** Deployment-wide fallback terms for pre-070 calls; null when unset. */
+  legacyCallTerms?: CallTerms | null;
+  /** Sales close this many seconds before the market's submission close. */
+  salesSafetySeconds?: number;
 }
 
 export function gatewayRouter(deps: GatewayRouterDeps): Router {
@@ -75,6 +93,65 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
         bodyJson: req.body ?? {},
       });
       sendGatewaySubmissionJsonResponse(res, result);
+    }),
+  );
+
+  // Public storefront. No auth: these are offers, and an offer nobody can see
+  // is not one. Scoped to this daemon's deployment; `purchase_available`
+  // reports whether the checkout below is actually mounted here.
+  router.get(
+    "/v2/gateway/calls/sellable",
+    asyncHandler(async (req, res) => {
+      const result = listSellableCallsResponse(
+        {
+          db: deps.db,
+          chain: deps.fhenixChain ?? null,
+          legacyTerms: deps.legacyCallTerms ?? null,
+          salesSafetySeconds: deps.salesSafetySeconds ?? DEFAULT_SALES_SAFETY_SECONDS,
+          purchaseAvailable: Boolean(deps.entitlementAccess),
+          now: deps.now,
+        },
+        { limit: numericQuery(req.query.limit) },
+      );
+      res.status(result.status).json(result.body);
+    }),
+  );
+
+  // A wallet's own purchases. Granted rows are public (they mirror on-chain
+  // grant events); the rest of the history needs a signature from the wallet.
+  router.get(
+    "/v2/gateway/entitlements",
+    asyncHandler(async (req, res) => {
+      const authHeader = req.header(SUBSCRIBER_AUTH_HEADER);
+      const result = await listSubscriberPurchasesResponse(
+        { db: deps.db, chain: deps.fhenixChain ?? null, now: deps.now },
+        {
+          subscriber: String(req.query.subscriber ?? ""),
+          limit: numericQuery(req.query.limit),
+          cursor: typeof req.query.cursor === "string" ? req.query.cursor : null,
+          authHeader: typeof authHeader === "string" ? authHeader : undefined,
+        },
+      );
+      res.status(result.status).json(result.body);
+    }),
+  );
+
+  // The agent's own submission attempt, including the onchain_call_id the SDK
+  // otherwise had no way to learn. Runtime-key auth only (see the surface).
+  router.get(
+    "/v2/gateway/attempts/:attempt_id",
+    asyncHandler(async (req, res) => {
+      const result = await gatewayAttemptResponse({
+        req,
+        deps: {
+          db: deps.db,
+          now: deps.now,
+          privyAuth: deps.privyAuth,
+          popAudience: deps.popAudience,
+        },
+        attemptId: String(req.params.attempt_id ?? ""),
+      });
+      res.status(result.status).json(result.body);
     }),
   );
 
@@ -181,4 +258,9 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
   );
 
   return router;
+}
+
+/** `?limit=` as a number, or undefined so the surface applies its default. */
+function numericQuery(raw: unknown): number | undefined {
+  return typeof raw === "string" && /^[0-9]+$/.test(raw) ? Number(raw) : undefined;
 }

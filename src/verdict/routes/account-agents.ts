@@ -14,6 +14,13 @@ import {
   setProviderTerms,
 } from "../provider-terms-surface.js";
 import { readProviderEarnings } from "../provider-earnings-surface.js";
+import { readProviderPayouts } from "../provider-payout-journal.js";
+import { readAccountAgentReveals } from "../account-agent-reveals-surface.js";
+import {
+  retireAccountAgent,
+  unretireAccountAgent,
+  updateAccountAgentProfile,
+} from "../account-agent-lifecycle-surface.js";
 
 export interface AccountAgentsRouterDeps {
   requireAccount: RequireAccount;
@@ -22,6 +29,12 @@ export interface AccountAgentsRouterDeps {
   listAgentsLimiter: RequestHandler;
   json: RequestHandler;
   newAgentId?: AccountAgentIdAdapter;
+  /**
+   * FHENIX_REVEAL_WORKER_GRACE_SEC as configured on this deployment, for the
+   * reveals duty list. `null` when no fallback reveal worker runs here, which
+   * the surface reports as "no deadline" rather than inventing one.
+   */
+  revealGraceSeconds?: number | null;
   /**
    * What this deployment can grant for one call inside the delivery budget.
    * Reported back to owners so a business ceiling above it is visibly clamped
@@ -49,6 +62,11 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
     protocolFeeBps,
     now,
   } = deps;
+  const revealGraceSeconds = deps.revealGraceSeconds ?? null;
+
+  /** Path slug, read the same defensive way every handler in this file does. */
+  const pathSlug = (req: Parameters<RequireAccount>[0]): string =>
+    String((req as unknown as { params: { slug?: string } }).params.slug ?? "");
 
   // POST /v1/account/agents - create a casual-tier agent under this account.
   // Body: { display_slug, display_name, bio? }
@@ -142,6 +160,94 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
         ),
         limit: numeric(query.limit),
         offset: numeric(query.offset),
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  // ── Payouts: what murmur has actually sent this agent's owner ────────────
+  //
+  // The other half of the earnings page. Same ownership gate; read-only for
+  // the owner, because the entries are written by the operator through
+  // POST /v1/admin/payouts and the journal is append-only.
+  router.get(
+    "/v1/account/agents/:slug/payouts",
+    listAgentsLimiter,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const query = (req as unknown as { query: Record<string, unknown> }).query;
+      const out = readProviderPayouts({
+        db,
+        accountId: resolved.account_id,
+        slug: pathSlug(req),
+        limit: numeric(query.limit),
+        offset: numeric(query.offset),
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  // ── Reveals: the duty list, with the deadline the worker actually uses ───
+  router.get(
+    "/v1/account/agents/:slug/reveals",
+    listAgentsLimiter,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const query = (req as unknown as { query: Record<string, unknown> }).query;
+      const out = readAccountAgentReveals({
+        db,
+        accountId: resolved.account_id,
+        slug: pathSlug(req),
+        revealGraceSeconds,
+        limit: numeric(query.limit),
+        offset: numeric(query.offset),
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  // ── Profile: the two fields an owner may change. The slug is not one. ────
+  router.patch(
+    "/v1/account/agents/:slug/profile",
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = updateAccountAgentProfile({
+        db,
+        accountId: resolved.account_id,
+        slug: pathSlug(req),
+        body: req.body,
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  // ── Retirement: stop taking new calls. Everything else is untouched. ─────
+  router.post(
+    "/v1/account/agents/:slug/retire",
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = retireAccountAgent({
+        db,
+        accountId: resolved.account_id,
+        slug: pathSlug(req),
+        now,
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  router.post(
+    "/v1/account/agents/:slug/unretire",
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = unretireAccountAgent({
+        db,
+        accountId: resolved.account_id,
+        slug: pathSlug(req),
+        now,
       });
       res.status(out.status).json(out.body);
     }),

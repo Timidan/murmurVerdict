@@ -9,6 +9,10 @@ import {
   resolveFhenixContractAddress,
 } from "../integrations/deployments.js";
 import {
+  loadFhenixSaleTermsEnv,
+  type FhenixSaleTermsEnv,
+} from "../integrations/fhenix-grant-env.js";
+import {
   createAdminRouteAuth,
   type AdminRouteAuth,
 } from "./admin-route-auth.js";
@@ -39,6 +43,13 @@ export interface VerdictRouterRuntimeInput {
   env?: NodeJS.ProcessEnv;
   fhenixChainId?: number | null;
   fhenixSealedVerdictsAddress?: string | null;
+  /**
+   * Deployment-wide sale terms + sales safety margin for the public sellable
+   * listing. Daemon callers pass the values parsed from their INJECTED env;
+   * direct/test construction falls back to the env derivation below, like
+   * every other adapter here.
+   */
+  saleTerms?: FhenixSaleTermsEnv;
   fhenixVerifier?: FhenixEventVerifier | null;
   logger?: Pick<Console, "error">;
   now: () => Date;
@@ -62,6 +73,7 @@ export interface VerdictRouterRuntime {
   operatorFhenixLifecycleQueryDefaults: OperatorFhenixLifecycleQueryDefaults;
   publicOrigin: MurmurPublicOrigin;
   requireFhenixVerifier: () => FhenixEventVerifier;
+  saleTerms: FhenixSaleTermsEnv;
   webhookDnsLookup?: WebhookDnsLookup;
   webhookUrlPolicy: WebhookUrlPolicy;
 }
@@ -115,6 +127,7 @@ export function createVerdictRouterRuntime(
     operatorFhenixLifecycleQueryDefaults,
     publicOrigin,
     requireFhenixVerifier: () => requireFhenixVerifier(fhenixVerifier),
+    saleTerms: input.saleTerms ?? loadFhenixSaleTermsEnv(env),
     webhookDnsLookup: input.webhookDnsLookup,
     webhookUrlPolicy: input.webhookUrlPolicy ?? loadWebhookUrlPolicy(env),
   };

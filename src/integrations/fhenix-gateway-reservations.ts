@@ -31,6 +31,7 @@ import {
   authorizeRuntimeKeyGatewayIntent,
   type RuntimeKeyIdentity,
 } from "../verdict/auth/runtime-authorization.js";
+import { assertAgentAcceptingCalls } from "../verdict/auth/account-lifecycle.js";
 import {
   inferFeedDeliveryDeadline,
   validateFeedPacketMarket,
@@ -57,7 +58,7 @@ export type ReserveSealedCallAttemptResult =
 /**
  * The ONE way a sealed-call client_order_id duplicate may exit (used by the
  * broadcaster's early checks, the pre-transaction checks here, the
- * in-transaction recheck, and unique-race recovery — per codex review
+ * in-transaction recheck, and unique-race recovery
  * 2026-08-02, every exit must compare fingerprints or the changed-parameter
  * guarantee is false under concurrency). Returns null when no duplicate
  * exists. Throws 409 when the same client_order_id carries DIFFERENT content,
@@ -156,6 +157,25 @@ export function reserveSealedCallAttempt(params: {
     if (inTxDuplicate) {
       return;
     }
+    // RETIREMENT GATE. This exact position is the whole point.
+    //
+    // AFTER the duplicate exit: a call the agent already sent must keep
+    // resolving to its existing attempt after the owner retires it. Gating
+    // first would turn a harmless client retry into an error for work already
+    // accepted.
+    //
+    // BEFORE the attempt insert, and INSIDE this BEGIN IMMEDIATE: the read and
+    // the write are then serialized, so a retire landing concurrently either
+    // loses the race entirely or is seen by this check. Gating outside the
+    // transaction would leave a window where a retired agent still queues one
+    // more call.
+    //
+    // And NOWHERE ELSE. Not in generic runtime-key auth — attempt READS go
+    // through that path, and an owner must still be able to read the history
+    // of an agent they retired. Not in post-chain acceptance — a call already
+    // broadcast has to be recorded, or retiring mid-flight orphans a confirmed
+    // on-chain call. Queued attempts finish; only new ones are refused.
+    assertAgentAcceptingCalls(params.db, agentId);
     authorizeRuntimeKeyGatewayIntent(
       params.db,
       params.runtimeIdentity,
@@ -415,6 +435,12 @@ export function reserveFeedPacketAttempt(params: {
         idempotentFeedReturn = competing.attempt;
         return;
       }
+      // Same retirement gate as sealed calls, same placement: inside the
+      // transaction, after the idempotent exit (an attempt that already
+      // exists must still return), before anything is inserted. A retired
+      // agent stops PRODUCING on every lane, not just verdicts (security
+      // review R3).
+      assertAgentAcceptingCalls(params.db, agentId);
       const sequence = params.body.sequence ?? Math.max(
         feedPacketsRepo.nextSequence(params.db, params.feed.feed_id),
         fhenixGatewayFeedPacketTxRepo.nextSequence(params.db, params.feed.feed_id),

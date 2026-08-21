@@ -10,6 +10,7 @@ import type {
 } from "../verdict/polymarket-market-registration.js";
 import type { SealedCallIdAdapter } from "../verdict/sealed-call-acceptance.js";
 import type { NanopayGatewayFactory } from "../verdict/nanopay-payment-gate.js";
+import { VenueTicker } from "../integrations/venue-ticker.js";
 import { SCHEMA_VERSION } from "../verdict/schema.js";
 import { loadDaemonRuntimeConfig } from "./daemon-config.js";
 import { createDaemonHttpSurface } from "./daemon-http.js";
@@ -20,7 +21,7 @@ import { startDaemonOpenServLaunchpad } from "./openserv-launchpad-runtime.js";
 import { startDaemonPolymarketGammaRuntime } from "./polymarket-gamma-runtime.js";
 import { startDaemonTickers } from "./tickers.js";
 
-// Wave 4b — receipts subsystem and Filecoin pin callback retired.
+// receipts subsystem and Filecoin pin callback retired.
 // The legacy makePinReceipt() helper that lived here was a no-op for any
 // deploy without FILECOIN_API_TOKEN set, and the receipts table it pinned
 // canonical JSON for is gone. v3 attested tier will pin EAS attestations
@@ -106,6 +107,14 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       schemaVersion: SCHEMA_VERSION,
     });
     lifecycle.defer({ name: "runtime-adapters", run: () => adapters.stop() });
+
+    // Constructed INERT: no socket, no timer, no query until start() below.
+    // It has to exist before the HTTP surface so the /v2/venue/* routes can
+    // close over its read interface.
+    const venueTicker = config.venueTickerEnabled
+      ? new VenueTicker({ db, nowMs, logger })
+      : null;
+
     const app = createDaemonHttpSurface({
       db,
       config,
@@ -127,6 +136,8 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       newSealedCallId: opts.newSealedCallId,
       fhenixChainId: adapters.fhenixChainId,
       fhenixSealedVerdictsAddress: adapters.fhenixSealedVerdictsAddress,
+      fhenixSaleTerms: adapters.fhenixSaleTerms,
+      venueTicker,
       now,
     });
 
@@ -145,6 +156,24 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
 
     const httpServerRuntime = await startDaemonHttpServer(app, config.port);
     lifecycle.defer({ name: "http-server", run: () => httpServerRuntime.close() });
+
+    // Registered AFTER the HTTP server on purpose: shutdown steps run in
+    // REVERSE registration order, so this slot yields
+    //   tickers → venue ticker → HTTP → gamma → DB.
+    // The ticker MUST stop before the HTTP server. `server.close()` waits for
+    // open connections to end and never ends them itself, so an open
+    // /v2/venue/stream would hold the close promise forever; the ticker's
+    // stop() is what ends those responses. It also stops after the general
+    // tickers, so nothing is still queuing work into it.
+    if (venueTicker) {
+      lifecycle.defer({ name: "venue-ticker", run: () => venueTicker.stop() });
+    }
+
+    // Sockets and timers only after the server is listening, and never in
+    // test mode — smokes must not open a real websocket to Polymarket.
+    if (venueTicker && !opts.skipTickers) {
+      await venueTicker.start();
+    }
 
     const tickerRuntime = opts.skipTickers
       ? null

@@ -10,6 +10,7 @@ import {
   type MurmurPublicOrigin,
 } from "./public-origin.js";
 import type { PrivyAuthVerifier } from "./auth/privy.js";
+import type { FhenixSaleTermsEnv } from "../integrations/fhenix-grant-env.js";
 import { accountRouteLimiters } from "./account-rate-limit-surface.js";
 import { resolvePolymarketGammaEnabled } from "./env-grammar.js";
 import type { FeedContractIdAdapter } from "./feed-contract-surface.js";
@@ -32,6 +33,7 @@ import { publicSystemRouter } from "./routes/public-system.js";
 import { publicRankingRouter } from "./routes/public-rankings.js";
 import { marketAdminRouter } from "./routes/market-admin.js";
 import { adminEntitlementsRouter } from "./routes/admin-entitlements.js";
+import { adminPayoutsRouter } from "./routes/admin-payouts.js";
 import { deferredDisputeRouter } from "./routes/deferred-disputes.js";
 import {
   type OperatorFhenixLifecycleQueryDefaults,
@@ -111,6 +113,13 @@ export interface ApiDeps {
   fhenixChainId?: number | null;
   fhenixSealedVerdictsAddress?: string | null;
   /**
+   * Deployment-wide access terms + sales safety margin, parsed INDEPENDENTLY
+   * of FHENIX_GRANT_ENABLED so a seal-only daemon's storefront prices legacy
+   * calls the same way a paid daemon would. Daemon callers pass this from
+   * their injected env; omitting it falls back to `env` → process.env.
+   */
+  saleTerms?: FhenixSaleTermsEnv;
+  /**
    * When true, /readyz fails unless the latest live-canary snapshot is OK.
    * Defaults false so local/dev environments do not become dependent on
    * external RPC/API availability.
@@ -167,6 +176,12 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     requireAdmin: adminAuth.requireAdmin,
     entitlementAccess: deps.entitlementAccess,
     popAudience: deps.popAudience,
+    // Public read surfaces are scoped to the deployment, and priced from the
+    // deployment's own terms — both independent of whether paid grants are
+    // enabled on this daemon.
+    fhenixChain: runtime.fhenixChain,
+    legacyCallTerms: runtime.saleTerms.legacyTerms,
+    salesSafetySeconds: runtime.saleTerms.salesSafetySeconds,
   }));
 
   router.use(operatorControlRouter({
@@ -265,6 +280,14 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     requireAdmin: adminAuth.requireAdmin,
   }));
 
+  // The payout journal's WRITE side. Admin token only — a Privy session reads
+  // its own payouts at /v1/account/agents/:slug/payouts and can never write one.
+  router.use(adminPayoutsRouter({
+    db: deps.db,
+    requireAdmin: adminAuth.requireAdmin,
+    now,
+  }));
+
   router.use(publicCallRouter({ db: deps.db }));
 
   router.use(deferredDisputeRouter());
@@ -286,7 +309,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
       resolvePolymarketGammaEnabled(deps.env ?? {}),
   }));
 
-  // Wave 4b-2 — /v1/market/preflight endpoint dropped alongside the
+  // /v1/market/preflight was dropped alongside the
   // Santiment scout/analyst pipeline. The endpoint returned composite
   // score / regime / top playbook decoration that the resolver never
   // consulted; nothing on the agent path required it. Murmur is a pure

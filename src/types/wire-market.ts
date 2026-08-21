@@ -127,6 +127,10 @@ export interface WireMarketRow {
   void_band: string; // decimal as string
   status: WireMarketStatus;
   market_config_version: number;
+  /** Provider key ("polymarket-gamma"). Emitted by the registry read since the
+   *  adapter-identity spread; typed explicitly so the provider level of the
+   *  dashboard hierarchy is a contract, not an index-signature accident. */
+  adapter_id?: string;
   market_taxonomy?: WireMarketTaxonomyAssignment;
   oracles?: WireMarketOracleSummary;
   /** Venue-adapter markets ONLY — live odds/volume snapshot. */

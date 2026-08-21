@@ -37,6 +37,9 @@ import { accountActivityRouter } from "./account-activity.js";
 import { accountApiKeyRouter } from "./account-api-keys.js";
 import { accountDestinationRouter } from "./account-destination.js";
 import { accountFunnelEventsRouter } from "./account-funnel-events.js";
+import { accountDeactivateRouter } from "./account-deactivate.js";
+import { accountWebhooksRouter } from "./account-webhooks.js";
+import { assertAccountActive } from "../auth/account-lifecycle.js";
 import { accountRouteLimiters } from "../account-rate-limit-surface.js";
 import type { AccountAgentIdAdapter } from "../account-agent-surface.js";
 import type {
@@ -73,6 +76,13 @@ export interface AccountRouterDeps {
    * read MURMUR_PROTOCOL_FEE_BPS itself (direct/test construction).
    */
   protocolFeeBps?: number | null;
+  /**
+   * FHENIX_REVEAL_WORKER_GRACE_SEC as this deployment is configured, threaded
+   * from the parsed daemon config for the reveals duty list. `null`/undefined
+   * means no fallback reveal worker runs here, and the surface then reports no
+   * deadline rather than printing the loader's default as if it were policy.
+   */
+  revealGraceSeconds?: number | null;
   /** HTTP route operation clock shared across account route Adapters. */
   now: () => Date;
   /**
@@ -123,14 +133,51 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     now,
   });
 
+  // ── The deactivation gate, applied ONCE at dispatch ──────────────────────
+  //
+  // A closed account (accounts.deactivated_at, migration 073) is refused
+  // everywhere under /v1/account/*. Enforcing it here rather than inside each
+  // handler means a route added tomorrow inherits the refusal by construction
+  // — the failure mode of the per-route habit is a route someone forgot, and
+  // that route is then the one hole in a terminal state.
+  //
+  // It reads deactivated_at and NOTHING ELSE. In particular it does not read
+  // the kill switch: those two columns are separate precisely so that
+  // releasing the switch cannot reopen a closed account.
+  //
+  // Two deliberate exemptions, both wired with the RAW `requireAccount`:
+  //
+  //   · the session router — GET /v1/account/session is how the dashboard
+  //     learns it should render the closed-account screen. Its POST sibling
+  //     is refused, and the dashboard falls back to the GET on that 403.
+  //   · the deactivate router — a retried close must report
+  //     already_deactivated, not 403.
+  const requireActiveAccount: typeof requireAccount = async (req, opts) => {
+    const resolved = await requireAccount(req, opts);
+    assertAccountActive(db, resolved.account_id);
+    return resolved;
+  };
+
   router.use(accountSessionRouter({
+    // GET reads the terminal state and stays open; POST touches last_seen_at
+    // and is a write like any other, so it is gated.
     requireAccount,
+    requireActiveAccount,
     sessionLimiter,
     json,
+    db,
+  }));
+
+  router.use(accountDeactivateRouter({
+    requireAccount,
+    db,
+    json,
+    limiter: rotateKeyLimiter,
+    now,
   }));
 
   router.use(accountAgentsRouter({
-    requireAccount,
+    requireAccount: requireActiveAccount,
     db,
     createAgentLimiter,
     json,
@@ -138,11 +185,19 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     newAgentId,
     deliverableCap: deps.deliverableCap,
     protocolFeeBps: deps.protocolFeeBps,
+    revealGraceSeconds: deps.revealGraceSeconds,
     now,
   }));
 
+  router.use(accountWebhooksRouter({
+    requireAccount: requireActiveAccount,
+    db,
+    listLimiter: listAgentsLimiter,
+    writeLimiter: rotateKeyLimiter,
+  }));
+
   router.use(accountControllerWalletRouter({
-    requireAccount,
+    requireAccount: requireActiveAccount,
     db,
     destAddrLimiter,
     json,
@@ -152,7 +207,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   }));
 
   router.use(accountRuntimeKeyRouter({
-    requireAccount,
+    requireAccount: requireActiveAccount,
     db,
     json,
     listAgentsLimiter,
@@ -165,7 +220,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   }));
 
   router.use(accountKillSwitchRouter({
-    requireAccount,
+    requireAccount: requireActiveAccount,
     db,
     json,
     limiter: rotateKeyLimiter,
@@ -173,13 +228,13 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   }));
 
   router.use(accountActivityRouter({
-    requireAccount,
+    requireAccount: requireActiveAccount,
     db,
     limiter: listAgentsLimiter,
   }));
 
   router.use(accountApiKeyRouter({
-    requireAccount,
+    requireAccount: requireActiveAccount,
     db,
     json,
     listAgentsLimiter,
@@ -191,7 +246,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   }));
 
   router.use(accountDestinationRouter({
-    requireAccount,
+    requireAccount: requireActiveAccount,
     db,
     destinationCooldownMs,
     destAddrLimiter,
@@ -201,7 +256,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   }));
 
   router.use(accountFunnelEventsRouter({
-    requireAccount,
+    requireAccount: requireActiveAccount,
     db,
     funnelEventLimiter,
     json,

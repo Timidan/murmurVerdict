@@ -312,7 +312,7 @@ export function parseNanopayPipelinesEnv(
     }
     if (priceAtoms !== expectedAtoms) {
       logger.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: priceAtoms ${priceAtomsStr} for ${pipelineId} does not match MURMUR_NANOPAY_DEFAULT_PRICE (${expectedAtoms.toString()} atoms); skipping (Phase 1b enforces single shared price)`,
+        `[daemon] MURMUR_NANOPAY_PIPELINES: priceAtoms ${priceAtomsStr} for ${pipelineId} does not match MURMUR_NANOPAY_DEFAULT_PRICE (${expectedAtoms.toString()} atoms); skipping`,
       );
       continue;
     }
@@ -324,7 +324,7 @@ export function parseNanopayPipelinesEnv(
     }
     if (recipient.toLowerCase() !== expectedSellerLower) {
       logger.warn(
-        `[daemon] MURMUR_NANOPAY_PIPELINES: recipient ${recipient} for ${pipelineId} does not match MURMUR_NANOPAY_SELLER_ADDRESS (${expectedSeller}); skipping (Phase 1b enforces single shared seller)`,
+        `[daemon] MURMUR_NANOPAY_PIPELINES: recipient ${recipient} for ${pipelineId} does not match MURMUR_NANOPAY_SELLER_ADDRESS (${expectedSeller}); skipping`,
       );
       continue;
     }

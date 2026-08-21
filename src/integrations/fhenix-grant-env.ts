@@ -14,6 +14,7 @@ import {
   parseFhenixChainIdInput,
   resolveFhenixContractAddress,
 } from "./deployments.js";
+import type { CallTerms } from "../verdict/call-sale-terms.js";
 import { SETTLEMENT_CURRENCY } from "./circle-gateway.js";
 import { createSerialBroadcastQueue } from "./fhenix-gateway-env.js";
 
@@ -112,7 +113,7 @@ export interface FhenixGrantEnvConfig {
   /**
    * Sales close at grantCloseAt - salesSafetySeconds. The margin must cover
    * grant broadcast, confirmations, and enough subscriber time to decrypt
-   * before the ciphertext goes public. Default 180s (Codex §6).
+   * before the ciphertext goes public. Default 180s.
    */
   salesSafetySeconds: number;
   /**
@@ -134,7 +135,7 @@ export interface FhenixGrantEnvConfig {
   minBalanceWei: bigint;
   /**
    * Flat, Murmur-configured access price in the settlement asset's atomic units
-   * (e.g. USDC 6-decimals). ONE price for all calls (Codex v1 scope): no
+   * (e.g. USDC 6-decimals). ONE price for all calls: no
    * producer split, no agent-set pricing. The payment asset/seller/network come
    * from the shared nanopay payment infra at composition time.
    */
@@ -148,6 +149,69 @@ export interface FhenixGrantEnvConfig {
 export interface FhenixGrantEnvOptions {
   contractAddress?: string | null;
   enabled?: boolean;
+}
+
+/** Default sales safety margin, in seconds. Mirrors FhenixGrantEnvConfig. */
+export const DEFAULT_SALES_SAFETY_SECONDS = 180;
+
+export interface FhenixSaleTermsEnv {
+  /**
+   * The deployment-wide access terms, or null when this daemon has none.
+   *
+   * Called "legacy" because only calls sealed before providers could price
+   * themselves (migration 070) are sold under them. Null is a real answer, not
+   * a failure: a seal-only daemon has no price configured, and the storefront
+   * must then EXCLUDE legacy rows rather than advertise a made-up number.
+   */
+  legacyTerms: CallTerms | null;
+  /** Sales close this many seconds before the contract's grant deadline. */
+  salesSafetySeconds: number;
+}
+
+/**
+ * Sale terms as a READ, independent of FHENIX_GRANT_ENABLED.
+ *
+ * `loadFhenixGrantEnvConfig` returns null the moment grants are off, because
+ * everything else it builds (a grantor key, an RPC client, a broadcast queue)
+ * is machinery for selling. The terms themselves are not machinery — they are
+ * the answer to "what would this call cost here", and a seal-only daemon must
+ * resolve it exactly as a paid daemon would, or the same call is priced
+ * differently depending on which process is asked.
+ *
+ * Deliberately LENIENT where the strict loader is fail-closed: a missing or
+ * malformed price yields null terms instead of throwing. This path never takes
+ * money — it only decides whether a legacy row can be listed — and a daemon
+ * that seals fine should not refuse to boot over a storefront detail. The
+ * strict loader still rejects the same values when grants are actually on.
+ */
+export function loadFhenixSaleTermsEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): FhenixSaleTermsEnv {
+  const priceAtoms = env.FHENIX_GRANT_PRICE_ATOMS?.trim() ?? "";
+  const currency = env.FHENIX_GRANT_CURRENCY?.trim() ?? "";
+  const pricingVersion = env.FHENIX_GRANT_PRICING_VERSION?.trim() ?? "";
+  // ALL THREE or nothing. A price with no pricing version describes terms a
+  // subscriber cannot be shown to have agreed to, and a currency with no price
+  // is not an offer. Partial configuration reads as an operator mid-edit.
+  const complete =
+    /^[0-9]+$/.test(priceAtoms) &&
+    BigInt(priceAtoms || "0") > 0n &&
+    currency.length > 0 &&
+    pricingVersion.length > 0;
+  const salesSafetySeconds = (() => {
+    const raw = env.FHENIX_GRANT_SALES_SAFETY_SEC?.trim();
+    if (!raw) return DEFAULT_SALES_SAFETY_SECONDS;
+    const value = Number(raw);
+    // Fall back rather than throw, for the same reason as above — but never to
+    // a SMALLER margin than the default, since a bad value must not widen the
+    // sale window past what delivery can cover.
+    if (!Number.isInteger(value) || value < 0) return DEFAULT_SALES_SAFETY_SECONDS;
+    return value;
+  })();
+  return {
+    legacyTerms: complete ? { priceAtoms, currency, pricingVersion } : null,
+    salesSafetySeconds,
+  };
 }
 
 // Strict, default-OFF loader. Returns null when disabled; throws (fail-closed)
@@ -193,7 +257,7 @@ export function loadFhenixGrantEnvConfig(
       "must be a 32-byte 0x-prefixed private key",
     );
   }
-  // Key isolation (Codex §4): the grantor key must not equal the relayer key
+  // Key isolation: the grantor key must not equal the relayer key
   // (nonce contention with submit/discovery) nor the reveal key (couples the
   // privacy revenue path to the availability fallback).
   const relayerKey = env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY?.trim();

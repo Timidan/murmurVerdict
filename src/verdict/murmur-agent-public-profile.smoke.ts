@@ -17,6 +17,7 @@ const agent: AgentRow = {
   bio: "Public profile bio",
   created_at: "2026-05-27T12:00:00Z",
   api_key_hash: "private-hash",
+  retired_at: null,
   wallet_address: "0x1111111111111111111111111111111111111111",
   chain_id: "eip155:8453",
 };
@@ -37,6 +38,7 @@ const sparseAgent: AgentRow = {
   display_name: "Sparse Profile",
   created_at: "2026-05-27T12:05:00Z",
   api_key_hash: "private-hash",
+  retired_at: null,
 };
 const sparseProfile = publicMurmurAgentProfile(sparseAgent);
 assert.ok(sparseProfile);
