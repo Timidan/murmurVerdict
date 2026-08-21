@@ -1,4 +1,4 @@
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { CallDetail } from "../components/compact/CallDetail.js";
 import { Ik } from "../icons.js";
 
@@ -10,10 +10,8 @@ import { Ik } from "../icons.js";
  */
 export function CallPage({ callId }: { callId: string }) {
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span className="inline-flex items-center gap-1.5">
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span className="inline-flex items-center gap-1.5">
             <Ik name="verdict" />
             {/* The word `calls` stays, so the crumb's accessible name is
                 unchanged — no sr-only stand-in needed here. */}
@@ -21,9 +19,7 @@ export function CallPage({ callId }: { callId: string }) {
               calls <span className="ck-dim mx-1">/</span>
               <span className="ck-pos">{callId.slice(0, 8)}</span>
             </span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       <h1 className="sr-only">call {callId}</h1>
 
@@ -31,19 +27,6 @@ export function CallPage({ callId }: { callId: string }) {
         <CallDetail callId={callId} variant="page" />
       </main>
 
-      <footer className="flex items-center gap-3 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">
-        <a href="#/" className="ck-mono ck-dim hover:ck-pos no-underline">
-          ← home
-        </a>
-        <span>·</span>
-        <a
-          href="#/leaderboard"
-          className="ck-mono ck-dim hover:ck-pos no-underline"
-        >
-          leaderboard
-        </a>
-        <span className="ml-auto ck-mono ck-dim">call · {callId.slice(0, 8)}</span>
-      </footer>
     </div>
   );
 }

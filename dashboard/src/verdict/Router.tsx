@@ -1,7 +1,11 @@
-import { useEffect, useState, lazy, Suspense } from "react";
-import { parseLocation } from "./route.js";
+import React, { useEffect, useState, lazy, Suspense } from "react";
+import { canonicalizeRouteLocation, parseLocation } from "./route.js";
 import { DetailDrawerProvider, DetailDrawer, useDetailDrawer } from "./components/compact/DetailDrawer.js";
 import { GlobalShortcuts } from "./components/compact/GlobalShortcuts.js";
+// Static, not lazy: a lazy topbar would suspend the fallback that renders it.
+import { CompactTopbar } from "./components/compact/Topbar.js";
+import { CompactFooter } from "./components/compact/Footer.js";
+import { CrumbSlotContext } from "./components/compact/TopbarCrumb.js";
 
 const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ default: m.TodayPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
@@ -11,14 +15,15 @@ const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => 
 const AdminGatewayPage = lazy(() => import("./pages/AdminGatewayPage.js").then((m) => ({ default: m.AdminGatewayPage })));
 const AdminOverviewPage = lazy(() => import("./pages/AdminOverviewPage.js").then((m) => ({ default: m.AdminOverviewPage })));
 
-// Phase 7a — account-area pages. Lazy so the Privy SDK chunk isn't pulled
+// account-area pages. Lazy so the Privy SDK chunk isn't pulled
 // into the landing/leaderboard bundles.
 const AccountPage = lazy(() => import("./pages/AccountPage.js").then((m) => ({ default: m.AccountPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage.js").then((m) => ({ default: m.LoginPage })));
-// Phase 7c — per-agent settings shell (payout + pricing + keys sub-tabs).
+// per-agent settings shell (payout + pricing + keys sub-tabs).
 // The tab union is IMPORTED, not restated: a tab added to the page but
 // missing from a local copy here would silently fall through to "payout".
 import type { AgentSettingsTab } from "./pages/AgentSettingsPage.js";
+import { LogoLoader } from "./components/LogoLoader.js";
 const AgentSettingsPage = lazy(() =>
   import("./pages/AgentSettingsPage.js").then((m) => ({
     default: m.AgentSettingsPage,
@@ -73,7 +78,7 @@ const NotFoundPage = lazy(() =>
 );
 
 /**
- * Phase 7a — extract the `?next=` deep-link from the hash query string.
+ * extract the `?next=` deep-link from the hash query string.
  * Returns the raw (un-decoded) path so LoginPage can sanitize it before
  * navigation. Defensive URL parsing — no throws on malformed input.
  */
@@ -91,12 +96,104 @@ function parseNext(hash: string): string | null {
   return n && n.length > 0 ? n : null;
 }
 
+/** Routes with their own chrome — everything else wears the compact shell. */
+const SHELL_LESS_ROUTES = new Set(["landing", "spec", "logo"]);
+
+/** Content-area only; the shell around it never unmounts. */
+function RouteFallback() {
+  return <LogoLoader />;
+}
+
+/**
+ * The missing safety net: without a boundary, ANY throw inside a lazy page —
+ * a component bug, an unexpected API shape, or a stale chunk after a rebuild
+ * changed the hashes — unmounts React to a silent white screen. "The page
+ * sometimes blanks out on navigation" was this.
+ *
+ * Two recoveries, by cause:
+ *   stale chunk (dynamic import failed)  → reload once, automatically. The
+ *     fresh document loads the new hashes; a sessionStorage latch stops a
+ *     broken deploy from looping the reload forever.
+ *   anything else → say so, in words, with a reload control. A blank page
+ *     tells the reader nothing; an error panel tells them it is not them.
+ */
+class RouteErrorBoundary extends React.Component<
+  { locationKey: string; children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidUpdate(prev: { locationKey: string }) {
+    // Navigating away clears the error — the next page deserves a fresh try.
+    if (prev.locationKey !== this.props.locationKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  componentDidCatch(error: Error) {
+    const staleChunk = /dynamically imported module|Loading chunk|Failed to fetch/i.test(
+      String(error?.message ?? error),
+    );
+    if (staleChunk && !sessionStorage.getItem("mmr_chunk_reloaded")) {
+      sessionStorage.setItem("mmr_chunk_reloaded", "1");
+      window.location.reload();
+    }
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="p-6 ck-mono text-[12px] flex flex-col gap-2 items-start">
+        <span className="ck-neg">this page hit an error while rendering.</span>
+        <span className="ck-dim">
+          It is not you — the page broke. The rest of murmur still works.
+        </span>
+        <button
+          type="button"
+          className="ck-btn ck-btn-bracket"
+          onClick={() => window.location.reload()}
+        >
+          reload the page
+        </button>
+      </div>
+    );
+  }
+}
+
+/**
+ * Persistent app chrome. Mounted once, outside <Suspense>, so route changes swap
+ * only the content: the topbar keeps its DOM node, its SSE subscription, and its
+ * knowledge of the previous route (which is what makes the nav activation
+ * animation fire at all).
+ */
+function AppShell({ shellLess, children }: { shellLess: boolean; children: React.ReactNode }) {
+  const [crumbSlot, setCrumbSlot] = useState<HTMLElement | null>(null);
+  if (shellLess) return <>{children}</>;
+  return (
+    <CrumbSlotContext.Provider value={crumbSlot}>
+      <div className="mmr-shell min-h-dvh bg-[var(--color-bg)] flex flex-col">
+        <CompactTopbar crumbSlotRef={setCrumbSlot} />
+        {children}
+        <CompactFooter />
+      </div>
+    </CrumbSlotContext.Provider>
+  );
+}
+
 export function VerdictRouter() {
   const [locationKey, setLocationKey] = useState(
     `${window.location.pathname}${window.location.search}${window.location.hash}`,
   );
   useEffect(() => {
     const onLocation = () => {
+      // A legacy `#/…` click lands here; fold it into the canonical path
+      // BEFORE the key is read so the address bar never shows the doubled
+      // `/dashboard#/dashboard` form. replaceState fires no events — no loop.
+      canonicalizeRouteLocation();
       setLocationKey(`${window.location.pathname}${window.location.search}${window.location.hash}`);
       window.scrollTo(0, 0);
     };
@@ -115,13 +212,9 @@ export function VerdictRouter() {
   return (
     <DetailDrawerProvider>
     <BackgroundInert>
-    <Suspense
-      fallback={
-        <div className="mmr-shell min-h-dvh bg-[var(--color-bg)] flex items-center justify-center">
-          <span className="ck-mono ck-dim">loading…</span>
-        </div>
-      }
-    >
+    <AppShell shellLess={SHELL_LESS_ROUTES.has(route.name)}>
+    <RouteErrorBoundary locationKey={locationKey}>
+    <Suspense fallback={<RouteFallback />}>
       {route.name === "landing" && <AnimatedLandingPage />}
       {route.name === "dashboard" && <LandingPage />}
       {route.name === "leaderboard" && <LeaderboardPage />}
@@ -160,6 +253,8 @@ export function VerdictRouter() {
       {route.name === "logo" && <LogoDemoPage />}
       {route.name === "not_found" && <NotFoundPage path={route.params?.path} />}
     </Suspense>
+    </RouteErrorBoundary>
+    </AppShell>
     </BackgroundInert>
       {/* Route chords (`g` + key). Mounted here, once, as a sibling of the
           drawer: it renders nothing and listens on `window`, so it must sit
