@@ -1,8 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { useStream } from "../../hooks/useStream.js";
+import { Ik } from "../../icons.js";
 import { formatScore } from "../../lib/score-format.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
 import { TimeAgo } from "./TimeAgo.js";
+
+/**
+ * The public outcome, in words. Slicing the raw enum to four characters used
+ * to render `oracle_unavailable` as "orac"; the retired price-feed wording is
+ * replaced by what the reader needs — no outcome landed.
+ */
+const OUTCOME_TEXT: Record<string, string> = {
+  win: "win",
+  loss: "loss",
+  void: "void",
+  oracle_unavailable: "no outcome",
+};
+
+function outcomeWord(outcome: string | null | undefined): string {
+  if (!outcome) return "—";
+  return OUTCOME_TEXT[outcome] ?? outcome.replace(/_/g, " ");
+}
 
 /**
  * COMPACT live tape — terminal-style scroll of accepted/resolved events.
@@ -60,13 +78,13 @@ export function CompactLiveFeed({
       if (status === "reconnecting" || status === "closed") {
         return (
           <div className="px-2 py-2 ck-mono ck-dim">
-            [reconnecting to live feed…]
+            [reconnecting to the live stream…]
           </div>
         );
       }
       return (
         <div className="px-2 py-2 ck-mono ck-dim">
-          [no activity yet — verdicts appear here live]
+          [no activity yet — new verdicts appear here]
         </div>
       );
     }
@@ -100,13 +118,33 @@ export function CompactLiveFeed({
               iso={isResolved ? evt.resolved_at : evt.accepted_at}
               className="ck-mono ck-dim truncate"
             />
-            <span className="ck-label truncate">
-              {isResolved ? "res" : "acc"}
+            {/* The event kind was "acc" / "res" — two three-letter tokens the
+                reader had to decode. The glyphs are the ones the panel titles
+                already use for the same two ideas, and the accessible name
+                carries the word. */}
+            <span
+              className="inline-flex items-center ck-dim"
+              title={isResolved ? "scored" : "sealed"}
+            >
+              <Ik name={isResolved ? "resolve" : "seal"} />
+              <span className="sr-only">{isResolved ? "scored" : "sealed"}</span>
             </span>
-            <span className="ck-mono ck-dim truncate">
-              {evt.type === "call.accepted"
-                ? "sealed"
-                : (evt.outcome ?? "—").slice(0, 4)}
+            {/* Tone follows the OUTCOME, matching the call history's rule:
+                right is green, wrong is red, the word carries the meaning and
+                the colour only reinforces. Sealed rows stay dim. */}
+            <span
+              className={
+                "ck-mono truncate " +
+                (evt.type === "call.accepted"
+                  ? "ck-dim"
+                  : evt.outcome === "win"
+                    ? "text-[var(--color-success)]"
+                    : evt.outcome === "loss"
+                      ? "ck-neg"
+                      : "ck-dim")
+              }
+            >
+              {evt.type === "call.accepted" ? "sealed" : outcomeWord(evt.outcome)}
             </span>
             <a
               href={`#/agents/${evt.agent_slug}`}
@@ -115,9 +153,18 @@ export function CompactLiveFeed({
             >
               {evt.agent_slug}
             </a>
-            <span className="ck-mono ck-dim text-right truncate">
+            <span
+              className={
+                "ck-mono text-right truncate " +
+                (evt.type !== "call.accepted" && evt.outcome === "win"
+                  ? "text-[var(--color-success)]"
+                  : evt.type !== "call.accepted" && evt.outcome === "loss"
+                    ? "ck-neg"
+                    : "ck-dim")
+              }
+            >
               {evt.type === "call.accepted"
-                ? "blind"
+                ? "sealed"
                 : evt.call_score !== null && evt.call_score !== undefined
                   ? formatScore(evt.call_score)
                   : "—"}
