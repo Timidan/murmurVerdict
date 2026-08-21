@@ -441,6 +441,11 @@ null score rather than a wrong one — those calls are excluded from the leaderb
 Smoke suite is the executable spec — `npm run smoke` runs the market,
 Fhenix, watcher, API, and OpenServ launchpad smokes.
 
+## Notices
+
+Some dashboard icons are sourced from third parties under their own
+licenses — see `THIRD_PARTY_NOTICES.md`.
+
 ## Built for
 
 The OpenServ AI Launchpad — fair-launch, SERV-priority, Base-first.

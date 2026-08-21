@@ -19,10 +19,11 @@
 //   render in component state and then is gone.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { CodeSnippetPanel } from "../components/account/CodeSnippetPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { buildAgentPrompt } from "../lib/agent-prompt.js";
+import { LogoLoader } from "../components/LogoLoader.js";
 
 const SESSION_KEY_PREFIX = "murmur_just_minted:";
 /** Handoff secrets older than this are treated as stale — see header comment. */
@@ -50,7 +51,7 @@ interface JustMintedEnvelope {
  * when the entry is missing, malformed, or past its expiry. Clearing on
  * read is intentional — refreshing the page should not re-reveal the key.
  *
- * Codex P2 fix — returns the full envelope (including `expires_at`) so the
+ * Returns the full envelope, `expires_at` included, so the
  * caller can schedule an expiry-driven clear. Earlier this only returned
  * the secret string, so state held the key past `expires_at` if the tab
  * was left idle.
@@ -100,7 +101,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     consumeJustMinted(slug),
   );
 
-  // Codex P2 fix — the handoff envelope carries `expires_at`; schedule a
+  // The handoff envelope carries `expires_at`; schedule a
   // setTimeout to null out the secret when that wall-clock moment arrives.
   // Earlier we only checked expiry at the initial sessionStorage read, so
   // an idle tab past the TTL kept the secret visible until manual refresh.
@@ -155,10 +156,8 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     arrivedWithFreshRuntimeKey || arrivedWithRetiredApiKey ? "ck-pos" : "ck-dim";
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             <a href="#/account" className="ck-dim hover:ck-pos no-underline">
               account
             </a>
@@ -166,9 +165,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <span className="ck-pos">{slug}</span>
             <span className="ck-dim mx-1">/</span>
             <span className={headerAccent}>integrate</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
 
       <main className="flex-1 px-3 py-4 flex flex-col gap-3 max-w-[820px] w-full mx-auto">
         <section>
@@ -182,18 +179,19 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           </h1>
           {arrivedWithFreshRuntimeKey && (
             <p className="ck-pos text-[12px] leading-relaxed max-w-[60ch]">
-              Your runtime key is wired into the snippet below — paste it into
+              Your runtime key is already in the snippet below. Paste it into
               your agent.{" "}
               <span className="ck-neg">
-                Shown only on this view. Refresh or leave this page and the key is gone;
-                you'll need to mint a new one to recover.
+                This page shows it once. Refresh or leave and the key is gone.
+                Mint a new one to get another.
               </span>
             </p>
           )}
           {!arrivedWithFreshRuntimeKey && !arrivedWithRetiredApiKey && (
             <p className="ck-dim text-[12px] leading-relaxed max-w-[60ch]">
-              paste this into your agent. set <code className="ck-pos">MURMUR_RUNTIME_KEY</code>{" "}
-              to a Runtime Key authorized by the agent's Controller Wallet.{" "}
+              Paste this into your agent. Set{" "}
+              <code className="ck-pos">MURMUR_RUNTIME_KEY</code> to a runtime key
+              that this agent's controller wallet has authorized.{" "}
               <a
                 href={`#/account/agent/${encodeURIComponent(slug)}/wallet`}
                 className="ck-pos no-underline underline-offset-2 hover:underline"
@@ -215,8 +213,8 @@ export function IntegratePage({ slug }: IntegratePageProps) {
               className="text-[12px] leading-relaxed max-w-[60ch]"
               style={{ color: "var(--color-accent-ink)" }}
             >
-              API keys no longer authorize agent submissions. Use a Runtime
-              Key for the Gateway snippet below.{" "}
+              An API key no longer authorizes an agent to send calls. Use a
+              runtime key for the gateway snippet below.{" "}
               <a
                 href={`#/account/agent/${encodeURIComponent(slug)}/runtime`}
                 className="ck-pos no-underline underline-offset-2 hover:underline"
@@ -241,22 +239,21 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           />
         ) : agentMissing ? (
           <section className="ck-frame-strong px-4 py-4">
-            <p className="ck-mono ck-neg">agent {slug} not found in your account.</p>
+            <p className="ck-mono ck-neg">We cannot find the agent {slug} on your account.</p>
             <p className="ck-dim text-[12px] mt-2">
-              the daemon may not have hydrated yet — try a refresh, or
-              {" "}
-              <a href="#/account" className="ck-pos no-underline">return to account</a>.
+              The daemon may still be loading. Refresh the page, or{" "}
+              <a href="#/account" className="ck-pos no-underline">go back to your account</a>.
             </p>
           </section>
         ) : (
           <section className="ck-frame px-4 py-4">
-            <p className="ck-mono ck-dim">resolving agent id…</p>
+            <p className="ck-mono ck-dim">Finding your agent…</p>
             <p className="ck-dim text-[12px] mt-2">
-              snippets render once your account agent is available.
+              The snippets appear once the agent loads.
             </p>
             {agentLoading && (
               <p className="ck-dim text-[12px] mt-1">
-                fetching /v1/account/agents…
+                Loading your agents…
               </p>
             )}
           </section>
@@ -264,21 +261,23 @@ export function IntegratePage({ slug }: IntegratePageProps) {
 
         <section className="ck-frame">
           <div className="ck-header">
-            <span className="ck-title">welcome packet</span>
+            <span className="ck-title">what to read next</span>
           </div>
           <ul className="divide-y divide-[var(--color-border)]">
             <li>
+              {/* download, not navigate: the raw file rendering in a tab is
+                  a dead end for a reader — this is a file you save and feed
+                  to an agent. */}
               <a
                 href="/v1/skill.md"
-                target="_blank"
-                rel="noreferrer"
+                download="murmur-skill.md"
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="flex flex-col">
-                  <span className="ck-pos">skill.md for your agent's LLM</span>
+                  <span className="ck-pos">the skill file your agent reads</span>
                   <span className="ck-dim text-[12px]">
-                    feed this to Claude / Cursor / GPT so it knows how to drive
-                    Murmur end-to-end
+                    Give this to Claude, Cursor, or GPT. It teaches the agent
+                    to run murmur end to end.
                   </span>
                 </span>
                 <span className="ck-dim text-[12px]">[ open .md → ]</span>
@@ -294,8 +293,8 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 <span className="flex flex-col">
                   <span className="ck-pos">your agent's ERC-8004 card (JSON)</span>
                   <span className="ck-dim text-[12px]">
-                    machine-readable identity manifest — endpoints, services,
-                    privacy posture
+                    The card other agents read: endpoints, services, and how
+                    this agent handles privacy.
                   </span>
                 </span>
                 <span className="ck-dim text-[12px]">[ open json → ]</span>
@@ -304,14 +303,13 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <li>
               <a
                 href="/v1/openapi.json"
-                target="_blank"
-                rel="noreferrer"
+                download="murmur-openapi.json"
                 className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
               >
                 <span className="flex flex-col">
-                  <span className="ck-pos">full OpenAPI spec</span>
+                  <span className="ck-pos">the full OpenAPI spec</span>
                   <span className="ck-dim text-[12px]">
-                    every endpoint shape your agent can call against this daemon
+                    Every endpoint your agent can call on this daemon.
                   </span>
                 </span>
                 <span className="ck-dim text-[12px]">[ open json → ]</span>
@@ -356,14 +354,14 @@ export function IntegratePage({ slug }: IntegratePageProps) {
         </section>
 
         <p className="ck-dim text-[12px]">
-          key wired in? watch{" "}
+          Key in place? Watch{" "}
           <a
             href={`#/agents/${encodeURIComponent(slug)}`}
             className="ck-pos no-underline underline-offset-2 hover:underline"
           >
             #/agents/{slug}
           </a>{" "}
-          — your first call appears there live.
+          — your first call shows up there as it happens.
         </p>
       </main>
     </div>
@@ -486,11 +484,11 @@ function AgentPromptPanel({
   return (
     <section className="ck-frame">
       <div className="ck-header">
-        <span className="ck-title">agent prompt</span>
+        <span className="ck-title">the prompt for your agent</span>
         <span className="flex items-center gap-2">
           {copyFallback && (
             <span className="text-[12px] ck-dim" aria-live="polite">
-              clipboard blocked — select + ⌘C / Ctrl-C
+              The clipboard is blocked. Select the text and press ⌘C or Ctrl-C.
             </span>
           )}
           <button
@@ -505,11 +503,11 @@ function AgentPromptPanel({
         </span>
       </div>
       {loading ? (
-        <p className="ck-dim text-[12px] px-3 py-2">resolving prompt…</p>
+        <p className="ck-dim text-[12px] px-3 py-2">Loading the prompt…</p>
       ) : error ? (
         <p className="ck-dim text-[12px] px-3 py-2">
-          could not load the agent prompt — the runbook is also at{" "}
-          <a href="/v1/skill.md" target="_blank" rel="noreferrer" className="ck-pos no-underline">
+          Unable to load the prompt. The same runbook is at{" "}
+          <a href="/v1/skill.md" download="murmur-skill.md" className="ck-pos no-underline">
             /v1/skill.md
           </a>
           .
@@ -528,21 +526,17 @@ function AgentPromptPanel({
 
 function LoadingShell({ slug }: { slug: string }) {
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span>
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span>
             <span className="ck-dim">account</span>
             <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{slug}</span>
             <span className="ck-dim mx-1">/</span>
             <span className="ck-dim">integrate</span>
-          </span>
-        }
-      />
+          </span></TopbarCrumb>
       <main className="flex-1 px-3 py-3 max-w-[820px] w-full mx-auto">
         <div className="ck-frame px-4 py-6">
-          <p className="ck-mono ck-dim">loading…</p>
+          <div className="flex justify-center py-6"><LogoLoader width={300} /></div>
         </div>
       </main>
     </div>
@@ -551,19 +545,15 @@ function LoadingShell({ slug }: { slug: string }) {
 
 function ConfigErrorShell({ slug }: { slug: string }) {
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span className="ck-neg">
-            {slug} · integrate · unconfigured
-          </span>
-        }
-      />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span className="ck-neg">
+            {slug} · integrate · not configured
+          </span></TopbarCrumb>
       <main className="flex-1 px-3 py-3 max-w-[820px] w-full mx-auto">
         <section className="ck-frame-strong px-4 py-4">
-          <p className="ck-mono ck-neg">privy not configured.</p>
+          <p className="ck-mono ck-neg">Sign-in is not configured.</p>
           <p className="ck-dim mt-2 text-[12px]">
-            set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local and rebuild.
+            Set <code>VITE_PRIVY_APP_ID</code> in dashboard/.env.local, then build again.
           </p>
         </section>
       </main>

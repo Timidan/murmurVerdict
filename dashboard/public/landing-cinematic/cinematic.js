@@ -28,8 +28,18 @@ const segmentInOut = (inStart, inEnd, outStart, outEnd, value) =>
 let sectionTop = 0;
 let sectionDistance = 1;
 let actualProgress = 0;
-let visualProgress = 0;
 let frameRequested = false;
+let lastProgressText = null;
+
+// Stage-heights of scroll the sequence spans. Biggest lever on beat visibility.
+const SCROLL_RUNWAY = 7;
+// Floor so landscape phones still get a sequence.
+const MIN_TRAVEL_PX = 3600;
+// No damping between scroll and progress: tried, unmeasurable, removed (see git log).
+// Where #sealed deep links land — middle of SEALED's hold.
+const SEALED_ANCHOR = 0.38;
+// Where the rail takes over interactivity, 47% through its reveal.
+const RAIL_HANDOFF = 0.85;
 let pointer = { x: 0, y: 0, targetX: 0, targetY: 0 };
 
 const particleState = {
@@ -59,14 +69,15 @@ function setRootPixels(name, value) {
 function measure() {
   if (!cinematic || !stage) return;
 
-  const viewportHeight = window.innerHeight;
-  const minimumHeight = window.innerWidth < 640 ? 3900 : window.innerWidth < 960 ? 4300 : 4700;
-  const cinematicHeight = Math.round(Math.max(minimumHeight, viewportHeight * 5.2));
+  // Stage box, not innerHeight: stage is svh, innerHeight shifts as mobile chrome hides.
+  const stageHeight = Math.round(stage.getBoundingClientRect().height) || window.innerHeight;
+  const travel = Math.round(Math.max(MIN_TRAVEL_PX, stageHeight * SCROLL_RUNWAY));
+  const cinematicHeight = stageHeight + travel;
   root.style.setProperty("--cinematic-height", `${cinematicHeight}px`);
 
   const rect = cinematic.getBoundingClientRect();
   sectionTop = rect.top + window.scrollY;
-  sectionDistance = Math.max(1, cinematicHeight - viewportHeight);
+  sectionDistance = Math.max(1, travel);
 
   resizeParticles();
   requestRender();
@@ -126,19 +137,19 @@ function render() {
   frameRequested = false;
   actualProgress = readProgress();
 
-  visualProgress = actualProgress;
-
   const pointerEase = 0.14;
   pointer.x += (pointer.targetX - pointer.x) * pointerEase;
   pointer.y += (pointer.targetY - pointer.y) * pointerEase;
 
-  const progress = visualProgress;
+  const progress = actualProgress;
+  // Beat timings as fractions of the section. SEALED and RESOLVED enter at the
+  // same pace (0.10) on purpose; the tail used to sit idle and now carries them.
   const heroVisibility = 1 - smoothstep(0.03, 0.18, progress);
   const portalOpen = smoothstep(0.15, 0.25, progress);
-  const sealedVisibility = segmentInOut(0.235, 0.265, 0.35, 0.44, progress);
-  const resolvedVisibility = segmentInOut(0.48, 0.58, 0.69, 0.74, progress);
-  const railVisibility = smoothstep(0.75, 0.9, progress);
-  const worldPush = smoothstep(0.03, 0.74, progress);
+  const sealedVisibility = segmentInOut(0.235, 0.335, 0.42, 0.47, progress);
+  const resolvedVisibility = segmentInOut(0.51, 0.61, 0.72, 0.77, progress);
+  const railVisibility = smoothstep(0.78, 0.93, progress);
+  const worldPush = smoothstep(0.03, 0.77, progress);
   const focusStrength = resolvedVisibility;
 
   setRootNumber("--progress", progress);
@@ -150,17 +161,25 @@ function render() {
   setRootNumber("--world-scale", lerp(1, 1.13, worldPush), 5);
   setRootNumber("--focus-visibility", focusStrength);
 
+  // Carry the full-bleed backdrop blur only while it is actually visible.
+  stage?.classList.toggle("focus-active", focusStrength > 0.001);
+
   setRootPixels("--far-x", pointer.x * -6 + lerp(0, -12, progress));
   setRootPixels("--far-y", pointer.y * -4 + lerp(0, -8, progress));
   setRootPixels("--near-x", pointer.x * 13 + lerp(0, -30, progress));
   setRootPixels("--near-y", pointer.y * 8 + lerp(0, -18, progress));
 
   if (progressValue) {
-    progressValue.textContent = String(Math.round(progress * 100)).padStart(2, "0");
+    // Integer readout — skip the write when it has not changed.
+    const shown = String(Math.round(progress * 100)).padStart(2, "0");
+    if (shown !== lastProgressText) {
+      lastProgressText = shown;
+      progressValue.textContent = shown;
+    }
   }
 
   header?.classList.toggle("is-scrolled", window.scrollY > 24);
-  header?.classList.toggle("has-verdict", progress > 0.82);
+  header?.classList.toggle("has-verdict", progress > RAIL_HANDOFF);
   const heroInteractive = heroVisibility > 0.55;
   heroMoment?.classList.toggle("is-interactive", heroInteractive);
   if (heroMoment) {
@@ -175,7 +194,7 @@ function render() {
     else skipSequence.setAttribute("inert", "");
   }
 
-  const railInteractive = progress > 0.82;
+  const railInteractive = progress > RAIL_HANDOFF;
   railScene?.classList.toggle("is-interactive", railInteractive);
   if (railScene) {
     if (railInteractive) railScene.removeAttribute("inert");
@@ -186,7 +205,8 @@ function render() {
 
   const pointerDelta =
     Math.abs(pointer.targetX - pointer.x) + Math.abs(pointer.targetY - pointer.y);
-  if (Math.abs(actualProgress - visualProgress) > 0.0005 || pointerDelta > 0.001) {
+  // Only the pointer ease needs frames of its own; scroll drives the rest.
+  if (pointerDelta > 0.001) {
     requestRender();
   }
 }
@@ -209,12 +229,11 @@ function initializeMotion() {
 
   if (window.location.hash === "#sealed") {
     window.scrollTo({
-      top: sectionTop + sectionDistance * 0.27,
+      top: sectionTop + sectionDistance * SEALED_ANCHOR,
       behavior: "auto",
     });
   }
 
-  visualProgress = readProgress();
   render();
 
   window.addEventListener("scroll", requestRender, { passive: true });
@@ -677,7 +696,7 @@ function setupSequenceLinks() {
       if (reducedMotion.matches || !root.classList.contains("motion-ok")) return;
       event.preventDefault();
       window.scrollTo({
-        top: sectionTop + sectionDistance * 0.27,
+        top: sectionTop + sectionDistance * SEALED_ANCHOR,
         behavior: "smooth",
       });
       history.replaceState(null, "", "#sealed");

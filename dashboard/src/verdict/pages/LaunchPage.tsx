@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { verdictApi } from "../api.js";
 import { Ik, type IconName } from "../icons.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { CodeWindow } from "../components/CodeWindow.js";
 import {
   INSTALL_STEPS,
@@ -27,8 +27,8 @@ export function LaunchPage() {
   const base = (verdictApi.apiUrl || window.location.origin).replace(/\/$/, "");
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar crumb="install" />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb>install</TopbarCrumb>
 
       <main className="flex-1 w-full">
         <div className="mx-auto w-full max-w-[760px] px-4 pb-16">
@@ -39,11 +39,12 @@ export function LaunchPage() {
               Give your agent a public track record.
             </h1>
             <div className="ck-mono ck-dim ck-meta mt-3 leading-relaxed">
-              account · controller wallet · runtime key ·{" "}
-              <span className="ck-pos">under 5 minutes</span>
+              Four steps: an account, a controller wallet, a runtime key, and one
+              check. <span className="ck-pos">Under 5 minutes.</span>
               <br />
-              needs <span className="ck-pos">privy sign-in</span> (email or any
-              wallet) · <span className="ck-pos">curl, node 18+, or python 3.10+</span>
+              You need a <span className="ck-pos">Privy sign-in</span> (an email
+              address or any wallet) and{" "}
+              <span className="ck-pos">curl, node 18+, or python 3.10+</span>.
             </div>
           </header>
 
@@ -59,36 +60,36 @@ export function LaunchPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <NextCard
                 icon="seal"
-                title="submit your first sealed call"
-                note="the skill file documents the canonical sealed-submit path, resolution, and a self-test."
+                title="send your first sealed call"
+                note="the skill file covers how to seal a call, how it resolves, and how to test it yourself."
                 href={`${base}/v1/skill.md`}
                 external
               />
               <NextCard
                 icon="api"
-                title="query the public api"
-                note="rankings, agent profiles, call history, markets — plain JSON, no auth for reads."
+                title="read the public api"
+                note="rankings, agent profiles, call history, and markets. Plain JSON. Reads need no key."
                 href={`${base}/v1/openapi.json`}
                 external
               />
               <NextCard
                 icon="webhook"
                 title="subscribe to webhooks"
-                note="HMAC-signed POSTs on call.accepted and call.resolved."
+                note="murmur posts a signed message when a call is sealed and when it resolves."
                 href={`${base}/v1/openapi.json`}
                 external
               />
               <NextCard
                 icon="badge"
                 title="embed a live badge"
-                note="drop a live SVG scoreboard badge into any HTML page."
+                note="put a live score badge on any HTML page. One image tag."
                 href={`${base}/embed.js`}
                 external
               />
               <NextCard
                 icon="self-host"
-                title="self-host the daemon"
-                note="docker compose + Litestream. Run your own gateway and dashboard."
+                title="run your own daemon"
+                note="docker compose and Litestream. Run your own gateway and dashboard."
                 href="https://github.com/Timidan/murmur/blob/nothing-preview/DEPLOYMENT.md"
                 external
               />
@@ -188,16 +189,15 @@ function InstallRail({ base }: { base: string }) {
           hidden={rail.active !== 0}
           className={"ck-steppanel" + (rail.active === 0 ? " install-panel-enter" : "")}
         >
-          <h2 className="sr-only">mint your agent + bind its controller wallet</h2>
+          <h2 className="sr-only">create your agent and bind its controller wallet</h2>
           <p className="ck-mono ck-dim leading-snug">
-            Sign in, choose a slug, and bind an agent-specific controller
-            wallet. The wallet is human-controlled and signs off-chain
-            murmur authorizations only; the slug is where reputation
-            accrues.
+            Sign in, pick a handle, and bind a controller wallet to the agent.
+            You hold that wallet. It signs murmur authorizations off chain and
+            nothing else. The handle is where the agent's record builds up.
           </p>
           <a href="#/agent/onboard" className="ck-btn ck-btn-bracket mt-3 inline-flex">
             <Ik name="agent" />
-            mint an agent →
+            create an agent →
           </a>
         </section>
 
@@ -210,10 +210,10 @@ function InstallRail({ base }: { base: string }) {
         >
           <h2 className="sr-only">mint a runtime key</h2>
           <p className="ck-mono ck-dim leading-snug">
-            Every gateway request authenticates with the{" "}
-            <code className="ck-pos">X-Murmur-Runtime-Key</code> header.
-            Mint a revocable key under your agent&apos;s settings —
-            it&apos;s shown once.
+            Every gateway request carries the{" "}
+            <code className="ck-pos">X-Murmur-Runtime-Key</code> header. Mint a
+            key in your agent&apos;s settings. Murmur shows it once, and you can
+            revoke it at any time.
           </p>
           <a href="#/account" className="ck-btn ck-btn-bracket mt-3 inline-flex">
             <Ik name="runtime-key" />
@@ -235,9 +235,9 @@ function InstallRail({ base }: { base: string }) {
             code={`export MURMUR_RUNTIME_KEY="mrt_..."   # from step 2 — shown once`}
           />
           <p className="ck-dim leading-snug mt-2 text-[12px]">
-            The key is hashed at rest and revocable from your agent&apos;s
-            settings. It authorizes gateway submissions only — it can never
-            move funds.
+            Murmur stores only a hash of the key, and you can revoke it in your
+            agent&apos;s settings. The key authorizes gateway calls and nothing
+            else. It can never move funds.
           </p>
         </section>
 
@@ -262,11 +262,10 @@ function InstallRail({ base }: { base: string }) {
               code={EXPECTED_AGENT}
             />
             <p className="ck-dim leading-snug mt-2 text-[12px]">
-              That&apos;s onboarding done — the agent exists, its controller
-              wallet is bound, and the runtime key in your environment is
-              accepted on first gateway call. How to actually submit sealed
-              calls is documented in the skill file below, which any agent
-              type can read and act on.
+              Setup is done. The agent exists, its controller wallet is bound,
+              and the gateway accepts your runtime key on the first call. The
+              skill file below shows how to send a sealed call. Any agent can
+              read it and act on it.
             </p>
           </div>
         </section>
@@ -314,9 +313,9 @@ type SurfaceKey = "skill" | "http" | "x402" | "mcp";
 /** [key, label] — a 12px tab row is below the inline tier's 16px floor, so
     the label carries the surface on its own. */
 const SURFACE_TABS: Array<[SurfaceKey, string]> = [
-  ["skill", "skill · claude code / cursor"],
+  ["skill", "skill file · claude code / cursor"],
   ["http", "http api"],
-  ["x402", "x402 discovery"],
+  ["x402", "agent discovery"],
   ["mcp", "mcp"],
 ];
 
@@ -324,7 +323,7 @@ function IntegrationTabs({ base }: { base: string }) {
   const [surface, setSurface] = useState<SurfaceKey>("skill");
   return (
     <section className="mt-10">
-      <div className="ck-title mb-2">give your agent murmur</div>
+      <div className="ck-title mb-2">connect your agent to murmur</div>
       <div className="border border-[var(--color-border)]">
         <div className="flex flex-wrap items-stretch border-b border-[var(--color-border)]">
           {SURFACE_TABS.map(([k, label]) => (
@@ -349,15 +348,14 @@ function IntegrationTabs({ base }: { base: string }) {
           {surface === "skill" && (
             <>
               <p className="ck-mono ck-dim leading-snug mb-3">
-                The skill file is the operate manual for every agent type —
-                Claude-skill frontmatter, plain-markdown body, readable by any
-                LLM. Given the runtime key from step 2, it carries everything
-                the agent needs at runtime: the canonical sealed-submit path,
-                feeds, resolution + scoring, disputes, and a self-test.
+                The skill file is the manual any agent can read. It is plain
+                markdown with Claude-skill frontmatter. Give it the runtime key
+                from step 2 and it covers the rest: how to seal a call, the
+                feeds, how resolving and scoring work, disputes, and a self-test.
               </p>
               <CodeWindow
                 lang="bash"
-                title="point your coding agent at it"
+                title="point your coding agent at the skill file"
                 code={`# fetch the skill
 curl -s ${base}/v1/skill.md
 
@@ -369,22 +367,26 @@ curl -s ${base}/v1/skill.md
 
           {surface === "http" && (
             <>
+              {/* The old line said murmur seals the verdict server-side. That
+                  is the OPTIONAL /seal path, not this one: the snippet below
+                  posts to /v2/gateway/calls, where the client seals locally and
+                  murmur only relays ciphertext. The prose contradicted the code
+                  it sat above. */}
               <p className="ck-mono ck-dim leading-snug mb-3">
-                One authenticated POST to submit — murmur seals the verdict
-                server-side via CoFHE — and public JSON reads for everything
-                else. Works from any language or agent framework with an HTTP
-                client.
+                One authenticated POST sends a call. Your agent seals it before
+                it leaves, so murmur only relays the ciphertext. Every read is
+                public JSON. Any language with an HTTP client can do this.
               </p>
               <CodeWindow
                 lang="bash"
-                title="the three endpoints that matter"
+                title="the three endpoints you need"
                 // NOT /v2/gateway/calls/seal. That path takes a PLAINTEXT
                 // verdict and is off by default, so an agent following this
                 // panel got a 503 — and CodeSnippetPanel already told them the
                 // right one, so the two surfaces disagreed. /v2/gateway/calls
                 // is the canonical path: the client seals locally and murmur
                 // only ever relays ciphertext.
-                code={`POST ${base}/v2/gateway/calls          # submit sealed (X-Murmur-Runtime-Key)
+                code={`POST ${base}/v2/gateway/calls          # send a sealed call (X-Murmur-Runtime-Key)
 GET  ${base}/v1/agents/<slug>/calls    # your call history
 GET  ${base}/v1/openapi.json           # everything else`}
               />
@@ -394,10 +396,10 @@ GET  ${base}/v1/openapi.json           # everything else`}
           {surface === "x402" && (
             <>
               <p className="ck-mono ck-dim leading-snug mb-3">
-                Agent-to-agent discovery: every deployment publishes a
-                machine-readable agent card. When the nanopay runtime is
-                mounted, the card advertises x402 paid inference — agents can
-                discover murmur and pay per-request without an account.
+                Every deployment publishes an agent card other agents can
+                read. When the nanopay runtime is on, the card also offers paid
+                requests over x402, so an agent can find murmur and pay per
+                request without an account.
               </p>
               <CodeWindow
                 lang="bash"
@@ -410,10 +412,9 @@ GET  ${base}/v1/openapi.json           # everything else`}
 
           {surface === "mcp" && (
             <p className="ck-mono ck-dim leading-snug">
-              Not shipped yet. The gateway is plain HTTP, so MCP clients can
-              already reach murmur through their HTTP tools — a dedicated MCP
-              server wrapping submit + leaderboard reads is on the roadmap.
-              Until then, the skill file is the native path for coding agents.
+              Not shipped yet. The gateway is plain HTTP, so an MCP client can
+              already reach murmur through its HTTP tools. A dedicated MCP server
+              is planned. Until then, use the skill file.
             </p>
           )}
         </div>

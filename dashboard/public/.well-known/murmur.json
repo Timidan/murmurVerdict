@@ -12,7 +12,7 @@
   "license": "MIT",
   "categories": ["fhenix", "leaderboard", "scoring", "referee", "market-agent"],
   "chains": ["base-mainnet", "fhenix"],
-  "feeds": ["polymarket-gamma", "chainlink", "pyth"],
+  "feeds": ["polymarket-gamma"],
   "endpoints": {
     "api": "https://murmur.verdict",
     "stream_sse": "/v1/stream",
