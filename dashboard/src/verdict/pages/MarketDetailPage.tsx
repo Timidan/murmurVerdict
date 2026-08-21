@@ -7,11 +7,9 @@ import {
   type AgentMarketRow,
   type MarketCallRow,
   type MarketRow,
-  type MarketOracleRef,
-  type MarketOracleSummary,
   type MarketVenueSnapshot,
 } from "../api.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
@@ -24,6 +22,7 @@ import { Ik, IkNav } from "../icons.js";
 import { useStream } from "../hooks/useStream.js";
 import { mergeMarketAgentRow } from "../hooks/stream-merge.js";
 import { marketDisplayName, parseMarketConfig } from "../lib/market-meta.js";
+import { formatLocalTimeLabel } from "../lib/date-time-format.js";
 import { shortId } from "../lib/display-format.js";
 import { formatScore } from "../lib/score-format.js";
 import { isTerminalFailureStatus } from "@shared/wire-call-status";
@@ -193,7 +192,9 @@ export function MarketDetailPage({
     : 0;
   const leader = agents && agents.length > 0 ? agents[0] : null;
 
-  const endsLabel = cfg?.endDate ? formatCountdown(cfg.endDate, nowMs) : null;
+  const ends = formatEnds(cfg?.endDate, nowMs);
+  const endsLabel = ends.label;
+  const endsIsPast = ends.isPast;
   const endsTitle = cfg?.endDate ? formatUtcTitle(cfg.endDate) : undefined;
   // Venue heading: question > humanized slug > (truncated) market id.
   let heading: string | null = null;
@@ -203,18 +204,14 @@ export function MarketDetailPage({
   }
 
   return (
-    <div className={isDrawer ? "flex flex-col min-h-0" : "mmr-shell min-h-dvh flex flex-col"}>
+    <div className={isDrawer ? "flex flex-col min-h-0" : "flex-1 flex flex-col min-h-0"}>
       {!isDrawer && (
-        <CompactTopbar
-          crumb={
-            <span>
+        <TopbarCrumb><span>
               markets <span className="ck-dim mx-1">/</span>
               <span className="ck-pos" title={marketId}>
                 {midTruncateId(marketId)}
               </span>
-            </span>
-          }
-        />
+            </span></TopbarCrumb>
       )}
 
       {error && (
@@ -256,40 +253,58 @@ export function MarketDetailPage({
               (isDrawer ? "" : isVenue ? "md:grid-cols-9" : "md:grid-cols-8")
             }
           >
-            <RCell label="market" value={midTruncateId(marketId)} title={marketId} />
+            <RCell label="market id" value={midTruncateId(marketId)} title={marketId} />
             {isVenue ? (
               <VenueCell url={cfg?.gamma_url} venue={venueName(market)} />
             ) : (
               <RCell label="asset" value={assetSlug.toUpperCase()} />
             )}
             {isVenue ? (
+              /* Never "ends: ended" — the label already says "ends", so the
+                 value has to add something. While the market runs it counts
+                 down ("in 4m"); once it is over it states the closing time. */
               <RCell
                 label="ends"
                 value={endsLabel ?? "—"}
                 title={endsTitle}
-                tone={endsLabel === "ended" ? "dim" : "default"}
+                tone={endsIsPast ? "dim" : "default"}
               />
             ) : (
-              <RCell label="hzn" value={horizon} />
+              <RCell label="horizon" value={horizon} />
             )}
             {/* Venue traded volume — the cell renders even while the snapshot
                 is null so the ribbon doesn't jump when data arrives. */}
             {isVenue && (
               <RCell
-                label="vol"
+                label="traded"
                 value={venue?.volume != null ? formatCompactUsd(venue.volume) : "—"}
                 tone={venue?.volume != null ? "default" : "dim"}
-                title={venueVolTitle(venue)}
+                title={venueVolTitle(venue) ?? "money traded on the venue for this market"}
               />
             )}
-            <RCell label="status" value={market?.status ?? "—"} tone="dim" />
-            <RCell label="agents" value={agents?.length ?? "—"} />
-            <RCell label="main" value={mainCount} />
-            <RCell label="vol·open" value={totalCalls} tone="dim" />
             <RCell
-              label="lead·vs"
+              label="status"
+              value={marketStatusLabel(market?.status)}
+              tone="dim"
+              title={marketStatusTitle(market?.status)}
+            />
+            <RCell label="agents" value={agents?.length ?? "—"} />
+            <RCell
+              label="ranked"
+              value={mainCount}
+              title="agents with 20 or more scored calls on this market"
+            />
+            <RCell
+              label="calls"
+              value={totalCalls}
+              tone="dim"
+              title="every call on this market, open and scored"
+            />
+            <RCell
+              label="top score"
               value={leader ? formatScore(leader.verdict_score) : "—"}
               tone={leader && (leader.verdict_score ?? 0) >= 0 ? "pos" : "neg"}
+              title="the best agent score on this market"
             />
           </section>
 
@@ -297,14 +312,19 @@ export function MarketDetailPage({
               Gamma-down (null prices) leaves the chips name-only. ─────────── */}
           {isVenue && cfg?.outcomes && cfg.outcomes.length > 0 && (
             <section className="flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-[var(--color-border)]">
-              <span className="ck-label mr-1">outcomes</span>
+              <span
+                className="ck-label mr-1"
+                title="what the market can settle as, with the venue's live odds"
+              >
+                outcomes
+              </span>
               {cfg.outcomes.map((o, i) => {
                 const odds = venueOddsFor(venue, o);
                 return (
                   <span
                     key={`${i}-${o}`}
                     className="ck-mono ck-value border border-[var(--color-border-vis)] px-2 py-[1px]"
-                    title={odds?.title}
+                    title={odds?.title ?? `${o.toLowerCase()} — the venue has no price yet`}
                   >
                     {o.toLowerCase()}
                     {odds !== null && <span className="ck-dim"> {odds.pct}%</span>}
@@ -317,45 +337,33 @@ export function MarketDetailPage({
           {/* META FACTS ─────────────────────────────────── */}
           <details className="border-b border-[var(--color-border)]">
             <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
-              market config
+              more about this market
             </summary>
             <div className={"details-fade grid grid-cols-2 border-t border-[var(--color-border)] " + (isDrawer ? "" : "md:grid-cols-8")}>
               <RCell
-                label="class"
+                label="type"
                 value={taxonomy?.label ?? market?.market_kind ?? "—"}
                 tone={taxonomy?.support_status === "reserved" ? "dim" : "pos"}
+                title="the family of market this belongs to"
               />
               <RCell
-                label="support"
-                value={taxonomy?.support_status ?? "—"}
+                label="scored"
+                value={supportLabel(taxonomy?.support_status)}
                 tone={taxonomy?.support_status === "reserved" ? "dim" : "pos"}
+                title="whether murmur scores calls on this kind of market today"
               />
               <RCell
-                label="payoff"
-                value={taxonomy?.payoff_model ?? "—"}
+                label="outcome shape"
+                value={payoffLabel(taxonomy?.payoff_model)}
                 tone="dim"
+                title="how many ways this market can settle"
               />
               <RCell
-                label="settle"
-                value={taxonomy?.settlement_model?.replace(/_/g, " ") ?? "—"}
+                label="settled by"
+                value={settlementLabel(taxonomy?.settlement_model)}
                 tone="dim"
+                title="who publishes the outcome. murmur never settles a market itself."
               />
-              <RCell
-                label="oracle"
-                value={oracleHealthLabel(market?.oracles)}
-                tone={oracleHealthTone(market?.oracles)}
-              />
-              <RCell
-                label="primary"
-                value={oracleRefLabel(market?.oracles?.primary)}
-                tone={oracleRefTone(market?.oracles?.primary)}
-              />
-              <RCell
-                label="fallback"
-                value={oracleRefLabel(market?.oracles?.fallback)}
-                tone={oracleRefTone(market?.oracles?.fallback)}
-              />
-              <RCell label="void·band" value={market?.void_band ?? "—"} tone="dim" />
             </div>
           </details>
 
@@ -383,7 +391,7 @@ export function MarketDetailPage({
             >
               {agents === null && <PanelSkeleton rows={6} />}
               {agents !== null && agents.length === 0 && (
-                <div className="px-2 py-2 ck-mono ck-dim">[no agents have resolved a call here yet]</div>
+                <div className="px-2 py-2 ck-mono ck-dim">[no agent has a scored call here yet]</div>
               )}
               {agents !== null && agents.length > 0 && <Ladder rows={agents} />}
             </Panel>
@@ -392,7 +400,7 @@ export function MarketDetailPage({
               <Panel
                 title={
                   <>
-                    <Ik name="verdict" /> verdicts · recent
+                    <Ik name="verdict" /> latest verdicts
                   </>
                 }
                 meta={calls ? `${calls.length}` : ""}
@@ -430,7 +438,7 @@ export function MarketDetailPage({
 function Ladder({ rows }: { rows: AgentMarketRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_64px_64px_50px_44px_60px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="grid grid-cols-[28px_1fr_64px_64px_54px_52px_60px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
         <span>agent</span>
         {/* Formulas are the ladder's, copied from LeaderboardPage so the same
@@ -440,35 +448,43 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
             `resolved_calls` / `pending_calls`), not derived quantities. */}
         <span className="flex justify-end">
           <FormulaTip
-            label="verdict_score"
-            formula="verdict_score = mean(call_score) - stdev(call_score) / sqrt(n)"
-          >
-            vs
-          </FormulaTip>
+            label="score"
+            plain="the agent's average call score here, less a penalty for uneven results. Higher is better."
+            formula="score = mean(call score) − stdev(call score) / √n"
+          />
         </span>
         <span className="flex justify-end">
           <FormulaTip
-            label="lb"
-            formula="lb = mean(call_score) - 1.6449 * standard_error(call_score)"
-          >
-            vs·lb
-          </FormulaTip>
+            label="floor"
+            plain="the lowest score this record supports. The board ranks agents on it."
+            formula="floor = mean(call score) − 1.6449 × standard error"
+          />
         </span>
-        <span className="text-right">res</span>
-        <span className="flex justify-end">
-          <FormulaTip label="win_rate" formula="win rate = wins / (wins + losses)">
-            wr
-          </FormulaTip>
+        <span className="text-right" title="scored — calls that finished and earned a score">
+          scored
         </span>
         <span className="flex justify-end">
-          <FormulaTip label="trend" formula="trend = recent resolved call_score series" />
+          <FormulaTip
+            label="win%"
+            plain="wins as a share of wins plus losses. Void calls are left out."
+            formula="win % = wins / (wins + losses)"
+          />
         </span>
-        <span className="text-right">p</span>
+        <span className="flex justify-end">
+          <FormulaTip
+            label="trend"
+            plain="the agent's last few call scores, oldest first."
+            formula="trend = recent call scores, in order"
+          />
+        </span>
+        <span className="text-right" title="open — calls that are sealed and have not resolved yet">
+          open
+        </span>
       </li>
       {rows.map((r, i) => (
         <li
           key={r.agent_id}
-          className="relative grid grid-cols-[28px_1fr_64px_64px_50px_44px_60px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[28px_1fr_64px_64px_54px_52px_60px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           {/* Stretched row link — real box so keyboard focus lands. */}
           <a
@@ -477,13 +493,20 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
             className="ck-rowlink"
           />
           <span className="contents">
-            <span className="ck-mono ck-dim">{String(i + 1).padStart(2, "0")}</span>
+            <span className="ck-mono ck-dim">{String(i + 1)}</span>
             <span className="flex items-baseline gap-1 min-w-0">
               <span className="ck-mono ck-pos truncate" title={r.display_name}>
                 {r.display_slug}
               </span>
-              <span className={"ck-label " + (r.market_main_tier ? "ck-pos" : "ck-dim")}>
-                {r.market_main_tier ? "·main" : "·prov"}
+              <span
+                className={"ck-label " + (r.market_main_tier ? "ck-pos" : "ck-dim")}
+                title={
+                  r.market_main_tier
+                    ? "ranked — this agent has 20 or more scored calls here"
+                    : "unranked — this agent has fewer than 20 scored calls here"
+                }
+              >
+                {r.market_main_tier ? "·ranked" : "·unranked"}
               </span>
             </span>
             <span
@@ -498,7 +521,7 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
               {formatScore(r.verdict_score_lb)}
             </span>
             <span className="ck-mono ck-dim text-right">
-              {String(r.resolved_calls).padStart(3, "0")}
+              {String(r.resolved_calls)}
             </span>
             <span className="ck-mono ck-dim text-right">
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
@@ -673,32 +696,74 @@ function formatHorizon(seconds: number): string {
   return `${Math.round(seconds / (86400 * 7))}w`;
 }
 
-function oracleHealthLabel(oracles: MarketOracleSummary | null | undefined): string {
-  if (!oracles) return "unknown";
-  if (oracles.health === "ok") return "ok";
-  if (oracles.health === "warn") return "check";
-  return "attention";
+/** `live | reserved` → whether murmur scores this class of market today. */
+function supportLabel(support: string | null | undefined): string {
+  if (!support) return "—";
+  if (support === "live") return "yes";
+  if (support === "reserved") return "not yet";
+  return support;
 }
 
-function oracleHealthTone(
-  oracles: MarketOracleSummary | null | undefined,
-): "pos" | "neg" | "dim" | "default" {
-  if (!oracles) return "dim";
-  if (oracles.health === "ok") return "pos";
-  return "neg";
+/** The payoff model, as the number of ways a market can land. */
+const PAYOFF_TEXT: Record<string, string> = {
+  binary: "two outcomes",
+  categorical: "many outcomes",
+  scalar: "a number",
+  range: "a range",
+  ranking: "a ranking",
+};
+
+function payoffLabel(model: string | null | undefined): string {
+  if (!model) return "—";
+  return PAYOFF_TEXT[model] ?? model.replace(/_/g, " ");
 }
 
-function oracleRefLabel(ref: MarketOracleRef | null | undefined): string {
-  if (!ref) return "none";
-  return `${ref.oracle_id} · ${ref.status}`;
+/** Who publishes the outcome. Murmur is never one of the answers. */
+const SETTLEMENT_TEXT: Record<string, string> = {
+  venue_adapter: "the venue",
+  hybrid: "the venue and agents",
+  agent_feed: "a signed agent feed",
+};
+
+function settlementLabel(model: string | null | undefined): string {
+  if (!model) return "—";
+  return SETTLEMENT_TEXT[model] ?? model.replace(/_/g, " ");
 }
 
-function oracleRefTone(
-  ref: MarketOracleRef | null | undefined,
-): "pos" | "neg" | "dim" | "default" {
-  if (!ref) return "dim";
-  if (ref.status === "listed" && ref.asset_match !== false) return "pos";
-  return "neg";
+/**
+ * The registry status, in words a reader can act on.
+ *
+ * The wire enum is `draft | listed | frozen | retired` (src/types/wire-market.ts).
+ * "frozen" is the one that reads as a bug — it means the market no longer takes
+ * calls, which is exactly what "closed" says (COPY.md §2.2).
+ */
+const MARKET_STATUS_TEXT: Record<string, { label: string; title: string }> = {
+  draft: {
+    label: "not listed",
+    title: "this market is registered but does not take calls yet",
+  },
+  listed: {
+    label: "taking calls",
+    title: "agents can submit calls to this market right now",
+  },
+  frozen: {
+    label: "closed",
+    title: "this market no longer takes calls",
+  },
+  retired: {
+    label: "retired",
+    title: "this market is finished and off the board",
+  },
+};
+
+function marketStatusLabel(status: string | null | undefined): string {
+  if (!status) return "—";
+  return MARKET_STATUS_TEXT[status]?.label ?? status;
+}
+
+function marketStatusTitle(status: string | null | undefined): string | undefined {
+  if (!status) return undefined;
+  return MARKET_STATUS_TEXT[status]?.title;
 }
 
 function shortAssetSlug(asset_id: string): string {
@@ -735,12 +800,33 @@ function midTruncateId(id: string): string {
   return shortId(id, 10, 4);
 }
 
-/** Compact countdown to an ISO close: `6d 14h` / `14h 02m` / `42m` / `ended`. */
+/**
+ * The `ends` ribbon cell, which must never read "ends: ended".
+ *
+ * While the market runs the value counts down — "in 4m". Once it is over the
+ * countdown has nothing left to say, so the value states the closing time
+ * instead. The label carries the verb either way.
+ */
+function formatEnds(
+  endDate: string | undefined,
+  nowMs: number,
+): { label: string | null; isPast: boolean } {
+  if (!endDate) return { label: null, isPast: false };
+  const end = Date.parse(endDate);
+  if (!Number.isFinite(end)) return { label: null, isPast: false };
+  if (end <= nowMs) {
+    return { label: formatLocalTimeLabel(endDate) ?? "closed", isPast: true };
+  }
+  const countdown = formatCountdown(endDate, nowMs);
+  return { label: countdown ? `in ${countdown}` : null, isPast: false };
+}
+
+/** Compact countdown to an ISO close: `6d 14h` / `14h 02m` / `42m`. */
 function formatCountdown(endDate: string, nowMs: number): string | null {
   const end = Date.parse(endDate);
   if (!Number.isFinite(end)) return null;
   const ms = end - nowMs;
-  if (ms <= 0) return "ended";
+  if (ms <= 0) return null;
   const totalMinutes = Math.floor(ms / 60_000);
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);
