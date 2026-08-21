@@ -69,6 +69,31 @@ export function buildRouteQueryUrl(location: LocationLike, params: URLSearchPara
   return `${location.pathname}${suffix}`;
 }
 
+/**
+ * Fold a legacy hash route into the canonical path form.
+ *
+ * Entry links use real paths and in-app links still use `#/…`, so the address
+ * bar accumulates both: `/dashboard#/dashboard` when they agree, or the worse
+ * `/leaderboard#/calls/x` where the visible path names a page the reader is
+ * not on. The hash always wins at parse time, so the path part is a fossil of
+ * wherever the reader entered — fold it away. `replaceState` fires neither
+ * `popstate` nor `hashchange`, so this never loops and never navigates.
+ *
+ * Requires the host to serve the app shell for deep paths (the same SPA
+ * fallback path-mode entry links already rely on); `/v1`–`/v2` API paths are
+ * never produced here because hash routes always start with a page path.
+ */
+export function canonicalizeRouteLocation(): void {
+  if (typeof window === "undefined") return;
+  const { hash } = window.location;
+  if (!hash.startsWith("#/")) return;
+  window.history.replaceState(window.history.state, "", hash.slice(1));
+}
+
+// Entries like `/dashboard#/dashboard` (or a stale `/leaderboard#/calls/x`)
+// normalize once at module load, before the router's first read.
+canonicalizeRouteLocation();
+
 /** Resolve normal browser paths, while keeping legacy #/ links working. */
 export function parseLocation(location: LocationLike): ParsedRoute {
   const hashPath = location.hash.startsWith("#/") ? location.hash.slice(1) : "";
@@ -105,7 +130,13 @@ export function parseLocation(location: LocationLike): ParsedRoute {
     return { name: "account_agent_integrate", params: { slug: agentIntegrateMatch[1] } };
   }
 
-  const agentSettingsMatch = /^\/account\/agent\/([^/]+)(?:\/(payout|pricing|wallet|runtime|keys))?$/.exec(path);
+  // Keep this alternation in step with AgentSettingsTab — a tab the page
+  // renders but this pattern does not list falls through to the marketing
+  // route, so a deep link to it 404s while the tab strip still shows it.
+  const agentSettingsMatch =
+    /^\/account\/agent\/([^/]+)(?:\/(payout|pricing|earnings|reveals|wallet|runtime|keys))?$/.exec(
+      path,
+    );
   if (agentSettingsMatch) {
     return {
       name: "account_agent_settings",

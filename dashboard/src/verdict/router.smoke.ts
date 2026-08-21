@@ -25,7 +25,15 @@ assert.equal(
 // Agent-settings sub-tabs: every tab the page renders must be routable, or a
 // deep link falls through to the 404 branch. `pricing` was missing from the
 // alternation while <AgentSettingsPage/> already shipped the tab.
-for (const tab of ["payout", "pricing", "wallet", "runtime", "keys"]) {
+for (const tab of [
+  "payout",
+  "pricing",
+  "earnings",
+  "reveals",
+  "wallet",
+  "runtime",
+  "keys",
+]) {
   const r = parseLocation({ pathname: `/account/agent/x/${tab}`, hash: "" });
   assert.equal(r.name, "account_agent_settings");
   assert.equal(r.params?.tab, tab);
