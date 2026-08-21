@@ -24,14 +24,24 @@ import { MarketAssetIcon } from "./MarketAssetIcon.js";
  * countdown.
  *
  * The header carries everything the rows would otherwise repeat five times —
- * the time range, the phase, the countdown — so a row is free to be just the
- * asset and its state. That is the whole point of grouping: ten rows with ten
- * identical countdowns hide the one number the reader is actually watching.
+ * the time range, the phase, the countdown, the outcome labels — so a row is
+ * free to be just the asset and its numbers. That is the whole point of
+ * grouping: ten rows with ten identical countdowns hide the one number the
+ * reader is actually watching.
+ *
+ * The same argument applies one level up, which is why `showCountdown` exists.
+ * Contiguous windows SHARE their boundaries (this window's resolution is the
+ * next one's close and the one after's open), so every stacked panel would
+ * otherwise tick the identical number and the reader reads three broken
+ * clocks. MarketsGrid hands the clock to the one window taking calls, because
+ * that deadline is the only one anybody can still act on; every other window's
+ * boundary is already printed in its range.
  */
 export function MarketWindowGroupPanel({
   group,
   phase,
   nowMs,
+  showCountdown = true,
   venueMarkets,
   venueResolutions,
   onOpenMarket,
@@ -39,6 +49,7 @@ export function MarketWindowGroupPanel({
   group: WindowGroup<MarketRow>;
   phase: MarketWindowPhase;
   nowMs: number;
+  showCountdown?: boolean;
   venueMarkets: Record<string, WireVenueMarketRow>;
   venueResolutions: Record<string, WireVenueResolutionRow>;
   onOpenMarket?: (marketId: string) => void;
@@ -58,6 +69,8 @@ export function MarketWindowGroupPanel({
     phase,
   );
   const countdownLabel = marketWindowCountdownLabel(phase);
+  const hoistedLabels =
+    phase === "resolved" ? null : sharedOutcomeLabels(group.items, venueMarkets);
 
   return (
     <section
@@ -83,18 +96,43 @@ export function MarketWindowGroupPanel({
             {formatLocalTimeLabel(group.resolutionAtMs) ?? "—"}
           </time>
         </h3>
-        <span className={"ck-badge " + PHASE_TONE[phase]}>{PHASE_TEXT[phase]}</span>
-        {target !== null && countdownLabel !== null && (
-          <span className="ml-auto flex items-center gap-1.5">
-            <span className="ck-label">{countdownLabel}</span>
-            {/* NO aria-live. This number changes every second; announcing it
-                would make the panel unusable with a screen reader on. The
-                phase-transition status region (MarketsGrid) is what speaks. */}
-            <span className="ck-mono tabular-nums ck-pos">
-              {formatCountdown(target - nowMs)}
+        <span
+          className={
+            "ck-badge " +
+            PHASE_TONE[phase] +
+            (phase === "open" ? " ck-badge-live" : "")
+          }
+        >
+          {PHASE_TEXT[phase]}
+        </span>
+        <span className="ml-auto flex items-center gap-3">
+          {showCountdown && target !== null && countdownLabel !== null && (
+            <span className="flex items-center gap-1.5">
+              <span className="ck-label">{countdownLabel}</span>
+              {/* NO aria-live. This number changes every second; announcing it
+                  would make the panel unusable with a screen reader on. The
+                  phase-transition status region (MarketsGrid) is what speaks. */}
+              <span className="ck-mono tabular-nums ck-pos">
+                {formatCountdown(target - nowMs)}
+              </span>
             </span>
-          </span>
-        )}
+          )}
+          {/* Column headers for the quote cells below. aria-hidden because
+              "Up Down" read aloud out of context says nothing; each row keeps
+              its own sr-only label so a screen reader still hears the pairing.
+              Widths and gap match QUOTE_CELL so the columns line up, and both
+              sides are anchored to the same right edge, which survives the
+              header wrapping to its own line on a narrow screen. */}
+          {hoistedLabels && (
+            <span className="flex items-center gap-2" aria-hidden="true">
+              {hoistedLabels.map((label) => (
+                <span key={label} className={"ck-label ck-dim " + QUOTE_CELL}>
+                  {label}
+                </span>
+              ))}
+            </span>
+          )}
+        </span>
       </header>
 
       <ul className="m-0 p-0 list-none">
@@ -105,6 +143,7 @@ export function MarketWindowGroupPanel({
             phase={phase}
             venue={venueMarkets[market.market_id]}
             resolution={venueResolutions[market.market_id]}
+            labelsInHeader={hoistedLabels !== null}
             onOpenMarket={onOpenMarket}
           />
         ))}
@@ -118,12 +157,14 @@ function MarketWindowRow({
   phase,
   venue,
   resolution,
+  labelsInHeader,
   onOpenMarket,
 }: {
   market: MarketRow;
   phase: MarketWindowPhase;
   venue: WireVenueMarketRow | undefined;
   resolution: WireVenueResolutionRow | undefined;
+  labelsInHeader: boolean;
   onOpenMarket?: (marketId: string) => void;
 }) {
   const cfg = parseMarketConfig(market);
@@ -162,7 +203,7 @@ function MarketWindowRow({
           {phase === "resolved" ? (
             <ResolvedOutcome resolution={resolution} />
           ) : (
-            <LiveQuotes venue={venue} phase={phase} />
+            <LiveQuotes venue={venue} phase={phase} labelsInHeader={labelsInHeader} />
           )}
         </span>
       </a>
@@ -187,11 +228,11 @@ function ResolvedOutcome({
     // The window is over but the venue has not published (or we have dropped
     // it from the ticker's lookback). Saying nothing is honest; saying "void"
     // would be a claim we cannot make.
-    return <span className="ck-mono ck-dim">awaiting venue</span>;
+    return <span className="ck-mono ck-dim">waiting for the venue</span>;
   }
   const winner = resolution.winning_label;
   if (winner === null) {
-    return <span className="ck-mono ck-dim">void · no winner</span>;
+    return <span className="ck-mono ck-dim">void — no winner</span>;
   }
   const direction = directionGlyph(winner);
   return (
@@ -216,33 +257,70 @@ function ResolvedOutcome({
 function LiveQuotes({
   venue,
   phase,
+  labelsInHeader,
 }: {
   venue: WireVenueMarketRow | undefined;
   phase: MarketWindowPhase;
+  labelsInHeader: boolean;
 }) {
   if (!venue || venue.freshness === "warming" || venue.outcomes.length === 0) {
     return (
       <span className="ck-mono ck-dim">
-        {phase === "upcoming" ? "not open yet" : "awaiting book"}
+        {phase === "upcoming" ? "not open yet" : "no prices yet"}
       </span>
     );
   }
   return (
     <span className="flex items-center gap-2 min-w-0">
       {venue.freshness === "stale" && (
-        <span className="ck-badge ck-dim">stale</span>
+        <span className="ck-badge ck-dim" title="these prices have stopped updating">stale</span>
       )}
       {venue.outcomes.map((outcome) => (
         <span
           key={outcome.token_id}
-          className="ck-mono whitespace-nowrap tabular-nums"
+          className={
+            "ck-mono whitespace-nowrap tabular-nums " +
+            (labelsInHeader ? QUOTE_CELL : "")
+          }
         >
-          <span className="ck-dim">{outcome.label} </span>
+          {/* Label hoisted to the group header: keep it for screen readers,
+              which read a row at a time and would otherwise hear bare numbers. */}
+          <span className={labelsInHeader ? "sr-only" : "ck-dim"}>{outcome.label} </span>
           {outcome.price === null ? "—" : outcome.price.toFixed(2)}
         </span>
       ))}
     </span>
   );
+}
+
+/** Fixed width so the quote cells form real columns under the header labels. */
+const QUOTE_CELL = "w-[46px] text-right";
+
+/**
+ * The outcome labels every quoted row in this group shares, or null.
+ *
+ * Hoisting to the header is only honest when every book agrees on the same
+ * labels in the same order, so a group mixing "Up/Down" with "Yes/No" keeps
+ * its labels inline. Fewer than two quoted rows means there is no repetition
+ * to remove, so the labels stay where they are.
+ */
+function sharedOutcomeLabels(
+  items: MarketRow[],
+  venueMarkets: Record<string, WireVenueMarketRow>,
+): string[] | null {
+  let shared: string[] | null = null;
+  let quoted = 0;
+  for (const market of items) {
+    const venue = venueMarkets[market.market_id];
+    if (!venue || venue.freshness === "warming" || venue.outcomes.length === 0) continue;
+    const labels = venue.outcomes.map((o) => o.label);
+    if (shared === null) shared = labels;
+    else if (labels.length !== shared.length || labels.some((l, i) => l !== shared![i])) {
+      return null;
+    }
+    quoted += 1;
+  }
+  return quoted >= 2 ? shared : null;
 }
 
 function directionGlyph(label: string): "↑" | "↓" | null {
@@ -258,7 +336,7 @@ function shortMarketId(marketId: string): string {
 
 export const PHASE_TEXT: Record<MarketWindowPhase, string> = {
   upcoming: "upcoming",
-  open: "calls open",
+  open: "taking calls",
   sealed: "sealed",
   resolved: "resolved",
 };

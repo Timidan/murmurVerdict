@@ -18,8 +18,11 @@ export function shortId(value: string, lead = 7, tail = 5): string {
 /** Compact single-unit relative time vs `nowMs`, floored (a unit never
  *  promotes early — "59.6s" stays "59s").
  *  Past: "now" (<10s either side), "42s ago", "7m ago", "34h ago" (<48h),
- *  "2d ago" (<14d), then the plain date ("2026-07-20"). Future timestamps
- *  mirror as "in 42s" / "in 7m" / …; beyond 14d ahead, the plain date.
+ *  "2d ago" (<14d), "6w ago" (<60d), "7mo ago" (<1y), "2y ago". Future
+ *  timestamps mirror as "in 42s" / "in 7m" / …
+ *  Always a relative unit: the exact instant lives in the `title` tooltip, and
+ *  an absolute fallback ("2026-07-20") only ever clipped to "2026-0…" in the
+ *  narrow columns this feeds.
  *  Invalid input → "—". */
 export function formatRelativeTime(iso: string, nowMs: number): string {
   const t = Date.parse(iso);
@@ -35,7 +38,9 @@ export function formatRelativeTime(iso: string, nowMs: number): string {
   if (s < 60) unit = `${s}s`;
   else if (s < 60 * 60) unit = `${Math.floor(s / 60)}m`;
   else if (s < 48 * 60 * 60) unit = `${Math.floor(s / 3600)}h`;
-  else if (s < 14 * 24 * 60 * 60) unit = `${Math.floor(s / 86400)}d`;
-  else return iso.slice(0, 10);
+  else if (s < 14 * 86400) unit = `${Math.floor(s / 86400)}d`;
+  else if (s < 60 * 86400) unit = `${Math.floor(s / (7 * 86400))}w`;
+  else if (s < 365 * 86400) unit = `${Math.floor(s / (30 * 86400))}mo`;
+  else unit = `${Math.floor(s / (365 * 86400))}y`;
   return diff >= 0 ? `${unit} ago` : `in ${unit}`;
 }

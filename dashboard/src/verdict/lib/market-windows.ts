@@ -83,6 +83,44 @@ export function marketWindowCountdownTargetMs(
   }
 }
 
+/**
+ * Which stacked window should own the one ticking clock, by `key`.
+ *
+ * Contiguous windows share their boundaries — this window's resolution is the
+ * next one's close and the one after's open — so every panel in the stack
+ * counts down to the SAME instant and renders the same number. Three identical
+ * clocks read as a bug and bury the one deadline that matters.
+ *
+ * It goes to the window taking calls, because closing submissions is the only
+ * boundary a reader can still act on. With none open (the whole stack upcoming
+ * or resolved) it falls to the soonest boundary. Every other window's instants
+ * stay legible in its own printed range.
+ */
+export function countdownOwnerKey<T>(
+  groups: ReadonlyArray<MarketWindowGroup<T>>,
+  phaseOf: (group: MarketWindowGroup<T>) => MarketWindowPhase,
+): string | null {
+  let soonestKey: string | null = null;
+  let soonestTarget = Infinity;
+  for (const group of groups) {
+    const phase = phaseOf(group);
+    if (phase === "open") return group.key;
+    const target = marketWindowCountdownTargetMs(
+      {
+        submission_open_at_ms: group.submissionOpenAtMs,
+        submission_close_at_ms: group.submissionCloseAtMs,
+        resolution_at_ms: group.resolutionAtMs,
+      },
+      phase,
+    );
+    if (target !== null && target < soonestTarget) {
+      soonestTarget = target;
+      soonestKey = group.key;
+    }
+  }
+  return soonestKey;
+}
+
 /** What the countdown is measuring, in words. Pairs with the phase chip. */
 export function marketWindowCountdownLabel(phase: MarketWindowPhase): string | null {
   switch (phase) {

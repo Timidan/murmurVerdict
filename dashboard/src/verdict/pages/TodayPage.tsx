@@ -3,7 +3,7 @@ import { verdictApi, type TodayFeed, type TodayFeedRow } from "../api.js";
 import { Ik, IkNav } from "../icons.js";
 import { useDetailDrawer, isPlainLeftClick } from "../components/compact/DetailDrawer.js";
 import { useStream } from "../hooks/useStream.js";
-import { CompactTopbar } from "../components/compact/Topbar.js";
+import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { ErrorState } from "../components/compact/ErrorState.js";
 import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
@@ -25,19 +25,34 @@ import { formatScore } from "../lib/score-format.js";
  */
 const titlePending = (live: boolean) => (
   <>
-    <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> live · pending
+    <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> open calls
   </>
 );
+/* "recent", not "last 24h": the feed builder caps these at the last 20 rows
+   (ACCEPTED_LIMIT / RESOLVED_LIMIT) with no time filter, so on a quiet week
+   they carry rows weeks old. The genuine 24h counters are feed.totals.*_24h. */
 const TITLE_RESOLVED = (
   <>
-    <Ik name="resolve" /> resolved · 24h
+    <Ik name="resolve" /> scored · recent
   </>
 );
 const TITLE_ACCEPTED = (
   <>
-    <IkNav name="confirm-live" /> accepted · 24h
+    <IkNav name="confirm-live" /> sealed · recent
   </>
 );
+
+/** The public outcome, in words — shared wording with the tape and the ladder. */
+const OUTCOME_TEXT: Record<string, string> = {
+  win: "win",
+  loss: "loss",
+  void: "void",
+  oracle_unavailable: "no outcome",
+};
+
+function outcomeWord(outcome: string): string {
+  return OUTCOME_TEXT[outcome] ?? outcome.replace(/_/g, " ");
+}
 
 export function TodayPage() {
   const [feed, setFeed] = useState<TodayFeed | null>(null);
@@ -93,14 +108,10 @@ export function TodayPage() {
   }, [streamKey]);
 
   return (
-    <div className="mmr-shell min-h-dvh flex flex-col">
-      <CompactTopbar
-        crumb={
-          <span className="inline-flex items-center gap-1.5">
-            <Ik name="feed" /> <span className="sr-only">feed </span>last 24h
-          </span>
-        }
-      />
+    <div className="flex-1 flex flex-col min-h-0">
+      <TopbarCrumb><span className="inline-flex items-center gap-1.5">
+            <Ik name="feed" /> <span className="sr-only">feed </span>recent
+          </span></TopbarCrumb>
 
       {error && (
         <div className="border-b border-[var(--color-border)]">
@@ -132,7 +143,7 @@ export function TodayPage() {
             <FeedRows
               rows={feed.pending_resolution}
               pending
-              emptyLabel="[nothing pending — sealed verdicts awaiting resolution appear here]"
+              emptyLabel="[no open calls — sealed calls waiting to resolve appear here]"
             />
           </Panel>
           <Panel
@@ -142,13 +153,13 @@ export function TodayPage() {
           >
             <FeedRows
               rows={feed.resolved_recent}
-              emptyLabel="[no verdicts resolved in the last 24h]"
+              emptyLabel="[no scored calls yet — resolved calls appear here]"
             />
           </Panel>
           <Panel title={TITLE_ACCEPTED} meta={feed.accepted_recent.length.toString()}>
             <FeedRows
               rows={feed.accepted_recent}
-              emptyLabel="[no new verdicts accepted in the last 24h]"
+              emptyLabel="[no sealed calls yet — new calls appear here]"
             />
           </Panel>
         </main>
@@ -174,26 +185,30 @@ function FeedRows({
   return (
     <ul className="m-0 p-0 list-none">
       {rows.map((row) => {
-        // Pending calls render sealed placards rather than verdict fields.
-        // The unscored fallback is sliced to 4 like every other tape in the
-        // cockpit (LiveFeed, AgentPage.formatOutcome) — printing it raw let
-        // `oracle_unavailable` run 122px off the end of the row.
+        // A row only speaks when it has a verdict to report. The panel title
+        // already names the state, so the old fallbacks printed one word down
+        // an entire column: "pending" 20 times under "open calls", and "open"
+        // 20 times under "sealed" — contradicting the header it sat beneath.
+        // A scored row still shows its score; an unscored one defers to the
+        // house empty glyph. Real outcomes go through the shared word map, so
+        // `oracle_unavailable` reads "no outcome" instead of the old
+        // four-character slice ("orac") that fitted but said nothing.
         const outcomeText = pending
-          ? "pend"
+          ? null
           : row.call_score !== null && row.call_score !== undefined
             ? formatScore(row.call_score)
-            : (row.outcome ?? "live").slice(0, 4);
-        const outcomeTone = pending
-          ? "ck-dim"
-          : row.outcome === "win"
-            ? "ck-pos"
-            : row.outcome === "loss"
-              ? "ck-neg"
-              : "ck-dim";
+            : row.outcome
+              ? outcomeWord(row.outcome)
+              : null;
+        const outcomeTone =
+          row.outcome === "win" ? "ck-pos" : row.outcome === "loss" ? "ck-neg" : "ck-dim";
         return (
           <li
             key={row.call_id}
-            className="relative grid grid-cols-[76px_14px_1fr_64px] gap-2 px-2 py-1 border-b border-[var(--color-border)] items-center"
+            className={
+              "relative grid gap-2 px-2 py-1 border-b border-[var(--color-border)] items-center " +
+              (pending ? "grid-cols-[76px_1fr]" : "grid-cols-[76px_1fr_64px]")
+            }
           >
             {/* Stretched row link — real box so keyboard focus lands. */}
             <a
@@ -211,9 +226,17 @@ function FeedRows({
               iso={row.submitted_at ?? row.accepted_at}
               className="ck-mono ck-dim truncate"
             />
-            <span aria-hidden="true" className="ck-dim">▪</span>
             <span className="ck-mono ck-dim truncate">@{row.agent_slug}</span>
-            <span className={"ck-mono text-right " + outcomeTone}>{outcomeText}</span>
+            {!pending && (
+              <span className={"ck-mono text-right " + outcomeTone}>
+                {outcomeText ?? (
+                  <>
+                    <span aria-hidden="true">—</span>
+                    <span className="sr-only">not scored yet</span>
+                  </>
+                )}
+              </span>
+            )}
           </li>
         );
       })}
