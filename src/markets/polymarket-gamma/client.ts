@@ -38,8 +38,6 @@
 
 import type { GammaMarketSnapshot } from "./transform.js";
 
-// ─── Constants ──────────────────────────────────────────────────────────────
-
 const DEFAULT_BASE_URL = "https://gamma-api.polymarket.com";
 const DEFAULT_TIMEOUT_MS = 6_000;
 const DEFAULT_MAX_RETRIES = 3;
@@ -48,8 +46,6 @@ const TTL_RESOLVED_MS = 60 * 60 * 1000; // 1h
 const TTL_ACTIVE_MS = 60 * 1000; // 60s
 const TTL_NEGATIVE_MS = 5 * 60 * 1000; // 5min
 const LRU_CAPACITY = 10_000;
-
-// ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface FetchFnLike {
   (input: string, init?: { signal?: AbortSignal }): Promise<{
@@ -82,6 +78,26 @@ export interface PolymarketClientOpts {
   sleepMs?: (ms: number) => Promise<void>;
   /** Timer Adapter for request aborts and default sleeps. */
   timers?: PolymarketGammaTimers;
+  /**
+   * Cache TTL overrides (milliseconds). Defaults are the resolver-tuned
+   * constants above. A live display surface polling far faster than the
+   * 60s resolver tick needs a shorter active TTL, or every read inside the
+   * TTL is served stale — see src/integrations/venue-ticker.ts, which owns
+   * its own instance precisely so these can differ without touching the
+   * resolver's shared client.
+   */
+  ttlActiveMs?: number;
+  ttlResolvedMs?: number;
+  ttlNegativeMs?: number;
+  /**
+   * Fetch the parent event's tags, which `/markets` does not embed.
+   *
+   * OFF by default and deliberately so: it costs one extra request per cache
+   * miss, and the only consumer of tags is market registration, which reads
+   * them to derive the venue category. Price polling (venue-ticker) shares
+   * this class on a much hotter loop and must not pay for data it discards.
+   */
+  enrichEventTags?: boolean;
 }
 
 /** Cache entry — `snapshot=null` for negative-cache (404 / final error). */
@@ -119,8 +135,6 @@ export interface FetchWindowResult {
 const WINDOW_PAGE_LIMIT_DEFAULT = 100;
 const WINDOW_MAX_PAGES_DEFAULT = 3;
 
-// ─── Implementation ─────────────────────────────────────────────────────────
-
 export class PolymarketGammaClient {
   private readonly baseUrl: string;
   private readonly fetchFn: FetchFnLike;
@@ -130,6 +144,10 @@ export class PolymarketGammaClient {
   private readonly retryJitterMs: () => number;
   private readonly sleepMs: (ms: number) => Promise<void>;
   private readonly timers: PolymarketGammaTimers;
+  private readonly ttlActiveMs: number;
+  private readonly ttlResolvedMs: number;
+  private readonly ttlNegativeMs: number;
+  private readonly enrichEventTags: boolean;
 
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inflight = new Map<string, Promise<FetchResult>>();
@@ -144,6 +162,10 @@ export class PolymarketGammaClient {
       opts.retryJitterMs ??
       (() => Math.floor(Math.random() * BASE_BACKOFF_MS));
     this.timers = opts.timers ?? defaultTimers;
+    this.ttlActiveMs = positiveTtl(opts.ttlActiveMs, TTL_ACTIVE_MS);
+    this.ttlResolvedMs = positiveTtl(opts.ttlResolvedMs, TTL_RESOLVED_MS);
+    this.ttlNegativeMs = positiveTtl(opts.ttlNegativeMs, TTL_NEGATIVE_MS);
+    this.enrichEventTags = opts.enrichEventTags ?? false;
     this.sleepMs =
       opts.sleepMs ??
       ((ms) =>
@@ -232,8 +254,6 @@ export class PolymarketGammaClient {
     return this.cache.size;
   }
 
-  // ─── Internal ─────────────────────────────────────────────────────────────
-
   private async fetchAndCache(
     conditionId: string,
     stale: CacheEntry | undefined,
@@ -243,8 +263,8 @@ export class PolymarketGammaClient {
       const result = await this.fetchOnce(conditionId);
       if (result.kind === "ok") {
         const ttl = result.snapshot.closed === true
-          ? TTL_RESOLVED_MS
-          : TTL_ACTIVE_MS;
+          ? this.ttlResolvedMs
+          : this.ttlActiveMs;
         this.setCache(conditionId, {
           snapshot: result.snapshot,
           expiresAtMs: this.nowMs() + ttl,
@@ -257,7 +277,7 @@ export class PolymarketGammaClient {
         // increments `consecutive_failures`.
         this.setCache(conditionId, {
           snapshot: null,
-          expiresAtMs: this.nowMs() + TTL_NEGATIVE_MS,
+          expiresAtMs: this.nowMs() + this.ttlNegativeMs,
         });
         return { snapshot: null, source: "fresh", error: "http_404" };
       }
@@ -282,7 +302,7 @@ export class PolymarketGammaClient {
     // retries don't hammer the same broken URL.
     this.setCache(conditionId, {
       snapshot: null,
-      expiresAtMs: this.nowMs() + TTL_NEGATIVE_MS,
+      expiresAtMs: this.nowMs() + this.ttlNegativeMs,
     });
     return { snapshot: null, source: "fresh", error: lastError };
   }
@@ -454,7 +474,66 @@ export class PolymarketGammaClient {
     if (!snapshot) {
       return { kind: "transient", error: "schema_drift:condition_id_mismatch" };
     }
-    return { kind: "ok", snapshot: snapshot as GammaMarketSnapshot };
+    const withTags = this.enrichEventTags
+      ? await this.enrichSnapshotEventTags(snapshot as GammaMarketSnapshot)
+      : (snapshot as GammaMarketSnapshot);
+    return { kind: "ok", snapshot: withTags };
+  }
+
+  /**
+   * Fill in the parent event's tags when `/markets` omitted them.
+   *
+   * `/markets?condition_ids=…` embeds `events[0].series` but returns
+   * `tags: null`, and no `include_tags`-style parameter changes that — the tag
+   * set only exists on `/events/<id>`. Categories are read from those tags, so
+   * without this the category tier has nothing to group on.
+   *
+   * NEVER fatal, and never retried. A market whose tag fetch fails registers
+   * uncategorised, which is exactly what a venue publishing no category looks
+   * like. Losing a market — or stalling its registration behind backoff — over
+   * a grouping label would be the wrong trade.
+   */
+  async enrichSnapshotEventTags(
+    snapshot: GammaMarketSnapshot,
+  ): Promise<GammaMarketSnapshot> {
+    const events = (snapshot as { events?: unknown }).events;
+    if (!Array.isArray(events) || events.length === 0) return snapshot;
+    const event = events[0];
+    if (typeof event !== "object" || event === null) return snapshot;
+    const record = event as Record<string, unknown>;
+    if (Array.isArray(record.tags) && record.tags.length > 0) return snapshot;
+    const eventId = record.id;
+    if (typeof eventId !== "string" && typeof eventId !== "number") return snapshot;
+    const tags = await this.fetchEventTags(String(eventId));
+    if (tags === null) return snapshot;
+    return {
+      ...snapshot,
+      events: [{ ...record, tags }, ...events.slice(1)],
+    } as GammaMarketSnapshot;
+  }
+
+  /** The parent event's tag array, or null on any failure whatsoever. */
+  private async fetchEventTags(eventId: string): Promise<unknown[] | null> {
+    const url = `${this.baseUrl}/events/${encodeURIComponent(eventId)}`;
+    const controller = new AbortController();
+    const timer = this.timers.setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchFn(url, { signal: controller.signal });
+      if (response.status < 200 || response.status >= 300) return null;
+      if ((response.headers.get("content-type") ?? "").includes("text/html")) {
+        return null;
+      }
+      const parsed = JSON.parse(await response.text()) as unknown;
+      // `/events/<id>` returns an object; `/events?slug=` returns an array.
+      const event = Array.isArray(parsed) ? parsed[0] : parsed;
+      if (typeof event !== "object" || event === null) return null;
+      const tags = (event as Record<string, unknown>).tags;
+      return Array.isArray(tags) && tags.length > 0 ? tags : null;
+    } catch {
+      return null;
+    } finally {
+      this.timers.clearTimeout(timer);
+    }
   }
 
   private setCache(key: string, entry: CacheEntry): void {
@@ -488,6 +567,12 @@ const defaultFetch: FetchFnLike = async (input, init) => {
   };
   return res;
 };
+
+function positiveTtl(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : fallback;
+}
 
 const defaultTimers: PolymarketGammaTimers = {
   setTimeout(callback, ms) {

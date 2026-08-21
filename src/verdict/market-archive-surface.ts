@@ -98,6 +98,17 @@ export interface MarketArchiveRow {
   icon_url: string | null;
   /** True when murmur bound a series schedule to this market. */
   sealed_window: boolean;
+  /** Provider key ("polymarket-gamma"). The archive is currently Polymarket-
+   *  only by construction — it starts from `polymarket_discovery_state` — so
+   *  this field is honest labelling, not multi-provider support. */
+  provider: string;
+  /** The venue's own top-level category, or null when it published none.
+   *
+   *  Never murmur's taxonomy class. That field describes how a market SETTLES
+   *  (every prediction market is a "Binary event"), so as a grouping tier it
+   *  partitions nothing and reads as the venue's word for the market when it
+   *  is not. A row the venue never categorised groups as uncategorised. */
+  category_label: string | null;
 }
 
 export interface MarketArchiveBody {
@@ -383,6 +394,10 @@ interface ArchiveDbRow {
   end_date_epoch_s: number;
   config_json: string | null;
   sealed_window: number;
+  adapter_id: string | null;
+  market_family: string | null;
+  market_kind: string | null;
+  scoring_kind: string | null;
 }
 
 export function marketArchiveSurface(input: {
@@ -439,6 +454,10 @@ export function marketArchiveSurface(input: {
          p.slug                              AS slug,
          p.end_date_epoch_s                  AS end_date_epoch_s,
          m.config_json                       AS config_json,
+         m.adapter_id                        AS adapter_id,
+         m.market_family                     AS market_family,
+         m.market_kind                       AS market_kind,
+         m.scoring_kind                      AS scoring_kind,
          CASE WHEN mc.market_id IS NULL THEN 0 ELSE 1 END AS sealed_window
        FROM polymarket_discovery_state p
        JOIN markets m ON m.market_id = p.condition_id
@@ -457,18 +476,28 @@ export function marketArchiveSurface(input: {
     status: 200,
     body: {
       schema_version: SCHEMA_VERSION,
-      results: page.map((row) => ({
-        market_id: row.market_id,
-        question: typeof row.question === "string" && row.question.length > 0
-          ? row.question
-          : null,
-        slug: typeof row.slug === "string" && row.slug.length > 0 ? row.slug : null,
-        ended_at: new Date(row.end_date_epoch_s * 1000).toISOString(),
-        // Same https gate the ingestion path applies. The stored blob is
-        // passthrough, so the read side re-checks rather than trusting it.
-        icon_url: httpsUrlOrNull(parseMarketConfigJson(row.config_json).icon_url),
-        sealed_window: row.sealed_window === 1,
-      })),
+      results: page.map((row) => {
+        // Parse once; icon + category both read from it.
+        const config = parseMarketConfigJson(row.config_json);
+        const categoryLabel =
+          typeof config.venue_category === "string" && config.venue_category.length > 0
+            ? config.venue_category
+            : null;
+        return {
+          market_id: row.market_id,
+          question: typeof row.question === "string" && row.question.length > 0
+            ? row.question
+            : null,
+          slug: typeof row.slug === "string" && row.slug.length > 0 ? row.slug : null,
+          ended_at: new Date(row.end_date_epoch_s * 1000).toISOString(),
+          // Same https gate the ingestion path applies. The stored blob is
+          // passthrough, so the read side re-checks rather than trusting it.
+          icon_url: httpsUrlOrNull(config.icon_url),
+          sealed_window: row.sealed_window === 1,
+          provider: row.adapter_id ?? "polymarket-gamma",
+          category_label: categoryLabel,
+        };
+      }),
       next_cursor:
         hasMore && last
           ? encodeArchiveCursor({

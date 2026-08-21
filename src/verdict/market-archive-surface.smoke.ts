@@ -374,13 +374,22 @@ assert.equal(
   assert.equal(row.icon_url, ICON, "an https icon_url is served through");
   assert.equal(row.sealed_window, true, "a market with a clock row is flagged");
   assert.deepEqual(Object.keys(row).sort(), [
+    "category_label",
     "ended_at",
     "icon_url",
     "market_id",
+    "provider",
     "question",
     "sealed_window",
     "slug",
   ]);
+  // Grouping normalization: this fixture's config predates venue_category, so
+  // it has no category at all. Uncategorised is the honest answer — murmur's
+  // taxonomy class describes settlement ("Binary event"), which every market
+  // here is, so borrowing it as a category would group nothing and would read
+  // as the venue's word for the market when it is not.
+  assert.equal(row.provider, "polymarket-gamma");
+  assert.equal(row.category_label, null, "no venue category, no borrowed one");
 }
 assert.equal(
   ok({ q: "ethereum" }).results[0]!.sealed_window,

@@ -33,6 +33,14 @@ export interface MarketConfig {
    * renderers must always have a glyph fallback.
    */
   icon_url?: string;
+  /** The venue's top-level category (allowlist-matched Gamma event tag,
+   *  canonical label), e.g. "Crypto". */
+  venue_category?: string;
+  /** Recurring-series title, e.g. "ETH Up or Down 5m" — display metadata. */
+  series_title?: string;
+  /** Recurring-series slug, e.g. "eth-up-or-down-5m" — the stable identity a
+   *  market keeps while its 5-minute windows roll over. */
+  series_slug?: string;
   /** UMA dispute bond (decimal string), e.g. "500". */
   umaBond?: string;
   /** Resolver address (0x…), the account UMA settles against. */
@@ -72,6 +80,18 @@ export function parseMarketConfig(m: MarketRow): MarketConfig | null {
     // server's own `new URL()` gate rejects — so the two halves of a
     // belt-and-braces check disagreed, and the browser half was the loose one.
     icon_url: httpsUrl(parsed.icon_url),
+    venue_category:
+      typeof parsed.venue_category === "string" && parsed.venue_category.length > 0
+        ? parsed.venue_category
+        : undefined,
+    series_title:
+      typeof parsed.series_title === "string" && parsed.series_title.length > 0
+        ? parsed.series_title
+        : undefined,
+    series_slug:
+      typeof parsed.series_slug === "string" && parsed.series_slug.length > 0
+        ? parsed.series_slug
+        : undefined,
     umaBond: typeof parsed.umaBond === "string" ? parsed.umaBond : undefined,
     resolvedBy: typeof parsed.resolvedBy === "string" ? parsed.resolvedBy : undefined,
   };
@@ -167,4 +187,83 @@ export function marketDisplayName(m: MarketRow): string {
     }
   }
   return m.market_id;
+}
+
+
+// ─── Hierarchy grouping ─────────────────────────────────────────────────────
+
+/** Provider display labels, keyed by adapter id. Unknown adapters show raw. */
+const PROVIDER_LABELS: Record<string, string> = {
+  "polymarket-gamma": "polymarket",
+};
+
+export interface MarketGrouping {
+  provider_key: string;
+  provider_label: string;
+  /** The venue's own top-level category, or null when it published none. */
+  category_label: string | null;
+}
+
+export function providerLabel(key: string): string {
+  return PROVIDER_LABELS[key] ?? key;
+}
+
+/**
+ * Normalized provider→category grouping for a LIVE registry row. Mirrors the
+ * server-side normalization the archive endpoint applies to frozen rows, so
+ * both boards group identically.
+ *
+ * The category is the venue's own, or nothing. Murmur's taxonomy label is NOT
+ * a fallback here: it describes how a market settles ("Binary event"), which
+ * every prediction market is, so it partitions nothing as a grouping tier and
+ * reads as the venue's word for the market when it is not one.
+ */
+export function marketGrouping(m: MarketRow): MarketGrouping {
+  const providerKey =
+    typeof m["adapter_id"] === "string" && (m["adapter_id"] as string).length > 0
+      ? (m["adapter_id"] as string)
+      : "unknown";
+  const cfg = parseMarketConfig(m);
+  return {
+    provider_key: providerKey,
+    provider_label: providerLabel(providerKey),
+    category_label: cfg?.venue_category ?? null,
+  };
+}
+
+/**
+ * A live registry row flattened to the filter tiers' coordinates
+ * (lib/market-filters.ts). The leaf identity is the SERIES slug where one
+ * exists, so a checked market follows its rolling windows rather than pinning
+ * one that expires in minutes; a one-off falls back to its market id. The
+ * leaf label is the asset symbol where the market is an asset and the
+ * question where it is not, which is why the tier is "market", not "asset".
+ */
+export function filterableMarket(m: MarketRow): {
+  venue: string;
+  venueLabel: string;
+  category: string | null;
+  series: string | null;
+  marketKey: string;
+  marketLabel: string;
+} {
+  const cfg = parseMarketConfig(m);
+  const venue =
+    typeof m["adapter_id"] === "string" && (m["adapter_id"] as string).length > 0
+      ? (m["adapter_id"] as string)
+      : "unknown";
+  return {
+    venue,
+    venueLabel: providerLabel(venue),
+    category: cfg?.venue_category ?? null,
+    series: cfg?.series_title ?? null,
+    marketKey: cfg?.series_slug ?? m.market_id,
+    marketLabel:
+      marketAssetSymbol(m) ??
+      (cfg?.question && cfg.question.length > 0
+        ? cfg.question
+        : m.market_id.length > 10
+          ? `${m.market_id.slice(0, 8)}…`
+          : m.market_id),
+  };
 }

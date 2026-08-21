@@ -620,5 +620,11 @@ async function livePolymarketMarketRegistrationGammaAdapter(
   const { PolymarketGammaClient } = await import(
     "../markets/polymarket-gamma/client.js"
   );
-  return new PolymarketGammaClient({ nowMs: () => operationNowMs });
+  // Registration is the one caller that reads the parent event's tags: they
+  // are where the venue's category comes from, and `/markets` does not embed
+  // them. Everywhere else shares this class on hotter loops and opts out.
+  return new PolymarketGammaClient({
+    nowMs: () => operationNowMs,
+    enrichEventTags: true,
+  });
 }

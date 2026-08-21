@@ -119,4 +119,96 @@ assert.deepEqual(
   },
 );
 
+// ─── venue category + series projection ─────────────────────────────────────
+
+{
+  const base = {
+    conditionId,
+    snapshot: {
+      slug: "will-eth-break-5k",
+      outcomes: JSON.stringify(["YES", "NO"]),
+      endDate: "2026-06-13T00:00:00Z",
+    },
+  };
+  // Tagged event: the highest-precedence ALLOWLISTED slug wins regardless of
+  // position, and the CANONICAL label is returned (the venue's own casing is
+  // ignored). Tag order here is the real one Gamma returns for a 5m series —
+  // the narrow `up-or-down` leads and `crypto` sits last — because taking
+  // tags[0] is exactly the bug this replaced. `solana` and `crypto-prices`
+  // are present and off-list, so they can never rank.
+  const tagged = JSON.parse(polymarketGammaMarketConfigJson({
+    ...base,
+    snapshot: {
+      ...base.snapshot,
+      events: [{
+        tags: [
+          { id: "102127", label: "Up or Down", slug: "up-or-down" },
+          { id: "1312", label: "Crypto Prices", slug: "crypto-prices" },
+          { id: "818", label: "Solana", slug: "solana" },
+          { id: "21", label: " Crypto ", slug: "crypto" },
+        ],
+        series: [{ title: "ETH Up or Down 5m", slug: "eth-up-or-down-5m" }],
+      }],
+    },
+  })) as Record<string, unknown>;
+  assert.equal(tagged.venue_category, "Crypto", "allowlisted slug, canonical label");
+  assert.equal(tagged.series_title, "ETH Up or Down 5m");
+  assert.equal(tagged.series_slug, "eth-up-or-down-5m");
+
+  // Two real categories on one market: the precedence ORDER decides, not tag
+  // ids (creation order) and not array position. Ids here are adversarial —
+  // tech's is lower AND tech is listed first, politics still wins.
+  const dual = JSON.parse(polymarketGammaMarketConfigJson({
+    ...base,
+    snapshot: {
+      ...base.snapshot,
+      events: [{
+        tags: [
+          { id: "2", label: "Tech", slug: "tech" },
+          { id: "1401", label: "Politics", slug: "politics" },
+        ],
+      }],
+    },
+  })) as Record<string, unknown>;
+  assert.equal(dual.venue_category, "Politics", "precedence order, never tag id");
+
+  // The venue's own label casing is ignored: Gamma serves "health" lowercase;
+  // murmur shows the canonical form. Ids are entirely optional.
+  const cased = JSON.parse(polymarketGammaMarketConfigJson({
+    ...base,
+    snapshot: {
+      ...base.snapshot,
+      events: [{ tags: [{ label: "health", slug: "health" }] }],
+    },
+  })) as Record<string, unknown>;
+  assert.equal(cased.venue_category, "Health", "canonical label, not the venue's casing");
+
+  // Untagged (our 5m series today) / malformed shapes: fields simply absent.
+  for (const events of [
+    undefined,
+    null,
+    "not-an-array",
+    [],
+    [{ tags: null, series: null }],
+    [{ tags: [{ label: "" }, { nolabel: 1 }], series: [{ title: "  " }] }],
+    // Tags that are real but none of them top-level: uncategorised is the
+    // honest answer. Borrowing "Up or Down" as a category is what we stopped.
+    [{ tags: [{ id: "102127", label: "Up or Down", slug: "up-or-down" }] }],
+    [{ tags: [{ id: "818", label: "Solana", slug: "solana" }] }],
+  ]) {
+    const cfg = JSON.parse(polymarketGammaMarketConfigJson({
+      ...base,
+      snapshot: { ...base.snapshot, ...(events === undefined ? {} : { events }) },
+    })) as Record<string, unknown>;
+    assert.equal("venue_category" in cfg, false, `no category for ${JSON.stringify(events)}`);
+    assert.equal("series_title" in cfg, false, `no series for ${JSON.stringify(events)}`);
+  }
+
+  // Public summary allowlists the new fields — and only as non-empty strings.
+  const summary = publicPolymarketGammaMarketConfigSummary(tagged);
+  assert.equal(summary.venue_category, "Crypto");
+  assert.equal(summary.series_title, "ETH Up or Down 5m");
+  assert.equal("series_slug" in summary, false, "slug is internal, not public");
+}
+
 process.stdout.write("Polymarket Gamma Market Config smoke ok\n");
