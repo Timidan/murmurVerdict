@@ -88,8 +88,8 @@ export interface EntitlementAccessDeps {
   /** Where accrual repairs and unattributed sales are reported. */
   readonly logger?: Pick<Console, "warn">;
   /**
-   * Block-depth required before a grant is marked terminally `granted`
-   * (Codex §6 step 6). Default 1.
+   * Block-depth required before a grant is marked terminally `granted`.
+   * Default 1.
    */
   readonly grantConfirmations?: number;
   /**
@@ -191,7 +191,7 @@ export interface EntitlementEligibility {
 
 /**
  * On-chain eligibility check, run BEFORE returning the 402 challenge and again
- * immediately before settlement (Codex §6). The contract re-enforces the window
+ * immediately before settlement. The contract re-enforces the window
  * at grant time — this is the early, no-charge gate.
  */
 export async function checkEntitlementEligibility(
@@ -209,7 +209,20 @@ export async function checkEntitlementEligibility(
   const nowSec = Math.floor(deps.now().getTime() / 1000);
   // Sales close a safety margin before the CONTRACT's grant deadline, so the
   // gate can never settle a payment for a grant that will revert.
-  const salesCloseAt = view.grantCloseAt - deps.salesSafetySeconds;
+  //
+  // The margin comes from the SERIES' own delivery budget when the call has
+  // one, not from the deployment-wide default. Those two numbers answer the
+  // same question — "how long does a grant need before the deadline?" — and
+  // they were set independently, so they disagreed: the series reserved 60s
+  // while the default reserved 180s, which closed checkout 120 SECONDS BEFORE
+  // the contract stopped calling calls sellable. Half of every EarlyAccess
+  // window produced calls the board offered and the gate refused.
+  //
+  // The series is authoritative because its budget is the one the on-chain
+  // clock was built around: earlyAccessCutoffAt is submissionCloseAt minus
+  // exactly this value. Aligning to it makes "sellable" mean one thing.
+  const salesCloseAt =
+    view.grantCloseAt - (seriesDeliveryBudgetForCall(deps, onchainCallId) ?? deps.salesSafetySeconds);
   if (nowSec >= salesCloseAt) return { reason: "sale_window_closed", view, cap: undefined };
 
   // Cohort capacity. Each grant is its own transaction, so an unbounded cohort is a funding and
@@ -283,7 +296,7 @@ export interface PurchaseInput {
 }
 
 /**
- * Codex §3 ordering: (1) validate call + window (done by the caller before 402,
+ * Ordering: (1) validate call + window (done by the caller before 402,
  * re-checked here), (2) reserve unique entitlement, (3) persist intent, (4)
  * settle, (5) queue + broadcast grant, (6) wait confirmations, (7) mark granted.
  * A grant that cannot be broadcast/confirmed AFTER settlement becomes
@@ -529,8 +542,8 @@ export async function reconcileEntitlement(
         grantTxHash: txHash,
         incrementAttempts: true,
         lastError: null,
-        // Grace before the tx is presumed dropped and re-broadcast (Codex ii:
-        // a dropped grant tx must heal without operator intervention).
+        // Grace before the tx is presumed dropped and re-broadcast — a
+        // dropped grant tx must heal without operator intervention.
         nextAttemptAt: addSeconds(nowIso, rebroadcastDelay),
         now: nowIso,
       });
@@ -578,7 +591,7 @@ export async function reconcileEntitlement(
         );
       }
       if (receipt.confirmations < requiredConfirmations) {
-        // Mined but not deep enough yet — revisit soon (Codex §6 step 6). A
+        // Mined but not deep enough yet — revisit soon. A
         // shallow-reorg before this depth must not have been marked granted.
         entitlementsRepo.transition(deps.db, id, ["grant_broadcast"], {
           status: "grant_broadcast",
@@ -797,6 +810,35 @@ function pendingRow(db: Database.Database, id: number): PurchaseResult {
  * series cannot be resolved, so the caller can fall back rather than sell
  * uncapped.
  */
+/**
+ * The series row behind a call, or null when the call cannot be traced to one
+ * (a legacy row, or a market registered outside a series).
+ */
+function seriesForCall(deps: EntitlementAccessDeps, onchainCallId: string) {
+  const sealed = fhenixSealedCallsRepo.byOnchainCall(deps.db, {
+    chain_id: deps.grantChain.chainId,
+    contract_address: deps.grantChain.contractAddress,
+    onchain_call_id: onchainCallId,
+  });
+  if (!sealed?.call_id) return null;
+  const row = deps.db
+    .prepare("SELECT market_id FROM submissions WHERE call_id = ?")
+    .get(sealed.call_id) as { market_id?: string } | undefined;
+  const marketId = row?.market_id ?? null;
+  if (!marketId) return null;
+  const clock = marketClocksRepo.get(deps.db, marketId);
+  if (!clock) return null;
+  return marketSeriesRepo.get(deps.db, clock.series_id) ?? null;
+}
+
+/** Seconds this series reserved for delivering grants before the deadline. */
+function seriesDeliveryBudgetForCall(
+  deps: EntitlementAccessDeps,
+  onchainCallId: string,
+): number | null {
+  return seriesForCall(deps, onchainCallId)?.delivery_budget_sec ?? null;
+}
+
 function seriesCapForCall(
   deps: EntitlementAccessDeps,
   onchainCallId: string,
