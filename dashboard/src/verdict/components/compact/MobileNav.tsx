@@ -94,7 +94,7 @@ export function MobileNav({
         aria-expanded={open}
         aria-controls={panelId}
         aria-label="menu"
-        className="mmr-nav-link whitespace-nowrap"
+        className="mmr-nav-link mmr-hit whitespace-nowrap"
       >
         menu
       </button>

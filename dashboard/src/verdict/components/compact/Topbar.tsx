@@ -9,6 +9,8 @@ import { NAV_CHORDS } from "./nav-chords.js";
 interface CompactTopbarProps {
   /** Free-text crumb shown after the system identifier (e.g. "LB / TIER:ALL"). */
   crumb?: React.ReactNode;
+  /** Receives the crumb slot element so pages can portal a crumb in. */
+  crumbSlotRef?: (el: HTMLElement | null) => void;
 }
 
 /**
@@ -79,7 +81,7 @@ const CHORD_KEY: Record<NavHref, string> = NAV_CHORDS;
  * status and menu trigger stay visible. The crumb slot truncates so no
  * breadcrumb (e.g. a full market id) can widen the document.
  */
-export function CompactTopbar({ crumb }: CompactTopbarProps) {
+export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
   const stream = useStream();
   const live = stream.status === "open";
   const [now, setNow] = useState(() => new Date());
@@ -105,30 +107,37 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
 
   return (
     <header className="h-[64px] flex items-stretch border-b border-[var(--color-border)] sticky top-0 z-30 bg-[var(--color-bg)]">
-      <div className="shrink-0 flex items-center gap-2 pl-4 pr-3">
+      {/* Equal-width rails + shrink-0 nav pin the glyph row to viewport centre.
+          Dropping basis-0, or sizing the nav, re-opens a 65px per-route drift. */}
+      <div className="flex-1 basis-0 min-w-0 flex items-center gap-2 pl-4 pr-3">
         <span
           aria-hidden
           className={
-            "w-[5px] h-[5px] " +
+            "shrink-0 w-[5px] h-[5px] " +
             (live ? "bg-[var(--color-success)]" : "bg-[var(--color-accent)]")
           }
         />
         <a
           href="#/"
-          className="no-underline flex items-center"
+          className="mmr-hit shrink-0 no-underline flex items-center"
           aria-label="MURMUR.VERDICT — home"
         >
           <MMark size={28} decorative />
         </a>
+        {crumb ? (
+          <div className="mmr-topbar-crumb-slot min-w-0 ml-1 flex items-center lg:max-w-[360px] overflow-hidden">
+            <span className="mmr-topbar-crumb truncate min-w-0">{crumb}</span>
+          </div>
+        ) : (
+          <div
+            ref={crumbSlotRef}
+            className="mmr-topbar-crumb-slot mmr-topbar-crumb min-w-0 flex items-center lg:max-w-[360px] overflow-hidden truncate"
+          />
+        )}
       </div>
-      {crumb && (
-        <div className="mmr-topbar-crumb-slot min-w-0 flex flex-1 lg:flex-none lg:max-w-[360px] items-center pr-3 overflow-hidden">
-          <span className="mmr-topbar-crumb truncate min-w-0">{crumb}</span>
-        </div>
-      )}
       <nav
         aria-label="Primary navigation"
-        className="hidden lg:flex flex-1 items-center justify-center mmr-nav-cluster px-4"
+        className="hidden lg:flex shrink-0 items-center justify-center mmr-nav-cluster px-4"
       >
         {NAV_LINKS.map((l) => (
           <CompactNavLink
@@ -141,7 +150,9 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
           />
         ))}
       </nav>
-      <div className="ml-auto shrink-0 flex h-full items-center gap-4 pr-4">
+      {/* No min-w-0: squeezes are absorbed by the left rail's truncating crumb.
+          Rail padding must stay equal both sides (28px) or the nav goes off-centre. */}
+      <div className="flex-1 basis-0 flex h-full items-center justify-end gap-4 pl-3 pr-4">
         <span
           aria-hidden="true"
           className="hidden lg:inline-flex mmr-topbar-meta ck-dim tabular-nums"
@@ -156,7 +167,11 @@ export function CompactTopbar({ crumb }: CompactTopbarProps) {
           aria-live="polite"
           className={"mmr-topbar-meta font-bold " + (live ? "ck-pos" : "ck-neg")}
         >
-          {live ? "live" : "offline"}
+          {live
+            ? "live"
+            : stream.status === "closed"
+              ? "offline"
+              : "connecting"}
         </span>
         <div className="lg:hidden flex items-center h-full">
           {/* NAV_LINKS is a readonly tuple (see above); MobileNav takes a

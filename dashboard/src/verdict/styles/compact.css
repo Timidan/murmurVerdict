@@ -350,6 +350,14 @@
     flex-shrink: 1;
     min-width: 0;
   }
+  /* Crumb atoms ellipsize instead of hard-clipping: the slot is a flex row, so text-overflow lives on its blockified span children. */
+  .mmr-shell .mmr-topbar-crumb-slot > span,
+  .mmr-shell .mmr-topbar-crumb-slot > span > span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .mmr-shell .mmr-theme-toggle {
@@ -398,6 +406,22 @@
 /* Tone modifiers compose with the base box. */
 .mmr-shell .ck-badge.ck-pos {
   color: var(--color-display);
+}
+/* Taking-calls badge: the one phase a reader can still act on carries a
+   square LED. Same keyframes and 2.8s cadence as the live-dot so every
+   liveness signal shares one rhythm; the square itself is declared outside
+   the motion gate, so reduced motion keeps the marker, just static. */
+.mmr-shell .ck-badge-live::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  background: currentColor;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mmr-shell .ck-badge-live::before {
+    animation: mmr-tx-led 2.8s var(--ease-land) infinite;
+  }
 }
 .mmr-shell .ck-badge.ck-neg {
   color: var(--color-accent-ink);
@@ -572,6 +596,75 @@
   color: var(--color-accent-ink);
 }
 
+/* Touch tap floor: controls grow to 44px boxes; fine pointers keep the dense desktop sizing. */
+@media (pointer: coarse) {
+  .mmr-shell .ck-btn,
+  .mmr-shell .ck-tab,
+  .mmr-shell button.ck-label,
+  .mmr-shell summary.ck-label,
+  .mmr-shell .mmr-asset-chip,
+  .mmr-shell .mmr-tier-chip {
+    min-height: 44px;
+  }
+  /* Hit-area extender for small glyph targets: grows the tappable box, never the drawn one (::before — nav underlines own ::after). */
+  .mmr-shell .mmr-hit {
+    position: relative;
+  }
+  .mmr-shell .mmr-hit::before {
+    content: "";
+    position: absolute;
+    inset: -8px;
+  }
+}
+
+/* ── Filter tiers (markets matrix) ──────────────────────────────────────────
+   Checkable rows, venue first (owner sign-off 2026-08-11). The checkbox IS
+   the state: filled square = on the board, empty square = off it. A tier
+   holding a single value renders as a plain label instead, so a control that
+   cannot change anything never looks like one. */
+.mmr-shell .mmr-tier {
+  display: flex;
+  align-items: center;
+  column-gap: 14px;
+  row-gap: 2px;
+  flex-wrap: wrap;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+.mmr-shell .mmr-tier-name {
+  width: 76px;
+  flex: none;
+}
+.mmr-shell .mmr-tier-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--color-secondary);
+  cursor: pointer;
+  transition: color 160ms var(--ease-out);
+}
+.mmr-shell .mmr-tier-chip::before {
+  content: "";
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 1px solid currentColor;
+}
+.mmr-shell .mmr-tier-chip.is-on {
+  color: var(--color-primary);
+}
+.mmr-shell .mmr-tier-chip.is-on::before {
+  background: currentColor;
+}
+.mmr-shell .mmr-tier-chip:hover,
+.mmr-shell .mmr-tier-chip:focus-visible {
+  color: var(--color-display);
+}
+
 /* Tight scrollbar styling for inner panels (webkit). */
 .mmr-shell .ck-scroll::-webkit-scrollbar {
   width: 6px;
@@ -639,6 +732,26 @@
 .mmr-shell .ck-value-lg {
   font-size: 15px;
   font-weight: 700;
+}
+/* Summary-tile value — sized by the PANEL via container query, mirroring the
+   tile glyph's own 24/48 toggle: compact in a tight sidecar, ck-num-lg
+   metrics once the panel affords hero tiles. Lives here, not as utilities:
+   .ck-mono (0,2,0) beats any font-size utility, so only a same-specificity
+   class placed after it can win. */
+.mmr-shell .ck-tile-value {
+  font-size: 13px;
+  font-weight: 700;
+}
+@container (min-width: 340px) {
+  .mmr-shell .ck-tile-value {
+    font-size: 24px;
+    letter-spacing: -0.02em;
+  }
+}
+@container (min-width: 560px) {
+  .mmr-shell .ck-tile-value {
+    font-size: 30px;
+  }
 }
 
 /* Row link — stretched-link overlay for whole-row navigation.

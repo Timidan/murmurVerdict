@@ -355,13 +355,14 @@ canvas {
 
 .world__image--far {
   opacity: 0.66;
-  filter: brightness(0.34) contrast(1.05) saturate(0);
+  /* No saturate(0): source asset is already greyscale. */
+  filter: brightness(0.34) contrast(1.05);
   transform: translate3d(var(--far-x), var(--far-y), 0) scale(var(--world-scale));
 }
 
 .world__image--near {
   opacity: 0.16;
-  filter: brightness(0.25) contrast(1.1) saturate(0) blur(1px);
+  filter: brightness(0.25) contrast(1.1) blur(1px);
   mask-image: linear-gradient(to bottom, transparent 42%, rgba(0, 0, 0, 0.12) 56%, #000 92%);
   transform: translate3d(var(--near-x), var(--near-y), 0) scale(calc(var(--world-scale) + 0.035));
 }
@@ -385,9 +386,17 @@ canvas {
 
 .world__focus {
   opacity: var(--focus-visibility);
-  backdrop-filter: blur(4.5px);
   background: rgba(10, 10, 10, 0.29);
   will-change: opacity;
+}
+
+/* Blur only while visible — its backdrop changes every frame, so it can't cache. */
+.focus-active .world__focus {
+  backdrop-filter: blur(4.5px);
+}
+
+.low-power .focus-active .world__focus {
+  backdrop-filter: none;
 }
 
 .low-power .world__focus {
@@ -428,17 +437,6 @@ canvas {
   right: 0;
   border-width: 0 0 0 1px;
   transform: translate3d(calc(var(--portal-open) * 112%), 0, 0);
-}
-
-.portal__seam {
-  position: absolute;
-  top: 12vh;
-  bottom: 12vh;
-  left: 50%;
-  width: 1px;
-  background: rgba(232, 232, 232, 0.36);
-  opacity: calc(1 - var(--portal-open));
-  transform: scaleY(calc(1 - var(--portal-open)));
 }
 
 .sequence-meter {
@@ -1450,14 +1448,48 @@ canvas {
   .site-footer p:nth-child(2) {
     text-align: left;
   }
+
+  /* Phone type floor: nothing renders under 12px (cockpit ruling 2026-08-08, applied to this page's fixed sub-floor sizes). */
+  .site-nav,
+  .button,
+  .text-link,
+  .signal-label,
+  .sequence-meter,
+  .evidence__topline,
+  .evidence__rows dt,
+  .evidence__rows dd,
+  .evidence__seal p,
+  .scoreboard__count span,
+  .scoreboard__rows li,
+  .chapter-card__index,
+  .chapter-card__meta,
+  .chapter-card--event > a,
+  .stack > p,
+  .site-footer {
+    font-size: 0.75rem;
+  }
 }
 
 @media (pointer: coarse) {
   .site-nav a,
   .text-link,
   .skip-sequence,
+  .button,
+  .skip-link,
   .stack__logos a {
     min-height: 48px;
+  }
+
+  /* Footer links reach the tap floor; the inline credit links grow their hit box via padding, which never moves inline layout. */
+  .site-footer nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 48px;
+    padding-inline: 6px;
+    margin-inline: -6px;
+  }
+  .site-footer p a {
+    padding-block: 10px;
   }
 
   .rail-viewport {
