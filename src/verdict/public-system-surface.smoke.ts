@@ -78,12 +78,33 @@ try {
   const staleAgentId = randomUUID();
   const internalAgentId = randomUUID();
 
-  const health = publicHealthSurface({ servedAt });
+  const health = publicHealthSurface({ servedAt, revealWorkerConfigured: false, acceptsPlaintextSubmission: false });
   assert.equal(health.ok, true);
   assert.equal(health.schema_version, 1);
   assert.equal(health.scoring_version, 1);
   assert.equal(health.now, "2026-06-12T09:30:00Z");
+  // Privacy is NOT a constant: MURMUR_OWNED_SEALING_ENABLED makes the gateway
+  // accept plaintext and seal server-side, at which point the operator can read
+  // every pending prediction. Asserting true unconditionally advertised a
+  // guarantee an owned-sealing deployment had explicitly traded away.
   assert.equal(health.privacy.pending_verdicts_private, true);
+  // pending_verdicts_private means NOT PUBLICLY READABLE, which the contract
+  // enforces on every path — so it holds even with owned sealing on. The claim
+  // owned sealing actually changes is operator blindness, tracked separately.
+  {
+    const owned = publicHealthSurface({
+      servedAt,
+      revealWorkerConfigured: false,
+      acceptsPlaintextSubmission: true,
+    }).privacy;
+    assert.equal(owned.pending_verdicts_private, true, "still not public");
+    assert.equal(
+      owned.operator_holds_plaintext,
+      "on_owned_sealing_path",
+      "owned sealing on: murmur must not claim operator blindness",
+    );
+  }
+  assert.equal(health.privacy.operator_holds_plaintext, "never_on_sealed_fhenix");
   // The reveal guarantee tracks the WORKER, and this field was hardcoded true
   // with no assertion on it, so a deploy with the worker off published a
   // promise it was not keeping. Both directions are pinned here now.
@@ -93,17 +114,17 @@ try {
     "no worker declared: /v1/health must not claim a reveal guarantee",
   );
   assert.equal(
-    publicHealthSurface({ servedAt, revealWorkerEnabled: true })
+    publicHealthSurface({ servedAt, revealWorkerConfigured: true, acceptsPlaintextSubmission: false })
       .privacy.public_reveal_after_horizon,
     true,
     "worker running: the guarantee is real and is published",
   );
   assert.equal(
-    publicHealthSurface({ servedAt, revealWorkerEnabled: false })
+    publicHealthSurface({ servedAt, revealWorkerConfigured: false, acceptsPlaintextSubmission: false })
       .privacy.public_reveal_after_horizon,
     false,
   );
-  const healthResponse = publicHealthResponse({ servedAt });
+  const healthResponse = publicHealthResponse({ servedAt, revealWorkerConfigured: false, acceptsPlaintextSubmission: false });
   const healthRes = new FakeJsonResponse();
   sendPublicSystemJsonResponse(healthRes, healthResponse);
   assert.equal(healthRes.statusCode, 200);
@@ -237,6 +258,8 @@ try {
   const meta = publicMetaSurface({
     db,
     servedAt,
+    revealWorkerConfigured: false,
+    acceptsPlaintextSubmission: false,
     nanopayX402Mounted: true,
     fhenixChain: {
       chainId: 84532,
@@ -256,6 +279,22 @@ try {
     since_iso: "2026-06-11T09:30:00Z",
   });
   assert.equal(meta.privacy.pending_verdicts_private, true);
+  assert.equal(meta.privacy.plaintext_submission_path, false);
+  {
+    const plaintext = publicMetaSurface({
+      db,
+      servedAt,
+      revealWorkerConfigured: false,
+      acceptsPlaintextSubmission: true,
+    }).privacy;
+    assert.equal(plaintext.pending_verdicts_private, true, "still not public");
+    assert.equal(plaintext.operator_holds_plaintext, "on_owned_sealing_path");
+    assert.equal(
+      plaintext.plaintext_submission_path,
+      true,
+      "owned sealing on: /v1/meta must say so, not repeat the manifest's false",
+    );
+  }
   // /v1/meta is the machine-readable capability document an integrator reads
   // to decide whether the seal can be trusted, so the reveal guarantee has to
   // track the worker here too. It was hardcoded true with no assertion — the
@@ -266,19 +305,21 @@ try {
     "no worker declared: /v1/meta must not advertise a reveal guarantee",
   );
   assert.equal(
-    publicMetaSurface({ db, servedAt, revealWorkerEnabled: true })
+    publicMetaSurface({ db, servedAt, revealWorkerConfigured: true, acceptsPlaintextSubmission: false })
       .privacy.public_reveal_after_horizon,
     true,
     "worker running: the guarantee is real and is advertised",
   );
   assert.equal(
-    publicMetaSurface({ db, servedAt, revealWorkerEnabled: false })
+    publicMetaSurface({ db, servedAt, revealWorkerConfigured: false, acceptsPlaintextSubmission: false })
       .privacy.public_reveal_after_horizon,
     false,
   );
   const metaResponse = publicMetaResponse({
     db,
     servedAt,
+    revealWorkerConfigured: false,
+    acceptsPlaintextSubmission: false,
     nanopayX402Mounted: true,
     fhenixChain: {
       chainId: 84532,
@@ -290,7 +331,12 @@ try {
   assert.equal(metaRes.statusCode, 200);
   assert.equal((metaRes.body as typeof meta).fhenix?.chain_id, "eip155:84532");
 
-  const defaultMeta = publicMetaSurface({ db, servedAt });
+  const defaultMeta = publicMetaSurface({
+    db,
+    servedAt,
+    revealWorkerConfigured: false,
+    acceptsPlaintextSubmission: false,
+  });
   assert.equal(defaultMeta.paid_inference.nanopay, null);
 
   db.close();

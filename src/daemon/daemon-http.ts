@@ -152,7 +152,11 @@ export function createDaemonHttpSurface(
       newOperatorAlertId: deps.newOperatorAlertId,
       newSealedCallId: deps.newSealedCallId,
       requireLiveCanaries: deps.config.requireLiveCanaries,
-      revealWorkerEnabled: deps.fhenixRevealWorkerEnabled ?? false,
+      revealWorkerConfigured: deps.fhenixRevealWorkerEnabled ?? false,
+      // Read off the LIVE gateway, not env: the broadcaster is the thing
+      // that actually holds a server-side sealer.
+      acceptsPlaintextSubmission:
+        deps.fhenixGateway?.acceptsPlaintextSubmission ?? false,
       operatorAlertSink: deps.operatorAlertSink === undefined
         ? deps.config.operatorAlertSink
         : deps.operatorAlertSink,

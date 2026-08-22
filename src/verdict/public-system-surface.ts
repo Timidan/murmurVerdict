@@ -30,10 +30,23 @@ export interface PublicSystemClock {
 
 export interface PublicSystemReadInstant {
   servedAt: Date;
-  /** Is the reveal worker actually running? Drives the public reveal claim
-   *  below. Omitted reads as "no" — a guarantee nobody asserted is not one
-   *  this endpoint may invent. */
-  revealWorkerEnabled?: boolean;
+  /** Is a reveal worker CONFIGURED on this deployment?
+   *
+   *  Deliberately named for what it can prove. The daemon derives it from
+   *  `adapters.fhenixRevealWorker !== null`, which means constructed — not
+   *  started, funded, or ticking successfully. Do not read it as liveness.
+   *
+   *  REQUIRED for the same reason as the field below: an optional guarantee
+   *  defaults to a promise. */
+  revealWorkerConfigured: boolean;
+  /** Does the gateway accept PLAINTEXT verdicts and seal them server-side
+   *  (MURMUR_OWNED_SEALING_ENABLED)?
+   *
+   *  REQUIRED, deliberately. As an optional field an omission defaulted to
+   *  the privacy-positive answer, so any future call site that forgot it
+   *  would silently re-publish the overclaim this was added to remove. A
+   *  guarantee has to be stated to be made. */
+  acceptsPlaintextSubmission: boolean;
 }
 
 export interface PublicSystemFhenixChain {
@@ -166,17 +179,25 @@ export function publicHealthSurface(input: PublicSystemReadInstant) {
     now: nowIso(input.servedAt),
     privacy: {
       mode: "sealed_fhenix",
-      // Structural, not operational: the daemon never receives plaintext, so
-      // a pending verdict is encrypted at rest no matter what is running.
-      // Safe as a constant — unlike the field below, which is a worker.
+      // "private" here means NOT PUBLICLY READABLE before reveal, which the
+      // contract enforces on every path (allowPublic is gated on a snapshotted
+      // timestamp). Owned sealing does not make a pending verdict public, so
+      // this stays true — an earlier pass flipped it and conflated public
+      // visibility with operator blindness, which are different claims.
       pending_verdicts_private: true,
-      // Reveal is NOT structural: it is a worker, and the worker ships
+      // Operator blindness is the OTHER claim, and it is the one owned sealing
+      // trades away. Named the way the agent card already names it rather than
+      // overloading the boolean above.
+      operator_holds_plaintext: input.acceptsPlaintextSubmission
+        ? "on_owned_sealing_path"
+        : "never_on_sealed_fhenix",
+      // Reveal is NOT structural either: it is a worker, and the worker ships
       // disabled (FHENIX_REVEAL_WORKER_ENABLED, default false), which
       // src/daemon/fhenix-runtime.ts warns about at startup. This field was
       // hardcoded true, so a deploy with the worker off published a
       // guarantee it was not delivering — on the public endpoint
       // integrators use to decide whether to trust the seal.
-      public_reveal_after_horizon: input.revealWorkerEnabled === true,
+      public_reveal_after_horizon: input.revealWorkerConfigured,
     },
   };
 }
@@ -276,15 +297,21 @@ export function publicMetaSurface(deps: PublicMetaDeps) {
     privacy: {
       mode: "sealed_fhenix",
       threshold_network: "fhenix",
-      // Structural, not operational: the daemon never receives plaintext, so
-      // a pending verdict is encrypted at rest no matter what is running.
-      // Safe as a constant — unlike the field below, which is a worker.
+      // Not publicly readable before reveal — contract-enforced on every
+      // path, so unconditional. See /v1/health for why this is NOT the field
+      // that tracks owned sealing.
       pending_verdicts_private: true,
+      // The two claims owned sealing actually changes, stated separately and
+      // in the agent card's vocabulary.
+      plaintext_submission_path: deps.acceptsPlaintextSubmission,
+      operator_holds_plaintext: deps.acceptsPlaintextSubmission
+        ? "on_owned_sealing_path"
+        : "never_on_sealed_fhenix",
       // Derived, for the same reason as /v1/health. This document is the
       // machine-readable capability contract an integrator's agent reads to
       // decide whether the seal can be trusted, so asserting a reveal
       // guarantee the worker is not delivering does the most damage here.
-      public_reveal_after_horizon: deps.revealWorkerEnabled === true,
+      public_reveal_after_horizon: deps.revealWorkerConfigured,
     },
     ...(fhenixChain ? { fhenix: fhenixChain } : {}),
   };

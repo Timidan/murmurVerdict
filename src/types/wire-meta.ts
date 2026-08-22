@@ -18,6 +18,14 @@ export interface WireMetaResponse {
     threshold_network: string;
     pending_verdicts_private: boolean;
     public_reveal_after_horizon: boolean;
+    /** True when the gateway accepts plaintext verdicts and seals them
+     *  server-side (MURMUR_OWNED_SEALING_ENABLED). An integrator deciding
+     *  whether to trust the seal needs this stated, not inferred. */
+    plaintext_submission_path: boolean;
+    /** Operator blindness, in the agent card's vocabulary. Distinct from
+     *  `pending_verdicts_private`, which is about PUBLIC visibility: a
+     *  verdict can be non-public and still readable by the operator. */
+    operator_holds_plaintext: string;
   };
   /** Present when the daemon has a Fhenix chain configured. */
   fhenix?: {

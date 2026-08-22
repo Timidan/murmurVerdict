@@ -35,8 +35,11 @@ export interface PublicSystemRouterDeps {
    */
   popAudience?: string;
   requireLiveCanaries?: boolean;
-  /** Threaded into /v1/health so the public reveal claim tracks the worker. */
-  revealWorkerEnabled?: boolean;
+  /** Reveal worker CONFIGURED (constructed), not proven live. Required: an
+   *  optional guarantee silently defaults to a promise. */
+  revealWorkerConfigured: boolean;
+  /** Gateway accepts plaintext (owned sealing). Required, same reason. */
+  acceptsPlaintextSubmission: boolean;
 }
 
 export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
@@ -63,7 +66,8 @@ export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
   router.get("/v1/health", (_req, res) => {
     sendPublicSystemJsonResponse(res, publicHealthResponse({
       servedAt: deps.now(),
-      revealWorkerEnabled: deps.revealWorkerEnabled,
+      revealWorkerConfigured: deps.revealWorkerConfigured,
+      acceptsPlaintextSubmission: deps.acceptsPlaintextSubmission,
     }));
   });
 
@@ -82,7 +86,8 @@ export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
       servedAt: deps.now(),
       fhenixChain: deps.fhenixChain,
       nanopayX402Mounted: deps.nanopayX402Mounted,
-      revealWorkerEnabled: deps.revealWorkerEnabled,
+      revealWorkerConfigured: deps.revealWorkerConfigured,
+      acceptsPlaintextSubmission: deps.acceptsPlaintextSubmission,
     }));
   });
 

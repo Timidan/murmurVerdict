@@ -175,6 +175,20 @@ export class FhenixGatewayBroadcaster {
   get feedRevealAcknowledged(): boolean {
     return this.feedRevealAcknowledgedFlag;
   }
+
+  /**
+   * Does this deployment accept PLAINTEXT verdicts and seal them server-side?
+   *
+   * When true the operator can read every pending prediction, which is the
+   * opposite of what `privacy.pending_verdicts_private` claims on /v1/health
+   * and /v1/meta. Those surfaces published `true` unconditionally, so a
+   * deployment running owned sealing was advertising a privacy guarantee it
+   * had explicitly traded away. Exposed here so the public surfaces derive it
+   * rather than assert it.
+   */
+  get acceptsPlaintextSubmission(): boolean {
+    return this.murmurOwnedSealer !== null;
+  }
   private readonly confirmations: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;

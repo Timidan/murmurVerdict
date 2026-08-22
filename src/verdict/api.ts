@@ -125,8 +125,10 @@ export interface ApiDeps {
    * external RPC/API availability.
    */
   requireLiveCanaries?: boolean;
-  /** Reveal worker actually running — published on /v1/health. */
-  revealWorkerEnabled?: boolean;
+  /** Reveal worker CONFIGURED — published on /v1/health and /v1/meta. */
+  revealWorkerConfigured?: boolean;
+  /** Gateway accepts plaintext (owned sealing) — drives the privacy claims. */
+  acceptsPlaintextSubmission?: boolean;
   /**
    * Optional admin/operator alert sink. Alerts are always persisted in the
    * local DB; when this sink is configured, `/v1/admin/alerts/tick` and the
@@ -209,7 +211,8 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     now,
     publicOrigin: runtime.publicOrigin,
     requireLiveCanaries: deps.requireLiveCanaries,
-    revealWorkerEnabled: deps.revealWorkerEnabled,
+    revealWorkerConfigured: deps.revealWorkerConfigured ?? false,
+    acceptsPlaintextSubmission: deps.acceptsPlaintextSubmission ?? false,
       popAudience: deps.popAudience,
   }));
 
