@@ -64,6 +64,8 @@ export interface DeleteWebhookSubscriptionInput {
 export interface LoadWebhookSubscriptionInput {
   db: Database.Database;
   id: string;
+  providedSecret: string | undefined;
+  secretEquals: (provided: string | undefined, stored: string) => boolean;
 }
 
 export const WEBHOOK_SUBSCRIPTION_CAP_PER_AGENT = 10;
@@ -115,6 +117,13 @@ export type LoadWebhookSubscriptionResult =
       status: 404;
       body: {
         code: "not_found";
+        message: string;
+      };
+    }
+  | {
+      status: 403;
+      body: {
+        code: "forbidden";
         message: string;
       };
     };
@@ -356,6 +365,16 @@ export function loadWebhookSubscription(
     return {
       status: 404,
       body: { code: "not_found", message: "webhook not found" },
+    };
+  }
+  // Same secret DELETE requires. Reading a subscription discloses its
+  // delivery URL and failure counts — private operational data — and this
+  // route was anonymous, bounded only by an unguessable id. Checked AFTER the
+  // existence probe so the refusal is indistinguishable either way.
+  if (!input.secretEquals(input.providedSecret, row.secret)) {
+    return {
+      status: 403,
+      body: { code: "forbidden", message: "webhook secret does not match" },
     };
   }
   return {

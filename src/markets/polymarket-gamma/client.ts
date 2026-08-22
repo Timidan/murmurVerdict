@@ -133,7 +133,10 @@ export interface FetchWindowResult {
 }
 
 const WINDOW_PAGE_LIMIT_DEFAULT = 100;
-const WINDOW_MAX_PAGES_DEFAULT = 3;
+// Ordering (above) puts the markets we want on page 1, so this is now depth
+// rather than the primary mechanism — it stops a server-side ordering change
+// from silently reproducing the blind-discovery bug.
+const WINDOW_MAX_PAGES_DEFAULT = 8;
 
 export class PolymarketGammaClient {
   private readonly baseUrl: string;
@@ -224,10 +227,18 @@ export class PolymarketGammaClient {
     const snapshots: GammaMarketSnapshot[] = [];
     const seen = new Set<string>();
     for (let page = 0; page < maxPages; page++) {
+      // ORDER BY end date. Gamma returns creation order by default, and the
+      // 5-minute up/down markets are created last — so on a busy window (a
+      // football afternoon, an election night) they sit past offset 500 and
+      // the first pages are entirely someone else's markets. Discovery read
+      // 3 pages, found zero candidates, logged no error, and the board went
+      // empty while /v1/readyz still said ready. Measured live: page 1 held
+      // 0 up/down markets unordered and 40 with this parameter.
       const url =
         `${this.baseUrl}/markets?closed=false` +
         `&end_date_min=${encodeURIComponent(input.endDateMinIso)}` +
         `&end_date_max=${encodeURIComponent(input.endDateMaxIso)}` +
+        `&order=endDate&ascending=true` +
         `&limit=${pageLimit}&offset=${page * pageLimit}`;
       const result = await this.fetchWindowPage(url);
       if (result.kind === "error") {

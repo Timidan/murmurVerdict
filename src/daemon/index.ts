@@ -191,6 +191,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
           fhenixGrantReconciler: adapters.fhenixGrantReconciler,
           polymarketDiscovery: adapters.polymarketDiscovery,
           liveCanaries: adapters.liveCanaries,
+          fhenixContractAddress: adapters.fhenixSealedVerdictsAddress,
           newFeedSlaIncidentId: opts.newFeedSlaIncidentId,
           newOperatorAlertId: opts.newOperatorAlertId,
           operatorAlertSink: adapters.operatorAlertSink,

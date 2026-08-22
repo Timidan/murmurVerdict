@@ -36,6 +36,15 @@ export interface OperatorAlertSourceOptions {
   servedAt: string;
   liveCanaries?: LiveCanaryProvider | null;
   gatewayStuckAfterMs?: number;
+  /**
+   * The contract this deployment actually runs. Gateway alerts are scoped to
+   * it: attempts against a RETIRED contract are history, not incidents, and
+   * re-raising them forever buries the alerts that matter. Five terminal
+   * failures on a contract replaced weeks ago were sitting at ~20,000
+   * occurrences and climbing, above the one warning that was correctly firing.
+   * Unset = no scoping, which is the old behaviour.
+   */
+  fhenixContractAddress?: string | null;
   fhenixRevealGraceSec?: number;
   identityDueSoonHours?: number;
 }
@@ -56,7 +65,12 @@ export function collectOperatorAlertSources(
   const batches: OperatorAlertSourceBatch[] = [
     {
       source: "gateway",
-      alerts: gatewayAlerts(opts.db, opts.servedAt, opts.gatewayStuckAfterMs),
+      alerts: gatewayAlerts(
+        opts.db,
+        opts.servedAt,
+        opts.gatewayStuckAfterMs,
+        opts.fhenixContractAddress ?? null,
+      ),
     },
     {
       source: "fhenix_lifecycle",
@@ -96,19 +110,30 @@ function gatewayAlerts(
   db: Database.Database,
   servedAt: string,
   stuckAfterMs = DEFAULT_STUCK_AFTER_MS,
+  contractAddress: string | null = null,
 ): OperatorAlertInput[] {
   const staleBefore = isoFromMs(Date.parse(servedAt) - Math.max(60_000, stuckAfterMs));
   const alerts: OperatorAlertInput[] = [];
+  // An attempt against a contract this deployment no longer runs cannot be
+  // acted on — there is nothing to retry it against. Case-insensitive because
+  // addresses are stored lowercased but configured checksummed.
+  const wanted = contractAddress?.toLowerCase() ?? null;
+  const live = (a: { contract_address?: string | null }): boolean =>
+    wanted === null || (a.contract_address ?? "").toLowerCase() === wanted;
   for (const attempt of fhenixGatewayTxRepo.listStuck(db, { stale_before: staleBefore, limit: 100 })) {
+    if (!live(attempt)) continue;
     alerts.push(gatewayAttemptAlert("call", "gateway_call_stuck", attempt, servedAt));
   }
   for (const attempt of fhenixGatewayFeedPacketTxRepo.listStuck(db, { stale_before: staleBefore, limit: 100 })) {
+    if (!live(attempt)) continue;
     alerts.push(gatewayAttemptAlert("feed_packet", "gateway_feed_packet_stuck", attempt, servedAt));
   }
   for (const attempt of fhenixGatewayTxRepo.listRecent(db, { status: "failed_terminal", limit: 100 })) {
+    if (!live(attempt)) continue;
     alerts.push(gatewayAttemptAlert("call", "gateway_call_terminal_failure", attempt, servedAt));
   }
   for (const attempt of fhenixGatewayFeedPacketTxRepo.listRecent(db, { status: "failed_terminal", limit: 100 })) {
+    if (!live(attempt)) continue;
     alerts.push(gatewayAttemptAlert("feed_packet", "gateway_feed_packet_terminal_failure", attempt, servedAt));
   }
   return alerts;

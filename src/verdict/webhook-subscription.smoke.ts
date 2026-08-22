@@ -184,10 +184,35 @@ try {
   assert.equal(registerTarget.statusCode, 201);
   assert.equal(registerTarget.body, success.body);
 
-  const loaded = loadWebhookSubscription({ db, id: success.body.id });
+  // Reading now requires the same secret DELETE does — the route was
+  // anonymous, and it discloses the delivery URL and failure counts.
+  const loaded = loadWebhookSubscription({
+    db,
+    id: success.body.id,
+    providedSecret: success.body.secret,
+    secretEquals: (a, b) => a === b,
+  });
   assert.equal(loaded.status, 200);
   if (loaded.status !== 200) throw new Error("expected webhook load success");
   assert.equal(loaded.body.schema_version, 1);
+
+  // The read route was ANONYMOUS until a security sweep found it: it discloses
+  // the delivery URL and failure counts, and sits outside /v1/account/ so no
+  // auth matrix covered it. An unguessable id is not a gate.
+  {
+    const eq = (a: string | undefined, b: string) => a === b;
+    const id = success.body.id;
+    assert.equal(
+      loadWebhookSubscription({ db, id, providedSecret: undefined, secretEquals: eq }).status,
+      403,
+      "reading a subscription must require its secret",
+    );
+    assert.equal(
+      loadWebhookSubscription({ db, id, providedSecret: "not-it", secretEquals: eq }).status,
+      403,
+      "a wrong secret must refuse",
+    );
+  }
   assert.equal(loaded.body.webhook.id, success.body.id);
   assert.equal(loaded.body.webhook.agent_slug, "webhook-smoke");
   assert.equal(loaded.body.webhook.url, "https://hooks.example/murmur");
@@ -236,7 +261,12 @@ try {
     status: 404,
     body: { code: "not_found", message: "webhook not found" },
   });
-  assert.deepEqual(loadWebhookSubscription({ db, id: success.body.id }), {
+  assert.deepEqual(loadWebhookSubscription({
+    db,
+    id: success.body.id,
+    providedSecret: success.body.secret,
+    secretEquals: (a, b) => a === b,
+  }), {
     status: 404,
     body: { code: "not_found", message: "webhook not found" },
   });
@@ -258,6 +288,7 @@ try {
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
+
 
 console.log("webhook-subscription smoke ok");
 

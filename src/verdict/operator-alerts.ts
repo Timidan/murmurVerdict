@@ -44,6 +44,9 @@ export interface OperatorAlertScanOptions {
   now: () => Date;
   liveCanaries?: LiveCanaryProvider | null;
   gatewayStuckAfterMs?: number;
+  /** Contract this deployment runs; gateway alerts are scoped to it so a
+   *  retired deployment's terminal failures stop re-raising forever. */
+  fhenixContractAddress?: string | null;
   fhenixRevealGraceSec?: number;
   identityDueSoonHours?: number;
   newAlertId?: OperatorAlertIdAdapter;
@@ -113,6 +116,7 @@ export function runOperatorAlertScan(opts: OperatorAlertScanOptions): OperatorAl
     servedAt,
     liveCanaries: opts.liveCanaries,
     gatewayStuckAfterMs: opts.gatewayStuckAfterMs,
+    fhenixContractAddress: opts.fhenixContractAddress,
     fhenixRevealGraceSec: opts.fhenixRevealGraceSec,
     identityDueSoonHours: opts.identityDueSoonHours,
   })) {

@@ -44,6 +44,9 @@ export interface DaemonTickersDeps {
   fhenixGrantReconciler?: Tickable | null;
   polymarketDiscovery: Tickable | null;
   liveCanaries: LiveCanaryProvider;
+  /** Contract this deployment runs. Gateway alerts scope to it so a retired
+   *  deployment's terminal failures stop re-raising every tick forever. */
+  fhenixContractAddress?: string | null;
   newFeedSlaIncidentId?: FeedSlaIncidentIdAdapter;
   newOperatorAlertId?: OperatorAlertIdAdapter;
   operatorAlertSink?: OperatorAlertSinkConfig;
@@ -79,6 +82,7 @@ export function startDaemonTickers(
     fhenixGrantReconciler,
     polymarketDiscovery,
     liveCanaries,
+    fhenixContractAddress,
     newFeedSlaIncidentId,
     newOperatorAlertId,
     operatorAlertSink,
@@ -204,6 +208,7 @@ export function startDaemonTickers(
           db,
           now,
           liveCanaries,
+          fhenixContractAddress,
           newAlertId: newOperatorAlertId,
           sink: operatorAlertSink,
         });

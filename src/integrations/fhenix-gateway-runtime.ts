@@ -146,9 +146,20 @@ export function errorMessage(err: unknown): string {
  */
 export function redactedErrorText(input: unknown): string {
   const raw = typeof input === "string" ? input : errorMessage(input);
-  const stripped = raw.replace(
-    /https?:\/\/([^\s/"'\\]+)[^\s"'\\]*/gi,
-    (_m, host: string) => `https://${host}/<redacted>`,
-  );
+  const stripped = raw
+    .replace(
+      /https?:\/\/([^\s/"'\\]+)[^\s"'\\]*/gi,
+      // The capture is the whole AUTHORITY, which includes any `user:pass@`
+      // userinfo — keeping it verbatim published the operator's RPC
+      // credentials through /v1/account/activity and the attempt-status
+      // route, to any third-party agent whose submit happened to fail.
+      // Everything before the last `@` is credentials; drop it.
+      (_m, authority: string) =>
+        `https://${String(authority).split("@").pop()}/<redacted>`,
+    )
+    // Credentials also travel OUTSIDE a URL — a provider echoing the
+    // Authorization header it rejected ("401 (Basic dXNlcjpwYXNz)") leaks the
+    // same secret with no scheme for the rule above to match on.
+    .replace(/\b(Basic|Bearer)\s+[A-Za-z0-9+/=._~-]+/gi, "$1 <redacted>");
   return stripped.length > 600 ? `${stripped.slice(0, 600)}…` : stripped;
 }

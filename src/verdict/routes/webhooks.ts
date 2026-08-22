@@ -114,9 +114,18 @@ export function webhookRouter(deps: WebhookRouterDeps): Router {
     }),
   );
 
+  // Reading a subscription exposes its delivery URL and failure counts —
+  // an owner's private operational data. It was anonymous (bounded only by an
+  // unguessable id), and it sits outside /v1/account/ so no auth matrix
+  // covered it. Gated on the same secret its sibling DELETE requires.
   router.get("/v1/webhooks/:id", (req, res) => {
     const id = String(req.params.id ?? "");
-    const result = loadWebhookSubscription({ db: deps.db, id });
+    const result = loadWebhookSubscription({
+      db: deps.db,
+      id,
+      providedSecret: req.header(WEBHOOK_SECRET_HEADER),
+      secretEquals: deps.secretEquals,
+    });
     sendWebhookSubscriptionJsonResponse(res, result);
   });
 
