@@ -30,7 +30,6 @@ services:
       PORT: "8080"
       VERDICT_DB_PATH: /app/data/verdict.db
       RESOLVER_TICK_SEC: "${RESOLVER_TICK_SEC:-30}"
-      BENCHMARK_TICK_SEC: "${BENCHMARK_TICK_SEC:-600}"
       DASHBOARD_ORIGIN: "${DASHBOARD_ORIGIN:-http://localhost:5173}"
       # URL split — keep these distinct or absolute links break:
       #   MURMUR_DASHBOARD_URL → where the dashboard SPA lives. Used by
@@ -56,8 +55,7 @@ services:
       FHENIX_WATCHER_RPC_URL: "${FHENIX_WATCHER_RPC_URL:-}"
       FHENIX_CHAIN_ID: "${FHENIX_CHAIN_ID:-}"
       FHENIX_EVENT_TICK_SEC: "${FHENIX_EVENT_TICK_SEC:-30}"
-      # 0 = auto-derive the start block from the deployment manifest entry that
-      # matches FHENIX_CONTRACT_ADDRESS; a positive value overrides it.
+      # Start block is derived from the deployment manifest; no env override.
       FHENIX_EVENT_CONFIRMATIONS: "${FHENIX_EVENT_CONFIRMATIONS:-2}"
       FHENIX_EVENT_BATCH_SIZE: "${FHENIX_EVENT_BATCH_SIZE:-1000}"
       FHENIX_REVEAL_GRACE_SEC: "${FHENIX_REVEAL_GRACE_SEC:-3600}"
@@ -177,7 +175,9 @@ services:
       OPENSERV_API_KEY: "${OPENSERV_API_KEY:-}"
       OPENSERV_AUTH_TOKEN: "${OPENSERV_AUTH_TOKEN:-}"
       OPENSERV_LAUNCHPAD_PORT: "${OPENSERV_LAUNCHPAD_PORT:-7378}"
-      OPENSERV_LAUNCHPAD_ENABLED: "${OPENSERV_LAUNCHPAD_ENABLED:-false}"
+      # No :-false default — the daemon derives this from OPENSERV_API_KEY.
+      # Forcing false here kept the launchpad off even with a key set.
+      OPENSERV_LAUNCHPAD_ENABLED: "${OPENSERV_LAUNCHPAD_ENABLED:-}"
       OPENSERV_LAUNCHPAD_PROJECT_ID: "${OPENSERV_LAUNCHPAD_PROJECT_ID:-}"
       OPENSERV_LAUNCHPAD_PROJECT_URL: "${OPENSERV_LAUNCHPAD_PROJECT_URL:-}"
       OPENSERV_LAUNCHPAD_STAGE: "${OPENSERV_LAUNCHPAD_STAGE:-prelaunch}"
