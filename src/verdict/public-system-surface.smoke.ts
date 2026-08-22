@@ -256,6 +256,26 @@ try {
     since_iso: "2026-06-11T09:30:00Z",
   });
   assert.equal(meta.privacy.pending_verdicts_private, true);
+  // /v1/meta is the machine-readable capability document an integrator reads
+  // to decide whether the seal can be trusted, so the reveal guarantee has to
+  // track the worker here too. It was hardcoded true with no assertion — the
+  // same gap that let the /v1/health copy drift. Both directions pinned.
+  assert.equal(
+    meta.privacy.public_reveal_after_horizon,
+    false,
+    "no worker declared: /v1/meta must not advertise a reveal guarantee",
+  );
+  assert.equal(
+    publicMetaSurface({ db, servedAt, revealWorkerEnabled: true })
+      .privacy.public_reveal_after_horizon,
+    true,
+    "worker running: the guarantee is real and is advertised",
+  );
+  assert.equal(
+    publicMetaSurface({ db, servedAt, revealWorkerEnabled: false })
+      .privacy.public_reveal_after_horizon,
+    false,
+  );
   const metaResponse = publicMetaResponse({
     db,
     servedAt,
