@@ -125,6 +125,8 @@ export interface ApiDeps {
    * external RPC/API availability.
    */
   requireLiveCanaries?: boolean;
+  /** Reveal worker actually running — published on /v1/health. */
+  revealWorkerEnabled?: boolean;
   /**
    * Optional admin/operator alert sink. Alerts are always persisted in the
    * local DB; when this sink is configured, `/v1/admin/alerts/tick` and the
@@ -207,6 +209,7 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     now,
     publicOrigin: runtime.publicOrigin,
     requireLiveCanaries: deps.requireLiveCanaries,
+    revealWorkerEnabled: deps.revealWorkerEnabled,
       popAudience: deps.popAudience,
   }));
 

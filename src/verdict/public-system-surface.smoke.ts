@@ -84,6 +84,25 @@ try {
   assert.equal(health.scoring_version, 1);
   assert.equal(health.now, "2026-06-12T09:30:00Z");
   assert.equal(health.privacy.pending_verdicts_private, true);
+  // The reveal guarantee tracks the WORKER, and this field was hardcoded true
+  // with no assertion on it, so a deploy with the worker off published a
+  // promise it was not keeping. Both directions are pinned here now.
+  assert.equal(
+    health.privacy.public_reveal_after_horizon,
+    false,
+    "no worker declared: /v1/health must not claim a reveal guarantee",
+  );
+  assert.equal(
+    publicHealthSurface({ servedAt, revealWorkerEnabled: true })
+      .privacy.public_reveal_after_horizon,
+    true,
+    "worker running: the guarantee is real and is published",
+  );
+  assert.equal(
+    publicHealthSurface({ servedAt, revealWorkerEnabled: false })
+      .privacy.public_reveal_after_horizon,
+    false,
+  );
   const healthResponse = publicHealthResponse({ servedAt });
   const healthRes = new FakeJsonResponse();
   sendPublicSystemJsonResponse(healthRes, healthResponse);

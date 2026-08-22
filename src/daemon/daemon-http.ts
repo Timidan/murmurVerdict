@@ -49,6 +49,9 @@ export interface DaemonHttpSurfaceDeps {
   fhenixGateway: FhenixGatewayBroadcaster | null;
   privyAuth?: PrivyAuthVerifier | null;
   fhenixChainId: number | null;
+  /** Reveal worker actually running? Published on /v1/health, which
+   *  must not assert a reveal guarantee no worker is delivering. */
+  fhenixRevealWorkerEnabled?: boolean;
   fhenixSealedVerdictsAddress: string | null;
   /**
    * Deployment-wide access terms + sales safety margin for the public sellable
@@ -149,6 +152,7 @@ export function createDaemonHttpSurface(
       newOperatorAlertId: deps.newOperatorAlertId,
       newSealedCallId: deps.newSealedCallId,
       requireLiveCanaries: deps.config.requireLiveCanaries,
+      revealWorkerEnabled: deps.fhenixRevealWorkerEnabled ?? false,
       operatorAlertSink: deps.operatorAlertSink === undefined
         ? deps.config.operatorAlertSink
         : deps.operatorAlertSink,

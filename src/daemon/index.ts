@@ -135,6 +135,9 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       newOperatorAlertId: opts.newOperatorAlertId,
       newSealedCallId: opts.newSealedCallId,
       fhenixChainId: adapters.fhenixChainId,
+      // The WORKER, not the flag: a configured-but-unbuilt worker is
+      // still no reveal guarantee.
+      fhenixRevealWorkerEnabled: adapters.fhenixRevealWorker !== null,
       fhenixSealedVerdictsAddress: adapters.fhenixSealedVerdictsAddress,
       fhenixSaleTerms: adapters.fhenixSaleTerms,
       venueTicker,

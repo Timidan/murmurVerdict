@@ -30,6 +30,10 @@ export interface PublicSystemClock {
 
 export interface PublicSystemReadInstant {
   servedAt: Date;
+  /** Is the reveal worker actually running? Drives the public reveal claim
+   *  below. Omitted reads as "no" — a guarantee nobody asserted is not one
+   *  this endpoint may invent. */
+  revealWorkerEnabled?: boolean;
 }
 
 export interface PublicSystemFhenixChain {
@@ -162,8 +166,17 @@ export function publicHealthSurface(input: PublicSystemReadInstant) {
     now: nowIso(input.servedAt),
     privacy: {
       mode: "sealed_fhenix",
+      // Structural, not operational: the daemon never receives plaintext, so
+      // a pending verdict is encrypted at rest no matter what is running.
+      // Safe as a constant — unlike the field below, which is a worker.
       pending_verdicts_private: true,
-      public_reveal_after_horizon: true,
+      // Reveal is NOT structural: it is a worker, and the worker ships
+      // disabled (FHENIX_REVEAL_WORKER_ENABLED, default false), which
+      // src/daemon/fhenix-runtime.ts warns about at startup. This field was
+      // hardcoded true, so a deploy with the worker off published a
+      // guarantee it was not delivering — on the public endpoint
+      // integrators use to decide whether to trust the seal.
+      public_reveal_after_horizon: input.revealWorkerEnabled === true,
     },
   };
 }
@@ -263,8 +276,15 @@ export function publicMetaSurface(deps: PublicMetaDeps) {
     privacy: {
       mode: "sealed_fhenix",
       threshold_network: "fhenix",
+      // Structural, not operational: the daemon never receives plaintext, so
+      // a pending verdict is encrypted at rest no matter what is running.
+      // Safe as a constant — unlike the field below, which is a worker.
       pending_verdicts_private: true,
-      public_reveal_after_horizon: true,
+      // Derived, for the same reason as /v1/health. This document is the
+      // machine-readable capability contract an integrator's agent reads to
+      // decide whether the seal can be trusted, so asserting a reveal
+      // guarantee the worker is not delivering does the most damage here.
+      public_reveal_after_horizon: deps.revealWorkerEnabled === true,
     },
     ...(fhenixChain ? { fhenix: fhenixChain } : {}),
   };
