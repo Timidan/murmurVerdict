@@ -8,12 +8,24 @@ import {
 } from "../schema.js";
 import type { OpenApiPathMap } from "./types.js";
 
+/**
+ * The privacy block is PER-DEPLOYMENT, and an integrator deciding whether to
+ * trust the seal has to be able to discover that from the spec rather than by
+ * reading our source. Every field below was at some point a hardcoded literal.
+ */
+const PRIVACY_BLOCK_DESCRIPTION =
+  "The `privacy` block reports live deployment state, not fixed product claims. " +
+  "`pending_verdicts_private` is contract-enforced on every path (a verdict cannot be made public before its snapshotted reveal timestamp). " +
+  "`public_reveal_after_horizon` reports whether a reveal worker is CONFIGURED here — it does not prove the worker is running, funded, or ticking successfully. " +
+  "`operator_holds_plaintext` is `never_on_sealed_fhenix` on the canonical client-sealed path, or `on_owned_sealing_path` when this operator has enabled server-side sealing and can therefore read pending predictions.";
+
 export function publicOpenApiPaths(): OpenApiPathMap {
   return {
     "/v1/health": {
       get: {
         tags: ["leaderboard"],
         summary: "Liveness probe.",
+        description: PRIVACY_BLOCK_DESCRIPTION,
         responses: { "200": { description: "OK" } },
       },
     },
@@ -21,6 +33,9 @@ export function publicOpenApiPaths(): OpenApiPathMap {
       get: {
         tags: ["leaderboard"],
         summary: "Schema + scoring version + 24h volume.",
+        description:
+          "Machine-readable capability document. " + PRIVACY_BLOCK_DESCRIPTION +
+          " /v1/meta additionally carries `privacy.plaintext_submission_path`: true when this deployment accepts plaintext verdicts and seals them server-side.",
         responses: { "200": { description: "JSON metadata payload" } },
       },
     },
