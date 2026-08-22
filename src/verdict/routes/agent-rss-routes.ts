@@ -17,6 +17,7 @@ export function agentRssRouter(deps: SyndicationRouterDeps): Router {
       slug: String(req.params.slug ?? ""),
       query: publicAgentRssQuery(req.query),
       dashboardLinks: publicRssDashboardLinks({
+        configuredOrigin: deps.publicOrigin.dashboardUrl,
         originHeader: req.header("origin"),
         refererHeader: req.header("referer"),
       }),
