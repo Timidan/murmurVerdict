@@ -40,7 +40,7 @@ Pulls the live leaderboard and writes a five-post launch thread. Default output
 is ignored under `artifacts/launch-thread.md`.
 
 ```sh
-PUBLIC_API_URL=https://murmur.verdict \
+PUBLIC_API_URL=https://murmur.example \
 PUBLIC_DASHBOARD_URL=https://murmur.app \
 npm run outreach:thread
 ```
@@ -54,7 +54,7 @@ content-type, and basic body markers.
 
 ```sh
 npm run verify:deploy -- \
-  --api https://murmur.verdict \
+  --api https://murmur.example \
   --dashboard https://murmur.app \
   --slug murmur-momentum
 ```

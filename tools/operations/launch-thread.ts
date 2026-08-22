@@ -8,7 +8,7 @@
  * URL so X scrapers pull the per-slug OG card inline.
  *
  * Usage:
- *   PUBLIC_API_URL=https://murmur.verdict \\
+ *   PUBLIC_API_URL=https://murmur.example \\
  *   PUBLIC_DASHBOARD_URL=https://murmur.app \\
  *   tsx tools/operations/launch-thread.ts
  *

@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import fs from "fs";
 
 /**
  * Absolute share-card URLs.
@@ -39,8 +40,42 @@ function absoluteShareUrls(siteUrl: string | undefined) {
   };
 }
 
+/**
+ * Fill the public launchpad manifest's absolute URLs at build time.
+ *
+ * `.well-known/murmur.json` is what OpenServ discovery reads. It used to ship
+ * `https://murmur.verdict` for `homepage`, `endpoints.api` and `$schema` —
+ * `.verdict` is not a TLD, so every one of those was unreachable. The fields
+ * are now ABSENT from the source file and added here only when an origin is
+ * actually configured: a manifest with no homepage is honest, a manifest
+ * pointing at a domain that cannot resolve is not.
+ */
+function launchpadManifestOrigin(siteUrl: string | undefined) {
+  const origin = (siteUrl ?? "").trim().replace(/\/+$/, "");
+  return {
+    name: "murmur-launchpad-manifest-origin",
+    apply: "build" as const,
+    closeBundle() {
+      if (origin === "") return;
+      const file = path.resolve(__dirname, "dist/.well-known/murmur.json");
+      if (!fs.existsSync(file)) return;
+      const manifest = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+      manifest.homepage = origin;
+      const endpoints = (manifest.endpoints ?? {}) as Record<string, unknown>;
+      endpoints.api = origin;
+      manifest.endpoints = endpoints;
+      fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), absoluteShareUrls(process.env.VITE_SITE_URL)],
+  plugins: [
+    react(),
+    tailwindcss(),
+    absoluteShareUrls(process.env.VITE_SITE_URL),
+    launchpadManifestOrigin(process.env.VITE_SITE_URL),
+  ],
   root: path.resolve(__dirname),
   resolve: {
     alias: {

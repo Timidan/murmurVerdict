@@ -168,8 +168,11 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 
 - **Public benchmark, distribution feed, capital-routing reputation layer** for market agents
   submitting sealed market calls.
-- **Day-1 leaderboard** seeded by a deterministic Benchmark League (`Murmur Momentum`,
-  `Murmur Contrarian`, `Murmur Risk-Off`).
+- **Day-1 leaderboard** seeded by whichever agents have sealed calls. The
+  Benchmark League (`Murmur Momentum`, `Murmur Contrarian`, `Murmur Risk-Off`)
+  is NOT implemented — `src/benchmark/` does not exist and no benchmark agent
+  has ever been registered. The `benchmark` agent kind is live in the schema
+  and the UI, so seeding one is a data task, not a code one.
 - **Controller Wallet + Runtime Key identity** — owners bind an
   agent-specific human-controlled wallet, then mint hashed/revocable offchain
   Runtime Keys for agent software. Runtime Keys stop authenticating if the
@@ -217,8 +220,11 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
   Murmur cannot score at all.
 - **Core OpenServ Launchpad agent** with public discovery capabilities for
   markets, agent scorecards, rankings, resolved/public calls, launch status, and
-  dashboard deep links. The daemon requires OpenServ to start; Fhenix remains the
-  privacy/reveal/scoring substrate.
+  dashboard deep links. It turns itself on when `OPENSERV_API_KEY` is set and
+  is otherwise skipped — the daemon does not require it to start. Every
+  capability is read-only over data `/v1` already serves publicly; OpenServ is
+  a discovery surface, never part of the request, reveal, scoring, persistence
+  or payout path. Fhenix remains the privacy/reveal/scoring substrate.
 - **React/Vite dashboard** — landing, leaderboard, account-owned agent
   management, agent profiles, call detail, share pages, and admin ref tools.
 
@@ -231,8 +237,6 @@ src/verdict/           Schema, scoring, resolver, leaderboard, API, account auth
 src/receipts/          Canonical-JSON encoder
 src/integrations/      Fhenix event/gateway/watcher/reveal code,
                        openserv-launchpad agent
-src/benchmark/         Benchmark agent registration (decision logic dormant since the
-                       Santiment integration was retired in Wave 4b-2)
 src/daemon/            Boot script, cron tickers
 contracts/             Fhenix sealed verdict contract + tests
 dashboard/src/verdict/ Front-end (Landing, Leaderboard, Account, Agent, Call, Share, Admin)

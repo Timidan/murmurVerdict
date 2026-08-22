@@ -5,7 +5,7 @@
  *
  * Usage:
  *   tsx tools/verify/verify-deploy.ts \
- *     --api https://murmur.verdict \
+ *     --api https://murmur.example \
  *     --dashboard https://murmur.app \
  *     --slug murmur-momentum
  *
