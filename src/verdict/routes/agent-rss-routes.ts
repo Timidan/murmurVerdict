@@ -6,6 +6,7 @@ import {
 } from "../public-agent-rss-surface.js";
 import { publicAgentRssQuery } from "../public-agent-query.js";
 import { publicRssDashboardLinks } from "../public-rss-links.js";
+import { publicApiUrlForRequest } from "../public-origin.js";
 import type { SyndicationRouterDeps } from "./syndication-types.js";
 
 export function agentRssRouter(deps: SyndicationRouterDeps): Router {
@@ -16,11 +17,13 @@ export function agentRssRouter(deps: SyndicationRouterDeps): Router {
       db: deps.db,
       slug: String(req.params.slug ?? ""),
       query: publicAgentRssQuery(req.query),
-      dashboardLinks: publicRssDashboardLinks({
-        configuredOrigin: deps.publicOrigin.dashboardUrl,
-        originHeader: req.header("origin"),
-        refererHeader: req.header("referer"),
-      }),
+      // Configured dashboard origin, else the origin this request was served
+      // on. NEVER the Origin/Referer headers — the response is shared-cached
+      // without Vary, so a caller-controlled origin would poison it.
+      dashboardLinks: publicRssDashboardLinks(
+        deps.publicOrigin.dashboardUrl ??
+          publicApiUrlForRequest(deps.publicOrigin, req),
+      ),
     }));
   });
 

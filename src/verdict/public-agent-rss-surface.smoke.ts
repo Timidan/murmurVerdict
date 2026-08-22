@@ -96,9 +96,7 @@ try {
     db,
     slug: "rss-agent",
     query: { limit: 1 },
-    dashboardLinks: publicRssDashboardLinks({
-      originHeader: "https://dashboard.example/",
-    }),
+    dashboardLinks: publicRssDashboardLinks("https://dashboard.example/"),
   });
   assert.equal(known.status, 200);
   assert.equal(known.headers["Content-Type"], "application/rss+xml; charset=utf-8");
@@ -129,9 +127,7 @@ try {
     db,
     slug: "rss-agent",
     query: { limit: 20 },
-    dashboardLinks: publicRssDashboardLinks({
-      refererHeader: "https://referer.example/",
-    }),
+    dashboardLinks: publicRssDashboardLinks("https://referer.example"),
   });
   assert.match(refererFallback.body, /https:\/\/referer\.example\/#\/agents\/rss-agent/);
 
@@ -139,7 +135,7 @@ try {
     db,
     slug: "missing<agent>",
     query: { limit: 20 },
-    dashboardLinks: publicRssDashboardLinks(),
+    dashboardLinks: publicRssDashboardLinks("https://dashboard.example"),
   });
   assert.equal(missing.status, 404);
   assert.equal(missing.headers["Content-Type"], "application/xml");

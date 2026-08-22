@@ -23,8 +23,7 @@ export interface PublicSealedRssCallRow extends PublicRssCallRowBase {
   is_sealed_scrubbed: true;
 }
 
-// There is no plaintext submission mode — every row is operator-blind and
-// sealed-scrubbed. `publicRssCallRow` (the sole constructor) always sets
+// Whatever the submission path, every RSS row is sealed-scrubbed: `publicRssCallRow` (the sole constructor) always sets
 // `is_sealed_scrubbed: true`, so the RSS feed only ever renders sealed items.
 export type PublicRssCallRow = PublicSealedRssCallRow;
 

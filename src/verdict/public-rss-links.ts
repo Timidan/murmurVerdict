@@ -1,38 +1,32 @@
-// No invented default. `murmur.verdict` used to sit here, and `.verdict` is
-// not a real TLD — every RSS item emitted without an Origin/Referer header
-// (which is every feed reader, since they are not browsers) carried a link to
-// a domain that cannot resolve. The configured dashboard origin is the honest
-// source; a request's own headers refine it; nothing else is guessed.
+// ─── public-rss-links — absolute dashboard links for the agent RSS feed ─────
+//
+// RSS 2.0 requires <link> to start with a registered URI scheme, and the
+// channel <link> is mandatory. So these MUST be absolute: a relative href is
+// invalid RSS, not merely ugly.
+//
+// Two things this deliberately does NOT do:
+//
+//   · No invented default. `https://murmur.verdict` used to sit here as a
+//     fallback, and `.verdict` is not a TLD — every item in every feed pointed
+//     at a domain that cannot resolve. Feed readers are not browsers.
+//
+//   · No Origin/Referer sniffing. Those headers are caller-controlled, and the
+//     feed is served `public, max-age=60` with no `Vary`, so honouring them
+//     would let one request bake attacker-chosen links into a shared cache
+//     that every later reader gets.
+//
+// The origin is therefore supplied by the caller: the configured dashboard
+// URL, else the origin the request was actually served on.
 
 export interface PublicRssDashboardLinks {
   agent(slug: string): string;
   call(callId: string): string;
 }
 
-export function publicRssDashboardLinks(input: {
-  originHeader?: string;
-  refererHeader?: string;
-  /** Configured dashboard origin (MURMUR_DASHBOARD_URL, else the public API
-   *  url) — what a feed reader gets, since it sends no Origin or Referer. */
-  configuredOrigin?: string | null;
-} = {}): PublicRssDashboardLinks {
-  const dashboardOrigin = publicRssDashboardOrigin(input);
+export function publicRssDashboardLinks(origin: string): PublicRssDashboardLinks {
+  const base = origin.trim().replace(/\/+$/, "");
   return {
-    agent: (slug) => `${dashboardOrigin}/#/agents/${encodeURIComponent(slug)}`,
-    call: (callId) => `${dashboardOrigin}/#/calls/${encodeURIComponent(callId)}`,
+    agent: (slug) => `${base}/#/agents/${encodeURIComponent(slug)}`,
+    call: (callId) => `${base}/#/calls/${encodeURIComponent(callId)}`,
   };
-}
-
-export function publicRssDashboardOrigin(input: {
-  originHeader?: string;
-  refererHeader?: string;
-  configuredOrigin?: string | null;
-} = {}): string {
-  // Configured origin FIRST: it is the deployment's own statement of where the
-  // dashboard lives, and it is the only one a feed reader will ever get.
-  // Headers refine it for a browser-issued request. An unconfigured deploy
-  // yields relative links rather than links to somewhere that does not exist.
-  const chosen =
-    input.configuredOrigin ?? input.originHeader ?? input.refererHeader ?? "";
-  return chosen.replace(/\/$/, "");
 }
