@@ -32,6 +32,7 @@ import {
 import { entitlementsRepo } from "./repos/entitlements-repo.js";
 import { effectiveCohortCap } from "./repos/agent-provider-terms-repo.js";
 import { SCHEMA_VERSION } from "./schema.js";
+import type { WireSellableCalls } from "../types/wire-marketplace.js";
 
 export const SELLABLE_DEFAULT_LIMIT = 50;
 export const SELLABLE_MAX_LIMIT = 200;
@@ -123,9 +124,25 @@ export interface SellableCallRow {
   reveal_open_at: string;
 }
 
+/**
+ * The envelope this surface actually emits.
+ *
+ * Pinned rather than `unknown`: the dashboard reads purchase_available,
+ * next_cursor and page off it, and while the body was untyped a rename here
+ * compiled clean and shipped as undefined.
+ *
+ * `calls` carries SellableCallRow, not WireSellableCall — the row still emits
+ * the deprecated flat price aliases beside locked_terms, and the wire type
+ * omits them on purpose so no client can reach an un-namespaced price.
+ * wire-contract-guards asserts the row conforms to the wire view.
+ */
+export type SellableCallsBody =
+  | (Omit<WireSellableCalls, "calls"> & { calls: SellableCallRow[] })
+  | { error: string; message?: string };
+
 export interface SellableCallsResponse {
   status: number;
-  body: unknown;
+  body: SellableCallsBody;
 }
 
 interface SellableQueryRow extends CallTermsSnapshot {
