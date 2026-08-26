@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 73 as const;
+export const LATEST_DB_MIGRATION_VERSION = 76 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1340,6 +1340,187 @@ export function applyMigrations(db: Database.Database): void {
       set.run("schema_version", "73");
     })();
     v = 73;
+  }
+
+  if (v < 74) {
+    // Scrub ambiguous pre-HMAC rows; feed attempts are provably client-sealed.
+    db.transaction(() => {
+      db.exec(`
+        UPDATE fhenix_gateway_tx_attempts
+           SET request_fingerprint = NULL
+         WHERE request_fingerprint IS NOT NULL
+           AND request_fingerprint NOT LIKE 'v1:%';
+      `);
+      set.run("schema_version", "74");
+    })();
+    v = 74;
+  }
+
+  if (v < 75) {
+    // Promote the venue's DURABLE identity to first-class tables. A market
+    // instance is ephemeral — a new one every 5 minutes, ~14k rows, ~20 live at
+    // once — so nothing durable (a registration, a price) can key to market_id.
+    // What persists is the recurring SERIES, carried until now only inside
+    // markets.config_json as series_slug / series_title / venue_category. This
+    // migration lifts it out of the JSON into tables later rows can FK.
+    //
+    // NOT the market_series table (064): that is the unrelated CLOCK series —
+    // schedule constants for the 300s binary clock. Same word, different
+    // concept. These are venue_market_series.
+    //
+    // SAFETY: agent_provider_terms is rekeyed from (agent_id) to
+    // (agent_id, venue_series_id). A per-agent price cannot be mapped onto one
+    // of the venue series it must now belong to without guessing, so the
+    // rebuild is only sound on an empty table. It is empty in every known
+    // deployment; the guard below refuses to proceed — and stamps NOTHING, so
+    // the DB stays honestly at 74 — if that ever stops being true.
+    //
+    // The emptiness check runs INSIDE the BEGIN IMMEDIATE below, not before it.
+    // Outside the transaction it was a TOCTOU: an insert landing between the
+    // count and the rekey's DROP would be silently discarded by the rebuild.
+    // The immediate write lock is held from the count through the drop, so no
+    // such insert can interleave; a throw rolls the whole thing back.
+    const nowIso = new Date().toISOString();
+
+    const migrate075 = db.transaction(() => {
+      const legacyTerms = db
+        .prepare("SELECT count(*) AS c FROM agent_provider_terms")
+        .get() as { c: number };
+      if (legacyTerms.c > 0) {
+        throw new Error(
+          `migration 075: agent_provider_terms holds ${legacyTerms.c} legacy ` +
+            `row(s), keyed by agent alone. There is no non-guessing way to map a ` +
+            `deployment-wide price onto one of the venue series it must now belong ` +
+            `to. Migrate or clear these rows by hand, then re-run.`,
+        );
+      }
+
+      db.exec(MIGRATION_075_VENUE_MARKET_SERIES);
+
+      // Nullable on purpose, and idempotent: a DB that already carries the
+      // column (e.g. replayed from an earlier stamp) skips the ALTER rather than
+      // failing on a duplicate. The REFERENCES needs venue_market_series to
+      // exist first — it does, from the exec above.
+      applyAlterTableAddColumn(
+        db,
+        "markets",
+        "venue_series_id",
+        "ALTER TABLE markets ADD COLUMN venue_series_id TEXT " +
+          "REFERENCES venue_market_series(venue_series_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_markets_venue_series " +
+          "ON markets(venue_series_id);",
+      );
+
+      // (a) One venue_market_series row per distinct valid series in the
+      //     markets.config_json history. "Valid" = a non-empty series_slug AND
+      //     a non-empty series_title (series_title is NOT NULL). venue_category
+      //     is genuinely absent for the 5m crypto series, so it stays NULL.
+      db.prepare(
+        `INSERT OR IGNORE INTO venue_market_series
+           (venue_series_id, venue, series_slug, series_title,
+            venue_category, source_adapter_id, created_at, updated_at)
+         SELECT
+           'polymarket:' || slug, 'polymarket', slug, title, cat,
+           'polymarket-gamma', @now, @now
+         FROM (
+           SELECT
+             json_extract(config_json, '$.series_slug')          AS slug,
+             MIN(json_extract(config_json, '$.series_title'))     AS title,
+             MIN(json_extract(config_json, '$.venue_category'))   AS cat
+           FROM markets
+           WHERE json_valid(config_json)
+             AND json_extract(config_json, '$.series_slug') IS NOT NULL
+             AND length(json_extract(config_json, '$.series_slug')) > 0
+             AND json_extract(config_json, '$.series_title') IS NOT NULL
+             AND length(json_extract(config_json, '$.series_title')) > 0
+           GROUP BY json_extract(config_json, '$.series_slug')
+         )`,
+      ).run({ now: nowIso });
+
+      // (b) Link each market whose config names a series that actually became a
+      //     row. Markets with no valid slug — or a slug that never yielded a
+      //     series — stay NULL, never fabricated. The EXISTS keeps the FK sound;
+      //     the assertion just below proves no link was invented.
+      db.prepare(
+        `UPDATE markets
+            SET venue_series_id =
+                  'polymarket:' || json_extract(config_json, '$.series_slug')
+          WHERE json_valid(config_json)
+            AND json_extract(config_json, '$.series_slug') IS NOT NULL
+            AND length(json_extract(config_json, '$.series_slug')) > 0
+            AND EXISTS (
+              SELECT 1 FROM venue_market_series vms
+               WHERE vms.venue_series_id =
+                     'polymarket:' || json_extract(markets.config_json, '$.series_slug')
+            )`,
+      ).run();
+
+      const fabricated = db
+        .prepare(
+          `SELECT count(*) AS c FROM markets
+            WHERE venue_series_id IS NOT NULL
+              AND (NOT json_valid(config_json)
+                   OR json_extract(config_json, '$.series_slug') IS NULL
+                   OR length(json_extract(config_json, '$.series_slug')) = 0)`,
+        )
+        .get() as { c: number };
+      if (fabricated.c > 0) {
+        throw new Error(
+          `migration 075: ${fabricated.c} market(s) were linked to a series ` +
+            `with no valid config_json series_slug — refusing to fabricate ` +
+            `durable identity.`,
+        );
+      }
+
+      // (c) An agent that has EVER submitted into a market of a series is
+      //     historically registered for that series. Row presence == registered.
+      //     Reachable only via submissions.market_id → markets.venue_series_id,
+      //     now populated by step (b).
+      db.prepare(
+        `INSERT OR IGNORE INTO agent_market_registrations
+           (agent_id, venue_series_id, created_at)
+         SELECT DISTINCT s.agent_id, m.venue_series_id, @now
+           FROM submissions s
+           JOIN markets m ON m.market_id = s.market_id
+          WHERE m.venue_series_id IS NOT NULL`,
+      ).run({ now: nowIso });
+
+      // (d) Rekey agent_provider_terms to (agent_id, venue_series_id). Asserted
+      //     empty above, so this is a drop + create, not a row-preserving
+      //     rebuild — nothing to copy, and nothing FKs into this table.
+      db.exec(MIGRATION_075_AGENT_PROVIDER_TERMS_REKEY);
+
+      set.run("schema_version", "75");
+    });
+    migrate075.immediate();
+    v = 75;
+  }
+
+  if (v < 76) {
+    // Indexes only. The consumer surfaces landing on top of 075 read the
+    // catalog two ways neither existing index serves:
+    //
+    //   · the marketplace catalog scans agent_provider_terms filtered by
+    //     venue_series_id — the PK is (agent_id, venue_series_id), whose
+    //     leading column is the wrong one for "who sells this series".
+    //   · the per-call storefront keysets on market_clocks
+    //     (submission_close_at_ms, market_id), which had no index at all: the
+    //     open-window predicate plus the ORDER BY was a scan + sort per page.
+    //
+    // No table is rewritten and no row is touched, so replay is a no-op.
+    db.transaction(() => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_agent_provider_terms_venue_series
+          ON agent_provider_terms(venue_series_id, agent_id);
+        CREATE INDEX IF NOT EXISTS idx_market_clocks_submission_close
+          ON market_clocks(submission_close_at_ms, market_id);
+      `);
+      // LITERAL "76" — see the note in 070.
+      set.run("schema_version", "76");
+    }).immediate();
+    v = 76;
   }
 }
 
@@ -4269,6 +4450,81 @@ const MIGRATION_064_MARKET_SERIES = `
   -- Due-work scans: which instances are open for arming / submission now.
   CREATE INDEX IF NOT EXISTS idx_market_clocks_arm_close
     ON market_clocks(arm_close_at_ms);
+`;
+
+// The venue's DURABLE identity, promoted out of markets.config_json. A market
+// instance is ephemeral (a new one every 5 minutes); the recurring series it
+// belongs to is what a registration or a price can safely key to.
+//
+// Identity is (venue, series_slug). adapter_id / asset_id / market_family are
+// single-valued across this whole surface and carry no identity, so they are
+// deliberately NOT part of the key. venue_series_id is the Polymarket-form
+// 'polymarket:<series_slug>' and the value every later FK stores.
+//
+// DISTINCT from market_series (064), which is the CLOCK series (schedule
+// constants). Same word, unrelated concept.
+const MIGRATION_075_VENUE_MARKET_SERIES = `
+  CREATE TABLE IF NOT EXISTS venue_market_series (
+    venue_series_id   TEXT PRIMARY KEY,
+    venue             TEXT NOT NULL,
+    series_slug       TEXT NOT NULL,
+    series_title      TEXT NOT NULL,
+    -- Venue-declared category. NULL is expected, not missing data: the 5m
+    -- crypto series carries no event tag, so there is nothing honest to store.
+    venue_category    TEXT,
+    source_adapter_id TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (venue, series_slug)
+  );
+
+  -- Row presence == this agent is registered to serve this series. Backfilled
+  -- from submission history; written going forward by the registration repo.
+  -- WITHOUT ROWID: the composite key IS the row, with no other payload worth a
+  -- rowid indirection.
+  --
+  -- CASCADE from agents (deleting an agent removes its registrations). RESTRICT
+  -- from the series (a series with live registrations cannot be deleted out
+  -- from under them).
+  CREATE TABLE IF NOT EXISTS agent_market_registrations (
+    agent_id        TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    venue_series_id TEXT NOT NULL
+                      REFERENCES venue_market_series(venue_series_id) ON DELETE RESTRICT,
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (agent_id, venue_series_id)
+  ) WITHOUT ROWID;
+`;
+
+// Rekey agent_provider_terms from (agent_id) to (agent_id, venue_series_id).
+// Only ever run against an asserted-empty table, so this is a drop + create,
+// not a row-preserving rebuild. The composite FK makes a registration a
+// precondition for terms and cascades the terms away when a registration is
+// dropped. No agent-wide default survives — a price now belongs to one series.
+// The price/version/cohort CHECK idioms are carried verbatim from 069.
+const MIGRATION_075_AGENT_PROVIDER_TERMS_REKEY = `
+  DROP TABLE agent_provider_terms;
+  CREATE TABLE agent_provider_terms (
+    agent_id              TEXT NOT NULL,
+    venue_series_id       TEXT NOT NULL,
+    -- Access price in the settlement asset's atomic units. Positive.
+    price_atoms           TEXT NOT NULL CHECK (
+                            price_atoms GLOB '[0-9]*' AND CAST(price_atoms AS INTEGER) > 0
+                          ),
+    currency              TEXT NOT NULL,
+    -- Identifies the commercial terms a subscriber agreed to. Never empty.
+    pricing_version       TEXT NOT NULL CHECK (length(pricing_version) > 0),
+    -- Owner's chosen ceiling, or NULL for "as many as murmur can serve".
+    max_subscribers_per_call INTEGER CHECK (
+                            max_subscribers_per_call IS NULL
+                            OR max_subscribers_per_call > 0
+                          ),
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    PRIMARY KEY (agent_id, venue_series_id),
+    FOREIGN KEY (agent_id, venue_series_id)
+      REFERENCES agent_market_registrations(agent_id, venue_series_id)
+      ON DELETE CASCADE
+  ) WITHOUT ROWID;
 `;
 
 // ─── Re-export ground type for migration knowledge ───────────────────────────
