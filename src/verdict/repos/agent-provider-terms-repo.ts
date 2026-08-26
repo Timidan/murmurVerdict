@@ -12,6 +12,8 @@ import { prep } from "../db-statements.js";
  */
 export interface AgentProviderTermsRow {
   agent_id: string;
+  /** The venue series these terms price. Terms are per-series (migration 075). */
+  venue_series_id: string;
   /** Access price in the settlement asset's atomic units. Always > 0. */
   price_atoms: string;
   currency: string;
@@ -33,6 +35,7 @@ export interface AgentProviderTermsRow {
 
 export interface AgentProviderTermsInput {
   agent_id: string;
+  venue_series_id: string;
   price_atoms: string;
   currency: string;
   pricing_version: string;
@@ -40,13 +43,25 @@ export interface AgentProviderTermsInput {
   now: string;
 }
 
+/** The composite key every read/write of provider terms is scoped to. */
+export interface AgentProviderTermsKey {
+  agentId: string;
+  venueSeriesId: string;
+}
+
 export const agentProviderTermsRepo = {
-  get(db: Database.Database, agentId: string): AgentProviderTermsRow | null {
+  get(
+    db: Database.Database,
+    key: AgentProviderTermsKey,
+  ): AgentProviderTermsRow | null {
     return (
       (prep(
         db,
-        `SELECT * FROM agent_provider_terms WHERE agent_id = ?`,
-      ).get(agentId) as AgentProviderTermsRow | undefined) ?? null
+        `SELECT * FROM agent_provider_terms
+          WHERE agent_id = ? AND venue_series_id = ?`,
+      ).get(key.agentId, key.venueSeriesId) as
+        | AgentProviderTermsRow
+        | undefined) ?? null
     );
   },
 
@@ -57,6 +72,11 @@ export const agentProviderTermsRepo = {
    * only because every sealed call SNAPSHOTS the terms it was sold under
    * (fhenix_sealed_calls.provider_*), so a change here never reaches a call a
    * subscriber has already bought into.
+   *
+   * A registration for (agent_id, venue_series_id) is a precondition: the row's
+   * composite foreign key into agent_market_registrations refuses terms for a
+   * series the agent does not serve. With foreign keys enforced at db open this
+   * is a native constraint failure, not a silent write.
    */
   upsert(db: Database.Database, input: AgentProviderTermsInput): void {
     if (!/^[0-9]+$/.test(input.price_atoms) || BigInt(input.price_atoms) <= 0n) {
@@ -85,12 +105,12 @@ export const agentProviderTermsRepo = {
     prep(
       db,
       `INSERT INTO agent_provider_terms (
-         agent_id, price_atoms, currency, pricing_version,
+         agent_id, venue_series_id, price_atoms, currency, pricing_version,
          max_subscribers_per_call, created_at, updated_at)
        VALUES (
-         @agent_id, @price_atoms, @currency, @pricing_version,
+         @agent_id, @venue_series_id, @price_atoms, @currency, @pricing_version,
          @max_subscribers_per_call, @now, @now)
-       ON CONFLICT(agent_id) DO UPDATE SET
+       ON CONFLICT(agent_id, venue_series_id) DO UPDATE SET
          price_atoms              = excluded.price_atoms,
          currency                 = excluded.currency,
          pricing_version          = excluded.pricing_version,
@@ -99,9 +119,16 @@ export const agentProviderTermsRepo = {
     ).run(input);
   },
 
-  /** Stop selling access to this provider's calls. Past sales are untouched. */
-  clear(db: Database.Database, agentId: string): void {
-    prep(db, `DELETE FROM agent_provider_terms WHERE agent_id = ?`).run(agentId);
+  /**
+   * Stop selling access to this provider's calls for one series. Past sales are
+   * untouched. Scoped to a single series — clearing one leaves the rest.
+   */
+  clear(db: Database.Database, key: AgentProviderTermsKey): void {
+    prep(
+      db,
+      `DELETE FROM agent_provider_terms
+        WHERE agent_id = ? AND venue_series_id = ?`,
+    ).run(key.agentId, key.venueSeriesId);
   },
 };
 

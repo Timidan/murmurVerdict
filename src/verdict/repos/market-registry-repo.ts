@@ -67,6 +67,12 @@ export interface MarketRow {
   adapter_id: string | null;
   market_family: string | null;
   config_json: string;
+  /**
+   * The durable venue series this instance belongs to (migration 075), or null
+   * for markets that name no valid series in their config. Nullable on purpose:
+   * a null here reads downstream exactly like "no provider terms" — unsellable.
+   */
+  venue_series_id: string | null;
 }
 
 export const assetsRepo = {
@@ -267,6 +273,16 @@ export const marketsRepo = {
       void_band: string;
       status: RegistryStatus;
       created_at: string;
+      /**
+       * The durable venue series this instance belongs to (migration 075), or
+       * null when the config names no valid series. Optional so callers that
+       * never had a series (fixtures, legacy smokes) stay unchanged and land
+       * null exactly as before; the Polymarket registration path passes the
+       * derived value. Set on BOTH the insert and the conflict-update: a
+       * re-registration restates it from the same fresh projection config_json
+       * comes from, so the two never disagree.
+       */
+      venue_series_id?: string | null;
     },
   ): void {
     prep(
@@ -278,7 +294,7 @@ export const marketsRepo = {
          t0_grace_seconds, t0_extended_grace_seconds,
          void_band, round_cadence_seconds, scoring_kind,
          market_config_version, status, notes, created_at,
-         adapter_id, market_family, config_json
+         adapter_id, market_family, config_json, venue_series_id
        ) VALUES (
          @market_id, @asset_id, @market_kind, @horizon_seconds,
          @primary_oracle_id, NULL,
@@ -286,7 +302,7 @@ export const marketsRepo = {
          0, 0,
          @void_band, NULL, @scoring_kind,
          1, @status, NULL, @created_at,
-         @adapter_id, @market_family, @config_json
+         @adapter_id, @market_family, @config_json, @venue_series_id
        )
        ON CONFLICT(market_id) DO UPDATE SET
          config_json     = excluded.config_json,
@@ -295,8 +311,11 @@ export const marketsRepo = {
          status          = excluded.status,
          adapter_id      = excluded.adapter_id,
          market_family   = excluded.market_family,
-         horizon_seconds = excluded.horizon_seconds`,
-    ).run(row);
+         horizon_seconds = excluded.horizon_seconds,
+         venue_series_id = excluded.venue_series_id`,
+      // better-sqlite3 rejects an absent/undefined named parameter, so a caller
+      // that omits venue_series_id must still bind an explicit null.
+    ).run({ ...row, venue_series_id: row.venue_series_id ?? null });
   },
 
   bumpConfig(

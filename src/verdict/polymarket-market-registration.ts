@@ -8,10 +8,11 @@ import {
 import { z } from "zod";
 import {
   PolymarketGammaConfigError,
-  polymarketGammaMarketConfigJson,
+  polymarketGammaMarketConfig,
 } from "../markets/polymarket-gamma/config.js";
 import type { GammaMarketSnapshot } from "../markets/polymarket-gamma/transform.js";
 import { marketsRepo } from "./repos/market-registry-repo.js";
+import { venueMarketSeriesRepo } from "./repos/venue-market-series-repo.js";
 import { agentSecurityEventsRepo } from "./repos/agent-security-events-repo.js";
 import {
   ResolutionClassSchema,
@@ -413,9 +414,9 @@ export async function runPolymarketMarketRegistration(
   // Gamma's payload can be missing the slug or the outcome labels. Both are
   // stored and published as real market facts, so the projection refuses to
   // invent them — surface that as a data problem, not a 500.
-  let configJson: string;
+  let config: ReturnType<typeof polymarketGammaMarketConfig>;
   try {
-    configJson = polymarketGammaMarketConfigJson({
+    config = polymarketGammaMarketConfig({
       conditionId,
       snapshot,
       resolutionClass: resolution_class,
@@ -430,8 +431,35 @@ export async function runPolymarketMarketRegistration(
       },
     };
   }
+  const configJson = JSON.stringify(config);
   const createdAt = operationNow;
   const created_at = nowIso(createdAt);
+
+  // The market's durable venue series, derived from the SAME validated
+  // projection that becomes config_json — series_slug/series_title/venue_category
+  // were already extracted from the parent event, so nothing here re-parses the
+  // question text. A config that names a valid series (non-empty slug AND title)
+  // links the market to a venue_market_series row so its calls can be priced
+  // per-series; one that names none stays null, which reads downstream as "no
+  // series" (unsellable) and is never fabricated.
+  const seriesInput =
+    typeof config.series_slug === "string" &&
+    config.series_slug.length > 0 &&
+    typeof config.series_title === "string" &&
+    config.series_title.length > 0
+      ? {
+          venue: "polymarket",
+          series_slug: config.series_slug,
+          series_title: config.series_title,
+          venue_category:
+            typeof config.venue_category === "string" &&
+            config.venue_category.length > 0
+              ? config.venue_category
+              : null,
+          source_adapter_id: "polymarket-gamma",
+          now: created_at,
+        }
+      : null;
 
   // Upsert + audit event stay in one transaction so a crash cannot land a
   // market mutation without the corresponding operator evidence.
@@ -445,6 +473,13 @@ export async function runPolymarketMarketRegistration(
     if (input.actor !== DISCOVERY_ACTOR) {
       marketsRepo.clearOperatorHalt(input.db, conditionId);
     }
+    // The series row must exist before the market can FK to it (foreign keys
+    // are enforced at db open). Upserting inside the market's own transaction
+    // keeps the two atomic: a linked market and its series land together or not
+    // at all. Idempotent — a re-registration restates the same series.
+    const venueSeriesId = seriesInput
+      ? venueMarketSeriesRepo.upsert(input.db, seriesInput).venue_series_id
+      : null;
     marketsRepo.upsertExternalMarket(input.db, {
       market_id: conditionId,
       asset_id: "polymarket:event",
@@ -458,6 +493,7 @@ export async function runPolymarketMarketRegistration(
       void_band: "0",
       status,
       created_at,
+      venue_series_id: venueSeriesId,
     });
     // Schedule writes share this transaction with the market upsert. Doing
     // them afterwards left a market that could exist without its embargo

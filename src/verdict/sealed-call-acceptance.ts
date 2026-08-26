@@ -171,8 +171,15 @@ export async function acceptSealedCall(
     reveal_open_at: verifiedSubmit.reveal_open_at,
   });
   // Read BEFORE the transaction so the snapshot below is a plain value, not a
-  // query interleaved with writes.
-  const providerTerms = agentProviderTermsRepo.get(db, agentId);
+  // query interleaved with writes. Terms are per-series now (migration 075): a
+  // market with no venue_series_id has no series to price against, so it reads
+  // as no-terms / unsellable — identical to today's owner-set-nothing path.
+  const providerTerms = market.venue_series_id
+    ? agentProviderTermsRepo.get(db, {
+        agentId,
+        venueSeriesId: market.venue_series_id,
+      })
+    : null;
   // The protocol fee is resolved BEFORE the transaction too, and only when this
   // agent sells. It throws when unconfigured, and that is the point: a priced
   // call whose fee snapshot is NULL is a sale whose split can never be

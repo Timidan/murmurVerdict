@@ -77,6 +77,9 @@ const EXPECTED_ACCOUNT_ROUTES = [
   "GET /v1/account/agents/:slug/provider-terms",
   "PUT /v1/account/agents/:slug/provider-terms",
   "DELETE /v1/account/agents/:slug/provider-terms",
+  "GET /v1/account/agents/:slug/market-registrations",
+  "POST /v1/account/agents/:slug/market-registrations",
+  "DELETE /v1/account/agents/:slug/market-registrations/:venueSeriesId",
   "GET /v1/account/agents/:slug/earnings",
   "GET /v1/account/agents/:slug/payouts",
   "GET /v1/account/agents/:slug/reveals",
@@ -263,6 +266,9 @@ for (const route of [
   "PATCH /v1/account/agents/:slug/profile",
   "POST /v1/account/agents/:slug/retire",
   "POST /v1/account/agents/:slug/unretire",
+  "GET /v1/account/agents/:slug/market-registrations",
+  "POST /v1/account/agents/:slug/market-registrations",
+  "DELETE /v1/account/agents/:slug/market-registrations/:venueSeriesId",
   "POST /v1/account/deactivate",
   "GET /v1/account/webhooks",
   "DELETE /v1/account/webhooks/:id",
@@ -318,6 +324,16 @@ const crossTenant: Array<{ method: string; path: string; body?: unknown }> = [
   },
   { method: "POST", path: `/v1/account/agents/${bob.slug}/retire` },
   { method: "POST", path: `/v1/account/agents/${bob.slug}/unretire` },
+  { method: "GET", path: `/v1/account/agents/${bob.slug}/market-registrations` },
+  {
+    method: "POST",
+    path: `/v1/account/agents/${bob.slug}/market-registrations`,
+    body: { venue_series_id: "polymarket:btc-up-or-down-5m" },
+  },
+  {
+    method: "DELETE",
+    path: `/v1/account/agents/${bob.slug}/market-registrations/polymarket:btc-up-or-down-5m`,
+  },
 ];
 
 for (const probe of crossTenant) {
@@ -351,9 +367,20 @@ for (const probe of crossTenant) {
 
 // And the same routes DO work for their own owner — a matrix that refuses
 // everybody proves nothing.
-for (const path of ["earnings", "payouts", "reveals", "provider-terms"]) {
+for (const path of [
+  "earnings",
+  "payouts",
+  "reveals",
+  "provider-terms",
+  "market-registrations",
+]) {
+  // provider-terms is per venue series now (migration 075): a read names one.
+  // Without it the owner is authorized but the request is malformed (400), so
+  // the auth check here supplies a series to prove the 200 path.
+  const suffix =
+    path === "provider-terms" ? "?series=polymarket:btc-up-or-down-5m" : "";
   const res = await call(
-    { method: "GET", path: `/v1/account/agents/${alice.slug}/${path}` },
+    { method: "GET", path: `/v1/account/agents/${alice.slug}/${path}${suffix}` },
     { token: alice.token, ip: "10.0.4.1" },
   );
   assert.equal(res.status, 200, `owner read of ${path} must succeed`);

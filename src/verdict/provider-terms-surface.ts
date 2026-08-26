@@ -22,6 +22,7 @@ import { z } from "zod";
 import { SETTLEMENT_CURRENCY } from "../integrations/circle-gateway.js";
 import { requireOwnedAgentBySlug } from "./agent-identity.js";
 import { PROTOCOL_FEE_BPS_ENV, parseProtocolFeeBps } from "./protocol-fee.js";
+import { agentMarketRegistrationsRepo } from "./repos/agent-market-registrations-repo.js";
 import {
   agentProviderTermsRepo,
   effectiveCohortCap,
@@ -72,6 +73,12 @@ export interface ProviderTermsDeps {
   db: Database.Database;
   accountId: string;
   slug: string;
+  /**
+   * The venue series being priced (migration 075). Terms are per-series now —
+   * there is no agent-wide default — so every read/write names one. Empty means
+   * the request did not, and the surface answers 400 rather than guessing.
+   */
+  venueSeriesId: string;
   /**
    * What this deployment can actually grant for one call inside the delivery
    * budget. Reported alongside the owner's number so a clamp is visible.
@@ -140,15 +147,43 @@ function view(
   };
 }
 
+/**
+ * Terms are per-series (migration 075). A request that names no series is
+ * malformed, not a hint to fall back to some agent-wide default — there is
+ * none. 400, with the parameter that fixes it.
+ */
+function seriesRequired(): ProviderTermsResponse {
+  return {
+    status: 400,
+    body: {
+      code: "series_required",
+      message:
+        "provider terms are per market series; name one with " +
+        "?series=<venue_series_id>",
+    },
+  };
+}
+
 export function readProviderTerms(deps: ProviderTermsDeps): ProviderTermsResponse {
   const agent = requireOwnedAgentBySlug(deps.db, deps.accountId, deps.slug);
-  return { status: 200, body: view(deps, agentProviderTermsRepo.get(deps.db, agent.agent_id)) };
+  if (!deps.venueSeriesId) return seriesRequired();
+  return {
+    status: 200,
+    body: view(
+      deps,
+      agentProviderTermsRepo.get(deps.db, {
+        agentId: agent.agent_id,
+        venueSeriesId: deps.venueSeriesId,
+      }),
+    ),
+  };
 }
 
 export function setProviderTerms(
   deps: ProviderTermsDeps & { body: unknown },
 ): ProviderTermsResponse {
   const agent = requireOwnedAgentBySlug(deps.db, deps.accountId, deps.slug);
+  if (!deps.venueSeriesId) return seriesRequired();
   const parsed = ProviderTermsBodySchema.safeParse(deps.body);
   if (!parsed.success) {
     return {
@@ -170,8 +205,27 @@ export function setProviderTerms(
       },
     };
   }
+  // A price presupposes the agent serves the series. The repo's foreign key
+  // enforces this too, but that surfaces as a 500; answer the honest 409 first.
+  if (
+    !agentMarketRegistrationsRepo.isRegistered(deps.db, {
+      agentId: agent.agent_id,
+      venueSeriesId: deps.venueSeriesId,
+    })
+  ) {
+    return {
+      status: 409,
+      body: {
+        code: "not_registered_for_series",
+        message:
+          "this agent is not registered to serve that series; register before " +
+          "pricing it",
+      },
+    };
+  }
   agentProviderTermsRepo.upsert(deps.db, {
     agent_id: agent.agent_id,
+    venue_series_id: deps.venueSeriesId,
     price_atoms: parsed.data.price_atoms,
     currency: parsed.data.currency,
     pricing_version: parsed.data.pricing_version,
@@ -180,12 +234,25 @@ export function setProviderTerms(
   });
   // Terms take effect for calls sealed FROM NOW ON. Calls already sealed keep
   // the snapshot they were sold under — see fhenix_sealed_calls.provider_*.
-  return { status: 200, body: view(deps, agentProviderTermsRepo.get(deps.db, agent.agent_id)) };
+  return {
+    status: 200,
+    body: view(
+      deps,
+      agentProviderTermsRepo.get(deps.db, {
+        agentId: agent.agent_id,
+        venueSeriesId: deps.venueSeriesId,
+      }),
+    ),
+  };
 }
 
 export function clearProviderTerms(deps: ProviderTermsDeps): ProviderTermsResponse {
   const agent = requireOwnedAgentBySlug(deps.db, deps.accountId, deps.slug);
-  agentProviderTermsRepo.clear(deps.db, agent.agent_id);
+  if (!deps.venueSeriesId) return seriesRequired();
+  agentProviderTermsRepo.clear(deps.db, {
+    agentId: agent.agent_id,
+    venueSeriesId: deps.venueSeriesId,
+  });
   // Calls already sealed keep their snapshot and remain purchasable; this only
   // stops FUTURE calls from being offered.
   return { status: 200, body: view(deps, null) };

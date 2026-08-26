@@ -31,8 +31,10 @@ import {
   requireProtocolFeeBps,
   splitFeeAtoms,
 } from "./protocol-fee.js";
+import { agentMarketRegistrationsRepo } from "./repos/agent-market-registrations-repo.js";
 import { entitlementsRepo } from "./repos/entitlements-repo.js";
 import { providerEarningsRepo } from "./repos/provider-earnings-repo.js";
+import { venueMarketSeriesRepo } from "./repos/venue-market-series-repo.js";
 import { SCHEMA_VERSION } from "./schema.js";
 
 // ─── The provider revenue split ────────────────────────────────────────────
@@ -791,6 +793,21 @@ async function buy(
 // ── 12. Pricing a signal is refused while the split cannot be recorded ─────
 {
   const h = newHarness();
+  // Terms are per-series (migration 075): the owner must serve a series before
+  // pricing it, so stand one up and register the harness agent for it.
+  const series = venueMarketSeriesRepo.upsert(h.db, {
+    venue: "polymarket",
+    series_slug: "eth-up-or-down-5m",
+    series_title: "ETH Up or Down 5m",
+    venue_category: null,
+    source_adapter_id: "polymarket-gamma",
+    now: NOW_ISO,
+  });
+  agentMarketRegistrationsRepo.register(h.db, {
+    agentId: h.agentId,
+    venueSeriesId: series.venue_series_id,
+    now: NOW_ISO,
+  });
   const body = {
     price_atoms: "1000000",
     currency: "USDC",
@@ -801,6 +818,7 @@ async function buy(
     db: h.db,
     accountId: h.accountId,
     slug: h.slug,
+    venueSeriesId: series.venue_series_id,
     deliverableCap: 25,
     protocolFeeBps: null,
     now: () => NOW,
@@ -814,6 +832,7 @@ async function buy(
     db: h.db,
     accountId: h.accountId,
     slug: h.slug,
+    venueSeriesId: series.venue_series_id,
     deliverableCap: 25,
     protocolFeeBps: 1_000,
     now: () => NOW,

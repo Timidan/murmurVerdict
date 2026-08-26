@@ -6,10 +6,12 @@ import { join } from "node:path";
 
 import { openDb } from "./db.js";
 import { termsFor } from "./entitlement-access-surface.js";
+import { agentMarketRegistrationsRepo } from "./repos/agent-market-registrations-repo.js";
 import {
   agentProviderTermsRepo,
   effectiveCohortCap,
 } from "./repos/agent-provider-terms-repo.js";
+import { venueMarketSeriesRepo } from "./repos/venue-market-series-repo.js";
 
 // An agent owner prices their own signal. Two properties carry the design:
 //
@@ -31,29 +33,48 @@ try {
        '2026-08-05T00:00:00Z', NULL, NULL, NULL)`,
   ).run(agentId);
 
+  // Terms are per venue series (migration 075): stand a series up and register
+  // the agent for it, since a price now FKs to a registration.
+  const series = venueMarketSeriesRepo.upsert(db, {
+    venue: "polymarket",
+    series_slug: "btc-up-or-down-5m",
+    series_title: "BTC Up or Down 5m",
+    venue_category: null,
+    source_adapter_id: "polymarket-gamma",
+    now: "2026-08-05T00:00:00Z",
+  });
+  const venueSeriesId = series.venue_series_id;
+  agentMarketRegistrationsRepo.register(db, {
+    agentId,
+    venueSeriesId,
+    now: "2026-08-05T00:00:00Z",
+  });
+
   // ── the owner sets terms ──────────────────────────────────────────────────
   agentProviderTermsRepo.upsert(db, {
     agent_id: agentId,
+    venue_series_id: venueSeriesId,
     price_atoms: "10000",
     currency: "USDC",
     pricing_version: "v1",
     max_subscribers_per_call: 40,
     now: "2026-08-05T00:00:00Z",
   });
-  let terms = agentProviderTermsRepo.get(db, agentId);
+  let terms = agentProviderTermsRepo.get(db, { agentId, venueSeriesId });
   assert.equal(terms?.price_atoms, "10000");
   assert.equal(terms?.max_subscribers_per_call, 40);
 
   // ── repricing is allowed, and is why the call snapshot exists ─────────────
   agentProviderTermsRepo.upsert(db, {
     agent_id: agentId,
+    venue_series_id: venueSeriesId,
     price_atoms: "50000",
     currency: "USDC",
     pricing_version: "v2",
     max_subscribers_per_call: null, // "as many as murmur can serve"
     now: "2026-08-05T01:00:00Z",
   });
-  terms = agentProviderTermsRepo.get(db, agentId);
+  terms = agentProviderTermsRepo.get(db, { agentId, venueSeriesId });
   assert.equal(terms?.price_atoms, "50000", "an owner may reprice at will");
   assert.equal(terms?.pricing_version, "v2");
   assert.equal(terms?.max_subscribers_per_call, null);
@@ -64,6 +85,7 @@ try {
       () =>
         agentProviderTermsRepo.upsert(db, {
           agent_id: agentId,
+          venue_series_id: venueSeriesId,
           price_atoms: bad,
           currency: "USDC",
           pricing_version: "v3",
@@ -77,6 +99,7 @@ try {
     () =>
       agentProviderTermsRepo.upsert(db, {
         agent_id: agentId,
+        venue_series_id: venueSeriesId,
         price_atoms: "10000",
         currency: "USDC",
         pricing_version: "v3",
@@ -173,6 +196,7 @@ try {
   // Owner reprices AFTER the call was sealed.
   agentProviderTermsRepo.upsert(db, {
     agent_id: agentId,
+    venue_series_id: venueSeriesId,
     price_atoms: "999999",
     currency: "USDC",
     pricing_version: "v9",
@@ -198,7 +222,7 @@ try {
     "and the cohort a subscriber joined cannot be shrunk under them",
   );
   assert.equal(
-    agentProviderTermsRepo.get(db, agentId)?.price_atoms,
+    agentProviderTermsRepo.get(db, { agentId, venueSeriesId })?.price_atoms,
     "999999",
     "...while the owner's CURRENT terms did change, for future calls",
   );
@@ -244,9 +268,9 @@ try {
   );
 
   // ── clearing stops FUTURE sales; it is not a refund ───────────────────────
-  agentProviderTermsRepo.clear(db, agentId);
+  agentProviderTermsRepo.clear(db, { agentId, venueSeriesId });
   assert.equal(
-    agentProviderTermsRepo.get(db, agentId),
+    agentProviderTermsRepo.get(db, { agentId, venueSeriesId }),
     null,
     "cleared terms mean no new calls are offered",
   );

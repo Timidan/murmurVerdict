@@ -13,6 +13,11 @@ import {
   readProviderTerms,
   setProviderTerms,
 } from "../provider-terms-surface.js";
+import {
+  listAgentMarketRegistrations,
+  registerAgentForSeries,
+  unregisterAgentFromSeries,
+} from "../agent-market-registration-surface.js";
 import { readProviderEarnings } from "../provider-earnings-surface.js";
 import { readProviderPayouts } from "../provider-payout-journal.js";
 import { readAccountAgentReveals } from "../account-agent-reveals-surface.js";
@@ -113,6 +118,11 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
     db,
     accountId,
     slug: String((req as unknown as { params: { slug?: string } }).params.slug ?? ""),
+    // Terms are per venue series (migration 075); the owner names which one via
+    // ?series=<venue_series_id>. Absent → the surface answers 400, never a guess.
+    venueSeriesId: String(
+      (req as unknown as { query?: { series?: unknown } }).query?.series ?? "",
+    ),
     deliverableCap,
     protocolFeeBps,
     now,
@@ -136,6 +146,61 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
       const out = setProviderTerms({
         ...termsDeps(req, resolved.account_id),
         body: req.body,
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  // ── Market registrations: which venue series this agent opts into serving ─
+  //
+  // A registration is the precondition for a price (provider terms FK to it),
+  // so the settings UI lists every series with this agent's registration and
+  // pricing state, then registers/unregisters against it. Unregistering
+  // cascades that series' terms away via the foreign key.
+  const registrationDeps = (
+    req: Parameters<RequireAccount>[0],
+    accountId: string,
+  ) => ({ db, accountId, slug: pathSlug(req) });
+
+  router.get(
+    "/v1/account/agents/:slug/market-registrations",
+    listAgentsLimiter,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = listAgentMarketRegistrations(
+        registrationDeps(req, resolved.account_id),
+      );
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  router.post(
+    "/v1/account/agents/:slug/market-registrations",
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = registerAgentForSeries({
+        ...registrationDeps(req, resolved.account_id),
+        body: req.body,
+        now,
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  router.delete(
+    "/v1/account/agents/:slug/market-registrations/:venueSeriesId",
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = unregisterAgentFromSeries({
+        ...registrationDeps(req, resolved.account_id),
+        // Path param; Express has already URL-decoded it (the id carries a
+        // colon, e.g. 'polymarket:eth-up-or-down-5m', which is a legal path
+        // character and needs no encoding).
+        venueSeriesId: String(
+          (req as unknown as { params: { venueSeriesId?: string } }).params
+            .venueSeriesId ?? "",
+        ),
       });
       res.status(out.status).json(out.body);
     }),
