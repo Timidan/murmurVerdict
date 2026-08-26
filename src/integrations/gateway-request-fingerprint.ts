@@ -4,21 +4,18 @@
 // exit on the gateway lanes compares the stored fingerprint of the request
 // that RESERVED the attempt against the fingerprint of the request being
 // replayed; a mismatch is a hard 409, never a silent idempotent 200 for
-// content the agent didn't submit. The fingerprint hashes the VALIDATED
+// content the agent didn't submit. The fingerprint covers the VALIDATED
 // semantic body (post-zod parse, canonicalized) — the raw-byte hash used by
 // runtime-key PoP is a different concern and deliberately a different value.
 //
 // The domain prefix separates route kinds (and the dynamic feed id) so
 // structurally similar bodies in a shared client_order namespace can't
-// collide semantically. Owned sealing fingerprints the ORIGINAL client body
-// BEFORE randomized CoFHE sealing, so byte-identical retries match even
-// though sealing output differs per call.
+// collide semantically. Owned sealing HMACs the ORIGINAL client body before
+// randomized CoFHE sealing, so byte-identical retries match across key rotation.
 //
-// Rows reserved before migration 060 have no stored fingerprint; those
-// replays keep today's 200 (documented legacy exception) because a null
-// can't prove a mismatch.
+// Null legacy fingerprints remain non-comparable because they prove no mismatch.
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 import { canonicalize } from "../receipts/canonical.js";
 import { ERROR_CODES, VerdictError } from "../verdict/schema.js";
@@ -28,25 +25,119 @@ export type GatewayFingerprintRouteKind =
   | "owned_sealed_call"
   | "feed_packet";
 
-export function gatewayRequestFingerprint(
+export interface GatewayFingerprintHmacKey {
+  id: string;
+  key: Buffer;
+}
+
+export interface GatewayFingerprintHmacKeyring {
+  active: GatewayFingerprintHmacKey;
+  previous: readonly GatewayFingerprintHmacKey[];
+}
+
+export interface GatewayRequestFingerprintOptions {
+  feedId?: string;
+  hmacKeyring?: GatewayFingerprintHmacKeyring;
+}
+
+export interface GatewayRequestFingerprints {
+  stored: string;
+  comparisons: readonly string[];
+}
+
+const HMAC_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export function parseGatewayFingerprintHmacKeyring(
+  input: string | null | undefined,
+): GatewayFingerprintHmacKeyring | null {
+  const raw = input?.trim();
+  if (!raw) return null;
+  const entries = raw.split(",").map((entry) => entry.trim());
+  const keys: GatewayFingerprintHmacKey[] = [];
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    const separator = entry.indexOf(":");
+    const id = separator === -1 ? "" : entry.slice(0, separator);
+    const keyHex = separator === -1 ? "" : entry.slice(separator + 1);
+    if (!HMAC_KEY_ID.test(id)) {
+      throw new Error(
+        "entries must use key-id:64-hex-key with a 1-64 character key id",
+      );
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(keyHex)) {
+      throw new Error(`key '${id}' must be exactly 256 bits encoded as 64 hex characters`);
+    }
+    if (ids.has(id)) {
+      throw new Error(`duplicate key id '${id}'`);
+    }
+    ids.add(id);
+    keys.push({ id, key: Buffer.from(keyHex, "hex") });
+  }
+  return { active: keys[0], previous: keys.slice(1) };
+}
+
+function fingerprintInput(
   routeKind: GatewayFingerprintRouteKind,
   parsedBody: unknown,
-  opts?: { feedId?: string },
+  opts?: GatewayRequestFingerprintOptions,
 ): string {
   const domain = ["murmur-idem-v1", routeKind];
   if (opts?.feedId) domain.push(opts.feedId);
-  return createHash("sha256")
-    .update(`${domain.join("\n")}\n${canonicalize(parsedBody)}`, "utf8")
-    .digest("hex");
+  return `${domain.join("\n")}\n${canonicalize(parsedBody)}`;
+}
+
+export function gatewayRequestFingerprints(
+  routeKind: GatewayFingerprintRouteKind,
+  parsedBody: unknown,
+  opts?: GatewayRequestFingerprintOptions,
+): GatewayRequestFingerprints {
+  const input = fingerprintInput(routeKind, parsedBody, opts);
+  if (routeKind === "owned_sealed_call") {
+    const ring = opts?.hmacKeyring;
+    if (!ring) {
+      throw new Error(
+        "MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS is required for Murmur-owned sealing",
+      );
+    }
+    const keys = [ring.active, ...ring.previous];
+    const ids = new Set<string>();
+    for (const entry of keys) {
+      if (!HMAC_KEY_ID.test(entry.id) || !Buffer.isBuffer(entry.key) || entry.key.length !== 32) {
+        throw new Error("gateway fingerprint HMAC keys require a valid id and exactly 256 bits");
+      }
+      if (ids.has(entry.id)) {
+        throw new Error(`duplicate gateway fingerprint HMAC key id '${entry.id}'`);
+      }
+      ids.add(entry.id);
+    }
+    const comparisons = keys.map((entry) =>
+      `v1:hmac-sha256:${entry.id}:${createHmac("sha256", entry.key)
+        .update(input, "utf8")
+        .digest("hex")}`
+    );
+    return { stored: comparisons[0], comparisons };
+  }
+  const digest = createHash("sha256").update(input, "utf8").digest("hex");
+  const stored = `v1:sha256:unkeyed:${digest}`;
+  return { stored, comparisons: [stored, digest] };
+}
+
+export function gatewayRequestFingerprint(
+  routeKind: GatewayFingerprintRouteKind,
+  parsedBody: unknown,
+  opts?: GatewayRequestFingerprintOptions,
+): string {
+  return gatewayRequestFingerprints(routeKind, parsedBody, opts).stored;
 }
 
 export function assertGatewayFingerprintMatch(
   stored: string | null | undefined,
-  current: string,
+  current: string | readonly string[],
   context: Record<string, unknown>,
 ): void {
-  if (stored == null) return; // pre-060 legacy row — nothing to compare
-  if (stored !== current) {
+  if (stored == null) return; // Legacy row — nothing to compare.
+  const candidates = typeof current === "string" ? [current] : current;
+  if (!candidates.includes(stored)) {
     throw new VerdictError(
       "client_order_id is already bound to a different gateway request",
       ERROR_CODES.duplicate,
