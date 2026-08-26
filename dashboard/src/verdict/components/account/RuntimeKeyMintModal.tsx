@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { RuntimeKeyMintResponse } from "../../api.js";
 import { Ik } from "../../icons.js";
 import { stashJustMinted } from "../../pages/IntegratePage.js";
-import { fetchAgentPromptTemplate, injectRuntimeKey } from "../../lib/agent-prompt.js";
+import { fetchAgentPromptTemplate, injectRuntimeCredentials } from "../../lib/agent-prompt.js";
 import { shortId } from "../../lib/display-format.js";
 import { TimeAgo } from "../compact/TimeAgo.js";
 import { useFocusTrap } from "../compact/useFocusTrap.js";
@@ -66,7 +66,13 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
     fetchAgentPromptTemplate(slug)
       .then((tpl) => {
         if (cancelled) return;
-        setPromptText(injectRuntimeKey(tpl, result.secret));
+        setPromptText(
+          injectRuntimeCredentials(tpl, {
+            runtimeKey: result.secret,
+            signingPrivateKey,
+            runtimeKeyId: result.runtime_key_id,
+          }),
+        );
         setPromptLoading(false);
       })
       .catch(() => {
@@ -77,14 +83,18 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
           `# operate ${slug}\n\n` +
             `(the personalized runbook could not be loaded — the key is still\n` +
             `yours below; wire it into the environment your agent runs in)\n\n` +
-            `MURMUR_RUNTIME_KEY=${result.secret}\n`,
+            `MURMUR_RUNTIME_KEY=${result.secret}\n` +
+            `MURMUR_RUNTIME_KEY_ID=${result.runtime_key_id}\n` +
+            (signingPrivateKey
+              ? `MURMUR_RUNTIME_KEY_SIGNING_PK=${signingPrivateKey}\n`
+              : ""),
         );
         setPromptLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [slug, result.secret]);
+  }, [slug, result.secret, result.runtime_key_id, signingPrivateKey]);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -137,8 +147,9 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
       source: "runtime",
       runtime_key_id: result.runtime_key_id,
       runtime_key_prefix: result.runtime_key_prefix,
+      runtime_key_signing_pk: signingPrivateKey ?? undefined,
     });
-  }, [slug, result.secret, result.runtime_key_id, result.runtime_key_prefix]);
+  }, [slug, result.secret, result.runtime_key_id, result.runtime_key_prefix, signingPrivateKey]);
 
   const onOpenIntegrate = useCallback(() => {
     // Navigate to the integrate page where the snippet panel will pick
@@ -158,6 +169,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
 
   const envLine = [
     `MURMUR_RUNTIME_KEY=${result.secret}  # ${slug}`,
+    `MURMUR_RUNTIME_KEY_ID=${result.runtime_key_id}`,
     ...(signingPrivateKey
       ? [
           `MURMUR_RUNTIME_KEY_SIGNING_PK=${signingPrivateKey}  # ed25519 pkcs8 base64 — PoP request signing`,

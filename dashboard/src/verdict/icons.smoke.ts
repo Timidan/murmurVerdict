@@ -15,11 +15,11 @@ import {
 // its origin uses (16 for hand-drawn, 24 for Streamline-sourced — see below).
 // 28 − reputation (deleted: 0 call sites, drawing pass 2026-08-07) = 27, then
 // +10 agent-scoring glyphs for the summary tile grid (2026-08-10).
-assert.equal(ICON_NAMES.length, 37);
+assert.equal(ICON_NAMES.length, 45);
 assert.equal(
   STREAMLINE_ICON_NAMES.length,
   16,
-  "16 of 37 inline concepts sourced from Streamline Sharp (2026-08-10 pass)",
+  "16 of 45 inline concepts sourced from Streamline Sharp (2026-08-10 pass); the 8 tab-* rail glyphs are hand-drawn in the same grammar",
 );
 
 // The summary grid is icon-ONLY — the stat's word is gone from view, so a

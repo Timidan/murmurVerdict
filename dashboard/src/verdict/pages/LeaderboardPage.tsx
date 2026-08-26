@@ -7,11 +7,18 @@ import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { SkeletonBar } from "../components/compact/PanelSkeleton.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
+import { AgentListingsMatrix } from "../components/compact/AgentListingsMatrix.js";
 import { FormulaTip } from "../components/compact/FormulaTip.js";
 import { FamilyLeaderboards } from "../components/FamilyLeaderboards.js";
 import { useStream } from "../hooks/useStream.js";
 import { mergeLeaderboardRow } from "../hooks/stream-merge.js";
 import { formatScore } from "../lib/score-format.js";
+import {
+  LEADERBOARD_VIEWS,
+  viewFromQuery,
+  writeViewToQuery,
+  type LeaderboardView,
+} from "../lib/listings-matrix.js";
 
 type Tier = "all" | "main" | "provisional";
 type SortKey = "rank" | "score" | "lb" | "wr" | "res" | "pend";
@@ -51,6 +58,20 @@ function sortFromUrl(): SortKey {
   const v = readRouteQuery(window.location).get("sort");
   return SORTS.includes(v as SortKey) ? (v as SortKey) : "rank";
 }
+function viewFromUrl(): LeaderboardView {
+  return viewFromQuery(readRouteQuery(window.location));
+}
+
+/**
+ * What each view answers. `rankings` is the ladder — who is best. `listings` is
+ * the browse matrix — who SELLS what, at what standing price, with what record.
+ * One route, one `?view=`: a fourth page listing agents would just compete with
+ * the three that already do.
+ */
+const VIEW_LABEL: Record<LeaderboardView, string> = {
+  rankings: "rankings",
+  listings: "listings",
+};
 
 /**
  * COMPACT leaderboard — single-screen ladder with side panel for live tape.
@@ -66,6 +87,7 @@ export function LeaderboardPage() {
   const [rows, setRows] = useState<LeaderboardRow[] | null>(null);
   const [tier, setTier] = useState<Tier>(tierFromUrl);
   const [sort, setSort] = useState<SortKey>(sortFromUrl);
+  const [view, setView] = useState<LeaderboardView>(viewFromUrl);
   const [error, setError] = useState<string | null>(null);
 
   // Mirror tier/sort into the address bar. replaceState (not push) keeps
@@ -79,12 +101,13 @@ export function LeaderboardPage() {
     else params.set("tier", tier);
     if (sort === "rank") params.delete("sort");
     else params.set("sort", sort);
+    writeViewToQuery(params, view);
     window.history.replaceState(
       window.history.state,
       "",
       buildRouteQueryUrl(window.location, params),
     );
-  }, [tier, sort]);
+  }, [tier, sort, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,13 +186,26 @@ export function LeaderboardPage() {
                 "leaderboard {tier} · sort:{sort}" to assistive tech. */}
             <span>
               <span className="sr-only">leaderboard </span>
-              <span className="ck-pos">{TIER_LABEL[tier]}</span>
-              <span className="ck-dim mx-1">·</span>by
-              <span className="ck-pos ml-1">{SORT_LABEL[sort]}</span>
+              {view === "listings" ? (
+                <span className="ck-pos">listings</span>
+              ) : (
+                <>
+                  <span className="ck-pos">{TIER_LABEL[tier]}</span>
+                  <span className="ck-dim mx-1">·</span>by
+                  <span className="ck-pos ml-1">{SORT_LABEL[sort]}</span>
+                </>
+              )}
             </span>
           </span></TopbarCrumb>
 
-      {/* RIBBON ─────────────────────────────────────── */}
+      {/* RIBBON ───────────────────────────────────────
+          Ladder-only. Every cell here counts RANKED agents, which is a
+          different population from the sellers in the listings matrix — the
+          board can hold a ranked agent that sells nothing, and a seller that
+          has never been scored. Captioning the matrix with these numbers would
+          describe rows the reader cannot see. The matrix carries its own
+          counts in its panel header instead. */}
+      {view === "rankings" && (
       <section className="grid grid-cols-2 md:grid-cols-6 border-b border-[var(--color-border)]">
         <RibbonCell label="agents" value={sorted?.length ?? "—"} />
         <RibbonCell label="ranked" value={summary?.main ?? "—"} />
@@ -184,42 +220,80 @@ export function LeaderboardPage() {
             30-day scoring window that does not exist. */}
         <RibbonCell label="counts" value="all time" tone="dim" />
       </section>
+      )}
 
       {/* CONTROL BAR ─────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-1 px-2 py-1 border-b border-[var(--color-border)]">
-        <span className="ck-label mr-2">show</span>
-        {(["all", "main", "provisional"] as Tier[]).map((t) => (
+        <span className="ck-label mr-2">view</span>
+        {LEADERBOARD_VIEWS.map((v) => (
           <button
-            key={t}
-            onClick={() => setTier(t)}
-            className={"ck-btn ck-btn-bracket " + (tier === t ? "ck-btn-active" : "")}
+            key={v}
+            onClick={() => setView(v)}
+            aria-pressed={view === v}
+            className={"ck-btn ck-btn-bracket " + (view === v ? "ck-btn-active" : "")}
+            title={
+              v === "rankings"
+                ? "the ladder: who is best, by their score floor"
+                : "the browse matrix: who sells which series, at what standing price"
+            }
           >
-            {TIER_LABEL[t]}
+            {VIEW_LABEL[v]}
           </button>
         ))}
-        <span className="ck-label mx-2 ml-4">sort by</span>
-        {(["rank", "score", "lb", "wr", "res", "pend"] as SortKey[]).map((k) => (
-          <button
-            key={k}
-            onClick={() => setSort(k)}
-            className={"ck-btn ck-btn-bracket " + (sort === k ? "ck-btn-active" : "")}
-          >
-            {SORT_LABEL[k]}
-          </button>
-        ))}
-        <span className="ml-auto ck-mono ck-dim">
-          {sorted ? `${sorted.length} agents` : ""}
-        </span>
+        {/* tier and sort belong to the ladder alone — showing them beside a
+            matrix they cannot reorder would promise a control that does
+            nothing. */}
+        {view === "rankings" && (
+          <>
+            <span className="ck-label mx-2 ml-4">show</span>
+            {(["all", "main", "provisional"] as Tier[]).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTier(t)}
+                className={"ck-btn ck-btn-bracket " + (tier === t ? "ck-btn-active" : "")}
+              >
+                {TIER_LABEL[t]}
+              </button>
+            ))}
+            <span className="ck-label mx-2 ml-4">sort by</span>
+            {(["rank", "score", "lb", "wr", "res", "pend"] as SortKey[]).map((k) => (
+              <button
+                key={k}
+                onClick={() => setSort(k)}
+                className={"ck-btn ck-btn-bracket " + (sort === k ? "ck-btn-active" : "")}
+              >
+                {SORT_LABEL[k]}
+              </button>
+            ))}
+            <span className="ml-auto ck-mono ck-dim">
+              {sorted ? `${sorted.length} agents` : ""}
+            </span>
+          </>
+        )}
       </div>
 
       {/* RANK BASIS — always-visible so the vs headline column isn't mistaken
           for the sort key. Default order is the daemon's lb-derived rank; vs
-          (verdict_score) is shown first only as the headline number. */}
+          (verdict_score) is shown first only as the headline number. Under
+          `listings` the sentence is replaced, not merely hidden: that view
+          ranks nothing, and the record it shows is all-time and global. */}
       <div
         className="px-2 py-1 ck-dim border-b border-[var(--color-border)] text-[14px]"
       >
-        The board ranks agents by their floor, not by their score. The floor
-        assumes an agent got lucky, so a long steady record beats a short hot one.
+        {view === "listings" ? (
+          <span className="block max-w-[92ch]">
+            Every price is the agent's standing listing — what their next sealed
+            call in that series would cost. A call already sealed is sold at the
+            price locked when it was sealed. Records are all-time and cover every
+            series, not the column they sit in.
+          </span>
+        ) : (
+          <span className="block max-w-[92ch]">
+            The board ranks agents by their floor, not by their score. The floor
+            assumes an agent got lucky, so a long steady record beats a short hot
+            one.
+          </span>
+        )}
       </div>
 
       {/* LEGEND / SCORING ─────────────────────────────────────────────
@@ -227,8 +301,13 @@ export function LeaderboardPage() {
           Copy is drawn straight from src/verdict/scoring.ts — no invented
           math (verdict_score / lb formulae, Brier skill term, ≥20-call main
           tier are all literal from the source of truth). */}
-      <ScoringLegend />
+      {view === "rankings" && <ScoringLegend />}
 
+      {/* The matrix owns the full width: a side rail would steal exactly the
+          horizontal room cross-row price comparison needs. */}
+      {view === "listings" && <AgentListingsMatrix />}
+
+      {view === "rankings" && (
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.5fr)_minmax(0,1fr)] min-h-0">
         <Panel
           title={
@@ -299,6 +378,7 @@ export function LeaderboardPage() {
           </div>
         </div>
       </main>
+      )}
     </div>
   );
 }

@@ -244,7 +244,7 @@ export function AdminGatewayPage() {
                 <select
                   value={status}
                   onChange={(e) => setStatus(e.target.value as GatewayAttemptStatus | "all")}
-                  className="bg-transparent border border-[var(--color-border-vis)] px-2 py-1 ck-mono text-[var(--color-primary)]"
+                  className="ck-mono ck-select"
                 >
                   <option value="all">all</option>
                   {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}

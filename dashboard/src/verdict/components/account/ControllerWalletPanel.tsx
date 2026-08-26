@@ -247,7 +247,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
   }
 
   return (
-    <section className="ck-frame w-full max-w-[720px] px-4 py-4 flex flex-col gap-3">
+    <section className="ck-frame w-full px-4 py-4 flex flex-col gap-3">
       <header className="flex items-center justify-between">
         <h3 className="ck-title ck-title-ik">
           <Ik name="controller-wallet" /> controller wallet

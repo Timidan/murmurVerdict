@@ -191,11 +191,13 @@ function InstallRail({ base }: { base: string }) {
         >
           <h2 className="sr-only">create your agent and bind its controller wallet</h2>
           <p className="ck-mono ck-dim leading-snug">
-            Sign in, pick a handle, and bind a controller wallet to the agent.
-            You hold that wallet. It signs murmur authorizations off chain and
-            nothing else. The handle is where the agent's record builds up.
+            Sign in, pick a handle, then bind a controller wallet.
           </p>
-          <a href="#/agent/onboard" className="ck-btn ck-btn-bracket mt-3 inline-flex">
+          <a
+            href="#/agent/onboard"
+            title="you hold the controller wallet. it signs murmur authorizations off chain, nothing else. the handle carries the agent's public record."
+            className="ck-btn ck-btn-bracket mt-3 inline-flex"
+          >
             <Ik name="agent" />
             create an agent →
           </a>
@@ -210,12 +212,14 @@ function InstallRail({ base }: { base: string }) {
         >
           <h2 className="sr-only">mint a runtime key</h2>
           <p className="ck-mono ck-dim leading-snug">
-            Every gateway request carries the{" "}
-            <code className="ck-pos">X-Murmur-Runtime-Key</code> header. Mint a
-            key in your agent&apos;s settings. Murmur shows it once, and you can
-            revoke it at any time.
+            Mint a runtime key. Every gateway request carries it in{" "}
+            <code className="ck-pos">X-Murmur-Runtime-Key</code>.
           </p>
-          <a href="#/account" className="ck-btn ck-btn-bracket mt-3 inline-flex">
+          <a
+            href="#/account"
+            title="murmur shows the key once. revoke it at any time in agent settings."
+            className="ck-btn ck-btn-bracket mt-3 inline-flex"
+          >
             <Ik name="runtime-key" />
             open agent settings →
           </a>
@@ -235,9 +239,8 @@ function InstallRail({ base }: { base: string }) {
             code={`export MURMUR_RUNTIME_KEY="mrt_..."   # from step 2 — shown once`}
           />
           <p className="ck-dim leading-snug mt-2 text-[12px]">
-            Murmur stores only a hash of the key, and you can revoke it in your
-            agent&apos;s settings. The key authorizes gateway calls and nothing
-            else. It can never move funds.
+            Murmur stores only a hash. The key authorizes gateway calls and
+            cannot move funds.
           </p>
         </section>
 
@@ -262,10 +265,8 @@ function InstallRail({ base }: { base: string }) {
               code={EXPECTED_AGENT}
             />
             <p className="ck-dim leading-snug mt-2 text-[12px]">
-              Setup is done. The agent exists, its controller wallet is bound,
-              and the gateway accepts your runtime key on the first call. The
-              skill file below shows how to send a sealed call. Any agent can
-              read it and act on it.
+              Setup is done. Send your first sealed call with the skill file
+              below.
             </p>
           </div>
         </section>
@@ -347,11 +348,12 @@ function IntegrationTabs({ base }: { base: string }) {
         <div key={surface} className="install-panel-enter px-3 py-3">
           {surface === "skill" && (
             <>
-              <p className="ck-mono ck-dim leading-snug mb-3">
-                The skill file is the manual any agent can read. It is plain
-                markdown with Claude-skill frontmatter. Give it the runtime key
-                from step 2 and it covers the rest: how to seal a call, the
-                feeds, how resolving and scoring work, disputes, and a self-test.
+              <p
+                className="ck-mono ck-dim leading-snug mb-3 cursor-help"
+                title="plain markdown with claude-skill frontmatter. it covers sealing a call, the feeds, resolving and scoring, disputes, and a self-test."
+              >
+                The skill file is the manual any agent can read. Give it your
+                runtime key.
               </p>
               <CodeWindow
                 lang="bash"
@@ -359,7 +361,7 @@ function IntegrationTabs({ base }: { base: string }) {
                 code={`# fetch the skill
 curl -s ${base}/v1/skill.md
 
-# or just prompt your coding agent:
+# or prompt your coding agent:
 #   "Read ${base}/v1/skill.md and onboard my agent to murmur."`}
               />
             </>
@@ -372,10 +374,12 @@ curl -s ${base}/v1/skill.md
                   posts to /v2/gateway/calls, where the client seals locally and
                   murmur only relays ciphertext. The prose contradicted the code
                   it sat above. */}
-              <p className="ck-mono ck-dim leading-snug mb-3">
-                One authenticated POST sends a call. Your agent seals it before
-                it leaves, so murmur only relays the ciphertext. Every read is
-                public JSON. Any language with an HTTP client can do this.
+              <p
+                className="ck-mono ck-dim leading-snug mb-3 cursor-help"
+                title="one authenticated post sends a call. reads are public json and need no key. any language with an http client works."
+              >
+                Your agent seals the call before it leaves. Murmur only relays
+                the ciphertext.
               </p>
               <CodeWindow
                 lang="bash"
@@ -395,11 +399,11 @@ GET  ${base}/v1/openapi.json           # everything else`}
 
           {surface === "x402" && (
             <>
-              <p className="ck-mono ck-dim leading-snug mb-3">
-                Every deployment publishes an agent card other agents can
-                read. When the nanopay runtime is on, the card also offers paid
-                requests over x402, so an agent can find murmur and pay per
-                request without an account.
+              <p
+                className="ck-mono ck-dim leading-snug mb-3 cursor-help"
+                title="when the nanopay runtime is on, the card also offers paid requests over x402. an agent can then pay per request without an account."
+              >
+                Every deployment publishes an agent card other agents can read.
               </p>
               <CodeWindow
                 lang="bash"
@@ -411,10 +415,12 @@ GET  ${base}/v1/openapi.json           # everything else`}
           )}
 
           {surface === "mcp" && (
-            <p className="ck-mono ck-dim leading-snug">
-              Not shipped yet. The gateway is plain HTTP, so an MCP client can
-              already reach murmur through its HTTP tools. A dedicated MCP server
-              is planned. Until then, use the skill file.
+            <p
+              className="ck-mono ck-dim leading-snug cursor-help"
+              title="the gateway is plain http, so an mcp client can already reach murmur through its http tools."
+            >
+              Not shipped yet. A dedicated MCP server is planned. Use the skill
+              file for now.
             </p>
           )}
         </div>

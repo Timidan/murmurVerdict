@@ -15,6 +15,7 @@
 //   · ApiKeysPanel (list + rotate + mint)
 
 import { useEffect, useMemo } from "react";
+import { Ik, type IconName } from "../icons.js";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { DestinationAddressForm } from "../components/account/DestinationAddressForm.js";
 import { ProviderTermsPanel } from "../components/account/ProviderTermsPanel.js";
@@ -37,7 +38,8 @@ export type AgentSettingsTab =
   | "reveals"
   | "wallet"
   | "runtime"
-  | "keys";
+  | "keys"
+  | "profile";
 
 export interface AgentSettingsPageProps {
   slug: string;
@@ -77,6 +79,12 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
   // blank page while the hook flushes its first /v1/account/agents call.
   const agentMissing = !account.loading && !agent;
 
+  // Tab state read off the AccountAgent row already in hand — no extra fetch.
+  // The other five tabs own their counts inside their panels, so they say
+  // nothing here rather than guess. Null while the row is still loading.
+  const payoutNote = agent ? (agent.destination_address ? "set" : "not set") : null;
+  const walletNote = agent ? (agent.controller_wallet ? "bound" : "not bound") : null;
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb><span>
@@ -92,9 +100,11 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             </a>
           </span></TopbarCrumb>
 
-      <main className="flex-1 px-3 py-4 flex flex-col items-center gap-4">
+      {/* One measure for the page, not one per panel. Panels inside are w-full
+          and inherit it; the rail and the body split it. */}
+      <main className="flex-1 px-3 py-4 w-full max-w-[1100px] mx-auto flex flex-col gap-4">
         {/* ── Agent header ─────────────────────────────────────────── */}
-        <header className="w-full max-w-[720px] flex flex-wrap items-center justify-between gap-3 px-1">
+        <header className="flex flex-wrap items-center justify-between gap-3 px-1">
           <div className="flex items-center gap-2 min-w-0">
             <span className="ck-mono ck-pos truncate">{slug}</span>
             <TierBadge kind={(agent?.kind as AgentKind) ?? "agent"} />
@@ -121,92 +131,98 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           </span>
         </header>
 
-        {/* ── Tab strip — hash-routed, not state-driven ──────────── */}
-        <nav
-          className="w-full max-w-[720px] flex items-stretch border border-[var(--color-border-vis)]"
-          aria-label="agent settings tabs"
-        >
-          {/* payout is the deep-link default (route.ts) — keep it first so
-              the default tab lands leftmost, not at the end of the strip. */}
-          <TabLink slug={slug} tab="payout" active={tab === "payout"}>
-            payout
-          </TabLink>
-          <TabLink slug={slug} tab="pricing" active={tab === "pricing"}>
-            pricing
-          </TabLink>
-          <TabLink slug={slug} tab="earnings" active={tab === "earnings"}>
-            earnings
-          </TabLink>
-          <TabLink slug={slug} tab="reveals" active={tab === "reveals"}>
-            reveals
-          </TabLink>
-          <TabLink slug={slug} tab="wallet" active={tab === "wallet"}>
-            wallet
-          </TabLink>
-          <TabLink slug={slug} tab="runtime" active={tab === "runtime"}>
-            runtime keys
-          </TabLink>
-          <TabLink slug={slug} tab="keys" active={tab === "keys"}>
-            api keys
-          </TabLink>
-        </nav>
-
-        {/* ── Body ─────────────────────────────────────────────── */}
-        {/* Codex P2 fix — `key={slug}` forces full remount when the user
-            navigates from one agent's settings to another's. Without it
-            React reuses the same component instance and the previous
-            agent's loaded keys / form input / confirm-id can leak under
-            the new header. On the keys tab the leak is destructive: a
-            stale confirm-id could rotate the wrong agent's key. */}
-        {agentMissing ? (
-          <NotFoundShell slug={slug} />
-        ) : tab === "payout" ? (
-          <DestinationAddressForm
-            key={slug}
-            slug={slug}
-            currentAddress={agent?.destination_address ?? null}
-            updatedAt={agent?.destination_address_updated_at ?? null}
-            onSaved={() => void account.refreshAgents()}
-          />
-        ) : tab === "pricing" ? (
-          <ProviderTermsPanel key={slug} slug={slug} />
-        ) : tab === "earnings" ? (
-          <EarningsPanel key={slug} slug={slug} />
-        ) : tab === "reveals" ? (
-          <RevealsPanel key={slug} slug={slug} />
-        ) : tab === "wallet" ? (
-          <ControllerWalletPanel
-            key={slug}
-            slug={slug}
-            agent={agent}
-            onAgentChanged={account.refreshAgents}
-          />
-        ) : tab === "runtime" ? (
-          <RuntimeKeysPanel key={slug} slug={slug} agent={agent} />
-        ) : (
-          <ApiKeysPanel key={slug} slug={slug} />
-        )}
-
-        {/* Profile and retirement sit BELOW the tab body, not inside a tab of
-            their own: they are the agent's identity and its off switch, and
-            both belong wherever the owner already is. Retirement carries the
-            danger styling; editing a name does not. */}
-        {!agentMissing && (
-          <>
-            <AgentProfilePanel
-              key={`profile-${slug}`}
+        {/* ── Rail + body — hash-routed, not state-driven ────────── */}
+        <div className="ck-sidetabs">
+          <nav className="ck-sidetab-rail" aria-label="agent settings tabs">
+            {/* payout is the deep-link default (route.ts) — keep it first so
+                the default tab lands topmost, not at the foot of the rail. */}
+            <TabLink slug={slug} tab="payout" active={tab === "payout"} note={payoutNote}>
+              payout
+            </TabLink>
+            <TabLink slug={slug} tab="pricing" active={tab === "pricing"}>
+              pricing
+            </TabLink>
+            <TabLink slug={slug} tab="earnings" active={tab === "earnings"}>
+              earnings
+            </TabLink>
+            <TabLink slug={slug} tab="reveals" active={tab === "reveals"}>
+              reveals
+            </TabLink>
+            <TabLink slug={slug} tab="wallet" active={tab === "wallet"} note={walletNote}>
+              wallet
+            </TabLink>
+            <TabLink slug={slug} tab="runtime" active={tab === "runtime"}>
+              runtime keys
+            </TabLink>
+            <TabLink slug={slug} tab="keys" active={tab === "keys"}>
+              api keys
+            </TabLink>
+            <TabLink
               slug={slug}
-              agent={agent}
-              onSaved={() => void account.refreshAgents()}
-            />
-            <AgentDangerZone
-              key={`danger-${slug}`}
-              slug={slug}
-              retiredAt={agent?.retired_at ?? null}
-              onChanged={() => void account.refreshAgents()}
-            />
-          </>
-        )}
+              tab="profile"
+              active={tab === "profile"}
+              note={agent?.retired_at ? "retired" : undefined}
+            >
+              profile
+            </TabLink>
+          </nav>
+
+          <div className="ck-sidetab-body flex flex-col gap-4">
+            {/* ── Body ─────────────────────────────────────────── */}
+            {/* Codex P2 fix — `key={slug}` forces full remount when the user
+                navigates from one agent's settings to another's. Without it
+                React reuses the same component instance and the previous
+                agent's loaded keys / form input / confirm-id can leak under
+                the new header. On the keys tab the leak is destructive: a
+                stale confirm-id could rotate the wrong agent's key. */}
+            {agentMissing ? (
+              <NotFoundShell slug={slug} />
+            ) : tab === "payout" ? (
+              <DestinationAddressForm
+                key={slug}
+                slug={slug}
+                currentAddress={agent?.destination_address ?? null}
+                updatedAt={agent?.destination_address_updated_at ?? null}
+                onSaved={() => void account.refreshAgents()}
+              />
+            ) : tab === "pricing" ? (
+              <ProviderTermsPanel key={slug} slug={slug} />
+            ) : tab === "earnings" ? (
+              <EarningsPanel key={slug} slug={slug} />
+            ) : tab === "reveals" ? (
+              <RevealsPanel key={slug} slug={slug} />
+            ) : tab === "wallet" ? (
+              <ControllerWalletPanel
+                key={slug}
+                slug={slug}
+                agent={agent}
+                onAgentChanged={account.refreshAgents}
+              />
+            ) : tab === "runtime" ? (
+              <RuntimeKeysPanel key={slug} slug={slug} agent={agent} />
+            ) : tab === "keys" ? (
+              <ApiKeysPanel key={slug} slug={slug} />
+            ) : (
+              /* Profile and retirement share ONE tab — an agent's identity and
+                 its off switch. They used to render below every tab, which read
+                 as the same setting duplicated; now each lives in one place. */
+              <>
+                <AgentProfilePanel
+                  key={`profile-${slug}`}
+                  slug={slug}
+                  agent={agent}
+                  onSaved={() => void account.refreshAgents()}
+                />
+                <AgentDangerZone
+                  key={`danger-${slug}`}
+                  slug={slug}
+                  retiredAt={agent?.retired_at ?? null}
+                  onChanged={() => void account.refreshAgents()}
+                />
+              </>
+            )}
+          </div>
+        </div>
       </main>
     </div>
   );
@@ -260,36 +276,56 @@ function ReattestHeaderChip({
   );
 }
 
+/** One mark per tab, from the shipped set — the rail reads by shape first. */
+const TAB_ICON: Record<AgentSettingsTab, IconName> = {
+  payout: "tab-payout",
+  pricing: "tab-pricing",
+  earnings: "tab-earnings",
+  reveals: "tab-reveals",
+  wallet: "tab-wallet",
+  runtime: "tab-runtime",
+  keys: "tab-apikeys",
+  profile: "tab-profile",
+};
+
 function TabLink({
   slug,
   tab,
   active,
+  note,
   children,
 }: {
   slug: string;
   tab: AgentSettingsTab;
   active: boolean;
+  /** The tab's own state, when the page already holds it. Never a guess. */
+  note?: string | null;
   children: React.ReactNode;
 }) {
+  // Icon-only, like the topbar nav: the glyph IS the link, the word rides in
+  // the hover tip. Labels in flow truncated ("payout · not\u2026") at rail width.
+  const label = typeof children === "string" ? children : tab;
   return (
     <a
       href={`#/account/agent/${encodeURIComponent(slug)}/${tab}`}
       className={
-        "flex-1 text-center px-3 py-2 ck-label no-underline border-r border-[var(--color-border)] last:border-r-0 " +
-        (active
-          ? "ck-pos bg-[var(--color-surface)]"
-          : "ck-dim hover:ck-pos")
+        "ck-sidetab ck-sidetab--icon " + (active ? "ck-tab-active" : "ck-dim ck-hoverable")
       }
       aria-current={active ? "page" : undefined}
+      aria-label={note ? `${label} · ${note}` : label}
     >
-      {children}
+      <Ik name={TAB_ICON[tab]} />
+      <span className="ck-sidetab-tip ck-label" aria-hidden="true">
+        {label}
+        {note && <span className="ck-dim"> · {note}</span>}
+      </span>
     </a>
   );
 }
 
 function NotFoundShell({ slug }: { slug: string }) {
   return (
-    <section className="ck-frame-strong w-full max-w-[560px] px-4 py-4">
+    <section className="ck-frame-strong w-full px-4 py-4">
       <p
         className="ck-mono"
         style={{ color: "var(--color-accent-ink)" }}

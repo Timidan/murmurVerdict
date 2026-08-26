@@ -23,6 +23,72 @@
 import type { ReactNode } from "react";
 
 const GLYPHS = {
+  /* ── Agent-settings rail ────────────────────────────────────────────────
+     Purpose-drawn so the rail reads by shape alone. Namespaced `tab-` because
+     every semantically-obvious mark (agent, seal, controller-wallet) is already
+     spoken for elsewhere, and the unused pool is outcome glyphs that mean call
+     results, not settings. Streamline Sharp: square caps, miter joins. */
+  "tab-payout": (
+    // Money out to your address. 16-grid, half-grid coords: hand-drawn tier.
+    <>
+      <path d="M8 1.5V9.5" />
+      <path d="M5 6.5L8 9.5L11 6.5" />
+      <path d="M1.5 11.5V14.5H14.5V11.5" />
+    </>
+  ),
+  "tab-pricing": (
+    <>
+      <path d="M8.5 1.5H14.5V7.5L7.5 14.5L1.5 8.5L8.5 1.5Z" />
+      <circle cx="11.5" cy="4.5" r="1" />
+    </>
+  ),
+  "tab-earnings": (
+    <>
+      <path d="M1.5 13.5H14.5" />
+      <path d="M2.5 10.5L6.5 6.5L8.5 8.5L13.5 3.5" />
+      <path d="M10.5 3.5H13.5V6.5" />
+    </>
+  ),
+  "tab-reveals": (
+    // Angular eye — the Sharp grammar has no soft lens curve.
+    <>
+      <path d="M1.5 8L4.5 4.5H11.5L14.5 8L11.5 11.5H4.5L1.5 8Z" />
+      <circle cx="8" cy="8" r="2" />
+    </>
+  ),
+  "tab-wallet": (
+    <>
+      <path d="M1.5 4.5H14.5V13.5H1.5V4.5Z" />
+      <path d="M1.5 4.5L10.5 2.5V4.5" />
+      <path d="M14.5 7.5H11.5V10.5H14.5" />
+    </>
+  ),
+  "tab-runtime": (
+    // Terminal: the running program the key authorizes.
+    <>
+      <path d="M1.5 2.5H14.5V13.5H1.5V2.5Z" />
+      <path d="M1.5 5.5H14.5" />
+      <path d="M4 8L6 10L4 12" />
+      <path d="M7.5 12H11.5" />
+    </>
+  ),
+  "tab-apikeys": (
+    <>
+      <circle cx="5" cy="8" r="2.5" />
+      <path d="M7.5 8H14.5" />
+      <path d="M12 8V10.5" />
+      <path d="M14 8V10" />
+    </>
+  ),
+  "tab-profile": (
+    <>
+      <path d="M1.5 3.5H14.5V12.5H1.5V3.5Z" />
+      <circle cx="5.5" cy="7" r="1.5" />
+      <path d="M3 11.5C3 9.5 4 8.5 5.5 8.5C7 8.5 8 9.5 8 11.5" />
+      <path d="M10.5 6.5H13" />
+      <path d="M10.5 9.5H12.5" />
+    </>
+  ),
   agent: (
     <>
       <path d="M2 7h20v15H2V7Z" />
@@ -671,6 +737,23 @@ const BRAND_MARKS = {
         fill="#EA4335"
         stroke="none"
         d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.69 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75z"
+      />
+    </>
+  ),
+  // Circle's USDC mark in its own brand blue. A price is denominated in a real
+  // asset, so it gets the real logo for the same reason Google's G does.
+  usdc: (
+    <>
+      <circle cx="12" cy="12" r="12" fill="#2775CA" stroke="none" />
+      <path
+        fill="#FFFFFF"
+        stroke="none"
+        d="M15.3 13.9c0-1.75-1.05-2.35-3.15-2.6-1.5-.2-1.8-.6-1.8-1.3s.5-1.15 1.5-1.15c.9 0 1.4.3 1.65.98a.38.38 0 0 0 .35.24h.8a.34.34 0 0 0 .35-.35v-.05a2.5 2.5 0 0 0-2.25-2.05V6.5a.38.38 0 0 0-.35-.35h-.75a.38.38 0 0 0-.35.35v1.1c-1.5.2-2.45 1.2-2.45 2.45 0 1.65 1 2.3 3.1 2.55 1.4.25 1.85.55 1.85 1.35s-.7 1.35-1.65 1.35c-1.3 0-1.75-.55-1.9-1.3a.36.36 0 0 0-.35-.28h-.85a.34.34 0 0 0-.35.35v.05c.2 1.25 1 2.15 2.65 2.4v1.13c0 .19.16.35.35.35h.75a.38.38 0 0 0 .35-.35v-1.13c1.5-.25 2.5-1.3 2.5-2.63z"
+      />
+      <path
+        fill="#FFFFFF"
+        stroke="none"
+        d="M9.65 19.15A7.51 7.51 0 0 1 12 4.65a.4.4 0 0 0 .3-.4v-.6a.35.35 0 0 0-.3-.38h-.1a9 9 0 0 0 0 17.45h.1a.35.35 0 0 0 .3-.38v-.6a.4.4 0 0 0-.3-.4 7.4 7.4 0 0 1-2.35-.19zm4.8-15.88h-.1a.35.35 0 0 0-.3.39v.6c0 .19.13.35.3.4a7.51 7.51 0 0 1 0 14.5.4.4 0 0 0-.3.4v.6c0 .21.14.38.3.38h.1a9 9 0 0 0 0-17.27z"
       />
     </>
   ),

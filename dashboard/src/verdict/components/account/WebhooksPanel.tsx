@@ -129,15 +129,14 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
       </div>
 
       <div className="px-3 py-3 flex flex-col gap-3">
-        <p className="ck-dim text-[12px]">
-          Murmur posts to your server when one of your calls is accepted and
-          again when it resolves. Every delivery is signed, so your server can
-          check that murmur sent it.
-        </p>
-        <p className="ck-dim text-[12px]">
-          Events sent:{" "}
-          <span className="ck-mono">{DELIVERED_EVENTS.join(" · ")}</span>. Each
-          subscription receives both.
+        {/* The signing detail lives on the line rather than above it — a
+            subscriber who needs it hovers, everyone else reads four words. */}
+        <p
+          className="ck-dim text-[12px]"
+          title="Every delivery is signed, so your server can verify murmur sent it. Each subscription receives both events."
+        >
+          Signed POST on{" "}
+          <span className="ck-mono">{DELIVERED_EVENTS.join(" · ")}</span>
         </p>
 
         {named.length === 0 ? (
@@ -167,7 +166,7 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
                 value={scope}
                 onChange={(e) => setScope(e.currentTarget.value)}
                 disabled={busy}
-                className={INPUT_CLASS}
+                className="ck-mono ck-select"
               >
                 <option value="">pick an agent</option>
                 {named.map((a) => (

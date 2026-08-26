@@ -43,6 +43,7 @@ interface JustMintedEnvelope {
   agent_slug?: string;
   runtime_key_id?: string;
   runtime_key_prefix?: string;
+  runtime_key_signing_pk?: string;
   minted_at?: number;
 }
 
@@ -80,6 +81,7 @@ function consumeJustMinted(slug: string): JustMintedEnvelope | null {
       agent_slug: env.agent_slug,
       runtime_key_id: env.runtime_key_id,
       runtime_key_prefix: env.runtime_key_prefix,
+      runtime_key_signing_pk: env.runtime_key_signing_pk,
       minted_at: env.minted_at,
     };
   } catch {
@@ -228,16 +230,17 @@ export function IntegratePage({ slug }: IntegratePageProps) {
         <AgentPromptPanel
           slug={slug}
           runtimeKey={arrivedWithFreshRuntimeKey ? envelope!.secret : undefined}
+          runtimeKeyId={arrivedWithFreshRuntimeKey ? envelope!.runtime_key_id : undefined}
+          signingPrivateKey={
+            arrivedWithFreshRuntimeKey ? envelope!.runtime_key_signing_pk : undefined
+          }
         />
 
-        {agent ? (
+        {!arrivedWithFreshRuntimeKey && agent ? (
           <CodeSnippetPanel
             agentSlug={slug}
-            runtimeKey={
-              arrivedWithFreshRuntimeKey ? envelope!.secret : undefined
-            }
           />
-        ) : agentMissing ? (
+        ) : !arrivedWithFreshRuntimeKey && agentMissing ? (
           <section className="ck-frame-strong px-4 py-4">
             <p className="ck-mono ck-neg">We cannot find the agent {slug} on your account.</p>
             <p className="ck-dim text-[12px] mt-2">
@@ -245,7 +248,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
               <a href="#/account" className="ck-pos no-underline">go back to your account</a>.
             </p>
           </section>
-        ) : (
+        ) : !arrivedWithFreshRuntimeKey ? (
           <section className="ck-frame px-4 py-4">
             <p className="ck-mono ck-dim">Finding your agent…</p>
             <p className="ck-dim text-[12px] mt-2">
@@ -257,7 +260,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
               </p>
             )}
           </section>
-        )}
+        ) : null}
 
         <section className="ck-frame">
           <div className="ck-header">
@@ -385,6 +388,7 @@ export interface StashJustMintedInput {
   source?: "runtime" | "api-key";
   runtime_key_id?: string;
   runtime_key_prefix?: string;
+  runtime_key_signing_pk?: string;
 }
 
 export function stashJustMinted(
@@ -402,6 +406,7 @@ export function stashJustMinted(
     agent_slug: slug,
     runtime_key_id: normalized.runtime_key_id,
     runtime_key_prefix: normalized.runtime_key_prefix,
+    runtime_key_signing_pk: normalized.runtime_key_signing_pk,
     minted_at: now,
   };
   try {
@@ -429,9 +434,13 @@ export function stashJustMinted(
 function AgentPromptPanel({
   slug,
   runtimeKey,
+  runtimeKeyId,
+  signingPrivateKey,
 }: {
   slug: string;
   runtimeKey?: string;
+  runtimeKeyId?: string;
+  signingPrivateKey?: string;
 }) {
   const [prompt, setPrompt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -444,7 +453,7 @@ function AgentPromptPanel({
     let cancelled = false;
     setLoading(true);
     setError(false);
-    buildAgentPrompt(slug, runtimeKey)
+    buildAgentPrompt(slug, { runtimeKey, runtimeKeyId, signingPrivateKey })
       .then((text) => {
         if (cancelled) return;
         setPrompt(text);
@@ -458,7 +467,7 @@ function AgentPromptPanel({
     return () => {
       cancelled = true;
     };
-  }, [slug, runtimeKey]);
+  }, [slug, runtimeKey, runtimeKeyId, signingPrivateKey]);
 
   useEffect(() => {
     return () => {

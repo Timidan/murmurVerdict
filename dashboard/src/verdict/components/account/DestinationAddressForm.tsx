@@ -193,7 +193,7 @@ export function DestinationAddressForm({
   return (
     <form
       onSubmit={onSubmit}
-      className="ck-frame w-full max-w-[560px] flex flex-col"
+      className="ck-frame w-full flex flex-col"
       noValidate
     >
       <div className="ck-header">

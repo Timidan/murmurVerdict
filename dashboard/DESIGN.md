@@ -100,6 +100,7 @@ When the page sits inside `.mmr-shell`, overrides at `dashboard/src/verdict/styl
 | `.ck-label` (T3) | **13px** | 700, 0.04em, `--color-secondary` — inline field labels |
 | `.ck-meta` | **13px** | small meta line under display titles |
 | `.ck-colhead` (T2) | **12px** | 700, 0.09em, `--color-disabled` — table column headers, quiet scaffolding. Sits ON the floor |
+| `.ck-tag` / `.ck-tag-ok` | **12px** | 700, 0.04em, `--color-disabled` — a list row's own state beside its control (`ck-tag-ok` tints it `--color-success` for "selling"). Sits ON the floor |
 | `.mmr-nav-link`, `.mmr-topbar-meta`, `.mmr-topbar-crumb` | **`--nav-font-size` = 0.78rem** (12.48px) | 400, 0 tracking, 44px target, `--nav-link-gap` 32px (68px under `hover:none`, where the pinned tips are always shown), unboxed with intent underline |
 | `.mmr-nav-tip` | **12px** | pinned/hover label; same 12px in the `hover:none` branch (padding tightens to `3px 5px`, not the size) |
 | `.ck-steprail-title`, `.ck-stephint`, `.ck-steppanel-foot` | **12px** | /install rail chrome |

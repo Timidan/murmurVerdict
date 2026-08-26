@@ -42,9 +42,23 @@ import { InlineError } from "../components/compact/InlineError.js";
 import { RuntimeKeyMintModal } from "../components/account/RuntimeKeyMintModal.js";
 import { generateRuntimeKeySigningKeypair } from "../lib/runtime-key-signing.js";
 import { useAccount } from "../hooks/useAccount.js";
-import { verdictApi, type RuntimeKeyMintResponse } from "../api.js";
+import { verdictApi, ApiError, type RuntimeKeyMintResponse } from "../api.js";
 
 const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/**
+ * How long the field waits after a keystroke before asking whether the handle
+ * is free. Short enough that it reads as an answer to the character just
+ * typed, long enough that typing a whole handle costs one question and not
+ * one per letter.
+ */
+const HANDLE_CHECK_DELAY_MS = 200;
+/** How long a single check is allowed to hang before it is called unknown. */
+const HANDLE_CHECK_TIMEOUT_MS = 6_000;
+
+type HandleCheck =
+  | { state: "idle" }
+  | { state: "checking" | "free" | "taken" | "unknown"; slug: string };
+
 const SLUG_MIN = 3;
 const SLUG_MAX = 32;
 
@@ -67,6 +81,10 @@ export function AgentOnboardPage() {
   const { signMessage } = useSignMessage();
 
   const [slug, setSlug] = useState<string>("");
+  // Whether the handle in the field is still free, answered while it is being
+  // typed rather than at submit. The state carries the handle it describes so
+  // a late answer about an earlier handle can be recognised and dropped.
+  const [handleCheck, setHandleCheck] = useState<HandleCheck>({ state: "idle" });
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [minted, setMinted] = useState<RuntimeKeyMintResponse | null>(null);
@@ -141,9 +159,81 @@ export function AgentOnboardPage() {
   }, [ready, authenticated, embeddedWallet, provisioning, createWallet]);
 
   const slugValid = useMemo(() => isValidSlug(slug), [slug]);
+
+  /**
+   * Ask whether the handle is taken, on every change to it.
+   *
+   * The route is the public agent profile: it answers 404 for exactly the
+   * handles the create call would accept, because both resolve the same
+   * `display_slug` column and the profile hides nothing that exists. Anything
+   * cleverer here would be a second definition of "taken" to keep in step with
+   * the first.
+   *
+   * Two things keep it honest under a fast typist. Each keystroke aborts the
+   * request before it, so at most one is ever in flight; and the answer is
+   * stored against the handle it was asked about, so a reply that arrives
+   * after the field has moved on is discarded rather than rendered. The short
+   * wait before asking is not a delay the typist can feel — it is what stops a
+   * ten-character handle costing ten round trips to learn one fact.
+   */
+  useEffect(() => {
+    if (!slugValid) {
+      setHandleCheck({ state: "idle" });
+      return;
+    }
+    const asked = slug;
+    setHandleCheck({ state: "checking", slug: asked });
+    const controller = new AbortController();
+
+    // A request that never answers would leave the field saying "checking"
+    // and the button disabled for as long as the operator cared to wait.
+    // `fetch` has no timeout of its own, so the stall gets one here.
+    const stall = window.setTimeout(() => {
+      controller.abort();
+      setHandleCheck({ state: "unknown", slug: asked });
+    }, HANDLE_CHECK_TIMEOUT_MS);
+
+    const timer = window.setTimeout(() => {
+      verdictApi
+        .agent(asked, controller.signal)
+        .then(() => {
+          window.clearTimeout(stall);
+          setHandleCheck({ state: "taken", slug: asked });
+        })
+        .catch((err: unknown) => {
+          window.clearTimeout(stall);
+          // Aborted either by the next keystroke or by the stall above, and
+          // both have already said what they mean.
+          if (controller.signal.aborted) return;
+          if (err instanceof ApiError && err.status === 404) {
+            setHandleCheck({ state: "free", slug: asked });
+            return;
+          }
+          // A check that could not run is not a handle that is taken. Say so
+          // and leave the button alone: the create call rejects a duplicate on
+          // its own, and blocking here would strand an operator behind a
+          // network blip.
+          setHandleCheck({ state: "unknown", slug: asked });
+        });
+    }, HANDLE_CHECK_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(stall);
+      controller.abort();
+    };
+  }, [slug, slugValid]);
+
+  // Only an answer about the handle currently in the field counts.
+  const handleState =
+    handleCheck.state !== "idle" && handleCheck.slug === slug
+      ? handleCheck.state
+      : "idle";
   const inFlight = phase !== "idle" && phase !== "done";
   const canSubmit =
     slugValid &&
+    handleState !== "taken" &&
+    handleState !== "checking" &&
     Boolean(embeddedWallet) &&
     !inFlight &&
     ready &&
@@ -321,11 +411,12 @@ export function AgentOnboardPage() {
           autoFocus
           className={
             "border bg-[var(--color-bg)] ck-mono px-3 py-2 " +
-            (slug.length === 0 || slugValid
+            (slug.length === 0 || (slugValid && handleState !== "taken")
               ? "border-[var(--color-border-vis)]"
               : "border-[var(--color-accent-ink)]")
           }
-          aria-invalid={slug.length > 0 && !slugValid}
+          aria-invalid={slug.length > 0 && (!slugValid || handleState === "taken")}
+          aria-describedby="handle-status"
         />
         {slug.length > 0 && !slugValid && (
           <span className="ck-neg text-xs">
@@ -333,12 +424,34 @@ export function AgentOnboardPage() {
             characters).
           </span>
         )}
-        {slugValid && (
-          <span className="ck-dim text-xs">
-            Shown as <span className="ck-pos">"{toTitleCase(slug)}"</span>.
-            You can change this later.
-          </span>
-        )}
+        {/* One line, spoken once. `aria-live` is polite rather than assertive
+            because this arrives while somebody is still typing, and an
+            assertive region would interrupt them mid-word to say "checking". */}
+        <span aria-live="polite" className="text-xs" id="handle-status">
+          {!slugValid ? null : handleState === "taken" ? (
+            <span className="ck-neg">
+              <span className="ck-mono">{slug}</span> is taken. Try another
+              handle.
+            </span>
+          ) : handleState === "checking" ? (
+            <span className="ck-dim">Checking whether it is free…</span>
+          ) : handleState === "unknown" ? (
+            <span className="ck-dim">
+              Could not check that handle just now. You can still continue —
+              a handle already in use is refused when the agent is created.
+            </span>
+          ) : (
+            <span className="ck-dim">
+              {handleState === "free" ? (
+                <>
+                  <span className="ck-pos">Free.</span>{" "}
+                </>
+              ) : null}
+              Shown as <span className="ck-pos">"{toTitleCase(slug)}"</span>.
+              You can change this later.
+            </span>
+          )}
+        </span>
       </section>
 
       <section className="flex flex-col gap-2 mt-6">

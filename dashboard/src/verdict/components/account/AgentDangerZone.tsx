@@ -61,7 +61,7 @@ export function AgentDangerZone({
   );
 
   return (
-    <details className="ck-frame mmr-danger w-full max-w-[720px]" open={retired}>
+    <details className="ck-frame mmr-danger w-full" open={retired}>
       <summary className="ck-header mmr-danger-summary">
         <span className="ck-title ck-title-ik">
           <Ik name="revoke" /> retire this agent

@@ -175,6 +175,31 @@
    the data-theme="paper" multi-theme variant.
    ──────────────────────────────────────────────────────────────────────── */
 
+/* The browser paints native widgets it will not let CSS reach: the <select>
+   popup list, scrollbars, focus rings, date pickers. Without this it assumes
+   light and renders a white popup with grey-on-white options, which is how the
+   webhook agent picker became unreadable on the dark canvas. Declared per
+   theme, not once, because paper really is a light page. */
+:root {
+  color-scheme: dark;
+}
+[data-theme="paper"] {
+  color-scheme: light;
+}
+
+/* color-scheme fixes the popup on every engine that honours it. These two
+   rules are for the ones that paint <option> from the UA sheet regardless. */
+select,
+option {
+  background-color: var(--color-bg);
+  color: var(--color-primary);
+}
+option:checked,
+option:hover {
+  background-color: var(--color-raised);
+  color: var(--color-display);
+}
+
 :root {
   --background: var(--color-bg);
   --foreground: var(--color-primary);

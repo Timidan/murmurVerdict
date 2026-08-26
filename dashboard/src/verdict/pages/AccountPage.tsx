@@ -156,8 +156,11 @@ export function AccountPage() {
             )}
           </span></TopbarCrumb>
 
-      <main className="flex-1 px-3 py-3 flex flex-col gap-3 max-w-[960px] w-full mx-auto">
-        <section className="ck-frame">
+      {/* Bento, not a stack. Eight equal-width panels gave "no webhooks yet"
+          the same weight as the agent list; span sizes encode what matters.
+          Single column under md — a phone has one column of attention. */}
+      <main className="flex-1 px-3 py-3 grid grid-cols-1 md:grid-cols-6 gap-3 content-start max-w-[960px] w-full mx-auto">
+        <section className="ck-frame md:col-span-6">
           <div className="ck-header">
             <span className="ck-title ck-title-ik">
               <IkNav name="agent" /> your agents
@@ -193,23 +196,49 @@ export function AccountPage() {
             <AgentList agents={account.agents} />
           )}
         </section>
-        <LinkedLoginsPanel />
-        <WebhooksPanel agents={account.agents} />
-        <PurchasesPanel agents={account.agents} />
-        <ActivityPanel />
-        <KillSwitchPanel />
-        {/* Closing the account sits BELOW the kill switch on purpose. They
-            read as neighbours and they are not: one is a pause with a release
-            button, the other has no undo. Ordering them pause-then-close puts
-            the reversible control in the path first. */}
-        <DeactivateAccountPanel
-          onClosed={() => {
-            // Re-enter the bootstrap so the terminal screen renders from the
-            // server's own answer rather than from local optimism.
-            window.location.reload();
-          }}
-        />
-        <FheStatusPanel />
+        {/* Row 2: the three that are usually empty or a single value. They
+            cost a third of a row each instead of a full one. */}
+        <div className="md:col-span-2 flex [&>*]:w-full">
+          <LinkedLoginsPanel />
+        </div>
+        <div className="md:col-span-2 flex [&>*]:w-full">
+          <WebhooksPanel agents={account.agents} />
+        </div>
+        <div className="md:col-span-2 flex [&>*]:w-full">
+          <ActivityPanel />
+        </div>
+
+        {/* Row 3: purchases carries a wallet and two controls, so it earns
+            half a row. */}
+        <div className="md:col-span-3 flex [&>*]:w-full">
+          <PurchasesPanel agents={account.agents} />
+        </div>
+
+        {/* ONE tile, two rows — not two stacked panels, which would reintroduce
+            the vertical stack this layout exists to remove. Both children keep
+            their own <details> and forms; mmr-safety only drops their frames so
+            they read as rows. Still ordered pause-then-close: one is a pause
+            with a release button, the other has no undo, so the reversible
+            control sits first in the path. */}
+        <section className="ck-frame md:col-span-3 mmr-safety">
+          <div className="ck-header">
+            <span className="ck-title ck-title-ik">
+              <Ik name="kill-switch" /> safety
+            </span>
+          </div>
+          <KillSwitchPanel />
+          <DeactivateAccountPanel
+            onClosed={() => {
+              // Re-enter the bootstrap so the terminal screen renders from the
+              // server's own answer rather than from local optimism.
+              window.location.reload();
+            }}
+          />
+        </section>
+
+        <div className="md:col-span-6">
+          <FheStatusPanel />
+        </div>
       </main>
     </div>
   );

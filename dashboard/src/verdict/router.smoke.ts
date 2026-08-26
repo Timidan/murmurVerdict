@@ -33,6 +33,7 @@ for (const tab of [
   "wallet",
   "runtime",
   "keys",
+  "profile",
 ]) {
   const r = parseLocation({ pathname: `/account/agent/x/${tab}`, hash: "" });
   assert.equal(r.name, "account_agent_settings");

@@ -152,7 +152,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
   const rotated = keys.filter((k) => k.rotated_at);
 
   return (
-    <section className="ck-frame w-full max-w-[720px] flex flex-col">
+    <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
           <Ik name="api" /> api keys · {slug}

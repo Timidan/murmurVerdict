@@ -107,10 +107,13 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
       </div>
 
       <div className="px-3 py-3 flex flex-col gap-3">
-        <p className="ck-dim text-[12px]">
-          Calls your controller wallet paid to read early. Murmur shows granted
-          purchases to anyone, because each one is already on chain. Sign a
-          message to see the rest: what stalled, and what is owed back.
+        {/* Why granted rows are public, and what signing adds, are answers to
+            questions the two buttons already ask. They belong on the hover. */}
+        <p
+          className="ck-dim text-[12px]"
+          title="Granted purchases are visible to anyone because each one is already on chain. Signing reveals the rest: what stalled, and what is owed back."
+        >
+          Calls this wallet paid to read early.
         </p>
 
         {address ? (

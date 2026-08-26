@@ -136,7 +136,7 @@ export function parseLocation(location: LocationLike): ParsedRoute {
   // renders but this pattern does not list falls through to the marketing
   // route, so a deep link to it 404s while the tab strip still shows it.
   const agentSettingsMatch =
-    /^\/account\/agent\/([^/]+)(?:\/(payout|pricing|earnings|reveals|wallet|runtime|keys))?$/.exec(
+    /^\/account\/agent\/([^/]+)(?:\/(payout|pricing|earnings|reveals|wallet|runtime|keys|profile))?$/.exec(
       path,
     );
   if (agentSettingsMatch) {

@@ -45,7 +45,6 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [minted, setMinted] = useState<RuntimeKeyMintResponse | null>(null);
   const [mintedSigning, setMintedSigning] = useState<string | null>(null);
-  const [popEnabled, setPopEnabled] = useState(true);
 
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -105,8 +104,8 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       }
       // PoP: the keypair must exist BEFORE the challenge so its public half
       // is inside the policy the controller wallet signs.
-      const signing = popEnabled ? await generateRuntimeKeySigningKeypair() : null;
-      const policy = signing ? { signing_pubkey: signing.publicKeyHex } : {};
+      const signing = await generateRuntimeKeySigningKeypair();
+      const policy = { signing_pubkey: signing.publicKeyHex };
       setBusy("challenging");
       const challenge = await verdictApi.postRuntimeKeyChallenge(token, slug, {
         policy,
@@ -125,7 +124,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
         authorization_issued_at: challenge.authorization_issued_at,
         signature,
       });
-      setMintedSigning(signing?.privateKeyPkcs8Base64 ?? null);
+      setMintedSigning(signing.privateKeyPkcs8Base64);
       setMinted(result);
     } catch (e) {
       // Frame the raw daemon detail in plain words — operators are devs,
@@ -167,7 +166,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   }
 
   return (
-    <section className="ck-frame w-full max-w-[720px] px-4 py-4 flex flex-col gap-3">
+    <section className="ck-frame w-full px-4 py-4 flex flex-col gap-3">
       <header className="flex items-center justify-between">
         <h3 className="ck-title ck-title-ik">
           <Ik name="runtime-key" /> runtime keys · {slug}
@@ -293,18 +292,6 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
         </p>
       )}
 
-      {cw && (
-        <label className="text-[12px] flex items-center gap-1.5 self-start cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={popEnabled}
-            onChange={(e) => setPopEnabled(e.target.checked)}
-            disabled={busy !== "idle"}
-          />
-          Sign every request. If someone steals the key alone, it will not
-          work.
-        </label>
-      )}
       {cw && (
         <button
           className="ck-btn ck-btn-bracket ck-pos self-start disabled:opacity-40 disabled:cursor-not-allowed"

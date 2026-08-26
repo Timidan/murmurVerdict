@@ -57,7 +57,7 @@ export function RevealsPanel({ slug }: { slug: string }) {
   const open = view?.reveals.filter((r) => r.reveal_source === "pending").length ?? 0;
 
   return (
-    <section className="ck-frame w-full max-w-[720px] flex flex-col">
+    <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
           <Ik name="seal" /> reveals

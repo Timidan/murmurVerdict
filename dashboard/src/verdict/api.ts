@@ -82,6 +82,23 @@ export type {
 
 export type { WireMetaResponse as MetaResponse } from "@shared/wire-meta";
 
+// The two PUBLIC marketplace surfaces. `MarketplaceCurrentTerms` (the standing
+// listing) and `LockedTerms` (a sealed call's frozen snapshot) are separate
+// types on purpose — see src/types/wire-marketplace.ts for why collapsing them
+// into "price" is the expensive bug here.
+export type {
+  WireMarketplaceSeries as MarketplaceSeries,
+  WireMarketplaceTrackRecord as MarketplaceTrackRecord,
+  WireMarketplaceCurrentTerms as MarketplaceCurrentTerms,
+  WireMarketplaceListing as MarketplaceListing,
+  WireMarketplaceAgent as MarketplaceAgent,
+  WireMarketplaceListings as MarketplaceListings,
+  WireInventoryStatus as InventoryStatus,
+  WireLockedTerms as LockedTerms,
+  WireSellableCall as SellableCall,
+  WireSellableCalls as SellableCalls,
+} from "@shared/wire-marketplace";
+
 export type {
   WireAccountSession as AccountSession,
   WireAccountAgent as AccountAgent,
@@ -159,6 +176,10 @@ import type {
   WireMarketTaxonomyResponse as MarketTaxonomyResponse,
 } from "@shared/wire-market";
 import type { WireMetaResponse as MetaResponse } from "@shared/wire-meta";
+import type {
+  WireMarketplaceListings as MarketplaceListings,
+  WireSellableCalls as SellableCalls,
+} from "@shared/wire-marketplace";
 import type {
   WireAccountSession as AccountSession,
   WireAccountAgent as AccountAgent,
@@ -397,6 +418,46 @@ export interface ProviderTermsView {
   clamped_by_deliverability?: boolean;
   notice?: string;
   updated_at?: string;
+}
+
+/* ── Market registrations ───────────────────────────────────────────────── */
+
+/** An owner's price for ONE series. Echoed on the registration row. */
+export interface MarketRegistrationTerms {
+  price_atoms: string;
+  currency: string;
+  pricing_version: string;
+  /** The owner's ceiling; null means "as many as murmur can serve". */
+  max_subscribers_per_call: number | null;
+}
+
+/**
+ * One venue series with THIS agent's state on it. A registration is the
+ * precondition for a price (the terms table FKs to it), so `terms` is non-null
+ * only under `registered: true`.
+ */
+export interface MarketRegistrationRow {
+  venue_series_id: string;
+  series_title: string;
+  series_slug: string;
+  venue_category: string | null;
+  registered: boolean;
+  terms: MarketRegistrationTerms | null;
+}
+
+export interface MarketRegistrationsView {
+  schema_version: number;
+  series: MarketRegistrationRow[];
+}
+
+/** Echo of a single register/unregister write. */
+export interface MarketRegistrationWriteView {
+  schema_version: number;
+  venue_series_id: string;
+  registered: boolean;
+  series_title?: string;
+  series_slug?: string;
+  venue_category?: string | null;
 }
 
 /* ── Earnings + payouts ─────────────────────────────────────────────────── */
@@ -644,7 +705,11 @@ export const verdictApi = {
       count: number;
       rows: AgentProfile[];
     }>(`/v1/agents?kind=${kind}&limit=${limit}`),
-  agent: (slug: string) => get<AgentProfile>(`/v1/agents/${encodeURIComponent(slug)}`),
+  // The signal is here for the handle field on the onboarding page, which
+  // asks this route on every keystroke and needs the answer to the handle
+  // being typed now rather than the one two characters ago.
+  agent: (slug: string, signal?: AbortSignal) =>
+    get<AgentProfile>(`/v1/agents/${encodeURIComponent(slug)}`, undefined, signal),
   agentCalls: (slug: string, limit = 50) =>
     get<{ agent_id: string; display_slug: string; kind: string; calls: AgentCallRow[] }>(
       `/v1/agents/${encodeURIComponent(slug)}/calls?limit=${limit}`,
@@ -653,6 +718,71 @@ export const verdictApi = {
   // claimInit / claimFinalize verdictApi methods removed
   // alongside the deleted /v1/agents/:slug/claim/* routes.
   todayFeed: () => get<TodayFeed>(`/v1/feed/today`),
+  /**
+   * The durable storefront catalog: who lists which series, at what STANDING
+   * price. Public and unauthenticated — an offer nobody can see is not an
+   * offer. Every price on this response is a `current_terms`: what the agent's
+   * NEXT sealed call would cost, never what an already-sealed call is sold at.
+   * Series metadata comes back SEPARATELY from agents, so a series with no
+   * sellers still yields a column.
+   */
+  marketplaceListings: (
+    opts: {
+      series?: readonly string[];
+      /** BigInt-safe decimal strings — atoms exceed what a number can hold. */
+      min_list_price_atoms?: string;
+      max_list_price_atoms?: string;
+      min_resolved_calls?: number;
+      min_score_floor?: number;
+    } = {},
+    signal?: AbortSignal,
+  ) => {
+    const params = new URLSearchParams();
+    for (const id of opts.series ?? []) params.append("series", id);
+    if (opts.min_list_price_atoms) params.set("min_list_price_atoms", opts.min_list_price_atoms);
+    if (opts.max_list_price_atoms) params.set("max_list_price_atoms", opts.max_list_price_atoms);
+    if (opts.min_resolved_calls !== undefined) {
+      params.set("min_resolved_calls", String(opts.min_resolved_calls));
+    }
+    if (opts.min_score_floor !== undefined) {
+      params.set("min_score_floor", String(opts.min_score_floor));
+    }
+    const q = params.toString();
+    return get<MarketplaceListings>(
+      `/v1/marketplace/listings${q ? `?${q}` : ""}`,
+      undefined,
+      signal,
+    );
+  },
+  /**
+   * Per-call inventory for the storefront. Public. Every price here is a
+   * `locked_terms` — the snapshot a buyer actually pays for THAT call.
+   *
+   * An empty `calls` array is the NORMAL resting state, not a failure: markets
+   * roll on a five-minute clock and most of it has nothing sealed inside. Read
+   * `purchase_available` before drawing any buy affordance.
+   */
+  sellableCalls: (
+    opts: {
+      series?: readonly string[];
+      agent_slug?: string;
+      limit?: number;
+      cursor?: string;
+    } = {},
+    signal?: AbortSignal,
+  ) => {
+    const params = new URLSearchParams();
+    for (const id of opts.series ?? []) params.append("series", id);
+    if (opts.agent_slug) params.set("agent_slug", opts.agent_slug);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.cursor) params.set("cursor", opts.cursor);
+    const q = params.toString();
+    return get<SellableCalls>(
+      `/v2/gateway/calls/sellable${q ? `?${q}` : ""}`,
+      undefined,
+      signal,
+    );
+  },
   feedAvailability: (feed_id: string) =>
     get<{
       schema_version: number;
@@ -1136,19 +1266,24 @@ export const verdictApi = {
   /**
    * The agent owner's own commercial terms for early decrypt access.
    *
+   * Terms are per venue series — `?series=` is required, and the daemon
+   * answers 400 `series_required` without it rather than guessing a default.
+   *
    * `effective_max_subscribers_per_call` is what murmur will actually sell:
    * min(the owner's ceiling, what this deployment can grant inside the
    * delivery budget). When those differ the response carries `notice`.
    */
-  getProviderTerms: (privyToken: string, slug: string) =>
+  getProviderTerms: (privyToken: string, slug: string, venueSeriesId: string) =>
     get<ProviderTermsView>(
-      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms`,
+      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms` +
+        `?series=${encodeURIComponent(venueSeriesId)}`,
       { Authorization: `Bearer ${privyToken}` },
     ),
 
   putProviderTerms: (
     privyToken: string,
     slug: string,
+    venueSeriesId: string,
     body: {
       price_atoms: string;
       currency: string;
@@ -1157,14 +1292,55 @@ export const verdictApi = {
     },
   ) =>
     put<ProviderTermsView>(
-      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms`,
+      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms` +
+        `?series=${encodeURIComponent(venueSeriesId)}`,
       body,
       { Authorization: `Bearer ${privyToken}` },
     ),
 
-  deleteProviderTerms: (privyToken: string, slug: string) =>
+  deleteProviderTerms: (
+    privyToken: string,
+    slug: string,
+    venueSeriesId: string,
+  ) =>
     del<ProviderTermsView>(
-      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms`,
+      `/v1/account/agents/${encodeURIComponent(slug)}/provider-terms` +
+        `?series=${encodeURIComponent(venueSeriesId)}`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * Every venue series with this agent's registration and pricing state on it —
+   * the whole opt-in surface in one read, which is what the pricing panel
+   * renders.
+   */
+  getMarketRegistrations: (privyToken: string, slug: string) =>
+    get<MarketRegistrationsView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/market-registrations`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /** Opt the agent into serving a series. Idempotent — a repeat still answers 200. */
+  postMarketRegistration: (
+    privyToken: string,
+    slug: string,
+    venueSeriesId: string,
+  ) =>
+    post<MarketRegistrationWriteView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/market-registrations`,
+      { venue_series_id: venueSeriesId },
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /** Drop the registration. Cascades that series' terms away with it. */
+  deleteMarketRegistration: (
+    privyToken: string,
+    slug: string,
+    venueSeriesId: string,
+  ) =>
+    del<MarketRegistrationWriteView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/market-registrations/` +
+        `${encodeURIComponent(venueSeriesId)}`,
       { Authorization: `Bearer ${privyToken}` },
     ),
 

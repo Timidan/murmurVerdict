@@ -600,6 +600,7 @@
 @media (pointer: coarse) {
   .mmr-shell .ck-btn,
   .mmr-shell .ck-tab,
+  .mmr-shell .ck-sidetab,
   .mmr-shell button.ck-label,
   .mmr-shell summary.ck-label,
   .mmr-shell .mmr-asset-chip,
@@ -733,6 +734,19 @@
   font-size: 15px;
   font-weight: 700;
 }
+
+/* State tag — 12px chrome naming a list row's own state beside its control. */
+.mmr-shell .ck-tag {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--color-disabled);
+}
+/* The one tinted variant: selling, in the green that already encodes a win. */
+.mmr-shell .ck-tag-ok {
+  color: var(--color-success);
+}
 /* Summary-tile value — sized by the PANEL via container query, mirroring the
    tile glyph's own 24/48 toggle: compact in a tight sidecar, ck-num-lg
    metrics once the panel affords hero tiles. Lives here, not as utilities:
@@ -792,6 +806,49 @@
   .mmr-shell textarea.ck-mono {
     font-size: 16px;
   }
+}
+
+/* ── safety tile ─────────────────────────────────────────────────────────────
+   Kill switch and close-account are two independent <details> panels that each
+   own a frame. Rendered as siblings they stack, which is the arrangement the
+   bento removes. Nesting them in one tile and dropping their frames turns two
+   panels into two rows without either component knowing. */
+.mmr-shell .mmr-safety > details.ck-frame {
+  border: 0;
+}
+.mmr-shell .mmr-safety > details + details {
+  border-top: 1px solid var(--color-border);
+}
+
+/* ── select ──────────────────────────────────────────────────────────────────
+   Two selects ship today (webhook agent picker, admin attempt filter) and each
+   had its own ad-hoc classes, so only one carried a border and neither owned
+   its arrow. The UA arrow is painted in the OS accent and cannot be recoloured,
+   which read as a foreign teal chip on the canvas — so appearance is stripped
+   and the chevron is drawn from --color-secondary. Popup colours come from
+   `color-scheme` in styles.css; this rule owns the closed control only. */
+.mmr-shell .ck-select {
+  appearance: none;
+  background-color: transparent;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-secondary) 50%),
+    linear-gradient(135deg, var(--color-secondary) 50%, transparent 50%);
+  background-position: calc(100% - 14px) calc(50% + 1px), calc(100% - 9px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  border: 1px solid var(--color-border-vis);
+  color: var(--color-primary);
+  padding: 4px 30px 4px 8px;
+  outline: none;
+}
+.mmr-shell .ck-select:hover:not(:disabled),
+.mmr-shell .ck-select:focus-visible {
+  border-color: var(--color-display);
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-display) 50%),
+    linear-gradient(135deg, var(--color-display) 50%, transparent 50%);
+}
+.mmr-shell .ck-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── /install step rail ──────────────────────────────────────────────────────
@@ -883,6 +940,124 @@
 .mmr-shell .ck-tab.ck-tab-active::after,
 .mmr-shell .ck-steprail-cell.ck-tab-active::after {
   background: var(--color-accent);
+}
+
+/* ── Side tabs — the same tab family stood on its edge ──────────────────────
+   Rail left, body right, one border around both. The page owns the measure so
+   panels inside can stop declaring their own. Active cell wears ck-tab's
+   accent bar rotated to the left edge; below md the rail lies back down into a
+   scrolling strip and the bar returns to the top, because a 170px column
+   beside content is unusable on a phone. */
+.mmr-shell .ck-sidetabs {
+  display: grid;
+  /* Icon-only rail: a 56px column, not 170px of truncated words. */
+  grid-template-columns: 56px minmax(0, 1fr);
+  border: 1px solid var(--color-border);
+}
+
+/* Icon-only tab + its hover tip, same grammar as the topbar nav: the glyph is
+   the link, the word rides in a bracketed tip. Tip sits to the RIGHT because
+   the rail is vertical. */
+.mmr-shell .ck-sidetab--icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--nav-hit-area, 44px);
+  padding: 11px 0;
+}
+.mmr-shell .ck-sidetab-tip {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.5ch;
+  padding: 3px 7px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-primary);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+  z-index: 20;
+}
+.mmr-shell .ck-sidetab-tip::before {
+  content: "[";
+}
+.mmr-shell .ck-sidetab-tip::after {
+  content: "]";
+}
+.mmr-shell .ck-sidetab--icon:hover .ck-sidetab-tip,
+.mmr-shell .ck-sidetab--icon:focus-visible .ck-sidetab-tip {
+  opacity: 1;
+}
+/* Touch has no hover: show every word instead of hiding all of them. */
+@media (hover: none) {
+  .mmr-shell .ck-sidetab-tip {
+    position: static;
+    transform: none;
+    opacity: 1;
+    border: 0;
+    padding: 0;
+    background: none;
+  }
+  .mmr-shell .ck-sidetab-tip::before,
+  .mmr-shell .ck-sidetab-tip::after {
+    content: "";
+  }
+}
+.mmr-shell .ck-sidetab-rail {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border);
+}
+.mmr-shell .ck-sidetab {
+  padding: 11px 14px;
+  text-align: left;
+  text-decoration: none;
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-sidetab:last-child {
+  border-bottom: 0;
+}
+.mmr-shell .ck-sidetab.ck-tab-active {
+  background: var(--color-surface);
+  color: var(--color-display);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+.mmr-shell .ck-sidetab-body {
+  min-width: 0;
+  padding: 18px 16px;
+}
+@media (max-width: 767px) {
+  .mmr-shell .ck-sidetabs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mmr-shell .ck-sidetab-rail {
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .mmr-shell .ck-sidetab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    border-bottom: 0;
+    border-right: 1px solid var(--color-border);
+  }
+  .mmr-shell .ck-sidetab:last-child {
+    border-right: 0;
+  }
+  .mmr-shell .ck-sidetab.ck-tab-active {
+    box-shadow: inset 0 2px 0 var(--color-accent);
+  }
 }
 
 .mmr-shell .ck-stephint {
@@ -1117,5 +1292,124 @@
   .mmr-shell .mmr-seal-stamp svg > rect[fill] {
     opacity: 1;
     animation: none;
+  }
+}
+
+/* ── Listings matrix (leaderboard `?view=listings`) ──────────────────────────
+   Rows are agents, columns are venue series. ONE grid, scrolled sideways by
+   the panel body — columns are never wrapped or squeezed, because comparing a
+   price DOWN a column is the whole point and a stacked card layout destroys
+   it. `grid-template-columns` and `min-width` are set inline from
+   lib/listings-matrix.ts (matrixGridTemplate) so the column count and the
+   per-column floor are one testable number, not a magic value in two files.
+   Placed at the END of the file: the 12px tiers below must follow .ck-mono in
+   source order to win the equal-specificity fight over font-size. */
+.mmr-shell .ck-matrix {
+  display: grid;
+  align-items: stretch;
+}
+
+/* The row is bookkeeping only — cells must be direct grid items for the
+   sticky row-header to track the panel's scroll box. */
+.mmr-shell .ck-matrix-row {
+  display: contents;
+}
+
+.mmr-shell .ck-matrix-corner,
+.mmr-shell .ck-matrix-colhead {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-border-vis);
+}
+
+/* Frozen first column: the handle and the record stay put while the series
+   scroll past. Opaque, or the cells underneath read through it. */
+.mmr-shell .ck-matrix-corner,
+.mmr-shell .ck-matrix-head {
+  position: sticky;
+  left: 0;
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border-vis);
+  z-index: 1;
+}
+.mmr-shell .ck-matrix-corner {
+  z-index: 2;
+}
+
+.mmr-shell .ck-matrix-head,
+.mmr-shell .ck-matrix-cell {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-border);
+  min-width: 0;
+}
+
+.mmr-shell .ck-matrix-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Clipped, never bled: a long handle or a four-digit call count must not
+     spill across the frozen border into the first series column. */
+  overflow: hidden;
+}
+
+/* Handle + floor + win + scored in ONE frozen cell. Three more sticky columns
+   would eat the comparison area this view exists for. */
+.mmr-shell .ck-matrix-record {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.mmr-shell .ck-matrix-sub {
+  font-size: 12px;
+}
+
+/* Standing price left, open-call marker right: the price holds one x-position
+   whether or not the marker is there, so a column still reads as a column. */
+.mmr-shell .ck-matrix-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mmr-shell .ck-matrix-truncate {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* NOT a buy button: it opens the drilldown, where each call carries the price
+   locked when it was sealed. Tinted only when a seat is genuinely purchasable. */
+.mmr-shell .ck-matrix-open {
+  border: 1px solid var(--color-border-vis);
+  padding: 0 4px;
+  background: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mmr-shell .ck-matrix-open:hover,
+.mmr-shell .ck-matrix-open-on {
+  color: var(--color-display);
+  border-color: var(--color-display);
+}
+
+/* Drilldown row: locked price · market · seats · sale close. */
+.mmr-shell .ck-matrix-calls {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) 150px 110px;
+  gap: 12px;
+  align-items: center;
+}
+@media (max-width: 639px) {
+  .mmr-shell .ck-matrix-calls {
+    grid-template-columns: 110px minmax(0, 1fr);
   }
 }

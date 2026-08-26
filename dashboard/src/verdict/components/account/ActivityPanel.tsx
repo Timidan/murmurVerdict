@@ -55,10 +55,13 @@ export function ActivityPanel() {
         <span className="ck-mono ck-dim">{rows.length} shown</span>
       </div>
       {error && <InlineError error={error} className="px-3 py-2 text-[12px]" />}
+      {/* The dropped second sentence explained a thing that has not happened. */}
       {rows.length === 0 && !loading && !error ? (
-        <p className="px-3 py-2 text-[12px] ck-dim">
-          No activity yet. A row appears each time an agent sends something
-          through the gateway with a runtime key.
+        <p
+          className="px-3 py-2 text-[12px] ck-dim"
+          title="A row appears each time an agent sends something through the gateway with a runtime key."
+        >
+          No activity yet.
         </p>
       ) : (
         <ul className="flex flex-col">
