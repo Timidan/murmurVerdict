@@ -10,6 +10,9 @@
 //   · a legacy (pre-070) call is priced from the deployment terms when this
 //     daemon has them, and EXCLUDED with a response note when it does not
 //   · purchase_available tracks whether the checkout is mounted here
+//   · a page's cursor must not skip or repeat a row
+//   · the LOCKED snapshot on a sealed call and the seller's CURRENT standing
+//     listing are different numbers, and repricing must move only the second
 
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -17,6 +20,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { openDb } from "./db.js";
+import { agentMarketRegistrationsRepo } from "./repos/agent-market-registrations-repo.js";
+import { agentProviderTermsRepo } from "./repos/agent-provider-terms-repo.js";
 import { entitlementsRepo } from "./repos/entitlements-repo.js";
 import {
   listSellableCallsResponse,
@@ -38,10 +43,21 @@ const LEGACY_TERMS: CallTerms = {
   pricingVersion: "v1",
 };
 
+const SERIES_BTC = "polymarket:btc-up-or-down-5m";
+const SERIES_ETH = "polymarket:eth-up-or-down-5m";
+
+const AGENTS = [
+  { id: "agent-1", slug: "oracle-one", name: "Oracle One" },
+  { id: "agent-2", slug: "Oracle-Two", name: "Oracle Two" },
+] as const;
+
 interface SeedCall {
   key: string;
   /** Absolute submission close; the sale closes SAFETY_SEC before it. */
   submissionCloseAtMs: number;
+  agentId?: string;
+  /** The venue series the call's MARKET belongs to; null leaves it unlinked. */
+  venueSeriesId?: string | null;
   contract?: string;
   submissionClass?: number;
   revealStatus?: "pending" | "revealed";
@@ -62,10 +78,26 @@ function seed(db: ReturnType<typeof openDb>, calls: SeedCall[]): void {
   // full would be scaffolding for columns this listing never reads.
   db.pragma("foreign_keys = OFF");
   const iso = NOW.toISOString();
-  db.prepare(
-    `INSERT INTO agents (agent_id, display_slug, kind, display_name, created_at)
-     VALUES ('agent-1', 'oracle-one', 'agent', 'Oracle One', @now)`,
-  ).run({ now: iso });
+  for (const agent of AGENTS) {
+    db.prepare(
+      `INSERT INTO agents (agent_id, display_slug, kind, display_name, created_at)
+       VALUES (@agent_id, @slug, 'agent', @name, @now)`,
+    ).run({ agent_id: agent.id, slug: agent.slug, name: agent.name, now: iso });
+  }
+  // The venue's durable series identity (migration 075). The storefront reads
+  // it only through markets.venue_series_id; the CATALOG side is seeded too so
+  // the standing-listing-vs-snapshot divergence can be driven for real.
+  for (const [seriesId, slug, title] of [
+    [SERIES_BTC, "btc-up-or-down-5m", "BTC Up or Down 5m"],
+    [SERIES_ETH, "eth-up-or-down-5m", "ETH Up or Down 5m"],
+  ] as Array<[string, string, string]>) {
+    db.prepare(
+      `INSERT INTO venue_market_series (venue_series_id, venue, series_slug,
+         series_title, venue_category, source_adapter_id, created_at, updated_at)
+       VALUES (@id, 'polymarket', @slug, @title, 'Crypto', 'polymarket-gamma',
+         @now, @now)`,
+    ).run({ id: seriesId, slug, title, now: iso });
+  }
 
   calls.forEach((call, index) => {
     const marketId = `market-${call.key}`;
@@ -75,9 +107,14 @@ function seed(db: ReturnType<typeof openDb>, calls: SeedCall[]): void {
     db.prepare(
       `INSERT INTO markets (market_id, asset_id, horizon_seconds, primary_oracle_id,
          primary_max_staleness_sec, t0_grace_seconds, t0_extended_grace_seconds,
-         void_band, created_at)
-       VALUES (@market_id, 'asset-1', 300, 'oracle-1', 60, 30, 60, '0', @now)`,
-    ).run({ market_id: marketId, now: iso });
+         void_band, created_at, venue_series_id)
+       VALUES (@market_id, 'asset-1', 300, 'oracle-1', 60, 30, 60, '0', @now,
+         @venue_series_id)`,
+    ).run({
+      market_id: marketId,
+      now: iso,
+      venue_series_id: call.venueSeriesId === undefined ? SERIES_BTC : call.venueSeriesId,
+    });
     db.prepare(
       `INSERT INTO market_series (series_id, venue, display_name, window_seconds,
          submission_open_lead_sec, commit_margin_sec, delivery_budget_sec,
@@ -115,13 +152,14 @@ function seed(db: ReturnType<typeof openDb>, calls: SeedCall[]): void {
         now: iso,
       });
     }
+    const agentId = call.agentId ?? "agent-1";
     db.prepare(
       `INSERT INTO submissions (call_id, agent_id, client_order_id, horizon_seconds,
          submitted_at, accepted_at, status, schema_version, scoring_version,
          dedup_key, market_id)
-       VALUES (@call_id, 'agent-1', @call_id, 300, @now, @now, 'accepted', 1, 1,
+       VALUES (@call_id, @agent_id, @call_id, 300, @now, @now, 'accepted', 1, 1,
          @call_id, @market_id)`,
-    ).run({ call_id: callId, market_id: marketId, now: iso });
+    ).run({ call_id: callId, agent_id: agentId, market_id: marketId, now: iso });
     db.prepare(
       `INSERT INTO fhenix_sealed_calls (call_id, chain_id, contract_address,
          onchain_call_id, submit_tx_hash, submit_log_index, binary_index_ct_hash,
@@ -155,7 +193,7 @@ function seed(db: ReturnType<typeof openDb>, calls: SeedCall[]): void {
         onchainCallId: onchainCallId(index + 1),
         subscriberAddress: `0x${(i + 1).toString(16).padStart(40, "b")}`,
         callId,
-        producerAgentId: "agent-1",
+        producerAgentId: agentId,
         amount: "1000",
         currency: "USDC",
         now: iso,
@@ -218,7 +256,36 @@ const SEEDS: SeedCall[] = [
     submissionClass: 2,
     price: { atoms: "2500", currency: "USDC", version: "v2" },
   },
+  {
+    // (8) A second seller, in a second series. Its LOCKED snapshot is 10000
+    //     while the same seller's standing listing for the series is 50000 —
+    //     the two prices this surface must never conflate.
+    key: "open-eth",
+    submissionCloseAtMs: NOW_MS + 1_200_000,
+    agentId: "agent-2",
+    venueSeriesId: SERIES_ETH,
+    price: { atoms: "10000", currency: "USDC", version: "v2" },
+    providerMaxSubscribers: 3,
+  },
 ];
+
+/** The seller's STANDING listing — deliberately a different number. */
+function seedStandingListing(db: ReturnType<typeof openDb>, priceAtoms: string): void {
+  agentMarketRegistrationsRepo.register(db, {
+    agentId: "agent-2",
+    venueSeriesId: SERIES_ETH,
+    now: NOW.toISOString(),
+  });
+  agentProviderTermsRepo.upsert(db, {
+    agent_id: "agent-2",
+    venue_series_id: SERIES_ETH,
+    price_atoms: priceAtoms,
+    currency: "USDC",
+    pricing_version: "v9",
+    max_subscribers_per_call: null,
+    now: NOW.toISOString(),
+  });
+}
 
 function newDb() {
   const tmp = mkdtempSync(join(tmpdir(), "sellable-surface-"));
@@ -233,6 +300,7 @@ interface ListingBody {
   excluded_legacy_unpriced: number;
   note: string | null;
   calls: SellableCallRow[];
+  next_cursor: string | null;
   page: { limit: number; returned: number };
   chain_id: number;
   contract_address: string;
@@ -240,7 +308,14 @@ interface ListingBody {
 
 function list(
   db: ReturnType<typeof openDb>,
-  opts: { legacyTerms: CallTerms | null; purchaseAvailable?: boolean; limit?: number },
+  opts: {
+    legacyTerms: CallTerms | null;
+    purchaseAvailable?: boolean;
+    limit?: number;
+    cursor?: string | null;
+    venueSeriesIds?: readonly string[];
+    agentSlug?: string | null;
+  },
 ): ListingBody {
   const res = listSellableCallsResponse(
     {
@@ -251,7 +326,12 @@ function list(
       purchaseAvailable: opts.purchaseAvailable ?? true,
       now: () => NOW,
     },
-    { limit: opts.limit },
+    {
+      limit: opts.limit,
+      cursor: opts.cursor ?? null,
+      venueSeriesIds: opts.venueSeriesIds ?? [],
+      agentSlug: opts.agentSlug ?? null,
+    },
   );
   assert.equal(res.status, 200);
   return res.body as ListingBody;
@@ -265,7 +345,7 @@ function list(
 
   assert.deepEqual(
     keys,
-    ["market-open", "market-sold-out", "market-legacy"],
+    ["market-open", "market-sold-out", "market-legacy", "market-open-eth"],
     "only open, sellable rows of THIS deployment are listed, sale_closes_at asc",
   );
 
@@ -301,7 +381,8 @@ function list(
   assert.equal(body.purchase_available, true);
   assert.equal(body.chain_id, CHAIN_ID);
   assert.equal(body.contract_address, CONTRACT);
-  assert.equal(body.page.returned, 3);
+  assert.equal(body.page.returned, 4);
+  assert.equal(body.next_cursor, null, "a page shorter than the limit is the last one");
 
   db.close();
   rmSync(tmp, { recursive: true, force: true });
@@ -313,7 +394,7 @@ function list(
   const body = list(db, { legacyTerms: null });
   assert.deepEqual(
     body.calls.map((c) => c.market.market_id),
-    ["market-open", "market-sold-out"],
+    ["market-open", "market-sold-out", "market-open-eth"],
     "a daemon with no configured price must not quote one",
   );
   assert.equal(body.legacy_terms_available, false);
@@ -358,6 +439,242 @@ function list(
   });
   assert.equal(res.status, 503);
   assert.equal((res.body as { error: string }).error, "FhenixDeploymentUnconfigured");
+  db.close();
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+// ── The two prices: a locked snapshot and a standing listing ────────────────
+//
+// The single most expensive bug this surface can have is quoting the seller's
+// CURRENT price for a call already sealed. Here the seller's standing listing
+// is 50000 while the sealed call's snapshot is 10000, and a repricing moves
+// only the first.
+{
+  const { db, tmp } = newDb();
+  seedStandingListing(db, "50000");
+
+  const before = list(db, { legacyTerms: LEGACY_TERMS, venueSeriesIds: [SERIES_ETH] });
+  const call = before.calls[0]!;
+  assert.equal(call.market.market_id, "market-open-eth");
+  assert.equal(
+    call.locked_terms.price_atoms,
+    "10000",
+    "a buyer pays the snapshot frozen when the call was sealed",
+  );
+  assert.equal(call.locked_terms.pricing_version, "v2");
+  assert.notEqual(
+    call.locked_terms.price_atoms,
+    "50000",
+    "the seller's standing listing is a DIFFERENT number and must not leak in",
+  );
+  assert.equal(call.price_atoms, call.locked_terms.price_atoms, "flat alias mirrors it");
+  assert.equal(call.currency, call.locked_terms.currency);
+  assert.equal(call.pricing_version, call.locked_terms.pricing_version);
+
+  // Reprice the standing listing. The already-sealed call must not move.
+  seedStandingListing(db, "99999");
+  const after = list(db, { legacyTerms: LEGACY_TERMS, venueSeriesIds: [SERIES_ETH] });
+  assert.equal(
+    after.calls[0]!.locked_terms.price_atoms,
+    "10000",
+    "repricing changes what the NEXT call costs, never a call already on offer",
+  );
+
+  db.close();
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+// ── Series and agent filters ────────────────────────────────────────────────
+{
+  const { db, tmp } = newDb();
+
+  const eth = list(db, { legacyTerms: LEGACY_TERMS, venueSeriesIds: [SERIES_ETH] });
+  assert.deepEqual(
+    eth.calls.map((c) => c.market.market_id),
+    ["market-open-eth"],
+    "a series filter returns only calls whose market belongs to it",
+  );
+  assert.equal(eth.calls[0]!.venue_series_id, SERIES_ETH, "the series id is on the row");
+  assert.equal(eth.calls[0]!.agent_id, "agent-2", "so is the seller's durable id");
+
+  const btc = list(db, { legacyTerms: LEGACY_TERMS, venueSeriesIds: [SERIES_BTC] });
+  assert.deepEqual(
+    btc.calls.map((c) => c.market.market_id),
+    ["market-open", "market-sold-out", "market-legacy"],
+  );
+
+  const both = list(db, {
+    legacyTerms: LEGACY_TERMS,
+    venueSeriesIds: [SERIES_BTC, SERIES_ETH],
+  });
+  assert.equal(both.calls.length, 4, "series= is repeatable and OR-ed");
+
+  const unknownSeries = list(db, {
+    legacyTerms: LEGACY_TERMS,
+    venueSeriesIds: ["polymarket:nope"],
+  });
+  assert.deepEqual(unknownSeries.calls, [], "an unknown series matches nothing, not everything");
+
+  // The seed slug is "Oracle-Two"; the query uses lowercase. Slugs are
+  // canonically lowercase but URLs are not, so the match is NOCASE.
+  const byAgent = list(db, { legacyTerms: LEGACY_TERMS, agentSlug: "oracle-two" });
+  assert.deepEqual(
+    byAgent.calls.map((c) => c.market.market_id),
+    ["market-open-eth"],
+    "an agent filter matches the slug case-insensitively",
+  );
+  const byOtherAgent = list(db, { legacyTerms: LEGACY_TERMS, agentSlug: "ORACLE-ONE" });
+  assert.deepEqual(
+    byOtherAgent.calls.map((c) => c.market.market_id),
+    ["market-open", "market-sold-out", "market-legacy"],
+  );
+
+  const combined = list(db, {
+    legacyTerms: LEGACY_TERMS,
+    venueSeriesIds: [SERIES_BTC],
+    agentSlug: "oracle-two",
+  });
+  assert.deepEqual(combined.calls, [], "filters AND together");
+
+  // The unpriced-legacy COUNT is scoped by the same filters, so it describes
+  // the slice it annotates. Without it, a caller narrowed to one series would
+  // be told about exclusions in another.
+  const btcNoTerms = list(db, { legacyTerms: null, venueSeriesIds: [SERIES_BTC] });
+  assert.equal(btcNoTerms.excluded_legacy_unpriced, 1, "the legacy row is a BTC row");
+  const ethNoTerms = list(db, { legacyTerms: null, venueSeriesIds: [SERIES_ETH] });
+  assert.equal(
+    ethNoTerms.excluded_legacy_unpriced,
+    0,
+    "and nothing is excluded from the ETH slice",
+  );
+  assert.equal(ethNoTerms.note, null);
+
+  db.close();
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+// ── Keyset paging: no gaps, no duplicates ───────────────────────────────────
+{
+  const { db, tmp } = newDb();
+  const whole = list(db, { legacyTerms: LEGACY_TERMS }).calls.map((c) => c.onchain_call_id);
+  assert.equal(whole.length, 4, "precondition: enough rows to page");
+
+  const paged: string[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 10; page += 1) {
+    const body: ListingBody = list(db, { legacyTerms: LEGACY_TERMS, limit: 2, cursor });
+    paged.push(...body.calls.map((c) => c.onchain_call_id));
+    cursor = body.next_cursor;
+    if (!cursor) break;
+  }
+  assert.equal(cursor, null, "paging terminates");
+  assert.deepEqual(paged, whole, "the pages reassemble the full list in order");
+  assert.equal(new Set(paged).size, paged.length, "and no row is served twice");
+
+  const firstPage = list(db, { legacyTerms: LEGACY_TERMS, limit: 2 });
+  assert.ok(firstPage.next_cursor, "a full page offers a cursor");
+  const secondPage = list(db, {
+    legacyTerms: LEGACY_TERMS,
+    limit: 2,
+    cursor: firstPage.next_cursor,
+  });
+  assert.equal(
+    secondPage.calls.some((c) => firstPage.calls.some((f) => f.onchain_call_id === c.onchain_call_id)),
+    false,
+    "the second page shares no row with the first",
+  );
+
+  // The cursor is opaque, and one this endpoint never issued is an error
+  // rather than a silent restart from the top.
+  const bad = listSellableCallsResponse(
+    {
+      db,
+      chain: { chainId: CHAIN_ID, sealedVerdictsAddress: CONTRACT },
+      legacyTerms: LEGACY_TERMS,
+      salesSafetySeconds: SAFETY_SEC,
+      purchaseAvailable: true,
+      now: () => NOW,
+    },
+    { cursor: "not-a-cursor" },
+  );
+  assert.equal(bad.status, 400);
+  assert.equal((bad.body as { error: string }).error, "BadCursor");
+
+  db.close();
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+// ── Inventory status and seats ──────────────────────────────────────────────
+{
+  const { db, tmp } = newDb();
+  const body = list(db, { legacyTerms: LEGACY_TERMS });
+  const byMarket = new Map(body.calls.map((c) => [c.market.market_id, c]));
+
+  const open = byMarket.get("market-open")!;
+  assert.equal(open.seats_cap, 5);
+  assert.equal(open.seats_reserved, 2);
+  assert.equal(open.seats_remaining, 3);
+  assert.equal(open.inventory_status, "available");
+
+  const soldOut = byMarket.get("market-sold-out")!;
+  assert.equal(soldOut.seats_remaining, 0);
+  assert.equal(
+    soldOut.inventory_status,
+    "full",
+    "a fully reserved cohort reads full — it is listed, but nothing is left to sell",
+  );
+
+  assert.ok(
+    !byMarket.has("market-not-selling"),
+    "snapshot taken with no price means NOT FOR SALE, at any price",
+  );
+  assert.ok(!byMarket.has("market-closed"), "a window inside the safety margin is closed");
+  assert.ok(!byMarket.has("market-wrong-contract"), "another deployment's rows never appear");
+  assert.ok(!byMarket.has("market-late"), "a LateUnsellable class can never be granted");
+
+  // Every row is informational when this daemon has no checkout at all. That
+  // dominates `full`: the reason a buyer cannot buy is the missing checkout.
+  const noCheckout = list(db, { legacyTerms: LEGACY_TERMS, purchaseAvailable: false });
+  assert.ok(noCheckout.calls.length > 0, "rows are still listed — they are real offers");
+  assert.deepEqual(
+    [...new Set(noCheckout.calls.map((c) => c.inventory_status))],
+    ["checkout_unavailable"],
+    "with no checkout mounted, every row says so",
+  );
+  assert.equal(
+    noCheckout.calls.find((c) => c.market.market_id === "market-open")!.seats_remaining,
+    3,
+    "and the seat counts stay factual",
+  );
+
+  db.close();
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+// ── The reservation count is one grouped read, and still per call ───────────
+{
+  const { db, tmp } = newDb();
+  const counts = entitlementsRepo.countActiveForCalls(db, {
+    chainId: CHAIN_ID,
+    contractAddress: CONTRACT,
+    onchainCallIds: [onchainCallId(1), onchainCallId(5), onchainCallId(6)],
+  });
+  assert.equal(counts.get(onchainCallId(1)), 2, "the open call's two reservations");
+  assert.equal(counts.get(onchainCallId(5)), 1, "the sold-out call's one");
+  assert.equal(
+    counts.get(onchainCallId(6)),
+    undefined,
+    "a call nobody bought is ABSENT, which callers must read as zero",
+  );
+  assert.equal(
+    counts.get(onchainCallId(1)),
+    entitlementsRepo.countActiveForCall(db, {
+      chainId: CHAIN_ID,
+      contractAddress: CONTRACT,
+      onchainCallId: onchainCallId(1),
+    }),
+    "batched and single-call counts agree",
+  );
   db.close();
   rmSync(tmp, { recursive: true, force: true });
 }

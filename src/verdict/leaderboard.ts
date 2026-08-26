@@ -62,10 +62,35 @@ export function getLeaderboardRowForAgent(
   agentId: string,
   opts: Omit<LeaderboardOptions, "limit"> = {},
 ): LeaderboardRow | null {
-  const row = computeLeaderboardRows(db, opts).find(
-    (candidate) => candidate.agent_id === agentId,
-  );
-  return row ? publicRankedLeaderboardRows([row])[0] : null;
+  return getLeaderboardRowsForAgentIds(db, [agentId], opts).get(agentId) ?? null;
+}
+
+/**
+ * The all-time leaderboard record for many agents, in ONE pass.
+ *
+ * The scoring facts read is a single global query and the ranking is global,
+ * so asking per agent recomputed the whole board once per agent. Surfaces that
+ * decorate a list of agents with their track record (the marketplace catalog)
+ * call this instead.
+ *
+ * Ranks are the GLOBAL ranks, not ranks within `agentIds` — the record an
+ * agent carries is the same one `getLeaderboard` publishes, and re-ranking a
+ * subset would invent a second, disagreeing number. An agent with no scoring
+ * facts at all (never submitted, or a kind outside `includeKinds`) is simply
+ * absent from the map; callers surface that as "unscored", never as excluded.
+ */
+export function getLeaderboardRowsForAgentIds(
+  db: Database.Database,
+  agentIds: readonly string[],
+  opts: Omit<LeaderboardOptions, "limit"> = {},
+): Map<string, LeaderboardRow> {
+  const out = new Map<string, LeaderboardRow>();
+  if (agentIds.length === 0) return out;
+  const wanted = new Set(agentIds);
+  for (const row of publicRankedLeaderboardRows(computeLeaderboardRows(db, opts))) {
+    if (wanted.has(row.agent_id)) out.set(row.agent_id, row);
+  }
+  return out;
 }
 
 type ComputedLeaderboardRow = LeaderboardRow & { _sortKey: number };

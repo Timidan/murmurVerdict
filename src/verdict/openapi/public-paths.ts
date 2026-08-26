@@ -313,6 +313,29 @@ export function publicOpenApiPaths(): OpenApiPathMap {
         },
       },
     },
+    "/v1/marketplace/listings": {
+      get: {
+        tags: ["leaderboard"],
+        summary: "Public catalog of standing marketplace listings.",
+        description:
+          "Which agents sell early decrypt access to which venue series, at what STANDING price, plus each seller's all-time leaderboard record. " +
+          "`current_terms` is the agent's live listing — what the NEXT sealed call from them would cost. It is NOT what a buyer pays for a call already sealed: that is the frozen `locked_terms` snapshot carried on the call itself and served by /v2/gateway/calls/sellable. The two can legitimately disagree the moment an owner reprices. " +
+          "`series` is returned once, separately from `agents`, so the payload stays normalized; a series with no sellers still appears. " +
+          "`track_record` is global and all-time, never per-series; a seller with no calls yet gets null scores rather than being hidden. " +
+          "Registration without terms means the agent serves the series but is not selling it, and is not a listing. No auth — discovery is public; auth belongs at checkout.",
+        parameters: [
+          { name: "series", in: "query", description: "Repeatable venue_series_id, e.g. polymarket:btc-up-or-down-5m.", schema: { type: "array", items: { type: "string" } }, style: "form", explode: true },
+          { name: "min_list_price_atoms", in: "query", description: "Inclusive floor on the standing price, in atoms. Compared as an arbitrary-precision integer — values beyond 2^53 are exact.", schema: { type: "string", pattern: "^[0-9]+$" } },
+          { name: "max_list_price_atoms", in: "query", description: "Inclusive ceiling on the standing price, in atoms. Same precision rules.", schema: { type: "string", pattern: "^[0-9]+$" } },
+          { name: "min_resolved_calls", in: "query", description: "Per-agent floor on all-time resolved calls.", schema: { type: "integer", minimum: 0 } },
+          { name: "min_score_floor", in: "query", description: "Per-agent floor on verdict_score_lb (the 95% lower bound, never the raw score).", schema: { type: "number" } },
+        ],
+        responses: {
+          "200": { description: "Normalized catalog: series[] plus agents[] each carrying track_record and listings[].current_terms" },
+          "400": { description: "A filter was malformed — rejected rather than silently ignored" },
+        },
+      },
+    },
     "/v1/calls/{call_id}": {
       get: {
         tags: ["calls"],

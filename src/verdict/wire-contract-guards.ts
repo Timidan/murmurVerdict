@@ -59,6 +59,15 @@ import type {
 } from "../types/wire-market.js";
 import type { WireMetaResponse } from "../types/wire-meta.js";
 import type {
+  WireMarketplaceSeries,
+  WireMarketplaceTrackRecord,
+  WireMarketplaceCurrentTerms,
+  WireMarketplaceListings,
+  WireInventoryStatus,
+  WireLockedTerms,
+  WireSellableCall,
+} from "../types/wire-marketplace.js";
+import type {
   WireAccountSession,
   WireAccountAgent,
   WireControllerWalletSummary,
@@ -134,6 +143,17 @@ import type {
   MarketVenuePricePoint,
 } from "../markets/polymarket-gamma/venue-snapshot.js";
 import type { publicMetaSurface } from "./public-system-surface.js";
+import type {
+  MarketplaceListingsBody,
+  MarketplaceTrackRecord,
+  MarketplaceCurrentTerms,
+} from "./marketplace-listings-surface.js";
+import type { MarketplaceSeriesRow } from "./marketplace-listings-query.js";
+import type {
+  InventoryStatus,
+  LockedTerms,
+  SellableCallRow,
+} from "./gateway-sellable-surface.js";
 
 import type { accountSessionResponse } from "./account-session-surface.js";
 import type {
@@ -249,6 +269,31 @@ type _MarketClock = Assert<Equals<WireMarketClock, MarketClockSnapshot>>;
 
 // ── Meta ────────────────────────────────────────────────────────────────────
 type _MetaResponse = Assert<Conforms<ReturnType<typeof publicMetaSurface>, WireMetaResponse>>;
+
+// ── Marketplace ─────────────────────────────────────────────────────────────
+// The catalog body is pinned WHOLE, so a rename anywhere inside series /
+// agents / listings / track_record fails this build. `marketplaceListingsResponse`
+// itself types `status` as plain `number`, so OkBody<> cannot narrow its union —
+// the exported body type IS the authoritative shape and is pinned directly.
+type _MarketplaceSeries = Assert<Conforms<MarketplaceSeriesRow, WireMarketplaceSeries>>;
+type _MarketplaceTrackRecord = Assert<
+  Conforms<MarketplaceTrackRecord, WireMarketplaceTrackRecord>
+>;
+type _MarketplaceCurrentTerms = Assert<
+  Conforms<MarketplaceCurrentTerms, WireMarketplaceCurrentTerms>
+>;
+type _MarketplaceListings = Assert<Conforms<MarketplaceListingsBody, WireMarketplaceListings>>;
+
+// The sellable envelope is typed `body: unknown` on the daemon side, so only
+// the ROW is pinnable — and the row is what carries the money. `locked_terms`
+// gets the strong bidirectional relation because a UI that loses it silently
+// falls back to quoting the standing `current_terms` beside a buy affordance,
+// which is the single most expensive bug this pair of surfaces can produce.
+// The row relation stays one-directional: it also carries deprecated top-level
+// price aliases the wire contract deliberately does not mirror.
+type _InventoryStatus = Assert<Equals<WireInventoryStatus, InventoryStatus>>;
+type _LockedTerms = Assert<Equals<WireLockedTerms, LockedTerms>>;
+type _SellableCall = Assert<Conforms<SellableCallRow, WireSellableCall>>;
 
 // ── Account surface ─────────────────────────────────────────────────────────
 type _ControllerWalletSummary = Assert<

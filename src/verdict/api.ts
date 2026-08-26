@@ -29,6 +29,7 @@ import { refManagementRouter } from "./routes/ref-management.js";
 import { publicAgentRouter } from "./routes/public-agents.js";
 import { publicCallRouter } from "./routes/public-calls.js";
 import { marketReadRouter } from "./routes/market-reads.js";
+import { publicMarketplaceRouter } from "./routes/public-marketplace.js";
 import { publicSystemRouter } from "./routes/public-system.js";
 import { publicRankingRouter } from "./routes/public-rankings.js";
 import { marketAdminRouter } from "./routes/market-admin.js";
@@ -205,7 +206,12 @@ export function createVerdictRouter(deps: ApiDeps): Router {
 
   router.use(publicSystemRouter({
     db: deps.db,
-    fhenixChain: runtime.fhenixChain,
+    fhenixChain: runtime.fhenixChain
+      ? {
+          ...runtime.fhenixChain,
+          relayerAddress: deps.fhenixGateway?.relayerAccountAddress ?? null,
+        }
+      : null,
     liveCanaries: deps.liveCanaries,
     nanopayX402Mounted: deps.nanopayX402Mounted,
     now,
@@ -222,11 +228,17 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     now,
   }));
 
+  // Public catalog of standing listings. No auth: discovery is public, and the
+  // checkout below it is where a caller must prove who they are.
+  router.use(publicMarketplaceRouter({ db: deps.db, now }));
+
   router.use(publicAgentRouter({
     db: deps.db,
     nanopayX402Mounted: deps.nanopayX402Mounted,
     now,
     publicOrigin: runtime.publicOrigin,
+    popAudience: deps.popAudience,
+    acceptsPlaintextSubmission: deps.acceptsPlaintextSubmission ?? false,
   }));
 
   router.use(feedRouter({

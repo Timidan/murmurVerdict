@@ -7,6 +7,14 @@
 // an OFFER: who is selling, for what market, at what price, until when, and
 // how many seats are left.
 //
+// The price on every row here is a `locked_terms`: the snapshot frozen onto
+// the call when it was sealed, which is what a buyer pays for THAT call. It is
+// NOT the agent's standing listing — that is `current_terms` in
+// `agent_provider_terms`, served by /v1/marketplace/listings, and it is what
+// the NEXT call would cost. The two legitimately disagree the moment an owner
+// reprices, so `agent_provider_terms` is deliberately NOT joined here: joining
+// it would let a repricing rewrite the price of a call already on offer.
+//
 // Deployment scope is a hard filter, not a nicety. `fhenix_sealed_calls` is
 // keyed by (chain, contract, onchain call id), and a database that has served
 // more than one deployment holds rows the CURRENT contract knows nothing
@@ -51,10 +59,35 @@ export interface SellableCallsDeps {
   now: () => Date;
 }
 
+/** What a buyer can do with a listed row, right now, on THIS daemon. */
+export type InventoryStatus = "available" | "full" | "checkout_unavailable";
+
+/** The frozen terms this specific call is sold under. Never the standing listing. */
+export interface LockedTerms {
+  price_atoms: string;
+  currency: string;
+  pricing_version: string;
+}
+
 export interface SellableCallRow {
   onchain_call_id: string;
   agent: { slug: string; display_name: string };
+  /** The seller's durable id, so a client can join to the catalog surface. */
+  agent_id: string;
   market: { market_id: string; question: string | null };
+  /**
+   * The venue series this call's market belongs to, or null for a market
+   * registered before/outside series linking (migration 075 leaves those NULL
+   * rather than fabricating one).
+   */
+  venue_series_id: string | null;
+  /** The snapshot. Authoritative for what checkout will charge. */
+  locked_terms: LockedTerms;
+  /**
+   * Temporary compatibility aliases for `locked_terms`. Same values, kept
+   * while existing clients migrate; they carry no independent meaning and will
+   * be removed once nothing reads them.
+   */
   price_atoms: string;
   currency: string;
   pricing_version: string;
@@ -70,6 +103,22 @@ export interface SellableCallRow {
    * and could be refused at checkout after seeing free seats here.
    */
   seats_reserved: number;
+  /**
+   * Seats a new buyer could still take: `seats_cap - seats_reserved`, floored
+   * at 0. Null when there is no cap at all, which means "not limited here",
+   * NOT "none left" — a client must not render null as zero.
+   */
+  seats_remaining: number | null;
+  /**
+   * available            — a seat exists and checkout is mounted here.
+   * full                 — the cohort is fully reserved; nothing to sell.
+   * checkout_unavailable — this daemon has no checkout, so EVERY row is
+   *                        informational regardless of its seats. It dominates
+   *                        `full` on purpose: when nothing can be bought, the
+   *                        reason a buyer needs is the missing checkout, not
+   *                        the seat count.
+   */
+  inventory_status: InventoryStatus;
   sale_closes_at: string;
   reveal_open_at: string;
 }
@@ -85,18 +134,62 @@ interface SellableQueryRow extends CallTermsSnapshot {
   reveal_open_at: string;
   agent_slug: string;
   agent_display_name: string;
+  agent_id: string;
   market_id: string;
+  venue_series_id: string | null;
   question: string | null;
   provider_max_subscribers: number | null;
   series_max_armed_per_call: number;
   submission_close_at_ms: number;
 }
 
+/**
+ * Optional narrowing, all AND-ed together. Absent means "no restriction",
+ * never "match nothing".
+ */
+export interface SellableFilters {
+  /** Repeatable venue_series_id; the call's MARKET must belong to one. */
+  venueSeriesIds?: readonly string[];
+  /** Seller's public slug, matched case-insensitively. */
+  agentSlug?: string | null;
+}
+
+function filterClauses(filters: SellableFilters): {
+  sql: string;
+  bind: Record<string, unknown>;
+} {
+  const clauses: string[] = [];
+  const bind: Record<string, unknown> = {};
+  const series = filters.venueSeriesIds ?? [];
+  if (series.length > 0) {
+    const names = series.map((_value, index) => `@series_${index}`);
+    series.forEach((value, index) => {
+      bind[`series_${index}`] = value;
+    });
+    clauses.push(`AND m.venue_series_id IN (${names.join(",")})`);
+  }
+  const slug = filters.agentSlug?.trim();
+  if (slug) {
+    // NOCASE so a caller who typed the slug with different casing still finds
+    // the seller; slugs are canonically lowercase but URLs are not.
+    clauses.push("AND a.display_slug = @agent_slug COLLATE NOCASE");
+    bind["agent_slug"] = slug;
+  }
+  return { sql: clauses.join("\n    "), bind };
+}
+
 // The `for sale` predicate mirrors termsFromSnapshot so LIMIT applies to rows
 // that will actually be listed — filtering after the fact would silently
 // shorten pages. The resolver is still the authority on the VALUES, and any
 // row it unexpectedly refuses is dropped below.
-const SELLABLE_SQL = `
+//
+// Paging is KEYSET, not OFFSET, over the same (submission_close_at_ms, call_id)
+// the ORDER BY uses. Calls are sealed continuously and the window closes
+// continuously, so rows enter and leave the result set between requests; an
+// OFFSET page would skip or repeat rows every time either happened. call_id
+// breaks ties so the order is total and the cursor cannot stall.
+function sellableSql(filters: SellableFilters): string {
+  return `
   SELECT
     f.onchain_call_id                AS onchain_call_id,
     f.call_id                        AS call_id,
@@ -106,9 +199,11 @@ const SELLABLE_SQL = `
     f.provider_pricing_version       AS provider_pricing_version,
     f.provider_terms_snapshotted     AS provider_terms_snapshotted,
     f.provider_max_subscribers       AS provider_max_subscribers,
+    a.agent_id                       AS agent_id,
     a.display_slug                   AS agent_slug,
     a.display_name                   AS agent_display_name,
     m.market_id                      AS market_id,
+    m.venue_series_id                AS venue_series_id,
     pds.question                     AS question,
     ms.max_armed_per_call            AS series_max_armed_per_call,
     mc.submission_close_at_ms        AS submission_close_at_ms
@@ -132,20 +227,33 @@ const SELLABLE_SQL = `
         AND f.provider_pricing_version IS NOT NULL)
       OR (f.provider_terms_snapshotted != 1 AND @has_legacy_terms = 1)
     )
+    AND (
+      @cursor_close_ms IS NULL
+      OR mc.submission_close_at_ms > @cursor_close_ms
+      OR (mc.submission_close_at_ms = @cursor_close_ms AND f.call_id > @cursor_call_id)
+    )
+    ${filterClauses(filters).sql}
   -- sale_closes_at is submission_close_at_ms shifted by a constant, so ordering
   -- on the raw column is the same order without recomputing it per row.
   ORDER BY mc.submission_close_at_ms ASC, f.call_id ASC
   LIMIT @limit
 `;
+}
 
 // Legacy rows this daemon cannot price. Counted, never listed: quoting the
 // operator's price for a call sealed under terms nobody configured here would
 // invent a number, and hiding them silently would make an empty storefront
 // look like an empty market.
-const EXCLUDED_LEGACY_SQL = `
+//
+// Scoped by the SAME filters as the listing. A count that ignored them would
+// describe a different slice than the page it annotates, so a caller filtering
+// to one series could be told about exclusions in another.
+function excludedLegacySql(filters: SellableFilters): string {
+  return `
   SELECT COUNT(*) AS n
   FROM fhenix_sealed_calls f
   JOIN submissions s    ON s.call_id = f.call_id
+  JOIN agents a         ON a.agent_id = s.agent_id
   JOIN markets m        ON m.market_id = s.market_id
   JOIN market_clocks mc ON mc.market_id = s.market_id
   WHERE f.chain_id = @chain_id
@@ -157,11 +265,44 @@ const EXCLUDED_LEGACY_SQL = `
     AND (f.provider_price_atoms IS NULL
       OR f.provider_currency IS NULL
       OR f.provider_pricing_version IS NULL)
+    ${filterClauses(filters).sql}
 `;
+}
+
+/** Opaque page token over the (submission_close_at_ms, call_id) sort key. */
+function encodeCursor(closeAtMs: number, callId: string): string {
+  return Buffer.from(`${closeAtMs}|${callId}`, "utf8").toString("base64url");
+}
+
+function parseCursor(
+  raw: string | null | undefined,
+): { closeAtMs: number; callId: string } | null | "invalid" {
+  const value = raw?.trim();
+  if (!value) return null;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(value, "base64url").toString("utf8");
+  } catch {
+    return "invalid";
+  }
+  // The call id may itself contain a separator, so split on the FIRST one:
+  // the timestamp cannot.
+  const separator = decoded.indexOf("|");
+  if (separator <= 0) return "invalid";
+  const closeAtMs = Number(decoded.slice(0, separator));
+  const callId = decoded.slice(separator + 1);
+  if (!Number.isSafeInteger(closeAtMs) || !callId) return "invalid";
+  return { closeAtMs, callId };
+}
 
 export function listSellableCallsResponse(
   deps: SellableCallsDeps,
-  input: { limit?: number } = {},
+  input: {
+    limit?: number;
+    cursor?: string | null;
+    venueSeriesIds?: readonly string[];
+    agentSlug?: string | null;
+  } = {},
 ): SellableCallsResponse {
   const limit = clamp(input.limit ?? SELLABLE_DEFAULT_LIMIT, 1, SELLABLE_MAX_LIMIT);
   const contractAddress = deps.chain?.sealedVerdictsAddress ?? null;
@@ -179,16 +320,44 @@ export function listSellableCallsResponse(
     };
   }
 
+  const cursor = parseCursor(input.cursor);
+  if (cursor === "invalid") {
+    return {
+      status: 400,
+      body: { error: "BadCursor", message: "cursor is not one this endpoint issued" },
+    };
+  }
+
+  const filters: SellableFilters = {
+    venueSeriesIds: input.venueSeriesIds ?? [],
+    agentSlug: input.agentSlug ?? null,
+  };
+  const filterBind = filterClauses(filters).bind;
   const params = {
     chain_id: deps.chain.chainId,
     contract_address: contractAddress,
     early_access: SUBMISSION_CLASS_EARLY_ACCESS,
     safety_ms: deps.salesSafetySeconds * 1000,
     now_ms: deps.now().getTime(),
+    ...filterBind,
   };
-  const rows = deps.db
-    .prepare(SELLABLE_SQL)
-    .all({ ...params, has_legacy_terms: deps.legacyTerms ? 1 : 0, limit }) as SellableQueryRow[];
+  const rows = deps.db.prepare(sellableSql(filters)).all({
+    ...params,
+    has_legacy_terms: deps.legacyTerms ? 1 : 0,
+    cursor_close_ms: cursor?.closeAtMs ?? null,
+    // Only read when cursor_close_ms is non-null, but better-sqlite3 binds
+    // every named parameter in the statement, so it always needs a value.
+    cursor_call_id: cursor?.callId ?? "",
+    limit,
+  }) as SellableQueryRow[];
+
+  // ONE grouped read for the whole page. This was a query per listed row, so a
+  // full page of 200 cost 200 round trips to answer a single question.
+  const reserved = entitlementsRepo.countActiveForCalls(deps.db, {
+    chainId: deps.chain.chainId,
+    contractAddress,
+    onchainCallIds: rows.map((row) => row.onchain_call_id),
+  });
 
   const calls: SellableCallRow[] = [];
   for (const row of rows) {
@@ -198,19 +367,31 @@ export function listSellableCallsResponse(
       row.provider_max_subscribers,
       row.series_max_armed_per_call,
     );
+    const seatsCap = cap ?? null;
+    const seatsReserved = reserved.get(row.onchain_call_id.toLowerCase()) ?? 0;
+    const seatsRemaining = seatsCap === null ? null : Math.max(0, seatsCap - seatsReserved);
     calls.push({
       onchain_call_id: row.onchain_call_id,
       agent: { slug: row.agent_slug, display_name: row.agent_display_name },
+      agent_id: row.agent_id,
       market: { market_id: row.market_id, question: row.question ?? null },
+      venue_series_id: row.venue_series_id ?? null,
+      locked_terms: {
+        price_atoms: terms.priceAtoms,
+        currency: terms.currency,
+        pricing_version: terms.pricingVersion,
+      },
       price_atoms: terms.priceAtoms,
       currency: terms.currency,
       pricing_version: terms.pricingVersion,
-      seats_cap: cap ?? null,
-      seats_reserved: entitlementsRepo.countActiveForCall(deps.db, {
-        chainId: deps.chain.chainId,
-        contractAddress,
-        onchainCallId: row.onchain_call_id,
-      }),
+      seats_cap: seatsCap,
+      seats_reserved: seatsReserved,
+      seats_remaining: seatsRemaining,
+      inventory_status: !deps.purchaseAvailable
+        ? "checkout_unavailable"
+        : seatsRemaining !== null && seatsRemaining <= 0
+          ? "full"
+          : "available",
       sale_closes_at: new Date(
         row.submission_close_at_ms - deps.salesSafetySeconds * 1000,
       ).toISOString(),
@@ -220,7 +401,12 @@ export function listSellableCallsResponse(
 
   const excludedLegacy = deps.legacyTerms
     ? 0
-    : ((deps.db.prepare(EXCLUDED_LEGACY_SQL).get(params) as { n: number }).n ?? 0);
+    : ((deps.db.prepare(excludedLegacySql(filters)).get(params) as { n: number }).n ?? 0);
+
+  // Taken from the last SQL row, not the last projected call: a row the terms
+  // resolver unexpectedly refuses is still a position in the keyset, and
+  // skipping it in the cursor would replay it forever.
+  const lastRow = rows.length === limit ? rows[rows.length - 1] : undefined;
 
   return {
     status: 200,
@@ -241,6 +427,9 @@ export function listSellableCallsResponse(
             `nobody set must not be quoted.`
           : null,
       calls,
+      next_cursor: lastRow
+        ? encodeCursor(lastRow.submission_close_at_ms, lastRow.call_id)
+        : null,
       page: { limit, returned: calls.length },
     },
   };

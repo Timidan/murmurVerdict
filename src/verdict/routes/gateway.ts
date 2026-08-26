@@ -111,7 +111,13 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
           purchaseAvailable: Boolean(deps.entitlementAccess),
           now: deps.now,
         },
-        { limit: numericQuery(req.query.limit) },
+        {
+          limit: numericQuery(req.query.limit),
+          cursor: typeof req.query.cursor === "string" ? req.query.cursor : null,
+          venueSeriesIds: repeatableQuery(req.query.series),
+          agentSlug:
+            typeof req.query.agent_slug === "string" ? req.query.agent_slug : null,
+        },
       );
       res.status(result.status).json(result.body);
     }),
@@ -263,4 +269,16 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
 /** `?limit=` as a number, or undefined so the surface applies its default. */
 function numericQuery(raw: unknown): number | undefined {
   return typeof raw === "string" && /^[0-9]+$/.test(raw) ? Number(raw) : undefined;
+}
+
+/** `?series=a&series=b` and `?series=a` both parse; blanks and dupes dropped. */
+function repeatableQuery(raw: unknown): string[] {
+  const values = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+  const out: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed && !out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
 }

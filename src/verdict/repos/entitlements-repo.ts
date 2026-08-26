@@ -510,6 +510,54 @@ export const entitlementsRepo = {
     return row.n;
   },
 
+  /**
+   * Seats reserved on MANY calls, in one grouped read.
+   *
+   * The storefront needs this for every row it lists; calling
+   * `countActiveForCall` per row made a listing page cost one query per call.
+   * Same status set, same lowercase normalization, one statement.
+   *
+   * Keys are the LOWERCASED on-chain call ids. Calls with no reservations are
+   * absent from the map, so callers must default to 0 rather than assume a key
+   * exists — a missing key means "nobody has bought this", not "unknown".
+   */
+  countActiveForCalls(
+    db: Database.Database,
+    input: {
+      chainId: number;
+      contractAddress: string;
+      onchainCallIds: readonly string[];
+    },
+  ): Map<string, number> {
+    const counts = new Map<string, number>();
+    const ids = [...new Set(input.onchainCallIds.map(norm))];
+    if (ids.length === 0) return counts;
+    // Chunked so a large page can never exceed SQLITE_MAX_VARIABLE_NUMBER
+    // (999 on older builds); two bound params are already spent per chunk.
+    const CHUNK = 400;
+    for (let start = 0; start < ids.length; start += CHUNK) {
+      const chunk = ids.slice(start, start + CHUNK);
+      const rows = prep(
+        db,
+        `SELECT lower(onchain_call_id) AS onchain_call_id, COUNT(*) AS n
+           FROM entitlements
+          WHERE chain_id = ?
+            AND lower(contract_address) = lower(?)
+            AND lower(onchain_call_id) IN (${chunk.map(() => "?").join(",")})
+            AND status IN (
+              'payment_settling','grant_queued','grant_broadcast',
+              'settlement_unknown','granted'
+            )
+          GROUP BY lower(onchain_call_id)`,
+      ).all(input.chainId, input.contractAddress, ...chunk) as Array<{
+        onchain_call_id: string;
+        n: number;
+      }>;
+      for (const row of rows) counts.set(row.onchain_call_id, row.n);
+    }
+    return counts;
+  },
+
   counts(db: Database.Database): Record<EntitlementStatus, number> {
     const rows = prep(
       db,

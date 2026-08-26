@@ -72,6 +72,7 @@ export function sealedCallDuplicateExit(params: {
   runtimeIdentity: RuntimeKeyIdentity;
   clientOrderId: string;
   requestFingerprint: string;
+  requestFingerprintCandidates?: readonly string[];
   now: () => Date;
 }): ReserveSealedCallAttemptResult | null {
   const agentId = params.runtimeIdentity.agent_id;
@@ -83,7 +84,7 @@ export function sealedCallDuplicateExit(params: {
   if (attempt) {
     assertGatewayFingerprintMatch(
       attempt.request_fingerprint,
-      params.requestFingerprint,
+      params.requestFingerprintCandidates ?? params.requestFingerprint,
       { client_order_id: params.clientOrderId, attempt_id: attempt.attempt_id },
     );
     authorizeRuntimeKeyGatewayIntent(
@@ -118,6 +119,7 @@ export function reserveSealedCallAttempt(params: {
   contractAddress: string;
   relayerAddress: string;
   requestFingerprint: string;
+  requestFingerprintCandidates?: readonly string[];
   authProof: string | null;
   newAttemptId?: () => string;
   now: () => Date;
@@ -133,6 +135,7 @@ export function reserveSealedCallAttempt(params: {
     runtimeIdentity: params.runtimeIdentity,
     clientOrderId: params.body.client_order_id,
     requestFingerprint: params.requestFingerprint,
+    requestFingerprintCandidates: params.requestFingerprintCandidates,
     now: params.now,
   });
   if (preTxDuplicate) {
@@ -152,6 +155,7 @@ export function reserveSealedCallAttempt(params: {
       runtimeIdentity: params.runtimeIdentity,
       clientOrderId: params.body.client_order_id,
       requestFingerprint: params.requestFingerprint,
+      requestFingerprintCandidates: params.requestFingerprintCandidates,
       now: params.now,
     });
     if (inTxDuplicate) {
@@ -229,6 +233,7 @@ export function reserveSealedCallAttempt(params: {
           runtimeIdentity: params.runtimeIdentity,
           clientOrderId: params.body.client_order_id,
           requestFingerprint: params.requestFingerprint,
+          requestFingerprintCandidates: params.requestFingerprintCandidates,
           now: params.now,
         });
         if (inTxDuplicate) {
@@ -270,6 +275,7 @@ export function feedPacketDuplicateExit(params: {
   feedId: string;
   clientOrderId: string;
   requestFingerprint: string;
+  requestFingerprintCandidates?: readonly string[];
 }): ReserveFeedPacketAttemptResult | null {
   const attempt = fhenixGatewayFeedPacketTxRepo.byClientOrder(
     params.db,
@@ -280,7 +286,7 @@ export function feedPacketDuplicateExit(params: {
   if (attempt) {
     assertGatewayFingerprintMatch(
       attempt.request_fingerprint,
-      params.requestFingerprint,
+      params.requestFingerprintCandidates ?? params.requestFingerprint,
       {
         client_order_id: params.clientOrderId,
         feed_id: params.feedId,
@@ -301,6 +307,7 @@ export function reserveFeedPacketAttempt(params: {
   contractAddress: string;
   relayerAddress: string;
   requestFingerprint: string;
+  requestFingerprintCandidates?: readonly string[];
   authProof: string | null;
   newAttemptId?: () => string;
   now: () => Date;
@@ -341,6 +348,7 @@ export function reserveFeedPacketAttempt(params: {
     feedId: params.feed.feed_id,
     clientOrderId: params.body.client_order_id,
     requestFingerprint: params.requestFingerprint,
+    requestFingerprintCandidates: params.requestFingerprintCandidates,
   });
   if (preTxFeedDuplicate) {
     return preTxFeedDuplicate;
@@ -430,6 +438,7 @@ export function reserveFeedPacketAttempt(params: {
         feedId: params.feed.feed_id,
         clientOrderId: params.body.client_order_id,
         requestFingerprint: params.requestFingerprint,
+        requestFingerprintCandidates: params.requestFingerprintCandidates,
       });
       if (competing?.kind === "existing_attempt") {
         idempotentFeedReturn = competing.attempt;
@@ -505,6 +514,7 @@ export function reserveFeedPacketAttempt(params: {
         feedId: params.feed.feed_id,
         clientOrderId: params.body.client_order_id,
         requestFingerprint: params.requestFingerprint,
+        requestFingerprintCandidates: params.requestFingerprintCandidates,
       });
       if (recovered) {
         return recovered;
