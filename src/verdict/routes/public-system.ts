@@ -22,6 +22,7 @@ export interface PublicSystemRouterDeps {
   fhenixChain?: {
     chainId: number;
     sealedVerdictsAddress: string | null;
+    relayerAddress: string | null;
   } | null;
   liveCanaries?: LiveCanaryProvider | null;
   nanopayX402Mounted?: boolean;

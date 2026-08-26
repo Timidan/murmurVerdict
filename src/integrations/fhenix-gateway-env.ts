@@ -22,6 +22,10 @@ import {
   SdkMurmurOwnedCofheSealer,
   type MurmurOwnedCofheSealer,
 } from "./murmur-owned-cofhe-sealer.js";
+import {
+  parseGatewayFingerprintHmacKeyring,
+  type GatewayFingerprintHmacKeyring,
+} from "./gateway-request-fingerprint.js";
 
 export interface FhenixGatewayEnvConfig {
   chainId: number;
@@ -29,6 +33,7 @@ export interface FhenixGatewayEnvConfig {
   relayerAddress: string;
   client: FhenixGatewayClient;
   murmurOwnedSealer: MurmurOwnedCofheSealer | null;
+  fingerprintHmacKeyring: GatewayFingerprintHmacKeyring | null;
   /** MURMUR_ACK_FEED_REVEAL_MANUAL. Feed packet submission 503s without it. */
   feedRevealAcknowledged: boolean;
   /** FHENIX_RECONCILE_OLD_FROM_BLOCK; see the attempt machine's mismatch branch. */
@@ -79,6 +84,30 @@ export function loadFhenixGatewayEnvConfig(
 ): FhenixGatewayEnvConfig | null {
   const enabled = opts.enabled ??
     booleanEnv(env.FHENIX_GATEWAY_ENABLED, false, "FHENIX_GATEWAY_ENABLED");
+  const murmurOwnedSealingEnabled = booleanEnv(
+    env.MURMUR_OWNED_SEALING_ENABLED,
+    false,
+    "MURMUR_OWNED_SEALING_ENABLED",
+  );
+  let fingerprintHmacKeyring: GatewayFingerprintHmacKeyring | null = null;
+  if (murmurOwnedSealingEnabled) {
+    try {
+      fingerprintHmacKeyring = parseGatewayFingerprintHmacKeyring(
+        env.MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS,
+      );
+    } catch (err) {
+      throw new FhenixGatewayEnvConfigError(
+        "MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    if (!fingerprintHmacKeyring) {
+      throw new FhenixGatewayEnvConfigError(
+        "MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS",
+        "MURMUR_OWNED_SEALING_ENABLED=true requires a 256-bit HMAC key; configure active-id:$(openssl rand -hex 32)",
+      );
+    }
+  }
   const rpcUrl = env.FHENIX_RPC_URL?.trim();
   const privateKey = env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY?.trim();
   const chainIdInput = parseFhenixChainIdInput(env.FHENIX_CHAIN_ID);
@@ -145,11 +174,6 @@ export function loadFhenixGatewayEnvConfig(
     env.MURMUR_ACK_FEED_REVEAL_MANUAL,
     false,
     "MURMUR_ACK_FEED_REVEAL_MANUAL",
-  );
-  const murmurOwnedSealingEnabled = booleanEnv(
-    env.MURMUR_OWNED_SEALING_ENABLED,
-    false,
-    "MURMUR_OWNED_SEALING_ENABLED",
   );
   const retryBaseMs = integerEnv("FHENIX_GATEWAY_RETRY_BASE_MS", 5_000, env, {
     min: 1_000,
@@ -251,6 +275,9 @@ export function loadFhenixGatewayEnvConfig(
     client,
     murmurOwnedSealer: murmurOwnedSealingEnabled
       ? new SdkMurmurOwnedCofheSealer(publicClient, walletClient)
+      : null,
+    fingerprintHmacKeyring: murmurOwnedSealingEnabled
+      ? fingerprintHmacKeyring
       : null,
     feedRevealAcknowledged,
     reconcileOldFromBlock,

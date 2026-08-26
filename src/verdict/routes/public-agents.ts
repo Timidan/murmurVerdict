@@ -26,6 +26,8 @@ export interface PublicAgentRouterDeps {
   nanopayX402Mounted?: boolean;
   now: () => Date;
   publicOrigin: MurmurPublicOrigin;
+  popAudience?: string;
+  acceptsPlaintextSubmission: boolean;
 }
 
 export function publicAgentRouter(deps: PublicAgentRouterDeps): Router {
@@ -75,7 +77,12 @@ export function publicAgentRouter(deps: PublicAgentRouterDeps): Router {
     sendPublicSystemResource(
       req,
       res,
-      publicAgentSkillResource(apiBase, agent.display_slug),
+      publicAgentSkillResource(
+        apiBase,
+        agent.display_slug,
+        deps.popAudience,
+        deps.acceptsPlaintextSubmission,
+      ),
     );
   });
 

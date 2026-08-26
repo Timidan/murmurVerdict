@@ -32,5 +32,6 @@ export interface WireMetaResponse {
     chain_id: string;
     chain_id_numeric: number;
     contract_address: string | null;
+    relayer_address: string | null;
   };
 }

@@ -52,6 +52,7 @@ export interface PublicSystemReadInstant {
 export interface PublicSystemFhenixChain {
   chainId: number;
   sealedVerdictsAddress: string | null;
+  relayerAddress: string | null;
 }
 
 export type PublicSystemResource = CacheablePublicResource;
@@ -140,10 +141,12 @@ export function publicSkillResource(
 export function publicAgentSkillResource(
   apiBase: string,
   slug: string,
+  popAudience?: string,
+  acceptsPlaintextSubmission = false,
 ): PublicSystemResource {
   return publicSystemResource(
     "text/markdown; charset=utf-8",
-    buildAgentOperatePrompt(apiBase, slug),
+    buildAgentOperatePrompt(apiBase, slug, popAudience, acceptsPlaintextSubmission),
   );
 }
 
@@ -266,6 +269,7 @@ export function publicMetaSurface(deps: PublicMetaDeps) {
         chain_id: `eip155:${deps.fhenixChain.chainId}`,
         chain_id_numeric: deps.fhenixChain.chainId,
         contract_address: deps.fhenixChain.sealedVerdictsAddress,
+        relayer_address: deps.fhenixChain.relayerAddress,
       }
     : null;
   return {

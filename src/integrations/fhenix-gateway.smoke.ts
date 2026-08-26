@@ -26,6 +26,7 @@ import {
   type FhenixGatewayClient,
 } from "./fhenix-gateway.js";
 import type { MurmurOwnedCofheSealer } from "./murmur-owned-cofhe-sealer.js";
+import type { GatewayFingerprintHmacKeyring } from "./gateway-request-fingerprint.js";
 import {
   MurmurOwnedSealedCallBodySchema,
 } from "./murmur-owned-sealing-schemas.js";
@@ -54,6 +55,11 @@ import {
   marketSeriesRepo,
 } from "../verdict/repos/market-clocks-repo.js";
 import { canonicalHash, canonicalize } from "../receipts/canonical.js";
+
+const fingerprintHmacKeyring: GatewayFingerprintHmacKeyring = {
+  active: { id: "smoke", key: Buffer.from("44".repeat(32), "hex") },
+  previous: [],
+};
 
 let failures = 0;
 
@@ -409,6 +415,7 @@ try {
     client: gatewayClient,
     confirmations: 2,
     murmurOwnedSealer: fakeMurmurOwnedSealer,
+    fingerprintHmacKeyring,
     // The feed lane 503s without this. It is off in production because
     // Murmur has no feed reveal path; these cases exercise the SUBMIT and
     // SLA mechanics, which are what exists today.
@@ -497,6 +504,21 @@ try {
       utype: 3,
       signature: "0xdcba",
     },
+  };
+  const ownedBody = {
+    marketRef: {
+      protocol: "polymarket-gamma",
+      sourceId: marketId,
+      configVersion: 1,
+    },
+    client_order_id: "owned-seal-smoke-order-001",
+    client_nonce: ownedSealClientNonce,
+    privacy_mode: "murmur_sealed_fhenix",
+    verdict: {
+      binary_index: 1,
+      confidence_bps: 7400,
+    },
+    public_strategy_tag: "momentum",
   };
 
   let attemptId = "";
@@ -703,6 +725,7 @@ try {
       client: gatewayClient,
       confirmations: 2,
       murmurOwnedSealer: fakeMurmurOwnedSealer,
+      fingerprintHmacKeyring,
       // The production default.
       feedRevealAcknowledged: false,
       newAttemptId: () => "unreachable",
@@ -995,21 +1018,7 @@ try {
         "Content-Type": "application/json",
         "X-Murmur-Runtime-Key": runtimeKey.secret,
       },
-      body: JSON.stringify({
-        marketRef: {
-          protocol: "polymarket-gamma",
-          sourceId: marketId,
-          configVersion: 1,
-        },
-        client_order_id: "owned-seal-smoke-order-001",
-        client_nonce: ownedSealClientNonce,
-        privacy_mode: "murmur_sealed_fhenix",
-        verdict: {
-          binary_index: 1,
-          confidence_bps: 7400,
-        },
-        public_strategy_tag: "momentum",
-      }),
+      body: JSON.stringify(ownedBody),
     });
     assert.equal(res.status, 202);
     assert.deepEqual(fakeMurmurOwnedSealer.calls, [
@@ -1018,6 +1027,42 @@ try {
     const payload = await res.json() as { status: string; tx_hash: string };
     assert.equal(payload.status, "submitted");
     assert.equal(payload.tx_hash, txHash);
+    assert.match(
+      fhenixGatewayTxRepo.byClientOrder(
+        db,
+        agentId,
+        ownedBody.client_order_id,
+      )?.request_fingerprint ?? "",
+      /^v1:hmac-sha256:smoke:[0-9a-f]{64}$/,
+    );
+  });
+
+  await check("murmur-owned sealing is idempotent before resealing", async () => {
+    const same = await fetch(`${baseUrl}/v2/gateway/calls/seal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Murmur-Runtime-Key": runtimeKey.secret,
+      },
+      body: JSON.stringify(ownedBody),
+    });
+    assert.equal(same.status, 202);
+    assert.equal((await same.json() as { idempotent_hit: boolean }).idempotent_hit, true);
+    assert.equal(fakeMurmurOwnedSealer.calls.length, 1);
+
+    const changed = await fetch(`${baseUrl}/v2/gateway/calls/seal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Murmur-Runtime-Key": runtimeKey.secret,
+      },
+      body: JSON.stringify({
+        ...ownedBody,
+        verdict: { ...ownedBody.verdict, confidence_bps: 7401 },
+      }),
+    });
+    assert.equal(changed.status, 409);
+    assert.equal(fakeMurmurOwnedSealer.calls.length, 1);
   });
 
   db.close();

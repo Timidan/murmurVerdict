@@ -33,7 +33,11 @@ import {
   reserveSealedCallAttempt,
   sealedCallDuplicateExit,
 } from "./fhenix-gateway-reservations.js";
-import { gatewayRequestFingerprint } from "./gateway-request-fingerprint.js";
+import {
+  gatewayRequestFingerprints,
+  type GatewayFingerprintHmacKeyring,
+  type GatewayRequestFingerprints,
+} from "./gateway-request-fingerprint.js";
 import {
   normalizeAddress,
   type FhenixGatewayRuntimeTimers,
@@ -101,6 +105,7 @@ export interface FhenixGatewayConfig {
   relayerAddress: string;
   client: FhenixGatewayClient;
   murmurOwnedSealer?: MurmurOwnedCofheSealer | null;
+  fingerprintHmacKeyring?: GatewayFingerprintHmacKeyring | null;
   /**
    * Live event bus. Acceptance emits `call.accepted` onto it — without this
    * the gateway (the only path an agent submits through) never reaches the
@@ -160,6 +165,7 @@ export class FhenixGatewayBroadcaster {
   private readonly relayerAddress: string;
   private readonly client: FhenixGatewayClient;
   private readonly murmurOwnedSealer: MurmurOwnedCofheSealer | null;
+  private readonly fingerprintHmacKeyring: GatewayFingerprintHmacKeyring | null;
   /** See the feed-packet gate in submitFeedPacket. */
   private readonly feedRevealAcknowledgedFlag: boolean;
   /** See assertChainMatchesRpc. */
@@ -189,6 +195,12 @@ export class FhenixGatewayBroadcaster {
   get acceptsPlaintextSubmission(): boolean {
     return this.murmurOwnedSealer !== null;
   }
+
+  /** Address client-side CoFHE inputs must bind to before Murmur relays them. */
+  get relayerAccountAddress(): string {
+    return this.relayerAddress;
+  }
+
   private readonly confirmations: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
@@ -213,6 +225,12 @@ export class FhenixGatewayBroadcaster {
     this.relayerAddress = normalizeAddress(config.relayerAddress);
     this.client = config.client;
     this.murmurOwnedSealer = config.murmurOwnedSealer ?? null;
+    this.fingerprintHmacKeyring = config.fingerprintHmacKeyring ?? null;
+    if (this.murmurOwnedSealer && !this.fingerprintHmacKeyring) {
+      throw new Error(
+        "MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS is required when Murmur-owned sealing is enabled",
+      );
+    }
     this.feedRevealAcknowledgedFlag = config.feedRevealAcknowledged ?? false;
     this.reconcileOldFromBlock = config.reconcileOldFromBlock ?? null;
     this.confirmations = Math.max(0, Math.floor(config.confirmations ?? 2));
@@ -248,7 +266,7 @@ export class FhenixGatewayBroadcaster {
     /** Owned sealing fingerprints the ORIGINAL client body before randomized
      *  CoFHE sealing and threads it through here, so byte-identical retries
      *  match even though sealing output differs per call. */
-    requestFingerprintOverride?: string;
+    requestFingerprintOverride?: GatewayRequestFingerprints;
   }): Promise<GatewaySubmitResult> {
     await this.assertChainMatchesRpc();
     const parsed = GatewaySealedCallBodySchema.safeParse(params.bodyJson);
@@ -266,14 +284,15 @@ export class FhenixGatewayBroadcaster {
       "gateway submissions require X-Murmur-Runtime-Key auth",
     );
 
-    const requestFingerprint =
+    const requestFingerprints =
       params.requestFingerprintOverride ??
-      gatewayRequestFingerprint("sealed_call", body);
+      gatewayRequestFingerprints("sealed_call", body);
     const earlyDuplicate = sealedCallDuplicateExit({
       db: this.db,
       runtimeIdentity,
       clientOrderId: body.client_order_id,
-      requestFingerprint,
+      requestFingerprint: requestFingerprints.stored,
+      requestFingerprintCandidates: requestFingerprints.comparisons,
       now: this.now,
     });
     if (earlyDuplicate?.kind === "existing_attempt") {
@@ -332,7 +351,8 @@ export class FhenixGatewayBroadcaster {
       chainId: this.chainId,
       contractAddress: this.contractAddress,
       relayerAddress: this.relayerAddress,
-      requestFingerprint,
+      requestFingerprint: requestFingerprints.stored,
+      requestFingerprintCandidates: requestFingerprints.comparisons,
       authProof: runtimeIdentity.runtime_key.signature_verified
         ? "pop-v1"
         : null,
@@ -386,15 +406,17 @@ export class FhenixGatewayBroadcaster {
       params.authResult,
       "murmur-owned sealing requires X-Murmur-Runtime-Key auth",
     );
-    const requestFingerprint = gatewayRequestFingerprint(
+    const requestFingerprints = gatewayRequestFingerprints(
       "owned_sealed_call",
       parsed.data,
+      { hmacKeyring: this.fingerprintHmacKeyring! },
     );
     const earlyDuplicate = sealedCallDuplicateExit({
       db: this.db,
       runtimeIdentity,
       clientOrderId: parsed.data.client_order_id,
-      requestFingerprint,
+      requestFingerprint: requestFingerprints.stored,
+      requestFingerprintCandidates: requestFingerprints.comparisons,
       now: this.now,
     });
     if (earlyDuplicate?.kind === "existing_attempt") {
@@ -426,7 +448,7 @@ export class FhenixGatewayBroadcaster {
         binaryIndexInput: sealed.binary_index_input,
         confidenceInput: sealed.confidence_input,
       }),
-      requestFingerprintOverride: requestFingerprint,
+      requestFingerprintOverride: requestFingerprints,
     });
   }
 
@@ -499,6 +521,9 @@ export class FhenixGatewayBroadcaster {
         { feed_id: params.feedId, status: feed.status },
       );
     }
+    const requestFingerprints = gatewayRequestFingerprints("feed_packet", body, {
+      feedId: params.feedId,
+    });
     const reservation = reserveFeedPacketAttempt({
       db: this.db,
       runtimeIdentity,
@@ -507,9 +532,8 @@ export class FhenixGatewayBroadcaster {
       chainId: this.chainId,
       contractAddress: this.contractAddress,
       relayerAddress: this.relayerAddress,
-      requestFingerprint: gatewayRequestFingerprint("feed_packet", body, {
-        feedId: params.feedId,
-      }),
+      requestFingerprint: requestFingerprints.stored,
+      requestFingerprintCandidates: requestFingerprints.comparisons,
       authProof: runtimeIdentity.runtime_key.signature_verified
         ? "pop-v1"
         : null,

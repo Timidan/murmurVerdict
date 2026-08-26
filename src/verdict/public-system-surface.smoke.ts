@@ -264,10 +264,12 @@ try {
     fhenixChain: {
       chainId: 84532,
       sealedVerdictsAddress: `0x${"a".repeat(40)}`,
+      relayerAddress: `0x${"b".repeat(40)}`,
     },
   });
   assert.equal(meta.schema_version, 1);
   assert.equal(meta.fhenix?.chain_id, "eip155:84532");
+  assert.equal(meta.fhenix?.relayer_address, `0x${"b".repeat(40)}`);
   assert.equal(meta.paid_inference.current_venue, "polymarket-gamma");
   assert.equal(meta.paid_inference.nanopay?.protocol, "x402");
   assert.equal(meta.paid_inference.nanopay?.gateway, "circle");
@@ -324,6 +326,7 @@ try {
     fhenixChain: {
       chainId: 84532,
       sealedVerdictsAddress: `0x${"a".repeat(40)}`,
+      relayerAddress: `0x${"b".repeat(40)}`,
     },
   });
   const metaRes = new FakeJsonResponse();

@@ -94,6 +94,7 @@ try {
         relayerAddress: "0x2222222222222222222222222222222222222222",
         client: fakeGatewayClient(),
         murmurOwnedSealer: null,
+        fingerprintHmacKeyring: null,
     feedRevealAcknowledged: false,
     reconcileOldFromBlock: null,
         confirmations: 1,

@@ -109,10 +109,42 @@ assert.equal(
 const parsedWithMurmurOwnedSealing = loadFhenixGatewayEnvConfig({
   ...enabledGatewayEnv,
   MURMUR_OWNED_SEALING_ENABLED: "true",
+  MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS:
+    `active:${"2".repeat(64)},previous:${"3".repeat(64)}`,
 });
 assert.equal(
   typeof parsedWithMurmurOwnedSealing?.murmurOwnedSealer?.sealVerdict,
   "function",
+);
+assert.equal(parsedWithMurmurOwnedSealing?.fingerprintHmacKeyring?.active.id, "active");
+assert.deepEqual(
+  parsedWithMurmurOwnedSealing?.fingerprintHmacKeyring?.previous.map((key) => key.id),
+  ["previous"],
+);
+
+assert.throws(
+  () =>
+    loadFhenixGatewayEnvConfig({
+      ...enabledGatewayEnv,
+      MURMUR_OWNED_SEALING_ENABLED: "true",
+    }),
+  (err) =>
+    err instanceof FhenixGatewayEnvConfigError &&
+    err.key === "MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS" &&
+    /requires a 256-bit HMAC key/.test(err.message),
+);
+
+assert.throws(
+  () =>
+    loadFhenixGatewayEnvConfig({
+      ...enabledGatewayEnv,
+      MURMUR_OWNED_SEALING_ENABLED: "true",
+      MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS: `short:${"4".repeat(62)}`,
+    }),
+  (err) =>
+    err instanceof FhenixGatewayEnvConfigError &&
+    err.key === "MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS" &&
+    /exactly 256 bits/.test(err.message),
 );
 
 const parsedWithoutMurmurOwnedSealing = loadFhenixGatewayEnvConfig({

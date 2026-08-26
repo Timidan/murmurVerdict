@@ -31,6 +31,8 @@ try {
     db,
     env: {},
     now: () => new Date("2026-06-12T10:00:00Z"),
+    popAudience: "configured-public-agent-audience",
+    acceptsPlaintextSubmission: true,
     publicOrigin: {
       publicApiUrl: "https://api.murmur.example/public",
       dashboardUrl: null,
@@ -60,8 +62,40 @@ try {
       card.meta?.openapi,
       "https://api.murmur.example/public/v1/openapi.json",
     );
+
+    const promptRes = await fetch(
+      `http://127.0.0.1:${port}/v1/agents/configured-origin-agent/skill.md`,
+    );
+    assert.equal(promptRes.status, 200);
+    const prompt = await promptRes.text();
+    assert.ok(prompt.includes("configured-public-agent-audience"));
+    assert.ok(prompt.includes("operator can read your verdict before public reveal"));
   } finally {
     await closeServer(server);
+  }
+
+  const disabledApp = express();
+  disabledApp.use(createVerdictRouter({
+    db,
+    env: {},
+    now: () => new Date("2026-06-12T10:00:00Z"),
+    acceptsPlaintextSubmission: false,
+    publicOrigin: {
+      publicApiUrl: "https://api.murmur.example/public",
+      dashboardUrl: null,
+    },
+  }));
+  const { server: disabledServer, port: disabledPort } = await listen(disabledApp);
+  try {
+    const disabledRes = await fetch(
+      `http://127.0.0.1:${disabledPort}/v1/agents/configured-origin-agent/skill.md`,
+    );
+    assert.equal(disabledRes.status, 200);
+    const disabledPrompt = await disabledRes.text();
+    assert.ok(disabledPrompt.includes("MURMUR_OWNED_SEALING_ENABLED=false"));
+    assert.ok(!disabledPrompt.includes("```js"));
+  } finally {
+    await closeServer(disabledServer);
   }
 
   db.close();
