@@ -159,7 +159,9 @@ export function loadFhenixRevealWorkerEnvConfig(
     20_000_000_000_000_000n, // 0.02 ETH
     env,
   );
-  const withoutPermit = booleanEnv(
+  // CoFHE 0.7 renamed Permits to ACPs. The env var keeps its name so existing
+  // deployments keep working; only the SDK call underneath changed.
+  const withoutAcp = booleanEnv(
     env.FHENIX_REVEAL_WORKER_WITHOUT_PERMIT,
     false,
     "FHENIX_REVEAL_WORKER_WITHOUT_PERMIT",
@@ -190,7 +192,7 @@ export function loadFhenixRevealWorkerEnvConfig(
     publicClient,
     walletClient,
     account.address,
-    withoutPermit,
+    withoutAcp,
   );
 
   return {
@@ -321,21 +323,23 @@ function createViemRevealChainAdapter(deps: {
 
 class CofheRevealDecryptor implements RevealDecryptor {
   private connected = false;
-  private permit: unknown = null;
+  private acp: unknown = null;
 
   constructor(
     private readonly client: ReturnType<typeof createCofheClient>,
     private readonly publicClient: ReturnType<typeof createPublicClient>,
     private readonly walletClient: ReturnType<typeof createWalletClient>,
     private readonly issuer: string,
-    private readonly withoutPermit: boolean,
+    private readonly withoutAcp: boolean,
   ) {}
 
   async decrypt(ctHash: string): Promise<{ value: number; signature: string }> {
     if (!this.connected) {
       await this.client.connect(this.publicClient as never, this.walletClient as never);
-      if (!this.withoutPermit) {
-        this.permit = await this.client.permits.createSelf({
+      if (!this.withoutAcp) {
+        // 0.7: client.permits.createSelf -> client.acp.createSelf. Same options,
+        // same create-and-sign semantics against the connected wallet.
+        this.acp = await this.client.acp.createSelf({
           type: "self",
           issuer: this.issuer,
         });
@@ -349,12 +353,12 @@ class CofheRevealDecryptor implements RevealDecryptor {
     const builder = this.client
       .decryptForTx(BigInt(ctHash))
       .set404RetryTimeout(COFHE_404_RETRY_TIMEOUT_MS);
-    // The ciphertext is globally public after openReveal, so withoutPermit()
-    // drops the permit lifecycle entirely when the SDK path is reliable; the
-    // permit path is the proven default.
-    const exec = this.withoutPermit
-      ? builder.withoutPermit()
-      : builder.withPermit(this.permit as never);
+    // The ciphertext is globally public after openReveal, so withoutACP()
+    // drops the ACP lifecycle entirely when the SDK path is reliable; the
+    // ACP path is the proven default.
+    const exec = this.withoutAcp
+      ? builder.withoutACP()
+      : builder.withACP(this.acp as never);
     const result = (await exec.execute()) as { decryptedValue: bigint; signature: string };
     return { value: Number(result.decryptedValue), signature: result.signature };
   }

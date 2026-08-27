@@ -16,11 +16,12 @@
  * overall seal-output budget is separate and still capped by the SDK at 5min.
  *
  * IMPORTANT — this does NOT cover every ACL-lag rejection. `set404RetryTimeout`
- * bounds retries for 204/404 only (`isRetryableSubmitStatus` in
+ * bounds retries for 204/404 only (`SubmitRetryableStatus = 204 | 404` in
  * `@cofhe/sdk/core/decrypt/submitRetry.ts`); **403/Forbidden is fatal to the
- * SDK**. And 403 is precisely how this repo has observed ACL lag in practice —
- * see the `RevealDecryptor` contract in `fhenix-reveal-worker.ts` ("expected
- * 403 for ~5-30s") and the retry loop in `tools/operator-blind-roundtrip.ts`.
+ * SDK** (it classifies as `fatal-http`). And 403 is precisely how this repo
+ * has observed ACL lag in practice — see the `RevealDecryptor` contract in
+ * `fhenix-reveal-worker.ts` ("expected 403 for ~5-30s") and the retry loop in
+ * `tools/operator-blind-roundtrip.ts`.
  *
  * So any caller that must survive ACL propagation needs its OWN retry around
  * the call; this constant is the shared deadline for that, not a substitute.

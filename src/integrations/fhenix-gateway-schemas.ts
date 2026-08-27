@@ -7,8 +7,8 @@ import {
   MarketIdSchema,
 } from "../verdict/schema.js";
 
-const COFHE_EUINT8_UTYPE = 2;
-const COFHE_EUINT16_UTYPE = 3;
+export const COFHE_EUINT8_UTYPE = 2;
+export const COFHE_EUINT16_UTYPE = 3;
 
 export const ZERO_BYTES32 = `0x${"00".repeat(32)}`;
 

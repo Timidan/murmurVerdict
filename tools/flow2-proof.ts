@@ -23,6 +23,13 @@ import { randomBytes } from "node:crypto";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
+import {
+  COFHE_EUINT8_UTYPE,
+  COFHE_EUINT16_UTYPE,
+} from "../src/integrations/fhenix-gateway-schemas.js";
+
+// 0.7 stopped echoing securityZone/utype per input.
+const COFHE_SECURITY_ZONE = 0;
 
 const ABI = parseAbi([
   "function registerMarket(bytes32 marketId, (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active) schedule)",
@@ -86,20 +93,26 @@ async function main(): Promise<void> {
   console.log(`[flow2] connecting @cofhe/sdk + encrypting inputs (binaryIndex=${BIN}, confidenceBps=${CONF})`);
   const cofhe = createCofheClient(createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }));
   await cofhe.connect(publicClient as never, relayerWallet as never);
-  await cofhe.permits.createSelf({ type: "self", issuer: relayer.address });
+  // 0.7 renamed Permits to ACPs.
+  await cofhe.acp.createSelf({ type: "self", issuer: relayer.address });
+  // 0.7 binds the consuming contract into a SINGLE batch signature and returns
+  // [...ctHashes, batchSignature] — one element more than the input count.
   const enc = await cofhe
     .encryptInputs([Encryptable.uint8(BigInt(BIN)), Encryptable.uint16(BigInt(CONF))] as never)
+    .setAccount(relayer.address)
+    .setSecurityZone(COFHE_SECURITY_ZONE)
+    .setConsumingContract(contract)
     .execute();
-  const binEnc = (enc as never[])[0] as { ctHash: bigint; securityZone: number; utype: number; signature: Hex };
-  const confEnc = (enc as never[])[1] as { ctHash: bigint; securityZone: number; utype: number; signature: Hex };
+  const [binCtHash, confCtHash, batchSignature] = enc as unknown as [Hex, Hex, Hex];
 
   console.log(`[flow2] submitSealedFor agent=${relayer.address}`);
   const subTx = await relayerWallet.writeContract({
     address: contract, abi: ABI, functionName: "submitSealedFor",
     args: [
       relayer.address, marketId,
-      { ctHash: binEnc.ctHash, securityZone: binEnc.securityZone, utype: binEnc.utype, signature: binEnc.signature },
-      { ctHash: confEnc.ctHash, securityZone: confEnc.securityZone, utype: confEnc.utype, signature: confEnc.signature },
+      // Both inputs share the one batch signature under 0.7.
+      { ctHash: BigInt(binCtHash), securityZone: COFHE_SECURITY_ZONE, utype: COFHE_EUINT8_UTYPE, signature: batchSignature },
+      { ctHash: BigInt(confCtHash), securityZone: COFHE_SECURITY_ZONE, utype: COFHE_EUINT16_UTYPE, signature: batchSignature },
       clientNonce,
     ] as never,
     chain: baseSepolia, account: relayer,

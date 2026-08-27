@@ -274,7 +274,14 @@ export function loadFhenixGatewayEnvConfig(
     relayerAddress: account.address,
     client,
     murmurOwnedSealer: murmurOwnedSealingEnabled
-      ? new SdkMurmurOwnedCofheSealer(publicClient, walletClient)
+      ? new SdkMurmurOwnedCofheSealer(
+          publicClient,
+          walletClient,
+          // CoFHE 0.7 binds both into the batch signature: the consuming
+          // contract and the relayer that broadcasts the submission.
+          contractAddress,
+          account.address,
+        )
       : null,
     fingerprintHmacKeyring: murmurOwnedSealingEnabled
       ? fingerprintHmacKeyring

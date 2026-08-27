@@ -60,6 +60,10 @@ import { baseSepolia } from "viem/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
+import {
+  COFHE_EUINT8_UTYPE,
+  COFHE_EUINT16_UTYPE,
+} from "./fhenix-gateway-schemas.js";
 import { loadDeployment } from "./deployments.js";
 
 const CHAIN_ID = 84532;
@@ -75,6 +79,9 @@ if (!agentAddress) throw new Error("AGENT_ADDRESS must be set");
 
 const sealed = loadDeployment(CHAIN_ID, "MurmurSealedVerdicts");
 if (!sealed) throw new Error("MurmurSealedVerdicts not in manifest; run sync-deployments");
+// 0.7 no longer echoes securityZone/utype back per input; we send what we
+// asked the verifier to sign.
+const COFHE_SECURITY_ZONE = 0;
 const contractAddress = getAddress(sealed.address);
 console.log(`[smoke] MurmurSealedVerdicts @ ${contractAddress}`);
 
@@ -154,23 +161,29 @@ async function main() {
   const cofheClient = createCofheClient(cofheConfig);
   await cofheClient.connect(publicClient as never, walletClient as never);
 
-  // Self-permit, signed by the relayer, authorizing decryptForTx below.
-  const selfPermit = await cofheClient.permits.createSelf({
+  // Self-ACP, signed by the relayer, authorizing decryptForTx below.
+  // 0.7 renamed the Permit system to ACP; options and semantics are unchanged.
+  const selfAcp = await cofheClient.acp.createSelf({
     type: "self",
     issuer: account.address,
   });
 
   // Step 2 (continued) — encrypt binaryIndex=0 (euint8) and confidenceBps=7500 (euint16)
   console.log(`[smoke] encrypting inputs via @cofhe/sdk`);
+  // 0.7: the consuming contract is bound into the batch signature, and
+  // execute() returns [...ctHashes, batchSignature] — one element more than the
+  // input count, with a single signature covering both hashes in order.
   const encryptedInputs = await cofheClient
     .encryptInputs([
       Encryptable.uint8(BigInt(0)),
       Encryptable.uint16(BigInt(7500)),
     ])
+    .setAccount(account.address)
+    .setSecurityZone(COFHE_SECURITY_ZONE)
+    .setConsumingContract(contractAddress)
     .execute();
-  const binEnc = encryptedInputs[0];
-  const confEnc = encryptedInputs[1];
-  console.log(`[smoke] encrypted: binEnc.ctHash=${binEnc.ctHash} confEnc.ctHash=${confEnc.ctHash}`);
+  const [binCtHash, confCtHash, batchSignature] = encryptedInputs;
+  console.log(`[smoke] encrypted: binCtHash=${binCtHash} confCtHash=${confCtHash}`);
 
   // Step 3 — submitSealedFor
   const clientNonce = keccak256(toHex(`nonce-${Date.now()}-${Math.random()}`));
@@ -182,17 +195,20 @@ async function main() {
     args: [
       agentAddress as Address,
       marketId,
+      // Both inputs carry the SAME batch signature under 0.7. The deployed
+      // contract still takes a per-input signature, so this submit only lands
+      // once MurmurSealedVerdicts moves to the batch (FHE.asEuint*s) form.
       {
-        ctHash: binEnc.ctHash,
-        securityZone: binEnc.securityZone,
-        utype: binEnc.utype,
-        signature: binEnc.signature as Hex,
+        ctHash: BigInt(binCtHash),
+        securityZone: COFHE_SECURITY_ZONE,
+        utype: COFHE_EUINT8_UTYPE,
+        signature: batchSignature as Hex,
       },
       {
-        ctHash: confEnc.ctHash,
-        securityZone: confEnc.securityZone,
-        utype: confEnc.utype,
-        signature: confEnc.signature as Hex,
+        ctHash: BigInt(confCtHash),
+        securityZone: COFHE_SECURITY_ZONE,
+        utype: COFHE_EUINT16_UTYPE,
+        signature: batchSignature as Hex,
       },
       clientNonce,
     ],
@@ -291,7 +307,7 @@ async function main() {
       try {
         const r = await cofheClient
           .decryptForTx(ctHash)
-          .withPermit(selfPermit as never)
+          .withACP(selfAcp as never)
           .execute();
         console.log(`[smoke] ${label} decrypted after ${attempt} attempt(s)`);
         return { decrypted: r.decryptedValue, signature: r.signature as Hex };

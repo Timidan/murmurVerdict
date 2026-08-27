@@ -18,7 +18,11 @@ import {
   normalizeCofheBytesHex,
   normalizeCofheCtHashToHex32,
 } from "../src/integrations/fhenix-gateway-cofhe-normalize.js";
-import type { CofheInput } from "../src/integrations/fhenix-gateway-schemas.js";
+import {
+  COFHE_EUINT8_UTYPE,
+  COFHE_EUINT16_UTYPE,
+  type CofheInput,
+} from "../src/integrations/fhenix-gateway-schemas.js";
 import {
   addressOnlyWalletClient,
   AGENT_GATEWAY_PATH,
@@ -27,16 +31,22 @@ import {
   cofheVerifierError,
 } from "../src/integrations/agent-side-cofhe-sealer-support.js";
 
+// 0.7 stopped echoing securityZone/utype per input; send what we asked the
+// verifier to sign.
+const COFHE_SECURITY_ZONE = 0;
+
 interface MetaResponse {
   fhenix?: {
     chain_id_numeric?: number;
     relayer_address?: string | null;
+    contract_address?: string | null;
   };
 }
 
 async function fetchMeta(apiBase: string): Promise<{
   chainId: number;
   relayerAddress: Address;
+  contractAddress: Address;
 }> {
   const response = await fetch(`${apiBase}/v1/meta`);
   if (!response.ok) {
@@ -45,13 +55,19 @@ async function fetchMeta(apiBase: string): Promise<{
   const meta = await response.json() as MetaResponse;
   const chainId = meta.fhenix?.chain_id_numeric;
   const relayerAddress = meta.fhenix?.relayer_address;
-  if (!chainId || !relayerAddress) {
+  const contractAddress = meta.fhenix?.contract_address;
+  if (!chainId || !relayerAddress || !contractAddress) {
     throw new Error(
-      "Murmur /v1/meta does not publish fhenix.chain_id_numeric and " +
-        "fhenix.relayer_address; client-side relayer binding is unavailable",
+      "Murmur /v1/meta does not publish fhenix.chain_id_numeric, " +
+        "fhenix.relayer_address and fhenix.contract_address; client-side " +
+        "proof binding is unavailable",
     );
   }
-  return { chainId, relayerAddress: getAddress(relayerAddress) };
+  return {
+    chainId,
+    relayerAddress: getAddress(relayerAddress),
+    contractAddress: getAddress(contractAddress),
+  };
 }
 
 async function sealVerdict(input: {
@@ -59,6 +75,7 @@ async function sealVerdict(input: {
   confidenceBps: number;
   chainId: number;
   relayerAddress: Address;
+  contractAddress: Address;
   rpcUrl: string;
 }): Promise<{
   binary_index_input: CofheInput;
@@ -84,32 +101,37 @@ async function sealVerdict(input: {
   );
 
   try {
-    const [binary, confidence] = await client
+    // Both bindings are Murmur's PUBLISHED values, not this agent's: the proof
+    // is signed for Murmur's relayer (which broadcasts it) and for
+    // MurmurSealedVerdicts (which consumes it). Input order is load-bearing —
+    // the single batch signature covers the hashes in this exact sequence.
+    const [binaryHash, confidenceHash, batchSignature] = await client
       .encryptInputs([
         Encryptable.uint8(BigInt(input.binaryIndex)),
         Encryptable.uint16(BigInt(input.confidenceBps)),
       ])
       .setAccount(input.relayerAddress)
+      .setSecurityZone(COFHE_SECURITY_ZONE)
+      .setConsumingContract(input.contractAddress)
       .execute();
+    const signature = normalizeCofheBytesHex(batchSignature, "sealed_batch");
     return {
-      binary_index_input: normalizeInput(binary, "binary_index_input"),
-      confidence_input: normalizeInput(confidence, "confidence_input"),
+      binary_index_input: {
+        ct_hash: normalizeCofheCtHashToHex32(binaryHash, "binary_index_input"),
+        security_zone: COFHE_SECURITY_ZONE,
+        utype: COFHE_EUINT8_UTYPE,
+        signature,
+      },
+      confidence_input: {
+        ct_hash: normalizeCofheCtHashToHex32(confidenceHash, "confidence_input"),
+        security_zone: COFHE_SECURITY_ZONE,
+        utype: COFHE_EUINT16_UTYPE,
+        signature,
+      },
     };
   } catch (error) {
     throw cofheVerifierError(error);
   }
-}
-
-function normalizeInput(
-  input: { ctHash: unknown; securityZone: number; utype: number; signature: unknown },
-  label: string,
-): CofheInput {
-  return {
-    ct_hash: normalizeCofheCtHashToHex32(input.ctHash, label),
-    security_zone: input.securityZone,
-    utype: input.utype,
-    signature: normalizeCofheBytesHex(input.signature, label),
-  };
 }
 
 function requiredEnv(name: string): string {
@@ -167,12 +189,13 @@ async function main(): Promise<void> {
   const signingPrivateKey = requiredEnv("MURMUR_RUNTIME_KEY_SIGNING_PK");
   const audience = requiredEnv("MURMUR_POP_AUDIENCE");
   const rpcUrl = requiredEnv("FHENIX_RPC_URL");
-  const { chainId, relayerAddress } = await fetchMeta(apiBase);
+  const { chainId, relayerAddress, contractAddress } = await fetchMeta(apiBase);
   const sealed = await sealVerdict({
     binaryIndex: args.binaryIndex,
     confidenceBps: args.confidenceBps,
     chainId,
     relayerAddress,
+    contractAddress,
     rpcUrl,
   });
   const body = buildAgentSealedCallBody({

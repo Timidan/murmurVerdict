@@ -25,7 +25,7 @@ async function main() {
   const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http(rpcUrl) });
   const cofhe = createCofheClient(createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }));
   await cofhe.connect(publicClient as never, walletClient as never);
-  const permit = await cofhe.permits.createSelf({ type: "self", issuer: account.address });
+  const acp = await cofhe.acp.createSelf({ type: "self", issuer: account.address });
 
   const openAt = Number(await publicClient.readContract({ address: contract, abi: ABI, functionName: "callPublicRevealAt", args: [callId] }));
   while (Math.floor(Date.now() / 1000) < openAt) {
@@ -41,7 +41,7 @@ async function main() {
   }
   const dec = async (ct: bigint) => {
     for (let i = 0; i < 30; i++) {
-      try { return (await cofhe.decryptForTx(ct).withPermit(permit as never).execute()) as { decryptedValue: bigint; signature: Hex }; }
+      try { return (await cofhe.decryptForTx(ct).withACP(acp as never).execute()) as { decryptedValue: bigint; signature: Hex }; }
       catch (e) { await new Promise((r) => setTimeout(r, 8000)); if (i === 29) throw e; }
     }
     throw new Error("decrypt timeout");

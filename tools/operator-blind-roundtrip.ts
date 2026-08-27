@@ -61,8 +61,8 @@ import { baseSepolia } from "viem/chains";
 //    Migration verified via tools/cofhe-sdk-spike.ts (2026-05-20).
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
-import { PermitUtils } from "@cofhe/sdk/permits";
-import type { Permit } from "@cofhe/sdk/permits";
+import { ACPUtils } from "@cofhe/sdk/acps";
+import type { ACP } from "@cofhe/sdk/acps";
 
 // ── deployments loader — same module the live-smoke uses.
 import { loadDeployment } from "../src/integrations/deployments.js";
@@ -243,14 +243,19 @@ const ABI = parseAbi([
 // ── threshold network direct /decrypt call (same shape as live-smoke). The
 //    cofhejs.decrypt() helper discards the signature; publishReveal needs
 //    it, so we call the endpoint directly.
+//
+//    UNUSED since the SDK's decryptForTx path replaced it (see decryptWithRetry
+//    below) — kept as reference. The request's `permit` field name is 0.5-era
+//    and has NOT been re-verified against the 0.7 threshold network; check it
+//    before resurrecting this path.
 async function fetchDecryptWithSignature(
   ctHashBigint: bigint,
-  permission: Permit,
+  acp: ACP,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const ct_tempkey = ctHashBigint.toString(16).padStart(64, "0");
-  // Threshold network expects a Permission (Permit minus name/type/sealingPair/hash).
-  // PermitUtils.getPermission does that projection.
-  const permissionPayload = PermitUtils.getPermission(permission, true);
+  // Threshold network expects the public projection of the ACP (0.7's
+  // ACPPublic, formerly Permission). ACPUtils.getPublic does that projection.
+  const permissionPayload = ACPUtils.getPublic(acp, true);
   const body = JSON.stringify({
     ct_tempkey,
     host_chain_id: CHAIN_ID,
@@ -281,14 +286,14 @@ async function fetchDecryptWithSignature(
 async function pollDecrypt(
   label: string,
   ctHashBigint: bigint,
-  permission: Permit,
+  acp: ACP,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let attempt = 0;
   while (Date.now() < deadline) {
     attempt++;
     try {
-      const result = await fetchDecryptWithSignature(ctHashBigint, permission);
+      const result = await fetchDecryptWithSignature(ctHashBigint, acp);
       if (result.signature && result.signature !== "0x" && result.signature.length > 4) {
         log(`${label} decrypted after ${attempt} poll(s)`);
         return result;
@@ -589,11 +594,11 @@ async function main() {
     });
     const cofheClient = createCofheClient(cofheConfig);
     await cofheClient.connect(publicClient as never, walletClient as never);
-    const selfPermit = await cofheClient.permits.createSelf({
+    // 0.7 renamed Permits to ACPs; same options, same create-and-sign semantics.
+    const selfAcp = await cofheClient.acp.createSelf({
       type: "self",
       issuer: account.address,
     });
-    const permission: Permit = selfPermit as unknown as Permit;
 
     const clientNonce = makeOperatorBlindClientNonce({ runId });
     const gatewayBody: GatewaySealedCallBody = {
@@ -774,7 +779,7 @@ async function main() {
         try {
           return await cofheClient
             .decryptForTx(ctHash)
-            .withPermit(selfPermit as never)
+            .withACP(selfAcp as never)
             .execute();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

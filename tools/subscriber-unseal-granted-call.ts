@@ -6,7 +6,7 @@
  * POST /v2/gateway/calls/:callId/access → grantDecryptAccess on-chain) — and
  * ONLY they — can read the agent's sealed prediction before the public reveal.
  * Murmur never sees the plaintext: the CoFHE threshold network seals the output
- * to the subscriber's self permit and the SDK unseals it locally.
+ * to the subscriber's self ACP and the SDK unseals it locally.
  *
  * This is a MANUAL script (it needs a funded/authorized subscriber wallet and a
  * live CoFHE threshold network), so it is intentionally NOT a *.smoke.ts and is
@@ -76,15 +76,15 @@ async function main(): Promise<void> {
     );
   }
 
-  // 2. Connect the subscriber wallet and build a SELF permit (not a shared
-  //    permit): the threshold output is sealed to this wallet's key only.
+  // 2. Connect the subscriber wallet and build a SELF ACP (not a shared ACP):
+  //    the threshold output is sealed to this wallet's key only.
   const client = createCofheClient(
     createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }),
   );
   await client.connect(publicClient as never, walletClient as never);
-  const permit = await client.permits.createSelf({ type: "self", issuer: account.address });
+  const acp = await client.acp.createSelf({ type: "self", issuer: account.address });
 
-  // 3. decryptForView each handle with the self permit. The SDK runs threshold
+  // 3. decryptForView each handle with the self ACP. The SDK runs threshold
   //    decryption then unseals the sealed output locally — plaintext never
   //    leaves this process.
   //
@@ -137,14 +137,14 @@ async function main(): Promise<void> {
       client
         .decryptForView(BigInt(binaryIndexCtHash), FheTypes.Uint8)
         .set404RetryTimeout(COFHE_404_RETRY_TIMEOUT_MS)
-        .withPermit(permit as never)
+        .withACP(acp as never)
         .execute(),
     ),
     decryptWithRetry("confidenceBps", () =>
       client
         .decryptForView(BigInt(confidenceCtHash), FheTypes.Uint16)
         .set404RetryTimeout(COFHE_404_RETRY_TIMEOUT_MS)
-        .withPermit(permit as never)
+        .withACP(acp as never)
         .execute(),
     ),
   ]);

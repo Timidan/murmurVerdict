@@ -149,7 +149,8 @@ async function main(): Promise<void> {
     createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }),
   );
   await cofheClient.connect(publicClient as never, walletClient as never);
-  const selfPermit = await cofheClient.permits.createSelf({ type: "self", issuer: account.address });
+  // 0.7 renamed Permits to ACPs; same options, same create-and-sign semantics.
+  const selfAcp = await cofheClient.acp.createSelf({ type: "self", issuer: account.address });
 
   const inflight = new Map<string, InFlight>();
   const bet = new Set<string>(); // market_ids already bet this run
@@ -275,7 +276,7 @@ async function main(): Promise<void> {
       }
       if (Math.floor(Date.now() / 1000) < f.revealOpenAtSec) continue;
       try {
-        await revealOne(db, publicClient, walletClient, cofheClient, selfPermit, f);
+        await revealOne(db, publicClient, walletClient, cofheClient, selfAcp, f);
       } catch (err) {
         log(`reveal ${f.callId.slice(0, 8)} FAILED: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -413,7 +414,7 @@ async function revealOne(
   },
   walletClient: ReturnType<typeof createWalletClient>,
   cofheClient: Awaited<ReturnType<typeof createCofheClient>> | ReturnType<typeof createCofheClient>,
-  selfPermit: unknown,
+  selfAcp: unknown,
   f: InFlight,
 ): Promise<void> {
   if (!f.onchainCallId) {
@@ -445,7 +446,7 @@ async function revealOne(
     for (;;) {
       attempt++;
       try {
-        return (await cofheClient.decryptForTx(ct).withPermit(selfPermit as never).execute()) as { decryptedValue: bigint; signature: Hex };
+        return (await cofheClient.decryptForTx(ct).withACP(selfAcp as never).execute()) as { decryptedValue: bigint; signature: Hex };
       } catch (err) {
         if (Date.now() + DECRYPT_RETRY_MS > deadline) throw new Error(`${label} decrypt timeout: ${err instanceof Error ? err.message : String(err)}`);
         await new Promise((r) => setTimeout(r, DECRYPT_RETRY_MS));
