@@ -87,12 +87,20 @@ export interface PolymarketDiscoveryEngineConfig {
   questionFilter: string;
   /** Bounded asset names matched as whole words against the question. */
   assets: string[];
-  /** Exact required endDate−startDate; 300 = the 5-minute series only. */
-  windowDurationSec: number;
   /**
-   * Series clock constants, validated by assertSeriesClockConfig. These derive
-   * every on-chain instant from the market's endDate, so they must match what
-   * is registered in `market_series` for this series.
+   * Window lengths (seconds) this daemon discovers. A candidate's own window
+   * is parsed from its question text and must be a MEMBER of this set;
+   * anything else — including an unrecognised question shape — is rejected.
+   *
+   * Each member is its own clock series with its own `market_series` row, so a
+   * 600s market can never land in the 300s series.
+   */
+  windowDurationSecs: number[];
+  /**
+   * Series clock constants, validated by assertSeriesClockConfig. Shared by
+   * EVERY window this daemon discovers: only the window length varies per
+   * series. These derive every on-chain instant from the market's endDate, so
+   * they must match what is registered in `market_series` for each series.
    */
   seriesClock: SeriesClockConfig;
   /**
@@ -152,6 +160,12 @@ export interface DiscoveryCandidate {
   question: string | null;
   slug: string | null;
   endDateEpochSec: number;
+  /**
+   * THIS market's prediction-window length, parsed from its question text.
+   * Every schedule derivation and series lookup keys off it, never off a
+   * daemon-wide setting — that is what lets one daemon run several windows.
+   */
+  windowSec: number;
   /** Present for freshly fetched windows; null for ledger-recovered rows. */
   snapshot: GammaMarketSnapshot | null;
 }
@@ -172,7 +186,8 @@ export interface DiscoveryCandidateFilter {
   seriesClock: SeriesClockConfig;
   questionFilter: string;
   assets: string[];
-  windowDurationSec: number;
+  /** Accepted window lengths. Membership, not equality. */
+  windowDurationSecs: readonly number[];
 }
 
 /**
@@ -215,14 +230,18 @@ export function selectDiscoveryCandidates(
     ) {
       continue;
     }
-    // Exact-duration gate: the Gamma window mixes 5-minute and 15-minute
+    // Duration gate: the Gamma window mixes 5-minute, 10-minute and 15-minute
     // series under the same question shape. Gamma's `startDate` is the market
     // *creation* time (~24h before close), NOT the prediction window start, so
     // endDate−startDate cannot separate the series. The window length lives
     // only in the question text ("7:15PM-7:20PM ET"). Rows whose question shape
-    // is unrecognized are rejected, not guessed.
+    // is unrecognized are rejected, not guessed — and the parsed window is
+    // carried on the candidate, because it, not the config, decides which
+    // series this market belongs to.
     const windowSec = parseQuestionWindowDurationSec(question);
-    if (windowSec === null || windowSec !== filter.windowDurationSec) continue;
+    if (windowSec === null || !filter.windowDurationSecs.includes(windowSec)) {
+      continue;
+    }
     if (typeof snapshot.endDate !== "string") continue;
     const endMs = Date.parse(snapshot.endDate);
     if (!Number.isFinite(endMs)) continue;
@@ -251,6 +270,7 @@ export function selectDiscoveryCandidates(
       question,
       slug: typeof snapshot.slug === "string" ? snapshot.slug : null,
       endDateEpochSec: Math.floor(endMs / 1000),
+      windowSec,
       snapshot,
     });
   }
@@ -379,7 +399,7 @@ export class PolymarketDiscoveryEngine {
         seriesClock: this.config.seriesClock,
         questionFilter: this.config.questionFilter,
         assets: this.config.assets,
-        windowDurationSec: this.config.windowDurationSec,
+        windowDurationSecs: this.config.windowDurationSecs,
       });
       const candidates = this.mergeLedgerCandidates(fresh, tickedAtMs);
 
@@ -546,15 +566,52 @@ export class PolymarketDiscoveryEngine {
     )) {
       if (freshIds.has(row.condition_id)) continue;
       if (row.end_date_epoch_s * 1000 <= nowMs) continue;
+      const windowSec = this.ledgerCandidateWindowSec(row);
+      if (windowSec === null) {
+        // No window means no schedule and no series — every step below would
+        // have to guess one, and guessing is what registers a market into the
+        // wrong clock series. Leave it; `freezeExpired` settles the row once
+        // its window ends.
+        this.logger.warn(
+          `[polymarket-discovery] ${row.condition_id}: cannot determine window ` +
+            `length from its clock snapshot or question — skipping recovery`,
+        );
+        continue;
+      }
       recovered.push({
         conditionId: row.condition_id,
         question: row.question,
         slug: row.slug,
         endDateEpochSec: row.end_date_epoch_s,
+        windowSec,
         snapshot: null,
       });
     }
     return [...recovered, ...fresh];
+  }
+
+  /**
+   * The window length of a row discovery already owns.
+   *
+   * A bound clock snapshot outranks the question text: it is what the market
+   * was actually registered with, so it stays right even if the venue later
+   * rewords the question, and it keeps a row recoverable after its window is
+   * dropped from the configured set. `resolutionAt - submissionCloseAt` IS the
+   * window by construction (see deriveSeriesClock). The question is the
+   * fallback for rows that never got as far as a snapshot.
+   */
+  private ledgerCandidateWindowSec(
+    row: PolymarketDiscoveryStateRow,
+  ): number | null {
+    const bound = marketClocksRepo.get(this.db, row.condition_id);
+    if (bound && bound.derived_from_end_date_ms === row.end_date_epoch_s * 1000) {
+      const windowSec =
+        (bound.resolution_at_ms - bound.submission_close_at_ms) / 1000;
+      if (Number.isInteger(windowSec) && windowSec > 0) return windowSec;
+    }
+    return row.question === null
+      ? null
+      : parseQuestionWindowDurationSec(row.question);
   }
 
   // ─── Per-candidate state machine ──────────────────────────────────────────
@@ -603,7 +660,7 @@ export class PolymarketDiscoveryEngine {
       this.recordCandidateError(conditionId, `chain_read:${describe(err)}`, now_iso);
       return "abort";
     }
-    const expectedSchedule = this.expectedSchedule(endDateEpochSec, conditionId);
+    const expectedSchedule = this.expectedSchedule(candidate);
     const exact = hasExactSchedule(chainState, expectedSchedule);
     const market = marketsRepo.get(this.db, conditionId);
 
@@ -892,7 +949,7 @@ export class PolymarketDiscoveryEngine {
     // promotion without any window check at all — so a market whose submission
     // window had closed could still be listed while the contract rejected
     // every submission to it.
-    const schedule = this.expectedSchedule(candidate.endDateEpochSec, candidate.conditionId);
+    const schedule = this.expectedSchedule(candidate);
     if (this.now().getTime() >= Number(schedule.submissionCloseAt) * 1000) {
       this.logger.warn(
         `[polymarket-discovery] refusing to list ${candidate.conditionId}: ` +
@@ -1032,14 +1089,14 @@ export class PolymarketDiscoveryEngine {
       status: "draft",
       // Stable horizon: the window duration, not "time remaining at
       // registration" (which would drift across retries).
-      horizon_seconds: this.config.windowDurationSec,
+      horizon_seconds: candidate.windowSec,
       actor: DISCOVERY_ACTOR,
       // Schedule travels WITH the registration so the market, its embargo
       // stamp, its series and its clock snapshot are one atomic write.
       schedule: {
-        seriesId: this.seriesId(),
-        displayName: `polymarket ${this.config.windowDurationSec}s binary`,
-        windowSeconds: this.config.windowDurationSec,
+        seriesId: this.seriesId(candidate.windowSec),
+        displayName: `polymarket ${candidate.windowSec}s binary`,
+        windowSeconds: candidate.windowSec,
         clockConfig: this.config.seriesClock,
         maxArmedPerCall: this.config.maxArmedPerCall,
       },
@@ -1068,9 +1125,21 @@ export class PolymarketDiscoveryEngine {
    * changed constant makes every already-registered market look like an
    * on-chain mismatch and bulk-freezes live markets before the repo ever
    * throws. Fail the tick instead, mutating nothing.
+   *
+   * Checked PER CONFIGURED WINDOW. Each window is its own series row, so a
+   * single check would leave the others unguarded — and comparing one series'
+   * stored window against a different configured window reads as drift on a
+   * series that never changed.
    */
   private assertSeriesConfigUnchanged(): void {
-    const stored = marketSeriesRepo.get(this.db, this.seriesId());
+    for (const windowSec of this.config.windowDurationSecs) {
+      this.assertSeriesUnchangedForWindow(windowSec);
+    }
+  }
+
+  private assertSeriesUnchangedForWindow(windowSec: number): void {
+    const seriesId = this.seriesId(windowSec);
+    const stored = marketSeriesRepo.get(this.db, seriesId);
     if (!stored) return;
     const c = this.config.seriesClock;
     const same =
@@ -1078,19 +1147,22 @@ export class PolymarketDiscoveryEngine {
       stored.commit_margin_sec === c.commitMarginSec &&
       stored.delivery_budget_sec === c.deliveryBudgetSec &&
       stored.embargo_sec === c.embargoSec &&
-      stored.window_seconds === this.config.windowDurationSec;
+      // Against THIS series' window, not the daemon's whole set: the series id
+      // already names the window, so a mismatch here is a genuinely rewritten
+      // series row, not a second window being added alongside.
+      stored.window_seconds === windowSec;
     // The cohort cap is part of the series contract too: registering the next
     // market would otherwise rewrite it for every existing one.
     if (stored.max_armed_per_call !== this.config.maxArmedPerCall) {
       throw new SeriesCapConflictError(
-        this.seriesId(),
+        seriesId,
         stored.max_armed_per_call,
         this.config.maxArmedPerCall,
       );
     }
     if (!same) {
       throw new SeriesClockConflictError(
-        this.seriesId(),
+        seriesId,
         {
           submissionOpenLeadSec: stored.submission_open_lead_sec,
           commitMarginSec: stored.commit_margin_sec,
@@ -1144,9 +1216,14 @@ export class PolymarketDiscoveryEngine {
    * with. Without it, changing a constant had no legal outcome — the preflight
    * throws every tick and the error's "use a new series id" advice was
    * impossible to follow because the id was derived only from window length.
+   *
+   * The window comes from the MARKET, not from config: one daemon discovers
+   * several window lengths and each is a distinct series, so a 600s market
+   * must land in `polymarket:binary-600s:v1` even while 300s markets register
+   * in the same tick.
    */
-  private seriesId(): string {
-    return `polymarket:binary-${this.config.windowDurationSec}s:v${this.config.seriesVersion}`;
+  private seriesId(windowSec: number): string {
+    return `polymarket:binary-${windowSec}s:v${this.config.seriesVersion}`;
   }
 
   private async broadcastRegistration(
@@ -1155,7 +1232,7 @@ export class PolymarketDiscoveryEngine {
   ): Promise<CandidateOutcome> {
     const { conditionId, endDateEpochSec } = candidate;
     const marketId = conditionId as Hex;
-    const schedule = this.expectedSchedule(endDateEpochSec, conditionId);
+    const schedule = this.expectedSchedule(candidate);
     const now_iso = isoFromMs(this.now().getTime());
 
     // Spend ceiling per write. A gas spike affects every candidate, so a
@@ -1344,10 +1421,8 @@ export class PolymarketDiscoveryEngine {
    * registration write — deriving them separately is exactly how a daemon and
    * a chain drift into disagreeing about when submissions close.
    */
-  private expectedSchedule(
-    endDateEpochSec: number,
-    conditionId?: string,
-  ): OnchainSchedule {
+  private expectedSchedule(candidate: DiscoveryCandidate): OnchainSchedule {
+    const { conditionId, endDateEpochSec } = candidate;
     // A market ALREADY BOUND to a schedule must be compared against its own
     // frozen snapshot, never against current global config.
     //
@@ -1357,7 +1432,7 @@ export class PolymarketDiscoveryEngine {
     // frozen. That is the precise opposite of what versioning is for —
     // existing markets are supposed to keep the schedule they were registered
     // with, and only NEW markets adopt the new constants.
-    const bound = conditionId ? marketClocksRepo.get(this.db, conditionId) : null;
+    const bound = marketClocksRepo.get(this.db, conditionId);
     if (bound && bound.derived_from_end_date_ms === endDateEpochSec * 1000) {
       return {
         armCloseAt: BigInt(Math.floor(bound.arm_close_at_ms / 1000)),
@@ -1371,7 +1446,10 @@ export class PolymarketDiscoveryEngine {
     }
     const clock = deriveSeriesClock({
       endDateMs: endDateEpochSec * 1000,
-      windowSec: this.config.windowDurationSec,
+      // THIS market's window. Deriving from a daemon-wide setting would give
+      // every window length the 300s series' schedule once more than one is
+      // configured, so a 600s market's on-chain check would never match.
+      windowSec: candidate.windowSec,
       config: this.config.seriesClock,
     });
     return {

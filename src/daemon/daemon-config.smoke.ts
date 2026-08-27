@@ -226,4 +226,33 @@ assert.equal(
   false,
 );
 
+// ── Window duration is a SET ───────────────────────────────────────────────
+// One daemon can discover several window lengths; each becomes its own clock
+// series. A bare value stays a set of one so existing deployments are
+// untouched, and malformed or duplicate entries throw rather than being
+// dropped — a silently ignored entry runs the daemon against a window set the
+// operator never asked for, visible only as markets that never appear.
+const withWindows = (raw?: string) =>
+  loadDaemonRuntimeConfig({
+    ...DISCOVERY_BASE,
+    FHENIX_GRANT_MAX_ARMED_PER_CALL: "25",
+    ...(raw === undefined
+      ? {}
+      : { POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC: raw }),
+  }).polymarketDiscovery.windowDurationSecs;
+
+assert.deepEqual(withWindows(), [300], "unset keeps the 5-minute default");
+assert.deepEqual(withWindows("300"), [300], "a bare value is a set of one");
+assert.deepEqual(withWindows("300,600"), [300, 600]);
+assert.deepEqual(withWindows(" 600 , 300 "), [300, 600], "trimmed and sorted");
+for (const bad of ["300,300", "300,", "300,,600", "300,abc", "300,59", "300,86401"]) {
+  assert.throws(
+    () => withWindows(bad),
+    (err) =>
+      err instanceof DaemonConfigError &&
+      err.key === "POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC",
+    `"${bad}" must be rejected loudly, not silently narrowed`,
+  );
+}
+
 console.log("daemon-config smoke ok");

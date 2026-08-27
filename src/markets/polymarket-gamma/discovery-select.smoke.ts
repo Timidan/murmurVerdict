@@ -52,7 +52,7 @@ const filter: DiscoveryCandidateFilter = {
   },
   questionFilter: "Up or Down",
   assets: ["Bitcoin", "Ethereum", "Solana", "Dogecoin"],
-  windowDurationSec: 300,
+  windowDurationSecs: [300],
 };
 
 const btc = snap({ conditionId: `0x${"1".repeat(64)}` }); // 5-min, lead 600s, Up/Down, Bitcoin → keep
@@ -102,6 +102,67 @@ assert.deepEqual(
   "candidates sorted earliest-end-first",
 );
 void ethEarlier;
+
+// ── A SET of windows: one daemon, several series ───────────────────────────
+// `300,600` must admit BOTH a 5-minute and a 10-minute row from the same
+// Gamma page, and each candidate must carry ITS OWN window — that value, not
+// the config, decides which clock series the market lands in.
+{
+  const both: DiscoveryCandidateFilter = {
+    ...filter,
+    windowDurationSecs: [300, 600],
+  };
+  const btc5m = snap({
+    conditionId: `0x${"a1".repeat(32)}`,
+    question: "Bitcoin Up or Down - July 19, 7:10PM-7:15PM ET",
+    endDate: "2026-07-19T23:15:00Z",
+  });
+  // 10-minute window: armCloseAt = end - 600 - 300 - 60 = end - 960s, so the
+  // end date has to clear 960s of lead, not 660s.
+  const btc10m = snap({
+    conditionId: `0x${"a2".repeat(32)}`,
+    question: "Bitcoin Up or Down - July 19, 7:10PM-7:20PM ET",
+    endDate: "2026-07-19T23:20:00Z", // now + 1200s
+  });
+  const eth15m = snap({
+    conditionId: `0x${"a3".repeat(32)}`,
+    question: "Ethereum Up or Down - July 19, 7:00PM-7:15PM ET", // 900s, unlisted
+    endDate: "2026-07-19T23:25:00Z",
+  });
+
+  const picked2 = selectDiscoveryCandidates([btc5m, btc10m, eth15m], both);
+  assert.deepEqual(
+    picked2.map((c) => [c.conditionId, c.windowSec]),
+    [
+      [btc5m.conditionId, 300],
+      [btc10m.conditionId, 600],
+    ],
+    "a set admits every listed window and stamps each candidate's own length",
+  );
+
+  // A bare 300 must still reject the 10-minute row. Widening the set is opt-in.
+  assert.deepEqual(
+    selectDiscoveryCandidates([btc5m, btc10m, eth15m], filter).map(
+      (c) => c.conditionId,
+    ),
+    [btc5m.conditionId],
+    "a single-window set is unchanged by the set plumbing",
+  );
+
+  // An unrecognised question shape is REJECTED, never assigned a window from
+  // the configured set. Guessing here would register a market into a clock
+  // series whose schedule the venue never agreed to.
+  const shapeless = snap({
+    conditionId: `0x${"a4".repeat(32)}`,
+    question: "Bitcoin Up or Down - July 19, sometime this evening",
+    endDate: "2026-07-19T23:20:00Z",
+  });
+  assert.deepEqual(
+    selectDiscoveryCandidates([shapeless], both),
+    [],
+    "an unparseable window is rejected, not guessed from the configured set",
+  );
+}
 
 process.stdout.write("polymarket discovery candidate-selection smoke ok\n");
 

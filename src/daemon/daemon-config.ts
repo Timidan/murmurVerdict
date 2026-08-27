@@ -92,7 +92,12 @@ export interface PolymarketDiscoveryRuntimeConfig {
   minLeadSec: number;
   questionFilter: string;
   assets: string[];
-  windowDurationSec: number;
+  /**
+   * Window lengths this daemon discovers, ascending. Each one is its own
+   * clock series (`polymarket:binary-<window>s:v<n>`); every other clock
+   * constant is shared across them.
+   */
+  windowDurationSecs: number[];
   seriesClock: SeriesClockConfig;
   maxArmedPerCall: number;
   seriesVersion: number;
@@ -329,9 +334,11 @@ function loadPolymarketDiscoveryRuntimeConfig(
     minLeadSec,
     questionFilter,
     assets,
-    windowDurationSec: parseIntegerRange(
+    // A SET, so one daemon can run several window lengths side by side. A
+    // bare `300` is still a set of one, so existing deployments are unchanged.
+    windowDurationSecs: parseIntegerSet(
       env.POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC,
-      300,
+      [300],
       "POLYMARKET_DISCOVERY_WINDOW_DURATION_SEC",
       60,
       24 * 60 * 60,
@@ -608,6 +615,53 @@ function parseIntegerRange(
     return value;
   }
   throw new DaemonConfigError(key, `must be an integer from ${min} to ${max}`);
+}
+
+/**
+ * A comma-separated SET of integers, each validated like parseIntegerRange.
+ *
+ * Malformed or duplicate entries throw rather than being dropped: silently
+ * ignoring one would run the daemon against a window set the operator never
+ * asked for, and the omission only shows up as markets that never appear.
+ * Returned ascending so iteration order is deterministic.
+ */
+function parseIntegerSet(
+  raw: string | undefined,
+  fallback: readonly number[],
+  key: string,
+  min: number,
+  max: number,
+): number[] {
+  const trimmed = raw?.trim();
+  const source =
+    trimmed === undefined || trimmed === ""
+      ? fallback.map(String)
+      : trimmed.split(",");
+  if (source.length === 0) {
+    throw new DaemonConfigError(key, "must list at least one integer");
+  }
+  const values: number[] = [];
+  for (const entry of source) {
+    const token = entry.trim();
+    if (token === "") {
+      throw new DaemonConfigError(
+        key,
+        `has an empty entry. List integers separated by commas, e.g. "300,600"`,
+      );
+    }
+    const value = Number(token);
+    if (!Number.isInteger(value) || value < min || value > max) {
+      throw new DaemonConfigError(
+        key,
+        `entry "${token}" must be an integer from ${min} to ${max}`,
+      );
+    }
+    if (values.includes(value)) {
+      throw new DaemonConfigError(key, `lists ${value} more than once`);
+    }
+    values.push(value);
+  }
+  return values.sort((a, b) => a - b);
 }
 
 function parseBooleanFlag(

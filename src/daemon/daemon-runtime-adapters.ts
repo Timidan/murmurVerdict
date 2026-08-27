@@ -132,7 +132,7 @@ async function loadPolymarketDiscoveryEngine(deps: {
       minLeadSec: discovery.minLeadSec,
       questionFilter: discovery.questionFilter,
       assets: discovery.assets,
-      windowDurationSec: discovery.windowDurationSec,
+      windowDurationSecs: discovery.windowDurationSecs,
       seriesClock: discovery.seriesClock,
       maxArmedPerCall: discovery.maxArmedPerCall,
       seriesVersion: discovery.seriesVersion,
