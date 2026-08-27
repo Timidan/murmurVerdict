@@ -1,57 +1,52 @@
-import type { ContractCofheInput } from "./fhenix-gateway-contract.js";
+import type { ContractSealedInputPair } from "./fhenix-gateway-contract.js";
 import {
   CofheInputSchema,
   type CofheInput,
 } from "./fhenix-gateway-schemas.js";
-import { contractInput } from "./fhenix-gateway-runtime.js";
+import { contractSealedPair } from "./fhenix-gateway-runtime.js";
 
 export function gatewayCofheInputJson(input: CofheInput): string {
   return JSON.stringify(input);
 }
 
+/**
+ * The two stored inputs are ONE CoFHE 0.7 batch, not two independent inputs:
+ * they share a single signature over both handles, in this order. They are
+ * therefore resolved together rather than one at a time, so a record whose two
+ * halves disagree is caught before the relayer spends gas on it.
+ */
 export function sealedCallCofheContractInputs(attempt: {
   binary_index_input_json: string;
   confidence_input_json: string;
-}): {
-  binaryIndex: ContractCofheInput;
-  confidence: ContractCofheInput;
-} {
-  return {
-    binaryIndex: storedGatewayCofheContractInput(
+}): ContractSealedInputPair {
+  return contractSealedPair(
+    storedGatewayCofheInput(
       attempt.binary_index_input_json,
       "gateway_attempt.binary_index_input_json",
     ),
-    confidence: storedGatewayCofheContractInput(
+    storedGatewayCofheInput(
       attempt.confidence_input_json,
       "gateway_attempt.confidence_input_json",
     ),
-  };
+    "gateway_attempt",
+  );
 }
 
 export function feedPacketCofheContractInputs(attempt: {
   action_input_json: string;
   signal_input_json: string;
-}): {
-  action: ContractCofheInput;
-  signal: ContractCofheInput;
-} {
-  return {
-    action: storedGatewayCofheContractInput(
+}): ContractSealedInputPair {
+  return contractSealedPair(
+    storedGatewayCofheInput(
       attempt.action_input_json,
       "gateway_feed_packet_attempt.action_input_json",
     ),
-    signal: storedGatewayCofheContractInput(
+    storedGatewayCofheInput(
       attempt.signal_input_json,
       "gateway_feed_packet_attempt.signal_input_json",
     ),
-  };
-}
-
-function storedGatewayCofheContractInput(
-  raw: string,
-  field: string,
-): ContractCofheInput {
-  return contractInput(storedGatewayCofheInput(raw, field));
+    "gateway_feed_packet_attempt",
+  );
 }
 
 function storedGatewayCofheInput(raw: string, field: string): CofheInput {

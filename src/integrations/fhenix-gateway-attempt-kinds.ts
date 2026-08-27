@@ -82,8 +82,11 @@ export function sealedCallAttemptKind(
         args: [
           attempt.agent_wallet_address as Address,
           attempt.market_id_hash as Hex,
-          inputs.binaryIndex,
-          inputs.confidence,
+          // Handle order is signed over: euint8 binaryIndex, then euint16
+          // confidence, then the one proof covering both.
+          inputs.firstHandle,
+          inputs.secondHandle,
+          inputs.inputProof,
           attempt.client_nonce as Hex,
         ],
       };
@@ -186,8 +189,9 @@ export function feedPacketAttemptKind(
           // No reveal-time argument: the contract takes it from the market's
           // registered publicRevealAt. `attempt.reveal_after` is still stored
           // for reconciliation (event extraction compares against it).
-          inputs.action,
-          inputs.signal,
+          inputs.firstHandle,
+          inputs.secondHandle,
+          inputs.inputProof,
           attempt.client_nonce as Hex,
         ],
       };

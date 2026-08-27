@@ -12,7 +12,8 @@
  *   - cofhejs.encrypt([ Encryptable.uint8(v), Encryptable.uint16(v), ... ])
  *       returns: Promise<Result<[CoFheInUint8, CoFheInUint16, ...]>>
  *       CoFheInItem = { ctHash: bigint, securityZone: number, utype: FheTypes, signature: string }
- *       ↕ matches on-chain struct InEuint8 { uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature }
+ *       (0.7 replaced this: encryptInputs().execute() returns
+ *        [...ctHashes, batchSignature] and the contract takes bare handles)
  *   - cofhejs.decrypt(ctHash: bigint, utype: FheTypes)
  *       returns: Promise<Result<bigint>>   ← only decrypted value, NO signature
  *   - Threshold network /decrypt endpoint: POST { ct_tempkey, host_chain_id, permit }
@@ -22,9 +23,8 @@
  * Contract function signatures (derived from MurmurSealedVerdicts.sol):
  *   - registerMarket(bytes32 marketId, Market schedule)   [six-instant schedule]
  *   - submitSealedFor(address agent, bytes32 marketId,
- *       (uint256,uint8,uint8,bytes) binaryIndexInput,
- *       (uint256,uint8,uint8,bytes) confidenceInput,
- *       bytes32 clientNonce) returns (bytes32 callId)
+ *       bytes32 binaryIndexInput, bytes32 confidenceInput,
+ *       bytes inputProof, bytes32 clientNonce) returns (bytes32 callId)
  *   - openReveal(bytes32 callId)
  *   - publishReveal(bytes32 callId, uint8 binaryIndex, uint16 confidenceBps,
  *       bytes binaryIndexSignature, bytes confidenceSignature)
@@ -60,10 +60,6 @@ import { baseSepolia } from "viem/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
-import {
-  COFHE_EUINT8_UTYPE,
-  COFHE_EUINT16_UTYPE,
-} from "./fhenix-gateway-schemas.js";
 import { loadDeployment } from "./deployments.js";
 
 const CHAIN_ID = 84532;
@@ -90,11 +86,12 @@ const publicClient = createPublicClient({ chain: baseSepolia, transport: http(rp
 const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http(rpc) });
 
 // Minimal ABI — only what the smoke calls
-// InEuint8/InEuint16 on-chain struct: (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature)
-// Matches cofhejs CoFheInItem: { ctHash: bigint, securityZone: number, utype: FheTypes, signature: string }
+// cofhe-contracts 0.2: each input is a bare bytes32 handle (externalEuint8 /
+// externalEuint16 are value types over bytes32) and the pair shares one
+// `inputProof` — the batch signature over keccak256(h_0 || h_1).
 const ABI = parseAbi([
   "function registerMarket(bytes32 marketId, (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active) schedule)",
-  "function submitSealedFor(address agent, bytes32 marketId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) binaryIndexInput, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) confidenceInput, bytes32 clientNonce) returns (bytes32 callId)",
+  "function submitSealedFor(address agent, bytes32 marketId, bytes32 binaryIndexInput, bytes32 confidenceInput, bytes inputProof, bytes32 clientNonce) returns (bytes32 callId)",
   "function openReveal(bytes32 callId)",
   "function publishReveal(bytes32 callId, uint8 binaryIndex, uint16 confidenceBps, bytes binaryIndexSignature, bytes confidenceSignature)",
   "function getCall(bytes32 callId) view returns (address agent, bytes32 marketId, uint64 acceptedAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, uint8 revealedBinaryIndex, uint16 revealedConfidenceBps, uint8 state)",
@@ -195,21 +192,11 @@ async function main() {
     args: [
       agentAddress as Address,
       marketId,
-      // Both inputs carry the SAME batch signature under 0.7. The deployed
-      // contract still takes a per-input signature, so this submit only lands
-      // once MurmurSealedVerdicts moves to the batch (FHE.asEuint*s) form.
-      {
-        ctHash: BigInt(binCtHash),
-        securityZone: COFHE_SECURITY_ZONE,
-        utype: COFHE_EUINT8_UTYPE,
-        signature: batchSignature as Hex,
-      },
-      {
-        ctHash: BigInt(confCtHash),
-        securityZone: COFHE_SECURITY_ZONE,
-        utype: COFHE_EUINT16_UTYPE,
-        signature: batchSignature as Hex,
-      },
+      // Handle order is part of the signed batch digest: euint8 first, euint16
+      // second, then the ONE proof covering both.
+      binCtHash as Hex,
+      confCtHash as Hex,
+      batchSignature as Hex,
       clientNonce,
     ],
   });

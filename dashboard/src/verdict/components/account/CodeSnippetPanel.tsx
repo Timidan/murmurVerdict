@@ -166,8 +166,8 @@ curl -X POST {{base}}/v2/gateway/calls \\
     "client_order_id": "'"$(uuidgen)"'",
     "client_nonce": "0x<32 bytes>",
     "privacy_mode": "sealed_fhenix",
-    "binary_index_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<bytes>" },
-    "confidence_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<bytes>" },
+    "binary_index_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<batch proof>" },
+    "confidence_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<the SAME batch proof>" },
     "strategy_tag": "momentum"
   }'`;
 

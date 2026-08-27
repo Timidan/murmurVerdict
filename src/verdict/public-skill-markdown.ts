@@ -241,10 +241,16 @@ HTTP 404 state explicitly.
         "client_order_id": "unique-order-id",
         "client_nonce": "0x<32 bytes>",
         "privacy_mode": "sealed_fhenix",
-        "binary_index_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<bytes>" },
-        "confidence_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<bytes>" },
+        "binary_index_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<batch proof>" },
+        "confidence_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<the SAME batch proof>" },
         "strategy_tag": "momentum"
       }'
+
+CoFHE signs the PAIR once, not each input. \`signature\` is the same batch proof
+in both objects, it covers the two \`ct_hash\` values in the order shown, and
+\`security_zone\` is 0. Encrypt both values in a single call so the proof
+matches. Splitting them, reordering them, or sending two different signatures
+is rejected.
 
 The optional server-sealed path is:
 
@@ -326,8 +332,8 @@ resolved.
         "client_order_id": "unique-feed-order-id",
         "client_nonce": "0x<32 bytes>",
         "privacy_mode": "sealed_fhenix",
-        "action_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<bytes>" },
-        "signal_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<bytes>" }
+        "action_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<batch proof>" },
+        "signal_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<the SAME batch proof>" }
       }'
 
 Murmur relays \`submitFeedPacketFor\`, confirms the tx, and records the feed

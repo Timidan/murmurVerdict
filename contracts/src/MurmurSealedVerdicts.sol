@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {FHE, InEuint8, InEuint16, euint8, euint16} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {
+    FHE,
+    Impl,
+    euint8,
+    euint16,
+    externalEuint8,
+    externalEuint16
+} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {UnsignedEncryptedInput, Utils} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
 
 /// @title MurmurSealedVerdicts
 /// @notice Canonical sealed-call entrypoint for Murmur Verdict.
@@ -119,6 +127,10 @@ contract MurmurSealedVerdicts {
         uint16 revealedSignalBps;
         CallState state;
     }
+
+    /// @dev CoFHE 0.7 dropped runtime security zones; 0 is the only zone the
+    ///      library's `external*` overloads and batch helpers construct.
+    uint8 private constant SECURITY_ZONE = 0;
 
     address public owner;
     address public pendingOwner;
@@ -385,23 +397,69 @@ contract MurmurSealedVerdicts {
         return market.publicRevealAt != 0;
     }
 
+    /// @dev CoFHE 0.7 verifies inputs as a BATCH, not one at a time. The
+    ///      verifier signs once over keccak256(h_0 || h_1) — where each h_i also
+    ///      binds the sender and the consuming contract — so the two hashes must
+    ///      be presented together, in the order they were encrypted. Calling
+    ///      `FHE.asEuint8(hash, proof)` and `FHE.asEuint16(hash, proof)`
+    ///      separately would rebuild two one-element digests and neither would
+    ///      match the signature.
+    ///
+    ///      `FHE.asEuint8s` / `asEuint16s` only take homogeneous batches, so a
+    ///      mixed (euint8, euint16) pair goes through `Impl.verifyBatchInputs`
+    ///      directly. That call is `internal`, so it inlines here and the
+    ///      `sender` it binds is this contract's own msg.sender — the relayer
+    ///      that broadcast the submission. The consuming contract the verifier
+    ///      binds is address(this).
+    ///
+    ///      securityZone is fixed at 0 to match the library's own `external*`
+    ///      overloads, which no longer accept one at runtime.
+    function _verifySealedPair(
+        externalEuint8 firstInput,
+        externalEuint16 secondInput,
+        bytes memory inputProof
+    ) private returns (euint8 first, euint16 second) {
+        UnsignedEncryptedInput[] memory inputs = new UnsignedEncryptedInput[](2);
+        inputs[0] = UnsignedEncryptedInput({
+            ctHash: uint256(externalEuint8.unwrap(firstInput)),
+            securityZone: SECURITY_ZONE,
+            utype: Utils.EUINT8_TFHE
+        });
+        inputs[1] = UnsignedEncryptedInput({
+            ctHash: uint256(externalEuint16.unwrap(secondInput)),
+            securityZone: SECURITY_ZONE,
+            utype: Utils.EUINT16_TFHE
+        });
+
+        bytes32[] memory handles = Impl.verifyBatchInputs(inputs, inputProof);
+        return (euint8.wrap(handles[0]), euint16.wrap(handles[1]));
+    }
+
+    /// @notice Relay one agent's sealed verdict.
+    /// @dev CoFHE 0.7 changed the input shape: the two handles are bare
+    ///      `external*` brands and `inputProof` is the SINGLE signature that
+    ///      covers both of them, in this order. See `_verifySealedPair`.
     function submitSealedFor(
         address agent,
         bytes32 marketId,
-        InEuint8 memory binaryIndexInput,
-        InEuint16 memory confidenceInput,
+        externalEuint8 binaryIndexInput,
+        externalEuint16 confidenceInput,
+        bytes calldata inputProof,
         bytes32 clientNonce
     ) external returns (bytes32 callId) {
         if (!relayers[msg.sender]) revert NotRelayer();
         if (agent == address(0)) revert ZeroAgent();
-        return _submitSealed(agent, marketId, binaryIndexInput, confidenceInput, clientNonce);
+        return _submitSealed(
+            agent, marketId, binaryIndexInput, confidenceInput, inputProof, clientNonce
+        );
     }
 
     function _submitSealed(
         address agent,
         bytes32 marketId,
-        InEuint8 memory binaryIndexInput,
-        InEuint16 memory confidenceInput,
+        externalEuint8 binaryIndexInput,
+        externalEuint16 confidenceInput,
+        bytes memory inputProof,
         bytes32 clientNonce
     ) internal returns (bytes32 callId) {
         Market memory market = markets[marketId];
@@ -432,8 +490,8 @@ contract MurmurSealedVerdicts {
             ? SubmissionClass.EarlyAccess
             : SubmissionClass.LateUnsellable;
 
-        euint8 sealedBinaryIndex = FHE.asEuint8(binaryIndexInput);
-        euint16 sealedConfidence = FHE.asEuint16(confidenceInput);
+        (euint8 sealedBinaryIndex, euint16 sealedConfidence) =
+            _verifySealedPair(binaryIndexInput, confidenceInput, inputProof);
         FHE.allowThis(sealedBinaryIndex);
         FHE.allowThis(sealedConfidence);
 
@@ -545,21 +603,25 @@ contract MurmurSealedVerdicts {
         address agent,
         bytes32 feedId,
         bytes32 marketId,
-        InEuint8 memory actionInput,
-        InEuint16 memory signalInput,
+        externalEuint8 actionInput,
+        externalEuint16 signalInput,
+        bytes calldata inputProof,
         bytes32 clientNonce
     ) external returns (bytes32 packetId) {
         if (!relayers[msg.sender]) revert NotRelayer();
         if (agent == address(0)) revert ZeroAgent();
-        return _submitFeedPacket(agent, feedId, marketId, actionInput, signalInput, clientNonce);
+        return _submitFeedPacket(
+            agent, feedId, marketId, actionInput, signalInput, inputProof, clientNonce
+        );
     }
 
     function _submitFeedPacket(
         address agent,
         bytes32 feedId,
         bytes32 marketId,
-        InEuint8 memory actionInput,
-        InEuint16 memory signalInput,
+        externalEuint8 actionInput,
+        externalEuint16 signalInput,
+        bytes memory inputProof,
         bytes32 clientNonce
     ) internal returns (bytes32 packetId) {
         uint64 revealAfter;
@@ -591,8 +653,8 @@ contract MurmurSealedVerdicts {
         );
         if (feedPackets[packetId].state != CallState.None) revert PacketAlreadyExists();
 
-        euint8 sealedAction = FHE.asEuint8(actionInput);
-        euint16 sealedSignal = FHE.asEuint16(signalInput);
+        (euint8 sealedAction, euint16 sealedSignal) =
+            _verifySealedPair(actionInput, signalInput, inputProof);
         FHE.allowThis(sealedAction);
         FHE.allowThis(sealedSignal);
 

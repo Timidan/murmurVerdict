@@ -199,9 +199,20 @@ export function gatewayOpenApiPaths(input: {
                     required: ["ct_hash", "security_zone", "utype", "signature"],
                     properties: {
                       ct_hash: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
-                      security_zone: { type: "integer", minimum: 0, maximum: 255 },
+                      security_zone: {
+                        type: "integer",
+                        minimum: 0,
+                        maximum: 255,
+                        description:
+                          "CoFHE 0.7 issues zone 0 only; the contract rebuilds the signed digest with 0.",
+                      },
                       utype: { type: "integer", enum: [2] },
-                      signature: { type: "string", pattern: "^0x[0-9a-fA-F]+$" },
+                      signature: {
+                        type: "string",
+                        pattern: "^0x[0-9a-fA-F]+$",
+                        description:
+                          "The batch proof. CoFHE signs both inputs once, so this is the SAME value in both objects and covers the two ct_hash values in order.",
+                      },
                     },
                     additionalProperties: false,
                   },
@@ -210,9 +221,20 @@ export function gatewayOpenApiPaths(input: {
                     required: ["ct_hash", "security_zone", "utype", "signature"],
                     properties: {
                       ct_hash: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
-                      security_zone: { type: "integer", minimum: 0, maximum: 255 },
+                      security_zone: {
+                        type: "integer",
+                        minimum: 0,
+                        maximum: 255,
+                        description:
+                          "CoFHE 0.7 issues zone 0 only; the contract rebuilds the signed digest with 0.",
+                      },
                       utype: { type: "integer", enum: [3] },
-                      signature: { type: "string", pattern: "^0x[0-9a-fA-F]+$" },
+                      signature: {
+                        type: "string",
+                        pattern: "^0x[0-9a-fA-F]+$",
+                        description:
+                          "The batch proof. CoFHE signs both inputs once, so this is the SAME value in both objects and covers the two ct_hash values in order.",
+                      },
                     },
                     additionalProperties: false,
                   },
@@ -296,9 +318,20 @@ export function gatewayOpenApiPaths(input: {
                     required: ["ct_hash", "security_zone", "utype", "signature"],
                     properties: {
                       ct_hash: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
-                      security_zone: { type: "integer", minimum: 0, maximum: 255 },
+                      security_zone: {
+                        type: "integer",
+                        minimum: 0,
+                        maximum: 255,
+                        description:
+                          "CoFHE 0.7 issues zone 0 only; the contract rebuilds the signed digest with 0.",
+                      },
                       utype: { type: "integer", enum: [2] },
-                      signature: { type: "string", pattern: "^0x[0-9a-fA-F]+$" },
+                      signature: {
+                        type: "string",
+                        pattern: "^0x[0-9a-fA-F]+$",
+                        description:
+                          "The batch proof. CoFHE signs both inputs once, so this is the SAME value in both objects and covers the two ct_hash values in order.",
+                      },
                     },
                     additionalProperties: false,
                   },
@@ -307,9 +340,20 @@ export function gatewayOpenApiPaths(input: {
                     required: ["ct_hash", "security_zone", "utype", "signature"],
                     properties: {
                       ct_hash: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
-                      security_zone: { type: "integer", minimum: 0, maximum: 255 },
+                      security_zone: {
+                        type: "integer",
+                        minimum: 0,
+                        maximum: 255,
+                        description:
+                          "CoFHE 0.7 issues zone 0 only; the contract rebuilds the signed digest with 0.",
+                      },
                       utype: { type: "integer", enum: [3] },
-                      signature: { type: "string", pattern: "^0x[0-9a-fA-F]+$" },
+                      signature: {
+                        type: "string",
+                        pattern: "^0x[0-9a-fA-F]+$",
+                        description:
+                          "The batch proof. CoFHE signs both inputs once, so this is the SAME value in both objects and covers the two ct_hash values in order.",
+                      },
                     },
                     additionalProperties: false,
                   },

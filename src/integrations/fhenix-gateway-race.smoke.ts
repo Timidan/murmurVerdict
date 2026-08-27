@@ -565,18 +565,20 @@ async function main(): Promise<void> {
       // Valid CoFHE input JSON so contractWrite() succeeds and the machine
       // actually reaches the client — the halt must come from the
       // preBroadcast seam, not from an argument-construction failure.
-      const cofheInput = JSON.stringify({
+      // One batch, one proof: 0.7 signs keccak256(h_0 || h_1), so the two
+      // halves must carry the SAME signature or contractWrite() refuses them.
+      const batchProof = "0x" + "bb".repeat(65);
+      attempt.binary_index_input_json = JSON.stringify({
         ct_hash: "0x" + "aa".repeat(32),
         security_zone: 0,
         utype: 2,
-        signature: "0x" + "bb".repeat(65),
+        signature: batchProof,
       });
-      attempt.binary_index_input_json = cofheInput;
       attempt.confidence_input_json = JSON.stringify({
         ct_hash: "0x" + "cc".repeat(32),
         security_zone: 0,
         utype: 3,
-        signature: "0x" + "dd".repeat(65),
+        signature: batchProof,
       });
       fhenixGatewayTxRepo.insert(dbA, attempt);
       let signerCalls = 0;

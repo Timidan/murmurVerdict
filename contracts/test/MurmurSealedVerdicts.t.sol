@@ -3,7 +3,12 @@ pragma solidity ^0.8.25;
 
 import {Test} from "forge-std/Test.sol";
 import {CofheClient} from "@cofhe/foundry-plugin/contracts/CofheClient.sol";
-import {InEuint8, InEuint16, TASK_MANAGER_ADDRESS} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {
+    externalEuint8,
+    externalEuint16,
+    TASK_MANAGER_ADDRESS
+} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {UnsignedEncryptedInput, Utils} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
 import {MockACL} from "@cofhe/mock-contracts/contracts/MockACL.sol";
 import {
     ZK_VERIFIER_SIGNER_ADDRESS,
@@ -24,6 +29,8 @@ contract MurmurSealedVerdictsTest is Test {
     CofheClient internal relayerClient;
     MockTaskManager internal mockTaskManager;
     MockACL internal mockAcl;
+    MockZkVerifier internal mockZkVerifier;
+    MockZkVerifierSigner internal mockZkVerifierSigner;
 
     address internal constant ZK_VERIFIER_ADDRESS = 0x0000000000000000000000000000000000005001;
     address internal constant THRESHOLD_NETWORK_ADDRESS =
@@ -290,13 +297,13 @@ contract MurmurSealedVerdictsTest is Test {
         address relayer = relayerClient.account();
         sealedVerdicts.setRelayer(relayer, true);
 
-        InEuint8 memory binaryIndex = relayerClient.createInEuint8(0);
-        InEuint16 memory confidence = relayerClient.createInEuint16(7200);
+        (externalEuint8 binaryIndex, externalEuint16 confidence, bytes memory inputProof) =
+            _sealedPair(relayer, 0, 7200);
         bytes32 nonce = keccak256("relayed-order-001");
 
         vm.prank(relayer);
         bytes32 callId = sealedVerdicts.submitSealedFor(
-            expectedAgent, MARKET_ID, binaryIndex, confidence, nonce
+            expectedAgent, MARKET_ID, binaryIndex, confidence, inputProof, nonce
         );
         bytes32 expectedCallId = keccak256(
             abi.encodePacked(
@@ -327,20 +334,20 @@ contract MurmurSealedVerdictsTest is Test {
     function test_submitSealedForRejectsNonRelayerAndZeroAgent() public {
         address expectedAgent = agentClient.account();
         address relayer = relayerClient.account();
-        InEuint8 memory binaryIndex = relayerClient.createInEuint8(0);
-        InEuint16 memory confidence = relayerClient.createInEuint16(7200);
+        (externalEuint8 binaryIndex, externalEuint16 confidence, bytes memory inputProof) =
+            _sealedPair(relayer, 0, 7200);
 
         vm.prank(relayer);
         vm.expectRevert(MurmurSealedVerdicts.NotRelayer.selector);
         sealedVerdicts.submitSealedFor(
-            expectedAgent, MARKET_ID, binaryIndex, confidence, keccak256("non-relayer")
+            expectedAgent, MARKET_ID, binaryIndex, confidence, inputProof, keccak256("non-relayer")
         );
 
         sealedVerdicts.setRelayer(relayer, true);
         vm.prank(relayer);
         vm.expectRevert(MurmurSealedVerdicts.ZeroAgent.selector);
         sealedVerdicts.submitSealedFor(
-            address(0), MARKET_ID, binaryIndex, confidence, keccak256("zero-agent")
+            address(0), MARKET_ID, binaryIndex, confidence, inputProof, keccak256("zero-agent")
         );
     }
 
@@ -369,8 +376,8 @@ contract MurmurSealedVerdictsTest is Test {
 
         address relayer = relayerClient.account();
         sealedVerdicts.setRelayer(relayer, true);
-        InEuint8 memory binaryIndex = relayerClient.createInEuint8(0);
-        InEuint16 memory confidence = relayerClient.createInEuint16(7200);
+        (externalEuint8 binaryIndex, externalEuint16 confidence, bytes memory inputProof) =
+            _sealedPair(relayer, 0, 7200);
         address agent = agentClient.account();
 
         vm.warp(other.submissionOpenAt);
@@ -380,6 +387,7 @@ contract MurmurSealedVerdictsTest is Test {
             FIXED_REVEAL_MARKET_ID,
             binaryIndex,
             confidence,
+            inputProof,
             keccak256("second-market-order")
         );
 
@@ -462,18 +470,16 @@ contract MurmurSealedVerdictsTest is Test {
         address agent = agentClient.account();
 
         vm.warp(SUBMISSION_OPEN_AT - 1);
-        InEuint8 memory b1 = relayerClient.createInEuint8(0);
-        InEuint16 memory c1 = relayerClient.createInEuint16(7200);
+        (externalEuint8 b1, externalEuint16 c1, bytes memory p1) = _sealedPair(relayer, 0, 7200);
         vm.prank(relayer);
         vm.expectRevert(MurmurSealedVerdicts.SubmissionWindowNotOpen.selector);
-        sealedVerdicts.submitSealedFor(agent, MARKET_ID, b1, c1, keccak256("too-early"));
+        sealedVerdicts.submitSealedFor(agent, MARKET_ID, b1, c1, p1, keccak256("too-early"));
 
         vm.warp(SUBMISSION_CLOSE_AT);
-        InEuint8 memory b2 = relayerClient.createInEuint8(0);
-        InEuint16 memory c2 = relayerClient.createInEuint16(7200);
+        (externalEuint8 b2, externalEuint16 c2, bytes memory p2) = _sealedPair(relayer, 0, 7200);
         vm.prank(relayer);
         vm.expectRevert(MurmurSealedVerdicts.SubmissionWindowClosed.selector);
-        sealedVerdicts.submitSealedFor(agent, MARKET_ID, b2, c2, keccak256("too-late"));
+        sealedVerdicts.submitSealedFor(agent, MARKET_ID, b2, c2, p2, keccak256("too-late"));
     }
 
     /// Calls submitted after the early-access cutoff are refereed and scored
@@ -485,11 +491,10 @@ contract MurmurSealedVerdictsTest is Test {
         address agent = agentClient.account();
 
         vm.warp(EARLY_ACCESS_CUTOFF_AT);
-        InEuint8 memory b = relayerClient.createInEuint8(0);
-        InEuint16 memory c = relayerClient.createInEuint16(7200);
+        (externalEuint8 b, externalEuint16 c, bytes memory p) = _sealedPair(relayer, 0, 7200);
         vm.prank(relayer);
         bytes32 callId =
-            sealedVerdicts.submitSealedFor(agent, MARKET_ID, b, c, keccak256("late-call"));
+            sealedVerdicts.submitSealedFor(agent, MARKET_ID, b, c, p, keccak256("late-call"));
 
         assertEq(
             uint8(sealedVerdicts.callSubmissionClass(callId)),
@@ -509,9 +514,9 @@ contract MurmurSealedVerdictsTest is Test {
         bytes32 confidenceHandle = sealedVerdicts.confidenceHandle(callId);
 
         (, uint256 binaryIndexPlain, bytes memory binaryIndexSig) =
-            agentClient.decryptForTx_withoutPermit(binaryIndexHandle);
+            agentClient.decryptForTx_withoutACP(binaryIndexHandle);
         (, uint256 confidencePlain, bytes memory confidenceSig) =
-            agentClient.decryptForTx_withoutPermit(confidenceHandle);
+            agentClient.decryptForTx_withoutACP(confidenceHandle);
 
         sealedVerdicts.publishReveal(
             callId, uint8(binaryIndexPlain), uint16(confidencePlain), binaryIndexSig, confidenceSig
@@ -536,9 +541,9 @@ contract MurmurSealedVerdictsTest is Test {
         bytes32 binaryIndexHandle = sealedVerdicts.binaryIndexHandle(callId);
         bytes32 confidenceHandle = sealedVerdicts.confidenceHandle(callId);
         (, uint256 binaryIndexPlain, bytes memory binaryIndexSig) =
-            agentClient.decryptForTx_withoutPermit(binaryIndexHandle);
+            agentClient.decryptForTx_withoutACP(binaryIndexHandle);
         (, uint256 confidencePlain, bytes memory confidenceSig) =
-            agentClient.decryptForTx_withoutPermit(confidenceHandle);
+            agentClient.decryptForTx_withoutACP(confidenceHandle);
 
         sealedVerdicts.publishReveal(
             callId, uint8(binaryIndexPlain), uint16(confidencePlain), binaryIndexSig, confidenceSig
@@ -563,9 +568,9 @@ contract MurmurSealedVerdictsTest is Test {
         bytes32 binaryIndexHandle = sealedVerdicts.binaryIndexHandle(callId);
         bytes32 confidenceHandle = sealedVerdicts.confidenceHandle(callId);
         (, uint256 binaryIndexPlain, bytes memory binaryIndexSig) =
-            agentClient.decryptForTx_withoutPermit(binaryIndexHandle);
+            agentClient.decryptForTx_withoutACP(binaryIndexHandle);
         (, uint256 confidencePlain, bytes memory confidenceSig) =
-            agentClient.decryptForTx_withoutPermit(confidenceHandle);
+            agentClient.decryptForTx_withoutACP(confidenceHandle);
 
         sealedVerdicts.publishReveal(
             callId, uint8(binaryIndexPlain), uint16(confidencePlain), binaryIndexSig, confidenceSig
@@ -589,8 +594,8 @@ contract MurmurSealedVerdictsTest is Test {
 
         bytes32 binaryIndexHandle = sealedVerdicts.binaryIndexHandle(callId);
         bytes32 confidenceHandle = sealedVerdicts.confidenceHandle(callId);
-        (,, bytes memory binaryIndexSig) = agentClient.decryptForTx_withoutPermit(binaryIndexHandle);
-        (,, bytes memory confidenceSig) = agentClient.decryptForTx_withoutPermit(confidenceHandle);
+        (,, bytes memory binaryIndexSig) = agentClient.decryptForTx_withoutACP(binaryIndexHandle);
+        (,, bytes memory confidenceSig) = agentClient.decryptForTx_withoutACP(confidenceHandle);
 
         vm.expectRevert();
         sealedVerdicts.publishReveal(callId, 0, 5000, binaryIndexSig, confidenceSig);
@@ -633,14 +638,14 @@ contract MurmurSealedVerdictsTest is Test {
         address relayer = relayerClient.account();
         sealedVerdicts.setRelayer(relayer, true);
 
-        InEuint8 memory action = relayerClient.createInEuint8(1);
-        InEuint16 memory signal = relayerClient.createInEuint16(6500);
+        (externalEuint8 action, externalEuint16 signal, bytes memory inputProof) =
+            _sealedPair(relayer, 1, 6500);
         bytes32 nonce = keccak256("relayed-packet-001");
         uint64 revealAfter = uint64(block.timestamp + 1 hours);
 
         vm.prank(relayer);
         bytes32 packetId = sealedVerdicts.submitFeedPacketFor(
-            expectedAgent, FEED_ID, MARKET_ID, action, signal, nonce
+            expectedAgent, FEED_ID, MARKET_ID, action, signal, inputProof, nonce
         );
         assertEq(
             packetId,
@@ -692,9 +697,9 @@ contract MurmurSealedVerdictsTest is Test {
         bytes32 signalHandle = sealedVerdicts.feedPacketSignalHandle(packetId);
 
         (, uint256 actionPlain, bytes memory actionSig) =
-            agentClient.decryptForTx_withoutPermit(actionHandle);
+            agentClient.decryptForTx_withoutACP(actionHandle);
         (, uint256 signalPlain, bytes memory signalSig) =
-            agentClient.decryptForTx_withoutPermit(signalHandle);
+            agentClient.decryptForTx_withoutACP(signalHandle);
 
         sealedVerdicts.publishFeedPacketReveal(
             packetId, uint8(actionPlain), uint16(signalPlain), actionSig, signalSig
@@ -720,9 +725,9 @@ contract MurmurSealedVerdictsTest is Test {
         bytes32 signalHandle = sealedVerdicts.feedPacketSignalHandle(packetId);
 
         (, uint256 actionPlain, bytes memory actionSig) =
-            agentClient.decryptForTx_withoutPermit(actionHandle);
+            agentClient.decryptForTx_withoutACP(actionHandle);
         (, uint256 signalPlain, bytes memory signalSig) =
-            agentClient.decryptForTx_withoutPermit(signalHandle);
+            agentClient.decryptForTx_withoutACP(signalHandle);
 
         sealedVerdicts.publishFeedPacketReveal(
             packetId, uint8(actionPlain), uint16(signalPlain), actionSig, signalSig
@@ -750,12 +755,12 @@ contract MurmurSealedVerdictsTest is Test {
         address relayer = relayerClient.account();
         sealedVerdicts.setRelayer(relayer, true);
         address agent = agentClient.account();
-        InEuint8 memory binaryIndex = relayerClient.createInEuint8(binaryIndexValue);
-        InEuint16 memory confidence = relayerClient.createInEuint16(confidenceValue);
+        (externalEuint8 binaryIndex, externalEuint16 confidence, bytes memory inputProof) =
+            _sealedPair(relayer, binaryIndexValue, confidenceValue);
 
         vm.prank(relayer);
         callId = sealedVerdicts.submitSealedFor(
-            agent, MARKET_ID, binaryIndex, confidence, nonce
+            agent, MARKET_ID, binaryIndex, confidence, inputProof, nonce
         );
     }
 
@@ -769,25 +774,25 @@ contract MurmurSealedVerdictsTest is Test {
         address relayer = relayerClient.account();
         sealedVerdicts.setRelayer(relayer, true);
         address agent = agentClient.account();
-        InEuint8 memory action = relayerClient.createInEuint8(1);
-        InEuint16 memory signal = relayerClient.createInEuint16(6500);
+        (externalEuint8 action, externalEuint16 signal, bytes memory proof) =
+            _sealedPair(relayer, 1, 6500);
 
         // One second before resolution: still open.
         vm.warp(RESOLUTION_AT - 1);
         vm.prank(relayer);
         sealedVerdicts.submitFeedPacketFor(
-            agent, FEED_ID, MARKET_ID, action, signal, keccak256("before-resolution")
+            agent, FEED_ID, MARKET_ID, action, signal, proof, keccak256("before-resolution")
         );
 
         // At resolution: closed, even though publicRevealAt is still future.
         vm.warp(RESOLUTION_AT);
         assertLt(block.timestamp, PUBLIC_REVEAL_AT, "the embargo has NOT elapsed");
-        InEuint8 memory action2 = relayerClient.createInEuint8(1);
-        InEuint16 memory signal2 = relayerClient.createInEuint16(6500);
+        (externalEuint8 action2, externalEuint16 signal2, bytes memory proof2) =
+            _sealedPair(relayer, 1, 6500);
         vm.prank(relayer);
         vm.expectRevert(MurmurSealedVerdicts.FeedWindowClosed.selector);
         sealedVerdicts.submitFeedPacketFor(
-            agent, FEED_ID, MARKET_ID, action2, signal2, keccak256("at-resolution")
+            agent, FEED_ID, MARKET_ID, action2, signal2, proof2, keccak256("at-resolution")
         );
     }
 
@@ -802,8 +807,8 @@ contract MurmurSealedVerdictsTest is Test {
         address relayer = relayerClient.account();
         sealedVerdicts.setRelayer(relayer, true);
         address agent = agentClient.account();
-        InEuint8 memory action = relayerClient.createInEuint8(actionValue);
-        InEuint16 memory signal = relayerClient.createInEuint16(signalValue);
+        (externalEuint8 action, externalEuint16 signal, bytes memory inputProof) =
+            _sealedPair(relayer, actionValue, signalValue);
 
         vm.prank(relayer);
         packetId = sealedVerdicts.submitFeedPacketFor(
@@ -812,6 +817,7 @@ contract MurmurSealedVerdictsTest is Test {
             MARKET_ID,
             action,
             signal,
+            inputProof,
             nonce
         );
     }
@@ -841,10 +847,12 @@ contract MurmurSealedVerdictsTest is Test {
             "../node_modules/@cofhe/mock-contracts/contracts/MockZkVerifier.sol:MockZkVerifier",
             ZK_VERIFIER_ADDRESS
         );
+        mockZkVerifier = MockZkVerifier(ZK_VERIFIER_ADDRESS);
         deployCodeTo(
             "../node_modules/@cofhe/foundry-plugin/contracts/MockZkVerifierSigner.sol:MockZkVerifierSigner",
             ZK_VERIFIER_SIGNER_ADDRESS
         );
+        mockZkVerifierSigner = MockZkVerifierSigner(ZK_VERIFIER_SIGNER_ADDRESS);
         deployCodeTo(
             "../node_modules/@cofhe/mock-contracts/contracts/MockThresholdNetwork.sol:MockThresholdNetwork",
             THRESHOLD_NETWORK_ADDRESS
@@ -855,6 +863,45 @@ contract MurmurSealedVerdictsTest is Test {
             "../node_modules/@cofhe/foundry-plugin/contracts/MockThresholdNetworkSigner.sol:MockThresholdNetworkSigner",
             DECRYPT_RESULT_SIGNER_ADDRESS
         );
+    }
+
+    /// @dev CoFHE 0.7 verifies the (euint8, euint16) pair as ONE batch: a single
+    ///      signature over keccak256(h_0 || h_1), with each h_i binding the
+    ///      sender AND the contract that consumes the handles. `CofheClient`
+    ///      only exposes single-input and same-type batch helpers, so a mixed
+    ///      pair is assembled here from the primitives those helpers use.
+    function _sealedPair(address sender, uint256 firstValue, uint256 secondValue)
+        internal
+        returns (externalEuint8 first, externalEuint16 second, bytes memory inputProof)
+    {
+        return _sealedPairFor(sender, address(sealedVerdicts), firstValue, secondValue);
+    }
+
+    function _sealedPairFor(
+        address sender,
+        address consumingContract,
+        uint256 firstValue,
+        uint256 secondValue
+    ) internal returns (externalEuint8 first, externalEuint16 second, bytes memory inputProof) {
+        UnsignedEncryptedInput[] memory inputs = new UnsignedEncryptedInput[](2);
+
+        uint256 firstHash = mockZkVerifier.zkVerifyCalcCtHash(
+            firstValue, Utils.EUINT8_TFHE, sender, 0, block.chainid
+        );
+        mockZkVerifier.insertCtHash(firstHash, firstValue);
+        inputs[0] =
+            UnsignedEncryptedInput({ctHash: firstHash, securityZone: 0, utype: Utils.EUINT8_TFHE});
+
+        uint256 secondHash = mockZkVerifier.zkVerifyCalcCtHash(
+            secondValue, Utils.EUINT16_TFHE, sender, 0, block.chainid
+        );
+        mockZkVerifier.insertCtHash(secondHash, secondValue);
+        inputs[1] =
+            UnsignedEncryptedInput({ctHash: secondHash, securityZone: 0, utype: Utils.EUINT16_TFHE});
+
+        inputProof = mockZkVerifierSigner.zkVerifyBatchSign(inputs, sender, consumingContract);
+        first = externalEuint8.wrap(bytes32(firstHash));
+        second = externalEuint16.wrap(bytes32(secondHash));
     }
 
     function expectPlaintext(bytes32 ctHash, uint256 value) internal view {

@@ -61,6 +61,29 @@ const fingerprintHmacKeyring: GatewayFingerprintHmacKeyring = {
   previous: [],
 };
 
+// CoFHE 0.7 signs a whole batch once, so BOTH inputs of a pair carry the same
+// proof. Distinct per lane so a crossed wire between the call and feed paths
+// still shows up.
+const SEALED_BATCH_PROOF = `0x${"1a".repeat(65)}`;
+const FEED_BATCH_PROOF = `0x${"2b".repeat(65)}`;
+
+/**
+ * Both submit paths now encode two bare ciphertext handles followed by ONE
+ * proof. Under CoFHE 0.7 the verifier signs keccak256(h_0 || h_1), so a build
+ * that split the pair back into per-input proofs — or dropped the proof
+ * argument — would revert on-chain rather than fail any type check.
+ */
+function assertSharedBatchProof(
+  firstHandle: unknown,
+  secondHandle: unknown,
+  inputProof: unknown,
+): void {
+  assert.match(String(firstHandle), /^0x[0-9a-f]{64}$/i);
+  assert.match(String(secondHandle), /^0x[0-9a-f]{64}$/i);
+  assert.notEqual(firstHandle, secondHandle);
+  assert.match(String(inputProof), /^0x(?:[0-9a-f]{2})+$/i);
+}
+
 let failures = 0;
 
 async function check(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -356,20 +379,24 @@ try {
         assert.equal(args.args[2], fhenixMarketIdForMurmurMarket(marketId));
         // Index 3 is no longer a reveal timestamp — the contract reads the
         // reveal time from the market, so the argument was removed entirely.
+        // 3/4 are the two CoFHE 0.7 ciphertext handles and 5 is the ONE proof
+        // covering both, so clientNonce sits at 6.
+        assertSharedBatchProof(args.args[3], args.args[4], args.args[5]);
         assert.ok(
-          args.args[5] === feedClientNonce || args.args[5] === feedRetryClientNonce,
+          args.args[6] === feedClientNonce || args.args[6] === feedRetryClientNonce,
         );
-        return (args.args[5] === feedRetryClientNonce ? feedRetryTxHash : feedTxHash) as Hex;
+        return (args.args[6] === feedRetryClientNonce ? feedRetryTxHash : feedTxHash) as Hex;
       }
       assert.equal(args.functionName, "submitSealedFor");
       assert.equal(args.args[0].toLowerCase(), wallet.toLowerCase());
       assert.equal(args.args[1], fhenixMarketIdForMurmurMarket(marketId));
+      assertSharedBatchProof(args.args[2], args.args[3], args.args[4]);
       assert.ok(
-        args.args[4] === clientNonce ||
-          args.args[4] === retryClientNonce ||
-          args.args[4] === ownedSealClientNonce,
+        args.args[5] === clientNonce ||
+          args.args[5] === retryClientNonce ||
+          args.args[5] === ownedSealClientNonce,
       );
-      return (args.args[4] === retryClientNonce ? retryTxHash : txHash) as Hex;
+      return (args.args[5] === retryClientNonce ? retryTxHash : txHash) as Hex;
     },
     getTransactionReceipt: async ({ hash }) => hash === feedTxHash ? feedReceipt : receipt,
   };
@@ -390,13 +417,13 @@ try {
           ct_hash: binaryIndexCtHash,
           security_zone: 0,
           utype: 2,
-          signature: "0x1234",
+          signature: SEALED_BATCH_PROOF,
         },
         confidence_input: {
           ct_hash: confidenceCtHash,
           security_zone: 0,
           utype: 3,
-          signature: "0xabcd",
+          signature: SEALED_BATCH_PROOF,
         },
       };
     },
@@ -476,13 +503,13 @@ try {
       ct_hash: binaryIndexCtHash,
       security_zone: 0,
       utype: 2,
-      signature: "0x1234",
+      signature: SEALED_BATCH_PROOF,
     },
     confidence_input: {
       ct_hash: confidenceCtHash,
       security_zone: 0,
       utype: 3,
-      signature: "0xabcd",
+      signature: SEALED_BATCH_PROOF,
     },
     strategy_tag: "momentum",
   };
@@ -496,13 +523,13 @@ try {
       ct_hash: feedActionCtHash,
       security_zone: 0,
       utype: 2,
-      signature: "0x5678",
+      signature: FEED_BATCH_PROOF,
     },
     signal_input: {
       ct_hash: feedSignalCtHash,
       security_zone: 0,
       utype: 3,
-      signature: "0xdcba",
+      signature: FEED_BATCH_PROOF,
     },
   };
   const ownedBody = {

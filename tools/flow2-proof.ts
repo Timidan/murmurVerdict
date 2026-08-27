@@ -23,17 +23,14 @@ import { randomBytes } from "node:crypto";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
-import {
-  COFHE_EUINT8_UTYPE,
-  COFHE_EUINT16_UTYPE,
-} from "../src/integrations/fhenix-gateway-schemas.js";
-
-// 0.7 stopped echoing securityZone/utype per input.
+// 0.7 stopped echoing securityZone/utype per input, and the contract no longer
+// takes either at runtime — utype is a compile-time brand on externalEuint*.
 const COFHE_SECURITY_ZONE = 0;
 
 const ABI = parseAbi([
   "function registerMarket(bytes32 marketId, (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active) schedule)",
-  "function submitSealedFor(address agent, bytes32 marketId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) binaryIndexInput, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) confidenceInput, bytes32 clientNonce) returns (bytes32 callId)",
+  // 0.7: two bare ciphertext handles plus the ONE proof covering both.
+  "function submitSealedFor(address agent, bytes32 marketId, bytes32 binaryIndexInput, bytes32 confidenceInput, bytes inputProof, bytes32 clientNonce) returns (bytes32 callId)",
   "function grantDecryptAccess(bytes32 callId, address subscriber)",
   "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 grantCloseAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
   "event SealedCallSubmitted(bytes32 indexed callId, address indexed agent, bytes32 indexed marketId, uint64 acceptedAt, uint64 publicRevealAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bytes32 clientNonce, uint8 submissionClass)",
@@ -110,9 +107,9 @@ async function main(): Promise<void> {
     address: contract, abi: ABI, functionName: "submitSealedFor",
     args: [
       relayer.address, marketId,
-      // Both inputs share the one batch signature under 0.7.
-      { ctHash: BigInt(binCtHash), securityZone: COFHE_SECURITY_ZONE, utype: COFHE_EUINT8_UTYPE, signature: batchSignature },
-      { ctHash: BigInt(confCtHash), securityZone: COFHE_SECURITY_ZONE, utype: COFHE_EUINT16_UTYPE, signature: batchSignature },
+      // Handle order is signed over: euint8 first, euint16 second, then the
+      // one batch signature covering both.
+      binCtHash, confCtHash, batchSignature,
       clientNonce,
     ] as never,
     chain: baseSepolia, account: relayer,

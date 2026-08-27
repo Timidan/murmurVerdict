@@ -1,8 +1,15 @@
 import { getAddress, type Address, type Hex } from "viem";
 
 import type { FhenixGatewayReceiptTelemetry } from "../verdict/repos/fhenix-gateway-attempt-lifecycle.js";
-import type { ContractCofheInput, GatewayReceipt } from "./fhenix-gateway-contract.js";
-import type { CofheInput } from "./fhenix-gateway-schemas.js";
+import type {
+  ContractSealedInputPair,
+  GatewayReceipt,
+} from "./fhenix-gateway-contract.js";
+import {
+  COFHE_EUINT8_UTYPE,
+  COFHE_EUINT16_UTYPE,
+  type CofheInput,
+} from "./fhenix-gateway-schemas.js";
 
 export type Measured<T> = {
   value: T;
@@ -21,14 +28,63 @@ export interface FhenixGatewayRuntimeTimers {
   clearTimeout(handle: unknown): void;
 }
 
-export function contractInput(input: CofheInput): ContractCofheInput {
+/** The only security zone CoFHE 0.7 constructs. */
+const COFHE_SECURITY_ZONE = 0;
+
+/**
+ * CoFHE 0.7 verifies the (euint8, euint16) pair as ONE batch, so the two stored
+ * inputs must agree on the proof and on the fields the contract no longer
+ * accepts at runtime. Every mismatch below produces a transaction the verifier
+ * would reject on-chain — burning relayer gas and failing the agent's submit —
+ * so they are refused here, before the broadcast.
+ *
+ *  - The signature must be byte-identical: it covers keccak256(h_0 || h_1), not
+ *    either hash alone, so two different values mean the record was written by
+ *    a per-input signer that no longer exists.
+ *  - The utypes must be euint8 then euint16, in that order — the batch digest
+ *    binds both the type and the position of each input.
+ *  - securityZone must be 0. 0.7 dropped runtime zones; the contract hardcodes
+ *    0 into the digest it rebuilds, so any other stored value silently
+ *    disagrees with what was signed.
+ */
+export function contractSealedPair(
+  first: CofheInput,
+  second: CofheInput,
+  field: string,
+): ContractSealedInputPair {
+  if (first.utype !== COFHE_EUINT8_UTYPE) {
+    throw new Error(
+      `${field}: first input must be CoFHE euint8 (utype ${COFHE_EUINT8_UTYPE}), got ${first.utype}`,
+    );
+  }
+  if (second.utype !== COFHE_EUINT16_UTYPE) {
+    throw new Error(
+      `${field}: second input must be CoFHE euint16 (utype ${COFHE_EUINT16_UTYPE}), got ${second.utype}`,
+    );
+  }
+  for (const [label, input] of [
+    ["first", first],
+    ["second", second],
+  ] as const) {
+    if (input.security_zone !== COFHE_SECURITY_ZONE) {
+      throw new Error(
+        `${field}: ${label} input security_zone must be ${COFHE_SECURITY_ZONE}, got ${input.security_zone}`,
+      );
+    }
+  }
+  if (first.signature.toLowerCase() !== second.signature.toLowerCase()) {
+    throw new Error(
+      `${field}: the two inputs carry different signatures; CoFHE 0.7 signs the pair once`,
+    );
+  }
+
   return {
-    ctHash: BigInt(input.ct_hash),
-    securityZone: input.security_zone,
-    utype: input.utype,
-    signature: input.signature as Hex,
+    firstHandle: first.ct_hash as Hex,
+    secondHandle: second.ct_hash as Hex,
+    inputProof: first.signature as Hex,
   };
 }
+
 
 export async function measure<T>(
   nowMs: () => number,

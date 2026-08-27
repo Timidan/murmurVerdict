@@ -5,9 +5,16 @@ import {
   SEALED_CALL_SUBMITTED_EVENT,
 } from "./fhenix-event-primitives.js";
 
+// CoFHE 0.7 / cofhe-contracts 0.2: the per-input
+// (ctHash, securityZone, utype, signature) struct is gone. Each input is now a
+// bare bytes32 ciphertext handle (`externalEuint8` / `externalEuint16` are
+// user-defined value types over bytes32, so they encode as bytes32), and the
+// two handles share ONE `inputProof` — the batch signature over
+// keccak256(binaryIndexInput || confidenceInput). Handle order is part of the
+// signed digest; swapping the two arguments invalidates the proof.
 const MURMUR_SEALED_VERDICTS_GATEWAY_FUNCTIONS_ABI = parseAbi([
-  "function submitSealedFor(address agent,bytes32 marketId,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) binaryIndexInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) confidenceInput,bytes32 clientNonce) returns (bytes32)",
-  "function submitFeedPacketFor(address agent,bytes32 feedId,bytes32 marketId,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) actionInput,(uint256 ctHash,uint8 securityZone,uint8 utype,bytes signature) signalInput,bytes32 clientNonce) returns (bytes32)",
+  "function submitSealedFor(address agent,bytes32 marketId,bytes32 binaryIndexInput,bytes32 confidenceInput,bytes inputProof,bytes32 clientNonce) returns (bytes32)",
+  "function submitFeedPacketFor(address agent,bytes32 feedId,bytes32 marketId,bytes32 actionInput,bytes32 signalInput,bytes inputProof,bytes32 clientNonce) returns (bytes32)",
   // View accessors used by the reconciliation path
   // (src/integrations/fhenix-gateway-reconciliation.ts). They revert with
   // CallNotFound / PacketNotFound if the id has never been written, which
@@ -67,27 +74,18 @@ export type GatewayWriteContractArgs =
       address: Address;
       abi: typeof MURMUR_SEALED_VERDICTS_GATEWAY_ABI;
       functionName: "submitSealedFor";
-      args: readonly [
-        Address,
-        Hex,
-        ContractCofheInput,
-        ContractCofheInput,
-        Hex,
-      ];
+      // agent, marketId, binaryIndex handle, confidence handle, shared
+      // inputProof, clientNonce.
+      args: readonly [Address, Hex, Hex, Hex, Hex, Hex];
     }
   | {
       address: Address;
       abi: typeof MURMUR_SEALED_VERDICTS_GATEWAY_ABI;
       functionName: "submitFeedPacketFor";
       // No reveal-time argument: the contract reads it from the market.
-      args: readonly [
-        Address,
-        Hex,
-        Hex,
-        ContractCofheInput,
-        ContractCofheInput,
-        Hex,
-      ];
+      // agent, feedId, marketId, action handle, signal handle, shared
+      // inputProof, clientNonce.
+      args: readonly [Address, Hex, Hex, Hex, Hex, Hex, Hex];
     };
 
 export type GatewayReadContractArgs = {
@@ -122,9 +120,16 @@ export type GatewayLog = {
   transactionHash?: Hex;
 };
 
-export type ContractCofheInput = {
-  ctHash: bigint;
-  securityZone: number;
-  utype: number;
-  signature: Hex;
+/**
+ * The contract-call form of one sealed (euint8, euint16) pair.
+ *
+ * Under CoFHE 0.7 the pair is verified as a single batch, so it travels as two
+ * ciphertext handles plus ONE proof rather than two self-contained input
+ * structs. `firstHandle` is the euint8 and `secondHandle` the euint16 —
+ * the order the sealer encrypted them in, which the batch digest covers.
+ */
+export type ContractSealedInputPair = {
+  firstHandle: Hex;
+  secondHandle: Hex;
+  inputProof: Hex;
 };

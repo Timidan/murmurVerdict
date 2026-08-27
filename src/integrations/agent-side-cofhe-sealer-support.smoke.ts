@@ -51,12 +51,14 @@ assert.equal(
   true,
 );
 
+// Under CoFHE 0.7 both halves of a sealed pair carry the SAME batch proof.
+const batchProof = `0x${"1234".repeat(2)}`;
 const sealedBody = buildAgentSealedCallBody({
   binaryInput: {
     ct_hash: `0x${"11".repeat(32)}`,
     security_zone: 0,
     utype: 2,
-    signature: "0x1234",
+    signature: batchProof,
   },
   clientNonce: `0x${"33".repeat(32)}`,
   clientOrderId: "operator-blind-smoke",
@@ -64,7 +66,7 @@ const sealedBody = buildAgentSealedCallBody({
     ct_hash: `0x${"22".repeat(32)}`,
     security_zone: 0,
     utype: 3,
-    signature: "0x5678",
+    signature: batchProof,
   },
   configVersion: 7,
   marketSourceId: "market-smoke",

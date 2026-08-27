@@ -1,0 +1,8 @@
+allowBuilds:
+  '@fhenixprotocol/cofhe-contracts': false
+  '@reown/appkit': false
+  better-sqlite3: true
+  bufferutil: true
+  esbuild: true
+  keccak: true
+  utf-8-validate: true
