@@ -69,6 +69,32 @@ assert.ok(
   "public integrator skill should retain the client-sealed path",
 );
 
+// CoFHE 0.7 verifies the pair against BOTH bindings. A snippet carrying only
+// .setAccount() throws "Consuming contract is not set" in the agent's own
+// process, so the published skill must document both or it ships a dead end.
+assert.ok(
+  integratorSkill.includes(".setAccount(relayerAddress)"),
+  "client-sealing snippet must bind the CoFHE account to the published relayer",
+);
+assert.ok(
+  integratorSkill.includes(".setConsumingContract(contractAddress)"),
+  "client-sealing snippet must bind the CoFHE consuming contract; 0.7 throws without it",
+);
+assert.ok(
+  integratorSkill.includes("fhenix.relayer_address") &&
+    integratorSkill.includes("fhenix.contract_address"),
+  "client-sealing doc must read BOTH bindings from /v1/meta",
+);
+assert.ok(
+  integratorSkill.includes("client-side proof binding is unavailable"),
+  "client-sealing snippet must stop when either binding is null",
+);
+assert.ok(
+  /returns one element MORE than the inputs/.test(integratorSkill) &&
+    integratorSkill.includes("const [binaryHash, confidenceHash, batchSignature]"),
+  "client-sealing doc must show the batch result shape: handles then the shared signature",
+);
+
 const disabled = buildAgentOperatePrompt(
   "https://api.example",
   "alpha-bot",

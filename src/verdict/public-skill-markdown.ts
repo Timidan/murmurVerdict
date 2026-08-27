@@ -210,19 +210,48 @@ Use \`/v2/gateway/calls\` unless you have a specific reason not to:
 ### Operator-blind client sealing
 
 Seal the verdict in the agent process before contacting Murmur. First read
-\`GET ${apiBase}/v1/meta\` and take \`fhenix.relayer_address\`. Connect the
-CoFHE SDK with a watch-only WalletClient-shaped object whose only account is
-that address, then override the encryption binding explicitly. If the field is
-null, stop: this deployment has no live Gateway relayer.
+\`GET ${apiBase}/v1/meta\` and take BOTH \`fhenix.relayer_address\` and
+\`fhenix.contract_address\`. If either is null, stop: this deployment has no
+live Gateway relayer or no deployed sealed-verdicts contract, so no proof you
+build can be accepted. Connect the CoFHE SDK with a watch-only
+WalletClient-shaped object whose only account is the relayer address, then bind
+the encryption to both published addresses. CoFHE 0.7 requires both:
+\`.setAccount()\` names who may use the ciphertext, \`.setConsumingContract()\`
+names the contract that consumes it, and omitting the second makes
+\`execute()\` throw \`Consuming contract is not set\` locally — before Murmur is
+ever contacted.
 
     const meta = await fetch("${apiBase}/v1/meta").then((r) => r.json());
-    const relayerAddress = meta.fhenix.relayer_address;
+    const relayerAddress = meta.fhenix?.relayer_address;
+    const contractAddress = meta.fhenix?.contract_address;
+    if (!relayerAddress || !contractAddress) {
+      throw new Error(
+        "this deployment publishes no fhenix.relayer_address / fhenix.contract_address; " +
+          "client-side proof binding is unavailable",
+      );
+    }
     const watchOnlyWallet = { account: { address: relayerAddress } } as unknown as WalletClient;
     await cofheClient.connect(publicClient, watchOnlyWallet);
-    const inputs = await cofheClient.encryptInputs([
-      Encryptable.uint8(BigInt(binaryIndex)),
-      Encryptable.uint16(BigInt(confidenceBps)),
-    ]).setAccount(relayerAddress).execute();
+    // Order is load-bearing: euint8 binary index first, euint16 confidence
+    // second. The one signature covers keccak256(h0 || h1) in that sequence.
+    const [binaryHash, confidenceHash, batchSignature] = await cofheClient
+      .encryptInputs([
+        Encryptable.uint8(BigInt(binaryIndex)),
+        Encryptable.uint16(BigInt(confidenceBps)),
+      ])
+      .setAccount(relayerAddress)
+      .setSecurityZone(0)
+      .setConsumingContract(contractAddress)
+      .execute();
+
+\`execute()\` returns one element MORE than the inputs you passed: the leading
+elements are the ciphertext handles in input order, and the TRAILING element is
+the single batch signature that both handles carry. Send \`binaryHash\` as
+\`binary_index_input.ct_hash\`, \`confidenceHash\` as
+\`confidence_input.ct_hash\`, and \`batchSignature\` as the \`signature\` of
+both. Both bindings are Murmur's published addresses, not yours: the proof is
+signed for Murmur's relayer, which broadcasts it, and for the sealed-verdicts
+contract, which consumes it.
 
 This needs no EVM or relayer private key: \`account\` is CoFHE binding context,
 not agent authentication. Keep the plaintext and proof generation local. Send

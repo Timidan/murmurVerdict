@@ -26,12 +26,20 @@
 // back to the page's own origin (which proxies /v1 in dev and same-host
 // deploys). Substituted consistently across all three languages so users
 // can paste any one and get a working call.
+//
+// The pasteable text itself lives in ./gateway-snippets.ts so a smoke can
+// assert on it without a DOM. Read that file's header for the auth and
+// sealing contract each snippet has to satisfy.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { HighlightedCode } from "../CodeWindow.js";
+import {
+  renderGatewaySnippet,
+  type SnippetLanguage,
+} from "./gateway-snippets.js";
 
-export type SnippetLanguage = "typescript" | "python" | "curl";
+export type { SnippetLanguage };
 
 export interface CodeSnippetPanelProps {
   /**
@@ -88,122 +96,6 @@ function getApiBase(): string {
   return window.location.origin;
 }
 
-/**
- * Substitute the `{{base}}` and `{{key}}` placeholders in a template.
- * When `runtimeKey` is undefined, swap `{{key}}` for the env-var pattern
- * idiomatic to each language (handled via the `keyBlock` arg per call).
- */
-function renderSnippet(
-  template: string,
-  base: string,
-  keyBlock: string,
-): string {
-  return template.replaceAll("{{base}}", base).replaceAll("{{key}}", keyBlock);
-}
-
-// ─── Templates ──────────────────────────────────────────────────────────────
-
-const TS_TEMPLATE = `// Create CoFHE inputs client-side, then let Murmur relay submitSealedFor.
-{{key}}
-const encrypted = await createCofheVerdictInputs({
-  binaryIndex: 0,
-  confidenceBps: 7200,
-});
-const res = await fetch("{{base}}/v2/gateway/calls", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "X-Murmur-Runtime-Key": MURMUR_RUNTIME_KEY,
-  },
-  body: JSON.stringify({
-    marketRef: { protocol: "polymarket-gamma", sourceId: "<condition-id>", configVersion: 1 },
-    client_order_id: crypto.randomUUID(),
-    client_nonce: encrypted.client_nonce,
-    privacy_mode: "sealed_fhenix",
-    binary_index_input: encrypted.binary_index_input,
-    confidence_input: encrypted.confidence_input,
-    strategy_tag: "momentum",
-  }),
-});
-const result = await res.json();
-console.log(result.call_id, result.status);`;
-
-const PY_TEMPLATE = `import json
-import os
-import urllib.request
-import uuid
-
-{{key}}
-
-encrypted = create_cofhe_verdict_inputs(binary_index=0, confidence_bps=7200)
-req = urllib.request.Request(
-    "{{base}}/v2/gateway/calls",
-    method="POST",
-    headers={
-        "Content-Type": "application/json",
-        "X-Murmur-Runtime-Key": MURMUR_RUNTIME_KEY,
-    },
-    data=json.dumps({
-        "marketRef": {"protocol": "polymarket-gamma", "sourceId": "<condition-id>", "configVersion": 1},
-        "client_order_id": str(uuid.uuid4()),
-        "client_nonce": encrypted["client_nonce"],
-        "privacy_mode": "sealed_fhenix",
-        "binary_index_input": encrypted["binary_index_input"],
-        "confidence_input": encrypted["confidence_input"],
-        "strategy_tag": "momentum",
-    }).encode(),
-)
-with urllib.request.urlopen(req) as resp:
-    body = json.load(resp)
-    print(body["call_id"], body["status"])`;
-
-const CURL_TEMPLATE = `{{key}}
-curl -X POST {{base}}/v2/gateway/calls \\
-  -H "Content-Type: application/json" \\
-  -H "X-Murmur-Runtime-Key: $MURMUR_RUNTIME_KEY" \\
-  -d '{
-    "marketRef": { "protocol": "polymarket-gamma", "sourceId": "<condition-id>", "configVersion": 1 },
-    "client_order_id": "'"$(uuidgen)"'",
-    "client_nonce": "0x<32 bytes>",
-    "privacy_mode": "sealed_fhenix",
-    "binary_index_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 2, "signature": "0x<batch proof>" },
-    "confidence_input": { "ct_hash": "0x<32 bytes>", "security_zone": 0, "utype": 3, "signature": "0x<the SAME batch proof>" },
-    "strategy_tag": "momentum"
-  }'`;
-
-function pickTemplate(language: SnippetLanguage): string {
-  if (language === "typescript") return TS_TEMPLATE;
-  if (language === "python") return PY_TEMPLATE;
-  return CURL_TEMPLATE;
-}
-
-/**
- * Build the language-idiomatic key-binding line. When `runtimeKey` is set
- * we inline it with a "// rotate before committing" hint so the operator
- * knows the snippet is paste-ready but secret-ful. When unset we fall back
- * to the env-var pattern so the snippet is safe to share.
- */
-function buildKeyBlock(
-  language: SnippetLanguage,
-  runtimeKey: string | undefined,
-): string {
-  const literal = runtimeKey && runtimeKey.length > 0 ? runtimeKey : null;
-  if (language === "typescript") {
-    return literal
-      ? `const MURMUR_RUNTIME_KEY = "${literal}"; // shown once — store in env before committing`
-      : `const MURMUR_RUNTIME_KEY = process.env.MURMUR_RUNTIME_KEY ?? "";`;
-  }
-  if (language === "python") {
-    return literal
-      ? `MURMUR_RUNTIME_KEY = "${literal}"  # shown once — store in env before committing`
-      : `MURMUR_RUNTIME_KEY = os.environ["MURMUR_RUNTIME_KEY"]`;
-  }
-  // curl
-  return literal
-    ? `# Shown once — export now then remove this line before sharing.\nexport MURMUR_RUNTIME_KEY='${literal}'\n`
-    : `# Set MURMUR_RUNTIME_KEY in your shell first.`;
-}
-
 export function CodeSnippetPanel({
   runtimeKey,
   languages,
@@ -248,11 +140,10 @@ export function CodeSnippetPanel({
   }, []);
 
   const base = getApiBase();
-  const body = useMemo(() => {
-    const tpl = pickTemplate(active);
-    const keyBlock = buildKeyBlock(active, runtimeKey);
-    return renderSnippet(tpl, base, keyBlock);
-  }, [active, base, runtimeKey]);
+  const body = useMemo(
+    () => renderGatewaySnippet(active, base, runtimeKey),
+    [active, base, runtimeKey],
+  );
 
   const doCopy = useCallback(async () => {
     if (!navigator.clipboard?.writeText) {
