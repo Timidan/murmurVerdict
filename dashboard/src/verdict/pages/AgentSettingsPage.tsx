@@ -100,9 +100,10 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             </a>
           </span></TopbarCrumb>
 
-      {/* One measure for the page, not one per panel. Panels inside are w-full
-          and inherit it; the rail and the body split it. */}
-      <main className="flex-1 px-3 py-4 w-full max-w-[1100px] mx-auto flex flex-col gap-4">
+      {/* ck-page owns the measure — one width for every account page, not one
+          per panel and not one per file. Panels inside are w-full and inherit
+          it; the rail and the body split it. */}
+      <main className="flex-1 px-3 py-4 ck-page flex flex-col gap-4">
         {/* ── Agent header ─────────────────────────────────────────── */}
         <header className="flex flex-wrap items-center justify-between gap-3 px-1">
           <div className="flex items-center gap-2 min-w-0">
@@ -344,7 +345,7 @@ function LoadingShell({ slug }: { slug: string }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb><span className="ck-pos">{slug}</span></TopbarCrumb>
-      <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
+      <main className="flex-1 px-3 py-3 ck-page">
         <div className="ck-frame px-4 py-6">
           <div className="flex justify-center py-6"><LogoLoader width={300} /></div>
         </div>
@@ -357,7 +358,7 @@ function ConfigErrorShell() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb><span className="ck-neg">settings · not configured</span></TopbarCrumb>
-      <main className="flex-1 px-3 py-3 max-w-[560px] w-full mx-auto">
+      <main className="flex-1 px-3 py-3 ck-page">
         <section className="ck-frame-strong px-4 py-4">
           <p className="ck-mono ck-neg">Sign-in is not configured.</p>
           <p className="ck-dim mt-2 text-[12px]">

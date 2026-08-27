@@ -113,10 +113,12 @@ When the page sits inside `.mmr-shell`, overrides at `dashboard/src/verdict/styl
 
 | Class | Effect |
 |---|---|
+| `.ck-page` | **the page measure: `max-width: 1100px`, centred.** One class, so it cannot drift again — it had reached three values (IntegratePage 820 · AccountPage 960 · AgentSettingsPage 1100) once each page typed its own. 1100 is the widest surface's real need: a rail plus a code body, where the TS gateway snippet's longest line is 88 mono characters and wraps under ~900px. Put it on the page's `<main>` — loading and error shells included, or the page jumps width on every cold load. Panels inside stay `w-full`; prose still caps itself at `max-w-[60ch]`. Modals, drawers, tooltips and the mobile nav are components, not pages, and keep their own widths. Two pages keep their own narrower measure on purpose and are not drift: `/install` (760px reading column, marketing type, not a cockpit page) and `AgentOnboardPage` (`max-w-2xl`, one centred form — a form stretched to 1100 is worse, not wider) |
 | `.ck-pos` / `.ck-neg` / `.ck-dim` | display / accent-ink / disabled tones — colour only, never size |
 | `.ck-frame` / `.ck-frame-strong` | hairline frame on `--color-border` / `--color-border-vis` |
 | `.ck-header` | `min-height: 31px`, `6px 8px` padding on `--color-surface` — derived, not chosen: 18px title line box + 6+6 padding + 1px border |
 | `.ck-row` | grid row, hover lift via `color-mix(in srgb, var(--color-primary), transparent 97%)` (theme-correct — the old `rgba(255,255,255,0.03)` hazed white on paper) |
+| `.ck-sidetabs` (+ `-rail` / `-body`) | rail left, body right, one frame around both; active cell wears an inset accent bar; below `md` the rail lies down into a scrolling strip. Two rail widths: bare = **56px icon-only** (`.ck-sidetab--icon` + `.ck-sidetab-tip`, used by AgentSettingsPage's eight tabs, whose labels truncate at word width), `.ck-sidetabs--wide` = **170px worded** (IntegratePage's four short labels, which do not). `.ck-sidetab-body--fixed` floors the body at 400px so switching panes never resizes the page |
 | `.ck-dot[-ok\|-stale]` | 5px square LED, static colour only — no animation |
 
 #### Dead classes — do not re-document as live

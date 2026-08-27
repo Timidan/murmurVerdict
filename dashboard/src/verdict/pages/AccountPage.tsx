@@ -133,7 +133,7 @@ export function AccountPage() {
         <TopbarCrumb>
           <span className="ck-neg">account · closed</span>
         </TopbarCrumb>
-        <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
+        <main className="flex-1 px-3 py-3 ck-page">
           <AccountClosedScreen
             deactivatedAt={account.deactivatedAt}
             onSignOut={() => void account.signOut()}
@@ -159,7 +159,7 @@ export function AccountPage() {
       {/* Bento, not a stack. Eight equal-width panels gave "no webhooks yet"
           the same weight as the agent list; span sizes encode what matters.
           Single column under md — a phone has one column of attention. */}
-      <main className="flex-1 px-3 py-3 grid grid-cols-1 md:grid-cols-6 gap-3 content-start max-w-[960px] w-full mx-auto">
+      <main className="flex-1 px-3 py-3 grid grid-cols-1 md:grid-cols-6 gap-3 content-start ck-page">
         <section className="ck-frame md:col-span-6">
           <div className="ck-header">
             <span className="ck-title ck-title-ik">
@@ -375,7 +375,7 @@ function LoadingShell() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb><span className="ck-pos">account</span></TopbarCrumb>
-      <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
+      <main className="flex-1 px-3 py-3 ck-page">
         <SkeletonRows />
       </main>
     </div>
@@ -386,7 +386,7 @@ function ConfigErrorShell() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb><span className="ck-neg">account · not configured</span></TopbarCrumb>
-      <main className="flex-1 px-3 py-3 max-w-[960px] w-full mx-auto">
+      <main className="flex-1 px-3 py-3 ck-page">
         <section className="ck-frame-strong px-4 py-4">
           <p className="ck-mono ck-neg">Sign-in is not configured.</p>
           <p className="ck-dim mt-2 text-[12px]">
