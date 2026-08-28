@@ -10,8 +10,20 @@
 // The catalog and the per-call inventory are fetched in PARALLEL as two
 // independent chains, so a failing inventory read annotates the matrix instead
 // of blanking it — the standing prices are true either way.
+//
+// The BUY lives in the drilldown, on the locked price itself. See
+// OpenCallsDrilldown below for why it belongs there and nowhere else on the
+// page, and components/compact/BuyAccessPanel.tsx for the checkout.
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from "react";
 
 import { verdictApi, type MarketplaceListings } from "../../api.js";
 import { Ik } from "../../icons.js";
@@ -33,6 +45,18 @@ import { shortId } from "../../lib/display-format.js";
 import { InlineError } from "./InlineError.js";
 import { Panel } from "./Panel.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
+
+/**
+ * The checkout, loaded only when somebody opens a call to buy.
+ *
+ * `lazy()` and not a plain import, because this component pulls the Privy SDK
+ * in with it. /leaderboard is a public route that Router.tsx deliberately keeps
+ * outside the Privy bundle; deferring the chunk to the click keeps that true
+ * while still putting the buy where a buyer is standing.
+ */
+const BuyAccessPanel = lazy(() =>
+  import("./BuyAccessPanel.js").then((m) => ({ default: m.BuyAccessPanel })),
+);
 
 /** One page of inventory is plenty: the storefront is per-deployment, not global. */
 const SELLABLE_PAGE = 200;
@@ -303,6 +327,13 @@ function Cell({
  * The open calls behind one cell. EVERY row here is `locked_terms` — the
  * standing price is deliberately absent, so nothing in this list can be read
  * as the number the cell above shows.
+ *
+ * This is also where the BUY lives, and that is why it lives here rather than
+ * on the call page: this list is the only surface in the browser that already
+ * renders the price a checkout will honour. The button and the number it
+ * charges come from one object, so no lookup can substitute the standing price
+ * for the locked one. (The confirm step re-reads the price from the 402 anyway,
+ * and says so when the two disagree.)
  */
 function OpenCallsDrilldown({
   slug,
@@ -315,6 +346,12 @@ function OpenCallsDrilldown({
   calls: OpenCallView[];
   onClose: () => void;
 }) {
+  /** Which call's checkout is open. One at a time — a buy is a modal act. */
+  const [buying, setBuying] = useState<string | null>(null);
+  // Only promise a buy when one is actually on offer. A full cohort, a closed
+  // window or a deployment with no checkout all render this list unchanged, and
+  // inviting a click that leads nowhere is worse than saying nothing.
+  const anyBuyable = calls.some((c) => c.buyable);
   return (
     <section className="ck-frame m-2">
       <div className="ck-header">
@@ -324,6 +361,7 @@ function OpenCallsDrilldown({
         <span className="flex items-center gap-3">
           <span className="ck-mono ck-dim">
             {slug} · {seriesTitle} · locked price
+            {anyBuyable ? " · click one to buy" : ""}
           </span>
           <button type="button" onClick={onClose} className="ck-btn ck-btn-bracket">
             close
@@ -332,7 +370,12 @@ function OpenCallsDrilldown({
       </div>
       <ul className="m-0 p-0 list-none">
         <li className="ck-matrix-calls ck-colhead px-2 py-1 border-b border-[var(--color-border-vis)]">
-          <span title="what checkout charges for THIS call, frozen when it was sealed">
+          <span
+            title={
+              "What checkout charges for THIS call, frozen when it was sealed." +
+              (anyBuyable ? " A boxed price is one you can buy: click it." : "")
+            }
+          >
             locked price
           </span>
           <span>market</span>
@@ -340,37 +383,61 @@ function OpenCallsDrilldown({
           <span>sale closes</span>
         </li>
         {calls.map((call) => (
-          <li
-            key={call.onchainCallId}
-            className="ck-matrix-calls px-2 py-1 border-b border-[var(--color-border)]"
-          >
-            <span
-              className="ck-mono ck-pos"
-              title={`locked at seal time, pricing ${call.pricingVersion} — ${call.lockedPriceAtoms} atoms`}
-            >
-              {call.lockedDisplay} <span className="ck-dim">{call.currency.toUpperCase()}</span>
-            </span>
-            <span
-              className="ck-mono ck-matrix-truncate"
-              title={call.question ?? `market ${call.marketId}`}
-            >
-              {call.question ?? (
-                <span className="ck-dim">
-                  no published question · {shortId(call.marketId, 8, 4)}
+          <li key={call.onchainCallId} className="border-b border-[var(--color-border)]">
+            <div className="ck-matrix-calls px-2 py-1">
+              {/* The price cell IS the buy control when the call can be bought.
+                  Fusing them is the point: an affordance that sits beside a
+                  number can advertise a different one, and this one cannot. */}
+              {call.buyable ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setBuying((prev) => (prev === call.onchainCallId ? null : call.onchainCallId))
+                  }
+                  aria-expanded={buying === call.onchainCallId}
+                  className={
+                    "ck-mono ck-pos ck-matrix-open " +
+                    (buying === call.onchainCallId ? "ck-matrix-open-on" : "")
+                  }
+                  title={`Buy early decrypt access to this call for ${call.lockedDisplay} ${call.currency.toUpperCase()} — the price locked when it was sealed, pricing ${call.pricingVersion} (${call.lockedPriceAtoms} atoms). The wallet that signs receives the access.`}
+                >
+                  {call.lockedDisplay} <span className="ck-dim">{call.currency.toUpperCase()}</span>
+                </button>
+              ) : (
+                <span
+                  className="ck-mono ck-pos"
+                  title={`locked at seal time, pricing ${call.pricingVersion} — ${call.lockedPriceAtoms} atoms`}
+                >
+                  {call.lockedDisplay} <span className="ck-dim">{call.currency.toUpperCase()}</span>
                 </span>
               )}
-            </span>
-            <span className={"ck-mono " + (call.buyable ? "ck-tag-ok" : "ck-dim")}>
-              {call.inventoryStatus === "checkout_unavailable"
-                ? "checkout unavailable"
-                : call.seatsLabel}
-            </span>
-            <span
-              className="ck-mono ck-dim"
-              title={formatLocalDateTime(call.saleClosesAt) ?? call.saleClosesAt}
-            >
-              {formatLocalTimeLabel(call.saleClosesAt) ?? UNLISTED}
-            </span>
+              <span
+                className="ck-mono ck-matrix-truncate"
+                title={call.question ?? `market ${call.marketId}`}
+              >
+                {call.question ?? (
+                  <span className="ck-dim">
+                    no published question · {shortId(call.marketId, 8, 4)}
+                  </span>
+                )}
+              </span>
+              <span className={"ck-mono " + (call.buyable ? "ck-tag-ok" : "ck-dim")}>
+                {call.inventoryStatus === "checkout_unavailable"
+                  ? "checkout unavailable"
+                  : call.seatsLabel}
+              </span>
+              <span
+                className="ck-mono ck-dim"
+                title={formatLocalDateTime(call.saleClosesAt) ?? call.saleClosesAt}
+              >
+                {formatLocalTimeLabel(call.saleClosesAt) ?? UNLISTED}
+              </span>
+            </div>
+            {buying === call.onchainCallId && (
+              <Suspense fallback={<p className="px-2 pb-2 m-0 ck-mono ck-dim">loading checkout…</p>}>
+                <BuyAccessPanel call={call} onClose={() => setBuying(null)} />
+              </Suspense>
+            )}
           </li>
         ))}
       </ul>

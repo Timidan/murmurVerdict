@@ -112,10 +112,115 @@ const incomplete = injectRuntimeCredentials(template, { runtimeKey });
 assert.ok(incomplete.includes("STOP"), "an incomplete minted credential should fail closed");
 assert.ok(!incomplete.includes("```js"), "an incomplete credential should not expose runnable code");
 
-const envBlock = prompt.match(/```dotenv\n([\s\S]*?)\n```/)?.[1];
+// Two dotenv blocks now: the runtime credentials first (what the runner below
+// is fed), then the subscriber key for buying. Order matters — the runner is
+// built from the FIRST block, so a reordering that put the buyer key first
+// would silently hand it a .env with no Runtime Key in it.
+const envBlocks = [...prompt.matchAll(/```dotenv\n([\s\S]*?)\n```/g)].map((m) => m[1]!);
+const envBlock = envBlocks[0];
 const nodeScript = prompt.match(/```js\n([\s\S]*?)\n```/)?.[1];
-assert.ok(envBlock, "prompt should contain one dotenv credential block");
+assert.ok(envBlock, "prompt should contain a dotenv credential block");
+assert.ok(
+  envBlock.includes("MURMUR_RUNTIME_KEY="),
+  "the FIRST dotenv block must be the runtime credentials — the runner is built from it",
+);
 assert.ok(nodeScript, "prompt should contain one executable Node runner");
+
+// ─── Buying is a first-class capability, not an operator errand ─────────────
+//
+// An agent can subscribe to another agent's sealed call on its own. The prompt
+// has to say so, name the separate key that makes it possible, and keep the
+// two prices apart — quoting the standing list price at a buyer is the one
+// expensive mistake on this path.
+assert.ok(
+  prompt.includes("## Buy another agent's sealed call"),
+  "the operate prompt should document buying as its own capability",
+);
+assert.ok(
+  prompt.includes("SUBSCRIBER_PRIVATE_KEY="),
+  "and name the operational key that does it",
+);
+assert.ok(
+  prompt.includes("NOT your Controller Wallet") && prompt.includes("cannot sign from your runtime"),
+  "and say why the Controller Wallet cannot be that key",
+);
+assert.ok(
+  prompt.includes("chmod 600") && prompt.includes("never put the key on a\ncommand line"),
+  "and hold the buyer key to the same credential discipline as the runtime key",
+);
+assert.ok(
+  prompt.includes("locked_terms") && prompt.includes("current_terms"),
+  "and separate the price a buyer pays from the seller's standing listing",
+);
+assert.ok(
+  prompt.includes("verified payer") || prompt.includes("VERIFIED payer"),
+  "and state that the payment signature is the identity",
+);
+
+// Same story on the public skill file, which is what an agent with no Runtime
+// Key reads first.
+assert.ok(
+  integratorSkill.includes("## Step 9 — Buy another agent's sealed call"),
+  "the public skill should carry the buyer path too",
+);
+assert.ok(
+  integratorSkill.includes("SUBSCRIBER_PRIVATE_KEY=") &&
+    integratorSkill.includes("tools/subscriber-buy-access.ts") &&
+    integratorSkill.includes("tools/subscriber-unseal-granted-call.ts"),
+  "naming the key, the buy tool, and the decrypt tool",
+);
+assert.ok(
+  integratorSkill.includes("deposited with Circle's Gateway"),
+  "and warning that the balance spent is a Gateway deposit, not a wallet balance",
+);
+
+// ─── The Path B env has to be the env the tools actually require ────────────
+//
+// Both documents told a buyer to write SUBSCRIBER_PRIVATE_KEY /
+// MURMUR_DAEMON_URL / BASE_RPC_URL and then run BOTH tools. The unseal tool
+// requireEnv()s two more — FHENIX_RPC_URL and FHENIX_SEALED_VERDICTS_ADDRESS —
+// so following the instructions exactly threw "missing required env" on the
+// step that reads what was just bought. The dotenv block is the contract.
+for (const [where, doc] of [
+  ["the public skill", buildSkillMarkdown("https://api.example", audience)],
+  ["the operate prompt", prompt],
+] as const) {
+  const buyerEnv = [...doc.matchAll(/```dotenv\n([\s\S]*?)\n```/g)]
+    .map((m) => m[1]!)
+    .find((block) => block.includes("SUBSCRIBER_PRIVATE_KEY="));
+  assert.ok(buyerEnv, `${where}: there is a buyer dotenv block`);
+  for (const name of [
+    "SUBSCRIBER_PRIVATE_KEY",
+    "MURMUR_DAEMON_URL",
+    "BASE_RPC_URL",
+    "FHENIX_RPC_URL",
+    "FHENIX_SEALED_VERDICTS_ADDRESS",
+  ]) {
+    assert.ok(
+      buyerEnv.includes(`${name}=`),
+      `${where}: the buyer env must name ${name} — a tool requires it`,
+    );
+  }
+  // And it says where the two chain values come from, because a repo checkout
+  // is the wrong place: it describes some other operator's deployment.
+  assert.ok(
+    doc.includes("/v1/meta") && doc.includes("fhenix.contract_address"),
+    `${where}: point the buyer at /v1/meta for the sealed-verdicts contract`,
+  );
+
+  // "signs payments and nothing else" was false. The same key sends the
+  // on-chain Circle Gateway deposit when the buy tool tops up, and creates the
+  // CoFHE decryption permit. A buyer who believed the old sentence would size
+  // that wallet's balance for nothing.
+  assert.ok(
+    !/signs payments and nothing else|It signs payments and nothing else/i.test(doc),
+    `${where}: the buyer key does more than sign payments, so it must not claim otherwise`,
+  );
+  assert.ok(
+    /operational key/i.test(doc) && /deposit/i.test(doc) && /permit/i.test(doc),
+    `${where}: describe the key as the buyer/decryption operational key it is`,
+  );
+}
 
 const db = openDb({ path: ":memory:" });
 const workspaceTmp = mkdtempSync(join(tmpdir(), "murmur-agent-prompt-"));

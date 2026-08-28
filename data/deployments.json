@@ -42,10 +42,10 @@
   {
     "chainId": 84532,
     "contractName": "MurmurSealedVerdicts",
-    "address": "0x957a5eadb86f0b0590fd4a8201b1dcaa4adacd46",
-    "deployedAt": "2026-08-05T11:03:17.857Z",
-    "txHash": "0x2e2dc56ef0dcf30350ed65ad679d410e03f5b3b02d46759eec55ef58db20c458",
-    "blockNumber": 45079755
+    "address": "0x166285D72722865adFFF36F36a248050a43ccbC6",
+    "deployedAt": "2026-08-27T21:03:18Z",
+    "txHash": "0xca494e7ee2c3891afb6b1e5d370d2c9b07f7046e1a51777905d016505835f1f7",
+    "blockNumber": 46048155
   },
   {
     "chainId": 84532,

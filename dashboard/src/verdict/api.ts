@@ -356,6 +356,60 @@ async function del<T>(path: string, headers?: HeaderMap, body?: unknown): Promis
   return (await res.json()) as T;
 }
 
+/**
+ * A response whose STATUS is part of the answer.
+ *
+ * `get`/`post` above throw on any non-2xx, which is right for reads: a 404 on
+ * a leaderboard is a failure. It is wrong for the x402 checkout, where 402 is
+ * not an error at all — it is the price list, and 409 tells a buyer precisely
+ * why a call cannot be bought. Throwing those away and re-parsing the message
+ * string is how a checkout starts guessing.
+ */
+export interface RawResponse {
+  status: number;
+  /** Parsed JSON, or null when the body was empty or unparseable. */
+  body: unknown;
+}
+
+async function rawResponse(path: string, init: RequestInit): Promise<RawResponse> {
+  const res = await fetch(`${API_URL}${path}`, init);
+  const text = await res.text().catch(() => "");
+  let body: unknown = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    // A non-JSON body from a proxy or a gateway is itself the diagnosis; the
+    // caller classifies on status and gets `null` rather than a throw.
+    body = null;
+  }
+  return { status: res.status, body };
+}
+
+async function rawPost(path: string, headers?: HeaderMap): Promise<RawResponse> {
+  return rawResponse(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(headers ?? {}) },
+  });
+}
+
+async function rawGet(path: string, headers?: HeaderMap): Promise<RawResponse> {
+  return rawResponse(path, { method: "GET", ...(headers ? { headers } : {}) });
+}
+
+/**
+ * The ABSOLUTE url of a call's access endpoint.
+ *
+ * Circle's payment envelope carries a `resource` naming what is being bought,
+ * and it has to be absolute — `API_BASE` is the empty string on a same-origin
+ * deploy, which would make it a bare path. Resolving against the page's own
+ * origin is exactly what the browser would do with that request anyway.
+ */
+export function callAccessUrl(onchainCallId: string): string {
+  const path = `/v2/gateway/calls/${encodeURIComponent(onchainCallId)}/access`;
+  const base = API_BASE || (typeof window === "undefined" ? "" : window.location.origin);
+  return `${base}${path}`;
+}
+
 export class ApiError extends Error {
   /**
    * Raw response body. Carried alongside the formatted message so callers
@@ -783,6 +837,36 @@ export const verdictApi = {
       signal,
     );
   },
+  /**
+   * Ask what ONE sealed call costs. Answers 402 with the challenge, which is
+   * the SUCCESS case here — hence `rawPost`, not `post`.
+   *
+   * Sends no payment and no identity. The endpoint takes neither a runtime key
+   * nor a Privy session: whoever signs the payment on the second call becomes
+   * the subscriber, so there is nothing to authenticate on this one.
+   */
+  callAccessChallenge: (onchainCallId: string) =>
+    rawPost(`/v2/gateway/calls/${encodeURIComponent(onchainCallId)}/access`),
+  /**
+   * Present a signed x402 authorization for that call.
+   *
+   * The header is the whole identity. murmur derives the subscriber from the
+   * VERIFIED payer inside it and never from anything else on the request, so
+   * the wallet that signs is the wallet that receives decrypt access.
+   *
+   * Idempotent: a repeat for access already held answers 200 `granted: true`
+   * without settling again.
+   */
+  callAccessPurchase: (onchainCallId: string, paymentSignature: string) =>
+    rawPost(`/v2/gateway/calls/${encodeURIComponent(onchainCallId)}/access`, {
+      "PAYMENT-SIGNATURE": paymentSignature,
+    }),
+  /** Payment + grant status for one (call, subscriber). Public; no plaintext. */
+  callAccessStatus: (onchainCallId: string, subscriber: string) =>
+    rawGet(
+      `/v2/gateway/calls/${encodeURIComponent(onchainCallId)}/access/status` +
+        `?subscriber=${encodeURIComponent(subscriber)}`,
+    ),
   feedAvailability: (feed_id: string) =>
     get<{
       schema_version: number;

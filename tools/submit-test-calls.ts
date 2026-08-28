@@ -80,20 +80,30 @@ async function main(): Promise<void> {
   const now = Date.now();
   const open = db
     .prepare(
+      // Restricted to series this agent has PRICED. A call on an unpriced market
+      // seals fine and then answers 404 NotForSale at checkout, which is the
+      // wrong thing to hand someone testing the buy path.
       `SELECT m.market_id, m.market_config_version, c.early_access_cutoff_at_ms
          FROM markets m
          JOIN market_clocks c ON c.market_id = m.market_id
+         JOIN agent_provider_terms t
+           ON t.venue_series_id = m.venue_series_id
+          AND t.agent_id = ?
         WHERE m.status = 'listed'
+          AND m.venue_series_id IS NOT NULL
           AND c.submission_open_at_ms <= ?
           AND c.early_access_cutoff_at_ms > ?
         ORDER BY c.early_access_cutoff_at_ms ASC
         LIMIT ?`,
     )
-    .all(now, now + 30_000, count) as OpenMarket[];
+    .all(agent.agent_id, now, now + 30_000, count) as OpenMarket[];
 
   if (open.length === 0) {
-    console.log("No market is open for early-access submission right now.");
-    console.log("Windows open every 5 minutes; try again shortly.");
+    console.log("No PRICED market is open for early-access submission right now.");
+    console.log(
+      "Windows open every 5 minutes. Only markets this agent has priced are\n" +
+        "selected, so the resulting call can actually be bought.",
+    );
     return;
   }
   console.log(`${agent.display_slug}: submitting to ${open.length} open market(s)\n`);

@@ -12,16 +12,28 @@
  * live CoFHE threshold network), so it is intentionally NOT a *.smoke.ts and is
  * not run in CI. Run it after the access purchase confirms `granted`:
  *
- *   FHENIX_RPC_URL=... \
- *   FHENIX_CHAIN_ID=84532 \
- *   FHENIX_SEALED_VERDICTS_ADDRESS=0x... \
- *   SUBSCRIBER_PRIVATE_KEY=0x... \
  *   npx tsx tools/subscriber-unseal-granted-call.ts <onchainCallId>
+ *
+ * Required env, read from the `.env` beside you (same file the buy tool uses):
+ *
+ *   SUBSCRIBER_PRIVATE_KEY          the wallet that was granted access
+ *   FHENIX_RPC_URL                  an RPC for the chain the contract lives on
+ *   FHENIX_SEALED_VERDICTS_ADDRESS  that contract
+ *
+ * The last two are NOT derived from the deployment manifest on purpose: this
+ * tool talks only to the chain, and the contract that matters is whichever one
+ * the daemon you BOUGHT FROM grants on. It publishes both as
+ * `fhenix.contract_address` and `fhenix.chain_id` on GET /v1/meta; a local
+ * data/deployments.json describes some other operator's deployment and would
+ * silently read the wrong contract, which surfaces as "NOT granted".
  *
  * The contract exposes both ciphertext handles + the subscriber's grant flag
  * via getDecryptAccess(callId, subscriber); the two encrypted fields are
  * binaryIndex (FheTypes.Uint8) and confidenceBps (FheTypes.Uint16).
  */
+// The docs tell a buyer to put these in a `chmod 600` .env rather than on a
+// command line, so this has to read one. Matches tools/subscriber-buy-access.ts.
+import "dotenv/config";
 import {
   createPublicClient,
   createWalletClient,
