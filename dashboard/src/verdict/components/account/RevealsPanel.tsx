@@ -68,22 +68,32 @@ export function RevealsPanel({ slug }: { slug: string }) {
       </div>
 
       <div className="px-4 py-4 flex flex-col gap-4">
-        <p className="ck-dim text-[12px]">
-          {view?.fallback.enabled === false
-            ? "This deployment runs no fallback. A call you do not reveal stays sealed."
-            : "Reveal each call before its deadline. After the deadline murmur reveals it for you, and the record shows that murmur did it."}
-        </p>
+        {/* Only a loaded response knows whether a fallback runs here, so an
+            unloaded panel promises nothing. */}
+        {view && (
+          <p className="ck-dim text-[12px]">
+            {view.fallback.enabled
+              ? "Reveal each call before its deadline. After the deadline murmur reveals it for you, and the record shows that murmur did it."
+              : "This deployment runs no fallback. A call you do not reveal stays sealed."}
+          </p>
+        )}
 
         {error && <InlineError error={error} className="text-[12px]" />}
 
         {loading && !view ? (
           <SkeletonRows />
-        ) : !view || view.reveals.length === 0 ? (
+        ) : !view ? (
+          <p className="ck-mono ck-dim">[reveals unavailable]</p>
+        ) : view.reveals.length === 0 ? (
           <p className="ck-mono ck-dim">No sealed calls yet.</p>
         ) : (
           <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
             {view.reveals.map((row) => (
-              <RevealRow key={row.call_id} row={row} />
+              <RevealRow
+                key={row.call_id}
+                row={row}
+                fallbackEnabled={view.fallback.enabled}
+              />
             ))}
           </ul>
         )}
@@ -92,7 +102,13 @@ export function RevealsPanel({ slug }: { slug: string }) {
   );
 }
 
-function RevealRow({ row }: { row: AccountRevealRow }) {
+function RevealRow({
+  row,
+  fallbackEnabled,
+}: {
+  row: AccountRevealRow;
+  fallbackEnabled: boolean;
+}) {
   const pending = row.reveal_source === "pending";
   return (
     <li className="grid grid-cols-[1fr_auto_auto] items-baseline gap-3 px-3 py-2">
@@ -129,8 +145,9 @@ function RevealRow({ row }: { row: AccountRevealRow }) {
       </span>
       {pending && (
         <span className="col-span-3 ck-dim text-[12px]">
-          If your agent misses the deadline, murmur reveals this call and the
-          record shows murmur as the sender.
+          {fallbackEnabled
+            ? "If your agent misses the deadline, murmur reveals this call and the record shows murmur as the sender."
+            : "Nobody reveals this call for you. It stays sealed until your agent reveals it."}
         </span>
       )}
     </li>

@@ -151,10 +151,14 @@ const catalog: WireMarketplaceListings = {
 
 const LOADED: AvailabilityFeed = { status: "ok", purchaseAvailable: true, calls: [] };
 
+// A fixed clock, two minutes before the fixture's sale closes. The matrix reads
+// the sale window to decide what is buyable, so it never reads its own clock.
+const NOW = Date.parse("2026-08-26T23:00:00.000Z");
+
 // ─── Series become columns, agents become rows ──────────────────────────────
 
 {
-  const m = buildListingsMatrix(catalog, LOADED);
+  const m = buildListingsMatrix(catalog, LOADED, NOW);
   assert.equal(m.columns.length, 5, "every series in the catalog gets a column");
   assert.equal(m.rows.length, 2, "every agent in the catalog gets a row");
   assert.deepEqual(
@@ -165,7 +169,7 @@ const LOADED: AvailabilityFeed = { status: "ok", purchaseAvailable: true, calls:
 }
 
 {
-  const m = buildListingsMatrix(catalog, LOADED);
+  const m = buildListingsMatrix(catalog, LOADED, NOW);
   const dogeCol = m.columns[1];
   assert.equal(dogeCol.venueSeriesId, "polymarket:doge-up-or-down-5m");
   assert.equal(dogeCol.sellers, 0, "a series with no sellers still gets a column");
@@ -192,7 +196,7 @@ const LOADED: AvailabilityFeed = { status: "ok", purchaseAvailable: true, calls:
 // ─── Missing terms render an em dash, never a zero ──────────────────────────
 
 {
-  const m = buildListingsMatrix(catalog, LOADED);
+  const m = buildListingsMatrix(catalog, LOADED, NOW);
   const claude = m.rows[0];
   assert.equal(claude.slug, "claude-4");
   assert.equal(claude.cells.length, m.columns.length, "cells are parallel to columns");
@@ -210,7 +214,7 @@ const LOADED: AvailabilityFeed = { status: "ok", purchaseAvailable: true, calls:
 // loses precision; the formatter must not.
 
 {
-  const m = buildListingsMatrix(catalog, LOADED);
+  const m = buildListingsMatrix(catalog, LOADED, NOW);
   const veteran = m.rows[1];
   assert.equal(veteran.cells[0].listPrice?.display, "9007199254740993");
   assert.notEqual(
@@ -247,7 +251,7 @@ const LOADED: AvailabilityFeed = { status: "ok", purchaseAvailable: true, calls:
   assert.ok(unscored.summary.includes("unscored"));
 
   // The unscored agent is a ROW, not an exclusion.
-  const m = buildListingsMatrix(catalog, LOADED);
+  const m = buildListingsMatrix(catalog, LOADED, NOW);
   assert.ok(
     m.rows.some((r) => r.slug === "claude-4" && r.track.unscored),
     "an unscored seller keeps its row",
@@ -281,7 +285,7 @@ const openCall = (over: Partial<WireSellableCall> = {}): WireSellableCall => ({
     purchaseAvailable: true,
     calls: [openCall()],
   };
-  const m = buildListingsMatrix(catalog, feed);
+  const m = buildListingsMatrix(catalog, feed, NOW);
   const cell = m.rows[0].cells[0];
   assert.equal(cell.listPrice?.display, "0.5", "the cell keeps the STANDING price");
   assert.equal(cell.openCalls.length, 1);
@@ -296,8 +300,45 @@ const openCall = (over: Partial<WireSellableCall> = {}): WireSellableCall => ({
   assert.equal(cell.openCalls[0].saleClosesAt, "2026-08-26T23:02:00.000Z");
   assert.equal(m.totalOpenCalls, 1);
 
+  assert.equal(m.totalBuyableCalls, 1, "an available call inside its sale window is buyable");
+
   // A call belongs to ONE cell. The other seller's BTC cell stays empty.
   assert.equal(m.rows[1].cells[0].openCalls.length, 0);
+}
+
+{
+  // The sale window is the deadline the inventory read cannot see: it was taken
+  // when the page loaded and the clock kept running. A call past its close is
+  // still listed and is no longer buyable.
+  const feed: AvailabilityFeed = {
+    status: "ok",
+    purchaseAvailable: true,
+    calls: [openCall()],
+  };
+  const m = buildListingsMatrix(catalog, feed, Date.parse("2026-08-26T23:03:00.000Z"));
+  const call = m.rows[0].cells[0].openCalls[0];
+  assert.equal(call.buyable, false, "a closed sale window is not buyable");
+  assert.equal(call.seatsLabel, "sale closed", "and it does not advertise seats");
+  assert.equal(m.totalOpenCalls, 1, "the call is still listed");
+  assert.equal(m.totalBuyableCalls, 0);
+}
+
+{
+  // A full cohort is listed and unbuyable, and the line must not count it as
+  // open to buy.
+  const feed: AvailabilityFeed = {
+    status: "ok",
+    purchaseAvailable: true,
+    calls: [openCall({ seats_remaining: 0, inventory_status: "full" })],
+  };
+  const m = buildListingsMatrix(catalog, feed, NOW);
+  assert.equal(m.totalOpenCalls, 1);
+  assert.equal(m.totalBuyableCalls, 0);
+  const line = availabilityLine(feed, m);
+  assert.ok(
+    line.text.includes("None takes a new buyer"),
+    `a sold-out call is not open to buy: ${line.text}`,
+  );
 }
 
 {
@@ -308,7 +349,7 @@ const openCall = (over: Partial<WireSellableCall> = {}): WireSellableCall => ({
     purchaseAvailable: true,
     calls: [openCall({ venue_series_id: null })],
   };
-  const m = buildListingsMatrix(catalog, feed);
+  const m = buildListingsMatrix(catalog, feed, NOW);
   assert.equal(m.totalOpenCalls, 0);
   assert.equal(m.rows[0].cells[0].openCalls.length, 0);
 }
@@ -326,7 +367,7 @@ assert.equal(
 // ─── The three availability situations read differently ─────────────────────
 
 {
-  const m = buildListingsMatrix(catalog, LOADED);
+  const m = buildListingsMatrix(catalog, LOADED, NOW);
 
   const idle = availabilityLine({ status: "ok", purchaseAvailable: true, calls: [] }, m);
   assert.equal(idle.tone, "dim");
@@ -359,7 +400,7 @@ assert.equal(
     { status: "ok", purchaseAvailable: false, calls: [] },
     { status: "ok", purchaseAvailable: true, calls: [] },
   ] as AvailabilityFeed[]) {
-    const built = buildListingsMatrix(catalog, feed);
+    const built = buildListingsMatrix(catalog, feed, NOW);
     assert.equal(built.columns.length, 5, "availability never removes a column");
     assert.equal(built.rows.length, 2, "availability never removes a row");
     assert.equal(built.rows[0].cells[0].listPrice?.display, "0.5");
@@ -369,14 +410,14 @@ assert.equal(
 // ─── Zero listings gives a useful empty state ───────────────────────────────
 
 {
-  assert.equal(matrixEmptyState(buildListingsMatrix(catalog, LOADED)), null, "a live matrix says nothing");
+  assert.equal(matrixEmptyState(buildListingsMatrix(catalog, LOADED, NOW)), null, "a live matrix says nothing");
 
-  const noSellers = buildListingsMatrix({ ...catalog, agents: [] }, LOADED);
+  const noSellers = buildListingsMatrix({ ...catalog, agents: [] }, LOADED, NOW);
   assert.equal(noSellers.columns.length, 5, "the columns survive with zero sellers");
   const sellerless = matrixEmptyState(noSellers);
   assert.ok(sellerless && sellerless.includes("no agent has published a standing price"), sellerless ?? "");
 
-  const noSeries = buildListingsMatrix({ ...catalog, series: [], agents: [] }, LOADED);
+  const noSeries = buildListingsMatrix({ ...catalog, series: [], agents: [] }, LOADED, NOW);
   const seriesless = matrixEmptyState(noSeries);
   assert.ok(seriesless && seriesless.includes("no venue series are registered"), seriesless ?? "");
   assert.notEqual(seriesless, sellerless, "an empty venue is not an empty marketplace");
@@ -385,12 +426,13 @@ assert.equal(
   const withdrawn = buildListingsMatrix(
     { ...catalog, agents: [{ ...catalog.agents[0], listings: [] }] },
     LOADED,
+    NOW,
   );
   const withdrawnText = matrixEmptyState(withdrawn);
   assert.ok(withdrawnText && withdrawnText.includes("withdrawn"), withdrawnText ?? "");
 
   // No catalog at all (first paint / a failed catalog read) is inert, not a throw.
-  assert.deepEqual(buildListingsMatrix(null, LOADED), EMPTY_MATRIX);
+  assert.deepEqual(buildListingsMatrix(null, LOADED, NOW), EMPTY_MATRIX);
 }
 
 // ─── Layout: columns keep a usable width instead of being squeezed ──────────

@@ -360,16 +360,28 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
       )}
 
       {line && (
-        <p className={`ck-mono m-0 ${line.tone === "pos" ? "ck-pos" : line.tone === "neg" ? "ck-neg" : "ck-dim"}`} title={line.title}>
+        <p
+          className={`ck-mono m-0 ${line.tone === "pos" ? "ck-pos" : line.tone === "neg" ? "ck-neg" : "ck-dim"}`}
+          /* The stop prints its own detail below, so a tooltip repeating it
+             would read the same sentence twice to a screen reader. */
+          title={state.step === "stopped" ? undefined : line.title}
+        >
           {line.text}
         </p>
       )}
 
+      {/* A stop's headline is three words: "gateway balance short" names no
+          balance a buyer can go and look at. The recovery lives in the detail,
+          and a tooltip is unreachable on touch, so it is rendered. */}
+      {state.step === "stopped" && <p className="ck-dim m-0">{state.stop.detail}</p>}
+
       {state.step === "granted" && (
         <p className="ck-dim m-0" title="The unseal tool reads the ciphertext handles from the status route and decrypts them with a permit only your wallet can sign. Murmur is not involved in the decrypt.">
           Unseal it from your own machine:{" "}
-          <span className="ck-mono">
-            tsx tools/subscriber-unseal-granted-call.ts {shortId(call.onchainCallId, 6, 4)}
+          {/* The WHOLE call id. A shortened one is not an argument the tool can
+              take, and this line is meant to be copied and run. */}
+          <span className="ck-mono break-all">
+            tsx tools/subscriber-unseal-granted-call.ts {call.onchainCallId}
           </span>
         </p>
       )}

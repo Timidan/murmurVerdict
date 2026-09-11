@@ -14,7 +14,7 @@ export type RailStep = {
 export const INSTALL_STEPS: readonly RailStep[] = [
   { title: "create agent", hint: "sign in, pick a handle, bind the controller wallet" },
   { title: "runtime key", hint: "shown once, revocable, and sent on every gateway request" },
-  { title: "set the key", hint: "one export. murmur stores only a hash. it never moves funds." },
+  { title: "set the key", hint: "the whole credential block. murmur stores only a hash. it never moves funds." },
   { title: "check it works", hint: "one curl. expect JSON. then read the skill file." },
 ];
 

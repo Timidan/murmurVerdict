@@ -83,8 +83,31 @@ function broadcast(): void {
 
 function setStatus(status: VenueStreamStatus): void {
   if (snapshot.status === status) return;
-  snapshot = { ...snapshot, status };
+  // Anything but `open` means nothing is quoting these markets any more, so
+  // what is cached is by definition the last thing seen. Freshness is the ONE
+  // field every renderer reads to decide whether to caveat a price, and it was
+  // frozen at `live` across a disconnect — the board went on showing a moving
+  // book that had stopped moving, with no badge. Staling here rather than in
+  // each row keeps that judgement in one place.
+  snapshot = {
+    ...snapshot,
+    status,
+    markets: status === "open" ? snapshot.markets : staleMarkets(snapshot.markets),
+  };
   broadcast();
+}
+
+/** Every quote marked stale. Returns the same object when nothing changed. */
+function staleMarkets(
+  markets: Record<string, WireVenueMarketRow>,
+): Record<string, WireVenueMarketRow> {
+  let next: Record<string, WireVenueMarketRow> | null = null;
+  for (const [id, row] of Object.entries(markets)) {
+    if (row.freshness === "stale") continue;
+    next ??= { ...markets };
+    next[id] = { ...row, freshness: "stale" };
+  }
+  return next ?? markets;
 }
 
 function applyTick(payload: WireVenueTickPayload): void {
@@ -287,7 +310,13 @@ function disconnect(): void {
   attempt = 0;
   awaitingFullSnapshot = true;
   if (snapshot.status !== "closed") {
-    snapshot = { ...snapshot, status: "closed" };
+    // Staled here too: the next page to mount reads this snapshot before its
+    // first frame lands, and those quotes are older than the socket.
+    snapshot = {
+      ...snapshot,
+      status: "closed",
+      markets: staleMarkets(snapshot.markets),
+    };
     // No broadcast — the last subscriber just unmounted.
   }
 }

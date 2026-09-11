@@ -476,6 +476,15 @@ assert.ok(noWalletStop().detail.includes("signs the payment becomes the subscrib
   const owed = classifyPoll({ status: "grant_failed_refund_due", grant: { onchainGranted: false } });
   assert.equal(owed.kind, "stopped");
   assert.equal(owed.kind === "stopped" && owed.stop.code, "GrantFailedRefundDue");
+
+  // `refunded` is the settled end of that story. Telling a buyer money is owed
+  // after it has been sent back has them chasing a refund they already have.
+  const sent = classifyPoll({ status: "refunded", grant: { onchainGranted: false } });
+  assert.equal(sent.kind === "stopped" && sent.stop.code, "GrantFailedRefunded");
+  assert.ok(
+    sent.kind === "stopped" && sent.stop.detail.includes("Nothing is owed"),
+    "a completed refund says so",
+  );
 }
 
 // The budget has to outlast the reconciler, or the refund-due message is

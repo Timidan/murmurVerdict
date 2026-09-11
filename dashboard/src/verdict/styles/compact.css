@@ -1408,14 +1408,14 @@
 }
 
 /* ── Agent ladder ────────────────────────────────────────────────────────────
-   The ladder spends 436px on fixed numeric tracks before the handle gets a
-   pixel. Inside a 390px viewport that left the `1fr` agent column resolving to
-   ZERO: the leaderboard rendered nameless rows, and the market ladder's tier
+   The ladder spends 376px (bare) / 436px (market) on fixed numeric tracks
+   before the handle gets a pixel. Inside a 390px viewport that left the `1fr`
+   agent column resolving to ZERO: the leaderboard rendered nameless rows, and the market ladder's tier
    badge printed on top of the score. Columns are dropped below 640px rather
    than squeezed — a 30px-wide score column is not a smaller table, it is an
    unreadable one. What survives is the pair the page's own explainer talks
-   about (score and the floor it ranks on); the rest are one tap away on the
-   agent's own page, where each is a full-width row.
+   about (the score it ranks on and the floor beside it); the rest are one tap
+   away on the agent's own page, where each is a full-width row.
 
    One class, two variants, because the two ladders differ by a column and had
    drifted into two hand-typed templates that no longer matched. */
@@ -1423,7 +1423,7 @@
   display: grid;
   align-items: center;
   gap: 6px;
-  grid-template-columns: 28px minmax(0, 1fr) 70px 64px 64px 52px 54px 60px 44px;
+  grid-template-columns: 28px minmax(0, 1fr) 70px 64px 64px 52px 54px 44px;
 }
 .mmr-shell .ck-ladder--market {
   grid-template-columns: 28px minmax(0, 1fr) 64px 64px 54px 52px 60px 44px;
@@ -1435,6 +1435,23 @@
   }
   .mmr-shell .ck-ladder-drop {
     display: none;
+  }
+}
+
+/* Live tape rows — the ladder's problem one panel over. 332px of fixed track
+   left the agent's `1fr` at 58px on a 390px phone, so the tape printed rows
+   with no name on them. Below 640px the seal/scored glyph goes (the outcome
+   word beside it says the same thing) and the numeric tracks tighten; cells
+   that leave wear `.ck-ladder-drop`, the same marker the ladder uses. */
+.mmr-shell .ck-tape {
+  display: grid;
+  align-items: center;
+  gap: 6px;
+  grid-template-columns: 8px 76px 36px 64px minmax(0, 1fr) 64px 32px;
+}
+@media (max-width: 639px) {
+  .mmr-shell .ck-tape {
+    grid-template-columns: 8px 64px 56px minmax(0, 1fr) 56px 32px;
   }
 }
 

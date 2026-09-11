@@ -117,9 +117,10 @@ export interface OpenCallView {
   lockedPriceAtoms: string;
   currency: string;
   pricingVersion: string;
-  /** "full" · "3 seats left" · "no seat limit". Null is never rendered as zero. */
+  /** "full" · "3 seats left" · "no seat limit" · "sale closed". Null is never rendered as zero. */
   seatsLabel: string;
   soldOut: boolean;
+  /** False once the sale window passes, whatever the inventory read said. */
   buyable: boolean;
   inventoryStatus: WireSellableCall["inventory_status"];
   saleClosesAt: string;
@@ -139,7 +140,7 @@ export interface MatrixCell {
  */
 export interface TrackRecordView {
   scopeLabel: "all-time";
-  /** formatScore of verdict_score_lb — the board ranks on the floor, not the score. */
+  /** formatScore of verdict_score_lb — the careful number shown beside the score. */
   floor: string;
   winRate: string;
   resolved: string;
@@ -168,7 +169,10 @@ export interface ListingsMatrix {
   rows: MatrixRow[];
   servedAt: string | null;
   totalListings: number;
+  /** Every sealed call on the page, whether or not a seat is still on offer. */
   totalOpenCalls: number;
+  /** The subset a buyer could actually take a seat on right now. */
+  totalBuyableCalls: number;
 }
 
 export const EMPTY_MATRIX: ListingsMatrix = {
@@ -177,6 +181,7 @@ export const EMPTY_MATRIX: ListingsMatrix = {
   servedAt: null,
   totalListings: 0,
   totalOpenCalls: 0,
+  totalBuyableCalls: 0,
 };
 
 /** The one tooltip that keeps a cell from being read as a buy price. */
@@ -199,10 +204,15 @@ export const UNLISTED = "—";
  * Availability is folded in per (agent, series) pair. A call whose
  * `venue_series_id` is null, or whose agent/series is not on this page, is
  * counted nowhere rather than attached to an arbitrary cell.
+ *
+ * `nowMs` is required and never read from the clock here: whether a sale window
+ * has passed decides what can be bought, and a module that reads its own clock
+ * cannot be tested against a fixed one.
  */
 export function buildListingsMatrix(
   catalog: WireMarketplaceListings | null,
   feed: AvailabilityFeed,
+  nowMs: number,
 ): ListingsMatrix {
   if (!catalog) return EMPTY_MATRIX;
 
@@ -237,6 +247,7 @@ export function buildListingsMatrix(
 
   let totalListings = 0;
   let totalOpenCalls = 0;
+  let totalBuyableCalls = 0;
 
   const rows: MatrixRow[] = catalog.agents.map((agent) => {
     const terms = new Map(agent.listings.map((l) => [l.venue_series_id, l.current_terms]));
@@ -245,10 +256,11 @@ export function buildListingsMatrix(
     const cells = columns.map((column): MatrixCell => {
       const current = terms.get(column.venueSeriesId);
       if (current) listedCount += 1;
-      const open = (byPair.get(pairKey(agent.agent_id, column.venueSeriesId)) ?? []).map(
-        toOpenCallView,
+      const open = (byPair.get(pairKey(agent.agent_id, column.venueSeriesId)) ?? []).map((call) =>
+        toOpenCallView(call, nowMs),
       );
       openCallCount += open.length;
+      totalBuyableCalls += open.filter((c) => c.buyable).length;
       return {
         venueSeriesId: column.venueSeriesId,
         listPrice: current
@@ -283,6 +295,7 @@ export function buildListingsMatrix(
     servedAt: catalog.served_at,
     totalListings,
     totalOpenCalls,
+    totalBuyableCalls,
   };
 }
 
@@ -292,7 +305,10 @@ function pairKey(agentId: string, venueSeriesId: string): string {
   return `${agentId}\n${venueSeriesId}`;
 }
 
-function toOpenCallView(call: WireSellableCall): OpenCallView {
+function toOpenCallView(call: WireSellableCall, nowMs: number): OpenCallView {
+  // `inventory_status` was read when the page loaded; the sale window keeps
+  // running afterwards, so the deadline is re-checked on every build.
+  const closed = saleClosed(call.sale_closes_at, nowMs);
   return {
     onchainCallId: call.onchain_call_id,
     question: call.market.question,
@@ -301,12 +317,24 @@ function toOpenCallView(call: WireSellableCall): OpenCallView {
     lockedPriceAtoms: call.locked_terms.price_atoms,
     currency: call.locked_terms.currency,
     pricingVersion: call.locked_terms.pricing_version,
-    seatsLabel: seatsLabel(call),
+    seatsLabel: closed ? "sale closed" : seatsLabel(call),
     soldOut: call.inventory_status === "full",
-    buyable: call.inventory_status === "available",
+    buyable: call.inventory_status === "available" && !closed,
     inventoryStatus: call.inventory_status,
     saleClosesAt: call.sale_closes_at,
   };
+}
+
+/**
+ * Is the sale window past?
+ *
+ * An unparsable stamp never closes a sale: the checkout re-checks the window
+ * itself and refuses with `SaleWindowClosed`, so a bad timestamp costs a wasted
+ * click rather than hiding a call that is genuinely on offer.
+ */
+export function saleClosed(saleClosesAt: string, nowMs: number): boolean {
+  const closesAtMs = Date.parse(saleClosesAt);
+  return Number.isFinite(closesAtMs) && closesAtMs <= nowMs;
 }
 
 /**
@@ -406,10 +434,23 @@ export function availabilityLine(
       text: "no calls open to buy right now. Standing prices apply when each agent seals its next call.",
     };
   }
-  const n = matrix.totalOpenCalls;
+  // A sealed call is not the same fact as a seat on offer: a full cohort, a
+  // deployment without checkout and a closed sale window all still show a call.
+  const buyable = matrix.totalBuyableCalls;
+  const closed = matrix.totalOpenCalls - buyable;
+  if (buyable === 0) {
+    return {
+      tone: "dim",
+      text: `${matrix.totalOpenCalls} sealed call${matrix.totalOpenCalls === 1 ? " is" : "s are"} listed. None takes a new buyer right now.`,
+    };
+  }
+  const closedClause =
+    closed > 0
+      ? ` ${closed} more ${closed === 1 ? "is" : "are"} listed but closed to new buyers.`
+      : "";
   return {
     tone: "dim",
-    text: `${n} sealed call${n === 1 ? "" : "s"} open to buy. Each is sold at the price locked when it was sealed, not at the standing price.`,
+    text: `${buyable} sealed call${buyable === 1 ? "" : "s"} open to buy. Each is sold at the price locked when it was sealed, not at the standing price.${closedClause}`,
   };
 }
 

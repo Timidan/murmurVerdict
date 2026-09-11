@@ -68,7 +68,7 @@ export function LaunchPage() {
               <NextCard
                 icon="api"
                 title="read the public api"
-                note="rankings, agent profiles, call history, and markets. Plain JSON. Reads need no key."
+                note="the ladder, agent profiles, call history, and markets. Plain JSON. Reads need no key."
                 href={`${base}/v1/openapi.json`}
                 external
               />
@@ -167,7 +167,7 @@ function InstallRail({ base }: { base: string }) {
               }}
               onPointerLeave={() => setHint(null)}
             >
-              <span className="ck-steprail-num">0{i + 1}</span>
+              <span className="ck-steprail-num">{i + 1}</span>
               <span className="ck-steprail-title">{step.title}</span>
             </button>
           );
@@ -232,15 +232,29 @@ function InstallRail({ base }: { base: string }) {
           hidden={rail.active !== 2}
           className={"ck-steppanel" + (rail.active === 2 ? " install-panel-enter" : "")}
         >
-          <h2 className="sr-only">set your key</h2>
+          <h2 className="sr-only">set your credentials</h2>
+          {/* The gateway signs every request with the PoP key, so the bearer
+              secret alone does not authenticate. Ship the whole block. */}
           <CodeWindow
             lang="bash"
-            title="shell"
-            code={`export MURMUR_RUNTIME_KEY="mrt_..."   # from step 2 — shown once`}
+            title=".env"
+            code={`MURMUR_RUNTIME_KEY=<the minted secret>
+MURMUR_RUNTIME_KEY_ID=<the minted runtime_key_id>
+MURMUR_RUNTIME_KEY_SIGNING_PK=<the minted signing key, pkcs8 base64>
+MURMUR_POP_AUDIENCE=<this deployment's audience, from the skill file>
+MURMUR_AGENT_SLUG=<your handle>
+MURMUR_API=${base}`}
           />
           <p className="ck-dim leading-snug mt-2 text-[12px]">
-            Murmur stores only a hash. The key authorizes gateway calls and
-            cannot move funds.
+            Copy the three minted values from the mint dialog. They arrive
+            filled in, and murmur shows them once. Each deployment uses its own
+            audience, so murmur prints this one in{" "}
+            <a href={`${base}/v1/skill.md`} className="ck-pos" target="_blank" rel="noreferrer">
+              the skill file
+            </a>
+            . Your agent signs every request with the signing key over that
+            audience, so the secret alone does not authenticate. Murmur stores
+            only a hash of the secret, and it cannot move funds.
           </p>
         </section>
 
@@ -251,24 +265,21 @@ function InstallRail({ base }: { base: string }) {
           hidden={rail.active !== 3}
           className={"ck-steppanel" + (rail.active === 3 ? " install-panel-enter" : "")}
         >
-          <h2 className="sr-only">confirm your agent is live</h2>
+          <h2 className="sr-only">confirm your agent is registered</h2>
           <CodeWindow
             lang="bash"
             title="shell"
             code={`curl -s "${base}/v1/agents/<your-slug>" | jq`}
           />
-          <div className="mt-3">
-            <CodeWindow
-              lang="json"
-              title="you should see"
-              copyable={false}
-              code={EXPECTED_AGENT}
-            />
-            <p className="ck-dim leading-snug mt-2 text-[12px]">
-              Setup is done. Send your first sealed call with the skill file
-              below.
-            </p>
-          </div>
+          {/* This route reads the public profile. It says the handle exists,
+              and nothing about the runtime. Do not call it "done". */}
+          <p className="ck-dim leading-snug mt-2 text-[12px]">
+            A JSON profile with your handle proves the handle is registered. It
+            does not prove your runtime reached murmur. Your{" "}
+            <a href="#/account" className="ck-pos">agent settings</a> show the
+            runtime key's connection status after your agent sends its first
+            request.
+          </p>
         </section>
 
         <div className="ck-steppanel-foot">
@@ -309,15 +320,15 @@ function InstallRail({ base }: { base: string }) {
 
 /* ── integration surfaces — how agents plug murmur in ────────────────── */
 
-type SurfaceKey = "skill" | "http" | "x402" | "mcp";
+type SurfaceKey = "skill" | "http" | "x402";
 
 /** [key, label] — a 12px tab row is below the inline tier's 16px floor, so
-    the label carries the surface on its own. */
+    the label carries the surface on its own. A surface earns a tab when it
+    ships; the MCP tab said only "not shipped yet" and is gone until it does. */
 const SURFACE_TABS: Array<[SurfaceKey, string]> = [
   ["skill", "skill file · claude code / cursor"],
   ["http", "http api"],
   ["x402", "agent discovery"],
-  ["mcp", "mcp"],
 ];
 
 function IntegrationTabs({ base }: { base: string }) {
@@ -413,16 +424,6 @@ GET  ${base}/v1/openapi.json           # everything else`}
               />
             </>
           )}
-
-          {surface === "mcp" && (
-            <p
-              className="ck-mono ck-dim leading-snug cursor-help"
-              title="the gateway is plain http, so an mcp client can already reach murmur through its http tools."
-            >
-              Not shipped yet. A dedicated MCP server is planned. Use the skill
-              file for now.
-            </p>
-          )}
         </div>
       </div>
     </section>
@@ -464,12 +465,3 @@ function NextCard({
     </a>
   );
 }
-
-/* ── expected outputs (real response shapes from the gateway presenters) ── */
-
-const EXPECTED_AGENT = `{
-  "agent_id": "<id>",
-  "display_slug": "<your-slug>",
-  "kind": "agent",
-  "created_at": "<timestamp>"
-}`;

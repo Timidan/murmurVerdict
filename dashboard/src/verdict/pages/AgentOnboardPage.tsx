@@ -91,6 +91,9 @@ export function AgentOnboardPage() {
   const [mintedSigning, setMintedSigning] = useState<string | null>(null);
   const [mintedSlug, setMintedSlug] = useState<string | null>(null);
   const [daemonChainId, setDaemonChainId] = useState<string | null>(null);
+  const [metaFailed, setMetaFailed] = useState(false);
+  // One automatic wallet-provision attempt. A failed one waits for the human.
+  const [walletFailed, setWalletFailed] = useState(false);
   // When create-agent succeeds but a later step (sign, bind, mint) fails,
   // we've burned a slug — the operator can't re-create it. Surface a
   // recovery link so they can finish setup from #/account/agent/:slug
@@ -111,22 +114,22 @@ export function AgentOnboardPage() {
 
   // Fetch the daemon's configured Fhenix chain id once. The bind/mint
   // signatures must be issued against this exact chain or the daemon
-  // will reject them.
-  useEffect(() => {
-    let cancelled = false;
+  // will reject them. Without it the button never enables, so a failure here
+  // is said out loud instead of leaving a dead control.
+  const loadDaemonChainId = useCallback(() => {
+    setMetaFailed(false);
     verdictApi
       .meta()
       .then((meta) => {
-        if (cancelled) return;
         if (meta.fhenix?.chain_id) setDaemonChainId(meta.fhenix.chain_id);
+        else setMetaFailed(true);
       })
-      .catch(() => {
-        // Surface only when the operator tries to submit.
-      });
-    return () => {
-      cancelled = true;
-    };
+      .catch(() => setMetaFailed(true));
   }, []);
+
+  useEffect(() => {
+    loadDaemonChainId();
+  }, [loadDaemonChainId]);
 
   // Strictly resolve the Privy embedded wallet. We do NOT fall back to
   // wallets[0] — that would silently use any MetaMask account the
@@ -148,15 +151,18 @@ export function AgentOnboardPage() {
   const [provisioning, setProvisioning] = useState(false);
   useEffect(() => {
     if (!ready || !authenticated) return;
-    if (embeddedWallet || provisioning) return;
+    // `walletFailed` is the stop: without it the cleared `provisioning` flag
+    // re-entered this effect and retried the same failing call forever.
+    if (embeddedWallet || provisioning || walletFailed) return;
     setProvisioning(true);
     createWallet()
       .catch((err) => {
         // eslint-disable-next-line no-console
         console.error("[onboard] embedded wallet provision failed", err);
+        setWalletFailed(true);
       })
       .finally(() => setProvisioning(false));
-  }, [ready, authenticated, embeddedWallet, provisioning, createWallet]);
+  }, [ready, authenticated, embeddedWallet, provisioning, walletFailed, createWallet]);
 
   const slugValid = useMemo(() => isValidSlug(slug), [slug]);
 
@@ -396,7 +402,7 @@ export function AgentOnboardPage() {
   return (
     <Shell>
       <section className="flex flex-col gap-3">
-        <h2 className="ck-label">Agent handle</h2>
+        <h2 className="ck-label" id="handle-label">Agent handle</h2>
         <p className="ck-dim text-xs">
           The public name people see on the leaderboard. Lowercase letters,
           numbers, and dashes.
@@ -409,6 +415,7 @@ export function AgentOnboardPage() {
           placeholder="my-bot"
           disabled={inFlight}
           autoFocus
+          aria-labelledby="handle-label"
           className={
             "border bg-[var(--color-bg)] ck-mono px-3 py-2 " +
             (slug.length === 0 || (slugValid && handleState !== "taken")
@@ -466,7 +473,11 @@ export function AgentOnboardPage() {
             "hover:text-[var(--color-bg)] disabled:opacity-50 " +
             "disabled:cursor-not-allowed press-feedback ck-mono"
           }
-          title={!daemonChainId || !embeddedWallet ? "Getting ready…" : ""}
+          title={
+            (!daemonChainId || !embeddedWallet) && !metaFailed && !walletFailed
+              ? "Getting ready…"
+              : ""
+          }
         >
           {inFlight ? (
             phaseLabel(phase)
@@ -482,8 +493,38 @@ export function AgentOnboardPage() {
           the wallet to this agent. The second authorizes the agent's runtime
           key.
         </span>
-        {!embeddedWallet && !inFlight && (
+        {!embeddedWallet && !inFlight && !walletFailed && (
           <span className="ck-dim text-xs">Setting up your signing key…</span>
+        )}
+        {walletFailed && (
+          <span className="flex flex-wrap items-center gap-2">
+            <InlineError
+              error="murmur could not create your signing wallet."
+              className="text-xs"
+            />
+            <button
+              type="button"
+              onClick={() => setWalletFailed(false)}
+              className="ck-btn ck-btn-bracket"
+            >
+              try again
+            </button>
+          </span>
+        )}
+        {metaFailed && (
+          <span className="flex flex-wrap items-center gap-2">
+            <InlineError
+              error="murmur could not read this deployment's chain settings, so it cannot create an agent yet."
+              className="text-xs"
+            />
+            <button
+              type="button"
+              onClick={loadDaemonChainId}
+              className="ck-btn ck-btn-bracket"
+            >
+              try again
+            </button>
+          </span>
         )}
         {error && <InlineError error={error} className="text-xs" />}
         {strandedSlug && (

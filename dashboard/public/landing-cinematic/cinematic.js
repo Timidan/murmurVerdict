@@ -557,6 +557,14 @@ function setupRail() {
   updateRailState(false);
 }
 
+/** Mirrors lib/score-format.ts — signed, three decimals, blank sign on zero. */
+function formatScore(value) {
+  if (typeof value !== "number") return "··";
+  const rounded = Number(value.toFixed(3));
+  const sign = rounded === 0 ? "\u2007" : rounded > 0 ? "+" : "\u2212";
+  return `${sign}${Math.abs(value).toFixed(3)}`;
+}
+
 function setupLiveData() {
   const scoreScene = document.querySelector(".evidence--score");
   const count = document.querySelector("[data-verdict-count]");
@@ -682,10 +690,10 @@ function setupLiveData() {
           const rank = document.createElement("span");
           const name = document.createElement("span");
           const score = document.createElement("strong");
-          rank.textContent = String(index + 1).padStart(2, "0");
+          // The API ranks; an unranked agent has none, and a row index is not one.
+          rank.textContent = typeof row.rank === "number" ? String(row.rank) : "—";
           name.textContent = row.display_slug || row.agent_slug || "agent";
-          score.textContent =
-            typeof row.verdict_score === "number" ? row.verdict_score.toFixed(2) : "··";
+          score.textContent = formatScore(row.verdict_score);
           item.append(rank, name, score);
           leaderboard.append(item);
         });

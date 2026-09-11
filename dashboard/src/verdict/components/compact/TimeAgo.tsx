@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { formatRelativeTime } from "../../lib/display-format.js";
-import { formatLocalDateTime } from "../../lib/date-time-format.js";
+import { formatLocalDateTimeShort } from "../../lib/date-time-format.js";
 
 // ─── shared 30s clock ───────────────────────────────────────────────────────
 // One module-level ticker drives every <TimeAgo/> on screen; the interval
@@ -66,7 +66,9 @@ export function TimeAgo({
   if (absolute) {
     // Falls back to the relative form if the instant will not parse, so a bad
     // timestamp costs precision, never the row.
-    const stamp = formatLocalDateTime(iso);
+    // Short form, not the full one: this renders INSIDE a value column, and
+    // the exact instant is already on the tooltip below.
+    const stamp = formatLocalDateTimeShort(iso);
     return (
       <span className={className} title={`${relative} · ${iso}`}>
         {stamp ?? relative}

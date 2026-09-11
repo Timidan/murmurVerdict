@@ -65,7 +65,9 @@ export function CompactLiveFeed({
     // state, not a loading placeholder — say so immediately.
     if (marketId && recentCalls.length > 0) {
       return (
-        <div className="px-2 py-2 ck-mono ck-dim">[no calls on this market yet]</div>
+        <div className="px-2 py-2 ck-mono ck-dim">
+          [no calls on this market have arrived in the live stream]
+        </div>
       );
     }
     // Entirely empty stream: skeleton only during the connect grace, then a
@@ -88,10 +90,11 @@ export function CompactLiveFeed({
       // Say what fills it, and offer the one action that does.
       return (
         <div className="px-2 py-2 ck-mono ck-dim flex flex-col items-start gap-1.5">
-          <span>[no calls sealed yet — the tape fills as agents send them]</span>
+          <span>[no calls have arrived in the live stream yet]</span>
           <span className="max-w-[42ch] leading-tight">
-            Every sealed call lands here the moment murmur accepts it, and again
-            when the venue settles it.
+            This tape carries what happens while you watch. Every sealed call
+            lands here the moment murmur accepts it, and again when the venue
+            settles it.
           </span>
           <a href="#/install" className="ck-btn ck-btn-bracket">
             connect an agent →
@@ -103,7 +106,7 @@ export function CompactLiveFeed({
   }
 
   return (
-    <ul className="m-0 p-0 list-none">
+    <ul role="log" aria-relevant="additions" className="m-0 p-0 list-none">
       {rows.map((evt) => {
         const isResolved = evt.type === "call.resolved";
         const rowKey = evt.call_id + (isResolved ? "r" : "a");
@@ -111,7 +114,7 @@ export function CompactLiveFeed({
         return (
           <li
             key={rowKey}
-            className={(isInitial ? "" : "tape-row ") + "grid grid-cols-[8px_76px_36px_64px_minmax(0,1fr)_64px_32px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)] ck-hoverable"}
+            className={(isInitial ? "" : "tape-row ") + "ck-tape px-2 py-[2px] border-b border-[var(--color-border)] ck-hoverable"}
           >
             <span
               className={
@@ -134,7 +137,7 @@ export function CompactLiveFeed({
                 already use for the same two ideas, and the accessible name
                 carries the word. */}
             <span
-              className="inline-flex items-center ck-dim"
+              className="inline-flex items-center ck-dim ck-ladder-drop"
               title={isResolved ? "scored" : "sealed"}
             >
               <Ik name={isResolved ? "resolve" : "seal"} />
@@ -195,11 +198,11 @@ function FeedSkeleton() {
       {[0, 1, 2, 3, 4].map((i) => (
         <li
           key={i}
-          className="grid grid-cols-[8px_76px_36px_64px_minmax(0,1fr)_64px_32px] gap-1.5 items-center px-2 py-[2px] border-b border-[var(--color-border)]"
+          className="ck-tape px-2 py-[2px] border-b border-[var(--color-border)]"
         >
           <span className="inline-block w-[5px] h-[5px] bg-[var(--color-border)]" />
           <SkeletonBar className="h-[8px] w-[44px]" />
-          <SkeletonBar className="h-[8px] w-[24px]" />
+          <SkeletonBar className="h-[8px] w-[24px] ck-ladder-drop" />
           <SkeletonBar className="h-[8px] w-[32px]" />
           <SkeletonBar className="h-[10px] w-[70%]" />
           <SkeletonBar className="h-[8px] w-[44px] justify-self-end" />

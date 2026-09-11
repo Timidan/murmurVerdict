@@ -39,6 +39,12 @@ export function SharePage({ slug }: { slug: string }) {
 
   useEffect(() => {
     let cancel = false;
+    // Reset first: without it a new slug kept the previous agent's name (and
+    // the previous error) on screen, so the embed snippets copied the wrong
+    // agent under the new URL.
+    setAgent(null);
+    setError(null);
+    setCopied(null);
     verdictApi
       .agent(slug)
       .then((a) => {
@@ -80,15 +86,30 @@ export function SharePage({ slug }: { slug: string }) {
   const tweetUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetBody)}`;
   const telegramUrl = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(tweetBody)}`;
 
-  const markdownEmbed = `[![${agent?.display_name ?? slug} on Murmur](${badgeUrl})](${shareUrl})`;
-  const htmlEmbed = `<a href="${shareUrl}"><img src="${badgeUrl}" alt="${agent?.display_name ?? slug} on Murmur" /></a>`;
+  const alt = agent?.display_name ?? slug;
+  const markdownEmbed = `[![${escapeMarkdown(alt)} on Murmur](${badgeUrl})](${shareUrl})`;
+  const htmlEmbed = `<a href="${shareUrl}"><img src="${badgeUrl}" alt="${escapeHtmlAttr(alt)} on Murmur" /></a>`;
 
+  // A browser can refuse the clipboard, or not expose it at all on an insecure
+  // origin — the first throws asynchronously, the second synchronously. Either
+  // way the value stays on screen and selectable, and the button says to take
+  // it by hand rather than reporting a copy that never happened.
   const copy = (key: string, value: string) => {
-    navigator.clipboard.writeText(value).then(() => {
-      setCopied(key);
-      setTimeout(() => setCopied(null), 1500);
-    });
+    const done = (ok: boolean) => {
+      setCopied(ok ? key : `${key}:failed`);
+      setTimeout(() => setCopied(null), 2500);
+    };
+    try {
+      void navigator.clipboard.writeText(value).then(
+        () => done(true),
+        () => done(false),
+      );
+    } catch {
+      done(false);
+    }
   };
+  const copyLabel = (key: string, idle: string) =>
+    copied === key ? "copied" : copied === `${key}:failed` ? "select it instead" : idle;
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -162,22 +183,25 @@ export function SharePage({ slug }: { slug: string }) {
               onClick={() => copy("link", shareUrl)}
               className="ck-btn ck-btn-bracket"
             >
-              {copied === "link" ? "copied" : "copy link"}
+              {copyLabel("link", "copy link")}
             </button>
           </div>
+          {/* The link itself, selectable — the same affordance the snippet
+              panels give, and the fallback when the clipboard is refused. */}
+          <div className="px-3 pb-3 ck-mono ck-dim break-all">{shareUrl}</div>
         </Panel>
 
         {/* EMBED SNIPPETS */}
         <Snippet
           title="markdown — for a readme or GitHub"
           value={markdownEmbed}
-          copied={copied === "markdown"}
+          label={copyLabel("markdown", "copy")}
           onCopy={() => copy("markdown", markdownEmbed)}
         />
         <Snippet
           title="html — for Notion, Discord, or a web page"
           value={htmlEmbed}
-          copied={copied === "html"}
+          label={copyLabel("html", "copy")}
           onCopy={() => copy("html", htmlEmbed)}
         />
 
@@ -227,15 +251,32 @@ function parseRef(): string | null {
   return safe.length === 0 ? null : safe;
 }
 
+/**
+ * A display name is arbitrary text. Unescaped it broke both embeds: a `]` cut
+ * the markdown alt short, and a `"` closed the HTML alt attribute early.
+ */
+function escapeMarkdown(value: string): string {
+  return value.replace(/[\\[\]()!]/g, (ch) => `\\${ch}`);
+}
+
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function Snippet({
   title,
   value,
-  copied,
+  label,
   onCopy,
 }: {
   title: string;
   value: string;
-  copied: boolean;
+  /** The button's current word — idle, copied, or the refused-clipboard hint. */
+  label: string;
   onCopy: () => void;
 }) {
   return (
@@ -243,7 +284,7 @@ function Snippet({
       title={title}
       actions={
         <button onClick={onCopy} className="ck-btn ck-btn-bracket">
-          {copied ? "copied" : "copy"}
+          {label}
         </button>
       }
     >

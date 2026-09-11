@@ -166,37 +166,6 @@ export function KindGlyph({
   );
 }
 
-/* ── Call side (UP / DOWN) ──────────────────────────────────────────────────── */
-
-export function SideGlyph({
-  side,
-  size = 14,
-  className,
-}: {
-  side: string | null | undefined;
-  size?: number;
-  className?: string;
-}) {
-  const s = (side ?? "").toString().toUpperCase();
-  if (s !== "UP" && s !== "DOWN") {
-    // sealed / unknown: pass the text through unchanged.
-    return <span className={"ck-mono " + (className ?? "")}>{side ?? "—"}</span>;
-  }
-  const up = s === "UP";
-  return (
-    <Wrap
-      title={up ? "up" : "down"}
-      label={`side ${up ? "up" : "down"}`}
-      tone={up ? "ck-pos" : "ck-neg"}
-      className={className}
-    >
-      <svg {...SVG_BASE} style={{ width: size, height: size, display: "block" }}>
-        {up ? <path d="M12 19V6M6 12l6-6 6 6" /> : <path d="M12 5v13M6 12l6 6 6-6" />}
-      </svg>
-    </Wrap>
-  );
-}
-
 /* ── Privacy mode → shared seal mark ────────────────────────────────────────── */
 
 export function SealGlyph({

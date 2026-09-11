@@ -2,7 +2,11 @@ import { Fragment, useMemo, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import type { AgentCallRow } from "../../api.js";
 import { Ik } from "../../icons.js";
-import { classifyCallOutcome } from "@shared/wire-call-status";
+import {
+  classifyCallOutcome,
+  isPendingCallStatus,
+  isTerminalFailureStatus,
+} from "@shared/wire-call-status";
 import {
   formatLocalDateTime,
   formatLocalDayLabel,
@@ -87,9 +91,25 @@ function callInstant(c: AgentCallRow): string {
   return c.submitted_at ?? c.accepted_at;
 }
 
+/**
+ * What a call without a settled outcome is called. "open" belongs to the
+ * canonical pending set alone (COPY.md: sealed, not resolved yet) — a rejected
+ * call, a bad reveal and a missed reveal are terminal and will never resolve,
+ * so labelling all three "open" told the reader to keep waiting for a verdict
+ * that is not coming.
+ */
+const STATE_WORD: Record<string, string> = {
+  rejected: "rejected",
+  invalid_reveal: "bad reveal",
+  missed_reveal: "missed reveal",
+  disputed: "under dispute",
+};
+
 function outcomeWord(c: AgentCallRow): string {
-  if (!c.outcome) return "open";
-  return OUTCOME_WORD[c.outcome] ?? c.outcome.replace(/_/g, " ");
+  if (c.outcome) return OUTCOME_WORD[c.outcome] ?? c.outcome.replace(/_/g, " ");
+  if (isPendingCallStatus(c.status)) return "open";
+  if (isTerminalFailureStatus(c.status)) return STATE_WORD[c.status] ?? "failed";
+  return STATE_WORD[c.status] ?? c.status.replace(/_/g, " ");
 }
 
 /** Ink for a call's score. Keyed on the outcome — see the header note. */
@@ -258,7 +278,7 @@ function DaySummary({ days }: { days: DayBucket[] }) {
               className="ck-mono"
               title="the average score across this day's scored calls"
             >
-              {formatScore(avg, { decimals: 2 })}
+              {formatScore(avg)}
             </span>
           </li>
         );
@@ -303,7 +323,13 @@ function DayCalls({
 function CallRow({ call }: { call: AgentCallRow }) {
   const { open } = useDetailDrawer();
   const settled = classifyCallOutcome(call.outcome) !== null;
-  const sealWord = settled ? "scored" : "sealed";
+  // The glyph's spoken name follows the real state: a rejected or missed-reveal
+  // call is not "sealed" and never will be scored.
+  const sealWord = settled
+    ? "scored"
+    : isPendingCallStatus(call.status)
+      ? "sealed"
+      : outcomeWord(call);
   const word = outcomeWord(call);
   const tone = outcomeTone(call);
   const shortCallId = call.call_id.slice(0, 8);
@@ -315,7 +341,7 @@ function CallRow({ call }: { call: AgentCallRow }) {
         // one line, fixed tracks, so scores stack in a readable column.
         "relative grid min-h-[32px] items-center gap-x-1.5 gap-y-0.5 px-2 py-[3px] " +
         "grid-cols-[20px_minmax(0,1fr)_auto_auto_24px] " +
-        "sm:grid-cols-[20px_84px_56px_72px_24px_minmax(0,1fr)] " +
+        "sm:grid-cols-[20px_84px_64px_72px_24px_minmax(0,1fr)] " +
         "border-b border-[var(--color-border)] ck-hoverable"
       }
     >
@@ -340,7 +366,7 @@ function CallRow({ call }: { call: AgentCallRow }) {
         {shortCallId}
       </span>
       <span className={"ck-mono text-right " + tone}>
-        {formatScore(call.call_score ?? null, { decimals: 2 })}
+        {formatScore(call.call_score ?? null)}
       </span>
       <span className={"ck-label truncate " + tone}>{word}</span>
       <CallTip call={call} />
@@ -482,15 +508,19 @@ function scoreLine(call: AgentCallRow): string {
   const outcome = classifyCallOutcome(call.outcome);
   if (call.call_score === null || call.call_score === undefined) {
     if (outcome === "void") return "no score — the market settled with no winner.";
-    if (outcome === null) return "no score yet — the market has not settled.";
+    if (outcome === null) {
+      return isPendingCallStatus(call.status)
+        ? "no score yet — the market has not settled."
+        : "no score — this call never reached a verdict.";
+    }
     return "no score — murmur could not score this call.";
   }
-  const score = formatScore(call.call_score, { decimals: 2 });
+  const score = formatScore(call.call_score);
   if (outcome === "win") {
-    return `${score} — win. Murmur pays a call for being right and confident.`;
+    return `${score} — win. The call sat close to the outcome the venue published.`;
   }
   if (outcome === "loss") {
-    return `${score} — loss. Murmur charges a call for being wrong and confident.`;
+    return `${score} — loss. The call sat far from the outcome the venue published.`;
   }
   return `${score} — void. The market settled with no winner.`;
 }

@@ -124,12 +124,14 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
       role="dialog"
       aria-modal="true"
       aria-labelledby="mint-modal-title"
-      className="modal-enter fixed inset-0 z-50 grid place-items-center bg-[var(--color-scrim)] px-3"
+      className="modal-enter fixed inset-0 z-50 grid place-items-center bg-[var(--color-scrim)] p-3"
     >
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="modal-enter-panel ck-frame-strong w-full max-w-[560px] bg-[var(--color-bg)]"
+        // Bounded by the viewport and scrolled internally: Escape and body
+        // scroll are both blocked, so an unbounded panel hides its own [done].
+        className="modal-enter-panel ck-frame-strong w-full max-w-[560px] max-h-full overflow-y-auto bg-[var(--color-bg)]"
       >
         <div className="ck-header">
           {/* Title-marker upgrade (P2): the api glyph replaces the generic

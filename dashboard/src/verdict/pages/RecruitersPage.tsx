@@ -147,7 +147,8 @@ function RefLinkHelper() {
 }
 
 const COLS =
-  "grid grid-cols-[44px_1fr_130px_80px_80px_130px] gap-2 items-center px-2 py-1.5";
+  "grid grid-cols-[44px_1fr_130px_80px_80px_130px] gap-2 items-center px-2 py-1.5 " +
+  "min-w-[660px]";
 
 function Table({ rows }: { rows: Sender[] }) {
   const max = rows.reduce((m, r) => Math.max(m, r.total), 0) || 1;
@@ -174,9 +175,7 @@ function Table({ rows }: { rows: Sender[] }) {
               "transition-colors duration-[var(--dur-fast)] ease-out"
             }
           >
-            <span className="ck-mono ck-dim tabular-nums">
-              {String(i + 1).padStart(2, "0")}
-            </span>
+            <span className="ck-mono ck-dim tabular-nums">{i + 1}</span>
             <span className="ck-mono ck-pos truncate">@{r.ref}</span>
             <span className="flex items-center gap-2 justify-end">
               <span className="hidden md:block w-[64px] h-[6px] bg-[var(--color-border)] relative">

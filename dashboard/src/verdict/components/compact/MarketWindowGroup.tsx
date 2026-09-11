@@ -71,10 +71,14 @@ export function MarketWindowGroupPanel({
   const countdownLabel = marketWindowCountdownLabel(phase);
   const hoistedLabels =
     phase === "resolved" ? null : sharedOutcomeLabels(group.items, venueMarkets);
+  const phaseText = windowPhaseText(
+    phase,
+    group.items.every((m) => venueResolutions[m.market_id] !== undefined),
+  );
 
   return (
     <section
-      aria-label={`${rangeLabel ?? "window"} — ${PHASE_TEXT[phase]}`}
+      aria-label={`${rangeLabel ?? "window"} — ${phaseText}`}
       className="border-b border-[var(--color-border-vis)]"
     >
       <header className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 bg-[var(--color-surface)]">
@@ -103,7 +107,7 @@ export function MarketWindowGroupPanel({
             (phase === "open" ? " ck-badge-live" : "")
           }
         >
-          {PHASE_TEXT[phase]}
+          {phaseText}
         </span>
         <span className="ml-auto flex items-center gap-3">
           {showCountdown && target !== null && countdownLabel !== null && (
@@ -191,14 +195,24 @@ function MarketWindowRow({
         className="flex items-center gap-2 min-h-[40px] px-2 py-1 no-underline text-[var(--color-primary)] ck-hoverable"
       >
         <MarketAssetIcon iconUrl={cfg?.icon_url} symbol={symbol} />
-        <span className="ck-mono font-bold flex-none">
-          {symbol ?? shortMarketId(market.market_id)}
+        {/* An asset market is its symbol. Anything else is its QUESTION —
+            never a truncated id, which names nothing (COPY.md §3). The id is
+            the last resort, for a row the venue gave no question or slug. */}
+        <span
+          className={
+            "ck-mono font-bold " + (symbol ? "flex-none" : "truncate min-w-0")
+          }
+        >
+          {symbol ??
+            (displayName === market.market_id
+              ? shortMarketId(market.market_id)
+              : displayName)}
         </span>
         {/* The venue's own phrasing — including its "ET" window naming — is
             the destination's real title, so it belongs in the accessible name.
-            Visually it would repeat the group header five times, so it is
-            hidden and the header speaks for the whole group. */}
-        <span className="sr-only">{displayName}</span>
+            Beside a symbol it would repeat the group header five times, so it
+            is hidden there and the header speaks for the whole group. */}
+        {symbol !== null && <span className="sr-only">{displayName}</span>}
         <span className="ml-auto flex items-center gap-2 min-w-0">
           {phase === "resolved" ? (
             <ResolvedOutcome resolution={resolution} />
@@ -286,15 +300,31 @@ function LiveQuotes({
           {/* Label hoisted to the group header: keep it for screen readers,
               which read a row at a time and would otherwise hear bare numbers. */}
           <span className={labelsInHeader ? "sr-only" : "ck-dim"}>{outcome.label} </span>
-          {outcome.price === null ? "—" : outcome.price.toFixed(2)}
+          {outcome.price === null ? "—" : formatQuotePrice(outcome.price)}
         </span>
       ))}
     </span>
   );
 }
 
-/** Fixed width so the quote cells form real columns under the header labels. */
-const QUOTE_CELL = "w-[46px] text-right";
+/**
+ * A quote, at the precision the number actually has.
+ *
+ * `toFixed(2)` printed a live 0.004 book as `0.00` — a price of zero, which is
+ * a different claim about the market. Small probabilities keep a third
+ * decimal, and anything under a tenth of a cent says so rather than rounding
+ * to nothing.
+ */
+function formatQuotePrice(price: number): string {
+  if (price <= 0) return "0.00";
+  if (price < 0.001) return "<0.001";
+  if (price < 0.01) return price.toFixed(3);
+  return price.toFixed(2);
+}
+
+/** Fixed width so the quote cells form real columns under the header labels.
+ *  Six mono characters, the width of the widest quote ("<0.001"). */
+const QUOTE_CELL = "w-[58px] text-right";
 
 /**
  * The outcome labels every quoted row in this group shares, or null.
@@ -332,6 +362,23 @@ function directionGlyph(label: string): "↑" | "↓" | null {
 
 function shortMarketId(marketId: string): string {
   return marketId.length > 10 ? `${marketId.slice(0, 8)}…` : marketId;
+}
+
+/**
+ * The window's state, in words.
+ *
+ * The phase machine reads `resolved` off the clock alone, which is right for
+ * scheduling — the window IS over — but wrong as a label: the venue may not
+ * have published anything yet, and "resolved" claims an outcome exists. An
+ * elapsed window says what is actually true until every market in it carries a
+ * venue outcome.
+ */
+export function windowPhaseText(
+  phase: MarketWindowPhase,
+  venueConfirmed: boolean,
+): string {
+  if (phase === "resolved" && !venueConfirmed) return "waiting for the venue";
+  return PHASE_TEXT[phase];
 }
 
 export const PHASE_TEXT: Record<MarketWindowPhase, string> = {

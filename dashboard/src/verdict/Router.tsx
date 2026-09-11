@@ -263,7 +263,7 @@ export function VerdictRouter() {
             />
           )}
           {route.name === "account_agent_integrate" && (
-            <IntegratePage slug={route.params!.slug} />
+            <IntegratePage key={route.params!.slug} slug={route.params!.slug} />
           )}
           {route.name === "agent_onboard" && <AgentOnboardPage />}
         </AccountShell>

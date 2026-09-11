@@ -170,7 +170,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
       {loading && active.length === 0 && rotated.length === 0 ? (
         <SkeletonRows />
       ) : active.length === 0 ? (
-        <EmptyState />
+        <EmptyState slug={slug} />
       ) : (
         <ul className="divide-y divide-[var(--color-border)]">
           {active.map((k) => (
@@ -283,12 +283,23 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
   );
 }
 
-function EmptyState() {
+/** An API key is an account credential. The gateway takes runtime keys only. */
+function EmptyState({ slug }: { slug: string }) {
   return (
     <div className="px-4 py-6 flex flex-col items-start gap-2">
       <p className="ck-mono ck-dim">No active keys.</p>
       <p className="ck-dim text-[12px] max-w-[40ch]">
-        Mint a key below so your agent can send calls. Murmur shows the key once.
+        An API key reads and writes your account from a script. It cannot send
+        calls. Murmur shows the key once.
+      </p>
+      <p className="ck-dim text-[12px] max-w-[40ch]">
+        Your agent sends calls with a{" "}
+        <a
+          href={`#/account/agent/${encodeURIComponent(slug)}/runtime`}
+          className="ck-pos no-underline underline-offset-2 hover:underline"
+        >
+          runtime key →
+        </a>
       </p>
     </div>
   );

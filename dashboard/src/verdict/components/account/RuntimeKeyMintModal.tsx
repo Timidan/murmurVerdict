@@ -222,7 +222,9 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
       <section
         ref={panelRef}
         tabIndex={-1}
-        className="modal-enter-panel ck-frame-strong w-full max-w-[640px] bg-[var(--color-bg)] p-4 flex flex-col gap-3"
+        // Bounded by the viewport and scrolled internally: Escape and body
+        // scroll are both blocked, so an unbounded panel hides its own [done].
+        className="modal-enter-panel ck-frame-strong w-full max-w-[640px] max-h-full overflow-y-auto bg-[var(--color-bg)] p-4 flex flex-col gap-3"
       >
         <header className="flex items-center justify-between">
           <h3 id="runtime-key-mint-title" className="ck-title ck-title-ik">

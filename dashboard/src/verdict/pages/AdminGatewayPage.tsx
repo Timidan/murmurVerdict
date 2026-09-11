@@ -22,6 +22,7 @@ import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { formatScore } from "../lib/score-format.js";
+import { formatLocalDateTimeShort } from "../lib/date-time-format.js";
 import { LogoLoader } from "../components/LogoLoader.js";
 
 const STATUSES: GatewayAttemptStatus[] = [
@@ -105,8 +106,10 @@ export function AdminGatewayPage() {
     setBusy("tick");
     setError(null);
     try {
-      const data = await verdictApi.adminGatewayTick(token);
-      setSnapshot(data.gateway);
+      await verdictApi.adminGatewayTick(token);
+      // Reload through load(): the tick's own snapshot is unfiltered, so
+      // installing it dropped the selected status filter without saying so.
+      await load(token);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -332,8 +335,8 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1119px]">
-        <div className="grid grid-cols-[110px_209px_170px_1fr_150px_120px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1199px]">
+        <div className="grid grid-cols-[110px_209px_170px_1fr_150px_200px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>severity</span>
           <span>source</span>
           <span>kind</span>
@@ -346,7 +349,7 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
             <li
               key={row.alert_id}
               className={
-                "grid grid-cols-[110px_209px_170px_1fr_150px_120px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[110px_209px_170px_1fr_150px_200px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -415,8 +418,8 @@ function FeedHealthTable({ rows }: { rows: FeedAvailabilitySummary[] }) {
   }
   return (
     <div className="overflow-x-auto border-b border-[var(--color-border)]">
-      <div className="min-w-[1060px]">
-        <div className="grid grid-cols-[1fr_120px_110px_120px_130px_160px_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1100px]">
+        <div className="grid grid-cols-[1fr_120px_110px_120px_130px_200px_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>feed</span>
           <span>health</span>
           <span className="text-right">rel</span>
@@ -430,7 +433,7 @@ function FeedHealthTable({ rows }: { rows: FeedAvailabilitySummary[] }) {
             <li
               key={row.feed_id}
               className={
-                "grid grid-cols-[1fr_120px_110px_120px_130px_160px_130px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[1fr_120px_110px_120px_130px_200px_130px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -478,8 +481,8 @@ function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1084px]">
-        <div className="grid grid-cols-[147px_130px_1fr_147px_130px_90px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1154px]">
+        <div className="grid grid-cols-[147px_130px_1fr_147px_200px_90px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>wallet</span>
@@ -493,7 +496,7 @@ function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
             <li
               key={row.agent_id}
               className={
-                "grid grid-cols-[147px_130px_1fr_147px_130px_90px_90px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[147px_130px_1fr_147px_200px_90px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -587,8 +590,8 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1296px]">
-        <div className="grid grid-cols-[110px_120px_1fr_150px_110px_188px_1fr_178px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1346px]">
+        <div className="grid grid-cols-[110px_120px_1fr_200px_110px_188px_1fr_178px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>market</span>
@@ -603,7 +606,7 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
             <li
               key={row.call_id}
               className={
-                "grid grid-cols-[110px_120px_1fr_150px_110px_188px_1fr_178px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[110px_120px_1fr_200px_110px_188px_1fr_178px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -645,8 +648,8 @@ function CanaryTable({ rows }: { rows: LiveCanaryCheck[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[980px]">
-        <div className="grid grid-cols-[170px_110px_110px_130px_1fr_190px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1050px]">
+        <div className="grid grid-cols-[170px_110px_110px_200px_1fr_190px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>check</span>
           <span>status</span>
           <span className="text-right">lat</span>
@@ -659,7 +662,7 @@ function CanaryTable({ rows }: { rows: LiveCanaryCheck[] }) {
             <li
               key={row.name}
               className={
-                "grid grid-cols-[170px_110px_110px_130px_1fr_190px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[170px_110px_110px_200px_1fr_190px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -687,8 +690,8 @@ function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1087px]">
-        <div className="grid grid-cols-[1fr_120px_147px_150px_120px_120px_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1207px]">
+        <div className="grid grid-cols-[1fr_120px_147px_200px_120px_120px_200px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>feed</span>
           <span className="text-right">seq</span>
           <span>status</span>
@@ -702,7 +705,7 @@ function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
             <li
               key={row.incident_id}
               className={
-                "grid grid-cols-[1fr_120px_147px_150px_120px_120px_130px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[1fr_120px_147px_200px_120px_120px_200px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -800,8 +803,8 @@ function FeedAttemptTable({
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1498px]">
-        <div className="grid grid-cols-[168px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1578px]">
+        <div className="grid grid-cols-[168px_120px_1fr_1fr_80px_90px_90px_1fr_100px_200px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>feed</span>
@@ -820,7 +823,7 @@ function FeedAttemptTable({
             <li
               key={row.attempt_id}
               className={
-                "grid grid-cols-[168px_120px_1fr_1fr_80px_90px_90px_1fr_100px_120px_130px_90px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[168px_120px_1fr_1fr_80px_90px_90px_1fr_100px_200px_130px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -878,8 +881,8 @@ function AttemptTable({
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[1318px]">
-        <div className="grid grid-cols-[168px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
+      <div className="min-w-[1398px]">
+        <div className="grid grid-cols-[168px_130px_1fr_90px_90px_1fr_120px_200px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
           <span>status</span>
           <span>agent</span>
           <span>market</span>
@@ -896,7 +899,7 @@ function AttemptTable({
             <li
               key={row.attempt_id}
               className={
-                "grid grid-cols-[168px_130px_1fr_90px_90px_1fr_120px_120px_130px_90px] gap-3 px-3 py-2 items-center " +
+                "grid grid-cols-[168px_130px_1fr_90px_90px_1fr_120px_200px_130px_90px] gap-3 px-3 py-2 items-center " +
                 (i > 0 ? "border-t border-[var(--color-border)]" : "")
               }
             >
@@ -1072,8 +1075,10 @@ function shortHex(value: string | null | undefined): string {
   return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
+/** Local instant, zone named, year and seconds left to the wire. The old ISO
+ *  slice printed a UTC stamp with no zone at all. */
 function shortDate(value: string): string {
-  return value.slice(5, 16).replace("T", " ");
+  return formatLocalDateTimeShort(value) ?? value;
 }
 
 function formatLatency(value: number | null | undefined): string {

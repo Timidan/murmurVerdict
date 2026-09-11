@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   verdictApi,
@@ -18,6 +18,8 @@ import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
 import { useDetailDrawer, isPlainLeftClick } from "../components/compact/DetailDrawer.js";
 import { KindGlyph } from "../components/compact/glyphs.js";
 import { CallHistory } from "../components/compact/CallHistory.js";
+import { InlineError } from "../components/compact/InlineError.js";
+import { useStream } from "../hooks/useStream.js";
 import { formatScore } from "../lib/score-format.js";
 import { shortId, splitMarketLabel } from "../lib/display-format.js";
 import {
@@ -32,44 +34,87 @@ import {
  *   3-col main → call log · market heat · sticky sidecar (stats + actions)
  * No hero number, no oversized Doto. The large readout is mono.
  */
+/** How many of an agent's newest calls this page reads. Every statistic and
+ *  every tab below is computed from that batch, so the number is quoted in the
+ *  copy rather than left implied. */
+const CALL_LIMIT = 100;
+
+/** Said once, appended everywhere a statistic on this page is defined. */
+const SCOPE_NOTE = `Counted from the agent's newest ${CALL_LIMIT} calls.`;
+
+/** The win% definition, stated identically in the ribbon and in the summary. */
+const WIN_RATE_PLAIN = `wins as a share of wins plus losses. Void calls are left out. ${SCOPE_NOTE}`;
+
 export function AgentPage({ slug }: { slug: string }) {
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [calls, setCalls] = useState<AgentCallRow[] | null>(null);
   const [grid, setGrid] = useState<AgentMarketRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+  // A failed dependent read is NOT an empty one. Both used to land on `[]`, so
+  // a call log that failed to load said "[no calls yet]" and a market grid that
+  // failed said "[no market results yet]" — murmur reporting a fact it did not
+  // have. Loading stays `null`, failure raises its own flag, and only a real
+  // empty array is an empty state.
+  const [callsFailed, setCallsFailed] = useState(false);
+  const [gridFailed, setGridFailed] = useState(false);
+
+  // The profile, its call log and its market grid are REST reads, and the
+  // topbar says "live" — so a call by THIS agent on the shared stream re-reads
+  // them. Streamed rows are the lean wire shape and carry none of the fields
+  // below, so REST stays the source of truth. `live` is a dependency for the
+  // same reason: an event that fires while the socket is down never arrives,
+  // so a reconnect re-reads rather than trusting a snapshot with a hole in it.
+  const { recentCalls, status } = useStream();
+  const live = status === "open";
+  const event = recentCalls.find((e) => e.agent_slug === slug);
+  const streamKey = event ? `${event.type}:${event.call_id}` : null;
+  const shown = useRef<string | null>(null);
+
   useEffect(() => {
     let cancel = false;
-    setAgent(null);
-    setCalls(null);
-    setGrid(null);
-    setError(null);
-    setNotFound(false);
+    // Only a NEW agent blanks the page; a live refresh repaints in place.
+    if (shown.current !== slug) {
+      shown.current = slug;
+      setAgent(null);
+      setCalls(null);
+      setGrid(null);
+      setError(null);
+      setNotFound(false);
+      setCallsFailed(false);
+      setGridFailed(false);
+    }
     // The primary agent fetch GATES the dependents. Previously agent + calls
     // + grid fanned out in parallel, so an unknown slug fired three requests
     // and painted three 404s. Now the calls/grid reads fire only after the
     // agent resolves — an unknown agent costs a single request and lands on
-    // the shared not-found state. Each dependent also degrades to an empty
-    // panel on its own failure rather than collapsing the whole page.
+    // the shared not-found state. Each dependent also degrades to its own
+    // failed panel rather than collapsing the whole page.
     verdictApi
       .agent(slug)
       .then((a) => {
         if (cancel) return;
         setAgent(a);
+        setError(null);
+        setNotFound(false);
         verdictApi
-          .agentCalls(slug, 100)
+          .agentCalls(slug, CALL_LIMIT)
           .then((c) => {
-            if (!cancel) setCalls(c.calls);
+            if (cancel) return;
+            setCalls(c.calls);
+            setCallsFailed(false);
           })
           .catch(() => {
-            if (!cancel) setCalls([]);
+            if (!cancel) setCallsFailed(true);
           });
         fetchAgentGrid(slug)
           .then((g) => {
-            if (!cancel) setGrid(g?.grid ?? []);
+            if (cancel) return;
+            setGrid(g?.grid ?? []);
+            setGridFailed(false);
           })
           .catch(() => {
-            if (!cancel) setGrid([]);
+            if (!cancel) setGridFailed(true);
           });
       })
       .catch((e: unknown) => {
@@ -80,7 +125,7 @@ export function AgentPage({ slug }: { slug: string }) {
     return () => {
       cancel = true;
     };
-  }, [slug]);
+  }, [slug, streamKey, live]);
 
   const stats = useMemo(() => {
     if (!calls) return null;
@@ -186,12 +231,12 @@ export function AgentPage({ slug }: { slug: string }) {
             <RCell label="kind" value={<KindGlyph kind={agent.kind} />} tone={kindTone(agent.kind)} />
             <RCell
               label={
-                /* Not a 30-day window: the fetch batch is the newest ≤100
+                /* Not a 30-day window: the fetch batch is the newest CALL_LIMIT
                    CALLS and the value averages the scored rows within it. The
                    plain line states that actual window, no date predicate. */
                 <FormulaTip
                   label="recent score"
-                  plain="the average score across this agent's scored calls, within its latest 100 calls."
+                  plain={`the average score across this agent's scored calls. ${SCOPE_NOTE}`}
                   formula="recent score = sum(call score) / scored calls"
                 />
               }
@@ -202,7 +247,7 @@ export function AgentPage({ slug }: { slug: string }) {
               label={
                 <FormulaTip
                   label="win%"
-                  plain="wins as a share of wins plus losses. Void calls are left out."
+                  plain={WIN_RATE_PLAIN}
                   formula="win % = wins / (wins + losses)"
                 />
               }
@@ -211,19 +256,19 @@ export function AgentPage({ slug }: { slug: string }) {
             <RCell
               label="scored"
               value={stats ? String(stats.resolved) : "—"}
-              title="calls that finished and earned a score"
+              title={`calls that finished and earned a score. ${SCOPE_NOTE}`}
             />
             <RCell
               label="open"
               value={stats ? String(stats.pending) : "—"}
               tone="dim"
-              title="calls that are sealed and have not resolved yet"
+              title={`calls that are sealed and have not resolved yet. ${SCOPE_NOTE}`}
             />
             <RCell
               label={
                 <FormulaTip
                   label="win streak"
-                  plain="wins in a row, counting back from the newest call."
+                  plain={`wins in a row, counting back from the newest call. ${SCOPE_NOTE}`}
                   formula="win streak = wins from the newest call until the first loss"
                 />
               }
@@ -236,9 +281,11 @@ export function AgentPage({ slug }: { slug: string }) {
             {agent.wallet_address && (
               <OwnerAuthorizedPill explorerUrl={ownerExplorerUrl} />
             )}
-            {agent.wallet_address && (
+            {/* The explorer follows the agent's own chain. This link was pinned
+                to mainnet Basescan under a tooltip that said Base Sepolia. */}
+            {agent.wallet_address && ownerExplorerUrl && (
               <a
-                href={`https://basescan.org/address/${agent.wallet_address}`}
+                href={ownerExplorerUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="ck-mono ck-pos no-underline"
@@ -246,6 +293,14 @@ export function AgentPage({ slug }: { slug: string }) {
               >
                 {shortId(agent.wallet_address, 8, 6)}
               </a>
+            )}
+            {agent.wallet_address && !ownerExplorerUrl && (
+              <span
+                className="ck-mono ck-pos"
+                title={`${agent.wallet_address} on ${humanChain(agent.chain_id)}`}
+              >
+                {shortId(agent.wallet_address, 8, 6)}
+              </span>
             )}
             <span className="ck-label ck-dim">
               since {agent.created_at.slice(0, 10)}
@@ -271,10 +326,24 @@ export function AgentPage({ slug }: { slug: string }) {
           <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)] min-h-0">
             <Panel
               title={<><IkNav name="feed" /> call log</>}
-              meta={calls ? `${calls.length}` : ""}
+              meta={
+                calls ? (
+                  <span title={`the agent's newest calls, ${CALL_LIMIT} at most`}>
+                    {calls.length}
+                  </span>
+                ) : (
+                  ""
+                )
+              }
               className="lg:border-r-0"
             >
-              {calls === null && <PanelSkeleton rows={6} />}
+              {calls === null && !callsFailed && <PanelSkeleton rows={6} />}
+              {callsFailed && (
+                <InlineError
+                  error="the call log did not load. reload the page to try again."
+                  className="px-2 py-2 ck-mono"
+                />
+              )}
               {calls !== null && calls.length === 0 && (
                 <div className="px-2 py-2 ck-mono ck-dim">[no calls yet]</div>
               )}
@@ -286,7 +355,13 @@ export function AgentPage({ slug }: { slug: string }) {
               meta={grid ? `${grid.length}` : ""}
               className="lg:border-r-0"
             >
-              {grid === null && <PanelSkeleton rows={5} />}
+              {grid === null && !gridFailed && <PanelSkeleton rows={5} />}
+              {gridFailed && (
+                <InlineError
+                  error="the market results did not load. reload the page to try again."
+                  className="px-2 py-2 ck-mono"
+                />
+              )}
               {grid !== null && grid.length === 0 && (
                 <div className="px-2 py-2 ck-mono ck-dim">[no market results yet]</div>
               )}
@@ -472,7 +547,7 @@ function SidebarStats({
           label="win rate"
           // Word for word the ribbon's win% tip: one definition, stated
           // identically everywhere the number appears.
-          plain="wins as a share of wins plus losses. Void calls are left out."
+          plain={WIN_RATE_PLAIN}
           formula="win % = wins / (wins + losses)"
           /* The tip box has to hang from the left edge or it walks off the
              side of a 256px sidecar. */
@@ -486,7 +561,11 @@ function SidebarStats({
           className="ck-splitbar mt-3"
           role="img"
           aria-label={
-            scored ? `${wins} wins, ${losses} losses` : "no scored calls yet"
+            stats === null
+              ? "the call log has not loaded"
+              : scored
+                ? `${wins} wins, ${losses} losses`
+                : "no scored calls yet"
           }
         >
           {scored > 0 && (
@@ -519,7 +598,12 @@ function SidebarStats({
             </span>
           </div>
         ) : (
-          <div className="mt-1.5 ck-colhead">[no scored calls yet]</div>
+          /* `stats` is null while the call log is loading or after it failed —
+             claiming "no scored calls yet" there states a fact murmur does not
+             have. */
+          <div className="mt-1.5 ck-colhead">
+            {stats === null ? "[the call log has not loaded]" : "[no scored calls yet]"}
+          </div>
         )}
       </div>
 
@@ -533,7 +617,7 @@ function SidebarStats({
           value={stats ? formatScore(stats.avgScore) : "—"}
           tone={(stats?.avgScore ?? 0) >= 0 ? "ink" : "neg"}
           tip={{
-            plain: "the average score across this agent's scored calls.",
+            plain: `the average score across this agent's scored calls. ${SCOPE_NOTE}`,
             formula: "avg score = sum(call score) / scored calls",
           }}
           tipAlign="start"
@@ -543,14 +627,14 @@ function SidebarStats({
           label="streak"
           value={n(stats?.streak)}
           tone={countTone(stats?.streak, "ink")}
-          title="wins in a row, counting back from the newest call"
+          title={`wins in a row, counting back from the newest call. ${SCOPE_NOTE}`}
         />
         <StatTile
           icon="all-calls"
           label="calls"
           value={n(stats?.total)}
           tone="ink"
-          title="every call this agent has made"
+          title={`the agent's newest calls, ${CALL_LIMIT} at most. Older calls are not read here.`}
         />
       </div>
 
@@ -562,10 +646,13 @@ function SidebarStats({
           title="calls that earned no score: void, rejected or missed reveal, or under dispute"
         >
           <span>unscored</span>
-          {/* All three are zero in this branch. The narrow sidecar has no room
-              for the tally, and "none" says the same thing. */}
-          <span className="@[340px]:hidden">none</span>
-          <span className="hidden @[340px]:inline">0 void · 0 failed · 0 other</span>
+          {/* All three are zero in this branch — unless there is no call log to
+              count, in which case the tally is unknown, not zero. The narrow
+              sidecar has no room for the tally, and "none" says the same. */}
+          <span className="@[340px]:hidden">{stats === null ? "—" : "none"}</span>
+          <span className="hidden @[340px]:inline">
+            {stats === null ? "—" : "0 void · 0 failed · 0 other"}
+          </span>
         </div>
       ) : (
         <div className="grid grid-cols-3 gap-px bg-[var(--color-border)] border-t border-[var(--color-border)]">
@@ -671,7 +758,7 @@ function StatTile({
           point, so the mark waits until the panel can seat both. */}
       {icon && (
         <span className="hidden @[440px]:block">
-          <IkHero name={icon} size={20} className="ck-dim block" />
+          <IkHero name={icon} size={24} className="ck-dim block" />
         </span>
       )}
       <span className="min-w-0">

@@ -74,8 +74,8 @@ covered. Only what a reader sees.
 
 | Shown as | Definition | Tooltip must say | Retired forms |
 |---|---|---|---|
-| **score** | The agent's headline score. Mean call score, less a penalty for uneven results. | "score — the agent's average call score, less a penalty for uneven results. Higher is better." | vs, verdict_score (as a label), verdict·recent |
-| **floor** | The careful score. It is the lowest score the record supports, so 20 lucky calls cannot beat 200 steady ones. **The board ranks on this.** | "floor — the lowest score this record supports. The board ranks agents on it." | lb, vs·lb, lower bound |
+| **score** | The agent's headline score. Mean call score, less a penalty for uneven results. **The global board ranks on this.** | "score — the agent's average call score, less a penalty for uneven results. Higher is better." | vs, verdict_score (as a label), verdict·recent |
+| **floor** | The careful score. It is the lowest score the record supports, so 20 lucky calls cannot beat 200 steady ones. **The market and family boards rank on this. The global board ranks on score.** | "floor — the lowest score this record supports. Market and family boards rank agents on it." | lb, vs·lb, lower bound |
 | **win %** | Wins as a share of wins plus losses. Void calls are left out. | "win % — wins as a share of wins plus losses." | wr, win_rate |
 | **scored** | How many calls finished with a win or a loss. | "scored — calls that finished and earned a score." | res |
 | **open** | How many calls are still sealed and waiting. | "open — calls that are sealed and have not resolved yet." | p, pend, pending |

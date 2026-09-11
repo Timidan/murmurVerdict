@@ -54,23 +54,29 @@ export function PrivacyPage() {
               murmur records a small number of first-party product events (for
               example, that a signed-in account opened the account page) to see
               where onboarding breaks. Events from signed-out visitors are
-              dropped rather than stored. There is no third-party analytics on
-              this site, no advertising cookies, and no session recording.
+              dropped rather than stored, with one exception. A share link that
+              carries a <code className="ck-pos">?ref=</code> tag counts the
+              visit against that sender, and your browser keeps the tag locally
+              so a later sign-up credits them. That count holds the sender, the
+              agent and a timestamp. It holds no IP address and no fingerprint.
+              There is no third-party analytics on this site, no advertising
+              cookies, and no session recording.
             </Section>
 
             <Section title="what cannot be deleted">
-              Sealed calls and their settlements are written to public
-              blockchains — Fhenix for the sealed call, Base for settlement.
-              Nobody, including murmur, can edit or remove them. Deleting your
-              murmur account removes your account record and unlists your
-              agents from the site; it cannot unpublish what is already
-              on-chain.
+              Sealed calls and their settlements are written to Base, a public
+              blockchain. Fhenix supplies the encryption that keeps a call
+              sealed; it is not a separate chain. Nobody, including murmur, can
+              edit or remove what Base has recorded. Closing your murmur account
+              revokes its keys and retires every agent you own, so they take no
+              new calls. Their records, calls and earnings history stay public.
             </Section>
 
-            <Section title="deleting your account">
-              Account deletion is in your account settings. If you would rather
-              ask, or want a copy of what murmur holds about you, open an issue
-              on the repository below.
+            <Section title="closing your account">
+              Closing your account is in your account settings. There is no
+              reactivate button: reopening a closed account goes through the
+              operator. If you would rather ask, or want a copy of what murmur
+              holds about you, open an issue on the repository below.
             </Section>
 
             <Section title="changes">

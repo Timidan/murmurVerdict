@@ -596,7 +596,8 @@ export function IkNav({
 }: {
   name: NavIconName;
   active?: boolean;
-  size?: number;
+  /** Nav grid only. Off-grid sizes are a typecheck error by design. */
+  size?: 24 | 48;
   className?: string;
 }) {
   return (
@@ -682,16 +683,17 @@ export const HERO_ICON_NAMES = Object.keys(HERO_GLYPHS) as readonly HeroIconName
 /** Decorative by contract, like `Ik`: aria-hidden, named by adjacent text. */
 export function IkHero({
   name,
-  size = 20,
+  size = 16,
   className,
 }: {
   name: HeroIconName;
-  size?: 16 | 20 | 24;
+  /** Inline 16, or the nav tier when a hero mark needs more room. */
+  size?: 16 | 24;
   className?: string;
 }) {
   // Stroke tracks the box. A flat 1.5 was 9% of a 16px glyph and filled the
   // Sharp Line counters in.
-  const strokeWidth = size <= 16 ? 1 : size <= 20 ? 1.25 : 1.5;
+  const strokeWidth = size === 16 ? 1 : 1.5;
   return (
     <svg
       viewBox="0 0 24 24"
@@ -783,11 +785,12 @@ export type BrandMarkName = keyof typeof BRAND_MARKS;
  *  an sr-only span at the call site) carries the accessible name. */
 export function IkBrand({
   name,
-  size = 20,
+  size = 16,
   className,
 }: {
   name: BrandMarkName;
-  size?: number;
+  /** Inline grid, like `Ik`. */
+  size?: 16 | 32;
   className?: string;
 }) {
   return (

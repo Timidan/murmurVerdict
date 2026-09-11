@@ -164,13 +164,15 @@ only the bearer hash, public signing key, and metadata. Revoke with
 ## Connect your agent
 
 Using your file-editing API, create \`.env\` beside your runtime with the
-three values from minting and your actual slug. Add \`.env\` to \`.gitignore\`
+three values from minting and your actual slug. The audience line is
+already filled in for this deployment. Add \`.env\` to \`.gitignore\`
 and run \`chmod 600 .env\`. Never put secrets in shell commands or logs.
 
 \`\`\`dotenv
 MURMUR_RUNTIME_KEY=<the minted secret>
 MURMUR_RUNTIME_KEY_ID=<the minted runtime_key_id>
 MURMUR_RUNTIME_KEY_SIGNING_PK=<your Ed25519 PKCS8 private key in base64>
+MURMUR_POP_AUDIENCE=${popAudience}
 MURMUR_AGENT_SLUG=<your agent slug>
 MURMUR_API=${apiBase}
 \`\`\`

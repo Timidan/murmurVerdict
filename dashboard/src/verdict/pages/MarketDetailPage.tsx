@@ -16,17 +16,19 @@ import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { FormulaTip } from "../components/compact/FormulaTip.js";
 import { VenueGlyph } from "../components/compact/glyphs.js";
 import { ErrorState } from "../components/compact/ErrorState.js";
+import { InlineError } from "../components/compact/InlineError.js";
 import { PanelSkeleton } from "../components/compact/PanelSkeleton.js";
 import { TimeAgo } from "../components/compact/TimeAgo.js";
 import { Ik, IkNav } from "../icons.js";
 import { useStream } from "../hooks/useStream.js";
-import { mergeMarketAgentRow } from "../hooks/stream-merge.js";
 import { marketDisplayName, parseMarketConfig } from "../lib/market-meta.js";
 import { formatLocalTimeLabel } from "../lib/date-time-format.js";
+import { marketWindowPhase } from "../lib/market-windows.js";
 import { shortId } from "../lib/display-format.js";
 import { setDocumentTitle } from "../lib/route-meta.js";
 import { formatScore } from "../lib/score-format.js";
 import { isTerminalFailureStatus } from "@shared/wire-call-status";
+import type { WireMarketClock } from "@shared/wire-market";
 
 /**
  * COMPACT per-market detail. Single-screen ladder with a live sidecar tape,
@@ -48,34 +50,45 @@ export function MarketDetailPage({
   const [market, setMarket] = useState<MarketRow | null>(null);
   const [agents, setAgents] = useState<AgentMarketRow[] | null>(null);
   const [calls, setCalls] = useState<MarketCallRow[] | null>(null);
+  const [callsError, setCallsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const stream = useStream();
 
-  // Fold SSE markets.update for this specific market_id. The markets.update
-  // rows are the lean wire shape (MarketLeaderboardEventAgentRow) — no REST-only
-  // fields. MERGE the streamed wire fields onto the REST-hydrated row keyed by
-  // agent_id so REST-only state survives a live tick instead of blanking,
-  // mirroring LeaderboardPage's leaderboard.update merge. The RENDERED
-  // REST-only fields — verdict_score_lb (lb score column) and call_scores (the
-  // trend sparkline) — are preserved from the prior REST row so a live tick
-  // doesn't blank them; last_resolved_at is preserved because AgentMarketRow
-  // requires it. Functional updater reads prev without adding `agents` to the
-  // effect deps.
+  // A markets.update event says this market's ladder MOVED. It is not the
+  // ladder: the event carries the top few agents in the lean wire shape, so
+  // rendering it replaced a 50-row REST ladder with a 5-row one and shrank
+  // every count on the page. Treat it as the trigger it is and re-read the
+  // same request the page loaded with. Keyed on the event's own stamp so an
+  // update to a DIFFERENT market does not refetch this one.
+  const marketsUpdateAt = stream.markets[marketId]?.served_at;
   useEffect(() => {
-    const evt = stream.markets[marketId];
-    if (!evt) return;
-    setAgents((prev) => {
-      const byAgent = new Map((prev ?? []).map((r) => [r.agent_id, r]));
-      return evt.agents.map((a) => mergeMarketAgentRow(a, byAgent.get(a.agent_id)));
-    });
-  }, [stream.markets, marketId]);
+    if (!marketsUpdateAt) return;
+    let cancel = false;
+    // A window settles as a BURST — one event per resolved call — and each
+    // would otherwise be its own request. The cleanup cancels the pending
+    // timer on the next event, so a burst costs one re-read.
+    const timer = setTimeout(() => {
+      fetchMarketLeaderboard(marketId, { limit: 50 })
+        .then((lb) => {
+          if (!cancel) setAgents(lb.agents);
+        })
+        .catch(() => {
+          /* keep the ladder on screen; the next event tries again */
+        });
+    }, 750);
+    return () => {
+      cancel = true;
+      clearTimeout(timer);
+    };
+  }, [marketsUpdateAt, marketId]);
 
   useEffect(() => {
     let cancel = false;
     setMarket(null);
     setAgents(null);
     setCalls(null);
+    setCallsError(null);
     setError(null);
     setNotFound(false);
 
@@ -104,11 +117,14 @@ export function MarketDetailPage({
       // The verdicts feed is NON-CRITICAL chrome. A 404/400 still means "no
       // such market" (handled alongside the sibling reads), but any OTHER
       // failure — 500, aborted request, network blip — must not throw out of
-      // Promise.all and collapse the whole page into the error state. Swallow
-      // it to null so market + ladder still render and the feed panel falls
-      // back to its own empty state.
+      // Promise.all and collapse the whole page into the error state. It is
+      // caught into the feed panel's own error line instead.
       fetchMarketCalls(marketId, { limit: 20 }).catch((e: unknown) => {
-        if (missing(e) && !cancel) setNotFound(true);
+        if (missing(e)) {
+          if (!cancel) setNotFound(true);
+        } else if (!cancel) {
+          setCallsError("the calls on this market did not load.");
+        }
         return null;
       }),
     ])
@@ -117,9 +133,10 @@ export function MarketDetailPage({
         setMarket(m);
         if (lb) setAgents(lb.agents);
         else if (m) setAgents([]);
-        // null callRows = feed fetch failed (or missing market): show the
-        // feed's empty state, not a perpetual [loading…].
-        setCalls(callRows ?? []);
+        // null callRows = the feed request failed. It stays UNKNOWN and the
+        // panel says so; "[no calls on this market yet]" would report an
+        // unreachable history as an empty one.
+        setCalls(callRows);
       })
       .catch((e: Error) => {
         if (!cancel) setError(e.message);
@@ -164,7 +181,9 @@ export function MarketDetailPage({
   // ticker. Gated on (venue + endDate) so a market with no countdown carries
   // no interval at all.
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const needsCountdownTick = isVenue && Boolean(cfg?.endDate);
+  // The status cell reads the window clock, so a market with a clock ticks too.
+  const needsCountdownTick =
+    (isVenue && Boolean(cfg?.endDate)) || Boolean(market?.clock);
   useEffect(() => {
     if (!needsCountdownTick) return;
     const id = setInterval(() => setNowMs(Date.now()), 30_000);
@@ -185,12 +204,26 @@ export function MarketDetailPage({
   const horizon = market ? formatHorizon(market.horizon_seconds) : "—";
   const assetSlug = market ? shortAssetSlug(market.asset_id) : "—";
   const taxonomy = market?.market_taxonomy ?? null;
-  const mainCount = agents ? agents.filter((a) => a.market_main_tier).length : 0;
+  // Every one of these is null until the ladder lands. A 0 before the request
+  // answers is a claim about the market, not a loading state.
+  const mainCount = agents
+    ? agents.filter((a) => a.market_main_tier).length
+    : null;
   const totalCalls = agents
     ? agents.reduce((acc, a) => acc + a.resolved_calls + a.pending_calls, 0)
-    : 0;
-  const leader = agents && agents.length > 0 ? agents[0] : null;
+    : null;
+  // The endpoint sorts by FLOOR, so the first row is not the highest score.
+  const topScore = agents
+    ? agents.reduce<number | null>(
+        (best, a) =>
+          a.verdict_score === null || (best !== null && a.verdict_score <= best)
+            ? best
+            : a.verdict_score,
+        null,
+      )
+    : null;
 
+  const status = marketStatusCell(market?.status, market?.clock ?? null, nowMs);
   const ends = formatEnds(cfg?.endDate, nowMs);
   const endsLabel = ends.label;
   const endsIsPast = ends.isPast;
@@ -283,26 +316,26 @@ export function MarketDetailPage({
             )}
             <RCell
               label="status"
-              value={marketStatusLabel(market?.status)}
+              value={status.label}
               tone="dim"
-              title={marketStatusTitle(market?.status)}
+              title={status.title}
             />
             <RCell label="agents" value={agents?.length ?? "—"} />
             <RCell
               label="ranked"
-              value={mainCount}
+              value={mainCount ?? "—"}
               title="agents with 20 or more scored calls on this market"
             />
             <RCell
               label="calls"
-              value={totalCalls}
+              value={totalCalls ?? "—"}
               tone="dim"
-              title="every call on this market, open and scored"
+              title="open plus scored calls, across the agents shown here"
             />
             <RCell
               label="top score"
-              value={leader ? formatScore(leader.verdict_score) : "—"}
-              tone={leader && (leader.verdict_score ?? 0) >= 0 ? "pos" : "neg"}
+              value={topScore === null ? "—" : formatScore(topScore)}
+              tone={topScore === null ? "dim" : topScore >= 0 ? "pos" : "neg"}
               title="the best agent score on this market"
             />
           </section>
@@ -404,7 +437,10 @@ export function MarketDetailPage({
                 }
                 meta={calls ? `${calls.length}` : ""}
               >
-                {calls === null && <PanelSkeleton rows={5} />}
+                {callsError !== null && (
+                  <InlineError error={callsError} className="px-2 py-2 ck-mono" />
+                )}
+                {calls === null && callsError === null && <PanelSkeleton rows={5} />}
                 {calls !== null && calls.length === 0 && (
                   <div className="px-2 py-2 ck-mono ck-dim">[no calls on this market yet]</div>
                 )}
@@ -435,6 +471,11 @@ export function MarketDetailPage({
 }
 
 function Ladder({ rows }: { rows: AgentMarketRow[] }) {
+  // Only ranked agents hold a rank. Numbering every row gave an agent with
+  // three scored calls a position on a board it does not qualify for.
+  const rankByAgent = new Map(
+    rows.filter((r) => r.market_main_tier).map((r, i) => [r.agent_id, i + 1]),
+  );
   return (
     <ul className="m-0 p-0 list-none">
       <li className="ck-ladder ck-ladder--market px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
@@ -486,7 +527,7 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
           open
         </span>
       </li>
-      {rows.map((r, i) => (
+      {rows.map((r) => (
         <li
           key={r.agent_id}
           className="relative ck-ladder ck-ladder--market px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
@@ -498,7 +539,9 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
             className="ck-rowlink"
           />
           <span className="contents">
-            <span className="ck-mono ck-dim">{String(i + 1)}</span>
+            <span className="ck-mono ck-dim">
+              {rankByAgent.get(r.agent_id) ?? "—"}
+            </span>
             <span className="flex flex-wrap items-baseline gap-x-1 min-w-0">
               <span className="ck-mono ck-pos truncate" title={r.display_name}>
                 {r.display_slug}
@@ -761,14 +804,34 @@ const MARKET_STATUS_TEXT: Record<string, { label: string; title: string }> = {
   },
 };
 
-function marketStatusLabel(status: string | null | undefined): string {
-  if (!status) return "—";
-  return MARKET_STATUS_TEXT[status]?.label ?? status;
-}
-
-function marketStatusTitle(status: string | null | undefined): string | undefined {
-  if (!status) return undefined;
-  return MARKET_STATUS_TEXT[status]?.title;
+/**
+ * The status cell: what the registry says, corrected by the clock.
+ *
+ * `listed` only means the registry accepted the market. A listed five-minute
+ * market spends most of its life not taking calls — before its window opens,
+ * and after its submissions close — so the registry word alone told readers to
+ * send a call that would be rejected.
+ */
+function marketStatusCell(
+  status: string | null | undefined,
+  clock: WireMarketClock | null,
+  nowMs: number,
+): { label: string; title?: string } {
+  if (!status) return { label: "—" };
+  if (status === "listed" && clock) {
+    switch (marketWindowPhase(clock, nowMs, false)) {
+      case "open":
+        break;
+      case "upcoming":
+        return {
+          label: "upcoming",
+          title: "this market does not take calls yet",
+        };
+      default:
+        return MARKET_STATUS_TEXT.frozen!;
+    }
+  }
+  return MARKET_STATUS_TEXT[status] ?? { label: status };
 }
 
 function shortAssetSlug(asset_id: string): string {
@@ -857,7 +920,7 @@ function formatUtcTitle(endDate: string): string | undefined {
 function venueOddsFor(
   venue: MarketVenueSnapshot | null,
   outcome: string,
-): { pct: number; title: string } | null {
+): { pct: string; title: string } | null {
   if (!venue?.prices) return null;
   const hit = venue.prices.find(
     (p) => p.outcome.toLowerCase() === outcome.toLowerCase(),
@@ -868,7 +931,20 @@ function venueOddsFor(
   const asOf = venue.fetched_at
     ? ` · as of ${formatUtcTitle(venue.fetched_at) ?? venue.fetched_at}`
     : "";
-  return { pct: Math.round(n * 100), title: `${hit.price}${asOf}` };
+  return { pct: formatOddsPct(n), title: `${hit.price}${asOf}` };
+}
+
+/**
+ * A 0..1 probability as a percentage that never reads zero while the venue is
+ * quoting one. `Math.round(0.004 * 100)` printed `0%`, which says the outcome
+ * cannot happen; it can, at 0.4%.
+ */
+function formatOddsPct(price: number): string {
+  const pct = price * 100;
+  if (pct <= 0) return "0";
+  if (pct < 0.1) return "<0.1";
+  if (pct < 1) return pct.toFixed(1);
+  return String(Math.round(pct));
 }
 
 /** Hover title for the vol cell — exact volume, plus liquidity when known:

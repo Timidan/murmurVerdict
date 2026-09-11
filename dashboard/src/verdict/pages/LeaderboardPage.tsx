@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { verdictApi, type LeaderboardRow } from "../api.js";
 import { Ik, IkNav } from "../icons.js";
 import { readRouteQuery, buildRouteQueryUrl } from "../route.js";
@@ -11,7 +11,6 @@ import { AgentListingsMatrix } from "../components/compact/AgentListingsMatrix.j
 import { FormulaTip } from "../components/compact/FormulaTip.js";
 import { FamilyLeaderboards } from "../components/FamilyLeaderboards.js";
 import { useStream } from "../hooks/useStream.js";
-import { mergeLeaderboardRow } from "../hooks/stream-merge.js";
 import { formatScore } from "../lib/score-format.js";
 import {
   LEADERBOARD_VIEWS,
@@ -25,6 +24,14 @@ type SortKey = "rank" | "score" | "lb" | "wr" | "res" | "pend";
 
 const TIERS: Tier[] = ["all", "main", "provisional"];
 const SORTS: SortKey[] = ["rank", "score", "lb", "wr", "res", "pend"];
+
+/**
+ * How long a leaderboard event waits before it triggers a refresh.
+ *
+ * One settling window resolves many calls at once and the daemon fans out an
+ * event per call, so the burst collapses into a single 200-row read.
+ */
+const REFRESH_DEBOUNCE_MS = 1_000;
 
 /**
  * Wire values stay in the URL and the API; only the WORD on the control
@@ -69,7 +76,7 @@ function viewFromUrl(): LeaderboardView {
  * the three that already do.
  */
 const VIEW_LABEL: Record<LeaderboardView, string> = {
-  rankings: "rankings",
+  rankings: "ladder",
   listings: "listings",
 };
 
@@ -109,14 +116,38 @@ export function LeaderboardPage() {
     );
   }, [tier, sort, view]);
 
+  // A leaderboard event says the board MOVED; it is not the board. Its payload
+  // is a fixed 20-row top slice with no tier filter and no floor, so folding it
+  // in used to shrink a 200-row read to 20, carry the old floors forward, and
+  // do nothing at all on a filtered tier. The event re-runs the query the page
+  // is actually showing instead.
+  const [refresh, setRefresh] = useState(0);
+  const seenEvent = useRef(stream.leaderboard);
   useEffect(() => {
-    let cancelled = false;
+    // The stream replays its last event to every new subscriber; refetching for
+    // that one would double the read on every visit to this route.
+    if (!stream.leaderboard || stream.leaderboard === seenEvent.current) return;
+    seenEvent.current = stream.leaderboard;
+    const timer = window.setTimeout(() => setRefresh((n) => n + 1), REFRESH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [stream.leaderboard]);
+
+  // A tier change is a different query, so the ladder blanks to its skeleton.
+  // A stream refresh is the same query, so it repaints in place.
+  useEffect(() => {
     setRows(null);
     setError(null);
+  }, [tier]);
+
+  useEffect(() => {
+    let cancelled = false;
     verdictApi
       .leaderboard({ tier: tier === "all" ? undefined : tier, limit: 200 })
       .then((r) => {
-        if (!cancelled) setRows(r.rows);
+        if (!cancelled) {
+          setRows(r.rows);
+          setError(null);
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e.message);
@@ -124,21 +155,7 @@ export function LeaderboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [tier]);
-
-  // Fold SSE deltas in for the "all" tier (mirrors default page).
-  useEffect(() => {
-    if (tier !== "all") return;
-    const lb = stream.leaderboard;
-    if (!lb) return;
-    setRows((prev) => {
-      // The SSE leaderboard rows are the lean wire shape; mergeLeaderboardRow
-      // folds them onto the prior REST row keyed by agent_id, preserving the
-      // REST-only fields (verdict_score_lb, last_resolved_at) the fan-out omits.
-      const byAgent = new Map(prev?.map((row) => [row.agent_id, row]));
-      return lb.rows.map((r) => mergeLeaderboardRow(r, byAgent.get(r.agent_id)));
-    });
-  }, [stream.leaderboard, tier]);
+  }, [tier, refresh]);
 
   const sorted = useMemo(() => {
     if (!rows) return null;
@@ -171,9 +188,12 @@ export function LeaderboardPage() {
     const main = sorted.filter((r) => r.tier === "main").length;
     const prov = sorted.filter((r) => r.tier === "provisional").length;
     const pend = sorted.reduce((acc, r) => acc + r.pending_calls, 0);
-    const avgWR =
-      sorted.filter((r) => r.win_rate !== null).reduce((a, r) => a + (r.win_rate ?? 0), 0) /
-      Math.max(1, sorted.filter((r) => r.win_rate !== null).length);
+    // Null, not zero, when nobody has a win rate yet. Dividing by a floor of 1
+    // turned an empty or wholly unscored board into a confident "0%".
+    const scored = sorted.filter((r) => r.win_rate !== null);
+    const avgWR = scored.length
+      ? scored.reduce((a, r) => a + (r.win_rate ?? 0), 0) / scored.length
+      : null;
     return { main, prov, pend, avgWR };
   }, [sorted]);
 
@@ -213,7 +233,7 @@ export function LeaderboardPage() {
         <RibbonCell label="open calls" value={summary?.pend ?? "—"} tone="dim" />
         <RibbonCell
           label="avg win %"
-          value={summary && Number.isFinite(summary.avgWR) ? `${Math.round(summary.avgWR * 100)}%` : "—"}
+          value={summary?.avgWR == null ? "—" : `${Math.round(summary.avgWR * 100)}%`}
         />
         {/* Scoring aggregates across ALL resolved calls (all-time) — see the
             legend's "all time" line. The prior "30d" implied a rolling
@@ -240,7 +260,7 @@ export function LeaderboardPage() {
               className={"ck-btn ck-btn-bracket " + (view === v ? "ck-btn-active" : "")}
               title={
                 v === "rankings"
-                  ? "the ladder: who is best, by their score floor"
+                  ? "who is best, by their score"
                   : "the browse matrix: who sells which series, at what standing price"
               }
             >
@@ -286,9 +306,10 @@ export function LeaderboardPage() {
         )}
       </div>
 
-      {/* RANK BASIS — always-visible so the vs headline column isn't mistaken
-          for the sort key. Default order is the daemon's lb-derived rank; vs
-          (verdict_score) is shown first only as the headline number. Under
+      {/* RANK BASIS — always-visible so the floor column isn't mistaken for
+          the sort key. The global board sorts on raw verdict_score
+          (leaderboard.ts: preferLowerBound false); the floor is shown beside
+          it as the careful number. Market and family boards sort on it. Under
           `listings` the sentence is replaced, not merely hidden: that view
           ranks nothing, and the record it shows is all-time and global. */}
       <div
@@ -303,9 +324,10 @@ export function LeaderboardPage() {
           </span>
         ) : (
           <span className="block max-w-[92ch]">
-            The board ranks agents by their floor, not by their score. The floor
-            assumes an agent got lucky, so a long steady record beats a short hot
-            one.
+            The board ranks agents by their score. The floor beside it is the
+            careful number: it assumes an agent got lucky, so a long steady
+            record holds a higher floor. Market and family boards rank on the
+            floor.
           </span>
         )}
       </div>
@@ -341,9 +363,9 @@ export function LeaderboardPage() {
                   /* Same grid as Ladder below, from the same class — the
                      skeleton had drifted to TEN hand-typed tracks against the
                      ladder's NINE, so rows re-flowed when data landed. The
-                     four bars the phone keeps are unmarked; the five that
+                     four bars the phone keeps are unmarked; the four that
                      wear `ck-ladder-drop` disappear exactly when the ladder's
-                     own five do, so the skeleton never wraps to three rows
+                     own four do, so the skeleton never wraps to three rows
                      under a table that is one row tall. */
                   className="ck-ladder px-2 py-1 border-b border-[var(--color-border)]"
                 >
@@ -352,7 +374,6 @@ export function LeaderboardPage() {
                   <SkeletonBar className="ck-ladder-drop h-[10px]" />
                   <SkeletonBar className="h-[10px]" />
                   <SkeletonBar className="h-[10px]" />
-                  <SkeletonBar className="ck-ladder-drop h-[10px]" />
                   <SkeletonBar className="ck-ladder-drop h-[10px]" />
                   <SkeletonBar className="ck-ladder-drop h-[10px]" />
                   <SkeletonBar className="ck-ladder-drop h-[10px]" />
@@ -417,7 +438,7 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
         <span className="flex justify-end">
           <FormulaTip
             label="floor"
-            plain="the lowest score this record supports. The board ranks agents on it."
+            plain="the lowest score this record supports. Market and family boards rank agents on it."
             formula="floor = mean(call score) − 1.6449 × standard error"
           />
         </span>
@@ -434,13 +455,10 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
         >
           scored
         </span>
-        <span className="ck-ladder-drop flex justify-end">
-          <FormulaTip
-            label="trend"
-            plain="the agent's last few call scores, oldest first."
-            formula="trend = recent call scores, in order"
-          />
-        </span>
+        {/* No trend column: GET /v1/leaderboard carries no per-call score
+            series (wire-leaderboard WireLeaderboardRow), and the column drew a
+            flat rule under a tooltip promising recent scores. The market
+            ladder keeps its trend because its rows DO carry `call_scores`. */}
         <span
           className="ck-ladder-drop text-right"
           title="open — calls that are sealed and have not resolved yet"
@@ -493,9 +511,6 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
             <span className="ck-ladder-drop ck-mono ck-dim text-right">
               {String(r.resolved_calls)}
             </span>
-            <span className="ck-ladder-drop flex justify-end items-center">
-              <div className="h-px bg-[var(--color-border)] w-full" />
-            </span>
             <span className="ck-ladder-drop text-right ck-mono ck-dim">
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
             </span>
@@ -545,14 +560,14 @@ function ScoringLegend() {
           <dd className="m-0">
             The agent's average call score, less a penalty for uneven results:{" "}
             <span className="ck-mono">mean(call score) − stdev / √n</span>.
-            Higher is better. The board ranks on the floor, not on this.
+            Higher is better. This board ranks on it.
           </dd>
           <dt className="ck-pos">floor</dt>
           <dd className="m-0">
             The lowest score this record supports:{" "}
             <span className="ck-mono">mean − 1.6449 × standard error</span>. It
             is strict when an agent has few calls, so 20 lucky calls cannot
-            outrank 200 steady ones.
+            beat 200 steady ones. Market and family boards rank on it.
           </dd>
           <dt className="ck-pos">win %</dt>
           <dd className="m-0">
@@ -565,8 +580,9 @@ function ScoringLegend() {
           </dd>
           <dt className="ck-pos">open</dt>
           <dd className="m-0">
-            Calls that are sealed and have not resolved yet. Nobody can read them
-            before the reveal.
+            Calls that are sealed and have not resolved yet. Murmur never holds
+            the plain text unless the agent uses the optional seal path. A buyer
+            with paid access can read a call before the public reveal.
           </dd>
           <dt className="ck-pos">·ranked / ·unranked</dt>
           <dd className="m-0">
@@ -576,14 +592,19 @@ function ScoringLegend() {
             higher bar: 50 scored calls and a floor of 0 or better.
           </dd>
         </dl>
+        {/* Literal to the shipped scorer: markets-core.callScore is
+            `1 − halfL1Distance(predicted, resolved)` and the Polymarket
+            adapter's score() wraps that shell and nothing else. No movement
+            weighting exists anywhere on the path, and no money changes hands
+            on a score. */}
         <p className="mt-2 mb-0 max-w-[92ch]">
-          How a call is scored: the venue publishes the outcome, then murmur pays
-          the agent for being right and confident, and charges it for being wrong
-          and confident —{" "}
-          <span className="ck-mono">0.25 − (confidence − outcome)²</span>,
-          weighted by how far the market moved. Markets with more than two
-          outcomes use{" "}
-          <span className="ck-mono">1 − ½ × L1(predicted, resolved)</span>. An
+          How a call is scored: the venue publishes the outcome, then murmur
+          measures how far the call sat from it. One formula covers every
+          market:{" "}
+          <span className="ck-mono">1 − ½ × L1(predicted, resolved)</span>. A
+          call that matches the outcome exactly scores 1. A call that split its
+          confidence evenly scores 0.5 when the market resolves to one side. A
+          call that misses completely scores 0. A void call earns no score. An
           agent's numbers add up every scored call it has ever made.
         </p>
       </div>

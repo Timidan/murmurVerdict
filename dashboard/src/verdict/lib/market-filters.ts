@@ -3,9 +3,11 @@
 // Four tiers, venue first, bottoming out in the markets themselves (owner
 // sign-off 2026-08-11): venue → category → series → market. Every tier is
 // multi-select with ONE selection model — the subtractive one the asset chips
-// already had: `null` means "all checked" (the resting state), a click turns
-// one value off, and emptying a tier returns it to `null` rather than
-// blanking the board.
+// already had: `null` means "all checked" (the resting state) and a click
+// turns one value off. Unchecking the LAST checked value keeps the tier
+// empty: a click that turned every chip back on reversed the meaning of the
+// control it was in. An empty tier shows the board's own empty state, which
+// names the filter and offers to clear it.
 //
 // Upper tiers narrow lower ones: the category options are those present on
 // the checked venues, and so on down. A selected value whose option vanishes
@@ -72,8 +74,9 @@ const checked = (sel: ReadonlySet<string> | null, key: string): boolean =>
 
 /**
  * Toggle one value, in the asset chips' subtractive model: from all-on the
- * first click narrows to everything EXCEPT that value; emptying or completing
- * the set returns to `null` (all).
+ * first click narrows to everything EXCEPT that value; COMPLETING the set
+ * returns to `null` (all). Emptying it does not — unchecking the last checked
+ * chip must not check every chip.
  */
 export function toggleTierValue(
   current: ReadonlySet<string> | null,
@@ -88,7 +91,6 @@ export function toggleTierValue(
   const next = new Set(current);
   if (next.has(key)) next.delete(key);
   else next.add(key);
-  if (next.size === 0) return null;
   if (next.size === allKeys.length) return null;
   return next;
 }
@@ -162,8 +164,9 @@ function collect(
 
 /**
  * Drop selected values that no longer exist among the tier's options. A tier
- * whose selection empties out returns to `null` — all checked — because a
- * board silently filtered by ghosts would read as a quiet market.
+ * whose selection is emptied BY THE PRUNE returns to `null` — all checked —
+ * because a board silently filtered by ghosts would read as a quiet market.
+ * A tier the reader emptied is left alone.
  */
 export function pruneFilterState(
   state: MarketFilterState,
@@ -182,6 +185,7 @@ function pruneTier(
   options: readonly TierOption[],
 ): ReadonlySet<string> | null {
   if (sel === null) return null;
+  if (sel.size === 0) return sel; // the reader unchecked everything; respect it
   const live = new Set(options.map((o) => o.key));
   const next = new Set([...sel].filter((k) => live.has(k)));
   if (next.size === 0) return null;
@@ -194,11 +198,17 @@ function pruneTier(
 // rest (all checked); keys are comma-joined and sorted so the same selection
 // always mints the same address.
 
+// `markets`, not `market`: the detail drawer owns `?market=<id>`, and a filter
+// sharing that key opened a drawer on a reload or a view switch.
+
+/** A tier the reader emptied. Absent param still means all checked, so an
+ *  emptied tier needs a value of its own or a reload rechecks everything. */
+const EMPTY_TIER = "~none";
 const TIER_PARAMS = [
   ["venue", "venues"],
   ["category", "categories"],
   ["series", "series"],
-  ["market", "markets"],
+  ["markets", "markets"],
 ] as const;
 
 export function marketFilterToQuery(
@@ -207,7 +217,8 @@ export function marketFilterToQuery(
   const query: Record<string, string> = {};
   for (const [param, tier] of TIER_PARAMS) {
     const sel = state[tier];
-    if (sel !== null && sel.size > 0) query[param] = [...sel].sort().join(",");
+    if (sel === null) continue;
+    query[param] = sel.size === 0 ? EMPTY_TIER : [...sel].sort().join(",");
   }
   return query;
 }
@@ -221,6 +232,10 @@ export function marketFilterFromQuery(
   for (const [param, tier] of TIER_PARAMS) {
     const raw = get(param);
     if (raw === null) continue;
+    if (raw === EMPTY_TIER) {
+      state[tier] = new Set();
+      continue;
+    }
     const keys = raw.split(",").map((k) => k.trim()).filter((k) => k.length > 0);
     if (keys.length > 0) state[tier] = new Set(keys);
   }

@@ -46,7 +46,11 @@ import { ArchivedMarketLinkRow } from "./ArchivedMarketRow.js";
 import { InlineError } from "./InlineError.js";
 import { MarketAssetIcon } from "./MarketAssetIcon.js";
 import { MarketsArchiveSearch } from "./MarketsArchiveSearch.js";
-import { MarketWindowGroupPanel, PHASE_TEXT } from "./MarketWindowGroup.js";
+import {
+  MarketWindowGroupPanel,
+  PHASE_TEXT,
+  windowPhaseText,
+} from "./MarketWindowGroup.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
 
 /**
@@ -187,8 +191,8 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
   }, [venueMarkets, refreshRegistry]);
 
   // Today's settled windows. Fetched on mount rather than on tab open because
-  // the header count states it ("10 live · 23 resolved today") — a number the
-  // reader sees before choosing a view.
+  // the header count states it ("10 taking calls · 23 resolved today") — a
+  // number the reader sees before choosing a view.
   const loadResolvedToday = useCallback(async (): Promise<void> => {
     const page = await fetchArchivedMarkets({
       from: startOfLocalDayEpochS(Date.now()),
@@ -197,28 +201,35 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     setResolvedToday({ rows: page.results, hasMore: page.has_more });
   }, []);
 
+  // Re-read when the SET of settled markets changes, or when the reader's own
+  // day rolls over. Keying on the count alone missed both: midnight keeps the
+  // count, and a replacement (one market evicted as another settles) does too,
+  // so the board sat on yesterday's results.
+  const resolutionSignature = Object.keys(resolutions).sort().join(",");
+  const localDayStartS = startOfLocalDayEpochS(nowMs);
   useEffect(() => {
-    let cancel = false;
-    loadResolvedToday().catch(() => {
-      // The archive is a secondary surface; a failure here must not take the
-      // live board down with it. The resolved view renders its own empty
-      // state and the header simply omits the count.
-      if (!cancel) setResolvedToday(null);
-    });
-    return () => {
-      cancel = true;
-    };
-  }, [loadResolvedToday]);
-
-  // Refresh the resolved list when a window we are watching settles, so the
-  // board does not need a manual reload to show what just happened.
-  const resolutionCount = Object.keys(resolutions).length;
-  useEffect(() => {
-    if (resolutionCount === 0) return;
+    // The archive is a secondary surface; a failure here must not take the
+    // live board down with it, and it must not drop rows already on screen.
+    // Before the first success the state is null, which renders its own
+    // "unavailable" line and leaves the header count off.
     loadResolvedToday().catch(() => undefined);
-  }, [resolutionCount, loadResolvedToday]);
+  }, [loadResolvedToday, resolutionSignature, localDayStartS]);
 
   const liveMarkets = useMemo(() => markets ?? [], [markets]);
+
+  // What the header states. "live" counted every LISTED row — upcoming and
+  // closed windows included — and read 0 before the registry landed. This is
+  // the markets whose window is taking calls right now, and null until the
+  // registry answers.
+  const takingCalls = useMemo(
+    () =>
+      markets === null
+        ? null
+        : markets.filter(
+            (m) => m.clock && marketWindowPhase(m.clock, nowMs, false) === "open",
+          ).length,
+    [markets, nowMs],
+  );
 
   // ── Filter tiers ──────────────────────────────────────────────────────────
   // Each live row flattened to its tier coordinates once; the bar, the board
@@ -346,6 +357,8 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
   // contributes nothing.
   const symbolFilter = useMemo((): ReadonlySet<string> | null => {
     if (effectiveFilter.markets === null) return null;
+    // The reader emptied the tier; the archive stays empty with it.
+    if (effectiveFilter.markets.size === 0) return new Set<string>();
     const labelByKey = new Map(filterRows.map((f) => [f.marketKey, f.marketLabel]));
     const symbols = new Set<string>();
     for (const key of effectiveFilter.markets) {
@@ -356,13 +369,12 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     return symbols.size > 0 ? symbols : null;
   }, [effectiveFilter, filterRows, iconByMarketKey]);
 
-  // The whole cohort settles together, so ONE resolution in the group means
-  // the window is over — the remaining four are moments behind it, and showing
-  // four "sealed" rows beside one "resolved" would misdescribe a settled
-  // window as still running.
+  // A window may only be pulled to `resolved` EARLY when every market in it
+  // carries a venue outcome. One resolution used to speak for the cohort,
+  // which declared four windows settled on the evidence of a fifth.
   const phaseOf = useCallback(
     (group: { resolutionAtMs: number; items: MarketRow[] }): MarketWindowPhase => {
-      const anyResolved = group.items.some(
+      const allResolved = group.items.every(
         (m) => resolutions[m.market_id] !== undefined,
       );
       const clock = group.items[0]?.clock;
@@ -373,7 +385,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
           resolution_at_ms: group.resolutionAtMs,
         },
         nowMs,
-        anyResolved,
+        allResolved,
       );
     },
     [nowMs, resolutions],
@@ -383,7 +395,11 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     visibleGroups.map((group) => ({
       key: group.key,
       label: formatLocalTimeLabel(group.submissionCloseAtMs) ?? group.key,
-      phase: phaseOf(group),
+      // The same words the badge shows, so heard matches seen.
+      text: windowPhaseText(
+        phaseOf(group),
+        group.items.every((m) => resolutions[m.market_id] !== undefined),
+      ),
     })),
   );
 
@@ -392,7 +408,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
       <MatrixHeader
         view={view}
         onPick={setView}
-        liveCount={liveMarkets.length}
+        takingCalls={takingCalls}
         resolvedToday={resolvedToday}
       />
 
@@ -538,12 +554,13 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
 function MatrixHeader({
   view,
   onPick,
-  liveCount,
+  takingCalls,
   resolvedToday,
 }: {
   view: MatrixView;
   onPick: (view: MatrixView) => void;
-  liveCount: number;
+  /** null until the registry has answered — a count of 0 would be a claim. */
+  takingCalls: number | null;
   resolvedToday: { rows: ArchivedMarketRow[]; hasMore: boolean } | null;
 }) {
   return (
@@ -581,7 +598,7 @@ function MatrixHeader({
       {/* Words, not "10/10". A ratio of two numbers nobody named is a puzzle;
           this states what is on the board. */}
       <p className="ml-auto ck-mono ck-dim m-0">
-        {liveCount} live
+        {takingCalls ?? "—"} taking calls
         {resolvedToday !== null && (
           <>
             {" · "}
@@ -794,39 +811,34 @@ function useSharedSecondTick(): number {
  * not read the whole board aloud.
  */
 function usePhaseTransitionAnnouncement(
-  groups: Array<{ key: string; label: string; phase: MarketWindowPhase }>,
+  groups: Array<{ key: string; label: string; text: string }>,
 ): string {
   const latest = useRef(groups);
   latest.current = groups;
   // The array is rebuilt every tick, so it cannot be the dependency — the
   // effect would run once a second forever. The SIGNATURE only changes when a
   // group appears, disappears, or moves phase, which is exactly the trigger.
-  const signature = groups.map((g) => `${g.key}:${g.phase}`).join("|");
-  const previous = useRef<Map<string, MarketWindowPhase> | null>(null);
+  const signature = groups.map((g) => `${g.key}:${g.text}`).join("|");
+  const previous = useRef<Map<string, string> | null>(null);
   const [announcement, setAnnouncement] = useState("");
 
   useEffect(() => {
     const current = latest.current;
-    const next = new Map(current.map((g) => [g.key, g.phase]));
+    const next = new Map(current.map((g) => [g.key, g.text]));
     const before = previous.current;
     previous.current = next;
     if (before === null) return; // seed pass — mounting says nothing
     const changed = current.filter(
-      (g) => before.has(g.key) && before.get(g.key) !== g.phase,
+      (g) => before.has(g.key) && before.get(g.key) !== g.text,
     );
     if (changed.length === 0) return;
     setAnnouncement(
-      changed
-        .map((g) => `${g.label} window: ${PHASE_ANNOUNCEMENT[g.phase]}`)
-        .join(". "),
+      changed.map((g) => `${g.label} window: ${g.text}`).join(". "),
     );
   }, [signature]);
 
   return announcement;
 }
-
-// Reuses the visible badge labels so what is heard matches what is shown.
-const PHASE_ANNOUNCEMENT = PHASE_TEXT;
 
 // ─── View param ─────────────────────────────────────────────────────────────
 
@@ -837,7 +849,7 @@ function readViewFromLocation(): MatrixView {
 
 // ─── Filter params ──────────────────────────────────────────────────────────
 
-const FILTER_PARAMS = ["venue", "category", "series", "market"] as const;
+const FILTER_PARAMS = ["venue", "category", "series", "markets"] as const;
 
 function readFilterFromLocation(): MarketFilterState {
   const params = readRouteQuery(window.location);

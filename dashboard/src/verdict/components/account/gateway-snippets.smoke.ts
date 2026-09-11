@@ -160,6 +160,29 @@ assert.ok(
   "TS snippet must destructure the handles and the trailing shared batch proof",
 );
 
+// The chain comes from the same /v1/meta block as the bindings — a snippet
+// that pins Base Sepolia signs for a chain the deployment may not run.
+assert.ok(
+  tsSnippet.includes("meta.fhenix?.chain_id_numeric") &&
+    !tsSnippet.includes("baseSepolia"),
+  "TS snippet must select the chain from /v1/meta, not hardcode one",
+);
+
+// No sample market, outcome, confidence or strategy in pasteable text.
+for (const language of LANGUAGES) {
+  const snippet = renderGatewaySnippet(language, "https://api.example");
+  for (const sample of ["<condition-id>", "momentum", "7200"]) {
+    assert.ok(
+      !snippet.includes(sample),
+      `${language} snippet must not ship the sample value ${sample}`,
+    );
+  }
+  assert.ok(
+    snippet.includes("MURMUR_MARKET_SOURCE_ID"),
+    `${language} snippet must require the market reference as an input`,
+  );
+}
+
 // The one-time post-mint path inlines only the bearer.
 const withKey = renderGatewaySnippet("typescript", "https://api.example", "mrt_secret");
 assert.ok(withKey.includes(`"mrt_secret"`), "post-mint render should inline the bearer");
@@ -255,6 +278,10 @@ if (canRunBash || canRunPython) {
     MURMUR_BATCH_PROOF: `0x${"ab".repeat(64)}`,
     MURMUR_BINARY_CT_HASH: `0x${"11".repeat(32)}`,
     MURMUR_CONFIDENCE_CT_HASH: `0x${"22".repeat(32)}`,
+    // The market reference is a required input now; unset is a hard stop.
+    MURMUR_MARKET_PROTOCOL: "polymarket-gamma",
+    MURMUR_MARKET_SOURCE_ID: "0x" + "cd".repeat(32),
+    MURMUR_MARKET_CONFIG_VERSION: "1",
   };
 
   async function runSnippet(command: string, args: string[]): Promise<string> {

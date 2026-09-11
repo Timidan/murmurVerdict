@@ -61,6 +61,8 @@ export function EarningsPanel({ slug }: { slug: string }) {
   }, [refresh]);
 
   const totals = earnings?.totals ?? [];
+  // The lifetime count, not `sales.length` — that page holds one page of rows.
+  const lifetimeSales = totals.reduce((sum, t) => sum + t.sales, 0);
 
   return (
     <section className="ck-frame w-full flex flex-col">
@@ -69,7 +71,7 @@ export function EarningsPanel({ slug }: { slug: string }) {
           <Ik name="x402" /> earnings
         </span>
         <span className="ck-mono ck-dim">
-          {earnings ? `${earnings.sales.length} sales` : "…"}
+          {earnings ? `${lifetimeSales} sales` : "…"}
         </span>
       </div>
 
@@ -84,6 +86,10 @@ export function EarningsPanel({ slug }: { slug: string }) {
 
         {loading && !earnings ? (
           <SkeletonStrip />
+        ) : !earnings ? (
+          // The request failed. An unloaded panel cannot claim there are no
+          // sales — the error above says what happened.
+          <p className="ck-mono ck-dim">[sales unavailable]</p>
         ) : totals.length === 0 ? (
           <p className="ck-mono ck-dim">No sales yet.</p>
         ) : (
@@ -137,7 +143,7 @@ export function EarningsPanel({ slug }: { slug: string }) {
           </div>
         )}
 
-        <PayoutJournal payouts={payouts} />
+        <PayoutJournal payouts={payouts} loading={loading} />
       </div>
     </section>
   );
@@ -230,11 +236,22 @@ function Figure({
  * amount is positive in both directions — the direction lives in `entry_type`
  * — so the sign here is presentation, applied once, in one place.
  */
-function PayoutJournal({ payouts }: { payouts: ProviderPayoutsView | null }) {
+function PayoutJournal({
+  payouts,
+  loading,
+}: {
+  payouts: ProviderPayoutsView | null;
+  loading: boolean;
+}) {
   return (
     <div className="flex flex-col gap-2">
       <h3 className="ck-label ck-pos">payouts</h3>
-      {!payouts || payouts.payouts.length === 0 ? (
+      {!payouts ? (
+        // Unloaded is not the same as empty, so it says neither.
+        <p className="ck-dim text-[12px]">
+          {loading ? "Loading the payout journal…" : "[payouts unavailable]"}
+        </p>
+      ) : payouts.payouts.length === 0 ? (
         <p className="ck-dim text-[12px]">
           Murmur has not recorded a payout for this agent yet. Payouts are sent
           by hand, then written down here.

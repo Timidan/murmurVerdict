@@ -9,7 +9,7 @@
 // secret dialog can still manage their own subscriptions, which is the whole
 // reason /v1/account/webhooks exists.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
 
 import {
@@ -21,6 +21,7 @@ import {
 import { Ik } from "../../icons.js";
 import { formatLocalDateTime } from "../../lib/date-time-format.js";
 import { InlineError } from "../compact/InlineError.js";
+import { useFocusTrap } from "../compact/useFocusTrap.js";
 
 const INPUT_CLASS =
   "ck-mono bg-transparent border border-[var(--color-border-vis)] px-2 py-1 outline-none focus:border-[var(--color-display)] disabled:opacity-50 disabled:cursor-not-allowed";
@@ -262,12 +263,26 @@ function WebhookSecretModal({
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const copyRef = useRef<HTMLButtonElement | null>(null);
   const copy = useCallback(() => {
     void navigator.clipboard?.writeText(created.secret).then(
       () => setCopied(true),
       () => setCopied(false),
     );
   }, [created.secret]);
+
+  // Same focus lifecycle as the key-reveal modals: move focus in on mount,
+  // return it on unmount, and keep Tab inside while it is open.
+  useEffect(() => {
+    const prevFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    (copyRef.current ?? panelRef.current)?.focus();
+    return () => {
+      prevFocus?.focus();
+    };
+  }, []);
+  useFocusTrap(panelRef);
 
   return (
     <div
@@ -276,7 +291,11 @@ function WebhookSecretModal({
       aria-modal="true"
       aria-labelledby="webhook-secret-title"
     >
-      <section className="ck-frame-strong max-w-[560px] w-full bg-[var(--color-bg)]">
+      <section
+        ref={panelRef}
+        tabIndex={-1}
+        className="ck-frame-strong max-w-[560px] w-full bg-[var(--color-bg)] outline-none"
+      >
         <div className="ck-header">
           <span id="webhook-secret-title" className="ck-title ck-title-ik">
             <Ik name="webhook" /> your signing secret
@@ -296,7 +315,12 @@ function WebhookSecretModal({
             compares. A request that does not match did not come from murmur.
           </p>
           <span className="flex gap-2">
-            <button type="button" onClick={copy} className="ck-btn ck-btn-bracket ck-pos">
+            <button
+              type="button"
+              ref={copyRef}
+              onClick={copy}
+              className="ck-btn ck-btn-bracket ck-pos"
+            >
               <Ik name="copy" />
               {copied ? "copied" : "copy the secret"}
             </button>

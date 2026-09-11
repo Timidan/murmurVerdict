@@ -85,6 +85,8 @@ export interface WireFullCall {
       binary_index: number;
       confidence_bps: number;
       confidence: number;
+      /** The venue's own word for this outcome. Absent when the venue named none. */
+      outcome_label?: string;
     };
   };
 }

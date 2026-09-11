@@ -45,6 +45,7 @@ import { shortId } from "../../lib/display-format.js";
 import { InlineError } from "./InlineError.js";
 import { Panel } from "./Panel.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
+import { useNowMs } from "./TimeAgo.js";
 
 /**
  * The checkout, loaded only when somebody opens a call to buy.
@@ -104,7 +105,13 @@ export function AgentListingsMatrix() {
     };
   }, []);
 
-  const matrix = useMemo(() => buildListingsMatrix(catalog, feed), [catalog, feed]);
+  // The shared 30s ticker, so a sale window that runs out stops offering a buy
+  // without a reload and without a second timer on the page.
+  const nowMs = useNowMs();
+  const matrix = useMemo(
+    () => buildListingsMatrix(catalog, feed, nowMs),
+    [catalog, feed, nowMs],
+  );
   const empty = matrixEmptyState(matrix);
   const line = availabilityLine(feed, matrix);
 
@@ -288,7 +295,7 @@ function Cell({
   const open = cell.openCalls.length;
   // Colour only for genuine state: the marker greens only when a seat can
   // actually be bought on this deployment right now.
-  const buyable = cell.openCalls.some((c) => c.buyable);
+  const buyable = cell.openCalls.filter((c) => c.buyable).length;
   return (
     <div className="ck-matrix-cell" role="cell">
       {cell.listPrice ? (
@@ -311,10 +318,18 @@ function Cell({
           aria-expanded={expanded}
           className={
             "ck-tag ck-matrix-open " +
-            (buyable ? "ck-tag-ok " : "") +
+            (buyable > 0 ? "ck-tag-ok " : "") +
             (expanded ? "ck-matrix-open-on" : "")
           }
-          title={`${open} sealed call${open === 1 ? "" : "s"} from ${row.slug} on ${column.title} are open to buy, each at the price locked when it was sealed`}
+          /* `n open` counts sealed calls, and a sealed call is not a seat on
+             offer — a full cohort or a closed sale window leaves it listed and
+             unbuyable. The tooltip says which of the two the reader is looking
+             at rather than promising a buy for every row. */
+          title={
+            buyable === 0
+              ? `${open} sealed call${open === 1 ? "" : "s"} from ${row.slug} on ${column.title}. None takes a new buyer right now.`
+              : `${buyable} sealed call${buyable === 1 ? " is" : "s are"} open to buy from ${row.slug} on ${column.title}, each at the price locked when it was sealed.`
+          }
         >
           {open} open
         </button>

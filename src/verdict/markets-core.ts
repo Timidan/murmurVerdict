@@ -19,8 +19,8 @@
  *
  * Score range: this module returns `call_score ∈ [0, 1]`, NOT the alternative
  * `[-1, +1]` mentioned in V2 §2.3. Picked `[0, 1]` for cleanness — `1.0` is a
- * perfect call, `0.0` is a full miss, `0.5` is 50/50 confidence on a 50/50
- * outcome. Confidence-weighted shifts to `[-1, +1]` are layered on top per
+ * perfect call, `0.0` is a full miss, `0.5` is 50/50 confidence when the market
+ * resolves to one side. Confidence-weighted shifts to `[-1, +1]` are layered on top per
  * `market_family` by adapters that want directional sign.
  *
  * JSON serializability: bigint is not natively JSON-serializable. Numerator /
@@ -245,7 +245,7 @@ function gcdBig(a: bigint, b: bigint): bigint {
  * Multinomial Brier-shell score. Returns `1 − halfL1Distance` ∈ `[0, 1]`.
  *
  *   - `1.0` perfect call  (predicted === resolved)
- *   - `0.5` 50/50 confidence on a 50/50 outcome
+ *   - `0.5` 50/50 confidence when the market resolves to one side
  *   - `0.0` full miss     (disjoint one-hots)
  *
  * Validates `predicted.kind === o.kind` and length agreement before

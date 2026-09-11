@@ -36,8 +36,9 @@ export interface StreamSnapshot {
   recentCalls: Array<CallAcceptedEvent | CallResolvedEvent>;
   /**
    * Latest per-market top-N snapshot keyed by market_id. Populated as
-   * `markets.update` events arrive — components scoped to a single market
-   * read `markets[their_market_id]` and re-render without a REST refetch.
+   * `markets.update` events arrive — a component scoped to one market reads
+   * `markets[their_market_id].served_at` as the signal to re-read its ladder
+   * over REST, because the lean event is not the ladder.
    */
   markets: Record<string, MarketsUpdateEvent>;
 }

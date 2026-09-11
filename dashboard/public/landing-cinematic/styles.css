@@ -821,7 +821,7 @@ canvas {
 .scoreboard__count strong {
   color: var(--ink-strong);
   font-family: var(--display);
-  font-size: clamp(2rem, 4vw, 3.5rem);
+  font-size: clamp(2.25rem, 4vw, 3.5rem);
   line-height: 0.8;
 }
 
@@ -1033,9 +1033,11 @@ canvas {
   max-width: 14ch;
   margin: var(--space-7) 0 var(--space-4);
   color: var(--ink-strong);
-  font-family: var(--display);
+  /* Sans, not Doto: DESIGN.md 2.1 floors the display face at 36px. */
+  font-family: var(--sans);
+  font-weight: 700;
   font-size: clamp(1.8rem, 2.6vw, 2.6rem);
-  line-height: 1;
+  line-height: 1.05;
   letter-spacing: -0.025em;
   text-wrap: balance;
 }

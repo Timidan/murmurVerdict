@@ -1,14 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { verdictApi, ApiError, type FullCall } from "../../api.js";
 import { Ik } from "../../icons.js";
 import { Panel } from "./Panel.js";
 import { ErrorState } from "./ErrorState.js";
 import { PanelSkeleton } from "./PanelSkeleton.js";
 import { PrivacyTierBadge } from "../PrivacyTierBadge.js";
-import { SideGlyph } from "./glyphs.js";
 import { TimeAgo } from "./TimeAgo.js";
 import { formatScore } from "../../lib/score-format.js";
 import { shortId } from "../../lib/display-format.js";
+import { useStream } from "../../hooks/useStream.js";
+import {
+  isPendingCallStatus,
+  isTerminalFailureStatus,
+} from "@shared/wire-call-status";
 
 /**
  * Shared call-detail body — the 3-stat header + submission / anchor·resolution
@@ -33,15 +37,33 @@ export function CallDetail({
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
 
+  // A call's record is a REST read, so a `call.resolved` event for THIS call
+  // has to re-read it — the streamed row is the lean wire shape and carries
+  // none of the lifecycle evidence below. `live` is a dependency for the same
+  // reason: an event that fires while the socket is down never arrives, so a
+  // reconnect re-reads rather than trusting a snapshot with a hole in it.
+  const { recentCalls, status } = useStream();
+  const live = status === "open";
+  const event = recentCalls.find((e) => e.call_id === callId);
+  const streamKey = event ? event.type : null;
+  const shown = useRef<string | null>(null);
+
   useEffect(() => {
     let cancel = false;
-    setData(null);
-    setError(null);
-    setNotFound(false);
+    // Only a NEW call blanks the panels; a live refresh repaints in place.
+    if (shown.current !== callId) {
+      shown.current = callId;
+      setData(null);
+      setError(null);
+      setNotFound(false);
+    }
     verdictApi
       .call(callId)
       .then((r) => {
-        if (!cancel) setData(r);
+        if (cancel) return;
+        setData(r);
+        setError(null);
+        setNotFound(false);
       })
       .catch((e: unknown) => {
         if (cancel) return;
@@ -51,23 +73,29 @@ export function CallDetail({
     return () => {
       cancel = true;
     };
-  }, [callId]);
+  }, [callId, streamKey, live]);
 
-  // Pending calls are sealed; only the privacy-mode label and public
-  // resolution data are shown after scoring.
+  // The privacy stat says which side of the reveal this call is on. It used to
+  // read "sealed" always — including on a call whose revealed side and
+  // confidence render two rows below it, under a tooltip insisting murmur
+  // cannot show them.
   //
-  // The tooltip below states the guarantee precisely rather than the flat
+  // The sealed tooltip states the guarantee precisely rather than the flat
   // "murmur never sees the sealed prediction" it used to claim. That was true
   // of the client-sealed path only — on /seal the operator IS handed the
   // plaintext — and it ignored that early decrypt access rests on grantor key
   // custody. The same overclaim was corrected in the agent card, README,
   // OpenAPI and skill doc; this was the copy actual users read.
-  const subjectLabel = !data ? "" : "sealed";
+  const revealed = Boolean(data?.fhenix?.revealed_verdict);
+  const subjectLabel = !data ? "" : revealed ? "revealed" : "sealed";
+  const privacyTitle = revealed
+    ? "The market closed and this call was opened, so the side and the confidence below are public. Before the reveal murmur held the plain text only on the optional /seal path. A buyer with paid access could read the call early."
+    : "The call is sealed. Murmur cannot show it here, and the contract cannot publish it before the market's reveal time. On the standard path the agent seals the call in its own runtime, so murmur never holds the plain text. On the optional /seal path murmur does hold it, by design.";
   const outcomeText = !data
     ? ""
     : data.resolution
       ? outcomeWord(data.resolution.outcome)
-      : "pending";
+      : callStateWord(data.submission.status);
   const outcomeTone = !data
     ? "ck-dim"
     : !data.resolution
@@ -119,12 +147,7 @@ export function CallDetail({
       {data && (
         <>
           <div className={statWrap}>
-            <Stat
-              label="privacy"
-              value={subjectLabel}
-              mono
-              title="The call is sealed. Murmur cannot show it here, and the contract cannot publish it before the market's reveal time. On the standard path the agent seals the call in its own runtime, so murmur never holds the plain text. On the optional /seal path murmur does hold it, by design."
-            />
+            <Stat label="privacy" value={subjectLabel} mono title={privacyTitle} />
             <Stat label="outcome" value={outcomeText} tone={outcomeTone} />
             <Stat
               label="score"
@@ -181,20 +204,17 @@ export function CallDetail({
               <>
                 {data.fhenix.revealed_verdict ? (
                   <>
-                    {/* Glyph + word, the same grammar the sealed branch below
-                        uses ("seal glyph + sealed"). Without the word the two
-                        states of this one row speak different languages: an
-                        arrow alone, then a marked-up phrase. */}
+                    {/* The venue names its own two outcomes. When it named
+                        this one, print its word; otherwise print the index,
+                        which is all murmur knows. Never an inferred direction:
+                        index 0 used to draw an up arrow on every market. */}
                     <Kv
                       k="side"
                       v={
-                        <span className="inline-flex items-center gap-1">
-                          <SideGlyph
-                            side={data.fhenix.revealed_verdict.binary_index === 0 ? "UP" : "DOWN"}
-                          />
-                          {data.fhenix.revealed_verdict.binary_index === 0 ? "up" : "down"}
-                        </span>
+                        data.fhenix.revealed_verdict.outcome_label ??
+                        `outcome ${data.fhenix.revealed_verdict.binary_index}`
                       }
+                      title="which of the venue's two outcomes this agent called. The venue names the pair; murmur records the index."
                     />
                     <Kv
                       k="confidence"
@@ -304,7 +324,11 @@ export function CallDetail({
             ) : (
               <Kv
                 k="scored"
-                v="not yet — the market has not settled"
+                v={
+                  isPendingCallStatus(data.submission.status)
+                    ? "not yet — the market has not settled"
+                    : "no score — this call never reached a verdict"
+                }
                 tone="ck-dim"
               />
             )}
@@ -482,8 +506,27 @@ const OUTCOME_TEXT: Record<string, string> = {
 };
 
 function outcomeWord(outcome: string | null | undefined): string {
-  if (!outcome) return "pending";
-  return OUTCOME_TEXT[outcome] ?? outcome.replace(/_/g, " ");
+  return outcome ? (OUTCOME_TEXT[outcome] ?? outcome.replace(/_/g, " ")) : "—";
+}
+
+/**
+ * A call with no resolution, said in the app's own words. "open" is reserved
+ * for the canonical pending set (COPY.md: sealed, not resolved yet) — a
+ * rejected call, a bad reveal and a missed reveal are terminal and will never
+ * resolve, so calling all three "pending" both used a retired word and told the
+ * reader to wait for a verdict that is not coming.
+ */
+const STATE_TEXT: Record<string, string> = {
+  rejected: "rejected",
+  invalid_reveal: "bad reveal",
+  missed_reveal: "missed reveal",
+  disputed: "under dispute",
+};
+
+function callStateWord(status: string): string {
+  if (isPendingCallStatus(status)) return "open";
+  if (isTerminalFailureStatus(status)) return STATE_TEXT[status] ?? "failed";
+  return STATE_TEXT[status] ?? status.replace(/_/g, " ");
 }
 
 function ExplorerLink({

@@ -17,7 +17,7 @@ const REFS_CRUMB = (
 /**
  * /#/admin/refs — token-gated full sender board.
  *
- * Mirrors /#/recruiters but with admin-only data (full unfiltered list)
+ * Mirrors /#/recruiters but with admin-only data (the first 200 senders)
  * and per-row delete actions. The token is read from ?token=<...> on
  * first visit and persisted to localStorage so the operator doesn't
  * paste it on every refresh. Token never enters the request URL —
@@ -92,7 +92,7 @@ export function AdminRefsPage() {
         <div className="flex flex-col gap-1">
           <span className="ck-title">full attribution data</span>
           <span className="ck-mono ck-dim">
-            admin · sender board · full unfiltered list with per-row delete
+            admin · sender board · the first 200 senders, with per-row delete
           </span>
         </div>
         <button onClick={signOut} className="ck-btn ck-btn-bracket">
@@ -119,7 +119,9 @@ export function AdminRefsPage() {
           )}
 
           {rows && rows.length > 0 && (
-            <ul className="m-0 p-0 list-none">
+            /* min-w: the fixed tracks take 664px, so the 1fr sender column
+               collapsed to nothing before the panel started scrolling. */
+            <ul className="m-0 p-0 list-none min-w-[860px]">
               <li className={COLS + " border-b border-[var(--color-border-vis)] ck-colhead"}>
                 <span>rank</span>
                 <span>sender</span>
@@ -131,7 +133,7 @@ export function AdminRefsPage() {
               </li>
               {rows.map((r, i) => (
                 <li key={r.ref} className={COLS + " border-b border-[var(--color-border)]"}>
-                  <span className="ck-mono ck-dim tabular-nums">{String(i + 1).padStart(2, "0")}</span>
+                  <span className="ck-mono ck-dim tabular-nums">{i + 1}</span>
                   <a
                     href={`https://x.com/${r.ref}`}
                     target="_blank"

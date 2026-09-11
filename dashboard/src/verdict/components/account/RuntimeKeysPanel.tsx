@@ -51,6 +51,16 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     refreshError ? unknownConnection(refreshError) : connectionAt(key.connection, snapshot!.served_at, receivedAtMs),
   ])), [clockTick, keys, receivedAtMs, refreshError, snapshot]);
 
+  // A key stops working when it is revoked OR when it expires, so both leave
+  // the active count. `clockTick` ticks this every second while visible.
+  const expired = (iso: string | null) => {
+    if (!iso) return false;
+    const at = Date.parse(iso);
+    return Number.isFinite(at) && at <= Date.now();
+  };
+  const activeCount = keys.filter((k) => !k.revoked_at && !expired(k.expires_at)).length;
+  const revokedCount = keys.filter((k) => k.revoked_at).length;
+
   const cw = agent?.controller_wallet ?? null;
   const canMint = Boolean(cw) && !cw?.reattestation_overdue;
   const controllerWalletConnected = cw
@@ -152,7 +162,8 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
           <Ik name="runtime-key" /> runtime keys · {slug}
         </h3>
         <span className="text-[12px] ck-dim">
-          {keys.filter((k) => !k.revoked_at).length} active · {keys.filter((k) => k.revoked_at).length} revoked
+          {/* Before the keys are known the count is unknown, not zero. */}
+          {snapshot ? `${activeCount} active · ${revokedCount} revoked` : "…"}
         </span>
       </header>
 
@@ -206,7 +217,8 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
           </li>
           {keys.map((k) => {
             const revoked = Boolean(k.revoked_at);
-            const tone = revoked ? "ck-dim" : "ck-pos";
+            // Expired keys read as dim too, so the row agrees with the count.
+            const tone = revoked || expired(k.expires_at) ? "ck-dim" : "ck-pos";
             return (
               <li
                 key={k.runtime_key_id}

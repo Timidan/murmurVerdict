@@ -50,6 +50,9 @@ export function FamilyLeaderboards() {
 
   useEffect(() => {
     let cancel = false;
+    // A failed view leaves its error behind, and the next view is a fresh
+    // request: keeping it would caption working rows with a dead error.
+    setError(null);
     if (view === "cross") {
       setCross(null);
       verdictApi
@@ -112,14 +115,16 @@ export function FamilyLeaderboards() {
       {error && (
         <InlineError error={error} className="px-2 py-2 ck-mono" />
       )}
+      {/* A request that failed never arrives, so its "loading…" would sit
+          there forever under the error that already explains it. */}
       {view === "cross" ? (
         cross === null ? (
-          <SkelRows />
+          error ? null : <SkelRows />
         ) : (
           <CrossRows rows={cross} />
         )
       ) : family === null ? (
-        <SkelRows />
+        error ? null : <SkelRows />
       ) : (
         <FamilyRows rows={family} />
       )}

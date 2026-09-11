@@ -514,11 +514,14 @@ details[open] > .details-fade {
 
 /* Logo loader — animated WebP with a real alpha channel. No blend mode: a
    blend needs an unbroken path to the page background, which any overlay
-   (position + z-index) breaks by forming a stacking context. */
+   (position + z-index) breaks by forming a stacking context.
+
+   IN FLOW, not fixed. It used to be `position: fixed; inset: 0`, so a panel
+   that loaded on its own — an admin table, the integrate rail — threw the mark
+   across the whole viewport, on top of content that had already arrived. Every
+   call site that wants it centred on the page already wraps it in a centring
+   flex box, so the fixed layer bought nothing and covered everything. */
 .mmr-logo-loader {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: center;

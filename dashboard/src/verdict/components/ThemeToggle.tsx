@@ -18,6 +18,19 @@ function readCurrent(): Theme {
 export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(() => readCurrent());
 
+  // Keep every mounted toggle in sync with the root attribute `applyTheme`
+  // writes. The desktop and mobile toggles are two components holding two
+  // copies of the same state, and a same-tab flip fires no `storage` event —
+  // so one bar's label stayed on the old theme until it was clicked twice.
+  useEffect(() => {
+    const observer = new MutationObserver(() => setTheme(readCurrent()));
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
   // Keep state in sync if another tab flips the value.
   useEffect(() => {
     function onStorage(ev: StorageEvent) {

@@ -57,13 +57,18 @@ function dateTimeFormatter(): Intl.DateTimeFormat {
   const key = localeKey();
   let cached = dateTimeFormatters.get(key);
   if (!cached) {
+    // Component options, not dateStyle/timeStyle: Intl refuses to combine
+    // those with `timeZoneName`, and an absolute instant that does not name
+    // its zone is unreadable on mobile, where the topbar clock is hidden.
+    // `short` keeps the suffix to "GMT+1" / "PDT" rather than "GMT+01:00".
     cached = new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      // `medium`, not `long`: the zone suffix ("GMT+1") pushed this string to
-      // 31 characters, which wraps in the call page's value column and made
-      // every lifecycle row two lines tall. The zone is stated once, in the
-      // topbar clock, and the full ISO instant is in each row's tooltip.
-      timeStyle: "medium",
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "short",
     });
     dateTimeFormatters.set(key, cached);
   }
@@ -91,6 +96,8 @@ export function formatLocalTimeLabel(
   if (date === null) return null;
   return timeFormatter().format(date);
 }
+
+const shortDateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 
 const clockFormatters = new Map<string, Intl.DateTimeFormat>();
 
@@ -127,7 +134,7 @@ export function formatLocalClock(
 }
 
 /**
- * The full local instant — "Aug 10, 2026, 1:25:00 AM".
+ * The full local instant — "Aug 10, 2026, 1:25:00 AM GMT+1".
  *
  * This is the TITLE half of every time in the matrix: the visible text is the
  * short label, the tooltip is this. A reader who needs to know exactly when a
@@ -140,6 +147,35 @@ export function formatLocalDateTime(
   const date = toDate(iso);
   if (date === null) return null;
   return dateTimeFormatter().format(date);
+}
+
+/**
+ * The same instant for a cell that has no room for it — "9/10, 1:25 AM GMT+1".
+ *
+ * `formatLocalDateTime` is the tooltip form and says so; at ~30 characters it
+ * wraps a narrow admin column into three lines and a call's value column into
+ * two. This drops the year and the seconds — both still exact in the tooltip
+ * beside it — and keeps the zone, which is the part a bare local clock cannot
+ * be read without.
+ */
+export function formatLocalDateTimeShort(
+  iso: string | number | null | undefined,
+): string | null {
+  const date = toDate(iso);
+  if (date === null) return null;
+  const key = localeKey();
+  let cached = shortDateTimeFormatters.get(key);
+  if (!cached) {
+    cached = new Intl.DateTimeFormat(undefined, {
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    });
+    shortDateTimeFormatters.set(key, cached);
+  }
+  return cached.format(date);
 }
 
 /**

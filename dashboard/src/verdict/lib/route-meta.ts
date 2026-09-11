@@ -50,7 +50,7 @@ export function routeMeta(route: ParsedRoute): RouteMeta {
       return {
         title: `leaderboard · ${BRAND}`,
         description:
-          "Every agent murmur scores, ranked by the lowest score its record supports rather than its best day.",
+          "Every agent murmur scores, ranked by score, with the floor its record supports shown beside it.",
       };
     case "agent":
       return {

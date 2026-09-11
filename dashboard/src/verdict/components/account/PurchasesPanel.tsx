@@ -17,7 +17,7 @@
 // murmur holds no settlement receipt for that row — NOT that the payment
 // failed — and softening it either way would be a guess about somebody's money.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSignMessage, useWallets } from "@privy-io/react-auth";
 
 import {
@@ -39,21 +39,56 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
   const [view, setView] = useState<WalletPurchasesView | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  // The signed read is replayable for five minutes, so paging keeps the same
+  // proof instead of asking the wallet to sign once per page.
+  const [auth, setAuth] = useState<
+    { unixSeconds: number; signature: string } | null
+  >(null);
 
-  // The controller wallet bound to any of this account's agents is the wallet
-  // that would have paid. Prefer a connected one, because only a connected
-  // wallet can sign.
   const boundAddresses = agents
     .map((a) => a.controller_wallet?.wallet_address)
     .filter((a): a is string => Boolean(a));
-  const connected =
-    wallets.find((w) =>
-      boundAddresses.some((b) => b.toLowerCase() === w.address.toLowerCase()),
-    ) ??
-    wallets.find((w) => w.walletClientType === "privy") ??
-    wallets[0] ??
+  const isBound = (a: string) =>
+    boundAddresses.some((b) => b.toLowerCase() === a.toLowerCase());
+
+  // An owner buys in the browser from the Privy wallet, while an agent's
+  // controller wallet is often a different one, so the panel offers both
+  // rather than choosing for them. Connected wallets come first — only those
+  // can sign. A bound wallet that is not connected still reads unsigned.
+  const options: Array<{ address: string; name: string }> = wallets.map((w) => ({
+    address: w.address,
+    name:
+      (w.walletClientType === "privy" ? "privy wallet" : w.walletClientType) +
+      (isBound(w.address) ? " · controller wallet" : ""),
+  }));
+  for (const b of boundAddresses) {
+    if (!options.some((o) => o.address.toLowerCase() === b.toLowerCase())) {
+      options.push({ address: b, name: "controller wallet · not connected" });
+    }
+  }
+
+  const fallback =
+    wallets.find((w) => isBound(w.address))?.address ??
+    wallets.find((w) => w.walletClientType === "privy")?.address ??
+    wallets[0]?.address ??
+    boundAddresses[0] ??
     null;
-  const address = connected?.address ?? boundAddresses[0] ?? null;
+  const address = picked ?? fallback;
+  const connected =
+    wallets.find((w) => w.address.toLowerCase() === address?.toLowerCase()) ??
+    null;
+
+  // Rows belong to the address they were fetched for. Switching wallets drops
+  // them, and bumping the token discards whatever is still in flight.
+  const requestRef = useRef(0);
+  useEffect(() => {
+    requestRef.current += 1;
+    setView(null);
+    setError(null);
+    setAuth(null);
+    setBusy(false);
+  }, [address]);
 
   const load = useCallback(
     async (signed: boolean) => {
@@ -61,11 +96,15 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
         setError("Bind a controller wallet first. It is the wallet that pays.");
         return;
       }
+      const request = ++requestRef.current;
       setBusy(true);
       setError(null);
       try {
         if (!signed) {
-          setView(await verdictApi.getWalletPurchases(address));
+          const page = await verdictApi.getWalletPurchases(address);
+          if (requestRef.current !== request) return;
+          setAuth(null);
+          setView(page);
           return;
         }
         if (!connected) {
@@ -80,20 +119,49 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
           { message: purchasesAuthMessage(connected.address, unixSeconds) },
           { address: connected.address },
         );
-        setView(
-          await verdictApi.getWalletPurchases(connected.address, {
-            unixSeconds,
-            signature,
-          }),
+        const proof = { unixSeconds, signature };
+        const page = await verdictApi.getWalletPurchases(
+          connected.address,
+          proof,
         );
+        if (requestRef.current !== request) return;
+        setAuth(proof);
+        setView(page);
       } catch (e) {
+        if (requestRef.current !== request) return;
         setError((e as Error)?.message ?? "unknown error");
       } finally {
-        setBusy(false);
+        if (requestRef.current === request) setBusy(false);
       }
     },
     [address, connected, signMessage],
   );
+
+  // "full history" was one page. Older purchases and their refund rows sat
+  // behind the cursor the response already carries.
+  const loadMore = useCallback(async () => {
+    const cursor = view?.next_cursor;
+    if (!address || !cursor) return;
+    const request = ++requestRef.current;
+    setBusy(true);
+    setError(null);
+    try {
+      const page = await verdictApi.getWalletPurchases(
+        address,
+        auth ?? undefined,
+        { cursor },
+      );
+      if (requestRef.current !== request) return;
+      setView((prev) =>
+        prev ? { ...page, purchases: [...prev.purchases, ...page.purchases] } : page,
+      );
+    } catch (e) {
+      if (requestRef.current !== request) return;
+      setError((e as Error)?.message ?? "unknown error");
+    } finally {
+      if (requestRef.current === request) setBusy(false);
+    }
+  }, [address, auth, view?.next_cursor]);
 
   return (
     <section className="ck-frame">
@@ -116,7 +184,24 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
           Calls this wallet paid to read early.
         </p>
 
-        {address ? (
+        {options.length > 1 ? (
+          <label className="flex items-center gap-2">
+            <span className="ck-label">wallet</span>
+            <select
+              value={address ?? ""}
+              onChange={(e) => setPicked(e.currentTarget.value)}
+              disabled={busy}
+              className="ck-mono ck-select"
+              title="the wallet whose purchases you are reading"
+            >
+              {options.map((o) => (
+                <option key={o.address} value={o.address} title={o.address}>
+                  {shortId(o.address, 8, 6)} · {o.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : address ? (
           <p className="ck-dim text-[12px]">
             wallet <span className="ck-mono" title={address}>{shortId(address, 8, 6)}</span>
           </p>
@@ -169,6 +254,16 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
                 <PurchaseRow key={`${row.onchain_call_id}-${row.created_at}`} row={row} />
               ))}
             </ul>
+            {view.next_cursor && (
+              <button
+                type="button"
+                className="ck-btn ck-btn-bracket self-start"
+                onClick={() => void loadMore()}
+                disabled={busy}
+              >
+                show older purchases
+              </button>
+            )}
           </>
         )}
       </div>

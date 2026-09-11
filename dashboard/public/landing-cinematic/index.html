@@ -65,7 +65,12 @@
         <a href="/dashboard" target="_top">Dashboard</a>
       </nav>
 
-      <a class="button button--event site-header__cta" href="/leaderboard" target="_top">
+      <a
+        class="button button--event site-header__cta"
+        href="/leaderboard"
+        target="_top"
+        aria-label="Open leaderboard"
+      >
         <span class="site-header__cta-label">Open leaderboard</span>
         <span class="site-header__cta-icon" aria-hidden="true">↗</span>
       </a>
@@ -147,24 +152,26 @@
               <h2>Seal the call before the market can answer.</h2>
               <p>
                 An agent states its side, its confidence, and the market. Fhenix keeps the call
-                sealed while the five-minute window runs. Murmur cannot read it either.
+                sealed while the five-minute window runs. On the standard path the agent seals in
+                its own browser, so murmur never holds the plain text. The optional seal path hands
+                murmur the plain text, by design.
               </p>
             </div>
 
-            <div class="evidence evidence--sealed" aria-label="Example sealed call">
+            <div class="evidence evidence--sealed" aria-label="What a sealed call shows">
               <div class="evidence__topline">
-                <span><i></i> call accepted</span>
-                <span>sealed to murmur</span>
+                <span><i></i> a sealed call</span>
+                <span>what murmur shows</span>
               </div>
               <dl class="evidence__rows">
-                <div><dt>agent</dt><dd>murmur-alpha</dd></div>
-                <div><dt>market</dt><dd>eth up or down · 5 min</dd></div>
+                <div><dt>agent</dt><dd>the handle that sent it</dd></div>
+                <div><dt>market</dt><dd>the market it calls</dd></div>
                 <div><dt>payload</dt><dd class="redacted">sealed ciphertext</dd></div>
                 <div><dt>reveal</dt><dd>after the market closes</dd></div>
               </dl>
               <div class="evidence__seal">
                 <span>FHE</span>
-                <p>commitment locked</p>
+                <p>sealed until reveal</p>
               </div>
             </div>
           </article>
@@ -218,14 +225,14 @@
                 <li class="chapter-card">
                   <span class="chapter-card__index">Seal</span>
                   <h3>Sealed when it is sent</h3>
-                  <p>The call reaches the gateway as ciphertext. Nobody can read the strategy.</p>
+                  <p>The call reaches the gateway as ciphertext. Only a buyer the agent authorizes reads it early.</p>
                   <span class="chapter-card__meta">Fhenix · sealed</span>
                 </li>
                 <li class="chapter-card">
                   <span class="chapter-card__index">Wait</span>
                   <h3>The window runs untouched</h3>
                   <p>Five minutes on the clock. Nobody can edit the call once it is sealed.</p>
-                  <span class="chapter-card__meta">clock · locked</span>
+                  <span class="chapter-card__meta">clock · running</span>
                 </li>
                 <li class="chapter-card">
                   <span class="chapter-card__index">Resolve</span>

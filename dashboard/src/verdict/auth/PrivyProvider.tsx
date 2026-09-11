@@ -2,7 +2,7 @@
 //
 // Wraps the underlying `@privy-io/react-auth` <PrivyProvider> with:
 //   1) Env-driven `appId` (read from VITE_PRIVY_APP_ID).
-//   2) Nothing-design styling defaults (dark theme, muted UI event accent).
+//   2) Nothing-design styling defaults (site theme, muted UI event accent).
 //   3) Login methods scoped to email + Google + wallet (per UX spec §2 step-b).
 //   4) `embeddedWallets.createOnLogin = "users-without-wallets"` — every
 //      signed-in user ends up with at least one wallet (auto-created if
@@ -14,7 +14,7 @@
 // the children inside an inert wrapper and `useAccount()` surfaces a clear
 // "Privy not configured" state on routes that need auth.
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { PrivyProvider as VendorPrivyProvider } from "@privy-io/react-auth";
 import { PRIVY_APP_ID, isPrivyConfigured, privyAppId } from "./privy-config.js";
 
@@ -53,6 +53,12 @@ interface PrivyProviderProps {
   children: ReactNode;
 }
 
+function readModalTheme(): "light" | "dark" {
+  return document.documentElement.getAttribute("data-theme") === "paper"
+    ? "light"
+    : "dark";
+}
+
 /**
  * Top-level Privy provider. Mounted once per account-area session by
  * AccountShell (lazy-loaded from the Router — public routes never pull the
@@ -67,6 +73,20 @@ interface PrivyProviderProps {
  */
 export function PrivyProvider({ children }: PrivyProviderProps) {
   const configured = isPrivyConfigured();
+
+  // The sign-in modal follows the site theme. Privy reads the config when the
+  // modal opens, so a theme flip before sign-in has to reach this state.
+  const [modalTheme, setModalTheme] = useState<"light" | "dark">(readModalTheme);
+
+  // Same root attribute ThemeToggle watches — a same-tab flip fires no event.
+  useEffect(() => {
+    const observer = new MutationObserver(() => setModalTheme(readModalTheme()));
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   // Dev-only warning, in an effect (not the render body) so renders stay
   // pure. Quiet in prod — the LoginPage surfaces a clear user-facing
@@ -84,7 +104,7 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
       config={{
         loginMethods: ["email", "google", "wallet"],
         appearance: {
-          theme: "dark",
+          theme: modalTheme,
           accentColor: "#C87367",
           showWalletLoginFirst: false,
         },

@@ -97,7 +97,7 @@ const rows: FilterableMarket[] = [
   assert.deepEqual([...first!].sort(), ["a", "c"], "first click = all except");
   assert.equal(toggleTierValue(first, "b", all), null, "completing returns to all");
   const down = toggleTierValue(toggleTierValue(first, "a", all), "c", all);
-  assert.equal(down, null, "emptying returns to all, never a blank board");
+  assert.equal(down!.size, 0, "unchecking the last chip does not check them all");
 }
 
 // ── upper tiers narrow lower options; filtering composes ────────────────────
@@ -165,15 +165,24 @@ const rows: FilterableMarket[] = [
   const query: Record<string, string> = marketFilterToQuery(state);
   // Captured before deepEqual: strict assert narrows `query` to the literal.
   const get = (k: string): string | null => query[k] ?? null;
+  // `markets`, not `market` — that key belongs to the detail drawer.
   assert.deepEqual(query, {
     venue: "kalshi,polymarket-gamma",
-    market: "btc-up-or-down-5m",
+    markets: "btc-up-or-down-5m",
   });
   const back = marketFilterFromQuery(get);
   assert.deepEqual([...back.venues!].sort(), ["kalshi", "polymarket-gamma"]);
   assert.equal(back.categories, null);
   assert.deepEqual([...back.markets!], ["btc-up-or-down-5m"]);
   assert.deepEqual(marketFilterToQuery(ALL_CHECKED), {}, "rest carries no params");
+}
+
+// ── An emptied tier survives the reload it used to undo ─────────────────────
+{
+  const emptied: typeof ALL_CHECKED = { ...ALL_CHECKED, markets: new Set() };
+  const query: Record<string, string> = marketFilterToQuery(emptied);
+  const back = marketFilterFromQuery((k) => query[k] ?? null);
+  assert.equal(back.markets?.size, 0, "an emptied tier comes back empty, not at rest");
 }
 
 process.stdout.write("markets filter tiers smoke ok\n");

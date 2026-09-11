@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { verdictApi, type TodayFeed, type TodayFeedRow } from "../api.js";
 import { Ik, IkNav } from "../icons.js";
 import { useDetailDrawer, isPlainLeftClick } from "../components/compact/DetailDrawer.js";
@@ -25,16 +25,26 @@ import { formatScore } from "../lib/score-format.js";
  */
 const titlePending = (live: boolean) => (
   <>
-    <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> open calls
+    <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> recent open calls
   </>
 );
-/* "recent", not "last 24h": the feed builder caps these at the last 20 rows
-   (ACCEPTED_LIMIT / RESOLVED_LIMIT) with no time filter, so on a quiet week
-   they carry rows weeks old. The genuine 24h counters are feed.totals.*_24h. */
+/* "recent", not "last 24h": the feed builder caps every panel at the last 20
+   rows (ACCEPTED_LIMIT / RESOLVED_LIMIT / PENDING_LIMIT) with no time filter, so
+   on a quiet week they carry rows weeks old, and the counts in the headers are
+   rows shown rather than totals. The genuine 24h counters are feed.totals.*_24h.
+   "outcomes", not "scored": these twenty rows also carry void and no-outcome
+   calls, which settle without earning a score. */
 const TITLE_RESOLVED = (
   <>
-    <Ik name="resolve" /> scored · recent
+    <Ik name="resolve" /> recent outcomes
   </>
+);
+/** A panel's count is the rows on screen, not a total — every list is capped
+ *  at 20 server-side. */
+const shownMeta = (n: number) => (
+  <span title="how many calls this panel shows. The feed carries the latest 20.">
+    {n} shown
+  </span>
 );
 const TITLE_ACCEPTED = (
   <>
@@ -62,50 +72,32 @@ export function TodayPage() {
   // subscribe), so reading it here costs no extra connection.
   const live = status === "open";
 
-  useEffect(() => {
-    let cancelled = false;
-    verdictApi
-      .todayFeed()
-      .then((r) => {
-        if (!cancelled) setFeed(r);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e.message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Keep "live · pending" honest: every call.accepted / call.resolved event
-  // on the shared SSE stream moves rows between the three panels, so refetch
-  // the feed when a new one lands. Streamed rows are the lean wire shape and
-  // can't be merged into TodayFeedRow directly — the REST endpoint stays the
-  // source of truth. Keyed on the newest event (type + call_id) so replayed
-  // snapshots at mount don't trigger a redundant fetch; refresh failures keep
-  // the last good feed rather than blanking the page.
+  // Every call.accepted / call.resolved event moves rows between the three
+  // panels, so the REST feed is re-read when a new one lands. Streamed rows are
+  // the lean wire shape and can't be merged into TodayFeedRow — REST stays the
+  // source of truth. `live` is a dependency too: events that arrive while the
+  // socket is down never arrive at all, so a reconnect has to re-read the feed
+  // rather than trust a snapshot with a hole in it. A refresh failure keeps the
+  // last good feed; only a cold load paints the error.
   const newest = recentCalls[0];
   const streamKey = newest ? `${newest.type}:${newest.call_id}` : null;
-  const seenKey = useRef(streamKey);
   useEffect(() => {
-    if (streamKey === null || streamKey === seenKey.current) return;
-    seenKey.current = streamKey;
     let cancelled = false;
     verdictApi
       .todayFeed()
       .then((r) => {
-        if (!cancelled) {
-          setFeed(r);
-          setError(null);
-        }
+        if (cancelled) return;
+        setFeed(r);
+        setError(null);
       })
-      .catch(() => {
-        // Transient refresh failure — the next stream event retries.
+      .catch((e) => {
+        if (!cancelled && feed === null) setError(e.message);
       });
     return () => {
       cancelled = true;
     };
-  }, [streamKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamKey, live]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -137,7 +129,7 @@ export function TodayPage() {
         <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 min-h-0">
           <Panel
             title={titlePending(live)}
-            meta={feed.pending_resolution.length.toString()}
+            meta={shownMeta(feed.pending_resolution.length)}
             className="lg:border-r-0"
           >
             <FeedRows
@@ -148,16 +140,16 @@ export function TodayPage() {
           </Panel>
           <Panel
             title={TITLE_RESOLVED}
-            meta={feed.resolved_recent.length.toString()}
+            meta={shownMeta(feed.resolved_recent.length)}
             className="lg:border-r-0"
           >
             <FeedRows
               rows={feed.resolved_recent}
               variant="scored"
-              emptyLabel="[no scored calls yet — resolved calls appear here]"
+              emptyLabel="[no outcomes yet — resolved calls appear here]"
             />
           </Panel>
-          <Panel title={TITLE_ACCEPTED} meta={feed.accepted_recent.length.toString()}>
+          <Panel title={TITLE_ACCEPTED} meta={shownMeta(feed.accepted_recent.length)}>
             <FeedRows
               rows={feed.accepted_recent}
               variant="sealed"

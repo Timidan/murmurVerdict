@@ -21,6 +21,8 @@ import {
   publicFhenixRevealEvidence,
   type PublicFhenixRevealEvidence,
 } from "./fhenix-reveal-public-evidence.js";
+import { marketsRepo } from "./repos/market-registry-repo.js";
+import { outcomeLabelsForMarket } from "./market-adapter-config.js";
 
 export interface PublicAgentCallProjection extends PublicCallProjection {
   adapter_id: string;
@@ -287,8 +289,14 @@ export function loadPublicSealedCallView(
     visibility.includeFhenix &&
     full.submission.privacy_mode === "sealed_fhenix"
   ) {
+    // The reveal carries an index; the venue owns the words. Read the labels
+    // off the market so the call page can print one instead of "outcome 1".
+    const market = full.submission.market_id
+      ? marketsRepo.get(input.db, full.submission.market_id)
+      : null;
     const fhenix = publicFhenixRevealEvidence(
       fhenixSealedCallsRepo.byCallId(input.db, input.call_id),
+      market ? outcomeLabelsForMarket(market) : null,
     );
     if (fhenix) view.fhenix = fhenix;
   }

@@ -18,10 +18,10 @@ const DECIMALS: Record<string, number> = {
   ETH: 18,
 };
 
-/** Decimals for a currency code, or 6 — the settlement default here. */
-export function decimalsFor(currency: string | null | undefined): number {
-  if (!currency) return 6;
-  return DECIMALS[currency.toUpperCase()] ?? 6;
+/** Decimals for a known settlement asset, or null when the code is unknown. */
+export function decimalsFor(currency: string | null | undefined): number | null {
+  if (!currency) return null;
+  return DECIMALS[currency.toUpperCase()] ?? null;
 }
 
 /**
@@ -43,11 +43,15 @@ export function formatAtoms(
   }
   const negative = value < 0n;
   const magnitude = negative ? -value : value;
-  const scale = 10n ** BigInt(decimalsFor(currency));
+  const decimals = decimalsFor(currency);
+  // An unknown code has no known scale, so the raw count is the only honest
+  // value; the unit says these are atoms and not whole units.
+  if (decimals === null) return `${negative ? "-" : ""}${magnitude} atoms`;
+  const scale = 10n ** BigInt(decimals);
   const whole = (magnitude / scale).toString();
   const frac = (magnitude % scale)
     .toString()
-    .padStart(decimalsFor(currency), "0")
+    .padStart(decimals, "0")
     .replace(/0+$/, "");
   const body = frac ? `${whole}.${frac}` : whole;
   return negative ? `-${body}` : body;

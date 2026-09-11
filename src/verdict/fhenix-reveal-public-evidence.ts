@@ -46,6 +46,7 @@ export interface PublicFhenixInvalidRevealIngestionBody {
 
 export function publicFhenixRevealEvidence(
   sealed: FhenixSealedCallRow | null,
+  outcomeLabels?: readonly string[] | null,
 ): PublicFhenixRevealEvidence | null {
   if (!sealed) return null;
   const revealedBinaryIndex = sealed.revealed_binary_index;
@@ -55,6 +56,16 @@ export function publicFhenixRevealEvidence(
     sealed.revealed_at !== null &&
     revealedBinaryIndex !== null &&
     revealedConfidenceBps !== null;
+  // `outcomeLabelsForMarket` answers `outcome_N` when the venue named nothing;
+  // that is not a venue word, so it is dropped rather than forwarded.
+  const label =
+    revealedBinaryIndex === null ? undefined : outcomeLabels?.[revealedBinaryIndex];
+  const outcomeLabel =
+    typeof label === "string" &&
+    label.length > 0 &&
+    label !== `outcome_${revealedBinaryIndex}`
+      ? label
+      : undefined;
   return {
     chain_id: sealed.chain_id,
     contract_address: sealed.contract_address,
@@ -75,6 +86,7 @@ export function publicFhenixRevealEvidence(
               sealed.revealed_confidence,
               revealedConfidenceBps,
             ),
+            ...(outcomeLabel ? { outcome_label: outcomeLabel } : {}),
           },
         }
       : {}),

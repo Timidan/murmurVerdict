@@ -321,7 +321,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                     <span
                       className={`${INPUT_CLASS} w-full min-w-0 flex items-center gap-1.5`}
                     >
-                      <IkBrand name="usdc" size={14} />
+                      <IkBrand name="usdc" size={16} />
                       <input
                         type="text"
                         inputMode="decimal"
@@ -361,27 +361,42 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                     {row.terms ? "listed" : row.registered ? "registered" : "·"}
                   </span>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void (row.terms
-                        ? unlist(series)
-                        : row.registered
-                          ? list(series)
-                          : register(series))
-                    }
-                    disabled={busy !== null}
-                    title={
-                      row.terms
-                        ? "take this market off the list; the registration stays"
-                        : row.registered
-                          ? "list your early access on this market at this price"
-                          : "serve this market, so it can be priced"
-                    }
-                    className="ck-btn ck-btn-bracket justify-self-end disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    {row.terms ? "unlist" : row.registered ? "list" : "register"}
-                  </button>
+                  {/* A listed row keeps its own save. Without it the edited
+                      price had nowhere to go but unlist, which cleared it. */}
+                  <span className="justify-self-end flex items-center gap-2">
+                    {row.terms && (
+                      <button
+                        type="button"
+                        onClick={() => void list(series)}
+                        disabled={busy !== null}
+                        title="save this market's price, version and ceiling"
+                        className="ck-btn ck-btn-bracket ck-pos disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        save
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void (row.terms
+                          ? unlist(series)
+                          : row.registered
+                            ? list(series)
+                            : register(series))
+                      }
+                      disabled={busy !== null}
+                      title={
+                        row.terms
+                          ? "take this market off the list; the registration stays"
+                          : row.registered
+                            ? "list your early access on this market at this price"
+                            : "serve this market, so it can be priced"
+                      }
+                      className="ck-btn ck-btn-bracket disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {row.terms ? "unlist" : row.registered ? "list" : "register"}
+                    </button>
+                  </span>
                 </div>
 
                 {/* Version and ceiling belong to THIS market. Held panel-wide,

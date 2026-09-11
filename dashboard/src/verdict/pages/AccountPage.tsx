@@ -143,6 +143,11 @@ export function AccountPage() {
     );
   }
 
+  // "0 owned" and "no agents yet" are claims about the account, and only a
+  // landed session backs them. Before that, and after a failure, the count is
+  // unknown — never zero.
+  const listed = account.settled && !account.error;
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb><span>
@@ -166,7 +171,9 @@ export function AccountPage() {
               <IkNav name="agent" /> your agents
             </span>
             <span className="flex items-center gap-3">
-              <span className="ck-mono ck-dim">{account.agents.length} owned</span>
+              <span className="ck-mono ck-dim">
+                {listed ? `${account.agents.length} owned` : "— owned"}
+              </span>
               <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
                 <Ik name="agent" />
                 + add an agent
@@ -188,12 +195,12 @@ export function AccountPage() {
             />
           )}
 
-          {account.loading && account.agents.length === 0 ? (
-            <SkeletonRows />
-          ) : account.agents.length === 0 ? (
-            <EmptyState />
-          ) : (
+          {account.agents.length > 0 ? (
             <AgentList agents={account.agents} />
+          ) : listed ? (
+            <EmptyState />
+          ) : account.error ? null : (
+            <SkeletonRows />
           )}
         </section>
         {/* Row 2: the three that are usually empty or a single value. They

@@ -297,12 +297,16 @@ function alertsCard(s: OperatorAlertsSnapshot | null): OverviewCard {
   return {
     title: "operator alerts",
     health,
+    // `open.total` counts informational alerts too, so the no-alerts claim has
+    // to check it — not just the critical and warning tallies.
     status:
       open.critical > 0
         ? `${open.critical} critical`
         : open.warning > 0
           ? `${open.warning} warning`
-          : "no open alerts",
+          : open.total > 0
+            ? `${open.total} open`
+            : "no open alerts",
     stats: [
       { label: "open", value: open.total, tone: open.total > 0 ? "neg" : "dim" },
       { label: "critical", value: open.critical, tone: open.critical > 0 ? "neg" : "dim" },
@@ -381,12 +385,20 @@ function StatusBanner({ health, cards }: { health: Health; cards: OverviewCard[]
         : health === "nominal"
           ? "all systems nominal"
           : "status unknown";
+  // The healthy sentence belongs to `nominal` only. It used to be the fallback,
+  // so an unread snapshot — including every render before the first load — read
+  // "status unknown" beside a line calling all six checks healthy.
+  const unknown = cards.filter((c) => c.health === "unknown");
   const detail =
     attention.length > 0
       ? attention.map((c) => `${c.title}: ${c.status}`).join("  ·  ")
       : warn.length > 0
         ? warn.map((c) => `${c.title}: ${c.status}`).join("  ·  ")
-        : "gateway, reveals, canaries, alerts, wallets, and feeds are healthy.";
+        : health === "nominal"
+          ? "gateway, reveals, canaries, alerts, wallets, and feeds are healthy."
+          : unknown.length > 0
+            ? `no data yet: ${unknown.map((c) => c.title).join(", ")}.`
+            : "the checks have not run yet.";
   return (
     <div className="border-b border-[var(--color-border)] px-3 py-2 flex items-center gap-3 flex-wrap">
       <HealthDot health={health} />

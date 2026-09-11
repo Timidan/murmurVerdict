@@ -25,9 +25,9 @@ export interface WireLeaderboardRow {
   pending_calls: number;
   last_resolved_at: string | null;
   // The daemon emits the reserved reveal-reliability / marketplace / trust axes
-  // on every row, but the dashboard also BUILDS partial rows from the SSE delta
-  // (hooks/stream-merge.ts), which has no such fields — so they are optional
-  // here and the producer guard pins the daemon output via `Conforms`.
+  // on every row, but a lean SSE delta carries none of them — the dashboard
+  // re-reads the ladder over REST for these — so they are optional here and the
+  // producer guard pins the daemon output via `Conforms`.
   /** Reveal reliability = non-daemon reveals / (non-daemon + daemon-fallback +
    *  genuine misses). `agent_reveals` counts reveals published without the
    *  murmur fallback; `daemon_fallback_reveals` counts reveals the murmur-owned
@@ -100,8 +100,8 @@ export interface WireAgentMarketRow {
   market_main_tier: boolean;
   /** Chronological per-call score series (nulls mark void /
    *  oracle_unavailable resolutions), powering the trend sparkline. Optional:
-   *  the daemon always emits it, but the dashboard also carries forward a
-   *  possibly-absent value on the SSE merge path (hooks/stream-merge.ts). */
+   *  the daemon always emits it, but a lean SSE delta does not — the dashboard
+   *  re-reads the ladder over REST to refill it. */
   call_scores?: (number | null)[];
   /**
    * The market's own question, e.g. "XRP Up or Down - August 24,

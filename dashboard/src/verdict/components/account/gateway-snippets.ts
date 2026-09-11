@@ -10,6 +10,10 @@
 // src/verdict/auth/runtime-key-pop.ts. That string is mirrored here field for
 // field; changing it server-side means changing all three templates.
 //
+// Inputs: the market reference (and, on the TS tab, the prediction and the
+// confidence) are REQUIRED env reads that fail loudly when unset. No sample
+// market, outcome or confidence ships inside a snippet a reader will paste.
+//
 // Sealing: CoFHE ships a JS SDK, so only the TS tab seals end to end (it
 // mirrors tools/agent-side-cofhe-sealer.ts, including the CoFHE 0.7 pair of
 // setAccount + setConsumingContract). The PY and CURL tabs sign a correct
@@ -36,20 +40,40 @@ const TS_TEMPLATE = `// Canonical private path. You seal locally and send handle
 // holds your plaintext verdict. Node 20+, npm i @cofhe/sdk viem
 import { createHash, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
 import { Encryptable } from "@cofhe/sdk";
-import { baseSepolia as cofheChain } from "@cofhe/sdk/chains";
+import { chains as cofheChains } from "@cofhe/sdk/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { createPublicClient, http } from "viem";
-import { baseSepolia } from "viem/chains";
+import * as viemChains from "viem/chains";
 
 const API = "{{base}}";
 const PATH = "/v2/gateway/calls";
 {{key}}
 
-// 1 · Both CoFHE bindings are Murmur's published addresses, never yours.
+// The market fields come from GET /v1/markets?status=listed — adapter_id,
+// market_id, market_config_version. The prediction is your model's.
+const need = (name) => {
+  const value = process.env[name];
+  if (!value) throw new Error("set " + name);
+  return value;
+};
+const marketRef = {
+  protocol: need("MURMUR_MARKET_PROTOCOL"),
+  sourceId: need("MURMUR_MARKET_SOURCE_ID"),
+  configVersion: Number(need("MURMUR_MARKET_CONFIG_VERSION")),
+};
+const binaryIndex = BigInt(need("MURMUR_BINARY_INDEX"));
+const confidenceBps = BigInt(need("MURMUR_CONFIDENCE_BPS"));
+
+// 1 · The bindings AND the chain are Murmur's published deployment, never
+//     yours. A deployment that names no chain has no sealing path — stop.
 const meta = await fetch(API + "/v1/meta").then((r) => r.json());
 const relayer = meta.fhenix?.relayer_address;
 const consuming = meta.fhenix?.contract_address;
-if (!relayer || !consuming) throw new Error("deployment publishes no CoFHE binding");
+const chainId = meta.fhenix?.chain_id_numeric;
+if (!relayer || !consuming || !chainId) throw new Error("deployment publishes no CoFHE binding");
+const cofheChain = Object.values(cofheChains).find((c) => c.id === chainId);
+const chain = Object.values(viemChains).find((c) => c.id === chainId);
+if (!cofheChain || !chain) throw new Error("no CoFHE chain for id " + chainId);
 
 // 2 · Seal. Order is load-bearing (euint8 index, then euint16 confidence) and
 //     CoFHE 0.7 needs setConsumingContract as well as setAccount. execute()
@@ -60,11 +84,11 @@ const cofhe = createCofheClient(createCofheConfig({
   supportedChains: [cofheChain],
 }));
 await cofhe.connect(
-  createPublicClient({ chain: baseSepolia, transport: http(process.env.FHENIX_RPC_URL) }),
+  createPublicClient({ chain, transport: http(process.env.FHENIX_RPC_URL) }),
   { account: { address: relayer } },
 );
 const [binaryHash, confidenceHash, batchProof] = await cofhe
-  .encryptInputs([Encryptable.uint8(0n), Encryptable.uint16(7200n)])
+  .encryptInputs([Encryptable.uint8(binaryIndex), Encryptable.uint16(confidenceBps)])
   .setAccount(relayer)
   .setSecurityZone(0)
   .setConsumingContract(consuming)
@@ -74,13 +98,12 @@ const proof = batchProof.startsWith("0x") ? batchProof : "0x" + batchProof;
 
 // 3 · Freeze the body BYTES now. Re-serializing later changes the hash.
 const body = Buffer.from(JSON.stringify({
-  marketRef: { protocol: "polymarket-gamma", sourceId: "<condition-id>", configVersion: 1 },
+  marketRef,
   client_order_id: randomUUID(),
   client_nonce: "0x" + randomBytes(32).toString("hex"),
   privacy_mode: "sealed_fhenix",
   binary_index_input: { ct_hash: hex32(binaryHash), security_zone: 0, utype: 2, signature: proof },
   confidence_input: { ct_hash: hex32(confidenceHash), security_zone: 0, utype: 3, signature: proof },
-  strategy_tag: "momentum",
 }), "utf8");
 
 // 4 · murmur-rk-v2 proof of possession. Dashboard-minted keys are PoP-bound,
@@ -140,10 +163,16 @@ signing_key = load_der_private_key(
     base64.b64decode(MURMUR_RUNTIME_KEY_SIGNING_PK), password=None
 )
 
-# One signature covers BOTH handles, in the order they were encrypted.
+# One signature covers BOTH handles, in the order they were encrypted. The
+# market fields come from GET /v1/markets?status=listed; the prediction and
+# the confidence are already inside the two handles you sealed.
 batch_proof = os.environ["MURMUR_BATCH_PROOF"]
 body = json.dumps({
-    "marketRef": {"protocol": "polymarket-gamma", "sourceId": "<condition-id>", "configVersion": 1},
+    "marketRef": {
+        "protocol": os.environ["MURMUR_MARKET_PROTOCOL"],
+        "sourceId": os.environ["MURMUR_MARKET_SOURCE_ID"],
+        "configVersion": int(os.environ["MURMUR_MARKET_CONFIG_VERSION"]),
+    },
     "client_order_id": str(uuid.uuid4()),
     "client_nonce": "0x" + secrets.token_hex(32),
     "privacy_mode": "sealed_fhenix",
@@ -155,7 +184,6 @@ body = json.dumps({
         "ct_hash": os.environ["MURMUR_CONFIDENCE_CT_HASH"],
         "security_zone": 0, "utype": 3, "signature": batch_proof,
     },
-    "strategy_tag": "momentum",
 }).encode()  # sign these exact bytes; re-dumping changes the hash
 
 timestamp = str(int(time.time()))
@@ -188,7 +216,8 @@ const CURL_TEMPLATE = `# Signs a correct murmur-rk-v2 request. Needs OpenSSL 3.x
 # tools/agent-side-cofhe-sealer.ts, then export the two handles and the one
 # shared batch proof it prints.
 {{key}}
-BODY='{"marketRef":{"protocol":"polymarket-gamma","sourceId":"<condition-id>","configVersion":1},"client_order_id":"'"$(uuidgen)"'","client_nonce":"0x'"$(openssl rand -hex 32)"'","privacy_mode":"sealed_fhenix","binary_index_input":{"ct_hash":"'"$MURMUR_BINARY_CT_HASH"'","security_zone":0,"utype":2,"signature":"'"$MURMUR_BATCH_PROOF"'"},"confidence_input":{"ct_hash":"'"$MURMUR_CONFIDENCE_CT_HASH"'","security_zone":0,"utype":3,"signature":"'"$MURMUR_BATCH_PROOF"'"},"strategy_tag":"momentum"}'
+# The market fields come from GET /v1/markets?status=listed. Unset means stop.
+BODY='{"marketRef":{"protocol":"'"\${MURMUR_MARKET_PROTOCOL:?set the market protocol}"'","sourceId":"'"\${MURMUR_MARKET_SOURCE_ID:?set the market source id}"'","configVersion":'"\${MURMUR_MARKET_CONFIG_VERSION:?set the market config version}"'},"client_order_id":"'"$(uuidgen)"'","client_nonce":"0x'"$(openssl rand -hex 32)"'","privacy_mode":"sealed_fhenix","binary_index_input":{"ct_hash":"'"$MURMUR_BINARY_CT_HASH"'","security_zone":0,"utype":2,"signature":"'"$MURMUR_BATCH_PROOF"'"},"confidence_input":{"ct_hash":"'"$MURMUR_CONFIDENCE_CT_HASH"'","security_zone":0,"utype":3,"signature":"'"$MURMUR_BATCH_PROOF"'"}}'
 
 # Hash the exact bytes that go on the wire, then sign the canonical string.
 TS=$(date +%s)

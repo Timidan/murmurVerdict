@@ -17,6 +17,7 @@
 import { useEffect, useMemo } from "react";
 import { Ik, type IconName } from "../icons.js";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
+import { InlineError } from "../components/compact/InlineError.js";
 import { DestinationAddressForm } from "../components/account/DestinationAddressForm.js";
 import { ProviderTermsPanel } from "../components/account/ProviderTermsPanel.js";
 import { EarningsPanel } from "../components/account/EarningsPanel.js";
@@ -74,10 +75,10 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
   if (!account.ready || !account.isAuthenticated) {
     return <LoadingShell slug={slug} />;
   }
-  // Agents may still be loading on first paint after a hard refresh.
-  // Render the chrome immediately and a skeleton body — better than a
-  // blank page while the hook flushes its first /v1/account/agents call.
-  const agentMissing = !account.loading && !agent;
+  // "you do not own this handle" is a claim about a list that landed. Before
+  // the session answers, and after it fails, the agent is unknown rather than
+  // missing — `!account.loading` alone said missing on both.
+  const listed = account.settled && !account.error;
 
   // Tab state read off the AccountAgent row already in hand — no extra fetch.
   // The other five tabs own their counts inside their panels, so they say
@@ -176,8 +177,15 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
                 agent's loaded keys / form input / confirm-id can leak under
                 the new header. On the keys tab the leak is destructive: a
                 stale confirm-id could rotate the wrong agent's key. */}
-            {agentMissing ? (
-              <NotFoundShell slug={slug} />
+            {!agent ? (
+              listed ? (
+                <NotFoundShell slug={slug} />
+              ) : (
+                <AccountPendingShell
+                  error={account.error}
+                  onRetry={() => void account.refreshAgents()}
+                />
+              )
             ) : tab === "payout" ? (
               <DestinationAddressForm
                 key={slug}
@@ -337,6 +345,34 @@ function NotFoundShell({ slug }: { slug: string }) {
         Either you do not own this handle, or your agents have not loaded yet.{" "}
         <a href="#/account" className="underline">Go back to your account</a>.
       </p>
+    </section>
+  );
+}
+
+/** The account list has not answered yet — loading, or failed with a retry. */
+function AccountPendingShell({
+  error,
+  onRetry,
+}: {
+  error: string | null;
+  onRetry: () => void;
+}) {
+  if (!error) {
+    return (
+      <div className="flex justify-center py-6">
+        <LogoLoader width={300} />
+      </div>
+    );
+  }
+  return (
+    <section className="ck-frame-strong w-full px-4 py-4 flex flex-col items-start gap-3">
+      <InlineError error={error} className="ck-mono" />
+      <p className="ck-dim text-[12px]">
+        Your agents did not load, so murmur cannot show this agent's settings.
+      </p>
+      <button type="button" onClick={onRetry} className="ck-btn ck-btn-bracket">
+        try again
+      </button>
     </section>
   );
 }

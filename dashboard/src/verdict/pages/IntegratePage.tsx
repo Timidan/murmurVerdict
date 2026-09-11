@@ -26,7 +26,9 @@
 //   the key is already out of sessionStorage by then.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { API_BASE } from "../api.js";
 import { Ik, type IconName } from "../icons.js";
+import { InlineError } from "../components/compact/InlineError.js";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { CodeSnippetPanel } from "../components/account/CodeSnippetPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
@@ -69,13 +71,15 @@ interface JustMintedEnvelope {
  * was left idle.
  */
 function consumeJustMinted(slug: string): JustMintedEnvelope | null {
-  if (typeof window === "undefined" || !window.sessionStorage) return null;
-  const key = `${SESSION_KEY_PREFIX}${slug}`;
-  const raw = window.sessionStorage.getItem(key);
-  if (!raw) return null;
-  // Whatever the parse result, the entry is single-use.
-  window.sessionStorage.removeItem(key);
+  if (typeof window === "undefined") return null;
+  // Reading `window.sessionStorage` itself throws when storage is blocked, so
+  // the property read sits inside the handler with the rest.
   try {
+    const key = `${SESSION_KEY_PREFIX}${slug}`;
+    const raw = window.sessionStorage?.getItem(key);
+    if (!raw) return null;
+    // Whatever the parse result, the entry is single-use.
+    window.sessionStorage.removeItem(key);
     const env = JSON.parse(raw) as Partial<JustMintedEnvelope>;
     if (
       typeof env?.secret !== "string" ||
@@ -158,12 +162,11 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     () => account.agents.find((a) => a.display_slug === slug),
     [account.agents, slug],
   );
-  const agentLoading = account.ready && account.isAuthenticated && account.agents.length === 0;
-  const agentMissing =
-    account.ready &&
-    account.isAuthenticated &&
-    account.agents.length > 0 &&
-    !agent;
+  // `loading` only flips true once the bootstrap effect runs, so a null
+  // session with no error is still the first frame, not a settled empty list.
+  const agentLoading = account.loading || (!account.session && !account.error);
+  const agentMissing = !agentLoading && !account.error && !agent;
+  const agentUnavailable = !agentLoading && Boolean(account.error) && !agent;
 
   // Auth gate — same posture as AccountPage. Bounce when Privy reports a
   // stable signed-out state.
@@ -331,12 +334,23 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <Pane active={section === "code"}>
               {agent ? (
                 <CodeSnippetPanel agentSlug={slug} />
+              ) : agentUnavailable ? (
+                <section className="ck-frame-strong px-4 py-4">
+                  <InlineError
+                    error="We could not load your agents."
+                    className="text-[12px]"
+                  />
+                  <p className="ck-dim text-[12px] mt-2">
+                    Refresh the page, or{" "}
+                    <a href="#/account" className="ck-pos no-underline">go back to your account</a>.
+                  </p>
+                </section>
               ) : agentMissing ? (
                 <section className="ck-frame-strong px-4 py-4">
                   <p className="ck-mono ck-neg">We cannot find the agent {slug} on your account.</p>
                   <p className="ck-dim text-[12px] mt-2">
-                    The daemon may still be loading. Refresh the page, or{" "}
-                    <a href="#/account" className="ck-pos no-underline">go back to your account</a>.
+                    <a href="#/account" className="ck-pos no-underline">Go back to your account</a>{" "}
+                    to pick another agent.
                   </p>
                 </section>
               ) : (
@@ -345,11 +359,6 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                   <p className="ck-dim text-[12px] mt-2">
                     The snippets appear once the agent loads.
                   </p>
-                  {agentLoading && (
-                    <p className="ck-dim text-[12px] mt-1">
-                      Loading your agents…
-                    </p>
-                  )}
                 </section>
               )}
             </Pane>
@@ -365,7 +374,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                         a dead end for a reader — this is a file you save and feed
                         to an agent. */}
                     <a
-                      href="/v1/skill.md"
+                      href={`${API_BASE}/v1/skill.md`}
                       download="murmur-skill.md"
                       title="the runbook is written for an LLM to follow, not for a person to read in a tab"
                       className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
@@ -381,7 +390,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                   </li>
                   <li>
                     <a
-                      href={`/v1/agents/${enc}/agent-card`}
+                      href={`${API_BASE}/v1/agents/${enc}/agent-card`}
                       target="_blank"
                       rel="noreferrer"
                       title="endpoints, services, and how this agent handles privacy"
@@ -398,7 +407,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                   </li>
                   <li>
                     <a
-                      href="/v1/openapi.json"
+                      href={`${API_BASE}/v1/openapi.json`}
                       download="murmur-openapi.json"
                       title="every endpoint your agent can call on this daemon"
                       className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
@@ -679,7 +688,11 @@ function AgentPromptPanel({
       ) : error ? (
         <p className="ck-dim text-[12px] px-3 py-2">
           Unable to load the prompt. The same runbook is at{" "}
-          <a href="/v1/skill.md" download="murmur-skill.md" className="ck-pos no-underline">
+          <a
+            href={`${API_BASE}/v1/skill.md`}
+            download="murmur-skill.md"
+            className="ck-pos no-underline"
+          >
             /v1/skill.md
           </a>
           .

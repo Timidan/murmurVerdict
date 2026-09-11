@@ -416,6 +416,27 @@ export function refundDueStop(): BuyStop {
   };
 }
 
+/** The refund for that undelivered grant is already recorded. Nothing is owed. */
+export function refundedStop(): BuyStop {
+  return {
+    code: "GrantFailedRefunded",
+    headline: "refunded",
+    detail:
+      "The on-chain grant could not be delivered, so the operator refunded this payment. Nothing is owed to you; the row is on your account's purchases panel.",
+    tone: "dim",
+    retryable: false,
+  };
+}
+
+/**
+ * `refunded` is the SETTLED end of the same story `grant_failed_refund_due`
+ * starts, and telling a buyer money is owed after it has been sent back sends
+ * them chasing a refund they already have.
+ */
+function refundStop(serverStatus: unknown): BuyStop {
+  return serverStatus === "refunded" ? refundedStop() : refundDueStop();
+}
+
 /** No wallet to pay from — the one precondition this page cannot supply itself. */
 export function noWalletStop(): BuyStop {
   return {
@@ -448,7 +469,8 @@ function detailWith(base: string, message: string): string {
  *   grant_queued          settled: the receipt id and amount are recorded
  *   grant_broadcast       settled: the grant tx is out
  *   granted               settled and delivered (a 200, not a 202)
- *   grant_failed_refund_due / refunded   settled, and owed back (a 409)
+ *   grant_failed_refund_due   settled, and owed back (a 409)
+ *   refunded                  settled, and already sent back (a 409)
  *
  * Only the third and fourth are evidence of a completed payment. Anything else
  * — including a status this page has never heard of — is "unknown", because the
@@ -549,7 +571,7 @@ export function classifyPurchase(
     };
   }
   if (status === 409 && record.refundDue === true) {
-    return { kind: "stopped", stop: refundDueStop() };
+    return { kind: "stopped", stop: refundStop(record.status) };
   }
   // Anything reaching here answered a PRESENTED payment.
   return { kind: "stopped", stop: stopFromResponse(status, body, "present") };
@@ -579,7 +601,7 @@ export type PollOutcome =
 export function classifyPoll(body: AccessStatusBody | null | undefined): PollOutcome {
   if (body?.grant?.onchainGranted === true) return { kind: "granted" };
   if (body?.status === "grant_failed_refund_due" || body?.status === "refunded") {
-    return { kind: "stopped", stop: refundDueStop() };
+    return { kind: "stopped", stop: refundStop(body.status) };
   }
   return { kind: "pending", settlement: settlementConfidence(body?.status) };
 }

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 
-import { formatLocalDayLabel, localDayKey } from "./date-time-format.js";
+import {
+  formatLocalDateTime,
+  formatLocalDateTimeShort,
+  formatLocalDayLabel,
+  localDayKey,
+} from "./date-time-format.js";
 
 // ─── local calendar days ─────────────────────────────────────────────────────
 //
@@ -38,5 +43,27 @@ assert.ok(label !== null && label.length > 0, "a parseable instant gets a label"
 assert.equal(label, label.toLowerCase(), "labels are lowercase");
 assert.ok(label.includes("20"), `label names the day: ${label}`);
 assert.equal(formatLocalDayLabel("not a date"), null);
+
+// The absolute instant NAMES its zone. It stopped doing so once already (the
+// suffix was dropped to stop a lifecycle row wrapping), which left every
+// absolute stamp unreadable on mobile, where the topbar clock is hidden.
+const instant = new Date(2026, 6, 20, 13, 5, 0);
+const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+  .formatToParts(instant)
+  .find((part) => part.type === "timeZoneName")?.value;
+const stamp = formatLocalDateTime(instant.getTime());
+assert.ok(
+  zone !== undefined && stamp !== null && stamp.includes(zone),
+  `absolute stamp names the zone: ${stamp}`,
+);
+
+// The short form is the VISIBLE half of the same pair: it keeps the zone (the
+// reason the suffix exists) and drops the year (the reason it needed shortening).
+const short = formatLocalDateTimeShort(instant.getTime());
+assert.ok(
+  zone !== undefined && short !== null && short.includes(zone),
+  `short stamp names the zone: ${short}`,
+);
+assert.ok(short !== null && !short.includes("2026"), `short stamp drops the year: ${short}`);
 
 console.log("date-time-format.smoke: ok");

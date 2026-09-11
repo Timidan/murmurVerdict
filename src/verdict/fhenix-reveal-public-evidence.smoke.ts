@@ -54,6 +54,33 @@ const revealed = publicFhenixRevealEvidence({
 assert.equal(revealed?.revealed_verdict?.binary_index, 1);
 assert.equal(revealed?.revealed_verdict?.confidence_bps, 7200);
 assert.equal(revealed?.revealed_verdict?.confidence, 0.72);
+assert.equal(revealed?.revealed_verdict?.outcome_label, undefined);
+
+// The venue's word for the revealed index rides along when the venue named one.
+const labelled = publicFhenixRevealEvidence(
+  {
+    ...base,
+    reveal_status: "revealed",
+    revealed_at: "2026-05-16T11:00:01Z",
+    revealed_binary_index: 1,
+    revealed_confidence_bps: 7200,
+  },
+  ["Up", "Down"],
+);
+assert.equal(labelled?.revealed_verdict?.outcome_label, "Down");
+
+// `outcome_N` is the resolver's own placeholder, not a venue word: dropped.
+const unlabelled = publicFhenixRevealEvidence(
+  {
+    ...base,
+    reveal_status: "revealed",
+    revealed_at: "2026-05-16T11:00:01Z",
+    revealed_binary_index: 1,
+    revealed_confidence_bps: 7200,
+  },
+  ["outcome_0", "outcome_1"],
+);
+assert.equal(unlabelled?.revealed_verdict?.outcome_label, undefined);
 
 assert.deepEqual(
   publicFhenixRevealIngestionBody({

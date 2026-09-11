@@ -52,6 +52,13 @@ export interface UseAccountResult {
   /** Most recent error from the backend session/list calls. */
   error: string | null;
   /**
+   * True once an account round trip has finished, success or failure, and
+   * false again while the next one runs. `loading` is false both before the
+   * bootstrap effect runs and after it fails, so it cannot tell "the list
+   * landed" from "the list has not been asked for yet".
+   */
+  settled: boolean;
+  /**
    * True once murmur says this account is closed (migration 073).
    *
    * A closed account is refused on every account route except
@@ -103,6 +110,7 @@ function useAccountState(): UseAccountResult {
   const [agents, setAgents] = useState<AccountAgent[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [settled, setSettled] = useState<boolean>(false);
   const [deactivated, setDeactivated] = useState<boolean>(false);
   const [deactivatedAt, setDeactivatedAt] = useState<string | null>(null);
 
@@ -115,6 +123,8 @@ function useAccountState(): UseAccountResult {
     if (!configured || !privy.authenticated) return;
     setLoading(true);
     setError(null);
+    // A retry is not a settled list: leaving this true renders "0 owned".
+    setSettled(false);
     try {
       const token = await getAccessToken();
       if (!token) {
@@ -127,6 +137,7 @@ function useAccountState(): UseAccountResult {
       setError((e as Error).message ?? "fetch_failed");
     } finally {
       setLoading(false);
+      setSettled(true);
     }
   }, [configured, privy.authenticated]);
 
@@ -138,6 +149,7 @@ function useAccountState(): UseAccountResult {
       bootstrappedRef.current = null;
       setSession(null);
       setAgents([]);
+      setSettled(false);
       return;
     }
     const did = privy.user?.id ?? "anon";
@@ -152,6 +164,7 @@ function useAccountState(): UseAccountResult {
     (async () => {
       setLoading(true);
       setError(null);
+      setSettled(false);
       try {
         const token = await getAccessToken();
         if (!token) {
@@ -224,7 +237,10 @@ function useAccountState(): UseAccountResult {
         }
         setError((e as Error).message ?? "session_failed");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setSettled(true);
+        }
       }
     })();
 
@@ -244,6 +260,7 @@ function useAccountState(): UseAccountResult {
     bootstrappedRef.current = null;
     setSession(null);
     setAgents([]);
+    setSettled(false);
     setDeactivated(false);
     setDeactivatedAt(null);
   }, [configured, privy]);
@@ -273,6 +290,7 @@ function useAccountState(): UseAccountResult {
     agents,
     loading,
     error,
+    settled,
     deactivated,
     deactivatedAt,
     userId: privy.user?.id ?? null,
