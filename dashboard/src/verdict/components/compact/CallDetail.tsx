@@ -79,8 +79,15 @@ export function CallDetail({
           : "ck-dim";
 
   const page = variant === "page";
+  // `grid-rows-[auto_minmax(0,1fr)]` is load-bearing on the page variant. The
+  // grid is a flex child with `flex-1`, and `align-content: normal` spreads
+  // that surplus height across every AUTO-sized row equally — so the three-cell
+  // outcome ribbon, which needs 60px, was handed the same share as the panels
+  // and grew to 290px. A third of a 900px viewport went to three words. Pinning
+  // the ribbon row to `auto` and giving the panel row the `1fr` sends the
+  // surplus where the content is.
   const wrap = page
-    ? "flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] min-h-0"
+    ? "flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] lg:grid-rows-[auto_minmax(0,1fr)] min-h-0"
     : "flex flex-col";
   const statWrap = page
     ? "lg:col-span-3 grid grid-cols-3 border-b border-[var(--color-border)]"
@@ -121,7 +128,7 @@ export function CallDetail({
             <Stat label="outcome" value={outcomeText} tone={outcomeTone} />
             <Stat
               label="score"
-              value={formatScore(data.resolution?.call_score, { decimals: 4 })}
+              value={formatScore(data.resolution?.call_score)}
               mono
               title="How good this call was. It pays the agent for being right and confident, and charges it for being wrong and confident."
             />
@@ -205,13 +212,17 @@ export function CallDetail({
             {data.submission.submitted_at && (
               <Kv
                 k="sent"
-                v={<TimeAgo iso={data.submission.submitted_at} />}
+                /* Absolute, not relative, on every row of this page: a call's
+                   seven lifecycle stamps fall inside one minute of each other,
+                   so "8d ago" printed seven times said nothing about the order
+                   or the gaps. The relative form moves to the tooltip. */
+                v={<TimeAgo iso={data.submission.submitted_at} absolute />}
                 title="when the agent sent this call"
               />
             )}
             <Kv
               k="accepted"
-              v={<TimeAgo iso={data.submission.accepted_at} />}
+              v={<TimeAgo iso={data.submission.accepted_at} absolute />}
               title="when murmur accepted the call and sealed it"
             />
             {data.submission.strategy_tag && (
@@ -237,7 +248,7 @@ export function CallDetail({
               <>
                 <Kv
                   k="anchor time"
-                  v={<TimeAgo iso={data.t0.t0} />}
+                  v={<TimeAgo iso={data.t0.t0} absolute />}
                   title="when the price was read at the start of this call"
                 />
                 <Kv
@@ -257,7 +268,7 @@ export function CallDetail({
               <>
                 <Kv
                   k="market closed"
-                  v={<TimeAgo iso={data.resolution.t1} />}
+                  v={<TimeAgo iso={data.resolution.t1} absolute />}
                   title="when the market closed and the call became scorable"
                 />
                 {/* Same rule as the anchor block: a venue call carries no
@@ -280,13 +291,13 @@ export function CallDetail({
                 {data.resolution.call_score !== null && (
                   <Kv
                     k="score"
-                    v={formatScore(data.resolution.call_score, { decimals: 4 })}
+                    v={formatScore(data.resolution.call_score)}
                     title="How good this call was. It pays the agent for being right and confident, and charges it for being wrong and confident."
                   />
                 )}
                 <Kv
                   k="scored"
-                  v={<TimeAgo iso={data.resolution.resolved_at} />}
+                  v={<TimeAgo iso={data.resolution.resolved_at} absolute />}
                   title="when murmur scored this call"
                 />
               </>
@@ -344,17 +355,17 @@ export function CallDetail({
                 />
                 <Kv
                   k="reveal opens"
-                  v={<TimeAgo iso={data.fhenix.reveal_open_at} />}
+                  v={<TimeAgo iso={data.fhenix.reveal_open_at} absolute />}
                   tone="ck-dim"
                   title="the earliest moment this call can be opened"
                 />
                 {data.fhenix.revealed_at && (
-                  <Kv k="revealed" v={<TimeAgo iso={data.fhenix.revealed_at} />} />
+                  <Kv k="revealed" v={<TimeAgo iso={data.fhenix.revealed_at} absolute />} />
                 )}
                 {data.fhenix.terminal_at && (
                   <Kv
                     k="closed"
-                    v={<TimeAgo iso={data.fhenix.terminal_at} />}
+                    v={<TimeAgo iso={data.fhenix.terminal_at} absolute />}
                     tone="ck-dim"
                     title="when this call reached its final state on chain"
                   />

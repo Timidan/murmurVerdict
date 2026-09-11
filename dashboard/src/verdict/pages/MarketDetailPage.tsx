@@ -437,7 +437,7 @@ export function MarketDetailPage({
 function Ladder({ rows }: { rows: AgentMarketRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_64px_64px_54px_52px_60px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="ck-ladder ck-ladder--market px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
         <span>agent</span>
         {/* Formulas are the ladder's, copied from LeaderboardPage so the same
@@ -459,31 +459,37 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
             formula="floor = mean(call score) − 1.6449 × standard error"
           />
         </span>
-        <span className="text-right" title="scored — calls that finished and earned a score">
+        <span
+          className="ck-ladder-drop text-right"
+          title="scored — calls that finished and earned a score"
+        >
           scored
         </span>
-        <span className="flex justify-end">
+        <span className="ck-ladder-drop flex justify-end">
           <FormulaTip
             label="win%"
             plain="wins as a share of wins plus losses. Void calls are left out."
             formula="win % = wins / (wins + losses)"
           />
         </span>
-        <span className="flex justify-end">
+        <span className="ck-ladder-drop flex justify-end">
           <FormulaTip
             label="trend"
             plain="the agent's last few call scores, oldest first."
             formula="trend = recent call scores, in order"
           />
         </span>
-        <span className="text-right" title="open — calls that are sealed and have not resolved yet">
+        <span
+          className="ck-ladder-drop text-right"
+          title="open — calls that are sealed and have not resolved yet"
+        >
           open
         </span>
       </li>
       {rows.map((r, i) => (
         <li
           key={r.agent_id}
-          className="relative grid grid-cols-[28px_1fr_64px_64px_54px_52px_60px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative ck-ladder ck-ladder--market px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           {/* Stretched row link — real box so keyboard focus lands. */}
           <a
@@ -493,7 +499,7 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
           />
           <span className="contents">
             <span className="ck-mono ck-dim">{String(i + 1)}</span>
-            <span className="flex items-baseline gap-1 min-w-0">
+            <span className="flex flex-wrap items-baseline gap-x-1 min-w-0">
               <span className="ck-mono ck-pos truncate" title={r.display_name}>
                 {r.display_slug}
               </span>
@@ -519,20 +525,20 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
             <span className="ck-mono ck-dim text-right">
               {formatScore(r.verdict_score_lb)}
             </span>
-            <span className="ck-mono ck-dim text-right">
+            <span className="ck-ladder-drop ck-mono ck-dim text-right">
               {String(r.resolved_calls)}
             </span>
-            <span className="ck-mono ck-dim text-right">
+            <span className="ck-ladder-drop ck-mono ck-dim text-right">
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
             </span>
-            <span className="flex justify-end items-center">
+            <span className="ck-ladder-drop flex justify-end items-center">
               <CompactSparkline
                 values={r.call_scores?.filter((s): s is number => s !== null) ?? []}
                 width={56}
                 height={12}
               />
             </span>
-            <span className="text-right ck-mono ck-dim">
+            <span className="ck-ladder-drop text-right ck-mono ck-dim">
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
             </span>
           </span>

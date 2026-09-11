@@ -123,9 +123,9 @@ export function accountOpenApiPaths(): OpenApiPathMap {
     "/v1/account/agents/{slug}/runtime-keys": {
       get: {
         tags: ["account"],
-        summary: "List Runtime Key metadata for one owned agent. Plaintext keys are never returned.",
+        summary: "List Runtime Key metadata and current connection status for one owned agent. Plaintext keys are never returned.",
         parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
-        responses: { "200": { description: "Runtime Key metadata" }, "401": { description: "Privy bearer required" } },
+        responses: { "200": { description: "Runtime Key metadata, per-key and aggregate connection, and served_at" }, "401": { description: "Privy bearer required" } },
         security: [{ privyAuth: [] }],
       },
       post: {

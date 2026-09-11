@@ -142,7 +142,7 @@ export function TodayPage() {
           >
             <FeedRows
               rows={feed.pending_resolution}
-              pending
+              variant="open"
               emptyLabel="[no open calls — sealed calls waiting to resolve appear here]"
             />
           </Panel>
@@ -153,12 +153,14 @@ export function TodayPage() {
           >
             <FeedRows
               rows={feed.resolved_recent}
+              variant="scored"
               emptyLabel="[no scored calls yet — resolved calls appear here]"
             />
           </Panel>
           <Panel title={TITLE_ACCEPTED} meta={feed.accepted_recent.length.toString()}>
             <FeedRows
               rows={feed.accepted_recent}
+              variant="sealed"
               emptyLabel="[no sealed calls yet — new calls appear here]"
             />
           </Panel>
@@ -169,15 +171,31 @@ export function TodayPage() {
   );
 }
 
+/**
+ * One panel's rows.
+ *
+ * `variant` is what keeps the three panels from reading as three copies of one
+ * list. Every panel used to stamp `submitted_at`, so a call that was sealed and
+ * then scored printed the SAME time in the sealed column and the scored column
+ * — two panels, twenty rows, identical to the character. Each panel now shows
+ * the moment ITS panel is about: sealed shows when the call was accepted,
+ * scored shows when the venue settled it.
+ *
+ * It also decides the score column. `sealed` used to render one, and the wire's
+ * accepted projection carries no score, so the column was twenty em-dashes with
+ * a screen-reader label reading "not scored yet" — about calls whose score was
+ * visible in the next panel over.
+ */
 function FeedRows({
   rows,
-  pending,
+  variant,
   emptyLabel,
 }: {
   rows: TodayFeedRow[];
-  pending?: boolean;
+  variant: "open" | "scored" | "sealed";
   emptyLabel: string;
 }) {
+  const scored = variant === "scored";
   const { open } = useDetailDrawer();
   if (rows.length === 0) {
     return <div className="px-2 py-3 ck-mono ck-dim leading-tight">{emptyLabel}</div>;
@@ -193,7 +211,7 @@ function FeedRows({
         // house empty glyph. Real outcomes go through the shared word map, so
         // `oracle_unavailable` reads "no outcome" instead of the old
         // four-character slice ("orac") that fitted but said nothing.
-        const outcomeText = pending
+        const outcomeText = !scored
           ? null
           : row.call_score !== null && row.call_score !== undefined
             ? formatScore(row.call_score)
@@ -207,7 +225,7 @@ function FeedRows({
             key={row.call_id}
             className={
               "relative grid gap-2 px-2 py-1 border-b border-[var(--color-border)] items-center " +
-              (pending ? "grid-cols-[76px_1fr]" : "grid-cols-[76px_1fr_64px]")
+              (scored ? "grid-cols-[76px_1fr_64px]" : "grid-cols-[76px_1fr]")
             }
           >
             {/* Stretched row link — real box so keyboard focus lands. */}
@@ -223,11 +241,15 @@ function FeedRows({
               className="ck-rowlink"
             />
             <TimeAgo
-              iso={row.submitted_at ?? row.accepted_at}
+              iso={
+                scored
+                  ? (row.resolved_at ?? row.accepted_at)
+                  : (row.submitted_at ?? row.accepted_at)
+              }
               className="ck-mono ck-dim truncate"
             />
             <span className="ck-mono ck-dim truncate">@{row.agent_slug}</span>
-            {!pending && (
+            {scored && (
               <span className={"ck-mono text-right " + outcomeTone}>
                 {outcomeText ?? (
                   <>

@@ -86,8 +86,8 @@ export function routeMeta(route: ParsedRoute): RouteMeta {
       };
     case "recruiters":
       return {
-        title: `for recruiters · ${BRAND}`,
-        description: "What murmur is and how it was built.",
+        title: `referrals · ${BRAND}`,
+        description: "Who shares agent records on murmur: referral links and visits.",
       };
     case "share":
       return {

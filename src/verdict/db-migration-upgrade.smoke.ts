@@ -37,6 +37,7 @@ const path = join(tmp, "verdict.db");
   fresh.exec("ALTER TABLE polymarket_discovery_state DROP COLUMN broadcast_started_at");
   fresh.exec("ALTER TABLE markets DROP COLUMN operator_halted_at");
   fresh.exec("DROP TABLE entitlement_payment_bindings");
+  fresh.exec("ALTER TABLE agent_runtime_keys DROP COLUMN last_heartbeat_at");
   fresh.prepare("UPDATE schema_meta SET value='64' WHERE key='schema_version'").run();
   fresh.close();
 }
@@ -76,6 +77,13 @@ const path = join(tmp, "verdict.db");
   assert.ok(
     cols.some((c) => c.name === "submission_class"),
     "an existing v64 database must gain submission_class — a version stamp without the column is the bug this test exists for",
+  );
+  const runtimeKeyCols = upgraded.prepare("PRAGMA table_info(agent_runtime_keys)").all() as {
+    name: string;
+  }[];
+  assert.ok(
+    runtimeKeyCols.some((c) => c.name === "last_heartbeat_at"),
+    "an existing v64 database must gain runtime key heartbeat presence (077)",
   );
 
   const discoveryCols = upgraded

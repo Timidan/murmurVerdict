@@ -34,6 +34,63 @@ export function gatewayOpenApiPaths(input: {
 
   return {
     ...nanopayPaths,
+    "/v2/gateway/heartbeat": {
+      post: {
+        tags: ["calls"],
+        summary: "Record a signed Runtime Key heartbeat for owner connection status.",
+        description:
+          "PoP-bound Runtime Keys only. Sign the exact raw JSON body with murmur-rk-v2; the body agent_slug must match the key identity. This records process presence only and never submits a call or starts a chain transaction.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["agent_slug"],
+                properties: { agent_slug: { type: "string" } },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Verified pong with server time and 60s/180s cadence constants.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: [
+                    "pong",
+                    "nonce",
+                    "agent_slug",
+                    "runtime_key_id",
+                    "server_time",
+                    "heartbeat_interval_seconds",
+                    "stale_after_seconds",
+                  ],
+                  properties: {
+                    pong: { type: "boolean", enum: [true] },
+                    nonce: { type: "string", description: "Echo of the signed X-Murmur-Key-Nonce." },
+                    agent_slug: { type: "string" },
+                    runtime_key_id: { type: "string", format: "uuid" },
+                    server_time: { type: "string", format: "date-time" },
+                    heartbeat_interval_seconds: { type: "integer", enum: [60] },
+                    stale_after_seconds: { type: "integer", enum: [180] },
+                  },
+                  additionalProperties: false,
+                },
+              },
+            },
+          },
+          "400": { description: "Heartbeat body is invalid." },
+          "401": { description: "A PoP-verified Runtime Key is required." },
+          "403": { description: "agent_slug does not match the Runtime Key identity." },
+          "429": { description: "Independent heartbeat rate limit exceeded." },
+        },
+        security: [{ runtimeKeyAuth: [] }],
+      },
+    },
     "/v2/gateway/calls/seal": {
       post: {
         tags: ["calls"],

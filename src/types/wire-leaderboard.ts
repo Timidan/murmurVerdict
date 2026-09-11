@@ -103,4 +103,15 @@ export interface WireAgentMarketRow {
    *  the daemon always emits it, but the dashboard also carries forward a
    *  possibly-absent value on the SSE merge path (hooks/stream-merge.ts). */
   call_scores?: (number | null)[];
+  /**
+   * The market's own question, e.g. "XRP Up or Down - August 24,
+   * 5:25AM-5:30AM ET" — the same string the market page uses as its title.
+   *
+   * Here because `market_id` is a 66-character hex condition id, and an agent
+   * profile listing forty-seven of them tells a reader nothing about what the
+   * agent actually called. Null for native price markets (no config_json) and
+   * for any market row that has since been deleted; renderers must fall back
+   * to the id. Optional on the wire so an older daemon still type-checks.
+   */
+  market_label?: string | null;
 }

@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import {
   assertFreshAuthorization,
-  listPublicRuntimeKeysForAccountAgent,
+  publicRuntimeKeyRow,
   requireControllerWalletForAgent,
   requireOwnedAgentBySlug,
 } from "./agent-identity.js";
@@ -16,7 +16,12 @@ import {
   RuntimeKeyAuthorizationReplayError,
   type RuntimeKeyMintAdapters,
 } from "./auth/accounts.js";
+import { listRuntimeKeysForAccountAgent } from "./auth/runtime-keys.js";
 import { RuntimeKeyPolicySchema } from "./auth/runtime-key-policy.js";
+import {
+  aggregateRuntimeKeyConnection,
+  runtimeKeyConnection,
+} from "./runtime-key-connection.js";
 import {
   verifySignedMessageAddress,
 } from "./controller-wallet.js";
@@ -61,22 +66,37 @@ export type RuntimeKeySignatureVerifier = (
 ) => Promise<boolean>;
 
 export function listAccountRuntimeKeysResponse(
-  input: AccountRuntimeKeySurfaceBase & {
+  input: AccountRuntimeKeySurfaceBase & AccountRuntimeKeyWriteClock & {
     slug: string;
   },
 ): {
   status: 200;
   body: {
-    keys: ReturnType<typeof listPublicRuntimeKeysForAccountAgent>;
+    keys: Array<ReturnType<typeof publicRuntimeKeyRow> & {
+      connection: ReturnType<typeof runtimeKeyConnection>;
+    }>;
+    connection: ReturnType<typeof runtimeKeyConnection>;
+    served_at: string;
   };
 } {
   const agent = requireOwnedAgentBySlug(input.db, input.accountId, input.slug);
-  const keys = listPublicRuntimeKeysForAccountAgent(
+  const keys = listRuntimeKeysForAccountAgent(
     input.db,
     input.accountId,
     agent.agent_id,
-  );
-  return { status: 200, body: { keys } };
+    true,
+  ).map((row) => ({
+    ...publicRuntimeKeyRow(row),
+    connection: runtimeKeyConnection(input.db, row, input.operationInstant),
+  }));
+  return {
+    status: 200,
+    body: {
+      keys,
+      connection: aggregateRuntimeKeyConnection(keys.map((key) => key.connection)),
+      served_at: input.operationInstant.toISOString().replace(/\.\d+Z$/, "Z"),
+    },
+  };
 }
 
 export function runtimeKeyChallengeResponse(

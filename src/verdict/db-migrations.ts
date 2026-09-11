@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 76 as const;
+export const LATEST_DB_MIGRATION_VERSION = 77 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1521,6 +1521,21 @@ export function applyMigrations(db: Database.Database): void {
       set.run("schema_version", "76");
     }).immediate();
     v = 76;
+  }
+
+  if (v < 77) {
+    // Presence is deliberately one nullable timestamp per Runtime Key. It is
+    // operational state, not a submission or a chain record.
+    db.transaction(() => {
+      applyAlterTableAddColumn(
+        db,
+        "agent_runtime_keys",
+        "last_heartbeat_at",
+        "ALTER TABLE agent_runtime_keys ADD COLUMN last_heartbeat_at TEXT;",
+      );
+      set.run("schema_version", "77");
+    }).immediate();
+    v = 77;
   }
 }
 

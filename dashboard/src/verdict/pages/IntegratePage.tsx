@@ -32,6 +32,9 @@ import { CodeSnippetPanel } from "../components/account/CodeSnippetPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
 import { buildAgentPrompt } from "../lib/agent-prompt.js";
 import { LogoLoader } from "../components/LogoLoader.js";
+import { useRuntimeKeyConnection } from "../hooks/useRuntimeKeyConnection.js";
+import { connectionAt, unknownConnection } from "../lib/runtime-key-connection.js";
+import { RuntimeKeyConnectionStatus } from "../components/account/RuntimeKeyConnectionStatus.js";
 
 const SESSION_KEY_PREFIX = "murmur_just_minted:";
 /** Handoff secrets older than this are treated as stale — see header comment. */
@@ -123,6 +126,15 @@ export function IntegratePage({ slug }: IntegratePageProps) {
   const [envelope, setEnvelope] = useState<JustMintedEnvelope | null>(() =>
     consumeJustMinted(slug),
   );
+  const [trackedRuntimeKeyId] = useState(() =>
+    envelope?.source !== "api-key" ? envelope?.runtime_key_id : undefined,
+  );
+  const {
+    snapshot: runtimeKeys,
+    receivedAtMs: runtimeKeysReceivedAtMs,
+    error: runtimeConnectionError,
+    clockTick: runtimeConnectionClockTick,
+  } = useRuntimeKeyConnection(slug, trackedRuntimeKeyId);
 
   // The handoff envelope carries `expires_at`; schedule a
   // setTimeout to null out the secret when that wall-clock moment arrives.
@@ -185,6 +197,17 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     arrivedWithFreshRuntimeKey &&
     Boolean(envelope!.runtime_key_id) &&
     Boolean(envelope!.runtime_key_signing_pk);
+  const trackedKey = trackedRuntimeKeyId
+    ? runtimeKeys?.keys.find((key) => key.runtime_key_id === trackedRuntimeKeyId)
+    : undefined;
+  const connection = runtimeConnectionError
+    ? unknownConnection(runtimeConnectionError)
+    : trackedKey && runtimeKeys
+      ? connectionAt(trackedKey.connection, runtimeKeys.served_at, runtimeKeysReceivedAtMs)
+      : !trackedRuntimeKeyId && runtimeKeys
+        ? connectionAt(runtimeKeys.connection, runtimeKeys.served_at, runtimeKeysReceivedAtMs)
+        : unknownConnection("waiting for the newly minted key to appear");
+  void runtimeConnectionClockTick;
 
   const enc = encodeURIComponent(slug);
   const walletHref = `#/account/agent/${enc}/wallet`;
@@ -225,6 +248,14 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <p className="ck-dim text-[12px] leading-relaxed max-w-[60ch]">
               Set <code className="ck-pos">MURMUR_RUNTIME_KEY</code> in your
               agent's environment.
+            </p>
+          )}
+          {!arrivedWithRetiredApiKey && (
+            <p className="mt-2">
+              <RuntimeKeyConnectionStatus connection={connection} />
+              {trackedRuntimeKeyId && (
+                <span className="ck-dim text-[12px]"> · this newly minted key</span>
+              )}
             </p>
           )}
           {arrivedWithRetiredApiKey && (

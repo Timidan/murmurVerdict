@@ -65,7 +65,12 @@ export function LoginPage({ next }: LoginPageProps) {
       <main className="flex-1 flex items-center justify-center px-4">
         <section className="ck-frame w-full max-w-[480px]">
           <div className="ck-header">
-            <span className="ck-title">sign in — you do not need a wallet</span>
+            {/* Just the action. The header used to be "sign in — you do not
+                need a wallet", and the first line of the body under it was
+                "You do not need a wallet." — the same sentence twice, four
+                lines apart, joined by an em dash the house voice does not
+                use. The reassurance is still there; it is only said once. */}
+            <span className="ck-title">sign in</span>
             <span className="ck-mono ck-dim">privy</span>
           </div>
 

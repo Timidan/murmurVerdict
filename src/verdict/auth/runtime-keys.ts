@@ -19,6 +19,7 @@ export interface RuntimeKeyRow {
   expires_at: string | null;
   revoked_at: string | null;
   revoke_reason: string | null;
+  last_heartbeat_at: string | null;
 }
 
 export interface MintRuntimeKeyResult {
@@ -175,7 +176,7 @@ export function listRuntimeKeysForAccountAgent(
               policy_json, policy_hash, controller_wallet_address,
               controller_chain_id, authorization_nonce, authorization_message,
               authorization_signature, created_at, expires_at, revoked_at,
-              revoke_reason
+              revoke_reason, last_heartbeat_at
        FROM agent_runtime_keys
        WHERE account_id = ? AND agent_id = ?
        ORDER BY created_at DESC`
@@ -183,11 +184,34 @@ export function listRuntimeKeysForAccountAgent(
               policy_json, policy_hash, controller_wallet_address,
               controller_chain_id, authorization_nonce, authorization_message,
               authorization_signature, created_at, expires_at, revoked_at,
-              revoke_reason
+              revoke_reason, last_heartbeat_at
        FROM agent_runtime_keys
        WHERE account_id = ? AND agent_id = ? AND revoked_at IS NULL
        ORDER BY created_at DESC`;
   return db.prepare(sql).all(account_id, agent_id) as RuntimeKeyRow[];
+}
+
+/** Record a verified runtime process presence. The caller owns authentication. */
+export function recordRuntimeKeyHeartbeat(
+  db: Database.Database,
+  input: {
+    runtime_key_id: string;
+    account_id: string;
+    agent_id: string;
+    observedAt: Date;
+  },
+): boolean {
+  const result = db.prepare(
+    `UPDATE agent_runtime_keys
+        SET last_heartbeat_at = ?
+      WHERE runtime_key_id = ? AND account_id = ? AND agent_id = ?`,
+  ).run(
+    stripIso(input.observedAt),
+    input.runtime_key_id,
+    input.account_id,
+    input.agent_id,
+  );
+  return result.changes === 1;
 }
 
 export function revokeRuntimeKey(

@@ -623,7 +623,9 @@ export function IkNav({
  * real marks, never the 16px garnish scaled up). 24×24, stroke 1.5, square
  * caps — the Streamline Sharp grammar the sourced inline set already speaks,
  * drawn with more mass because a hero IS the tile's subject, not garnish.
- * Renders at 24 or 48 only; fractional scales are the old grey-soup failure.
+ * Renders at 16, 20 or 24; fractional scales are the old grey-soup failure.
+ * The 48 hero is gone: at 48 against a 24px value the mark was twice the
+ * height of the number it annotates (owner flag, 2026-08-27).
  * ------------------------------------------------------------------------- */
 
 const HERO_GLYPHS = {
@@ -680,13 +682,16 @@ export const HERO_ICON_NAMES = Object.keys(HERO_GLYPHS) as readonly HeroIconName
 /** Decorative by contract, like `Ik`: aria-hidden, named by adjacent text. */
 export function IkHero({
   name,
-  size = 24,
+  size = 20,
   className,
 }: {
   name: HeroIconName;
-  size?: 24 | 48;
+  size?: 16 | 20 | 24;
   className?: string;
 }) {
+  // Stroke tracks the box. A flat 1.5 was 9% of a 16px glyph and filled the
+  // Sharp Line counters in.
+  const strokeWidth = size <= 16 ? 1 : size <= 20 ? 1.25 : 1.5;
   return (
     <svg
       viewBox="0 0 24 24"
@@ -694,7 +699,7 @@ export function IkHero({
       height={size}
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.5}
+      strokeWidth={strokeWidth}
       strokeLinecap="square"
       strokeLinejoin="miter"
       aria-hidden="true"

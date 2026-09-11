@@ -127,6 +127,7 @@ export function publicRuntimeKeyRow(row: RuntimeKeyRow) {
     expires_at: row.expires_at,
     revoked_at: row.revoked_at,
     revoke_reason: row.revoke_reason,
+    last_heartbeat_at: row.last_heartbeat_at,
   };
 }
 

@@ -88,6 +88,7 @@ try {
     db,
     accountId: account.account_id,
     slug: "runtime-key-agent",
+    operationInstant: now(),
   });
   assert.equal(empty.status, 200);
   assert.deepEqual(empty.body.keys, []);
@@ -279,6 +280,7 @@ try {
     db,
     accountId: account.account_id,
     slug: "runtime-key-agent",
+    operationInstant: now(),
   });
   assert.equal(listed.body.keys.length, 1);
   assert.equal(listed.body.keys[0].runtime_key_id, minted.body.runtime_key_id);
@@ -327,6 +329,7 @@ try {
     db,
     accountId: account.account_id,
     slug: "runtime-key-agent",
+    operationInstant: now(),
   });
   assert.equal(afterRevoke.body.keys[0].revoke_reason, "owner rotation");
   assert.equal(afterRevoke.body.keys[0].revoked_at, "2026-06-12T10:00:00Z");

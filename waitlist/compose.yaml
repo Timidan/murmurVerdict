@@ -1,0 +1,27 @@
+name: murmur-waitlist
+
+services:
+  waitlist:
+    build: .
+    container_name: murmur-waitlist
+    restart: unless-stopped
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://murmurapp.live}
+      # The service receives public traffic through the existing Caddy proxy.
+      TRUST_PROXY: "1"
+    ports:
+      - "127.0.0.1:3187:3187"
+    volumes:
+      - murmur-waitlist-data:/app/data
+    networks:
+      public_proxy:
+        aliases:
+          - murmur-waitlist
+
+volumes:
+  murmur-waitlist-data:
+    name: murmur-waitlist-data
+
+networks:
+  public_proxy:
+    external: true

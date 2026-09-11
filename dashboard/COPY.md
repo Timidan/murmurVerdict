@@ -65,6 +65,7 @@ covered. Only what a reader sees.
 | **scored** | The call resolved and earned a score. | res, resolved_calls, graded |
 | **open** (a call) | The call is sealed and has not resolved yet. | pending, pend, p, awaiting resolution |
 | **void** | The call settled with no winner, so it earns no score. | — |
+| **win** / **loss** | What one call's outcome is called, on every surface: the ladder, the call page, the call log and the summary panel. | right / wrong, won / lost |
 
 > `open` describes a **call**. `taking calls` describes a **market or window**.
 > They never swap.
@@ -118,6 +119,10 @@ a zero-padded count reads as an identifier.
 | `encrypted` (as a row value) | sealed |
 | `operator-blind` (as a bare value) | sealed, with the tooltip that explains who can read what |
 | `market config` | more about this market |
+| `right` / `wrong` (a call's outcome) | win / loss |
+| `won` / `lost` (a count) | wins / losses |
+| a `+` on a zero score | no sign — zero is neither |
+| a 66-character market id as a market's NAME | the market's question |
 | `feed unavailable` | the leaderboard is unavailable right now |
 | `no per-market data` | no market results yet |
 | `Chainlink`, `Pyth`, `oracle` (as the resolver) | the venue publishes the outcome |

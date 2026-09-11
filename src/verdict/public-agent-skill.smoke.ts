@@ -102,11 +102,11 @@ const disabled = buildAgentOperatePrompt(
   false,
 );
 assert.ok(
-  disabled.indexOf("MURMUR_OWNED_SEALING_ENABLED=false") < disabled.indexOf("## Credentials"),
-  "disabled prompt should lead with the deployment limitation",
+  disabled.indexOf("## Verify the connection first") < disabled.indexOf("MURMUR_OWNED_SEALING_ENABLED=false"),
+  "connection verification must work before the sealing limitation",
 );
-assert.ok(disabled.includes("ask your owner"), "disabled prompt should give the only recovery path");
-assert.ok(!disabled.includes("```js"), "disabled prompt should not hand out a doomed call");
+assert.ok(disabled.includes("Ask your owner"), "disabled prompt should explain the submission choice");
+assert.equal([...disabled.matchAll(/```js\n/g)].length, 1, "disabled prompt offers only the connection client");
 
 const incomplete = injectRuntimeCredentials(template, { runtimeKey });
 assert.ok(incomplete.includes("STOP"), "an incomplete minted credential should fail closed");
@@ -118,13 +118,15 @@ assert.ok(!incomplete.includes("```js"), "an incomplete credential should not ex
 // would silently hand it a .env with no Runtime Key in it.
 const envBlocks = [...prompt.matchAll(/```dotenv\n([\s\S]*?)\n```/g)].map((m) => m[1]!);
 const envBlock = envBlocks[0];
-const nodeScript = prompt.match(/```js\n([\s\S]*?)\n```/)?.[1];
+const scripts = [...prompt.matchAll(/```js\n([\s\S]*?)\n```/g)].map((m) => m[1]!);
+const [connectionScript, nodeScript] = scripts;
 assert.ok(envBlock, "prompt should contain a dotenv credential block");
 assert.ok(
   envBlock.includes("MURMUR_RUNTIME_KEY="),
   "the FIRST dotenv block must be the runtime credentials — the runner is built from it",
 );
-assert.ok(nodeScript, "prompt should contain one executable Node runner");
+assert.ok(connectionScript && nodeScript, "prompt contains connection client and submit runner");
+assert.equal(disabled.match(/```js\n([\s\S]*?)\n```/)?.[1], connectionScript);
 
 // ─── Buying is a first-class capability, not an operator errand ─────────────
 //
@@ -227,6 +229,7 @@ const workspaceTmp = mkdtempSync(join(tmpdir(), "murmur-agent-prompt-"));
 const submittedBodies: Buffer[] = [];
 let verifiedRequests = 0;
 let terminalSubmission = false;
+let wrongPong = false;
 
 const server = createServer(async (req, res) => {
   const chunks: Buffer[] = [];
@@ -273,6 +276,17 @@ const server = createServer(async (req, res) => {
     verifiedRequests++;
 
     res.setHeader("Content-Type", "application/json");
+    if (req.method === "POST" && pathAndQuery === "/v2/gateway/heartbeat") {
+      assert.deepEqual(JSON.parse(rawBody.toString()), { agent_slug: "alpha-bot" });
+      res.end(JSON.stringify({
+        pong: true,
+        nonce: wrongPong ? "wrong-nonce" : req.headers[POP_HEADER_NONCE.toLowerCase()],
+        agent_slug: "alpha-bot", runtime_key_id: runtimeKeyId,
+        server_time: new Date().toISOString(),
+        heartbeat_interval_seconds: 60, stale_after_seconds: 180,
+      }));
+      return;
+    }
     if (req.method === "POST" && pathAndQuery === "/v2/gateway/calls/seal") {
       submittedBodies.push(rawBody);
       res.statusCode = 202;
@@ -307,21 +321,19 @@ async function run(): Promise<void> {
       `MURMUR_API=http://127.0.0.1:${address.port}`,
     );
     writeFileSync(join(workspaceTmp, ".env"), `${localEnv}\n`, { mode: 0o600 });
+    writeFileSync(join(workspaceTmp, "murmur.mjs"), `${connectionScript}\n`);
     writeFileSync(join(workspaceTmp, "submit.mjs"), `${nodeScript}\n`);
 
-    const child = spawn(process.execPath, ["submit.mjs"], {
-      cwd: workspaceTmp,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
+    const checked = await runScript("murmur.mjs");
+    assert.equal(checked.code, 0, checked.stderr);
+    assert.match(checked.stdout, /Connected to Murmur as alpha-bot/);
+    assert.equal(verifiedRequests, 1);
+    assert.equal(submittedBodies.length, 0, "connection check must not submit a call");
+
+    const { code, stdout, stderr } = await runScript("submit.mjs");
     assert.equal(code, 0, stderr || stdout);
     assert.match(stdout, /call-prompt-smoke/);
-    assert.equal(verifiedRequests, 2, "submit and attempt read should both pass PoP verification");
+    assert.equal(verifiedRequests, 4, "check, submit heartbeat, submit and attempt read pass PoP");
     assert.equal(submittedBodies.length, 1);
     const submitted = JSON.parse(submittedBodies[0]!.toString("utf8")) as {
       marketRef: { protocol: string; sourceId: string; configVersion: number };
@@ -334,26 +346,41 @@ async function run(): Promise<void> {
     });
     assert.match(submitted.client_nonce, /^0x[0-9a-f]{64}$/);
 
+    wrongPong = true;
+    const mismatched = await runScript("murmur.mjs");
+    assert.notEqual(mismatched.code, 0);
+    assert.ok(!mismatched.stdout.includes("Connected"), "wrong pong never prints success");
+    assert.match(mismatched.stderr, /pong did not match/);
+    assert.equal(submittedBodies.length, 1);
+    wrongPong = false;
+
     terminalSubmission = true;
-    const failedChild = spawn(process.execPath, ["submit.mjs"], {
-      cwd: workspaceTmp,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let failedOutput = "";
-    failedChild.stdout.on("data", (chunk) => { failedOutput += String(chunk); });
-    failedChild.stderr.on("data", (chunk) => { failedOutput += String(chunk); });
-    const failedCode = await new Promise<number | null>((resolve) =>
-      failedChild.once("close", resolve));
-    assert.notEqual(failedCode, 0, "terminal submission should fail the runner");
-    assert.match(failedOutput, /Submission failed:.*failed_terminal/s);
-    assert.equal(verifiedRequests, 3, "terminal submit should also pass PoP verification");
-    process.stdout.write("  ok rendered prompt signs submit + observe exactly as the verifier requires\n");
+    const failed = await runScript("submit.mjs");
+    assert.notEqual(failed.code, 0, "terminal submission should fail the runner");
+    assert.match(failed.stderr + failed.stdout, /Submission failed:.*failed_terminal/s);
+    assert.equal(verifiedRequests, 7, "terminal submit and heartbeat also pass PoP verification");
+    process.stdout.write("  ok connection-only check, mismatched pong rejection, signed submit + observe\n");
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     db.close();
     rmSync(workspaceTmp, { recursive: true, force: true });
   }
+}
+
+async function runScript(name: string) {
+  const child = spawn(process.execPath, [name], {
+    cwd: workspaceTmp, env: process.env, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const timeout = setTimeout(() => child.kill(), 15_000);
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  }).finally(() => clearTimeout(timeout));
+  return { code, stdout, stderr };
 }
 
 await run();

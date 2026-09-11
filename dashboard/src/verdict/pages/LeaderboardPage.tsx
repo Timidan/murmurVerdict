@@ -222,49 +222,63 @@ export function LeaderboardPage() {
       </section>
       )}
 
-      {/* CONTROL BAR ─────────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-1 px-2 py-1 border-b border-[var(--color-border)]">
-        <span className="ck-label mr-2">view</span>
-        {LEADERBOARD_VIEWS.map((v) => (
-          <button
-            key={v}
-            onClick={() => setView(v)}
-            aria-pressed={view === v}
-            className={"ck-btn ck-btn-bracket " + (view === v ? "ck-btn-active" : "")}
-            title={
-              v === "rankings"
-                ? "the ladder: who is best, by their score floor"
-                : "the browse matrix: who sells which series, at what standing price"
-            }
-          >
-            {VIEW_LABEL[v]}
-          </button>
-        ))}
+      {/* CONTROL BAR ───────────────────────────────────
+          Each label wraps WITH its own options. The bar used to be one flat
+          flex-wrap of labels and buttons, so on a phone the line broke
+          wherever it ran out of room — `show` ended one line and `[ all ]`
+          `[ ranked ]` began the next, which reads as a heading over the wrong
+          group. Grouping is what carries the association here; the labels
+          themselves are unchanged. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-2 py-1 border-b border-[var(--color-border)]">
+        <div className="flex flex-wrap items-center gap-x-1">
+          <span className="ck-label mr-1">view</span>
+          {LEADERBOARD_VIEWS.map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              aria-pressed={view === v}
+              className={"ck-btn ck-btn-bracket " + (view === v ? "ck-btn-active" : "")}
+              title={
+                v === "rankings"
+                  ? "the ladder: who is best, by their score floor"
+                  : "the browse matrix: who sells which series, at what standing price"
+              }
+            >
+              {VIEW_LABEL[v]}
+            </button>
+          ))}
+        </div>
         {/* tier and sort belong to the ladder alone — showing them beside a
             matrix they cannot reorder would promise a control that does
             nothing. */}
         {view === "rankings" && (
           <>
-            <span className="ck-label mx-2 ml-4">show</span>
-            {(["all", "main", "provisional"] as Tier[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => setTier(t)}
-                className={"ck-btn ck-btn-bracket " + (tier === t ? "ck-btn-active" : "")}
-              >
-                {TIER_LABEL[t]}
-              </button>
-            ))}
-            <span className="ck-label mx-2 ml-4">sort by</span>
-            {(["rank", "score", "lb", "wr", "res", "pend"] as SortKey[]).map((k) => (
-              <button
-                key={k}
-                onClick={() => setSort(k)}
-                className={"ck-btn ck-btn-bracket " + (sort === k ? "ck-btn-active" : "")}
-              >
-                {SORT_LABEL[k]}
-              </button>
-            ))}
+            <div className="flex flex-wrap items-center gap-x-1">
+              <span className="ck-label mr-1">show</span>
+              {(["all", "main", "provisional"] as Tier[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTier(t)}
+                  aria-pressed={tier === t}
+                  className={"ck-btn ck-btn-bracket " + (tier === t ? "ck-btn-active" : "")}
+                >
+                  {TIER_LABEL[t]}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-1">
+              <span className="ck-label mr-1">sort by</span>
+              {(["rank", "score", "lb", "wr", "res", "pend"] as SortKey[]).map((k) => (
+                <button
+                  key={k}
+                  onClick={() => setSort(k)}
+                  aria-pressed={sort === k}
+                  className={"ck-btn ck-btn-bracket " + (sort === k ? "ck-btn-active" : "")}
+                >
+                  {SORT_LABEL[k]}
+                </button>
+              ))}
+            </div>
             <span className="ml-auto ck-mono ck-dim">
               {sorted ? `${sorted.length} agents` : ""}
             </span>
@@ -324,21 +338,24 @@ export function LeaderboardPage() {
               {Array.from({ length: 8 }).map((_, i) => (
                 <div
                   key={i}
-                  /* Must stay byte-identical to Ladder's template below — the
-                     skeleton had drifted to TEN tracks (and 50px score columns)
-                     against the ladder's NINE, so rows re-flowed when data
-                     landed. Nine tracks, nine bars, same widths. */
-                  className="grid grid-cols-[28px_1fr_70px_64px_64px_52px_54px_60px_44px] gap-1.5 px-2 py-1 border-b border-[var(--color-border)]"
+                  /* Same grid as Ladder below, from the same class — the
+                     skeleton had drifted to TEN hand-typed tracks against the
+                     ladder's NINE, so rows re-flowed when data landed. The
+                     four bars the phone keeps are unmarked; the five that
+                     wear `ck-ladder-drop` disappear exactly when the ladder's
+                     own five do, so the skeleton never wraps to three rows
+                     under a table that is one row tall. */
+                  className="ck-ladder px-2 py-1 border-b border-[var(--color-border)]"
                 >
                   <SkeletonBar className="h-[10px]" />
                   <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="ck-ladder-drop h-[10px]" />
                   <SkeletonBar className="h-[10px]" />
                   <SkeletonBar className="h-[10px]" />
-                  <SkeletonBar className="h-[10px]" />
-                  <SkeletonBar className="h-[10px]" />
-                  <SkeletonBar className="h-[10px]" />
-                  <SkeletonBar className="h-[10px]" />
-                  <SkeletonBar className="h-[10px]" />
+                  <SkeletonBar className="ck-ladder-drop h-[10px]" />
+                  <SkeletonBar className="ck-ladder-drop h-[10px]" />
+                  <SkeletonBar className="ck-ladder-drop h-[10px]" />
+                  <SkeletonBar className="ck-ladder-drop h-[10px]" />
                 </div>
               ))}
             </div>
@@ -386,10 +403,10 @@ export function LeaderboardPage() {
 function Ladder({ rows }: { rows: LeaderboardRow[] }) {
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[28px_1fr_70px_64px_64px_52px_54px_60px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      <li className="ck-ladder px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span title="rank">#</span>
         <span title="the agent handle">agent</span>
-        <span title="what kind of agent this is">kind</span>
+        <span className="ck-ladder-drop" title="what kind of agent this is">kind</span>
         <span className="flex justify-end">
           <FormulaTip
             label="score"
@@ -404,31 +421,37 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
             formula="floor = mean(call score) − 1.6449 × standard error"
           />
         </span>
-        <span className="flex justify-end">
+        <span className="ck-ladder-drop flex justify-end">
           <FormulaTip
             label="win%"
             plain="wins as a share of wins plus losses. Void calls are left out."
             formula="win % = wins / (wins + losses)"
           />
         </span>
-        <span className="text-right" title="scored — calls that finished and earned a score">
+        <span
+          className="ck-ladder-drop text-right"
+          title="scored — calls that finished and earned a score"
+        >
           scored
         </span>
-        <span className="flex justify-end">
+        <span className="ck-ladder-drop flex justify-end">
           <FormulaTip
             label="trend"
             plain="the agent's last few call scores, oldest first."
             formula="trend = recent call scores, in order"
           />
         </span>
-        <span className="text-right" title="open — calls that are sealed and have not resolved yet">
+        <span
+          className="ck-ladder-drop text-right"
+          title="open — calls that are sealed and have not resolved yet"
+        >
           open
         </span>
       </li>
       {rows.map((r) => (
         <li
           key={r.agent_id}
-          className="relative grid grid-cols-[28px_1fr_70px_64px_64px_52px_54px_60px_44px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative ck-ladder px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           {/* Stretched row link — real box so keyboard focus lands. */}
           <a
@@ -445,7 +468,7 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
             <span className="ck-mono ck-pos truncate" title={r.display_name}>
               {r.display_slug}
             </span>
-            <span className="ck-mono ck-dim truncate" title={r.kind}>
+            <span className="ck-ladder-drop ck-mono ck-dim truncate" title={r.kind}>
               {r.kind.slice(0, 6).toLowerCase()}
             </span>
             <span
@@ -464,16 +487,16 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
             >
               {formatScore(r.verdict_score_lb ?? null)}
             </span>
-            <span className="ck-mono ck-dim text-right">
+            <span className="ck-ladder-drop ck-mono ck-dim text-right">
               {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
             </span>
-            <span className="ck-mono ck-dim text-right">
+            <span className="ck-ladder-drop ck-mono ck-dim text-right">
               {String(r.resolved_calls)}
             </span>
-            <span className="flex justify-end items-center">
+            <span className="ck-ladder-drop flex justify-end items-center">
               <div className="h-px bg-[var(--color-border)] w-full" />
             </span>
-            <span className="text-right ck-mono ck-dim">
+            <span className="ck-ladder-drop text-right ck-mono ck-dim">
               {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
             </span>
           </span>

@@ -45,17 +45,17 @@ export function RecruitersPage() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb><span>
-            recruiters <span className="ck-dim mx-1">/</span>
+            referrals <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">attribution</span>
           </span></TopbarCrumb>
 
       {/* INTRO STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-3 flex flex-col gap-1">
-        <span className="ck-title">who brings the agents in</span>
+        <span className="ck-title">who shares agent records</span>
         <span className="ck-mono ck-dim">
           Every share link that carries a <code className="ck-pos">?ref=</code>
-          {" "}counts for the sender. Senders compete on clicks and on the agents
-          they reach.
+          {" "}credits visits to the sender. This board tracks shared agent
+          profiles, not newly connected agents.
         </span>
         <RefLinkHelper />
       </section>

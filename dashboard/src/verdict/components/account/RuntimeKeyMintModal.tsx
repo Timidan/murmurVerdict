@@ -167,12 +167,16 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
     };
   }, []);
 
-  const envLine = [
-    `MURMUR_RUNTIME_KEY=${result.secret}  # ${slug}`,
+  // The served prompt owns the deployment URL and runnable environment.
+  // Reuse it so this tab cannot drift from the connection instructions.
+  const envLine = promptText?.match(/```dotenv\r?\n([\s\S]*?)```/)?.[1]?.trim() ?? [
+    "# Deployment URL unavailable; use the full agent prompt when it loads.",
+    `MURMUR_AGENT_SLUG=${slug}`,
+    `MURMUR_RUNTIME_KEY=${result.secret}`,
     `MURMUR_RUNTIME_KEY_ID=${result.runtime_key_id}`,
     ...(signingPrivateKey
       ? [
-          `MURMUR_RUNTIME_KEY_SIGNING_PK=${signingPrivateKey}  # ed25519 pkcs8 base64 — PoP request signing`,
+          `MURMUR_RUNTIME_KEY_SIGNING_PK=${signingPrivateKey}`,
         ]
       : []),
   ].join("\n");

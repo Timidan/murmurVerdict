@@ -45,8 +45,8 @@ Two themes share the same CSS-variable surface. Dark is the default. Paper is ac
 | `--color-raised` | `#1F1F1F` | `#EAE3D3` | Raised surface (rarer) |
 | `--color-border` | `#262626` | `#D8D2C8` | Hairline divider |
 | `--color-border-vis` | `#363636` | `#B8AE99` | Visible/interactive border |
-| `--color-disabled` | `#8A8A8A` | `#6F6754` | Disabled, timestamps, hints |
-| `--color-secondary` | `#999999` | `#6B6453` | Labels, captions, metadata |
+| `--color-disabled` | `#8A8A8A` | `#6B6350` | Disabled, timestamps, hints |
+| `--color-secondary` | `#999999` | `#605A49` | Labels, captions, metadata |
 | `--color-primary` | `#E8E8E8` | `#1F1B14` | Body text |
 | `--color-display` | `#FFFFFF` | `#0A0A0A` | Hero numerals, the ONE thing per screen |
 | `--color-brand-mark` | `#FD3C3C` | `#FD3C3C` | Immutable approved logo-dot red; never follows UI palette changes |
@@ -58,6 +58,19 @@ Two themes share the same CSS-variable surface. Dark is the default. Paper is ac
 | `--color-warning` | `#D4A843` | `#8A6A1F` | Stale-but-acceptable, void band (data-encoding only) |
 
 Dark uses a near-black `#0A0A0A` (OLED-friendly canvas). Paper uses cream `#FCF9F2` sampled from the approved asset pack.
+
+**Paper text tiers re-cut against `raised` (2026-09-02).** `--color-disabled` and
+`--color-secondary` were tuned against the paper CANVAS only, and landed at
+4.39:1 and 4.60:1 on `--color-raised` — the FormulaTip box's own background —
+so every formula line in a light-theme tooltip failed AA. Both moved together
+(4.66 / 5.38 on raised, 5.66 / 6.54 on bg): darkening only `disabled` would
+have made the quieter tier the louder one. Any future paper token is checked
+against `raised`, not `bg`.
+
+**`--color-accent-ink` carries every red that sits on `raised`.** The graphic
+accent is 2.69:1 there, which fails even the 3:1 non-text floor, so the
+`/install` step numeral, the active-tab bars and the side-tab rail bar all take
+the ink token. On dark the two resolve to the same hex, so nothing moves.
 
 **Hierarchy rule:** max 4 text levels per screen, drawn from `disabled / secondary / primary / display`. Red is not part of the hierarchy — if nothing is urgent, no red on screen.
 
@@ -86,7 +99,7 @@ When the page sits inside `.mmr-shell`, overrides at `dashboard/src/verdict/styl
 **The floor is enforced, not conventional.** Two committed mechanisms, added 2026-08-09:
 
 1. **Nothing outside the app can reach the bundle.** `dashboard/src/styles.css` disables Tailwind's automatic content detection (`@import "tailwindcss" source(none)`) and declares `dashboard/src` + `dashboard/index.html` as the only `@source`s. Before this, v4 scanned from the git root, so a size written in a plan, spec or design doc compiled into shipped CSS — which is exactly how the two banned utilities kept their rules alive with zero call sites.
-2. **A sub-12px size fails a check.** `dashboard/src/verdict/type-floor.check.ts` runs in `npm run smoke:all` (and therefore `verify:readiness`) and scans the same source set the stylesheet declares. It fails on any arbitrary text-size utility, inline `fontSize`, or stylesheet `font-size`/font-size custom property that resolves under 12px, naming the file, line and value. Relative units (`em`, `%`) are out of its reach by design — see the check's header for why.
+2. **A sub-12px size fails a check.** `dashboard/src/verdict/type-floor.check.ts` runs in `npm run smoke:all` (and therefore `verify:readiness`) and scans the same source set the stylesheet declares, **plus `dashboard/public/landing-cinematic/`** (added 2026-09-02). The landing is served from `public/`, so it never entered the Tailwind bundle and was never scanned — and it had drifted almost wholly under the floor while the cockpit was swept four times: nav 11.5px, section labels 10.4, footer 9.6. It is the first page a visitor sees, and the floor is a product ruling rather than a bundler artefact, so the check follows the pixels. It fails on any arbitrary text-size utility, inline `fontSize`, or stylesheet `font-size`/font-size custom property that resolves under 12px, naming the file, line and value. Relative units (`em`, `%`) are out of its reach by design — see the check's header for why.
 
 #### Type ladder
 
@@ -120,6 +133,8 @@ When the page sits inside `.mmr-shell`, overrides at `dashboard/src/verdict/styl
 | `.ck-row` | grid row, hover lift via `color-mix(in srgb, var(--color-primary), transparent 97%)` (theme-correct — the old `rgba(255,255,255,0.03)` hazed white on paper) |
 | `.ck-sidetabs` (+ `-rail` / `-body`) | rail left, body right, one frame around both; active cell wears an inset accent bar; below `md` the rail lies down into a scrolling strip. Two rail widths: bare = **56px icon-only** (`.ck-sidetab--icon` + `.ck-sidetab-tip`, used by AgentSettingsPage's eight tabs, whose labels truncate at word width), `.ck-sidetabs--wide` = **170px worded** (IntegratePage's four short labels, which do not). `.ck-sidetab-body--fixed` floors the body at 400px so switching panes never resizes the page |
 | `.ck-dot[-ok\|-stale]` | 5px square LED, static colour only — no animation |
+| `.ck-ladder` (+ `--market`) | **the agent ladder's grid**, owned here rather than retyped per page. Nine tracks (eight on `--market`), and below 640px only four: rank, agent, score, floor. The 436px of fixed numeric track left the `1fr` handle column resolving to ZERO on a 390px phone — the leaderboard rendered nameless rows and the market ladder printed its tier badge over the score. Cells that leave wear `.ck-ladder-drop`; the loading skeleton wears it on the same five bars so it cannot wrap to three rows under a one-row table |
+| `.ck-fam-row` | the families panel's four-track row. The unit ("of families") moved from every row into the column header, which is what had been truncating the handle to `operator-…` in a 290px side panel |
 
 #### Dead classes — do not re-document as live
 
@@ -183,6 +198,21 @@ Two rules keep it honest, and both are load-bearing:
 - **Equal rail padding.** Under `border-box`, a `flex-basis: 0` item cannot resolve below its own horizontal padding, so unequal padding gives the rails unequal floors and pushes the nav off-centre (it was 6px off at 28px vs 16px). Change one side's padding and you must change the other.
 
 Only the left rail gets `min-w-0`: it absorbs any squeeze by truncating the crumb, so the right rail's fixed-size chrome never compresses.
+
+**The bar is 98px where the tips are pinned (2026-09-02).** Under `hover: none`
+every nav tip is shown at once, hanging 68-88px below the bar's top edge — 24px
+past a 64px bar. They are out of flow, so on a hoverless ≥1024px device (an iPad
+in landscape) six bracketed labels printed straight over the first rows of the
+page: the leaderboard's ribbon, the agent's identity strip, the call's outcome.
+`.mmr-topbar` (the class exists for this) grows to 98px in that branch and pins
+its three rails back to 64px, so every measurement above still holds and only
+the header box changes. `--nav-hit-area` and the rail padding are untouched.
+
+**The clock is local, not UTC (2026-09-02).** It printed `toISOString()` with a
+bare `Z` while every market window on the same screen was already rendered in
+the reader's own zone. One zone per screen, and it is the reader's; the zone is
+named in the label so nothing is ambiguous. UTC keeps the place it belongs,
+which is the wire.
 | `Panel` | Hairline-framed labeled region with header strip | leaderboard, live tape, markets matrix panels |
 | `CompactMiniLB` | Top-N leaderboard rendered as `ck-row` grid with sparklines | landing |
 | `CompactLiveFeed` | Tape of recent SSE events | landing |
@@ -337,9 +367,9 @@ Two layers:
 
 Both produce the same visual landing if a human hits it in a browser.
 
-### 5.10 Recruiters (`#/recruiters`) — `RecruitersPage.tsx`
+### 5.10 Referrals (`#/recruiters`) — `RecruitersPage.tsx`
 
-Static-ish copy block + leaderboard preview for journalists/investors. No interactivity beyond the embedded leaderboard.
+Public referral attribution board with a share-link suffix helper. Available from the footer, not primary desktop/mobile navigation. The existing route and referral tracking stay unchanged; these counts describe shared profiles and visits, not newly connected agents.
 
 ### 5.11 Admin refs (`#/admin/refs`) — `AdminRefsPage.tsx`
 
@@ -500,7 +530,16 @@ Dual theme: **dark** (default) + **paper** (cream/ink twin). Activation via `[da
 
 **Runtime apply:** `applyTheme(theme)` in `dashboard/src/verdict/ui/theme.ts` is the single source for runtime theme writes (DOM attribute, meta-theme-color, favicon hrefs, localStorage). The bootstrap script mirrors this logic — flagged "keep in sync" with comments in both files.
 
-**Toggle:** `ThemeToggle` (`dashboard/src/verdict/components/ThemeToggle.tsx`) mounts in the compact topbar's right cluster, between the UTC clock and the LIVE/OFFLINE status. Cross-tab sync via the `storage` event with an idempotency short-circuit.
+**Toggle:** `ThemeToggle` (`dashboard/src/verdict/components/ThemeToggle.tsx`) mounts in the compact topbar's right cluster, between the clock and the LIVE/OFFLINE status. Cross-tab sync via the `storage` event with an idempotency short-circuit.
+
+**The cinematic landing is dark in both themes, on purpose.** `/` is a
+full-bleed photographic scene (`public/landing-cinematic/`) with its own
+stylesheet, its own tokens and `color-scheme: dark`; the composition is a
+graded night photograph, and there is no light twin of it. A paper reader
+therefore meets a dark entrance and a cream app. That is a deliberate
+brand-surface exception, not an unfinished theme — recorded here so it is not
+"fixed" by accident. If the landing ever needs a paper twin it needs a second
+art direction first, not a token sweep.
 
 ---
 

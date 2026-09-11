@@ -47,6 +47,15 @@ const REM_PX = 16;
 const dashboardRoot = fileURLToPath(new URL("../../", import.meta.url));
 const SRC_ROOT = join(dashboardRoot, "src");
 const ENTRY_HTML = join(dashboardRoot, "index.html");
+/**
+ * The cinematic landing is served from `public/`, so it never enters the
+ * Tailwind bundle and was never scanned here — and it had drifted almost
+ * entirely under the floor while the cockpit was being swept four times: the
+ * nav at 11.5px, section labels at 10.4, the footer at 9.6. It is the first
+ * page a visitor sees. The floor is a product ruling, not a bundler artefact,
+ * so the check follows the pixels rather than the build graph.
+ */
+const LANDING_ROOT = join(dashboardRoot, "public", "landing-cinematic");
 
 interface Violation {
   file: string;
@@ -70,6 +79,7 @@ function walk(dir: string, out: string[]) {
 
 const files: string[] = [];
 walk(SRC_ROOT, files);
+walk(LANDING_ROOT, files);
 files.push(ENTRY_HTML);
 files.sort();
 

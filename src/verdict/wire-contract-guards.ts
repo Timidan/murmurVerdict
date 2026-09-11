@@ -78,6 +78,7 @@ import type {
   WireControllerWalletReattestationResponse,
   WireRuntimeKeyPolicy,
   WireRuntimeKeyRow,
+  WireRuntimeKeysResponse,
   WireRuntimeKeyChallengeResponse,
   WireRuntimeKeyMintResponse,
   WireMintApiKeyResponse,
@@ -175,6 +176,7 @@ import type {
   mintAccountRuntimeKeyResponse,
 } from "./account-runtime-key-surface.js";
 import type { publicControllerWalletRow, publicRuntimeKeyRow } from "./agent-identity.js";
+import type { listAccountRuntimeKeysResponse } from "./account-runtime-key-surface.js";
 import type { RuntimeKeyPolicy as DaemonRuntimeKeyPolicy } from "./auth/runtime-key-policy.js";
 
 import type {
@@ -299,7 +301,14 @@ type _SellableCall = Assert<Conforms<SellableCallRow, WireSellableCall>>;
 type _ControllerWalletSummary = Assert<
   Conforms<ReturnType<typeof publicControllerWalletRow>, WireControllerWalletSummary>
 >;
-type _RuntimeKeyRow = Assert<Conforms<ReturnType<typeof publicRuntimeKeyRow>, WireRuntimeKeyRow>>;
+type _RuntimeKeyRow = Assert<Conforms<
+  ReturnType<typeof publicRuntimeKeyRow>,
+  Omit<WireRuntimeKeyRow, "connection">
+>>;
+type _RuntimeKeysResponse = Assert<Conforms<
+  ReturnType<typeof listAccountRuntimeKeysResponse>["body"],
+  WireRuntimeKeysResponse
+>>;
 type _RuntimeKeyPolicy = Assert<Conforms<DaemonRuntimeKeyPolicy, WireRuntimeKeyPolicy>>;
 
 type _AccountSession = Assert<

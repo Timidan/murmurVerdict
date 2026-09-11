@@ -144,11 +144,17 @@ function render() {
   const progress = actualProgress;
   // Beat timings as fractions of the section. SEALED and RESOLVED enter at the
   // same pace (0.10) on purpose; the tail used to sit idle and now carries them.
-  const heroVisibility = 1 - smoothstep(0.03, 0.18, progress);
+  // Shorter ramps, same beats. Each moment kept its position in the sequence
+  // but spent most of its span mid-fade: `resolved` took a tenth of the whole
+  // scroll to arrive and held fully legible for barely more, so a reader
+  // stopping anywhere between the beats found a screen of 20%-opacity text
+  // and no way to tell whether it was loading, broken, or theirs to read.
+  // Only the ramp lengths moved; every beat still starts where it started.
+  const heroVisibility = 1 - smoothstep(0.03, 0.12, progress);
   const portalOpen = smoothstep(0.15, 0.25, progress);
-  const sealedVisibility = segmentInOut(0.235, 0.335, 0.42, 0.47, progress);
-  const resolvedVisibility = segmentInOut(0.51, 0.61, 0.72, 0.77, progress);
-  const railVisibility = smoothstep(0.78, 0.93, progress);
+  const sealedVisibility = segmentInOut(0.235, 0.295, 0.43, 0.47, progress);
+  const resolvedVisibility = segmentInOut(0.51, 0.57, 0.73, 0.77, progress);
+  const railVisibility = smoothstep(0.78, 0.86, progress);
   const worldPush = smoothstep(0.03, 0.77, progress);
   const focusStrength = resolvedVisibility;
 

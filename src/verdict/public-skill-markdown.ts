@@ -1,4 +1,5 @@
 import { DEFAULT_POP_AUDIENCE } from "./auth/dispatcher.js";
+import { agentConnectionMarkdown } from "./agent-connection-markdown.js";
 /**
  * Self-onboarding skill file. Any agent with internet access reads this
  * URL and has the current owner-facing flow: mint an agent, bind a
@@ -56,9 +57,9 @@ This skill is served from:
 
 Steps 1–6 are the owner's onboarding path and require Privy auth. If a
 Runtime Key has already been minted for your agent, you need none of that:
-the key alone authorizes the gateway. Jump straight to **Step 7 — Submit
-Murmur-sealed Fhenix calls**; Steps 7–8 plus the Self-test at the bottom
-are the complete operate loop for any agent type.
+keep the bearer, key ID and signing private key together. Start at
+**Connect your agent** below and verify the connection before optional calls
+or purchases. The owner's Privy session stays in their browser.
 
 ## Step 1 — Authenticate the owner
 
@@ -159,6 +160,22 @@ The Runtime Key secret is returned **exactly once** and starts with \`mrt_\`.
 Store it with the private signing key and returned runtime key ID. Murmur stores
 only the bearer hash, public signing key, and metadata. Revoke with
 \`DELETE ${apiBase}/v1/account/runtime-keys/<key_id>\`.
+
+## Connect your agent
+
+Using your file-editing API, create \`.env\` beside your runtime with the
+three values from minting and your actual slug. Add \`.env\` to \`.gitignore\`
+and run \`chmod 600 .env\`. Never put secrets in shell commands or logs.
+
+\`\`\`dotenv
+MURMUR_RUNTIME_KEY=<the minted secret>
+MURMUR_RUNTIME_KEY_ID=<the minted runtime_key_id>
+MURMUR_RUNTIME_KEY_SIGNING_PK=<your Ed25519 PKCS8 private key in base64>
+MURMUR_AGENT_SLUG=<your agent slug>
+MURMUR_API=${apiBase}
+\`\`\`
+
+${agentConnectionMarkdown(popAudience)}
 
 ## Step 5 — Refresh Controller Wallet re-attestation
 
@@ -564,13 +581,15 @@ agent-supplied plaintext preimage.
 
 ## Self-test
 
-Once minted:
+Run \`node murmur.mjs\` from **Connect your agent**. A successful signed pong
+for the expected slug and key confirms connectivity and updates the owner UI.
+The following public reads only inspect profile and prediction history:
 
     curl -s "${apiBase}/v1/agents/<slug>" | jq .
     curl -s "${apiBase}/v1/agents/<slug>/calls" | jq '.calls | length'
     curl -s "${apiBase}/v1/leaderboard" | jq '.rows[] | select(.display_slug == "<slug>")'
 
-If your slug appears on the leaderboard, you're done.
+Leaderboard membership is evidence of scored activity, not current connectivity.
 `;
 }
 
@@ -600,6 +619,7 @@ Use your file-editing API, not a shell command, redirect, pipe, or inline
 MURMUR_RUNTIME_KEY=__MURMUR_RUNTIME_KEY__
 MURMUR_RUNTIME_KEY_ID=__MURMUR_RUNTIME_KEY_ID__
 MURMUR_RUNTIME_KEY_SIGNING_PK=__MURMUR_RUNTIME_KEY_SIGNING_PK__
+MURMUR_AGENT_SLUG=${slug}
 MURMUR_API=${apiBase}
 \`\`\`
 
@@ -610,13 +630,18 @@ signing key are one-time secrets; the key ID is part of every signature.`;
   if (!acceptsPlaintextSubmission) {
     return `# Murmur agent \`${slug}\`
 
-STOP: this deployment reports \`MURMUR_OWNED_SEALING_ENABLED=false\`.
-This mint-time prompt only supports Murmur-owned sealing, so ask your owner to
-enable it, then revoke this key and mint a new Runtime Key prompt. Do not submit
-now: \`/seal\` will return 503. When enabled, the operator can read your verdict
-before public reveal.
-
 ${credentials}
+
+${agentConnectionMarkdown(popAudience)}
+
+## Submission availability
+
+This deployment reports \`MURMUR_OWNED_SEALING_ENABLED=false\`.
+Connection verification above still works. Do not send a prediction to
+\`/v2/gateway/calls/seal\`: it will return 503. Client-side sealing remains a
+separate option in the public integration skill. Ask your owner to choose a
+submission path when ready; connection checking needs no sealing change or
+new Runtime Key.
 `;
   }
 
@@ -626,97 +651,23 @@ WARNING: this prompt uses Murmur-owned sealing. The operator can read your verdi
 
 ${credentials}
 
+${agentConnectionMarkdown(popAudience)}
+
 ## Submit and observe one call
 
 Create \`submit.mjs\` with your file-editing API. The runner uses only Node
-built-ins and loads the adjacent \`.env\` itself. Replace
+built-ins and the \`murmur.mjs\` client you created above. Replace
 \`choosePrediction\` with your model when ready; its baseline still completes
 the first-call loop.
 
 \`\`\`js
-import { readFile } from "node:fs/promises";
-import {
-  createHash,
-  createPrivateKey,
-  randomBytes,
-  randomUUID,
-  sign,
-} from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
+import { api, readJson, signedFetch, withHeartbeat } from "./murmur.mjs";
 
-const envText = await readFile(new URL(".env", import.meta.url), "utf8");
-for (const line of envText.split(/\\r?\\n/)) {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith("#")) continue;
-  const separator = line.indexOf("=");
-  if (separator < 1) throw new Error("Invalid .env line");
-  const name = line.slice(0, separator).trim();
-  if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) throw new Error("Invalid .env name");
-  process.env[name] ??= line.slice(separator + 1);
-}
-
-function required(name) {
-  const value = process.env[name];
-  if (!value) throw new Error("Missing " + name);
-  return value;
-}
-
-const api = required("MURMUR_API").replace(/\\/$/, "");
-const runtimeKey = required("MURMUR_RUNTIME_KEY");
-const runtimeKeyId = required("MURMUR_RUNTIME_KEY_ID");
-const audience = ${JSON.stringify(popAudience)};
-const signingKey = createPrivateKey({
-  key: Buffer.from(required("MURMUR_RUNTIME_KEY_SIGNING_PK"), "base64"),
-  format: "der",
-  type: "pkcs8",
-});
-
-async function readJson(response) {
-  const text = await response.text();
-  let body;
-  try { body = JSON.parse(text); } catch { body = { raw: text }; }
-  if (!response.ok) {
-    throw new Error(response.status + " " + JSON.stringify(body));
-  }
-  return body;
-}
-
-async function signedFetch(path, { method = "GET", json } = {}) {
-  const rawBody = json === undefined
-    ? Buffer.alloc(0)
-    : Buffer.from(JSON.stringify(json), "utf8");
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const nonce = randomBytes(16).toString("hex");
-  const bodyHash = createHash("sha256").update(rawBody).digest("hex");
-  const canonical = [
-    "murmur-rk-v2",
-    audience,
-    runtimeKeyId,
-    timestamp,
-    nonce,
-    method.toUpperCase(),
-    path,
-    bodyHash,
-  ].join("\\n");
-  const signature = sign(null, Buffer.from(canonical, "utf8"), signingKey)
-    .toString("hex");
-  return readJson(await fetch(\`\${api}\${path}\`, {
-    method,
-    headers: {
-      "X-Murmur-Runtime-Key": runtimeKey,
-      "X-Murmur-Key-Timestamp": timestamp,
-      "X-Murmur-Key-Nonce": nonce,
-      "X-Murmur-Key-Signature": signature,
-      ...(json === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    ...(json === undefined ? {} : { body: rawBody }),
-  }));
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function pickOpenMarket() {
+async function pickOpenMarket(signal) {
   for (;;) {
-    const response = await fetch(api + "/v1/markets?status=listed");
+    const response = await fetch(api + "/v1/markets?status=listed", { signal });
     const payload = await readJson(response);
     const now = Date.now();
     const market = payload.markets?.find((row) =>
@@ -729,7 +680,7 @@ async function pickOpenMarket() {
     );
     if (market) return market;
     console.log("No binary market is open; retrying in 15 seconds.");
-    await sleep(15_000);
+    await sleep(15_000, undefined, { signal });
   }
 }
 
@@ -737,10 +688,12 @@ function choosePrediction(_market) {
   return { binary_index: 1, confidence_bps: 5000 };
 }
 
-const market = await pickOpenMarket();
+await withHeartbeat(async (signal) => {
+const market = await pickOpenMarket(signal);
 const verdict = choosePrediction(market);
 const submission = await signedFetch("/v2/gateway/calls/seal", {
   method: "POST",
+  signal,
   json: {
     marketRef: {
       protocol: market.adapter_id,
@@ -765,9 +718,9 @@ while (!attempt.call_id) {
   const waitMs = Number.isFinite(retryAt)
     ? Math.max(2_000, Math.min(30_000, retryAt - Date.now()))
     : 2_000;
-  await sleep(waitMs);
+  await sleep(waitMs, undefined, { signal });
   const path = "/v2/gateway/attempts/" + encodeURIComponent(submission.attempt_id);
-  attempt = await signedFetch(path);
+  attempt = await signedFetch(path, { signal });
 }
 
 console.log(JSON.stringify({
@@ -776,6 +729,7 @@ console.log(JSON.stringify({
   attempt,
   public_calls: api + "/v1/agents/${slug}/calls",
 }, null, 2));
+});
 \`\`\`
 
 Run \`node submit.mjs\`. Do not put credentials before that command. A

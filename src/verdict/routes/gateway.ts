@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import express from "express";
+import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 import type Database from "better-sqlite3";
 import type { FhenixGatewayBroadcaster } from "../../integrations/fhenix-gateway.js";
 import type { PrivyAuthVerifier } from "../auth/privy.js";
@@ -11,6 +12,9 @@ import {
   gatewaySealedCallSubmissionResponse,
   sendGatewaySubmissionJsonResponse,
 } from "../gateway-submission-surface.js";
+import {
+  gatewayHeartbeatResponse,
+} from "../gateway-heartbeat-surface.js";
 import {
   operatorGatewayRetryResponse,
   operatorGatewaySnapshotResponse,
@@ -66,6 +70,52 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
         createHash("sha256").update(buf).digest("hex");
     },
   });
+  // Heartbeats are operational presence, so their budget is independent of
+  // per-key submission policy quotas. Keep it generous relative to the 60s
+  // cadence while bounding accidental tight loops before PoP verification.
+  const heartbeatIpLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 120,
+    // The keyed limiter below owns the response headers. Suppressing these
+    // avoids conflicting RateLimit values while still bounding arbitrary
+    // Runtime-Key header churn before authentication.
+    standardHeaders: false,
+    legacyHeaders: false,
+    message: { error: "rate_limited", code: "rate_limited", route: "gateway_heartbeat" },
+  });
+  const heartbeatLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 12,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const runtimeKey = req.header("X-Murmur-Runtime-Key");
+      return runtimeKey
+        ? createHash("sha256").update(runtimeKey).digest("hex")
+        : ipKeyGenerator(req.ip ?? "unknown");
+    },
+    message: { error: "rate_limited", code: "rate_limited", route: "gateway_heartbeat" },
+  });
+
+  router.post(
+    "/v2/gateway/heartbeat",
+    heartbeatIpLimiter,
+    heartbeatLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const result = await gatewayHeartbeatResponse({
+        req,
+        deps: {
+          db: deps.db,
+          now: deps.now,
+          privyAuth: deps.privyAuth,
+          popAudience: deps.popAudience,
+        },
+        bodyJson: req.body ?? {},
+      });
+      res.status(result.status).json(result.body);
+    }),
+  );
 
   // Canonical Gateway paths. The daemon never receives verdict/feed plaintext
   // while pending; it accepts CoFHE encrypted inputs, enforces Gateway policy,

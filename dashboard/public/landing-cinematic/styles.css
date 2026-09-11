@@ -1,3 +1,13 @@
+/* ── The 12px type floor ─────────────────────────────────────────────────────
+   Nothing on this page renders below 12px (0.75rem) — the same owner ruling
+   the cockpit runs under (dashboard/DESIGN.md §2.5). This file used to sit
+   almost entirely beneath it: the nav at 11.5px, section labels and card meta
+   at 10.4-10.6, the footer at 9.6. The cockpit's floor is enforced by
+   `dashboard/src/verdict/type-floor.check.ts`, and that check now scans this
+   stylesheet too, so a smaller value fails the build rather than shipping.
+
+   If a label no longer fits, shorten the label. Never the type.
+   ──────────────────────────────────────────────────────────────────────── */
 :root {
   color-scheme: dark;
   --bg: #0a0a0a;
@@ -194,9 +204,36 @@ canvas {
   height: 56px;
 }
 
+/* The hero carries the wordmark at full size 90px below the bar's copy, so at
+   first paint the page said MURMUR.VERDICT twice inside 200px. The bar's copy
+   waits until the hero has scrolled away — `visibility`, not opacity, so the
+   hidden link leaves the tab order instead of being a focusable nothing. No
+   layout moves either way: the grid column is sized above.
+
+   Scoped to `.js.motion-ok`, which is the ONLY branch where `is-scrolled` is
+   ever set: `initializeMotion()` returns early under `prefers-reduced-motion`
+   and never binds the scroll listener, so an unscoped rule would hide the
+   wordmark permanently for exactly the readers least able to work around it.
+   Those branches keep the wordmark from the start. */
+.js.motion-ok .site-header .brand-strip--nav {
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity 240ms var(--ease-ui),
+    visibility 0s linear 240ms;
+}
+
+.js.motion-ok .site-header.is-scrolled .brand-strip--nav {
+  visibility: visible;
+  opacity: 1;
+  transition:
+    opacity 240ms var(--ease-ui),
+    visibility 0s;
+}
+
 .brand-strip--hero {
   width: clamp(240px, 28vw, 420px);
-  height: clamp(88px, 11vw, 148px);
+  height: clamp(80px, min(11vw, 14vh), 148px);
   margin-left: clamp(-16px, -1.2vw, -8px);
   margin-bottom: var(--space-3);
   overflow: visible;
@@ -211,7 +248,7 @@ canvas {
   justify-content: center;
   gap: var(--space-6);
   font-family: var(--mono);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .site-nav a {
@@ -257,7 +294,7 @@ canvas {
   border: 1px solid transparent;
   border-radius: 0;
   font-family: var(--mono);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.01em;
   cursor: pointer;
@@ -452,7 +489,7 @@ canvas {
   gap: var(--space-3);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -492,6 +529,12 @@ canvas {
   align-content: center;
   justify-items: center;
   text-align: center;
+  /* Reserve the proof strip's own band. The strip is absolutely positioned at
+     the bottom of this box, so it does not participate in the centring above —
+     and on a 1440x900 laptop the lockup grew straight through it: the "Open
+     the dashboard" button printed on top of "SEALED · FHENIX". Padding is what
+     the strip needs to be safe from, not a z-index. */
+  padding-bottom: calc(var(--space-8) + 3.25rem);
 }
 
 .hero-lockup {
@@ -505,7 +548,7 @@ canvas {
   margin: 0 0 var(--space-4);
   color: var(--ink);
   font-family: var(--mono);
-  font-size: clamp(0.68rem, 0.8vw, 0.76rem);
+  font-size: clamp(0.75rem, 0.8vw, 0.8rem);
   letter-spacing: 0.08em;
   line-height: 1.55;
   text-transform: uppercase;
@@ -531,7 +574,12 @@ canvas {
 
 .hero-lockup h1 {
   max-width: 14ch;
-  font-size: clamp(3rem, 6.8vw, 6rem);
+  /* Height-aware, because this heading wraps to four lines and the viewport it
+     has to fit inside is measured the other way. At 1440x900 the width term
+     alone asked for 98px, so four lines came to 376px of a 724px content box
+     and the hero overflowed its own screen. `min()` lets whichever dimension
+     is scarcer set the size. */
+  font-size: clamp(3rem, min(6.8vw, 8.6vh), 6rem);
 }
 
 .hero-lockup h1 span {
@@ -565,7 +613,7 @@ canvas {
   padding: var(--space-2) var(--space-3);
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
 }
 
 .text-link span {
@@ -587,7 +635,7 @@ canvas {
   margin: 0;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   transform: translateX(-50%);
@@ -668,7 +716,7 @@ canvas {
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }
@@ -701,7 +749,7 @@ canvas {
 .evidence__rows dt,
 .evidence__rows dd {
   margin: 0;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .evidence__rows dt {
@@ -749,7 +797,7 @@ canvas {
 .evidence__seal p {
   margin: 0;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -765,7 +813,7 @@ canvas {
 
 .scoreboard__count span {
   color: var(--muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -821,7 +869,7 @@ canvas {
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid rgba(232, 232, 232, 0.08);
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .scoreboard__rows li:last-child {
@@ -972,7 +1020,7 @@ canvas {
 .chapter-card__index,
 .chapter-card__meta {
   font-family: var(--mono);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1031,7 +1079,7 @@ canvas {
   padding-top: var(--space-3);
   color: var(--bg);
   font-family: var(--mono);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -1046,7 +1094,7 @@ canvas {
   gap: var(--space-2);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1082,7 +1130,7 @@ canvas {
   margin: 0 0 var(--space-5);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1107,11 +1155,25 @@ canvas {
   opacity: 1;
 }
 
+/* Two of these four assets are horizontal lockups and two are square marks.
+   One shared `height: 24px` made the lockups 112px wide and the squares 24px,
+   so Circle and Base read as specks beside Fhenix and OpenServ. Optical
+   weight, not measured height, is what makes a logo row look level: a square
+   mark carries its mass in one block and needs more height than a lockup whose
+   letterforms are only x-height tall. */
 .stack__logos img {
   width: auto;
-  max-width: 112px;
-  height: 24px;
   object-fit: contain;
+}
+
+.stack__logos .stack__logo--lockup {
+  max-width: 116px;
+  height: 22px;
+}
+
+.stack__logos .stack__logo--mark {
+  width: 30px;
+  height: 30px;
 }
 
 .site-footer {
@@ -1123,7 +1185,7 @@ canvas {
   border-top: 1px solid var(--line);
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 0.6rem;
+  font-size: 0.75rem;
 }
 
 .site-footer p {

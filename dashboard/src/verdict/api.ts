@@ -110,6 +110,7 @@ export type {
   WireControllerWalletReattestationResponse as ControllerWalletReattestationResponse,
   WireRuntimeKeyPolicy as RuntimeKeyPolicy,
   WireRuntimeKeyRow as RuntimeKeyRow,
+  WireRuntimeKeyConnection as RuntimeKeyConnection,
   WireRuntimeKeyChallengeResponse as RuntimeKeyChallengeResponse,
   WireRuntimeKeyMintResponse as RuntimeKeyMintResponse,
   WireMintApiKeyResponse as MintApiKeyResponse,
@@ -120,6 +121,8 @@ export type {
   WireFunnelEventKind as FunnelEventKind,
   WireAdminRefSender as AdminRefSender,
 } from "@shared/wire-account";
+
+export type RuntimeKeysResponse = import("@shared/wire-account").WireRuntimeKeysResponse;
 
 export type {
   WireGatewayAttemptStatus as GatewayAttemptStatus,
@@ -1341,10 +1344,11 @@ export const verdictApi = {
       { Authorization: `Bearer ${privyToken}` },
     ),
 
-  getRuntimeKeys: (privyToken: string, slug: string) =>
-    get<{ keys: RuntimeKeyRow[] }>(
+  getRuntimeKeys: (privyToken: string, slug: string, signal?: AbortSignal) =>
+    get<RuntimeKeysResponse>(
       `/v1/account/agents/${encodeURIComponent(slug)}/runtime-keys`,
       { Authorization: `Bearer ${privyToken}` },
+      signal,
     ),
 
   /**

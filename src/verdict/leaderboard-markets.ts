@@ -38,6 +38,8 @@ export interface AgentMarketRow {
    * void / oracle_unavailable), powering the per-market trend sparkline.
    */
   call_scores: (number | null)[];
+  /** The market's own question — see WireAgentMarketRow.market_label. */
+  market_label?: string | null;
 }
 
 export interface AgentMarketGridOptions {
@@ -217,6 +219,56 @@ export function getLeaderboardForMarkets(
 }
 
 /**
+ * Human labels for a set of market ids, read from each market's own
+ * `config_json`.
+ *
+ * The grid keys on `market_id`, which for a venue market is a 66-character hex
+ * condition id. Rendering forty-seven of those on an agent profile is a list
+ * of hashes, not a record of what the agent called, so the row carries the
+ * market's question alongside its id.
+ *
+ * `question` before `series_title`: each grid row IS one five-minute window, so
+ * the window-specific question ("XRP Up or Down - August 24, 5:25AM-5:30AM ET")
+ * distinguishes the rows, while the series title would repeat once per row.
+ * Native price markets carry no config_json and resolve to null.
+ *
+ * Chunked at 300 ids per statement — SQLite caps bound parameters (999 by
+ * default) and an agent that has traded for a while has more markets than that.
+ */
+function marketLabels(
+  db: Database.Database,
+  marketIds: string[],
+): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (let i = 0; i < marketIds.length; i += 300) {
+    const chunk = marketIds.slice(i, i + 300);
+    const rows = db
+      .prepare(
+        `SELECT market_id, config_json FROM markets
+          WHERE market_id IN (${chunk.map(() => "?").join(",")})`,
+      )
+      .all(...chunk) as Array<{ market_id: string; config_json: string | null }>;
+    for (const row of rows) {
+      if (typeof row.config_json !== "string" || row.config_json.length === 0) continue;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(row.config_json) as Record<string, unknown>;
+      } catch {
+        continue; // a malformed blob costs this row its label, nothing more
+      }
+      const label =
+        typeof parsed.question === "string" && parsed.question.trim().length > 0
+          ? parsed.question.trim()
+          : typeof parsed.series_title === "string" && parsed.series_title.trim().length > 0
+            ? parsed.series_title.trim()
+            : null;
+      if (label !== null) labels.set(row.market_id, label);
+    }
+  }
+  return labels;
+}
+
+/**
  * Heat grid: every (market_id, score) pair this agent has resolved at least
  * one call on. Sub-threshold cells are still returned; UI distinguishes
  * provisional via market_main_tier.
@@ -265,12 +317,14 @@ export function getAgentMarketGrid(
     a.calls.push(row);
   }
 
+  const labels = marketLabels(db, Array.from(byMarket.keys()));
   const computed = Array.from(byMarket.values()).map((a) => {
     const summary = leaderboardCallSummary(a.calls);
     const { mainTier, sortKey } = resolveTierAndSort(summary, {
       preferLowerBound: true,
     });
     return {
+      market_label: labels.get(a.market_id) ?? null,
       agent_id: a.profile.agent_id,
       display_slug: a.profile.display_slug,
       display_name: a.profile.display_name,

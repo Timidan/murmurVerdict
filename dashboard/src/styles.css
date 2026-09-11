@@ -142,10 +142,15 @@
   --color-raised: #EAE3D3;
   --color-border: #D8D2C8;
   --color-border-vis: #B8AE99;
-  /* AA-safe as real text (5.33:1 on bg) — the tier carries empty states,
-     hints, timestamps, i.e. actual copy. */
-  --color-disabled: #6F6754;
-  --color-secondary: #6B6453;
+  /* AA-safe as real text on EVERY paper surface, not just the canvas. Both
+     tiers were tuned against `bg` alone (5.33 / 5.59) and landed at 4.39 and
+     4.60 on `raised` — the FormulaTip box's own background — so every formula
+     line in a tooltip failed AA on the light theme. Re-picked against the
+     darkest paper surface: disabled 4.66 / secondary 5.38 on raised, 5.66 /
+     6.54 on bg. The tier order is preserved (disabled stays the quieter of
+     the two); darkening only `disabled` would have inverted the ladder. */
+  --color-disabled: #6B6350;
+  --color-secondary: #605A49;
   --color-primary: #1F1B14;
   --color-display: #0A0A0A;
 

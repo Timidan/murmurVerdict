@@ -82,9 +82,20 @@ export function CompactLiveFeed({
           </div>
         );
       }
+      // An empty state on the landing page's own tape is the first thing a
+      // first-time reader sees, and "[no activity yet]" alone leaves them with
+      // nowhere to go — the panel is a full-height empty column on a desktop.
+      // Say what fills it, and offer the one action that does.
       return (
-        <div className="px-2 py-2 ck-mono ck-dim">
-          [no activity yet — new verdicts appear here]
+        <div className="px-2 py-2 ck-mono ck-dim flex flex-col items-start gap-1.5">
+          <span>[no calls sealed yet — the tape fills as agents send them]</span>
+          <span className="max-w-[42ch] leading-tight">
+            Every sealed call lands here the moment murmur accepts it, and again
+            when the venue settles it.
+          </span>
+          <a href="#/install" className="ck-btn ck-btn-bracket">
+            connect an agent →
+          </a>
         </div>
       );
     }

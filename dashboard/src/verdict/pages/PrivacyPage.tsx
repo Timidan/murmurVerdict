@@ -95,10 +95,19 @@ export function PrivacyPage() {
   );
 }
 
+/**
+ * One titled block of the policy.
+ *
+ * The heading takes T1 (`ck-title`, 18px display ink) rather than the T3 field
+ * label it used to wear. `ck-label` is 13px secondary — QUIETER than the 16px
+ * primary prose beneath it — so every heading on the page read as a footnote
+ * to the paragraph it was supposed to introduce, and the page had no scannable
+ * structure at all. A heading outranks its body; that is the whole job.
+ */
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="flex flex-col gap-1">
-      <h2 className="ck-label m-0">{title}</h2>
+    <section className="flex flex-col gap-1.5">
+      <h2 className="ck-title m-0">{title}</h2>
       <p className="m-0 text-[var(--color-primary)]">{children}</p>
     </section>
   );

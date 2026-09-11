@@ -5,6 +5,7 @@ import { ThemeToggle } from "../ThemeToggle.js";
 import { MMark } from "../MMark.js";
 import { MobileNav, isNavItemActive, type NavItem } from "./MobileNav.js";
 import { NAV_CHORDS } from "./nav-chords.js";
+import { formatLocalClock } from "../../lib/date-time-format.js";
 
 interface CompactTopbarProps {
   /** Free-text crumb shown after the system identifier (e.g. "LB / TIER:ALL"). */
@@ -25,7 +26,6 @@ const NAV_LINKS = [
   { href: "/leaderboard", label: "leaderboard" },
   { href: "/today", label: "feed" },
   { href: "/install", label: "install" },
-  { href: "/recruiters", label: "recruiters" },
   { href: "/account", label: "account" },
 ] as const satisfies readonly NavItem[];
 
@@ -54,7 +54,6 @@ const NAV_ICONS: Record<NavHref, NavIconName> = {
   "/leaderboard": "leaderboard",
   "/today": "feed",
   "/install": "confirm-live",
-  "/recruiters": "badge",
   "/account": "agent",
 };
 
@@ -74,7 +73,7 @@ const CHORD_KEY: Record<NavHref, string> = NAV_CHORDS;
 
 /**
  * Shared app chrome — 64px tall, single live-state dot, MMark glyph,
- * UTC clock, and the cinematic landing's canonical unboxed navigation.
+ * local clock, and the cinematic landing's canonical unboxed navigation.
  *
  * Below the `lg` breakpoint the inline nav links, clock and theme toggle
  * collapse into a menu drawer (see <MobileNav/>); the logo, live
@@ -106,7 +105,11 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
   }, []);
 
   return (
-    <header className="h-[64px] flex items-stretch border-b border-[var(--color-border)] sticky top-0 z-30 bg-[var(--color-bg)]">
+    /* `mmr-topbar` is the hook the hoverless branch needs: where the nav tips
+       are pinned open they hang 34px below a 64px bar, so the bar grows to
+       carry them and re-pins its rails to 64 (compact.css @media (hover: none)).
+       Without a class there was no way to reach the header from CSS. */
+    <header className="mmr-topbar h-[64px] flex items-stretch border-b border-[var(--color-border)] sticky top-0 z-30 bg-[var(--color-bg)]">
       {/* Equal-width rails + shrink-0 nav pin the glyph row to viewport centre.
           Dropping basis-0, or sizing the nav, re-opens a 65px per-route drift. */}
       <div className="flex-1 basis-0 min-w-0 flex items-center gap-2 pl-4 pr-3">
@@ -153,11 +156,16 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
       {/* No min-w-0: squeezes are absorbed by the left rail's truncating crumb.
           Rail padding must stay equal both sides (28px) or the nav goes off-centre. */}
       <div className="flex-1 basis-0 flex h-full items-center justify-end gap-4 pl-3 pr-4">
+        {/* Local, with its zone named. This printed UTC with a bare `Z` while
+            every market window on the same screen was already rendered in the
+            reader's own zone (lib/date-time-format.ts states that rule and the
+            reason for it), so the cockpit carried two clocks hours apart and
+            labelled neither. UTC keeps the place it belongs, which is the wire. */}
         <span
           aria-hidden="true"
           className="hidden lg:inline-flex mmr-topbar-meta ck-dim tabular-nums"
         >
-          {now.toISOString().slice(11, 19)}Z
+          {formatLocalClock(now) ?? ""}
         </span>
         <div className="hidden lg:flex h-full items-center">
           <ThemeToggle />

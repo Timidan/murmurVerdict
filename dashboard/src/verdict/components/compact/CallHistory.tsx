@@ -19,8 +19,8 @@ import { isPlainLeftClick, useDetailDrawer } from "./DetailDrawer.js";
  * eye has nothing to hold and the reader learns nothing they could not have
  * learnt from the first three rows. This splits the same data in two:
  *
- *   · `all · summary` — one strip per day. How many calls, how many right, how
- *     many wrong, the day's average score. No individual calls. This is the
+ *   · `all · summary` — one strip per day. How many calls, how many wins, how
+ *     many losses, the day's average score. No individual calls. This is the
  *     story, and it is what the panel opens on.
  *   · one tab per day — the calls themselves, newest first, ten at a time, with
  *     the rest one button away. Each row is a real link to its call page; the
@@ -35,7 +35,7 @@ import { isPlainLeftClick, useDetailDrawer } from "./DetailDrawer.js";
  * the sign of the number: on the venue path a call score runs 0…1, where +1.00
  * means the call was right and confident and +0.00 means it was wrong and
  * confident — colouring by sign would paint every row green and say nothing.
- * The words carry the meaning either way ("right" / "wrong" sit in the row, in
+ * The words carry the meaning either way ("win" / "loss" sit in the row, in
  * the tooltip and in the accessible name); the colour only reinforces them.
  *
  * Hit areas: rows keep the cockpit's density (~32px) rather than the 40px a
@@ -51,15 +51,20 @@ const DAY_PAGE = 10;
 const SUMMARY_TAB = "all";
 
 /**
- * The outcome, in the words this surface uses. `win`/`loss` are the wire's
- * names for one idea: the call was right, or it was wrong (COPY.md §4 — murmur
- * "pays the agent for being right and confident, and charges it for being wrong
- * and confident"). `oracle_unavailable` names retired price-feed machinery; a
- * reader needs to know that no outcome landed.
+ * The outcome, in the app's one set of words for it.
+ *
+ * This surface used to say "right" and "wrong" while the ladder said "win" and
+ * the summary panel said "won", so one fact wore three names on three screens
+ * a click apart. COPY.md rule 5 is "one word, one meaning, everywhere", and the
+ * word the wire, the ladder, the call page and the leaderboard all already use
+ * is `win` / `loss`. The sentence under a score still explains what winning
+ * cost or paid; it just no longer introduces a second vocabulary to do it.
+ * `oracle_unavailable` names retired price-feed machinery; a reader needs to
+ * know only that no outcome landed.
  */
 const OUTCOME_WORD: Record<string, string> = {
-  win: "right",
-  loss: "wrong",
+  win: "win",
+  loss: "loss",
   void: "void",
   oracle_unavailable: "no outcome",
 };
@@ -70,8 +75,8 @@ interface DayBucket {
   /** Short local label, `jul 20`. */
   label: string;
   calls: AgentCallRow[];
-  right: number;
-  wrong: number;
+  wins: number;
+  losses: number;
   /** Calls that finished with a win or a loss AND carry a score. */
   scored: number;
   scoreSum: number;
@@ -108,8 +113,8 @@ function groupByLocalDay(calls: AgentCallRow[]): DayBucket[] {
         // dropping them out of the history altogether.
         label: (key === "" ? null : formatLocalDayLabel(iso)) ?? "undated",
         calls: [],
-        right: 0,
-        wrong: 0,
+        wins: 0,
+        losses: 0,
         scored: 0,
         scoreSum: 0,
       };
@@ -117,8 +122,8 @@ function groupByLocalDay(calls: AgentCallRow[]): DayBucket[] {
     }
     bucket.calls.push(c);
     const outcome = classifyCallOutcome(c.outcome);
-    if (outcome === "win") bucket.right++;
-    else if (outcome === "loss") bucket.wrong++;
+    if (outcome === "win") bucket.wins++;
+    else if (outcome === "loss") bucket.losses++;
     if (
       (outcome === "win" || outcome === "loss") &&
       c.call_score !== null &&
@@ -243,9 +248,11 @@ function DaySummary({ days }: { days: DayBucket[] }) {
               {d.calls.length === 1 ? "1 call" : `${d.calls.length} calls`}
             </span>
             <span className="ck-mono text-[var(--color-success)]">
-              {d.right} right
+              {d.wins === 1 ? "1 win" : `${d.wins} wins`}
             </span>
-            <span className="ck-mono ck-neg">{d.wrong} wrong</span>
+            <span className="ck-mono ck-neg">
+              {d.losses === 1 ? "1 loss" : `${d.losses} losses`}
+            </span>
             <span className="ml-auto ck-label">avg score</span>
             <span
               className="ck-mono"
@@ -480,10 +487,10 @@ function scoreLine(call: AgentCallRow): string {
   }
   const score = formatScore(call.call_score, { decimals: 2 });
   if (outcome === "win") {
-    return `${score} — right. Murmur pays a call for being right and confident.`;
+    return `${score} — win. Murmur pays a call for being right and confident.`;
   }
   if (outcome === "loss") {
-    return `${score} — wrong. Murmur charges a call for being wrong and confident.`;
+    return `${score} — loss. Murmur charges a call for being wrong and confident.`;
   }
   return `${score} — void. The market settled with no winner.`;
 }

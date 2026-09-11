@@ -12,19 +12,17 @@
 // Minting requires a bound Controller Wallet on this agent. If unbound, the
 // panel renders a deep-link to the wallet tab instead of the mint CTA.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, useSignMessage, useWallets } from "@privy-io/react-auth";
-import {
-  verdictApi,
-  type AccountAgent,
-  type RuntimeKeyRow,
-  type RuntimeKeyMintResponse,
-} from "../../api.js";
+import { verdictApi, type AccountAgent, type RuntimeKeyMintResponse } from "../../api.js";
 import { Ik } from "../../icons.js";
 import { InlineError } from "../compact/InlineError.js";
 import { TimeAgo } from "../compact/TimeAgo.js";
 import { RuntimeKeyMintModal } from "./RuntimeKeyMintModal.js";
 import { generateRuntimeKeySigningKeypair } from "../../lib/runtime-key-signing.js";
+import { connectionAt, unknownConnection } from "../../lib/runtime-key-connection.js";
+import { useRuntimeKeyConnection } from "../../hooks/useRuntimeKeyConnection.js";
+import { RuntimeKeyConnectionStatus } from "./RuntimeKeyConnectionStatus.js";
 
 const CONFIRM_TIMEOUT_MS = 5000;
 
@@ -39,43 +37,25 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   const { signMessage } = useSignMessage();
   const { wallets } = useWallets();
 
-  const [keys, setKeys] = useState<RuntimeKeyRow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<BusyState>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [minted, setMinted] = useState<RuntimeKeyMintResponse | null>(null);
   const [mintedSigning, setMintedSigning] = useState<string | null>(null);
 
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { snapshot, receivedAtMs, error: refreshError, loading, refresh, clockTick } = useRuntimeKeyConnection(slug);
+  const keys = snapshot?.keys ?? [];
+  const displayConnections = useMemo(() => new Map(keys.map((key) => [
+    key.runtime_key_id,
+    refreshError ? unknownConnection(refreshError) : connectionAt(key.connection, snapshot!.served_at, receivedAtMs),
+  ])), [clockTick, keys, receivedAtMs, refreshError, snapshot]);
 
   const cw = agent?.controller_wallet ?? null;
   const canMint = Boolean(cw) && !cw?.reattestation_overdue;
   const controllerWalletConnected = cw
     ? wallets.some((wallet) => sameAddress(wallet.address, cw.wallet_address))
     : false;
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const token = await getAccessToken();
-      if (!token) {
-        setError("Your session expired. Sign in again.");
-        return;
-      }
-      const { keys } = await verdictApi.getRuntimeKeys(token, slug);
-      setKeys(keys);
-    } catch (e) {
-      setError((e as Error)?.message ?? "unable to load your runtime keys. retry, or reload the page.");
-    } finally {
-      setLoading(false);
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
 
   useEffect(() => {
     return () => {
@@ -84,14 +64,14 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   }, []);
 
   async function mint() {
-    setError(null);
+    setActionError(null);
     // TS-narrowing guard only — unreachable via UI. The mint button renders
     // whenever a controller wallet is bound but stays disabled while
     // `!canMint` (re-attestation overdue), with the overdue warning + link
     // above explaining why; unbound agents get the wallet deep-link instead.
     if (!canMint || !cw) return;
     if (!controllerWalletConnected) {
-      setError(
+      setActionError(
         "Connect the bound controller wallet first. It has to sign the runtime-key authorization.",
       );
       return;
@@ -99,7 +79,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("Your session expired. Sign in again.");
+        setActionError("Your session expired. Sign in again.");
         return;
       }
       // PoP: the keypair must exist BEFORE the challenge so its public half
@@ -129,7 +109,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     } catch (e) {
       // Frame the raw daemon detail in plain words — operators are devs,
       // the detail is useful, but the failure should read as a sentence.
-      setError(`unable to mint the key. ${(e as Error)?.message ?? "unknown error"}`);
+      setActionError(`unable to mint the key. ${(e as Error)?.message ?? "unknown error"}`);
     } finally {
       setBusy("idle");
     }
@@ -147,11 +127,11 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   }
 
   async function confirmRevoke(id: string) {
-    setError(null);
+    setActionError(null);
     try {
       const token = await getAccessToken();
       if (!token) {
-        setError("Your session expired. Sign in again.");
+        setActionError("Your session expired. Sign in again.");
         return;
       }
       setBusy("revoking");
@@ -159,7 +139,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       setConfirmId(null);
       await refresh();
     } catch (e) {
-      setError(`We could not revoke the key — ${(e as Error)?.message ?? "unknown error"}`);
+      setActionError(`We could not revoke the key — ${(e as Error)?.message ?? "unknown error"}`);
     } finally {
       setBusy("idle");
     }
@@ -217,10 +197,11 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
 
       {!loading && keys.length > 0 && (
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
-          <li className="grid grid-cols-[140px_1fr_120px_142px] gap-2 ck-colhead">
+          <li className="hidden md:grid md:grid-cols-[140px_1fr_120px_130px_142px] gap-2 ck-colhead">
             <span>key</span>
             <span>label</span>
             <span>created</span>
+            <span>connection</span>
             <span className="text-right"></span>
           </li>
           {keys.map((k) => {
@@ -229,19 +210,25 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
             return (
               <li
                 key={k.runtime_key_id}
-                className="grid grid-cols-[140px_1fr_120px_142px] gap-2 text-[12px] items-center px-1 py-1 border-b border-[var(--color-border)]"
+                className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 text-[12px] items-center px-1 py-2 border-b border-[var(--color-border)] md:grid-cols-[140px_1fr_120px_130px_142px] md:gap-2 md:py-1"
               >
                 <span className={`${tone} truncate`} title={k.runtime_key_id}>
                   {k.runtime_key_prefix}
                 </span>
                 <span
-                  className="ck-dim truncate"
+                  className="ck-dim truncate text-right md:text-left"
                   title={k.policy_hash}
                 >
                   {k.label ?? "—"} · h:{k.policy_hash.slice(0, 8)}
                 </span>
                 <TimeAgo iso={k.created_at} className="ck-dim text-[12px]" />
-                <span className="text-right">
+                <span className="col-span-2 md:col-span-1">
+                  <RuntimeKeyConnectionStatus
+                    compact
+                    connection={displayConnections.get(k.runtime_key_id) ?? unknownConnection()}
+                  />
+                </span>
+                <span className="col-span-2 self-start md:col-span-1 md:self-auto md:text-right">
                   {revoked ? (
                     <span className="ck-dim text-[12px]">revoked</span>
                   ) : confirmId === k.runtime_key_id ? (
@@ -307,7 +294,8 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
         </button>
       )}
 
-      {error && <InlineError error={error} className="text-[12px]" />}
+      {actionError && <InlineError error={actionError} className="text-[12px]" />}
+      {refreshError && <InlineError error={`connection status unavailable — ${refreshError}`} className="text-[12px]" />}
 
       {minted && (
         <RuntimeKeyMintModal

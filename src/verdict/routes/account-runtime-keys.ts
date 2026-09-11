@@ -48,6 +48,7 @@ export function accountRuntimeKeyRouter(deps: AccountRuntimeKeyRouterDeps): Rout
         db,
         accountId: resolved.account_id,
         slug: String(req.params.slug ?? ""),
+        operationInstant: now(),
       }));
     }),
   );

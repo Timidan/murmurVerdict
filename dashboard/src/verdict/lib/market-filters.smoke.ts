@@ -65,14 +65,24 @@ const rows: FilterableMarket[] = [
 {
   assert.equal(filterMarkets(rows, ALL_CHECKED).length, rows.length);
   const opts = marketFilterOptions(rows, ALL_CHECKED);
+  // Label order, not first-seen order. The venue returns its markets in an
+  // order that changes between polls, so a first-seen tier re-shuffled the
+  // filter row under the reader on every refresh.
   assert.deepEqual(
     opts.venues.map((o) => [o.key, o.count]),
-    [["polymarket-gamma", 4], ["kalshi", 2]],
-    "first-seen order, live counts",
+    [["kalshi", 2], ["polymarket-gamma", 4]],
+    "label order, live counts",
   );
   assert.deepEqual(
     opts.categories.map((o) => o.key),
-    ["Crypto", UNCATEGORISED, "Politics", "Economy"],
+    ["Crypto", "Economy", "Politics", UNCATEGORISED],
+  );
+  // The property that matters: the same set of markets yields the same option
+  // order however the wire happened to sequence them.
+  assert.deepEqual(
+    marketFilterOptions([...rows].reverse(), ALL_CHECKED).venues.map((o) => o.key),
+    opts.venues.map((o) => o.key),
+    "option order is independent of row order",
   );
   // A row with no series leans on its market key so the tier stays total.
   assert.equal(opts.series.length, 5);

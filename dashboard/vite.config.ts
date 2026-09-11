@@ -87,6 +87,12 @@ export default defineConfig({
       "@shared": path.resolve(__dirname, "../src/types"),
     },
   },
+  // Privy is reachable only through the lazily-imported AccountShell, so Vite's
+  // startup scan misses it and re-optimizes on the first /account visit —
+  // invalidating chunks the browser has already fetched. The result is a 404 on
+  // a deps chunk and "Failed to fetch dynamically imported module". Pre-bundle
+  // it so there is no second pass.
+  optimizeDeps: { include: ["@privy-io/react-auth"] },
   build: {
     outDir: path.resolve(__dirname, "dist"),
     emptyOutDir: true,

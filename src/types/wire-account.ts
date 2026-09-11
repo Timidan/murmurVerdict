@@ -131,6 +131,27 @@ export interface WireRuntimeKeyRow {
   expires_at: string | null;
   revoked_at: string | null;
   revoke_reason: string | null;
+  last_heartbeat_at: string | null;
+  connection: WireRuntimeKeyConnection;
+}
+
+export type WireRuntimeKeyConnectionStatus =
+  | "never_connected"
+  | "connected"
+  | "stale"
+  | "authorization_required";
+
+export interface WireRuntimeKeyConnection {
+  status: WireRuntimeKeyConnectionStatus;
+  last_heartbeat_at: string | null;
+  fresh_until: string | null;
+  reason: string | null;
+}
+
+export interface WireRuntimeKeysResponse {
+  keys: WireRuntimeKeyRow[];
+  connection: WireRuntimeKeyConnection;
+  served_at: string;
 }
 
 export interface WireRuntimeKeyChallengeResponse {

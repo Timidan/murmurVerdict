@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { formatRelativeTime } from "../../lib/display-format.js";
+import { formatLocalDateTime } from "../../lib/date-time-format.js";
 
 // ─── shared 30s clock ───────────────────────────────────────────────────────
 // One module-level ticker drives every <TimeAgo/> on screen; the interval
@@ -41,19 +42,40 @@ export function useNowMs(): number {
 /**
  * Relative timestamp ("7m ago") that stays fresh off the shared ticker and
  * carries the exact ISO instant in its tooltip. `null`/`undefined` → "—".
+ *
+ * `absolute` swaps the visible text for the full local instant and keeps the
+ * relative form in the tooltip. Use it wherever several timestamps sit in one
+ * column and the reader's question is "in what order, how far apart" rather
+ * than "how long ago" — a call's lifecycle being the case this exists for.
+ * Relative time compresses hard: seven rows of a call's history all rendered
+ * "8d ago", which reads as one instant repeated seven times rather than as a
+ * sequence anyone can audit.
  */
 export function TimeAgo({
   iso,
   className,
+  absolute = false,
 }: {
   iso: string | null | undefined;
   className?: string;
+  absolute?: boolean;
 }) {
   const now = useNowMs();
   if (!iso) return <span className={className}>—</span>;
+  const relative = formatRelativeTime(iso, now);
+  if (absolute) {
+    // Falls back to the relative form if the instant will not parse, so a bad
+    // timestamp costs precision, never the row.
+    const stamp = formatLocalDateTime(iso);
+    return (
+      <span className={className} title={`${relative} · ${iso}`}>
+        {stamp ?? relative}
+      </span>
+    );
+  }
   return (
     <span className={className} title={iso}>
-      {formatRelativeTime(iso, now)}
+      {relative}
     </span>
   );
 }

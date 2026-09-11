@@ -156,6 +156,13 @@ class RouteErrorBoundary extends React.Component<
         <span className="ck-dim">
           It is not you — the page broke. The rest of murmur still works.
         </span>
+        {/* Dev only: a boundary that hides the error makes every crash a
+            guessing game. Production keeps the plain sentence above. */}
+        {import.meta.env.DEV && (
+          <pre className="ck-neg whitespace-pre-wrap break-all max-w-[90ch] leading-tight">
+            {this.state.error.stack ?? String(this.state.error)}
+          </pre>
+        )}
         <button
           type="button"
           className="ck-btn ck-btn-bracket"

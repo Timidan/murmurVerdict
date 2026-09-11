@@ -147,7 +147,11 @@ function LiveCounter({
         style={{ fontSize: "clamp(48px, 8vw, 96px)" }}
       >
         {value === null ? (
-          "—"
+          /* Mono, not Doto. Doto is a dot-matrix face with no em-dash glyph,
+             so the placeholder rendered as a row of five tofu squares at 96px
+             — the loudest thing on the landing page was a font error. The
+             mono stack draws the same character correctly at the same size. */
+          <span style={{ fontFamily: "var(--font-mono)" }}>—</span>
         ) : (
           <span key={value} className="counter-tick">
             {value.toLocaleString("en-US")}

@@ -146,14 +146,17 @@ function FamilyChip({
       type="button"
       onClick={onClick}
       title={title}
-      className={
-        "ck-label inline-flex items-center px-[6px] py-[1px] border " +
-        "border-[var(--color-border-vis)] " +
-        (active ? "ck-pos" : "ck-dim hover:ck-pos")
-      }
+      aria-pressed={active}
+      /* One form per role. These wore a hairline BOX and typed-out `[ ]`
+         brackets at the same time, which is the badge signature and the button
+         signature stacked on one control (compact.css, "component form
+         grammar"). They are buttons, so they take the shared bracket button —
+         brackets from the pseudo-elements, no border, and the same active
+         underline every other toggle in the cockpit now uses. */
+      className={"ck-btn ck-btn-bracket " + (active ? "ck-btn-active" : "")}
     >
-      [ {label}
-      {sub ? <span className="ck-dim ml-1">{sub}</span> : null} ]
+      {label}
+      {sub ? <span className="ck-dim ml-1">{sub}</span> : null}
     </button>
   );
 }
@@ -173,26 +176,46 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
     );
   }
   return (
-    <ul className="divide-y divide-[var(--color-border)] ck-mono">
+    <ul className="m-0 p-0 list-none ck-mono">
+      {/* The unit belongs in the header, once. Every row used to end with the
+          words "of families", which cost ~110px per row in a panel that is
+          290px wide at its narrowest — so the agent handle, the one thing a
+          reader is looking for, truncated to `operator-…` to make room for a
+          word repeated identically down the column. */}
+      <li className="ck-fam-row px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+        <span>#</span>
+        <span>agent</span>
+        <span className="text-right" title="the agent's score across every family">
+          score
+        </span>
+        <span
+          className="text-right"
+          title="the share of families this agent holds a rank in"
+        >
+          families
+        </span>
+      </li>
       {rows.map((r, i) => (
-        <li key={r.agent_id} className="flex items-center gap-2 px-2 py-1">
-          <span className="ck-dim w-6 text-right">
+        <li
+          key={r.agent_id}
+          className="ck-fam-row px-2 py-1 border-b border-[var(--color-border)]"
+        >
+          <span className="ck-dim text-right">
             {r.cross_family_main_tier ? i + 1 : "—"}
           </span>
           <a
             href={`#/agents/${encodeURIComponent(r.display_slug)}`}
-            className="ck-pos flex-1 truncate hover:underline"
+            className="ck-pos truncate hover:underline"
+            title={r.display_slug}
           >
             {r.display_slug}
           </a>
-          <span className="ck-dim">
-            {formatScore(r.general_score)}
-          </span>
+          <span className="ck-dim text-right">{formatScore(r.general_score)}</span>
           <span
-            className="ck-dim"
-            title="the share of families this agent holds a rank in"
+            className="ck-dim text-right"
+            title={`holds a rank in ${Math.round(r.coverage_ratio * 100)}% of families`}
           >
-            {Math.round(r.coverage_ratio * 100)}% of families
+            {Math.round(r.coverage_ratio * 100)}%
           </span>
         </li>
       ))}
@@ -207,24 +230,37 @@ function FamilyRows({ rows }: { rows: AgentFamilyRow[] }) {
     );
   }
   return (
-    <ul className="divide-y divide-[var(--color-border)] ck-mono">
+    <ul className="m-0 p-0 list-none ck-mono">
+      <li className="ck-fam-row px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+        <span>#</span>
+        <span>agent</span>
+        <span className="text-right" title="the agent's score in this family">
+          score
+        </span>
+        <span
+          className="text-right"
+          title="scored — calls that finished and earned a score"
+        >
+          scored
+        </span>
+      </li>
       {rows.map((r, i) => (
-        <li key={r.agent_id} className="flex items-center gap-2 px-2 py-1">
-          <span className="ck-dim w-6 text-right">
+        <li
+          key={r.agent_id}
+          className="ck-fam-row px-2 py-1 border-b border-[var(--color-border)]"
+        >
+          <span className="ck-dim text-right">
             {r.family_main_tier ? i + 1 : "—"}
           </span>
           <a
             href={`#/agents/${encodeURIComponent(r.display_slug)}`}
-            className="ck-pos flex-1 truncate hover:underline"
+            className="ck-pos truncate hover:underline"
+            title={r.display_slug}
           >
             {r.display_slug}
           </a>
-          <span className="ck-dim">
-            {formatScore(r.verdict_score)}
-          </span>
-          <span className="ck-dim" title="calls scored in this family">
-            {r.resolved_calls} scored
-          </span>
+          <span className="ck-dim text-right">{formatScore(r.verdict_score)}</span>
+          <span className="ck-dim text-right">{r.resolved_calls}</span>
         </li>
       ))}
     </ul>

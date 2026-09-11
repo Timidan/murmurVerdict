@@ -131,6 +131,17 @@ export function marketFilterOptions(
   };
 }
 
+/**
+ * One tier's options, deduped and in a STABLE order.
+ *
+ * The sort is the point. Insertion order is whatever order the venue happened
+ * to return its markets in, and that order changes between polls, so the
+ * filter row re-shuffled under the reader — the same five assets came back as
+ * `BTC ETH SOL XRP DOGE` on one load and `DOGE SOL BTC XRP ETH` on the next.
+ * A control whose options move is a control you have to re-read every time,
+ * and muscle memory never forms. Sorted by label, case-insensitively, with the
+ * key as the tiebreak so two identical labels never swap places either.
+ */
 function collect(
   rows: readonly FilterableMarket[],
   pick: (m: FilterableMarket) => [key: string, label: string],
@@ -142,7 +153,11 @@ function collect(
     if (entry) entry.count += 1;
     else seen.set(key, { key, label, count: 1 });
   }
-  return [...seen.values()];
+  return [...seen.values()].sort(
+    (a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) ||
+      a.key.localeCompare(b.key),
+  );
 }
 
 /**

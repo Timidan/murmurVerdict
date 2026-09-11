@@ -59,7 +59,11 @@ function dateTimeFormatter(): Intl.DateTimeFormat {
   if (!cached) {
     cached = new Intl.DateTimeFormat(undefined, {
       dateStyle: "medium",
-      timeStyle: "long",
+      // `medium`, not `long`: the zone suffix ("GMT+1") pushed this string to
+      // 31 characters, which wraps in the call page's value column and made
+      // every lifecycle row two lines tall. The zone is stated once, in the
+      // topbar clock, and the full ISO instant is in each row's tooltip.
+      timeStyle: "medium",
     });
     dateTimeFormatters.set(key, cached);
   }
@@ -88,8 +92,42 @@ export function formatLocalTimeLabel(
   return timeFormatter().format(date);
 }
 
+const clockFormatters = new Map<string, Intl.DateTimeFormat>();
+
 /**
- * The full local instant, with a named zone — "Aug 10, 2026, 1:25:00 AM GMT+1".
+ * The topbar's running clock — "9:48:32 PM GMT+1" / "21:48:32 GMT+1".
+ *
+ * Local, with the zone named. The bar used to print `toISOString()` with a
+ * bare `Z` while every window label on the same screen was already in the
+ * reader's own zone, so the dashboard showed two clocks four hours apart and
+ * nothing said which was which. One zone per screen, and it is the reader's;
+ * UTC still exists everywhere it belongs, which is the wire.
+ *
+ * Seconds are included because the bar ticks once a second and a clock that
+ * re-renders without visibly changing looks broken. `hour12` is left to the
+ * locale for the same reason as `timeFormatter` above.
+ */
+export function formatLocalClock(
+  iso: string | number | Date | null | undefined,
+): string | null {
+  const date = iso instanceof Date ? iso : toDate(iso);
+  if (date === null || Number.isNaN(date.getTime())) return null;
+  const key = localeKey();
+  let cached = clockFormatters.get(key);
+  if (!cached) {
+    cached = new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "short",
+    });
+    clockFormatters.set(key, cached);
+  }
+  return cached.format(date);
+}
+
+/**
+ * The full local instant — "Aug 10, 2026, 1:25:00 AM".
  *
  * This is the TITLE half of every time in the matrix: the visible text is the
  * short label, the tooltip is this. A reader who needs to know exactly when a

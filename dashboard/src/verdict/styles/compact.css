@@ -302,6 +302,27 @@
    widest neighbours (dashboard|leaderboard); hover devices keep the tighter
    icon rhythm and reveal one label at a time. */
 @media (hover: none) {
+  /* The bar has to CARRY the pinned tips, not let them hang out of it.
+     A tip sits 68-88px below the bar's top edge, and the bar is 64px, so on
+     every hoverless ≥1024px device (an iPad in landscape is the common one)
+     six bracketed labels printed straight over the first rows of the page —
+     the leaderboard's ribbon, the agent's identity strip, the call's outcome.
+     They are out of flow, so nothing below them moved out of the way.
+
+     Growing the bar to 98px and pinning its three rails back to 64px leaves
+     the tips a 34px gutter of their own inside the header. The rails keep the
+     height every measurement in this file assumes; only the header box grows. */
+  .mmr-shell .mmr-topbar {
+    height: 98px;
+    align-items: flex-start;
+  }
+  .mmr-shell .mmr-topbar > * {
+    height: 64px;
+  }
+  /* Sticky offset follows the taller bar, or an anchored step scrolls under it. */
+  .mmr-shell .ck-steprail-cell {
+    scroll-margin-top: 106px;
+  }
   .mmr-shell .mmr-nav-cluster {
     gap: 68px;
   }
@@ -588,6 +609,12 @@
   color: var(--color-display);
   background: transparent;
   border-color: transparent;
+  /* Ink alone could not carry this. Chosen vs unchosen was #FFFFFF vs #E8E8E8
+     on the label — a 1.1:1 step nobody reads as state — so a row of eight
+     toggles looked like eight identical words. The rule is the topbar nav's
+     own intent underline, borrowed rather than invented, and it keeps the
+     signal monochrome: red stays reserved for urgency. */
+  box-shadow: inset 0 -1px 0 var(--color-display);
 }
 .mmr-shell .ck-btn-bracket.ck-btn-active::before,
 .mmr-shell .ck-btn-bracket.ck-btn-active::after {
@@ -765,19 +792,56 @@
    .ck-mono (0,2,0) beats any font-size utility, so only a same-specificity
    class placed after it can win. */
 .mmr-shell .ck-tile-value {
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 700;
+  line-height: 1.1;
 }
 @container (min-width: 340px) {
   .mmr-shell .ck-tile-value {
-    font-size: 24px;
+    /* 20, not 22: three tiles across a 360px sidecar leave ~88px of text room
+       per cell, and `+0.574` set at 22px needs 76 of them before the glyph
+       takes its 28. The number was truncating to `+0.…` at every width the
+       sidecar actually ships at — a stat panel whose headline stat is elided
+       is worse than one tier smaller. */
+    font-size: 20px;
     letter-spacing: -0.02em;
   }
 }
 @container (min-width: 560px) {
   .mmr-shell .ck-tile-value {
-    font-size: 30px;
+    font-size: 26px;
   }
+}
+
+/* Summary hero — the panel's one display-tier number, and the only place the
+   sidecar breaks its own size ladder. Everything around it is quiet so this
+   can be loud. */
+.mmr-shell .ck-stat-hero {
+  display: block;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 40px;
+  line-height: 0.9;
+  letter-spacing: -0.03em;
+  color: var(--color-display);
+  font-variant-numeric: tabular-nums;
+}
+@container (min-width: 340px) {
+  .mmr-shell .ck-stat-hero {
+    font-size: 54px;
+  }
+}
+
+/* Win/loss split under the hero. Carries the same two data colours the call
+   log uses, so the bar needs no key. */
+.mmr-shell .ck-splitbar {
+  display: flex;
+  height: 6px;
+  background: var(--color-border);
+}
+.mmr-shell .ck-splitbar i {
+  display: block;
+  height: 100%;
 }
 
 /* Row link — stretched-link overlay for whole-row navigation.
@@ -894,7 +958,7 @@
   background: color-mix(in srgb, var(--color-primary), transparent 97%);
 }
 .mmr-shell .ck-steprail-cell:focus-visible {
-  outline: 1px solid var(--color-accent);
+  outline: 1px solid var(--color-accent-ink);
   outline-offset: -1px;
 }
 
@@ -920,9 +984,15 @@
 .mmr-shell .ck-steprail-cell.ck-seen .ck-steprail-num::after {
   /* Alt-text form: the dot is decorative, so it stays out of the accessible name. */
   content: " ·" / "";
-  color: var(--color-accent);
+  color: var(--color-accent-ink);
 }
-.mmr-shell .ck-steprail-cell.ck-tab-active .ck-steprail-num { color: var(--color-accent); }
+/* accent-INK, not accent: the graphic red is 2.69:1 on the paper theme's raised
+   surface, and this numeral is 30px display text sitting on exactly that
+   surface when its step is active. The ink token is the one the palette
+   already guarantees AA on every paper surface (4.53:1 here); on dark the two
+   tokens are the same hex, so nothing moves. Same reasoning for the 2px active
+   bars below, which are thin graphics held to the 3:1 non-text floor. */
+.mmr-shell .ck-steprail-cell.ck-tab-active .ck-steprail-num { color: var(--color-accent-ink); }
 .mmr-shell .ck-steprail-cell.ck-tab-active .ck-steprail-title { color: var(--color-display); }
 
 /* shared accent-topbar tab state — used by rail cells AND the integration
@@ -951,7 +1021,7 @@
 }
 .mmr-shell .ck-tab.ck-tab-active::after,
 .mmr-shell .ck-steprail-cell.ck-tab-active::after {
-  background: var(--color-accent);
+  background: var(--color-accent-ink);
 }
 
 /* ── Side tabs — the same tab family stood on its edge ──────────────────────
@@ -1046,7 +1116,7 @@
 .mmr-shell .ck-sidetab.ck-tab-active {
   background: var(--color-surface);
   color: var(--color-display);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  box-shadow: inset 2px 0 0 var(--color-accent-ink);
 }
 .mmr-shell .ck-sidetab-body {
   min-width: 0;
@@ -1081,7 +1151,7 @@
     border-right: 0;
   }
   .mmr-shell .ck-sidetab.ck-tab-active {
-    box-shadow: inset 0 2px 0 var(--color-accent);
+    box-shadow: inset 0 2px 0 var(--color-accent-ink);
   }
 }
 
@@ -1212,6 +1282,23 @@
   }
 }
 
+/* A tooltip trigger is a control, and on touch it was a 16px-tall one — the
+   label plus its ⓘ, sitting in a column-header row. Tap-focus is the ONLY way
+   to read these definitions on a phone, so the target grows to 32px on coarse
+   pointers via the same ::before extender the nav glyphs use: the drawn text
+   never moves, only the box that catches the thumb.
+
+   Vertical only. Adjacent headers (score · floor · win%) are 6px apart, so a
+   horizontal extender would have neighbouring triggers overlapping and
+   stealing each other's taps. */
+@media (pointer: coarse) {
+  .mmr-shell .formula-tip-trigger::before {
+    content: "";
+    position: absolute;
+    inset: -8px -2px;
+  }
+}
+
 /* FormulaTip on touch: hover can never fire, so tap-focus IS the gesture.
    The trigger is tabbable and carries a no-op click handler (Safari only
    focuses a non-form element on tap when one is present); the tap focuses it,
@@ -1320,6 +1407,47 @@
   }
 }
 
+/* ── Agent ladder ────────────────────────────────────────────────────────────
+   The ladder spends 436px on fixed numeric tracks before the handle gets a
+   pixel. Inside a 390px viewport that left the `1fr` agent column resolving to
+   ZERO: the leaderboard rendered nameless rows, and the market ladder's tier
+   badge printed on top of the score. Columns are dropped below 640px rather
+   than squeezed — a 30px-wide score column is not a smaller table, it is an
+   unreadable one. What survives is the pair the page's own explainer talks
+   about (score and the floor it ranks on); the rest are one tap away on the
+   agent's own page, where each is a full-width row.
+
+   One class, two variants, because the two ladders differ by a column and had
+   drifted into two hand-typed templates that no longer matched. */
+.mmr-shell .ck-ladder {
+  display: grid;
+  align-items: center;
+  gap: 6px;
+  grid-template-columns: 28px minmax(0, 1fr) 70px 64px 64px 52px 54px 60px 44px;
+}
+.mmr-shell .ck-ladder--market {
+  grid-template-columns: 28px minmax(0, 1fr) 64px 64px 54px 52px 60px 44px;
+}
+@media (max-width: 639px) {
+  .mmr-shell .ck-ladder,
+  .mmr-shell .ck-ladder--market {
+    grid-template-columns: 24px minmax(0, 1fr) 64px 64px;
+  }
+  .mmr-shell .ck-ladder-drop {
+    display: none;
+  }
+}
+
+/* Families panel rows — the same four-part shape as the ladder, at the width
+   a side panel actually gets (290px in the leaderboard's right column). The
+   handle takes what the three fixed tracks leave and truncates last. */
+.mmr-shell .ck-fam-row {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: 20px minmax(0, 1fr) 62px 58px;
+}
+
 /* ── Listings matrix (leaderboard `?view=listings`) ──────────────────────────
    Rows are agents, columns are venue series. ONE grid, scrolled sideways by
    the panel body — columns are never wrapped or squeezed, because comparing a
@@ -1382,12 +1510,21 @@
 
 /* Handle + floor + win + scored in ONE frozen cell. Three more sticky columns
    would eat the comparison area this view exists for. */
+/* Four facts on one line, wrapping as a group rather than clipping mid-word.
+   `nowrap` inside the frozen column's `overflow: hidden` cut the last stat in
+   half — the row read "…win 50% scor" — which looks like a rendering fault,
+   not a dense table. Each fact keeps its own nowrap so a number never splits
+   from its label; only the line between them breaks. */
 .mmr-shell .ck-matrix-record {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  white-space: nowrap;
+  flex-wrap: wrap;
+  column-gap: 6px;
+  row-gap: 1px;
   font-size: 12px;
+}
+.mmr-shell .ck-matrix-record > * {
+  white-space: nowrap;
 }
 
 .mmr-shell .ck-matrix-sub {
