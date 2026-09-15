@@ -438,7 +438,7 @@ export function createGatewayEntitlementBroker(deps: {
       try {
         canonical = await deps.gateway.paymentRequirements(binding.priceAtoms, parsed.accepted.network);
       } catch (err) {
-        return brokerError(503, "PaymentGatewayUnavailable", messageFrom(err));
+        return gatewayUnavailable(err);
       }
       if (!canonical || canonicalize(canonical) !== canonicalize(parsed.accepted)) {
         return brokerError(402, "PaymentRequirementsMismatch", "not the canonical server challenge");
@@ -447,10 +447,10 @@ export function createGatewayEntitlementBroker(deps: {
       try {
         verify = await deps.gateway.verify(parsed.paymentPayload, canonical);
       } catch (err) {
-        return brokerError(503, "PaymentGatewayUnavailable", messageFrom(err));
+        return gatewayUnavailable(err);
       }
       if (!verify.valid) {
-        return brokerError(402, "PaymentVerificationFailed", verify.error);
+        return brokerError(402, "PaymentVerificationFailed", safeReason(verify.error));
       }
       if (verify.payer && verify.payer.toLowerCase() !== parsed.payer.toLowerCase()) {
         return brokerError(402, "PaymentVerificationFailed", "verified payer does not match authorization");
@@ -593,6 +593,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isAddress(value: unknown): value is string {
   return typeof value === "string" && ADDRESS.test(value);
+}
+
+/** Logs the provider's message and returns one the buyer can safely see. */
+function gatewayUnavailable(err: unknown): BrokerAuthorization {
+  console.warn(`[entitlement-access] payment gateway error: ${redactedErrorText(messageFrom(err))}`);
+  return brokerError(503, "PaymentGatewayUnavailable", "The payment service is unavailable. Try again shortly.");
+}
+
+/** Keeps short machine codes (e.g. insufficient_balance); anything else is withheld. */
+function safeReason(reason: string | undefined): string {
+  return reason && /^[A-Za-z0-9_.-]{1,64}$/.test(reason) ? reason : "payment verification failed";
 }
 
 function messageFrom(err: unknown): string {

@@ -110,7 +110,7 @@ export async function processDurableNanopay(
       parsed.accepted.network,
     );
   } catch (err) {
-    return error(503, "PaymentGatewayUnavailable", messageFrom(err));
+    return gatewayUnavailable(err);
   }
   if (
     !canonicalRequirements ||
@@ -130,7 +130,7 @@ export async function processDurableNanopay(
       canonicalRequirements,
     );
   } catch (err) {
-    return error(503, "PaymentGatewayUnavailable", messageFrom(err));
+    return gatewayUnavailable(err);
   }
   if (!verifyResult.valid) {
     return {
@@ -202,7 +202,8 @@ export async function processDurableNanopay(
       canonicalRequirements,
     );
   } catch (err) {
-    return pendingUnknown(messageFrom(err));
+    console.warn(`[nanopay] settlement status unknown: ${messageFrom(err)}`);
+    return pendingUnknown("Settlement is still being confirmed. Retry shortly.");
   }
   if (!settleResult.success) {
     nanopayReceiptsRepo.markFailed(input.deps.db, {
@@ -381,6 +382,12 @@ function isSqliteUniqueViolation(err: unknown): boolean {
       "code" in err &&
       (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE",
   );
+}
+
+/** Logs the provider's message and returns one the buyer can safely see. */
+function gatewayUnavailable(err: unknown): DurableNanopayResult {
+  console.warn(`[nanopay] payment gateway error: ${messageFrom(err)}`);
+  return error(503, "PaymentGatewayUnavailable", "The payment service is unavailable. Try again shortly.");
 }
 
 function messageFrom(err: unknown): string {

@@ -178,17 +178,6 @@ function TokenPrompt({
   onSubmit: () => void;
   error: string | null;
 }) {
-  // On first render, peek at ?token= and pre-fill if present.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const hash = window.location.hash || "";
-    const idx = hash.indexOf("?");
-    if (idx < 0) return;
-    const t = new URLSearchParams(hash.slice(idx + 1)).get("token");
-    if (t && !value) onChange(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb>{REFS_CRUMB}</TopbarCrumb>
