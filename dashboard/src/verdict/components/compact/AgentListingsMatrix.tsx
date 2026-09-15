@@ -20,6 +20,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useState,
   type CSSProperties,
@@ -31,10 +32,20 @@ import {
   availabilityLine,
   buildListingsMatrix,
   CELL_PRICE_TOOLTIP,
+  DEFAULT_LISTINGS_FILTERS,
+  DEFAULT_SORT_DIRECTION,
+  filteredEmptyState,
+  filterListingsMatrix,
+  filtersActive,
+  LISTINGS_SORTS,
   matrixEmptyState,
+  SORT_DIRECTION_LABEL,
   matrixGridTemplate,
   UNLISTED,
   type AvailabilityFeed,
+  type ListingsFilters,
+  type ListingsMatrix,
+  type ListingsSort,
   type MatrixCell,
   type MatrixColumn,
   type MatrixRow,
@@ -42,6 +53,7 @@ import {
 } from "../../lib/listings-matrix.js";
 import { formatLocalDateTime, formatLocalTimeLabel } from "../../lib/date-time-format.js";
 import { shortId } from "../../lib/display-format.js";
+import { CurrencyMark } from "./CurrencyMark.js";
 import { InlineError } from "./InlineError.js";
 import { Panel } from "./Panel.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
@@ -73,6 +85,7 @@ export function AgentListingsMatrix() {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [feed, setFeed] = useState<AvailabilityFeed>({ status: "loading" });
   const [drill, setDrill] = useState<Drilldown | null>(null);
+  const [filters, setFilters] = useState<ListingsFilters>(DEFAULT_LISTINGS_FILTERS);
 
   // TWO chains, not one Promise.all: `all` rejects on the first failure, which
   // would let a 503 on the inventory route blank a catalog that loaded fine.
@@ -112,7 +125,12 @@ export function AgentListingsMatrix() {
     () => buildListingsMatrix(catalog, feed, nowMs),
     [catalog, feed, nowMs],
   );
+  // `matrix` is the deployment; `shown` is the current query over it. Both are
+  // kept: the empty states and the availability line below describe what murmur
+  // holds, and only the grid narrows.
+  const shown = useMemo(() => filterListingsMatrix(matrix, filters), [matrix, filters]);
   const empty = matrixEmptyState(matrix);
+  const filteredEmpty = filteredEmptyState(matrix, shown, filters);
   const line = availabilityLine(feed, matrix);
 
   const toggle = useCallback((agentId: string, venueSeriesId: string) => {
@@ -123,16 +141,18 @@ export function AgentListingsMatrix() {
     );
   }, []);
 
+  // Looked up in the FILTERED matrix, so narrowing the view closes a drilldown
+  // whose cell is no longer on screen.
   const opened = useMemo(() => {
     if (!drill) return null;
-    const row = matrix.rows.find((r) => r.agentId === drill.agentId);
-    const column = matrix.columns.find((c) => c.venueSeriesId === drill.venueSeriesId);
+    const row = shown.rows.find((r) => r.agentId === drill.agentId);
+    const column = shown.columns.find((c) => c.venueSeriesId === drill.venueSeriesId);
     const cell = row?.cells.find((c) => c.venueSeriesId === drill.venueSeriesId);
     if (!row || !column || !cell || cell.openCalls.length === 0) return null;
     return { row, column, cell };
-  }, [drill, matrix]);
+  }, [drill, shown]);
 
-  const template = matrixGridTemplate(matrix.columns.length);
+  const template = matrixGridTemplate(shown.columns.length);
   const gridStyle: CSSProperties = {
     gridTemplateColumns: template.gridTemplateColumns,
     minWidth: template.minWidth,
@@ -140,6 +160,12 @@ export function AgentListingsMatrix() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-auto ck-scroll">
+      {/* Above the panel, like the ladder's own control bar — inside it, these
+          would sit in the grid's horizontal scroll box and slide away with the
+          columns they filter. */}
+      {!catalogError && catalog !== null && !empty && (
+        <FilterBar matrix={matrix} filters={filters} onChange={setFilters} />
+      )}
       <Panel
         title={
           <>
@@ -151,28 +177,36 @@ export function AgentListingsMatrix() {
            counts describe THIS population — the page's ladder ribbon counts a
            different one (every ranked agent, seller or not), so it is hidden
            in this view rather than left to describe the wrong rows. */
-        meta={
-          catalog === null
-            ? "next-call list price"
-            : `${matrix.rows.length} seller${matrix.rows.length === 1 ? "" : "s"} · ${matrix.columns.length} series · next-call list price`
-        }
+        meta={catalog === null ? "next-call list price" : panelMeta(matrix, shown)}
       >
         {catalogError && <InlineError error={catalogError} className="px-2 py-2 ck-mono" />}
         {!catalogError && catalog === null && <MatrixSkeleton />}
         {!catalogError && catalog !== null && empty && (
           <p className="px-2 py-2 m-0 ck-mono ck-dim">[{empty}]</p>
         )}
-        {!catalogError && catalog !== null && !empty && (
+        {!catalogError && catalog !== null && !empty && filteredEmpty && (
+          <p className="px-2 py-2 m-0 ck-mono ck-dim">
+            [{filteredEmpty}]{" "}
+            <button
+              type="button"
+              onClick={() => setFilters(DEFAULT_LISTINGS_FILTERS)}
+              className="ck-btn ck-btn-bracket"
+            >
+              reset filters
+            </button>
+          </p>
+        )}
+        {!catalogError && catalog !== null && !empty && !filteredEmpty && (
           <div className="ck-matrix" style={gridStyle} role="table" aria-label="agent listings by series">
             <div className="ck-matrix-row" role="row">
               <div className="ck-matrix-corner ck-colhead" role="columnheader">
                 agent · all-time record
               </div>
-              {matrix.columns.map((column) => (
+              {shown.columns.map((column) => (
                 <ColumnHead key={column.venueSeriesId} column={column} />
               ))}
             </div>
-            {matrix.rows.map((row) => (
+            {shown.rows.map((row) => (
               <div className="ck-matrix-row" role="row" key={row.agentId}>
                 <RowHead row={row} />
                 {row.cells.map((cell, i) => (
@@ -180,7 +214,7 @@ export function AgentListingsMatrix() {
                     key={cell.venueSeriesId}
                     cell={cell}
                     row={row}
-                    column={matrix.columns[i]}
+                    column={shown.columns[i]}
                     expanded={
                       drill?.agentId === row.agentId &&
                       drill?.venueSeriesId === cell.venueSeriesId
@@ -212,6 +246,166 @@ export function AgentListingsMatrix() {
           calls={opened.cell.openCalls}
           onClose={() => setDrill(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/** A price and the asset it is denominated in. */
+function Price({ display, currency }: { display: string; currency: string }) {
+  return (
+    <>
+      {display} <CurrencyMark currency={currency} className="ck-dim" />
+    </>
+  );
+}
+
+/**
+ * The panel header count. It describes the rows ON SCREEN, so a narrowed view
+ * says so rather than repeating the deployment's totals.
+ */
+function panelMeta(matrix: ListingsMatrix, shown: ListingsMatrix): string {
+  const sellers =
+    shown.rows.length === matrix.rows.length
+      ? `${matrix.rows.length} seller${matrix.rows.length === 1 ? "" : "s"}`
+      : `${shown.rows.length} of ${matrix.rows.length} sellers`;
+  const series =
+    shown.columns.length === matrix.columns.length
+      ? `${matrix.columns.length} series`
+      : `${shown.columns.length} of ${matrix.columns.length} series`;
+  return `${sellers} · ${series} · next-call list price`;
+}
+
+/** What each key sorts ON. The DIRECTION is spelled out by the arrow beside it. */
+const SORT_TITLE: Record<ListingsSort, string> = {
+  name: "the agent handle",
+  price: "the cheapest standing listing across the markets on screen",
+  record: "the all-time floor; unscored sellers stay last in both directions",
+};
+
+/**
+ * Browse controls for the matrix.
+ *
+ * All three narrow the SAME loaded page — the catalog is one read and no
+ * control refetches. `empty markets` is off by default: a deployment runs many
+ * more series than it has sellers, and four columns of em dashes crowd out the
+ * one column a reader came to compare.
+ */
+function FilterBar({
+  matrix,
+  filters,
+  onChange,
+}: {
+  matrix: ListingsMatrix;
+  filters: ListingsFilters;
+  onChange: (next: ListingsFilters) => void;
+}) {
+  const agentFieldId = useId();
+  const marketFieldId = useId();
+  const emptyCount = matrix.columns.filter((c) => c.sellers === 0).length;
+  return (
+    <div className="flex flex-wrap items-end gap-x-4 gap-y-2 px-2 py-2 border-b border-[var(--color-border)]">
+      <span className="flex flex-col gap-1 w-[22ch] max-w-full min-w-0">
+        <label htmlFor={agentFieldId} className="ck-label">
+          agent
+        </label>
+        <input
+          id={agentFieldId}
+          type="search"
+          value={filters.agent}
+          onChange={(e) => onChange({ ...filters, agent: e.target.value })}
+          placeholder="handle or name"
+          className="ck-mono min-h-[32px] w-full bg-transparent border border-[var(--color-border)] px-2 py-1 outline-none focus:border-[var(--color-border-vis)] placeholder:text-[var(--color-disabled)]"
+        />
+      </span>
+      <span className="flex flex-col gap-1 max-w-full min-w-0">
+        <label htmlFor={marketFieldId} className="ck-label">
+          market
+        </label>
+        {/* A native select: the list is a set of values, it is already this
+            page's only long enumeration, and it comes with keyboard and mobile
+            behaviour no custom menu here would earn. */}
+        <select
+          id={marketFieldId}
+          value={filters.venueSeriesId ?? ""}
+          onChange={(e) => onChange({ ...filters, venueSeriesId: e.target.value || null })}
+          className="ck-mono min-h-[32px] max-w-full bg-transparent border border-[var(--color-border)] px-2 py-1 outline-none focus:border-[var(--color-border-vis)]"
+        >
+          <option value="">every market</option>
+          {matrix.columns.map((column) => (
+            <option key={column.venueSeriesId} value={column.venueSeriesId}>
+              {column.title} ({column.sellers})
+            </option>
+          ))}
+        </select>
+      </span>
+      <span className="flex flex-col gap-1">
+        <span className="ck-label">sort by</span>
+        <span className="flex flex-wrap items-center gap-1">
+          {LISTINGS_SORTS.map((sort) => {
+            const active = filters.sort === sort;
+            // Clicking the key you are already on flips it — the table idiom,
+            // and it costs no second control. Picking a new key jumps to that
+            // key's useful end rather than inheriting the last one's direction.
+            const next: ListingsFilters = active
+              ? { ...filters, direction: filters.direction === "asc" ? "desc" : "asc" }
+              : { ...filters, sort, direction: DEFAULT_SORT_DIRECTION[sort] };
+            const meaning = SORT_DIRECTION_LABEL[sort][active ? filters.direction : DEFAULT_SORT_DIRECTION[sort]];
+            return (
+              <button
+                key={sort}
+                type="button"
+                onClick={() => onChange(next)}
+                aria-pressed={active}
+                title={
+                  active
+                    ? `Sorted by ${SORT_TITLE[sort]}, ${meaning}. Click to reverse.`
+                    : `Sort by ${SORT_TITLE[sort]}, ${meaning}.`
+                }
+                className={
+                  "ck-btn ck-btn-bracket min-h-[32px] " + (active ? "ck-btn-active" : "")
+                }
+              >
+                {sort}
+                {active && (
+                  <>
+                    {" "}
+                    <span aria-hidden="true">{filters.direction === "asc" ? "↑" : "↓"}</span>
+                    <span className="sr-only">, {meaning}</span>
+                  </>
+                )}
+              </button>
+            );
+          })}
+        </span>
+      </span>
+      {/* Only offered when it would change something: with one market picked
+          there are no empty columns to reveal. */}
+      {filters.venueSeriesId === null && emptyCount > 0 && (
+        <span className="flex flex-col gap-1">
+          <span className="ck-label">columns</span>
+          <button
+            type="button"
+            onClick={() => onChange({ ...filters, hideEmptySeries: !filters.hideEmptySeries })}
+            aria-pressed={!filters.hideEmptySeries}
+            title={`${emptyCount} registered series have no seller yet. Hidden by default.`}
+            className={
+              "ck-btn ck-btn-bracket min-h-[32px] " +
+              (filters.hideEmptySeries ? "" : "ck-btn-active")
+            }
+          >
+            empty markets
+          </button>
+        </span>
+      )}
+      {filtersActive(filters) && (
+        <button
+          type="button"
+          onClick={() => onChange(DEFAULT_LISTINGS_FILTERS)}
+          className="ck-btn ck-btn-bracket min-h-[32px]"
+        >
+          reset
+        </button>
       )}
     </div>
   );
@@ -300,8 +494,7 @@ function Cell({
     <div className="ck-matrix-cell" role="cell">
       {cell.listPrice ? (
         <span className="ck-mono ck-pos" title={CELL_PRICE_TOOLTIP}>
-          {cell.listPrice.display}{" "}
-          <span className="ck-dim">{cell.listPrice.currency.toUpperCase()}</span>
+          <Price display={cell.listPrice.display} currency={cell.listPrice.currency} />
         </span>
       ) : (
         <span
@@ -416,14 +609,14 @@ function OpenCallsDrilldown({
                   }
                   title={`Buy early decrypt access to this call for ${call.lockedDisplay} ${call.currency.toUpperCase()} — the price locked when it was sealed, pricing ${call.pricingVersion} (${call.lockedPriceAtoms} atoms). The wallet that signs receives the access.`}
                 >
-                  {call.lockedDisplay} <span className="ck-dim">{call.currency.toUpperCase()}</span>
+                  <Price display={call.lockedDisplay} currency={call.currency} />
                 </button>
               ) : (
                 <span
                   className="ck-mono ck-pos"
                   title={`locked at seal time, pricing ${call.pricingVersion} — ${call.lockedPriceAtoms} atoms`}
                 >
-                  {call.lockedDisplay} <span className="ck-dim">{call.currency.toUpperCase()}</span>
+                  <Price display={call.lockedDisplay} currency={call.currency} />
                 </span>
               )}
               <span

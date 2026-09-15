@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useStream } from "../../hooks/useStream.js";
 import { Ik } from "../../icons.js";
 import { formatScore } from "../../lib/score-format.js";
+import { isPlainLeftClick, useDetailDrawer } from "./DetailDrawer.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
 import { TimeAgo } from "./TimeAgo.js";
 
@@ -213,12 +214,25 @@ function FeedSkeleton() {
   );
 }
 
+/**
+ * The [V] chip. A plain left-click opens the call in the shared detail drawer
+ * over the tape, so reading the feed never costs the page you were on; the href
+ * stays the canonical permalink, so modifier and middle clicks, Copy Link, and
+ * keyboard Enter all still reach the full page.
+ */
 function VerifyCallLink({ callId }: { callId: string }) {
+  const { open } = useDetailDrawer();
   const shortId = callId.slice(0, 8);
   return (
     <a
       href={`#/calls/${callId}`}
       aria-label={`open call detail ${shortId}`}
+      onClick={(e) => {
+        if (isPlainLeftClick(e)) {
+          e.preventDefault();
+          open("call", callId);
+        }
+      }}
       className={
         "t-meta justify-self-end inline-flex items-center border border-[var(--color-border-vis)] px-1 py-[5px] " +
         "text-[12px] leading-[14px] text-[var(--color-secondary)] no-underline " +

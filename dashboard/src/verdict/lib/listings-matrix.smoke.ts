@@ -10,6 +10,10 @@ import {
   buildListingsMatrix,
   CELL_PRICE_TOOLTIP,
   DEFAULT_LEADERBOARD_VIEW,
+  DEFAULT_LISTINGS_FILTERS,
+  DEFAULT_SORT_DIRECTION,
+  filteredEmptyState,
+  filterListingsMatrix,
   EMPTY_MATRIX,
   matrixEmptyState,
   matrixGridTemplate,
@@ -433,6 +437,74 @@ assert.equal(
 
   // No catalog at all (first paint / a failed catalog read) is inert, not a throw.
   assert.deepEqual(buildListingsMatrix(null, LOADED, NOW), EMPTY_MATRIX);
+}
+
+// ─── Browsing: filter and sort the built matrix ─────────────────────────────
+//
+// The fixture is the shape the filters exist for: five registered series, only
+// two of which anyone sells, and a cheap ETH listing hiding behind a colossal
+// BTC one.
+
+{
+  const m = buildListingsMatrix(catalog, LOADED, NOW);
+
+  // Empty aisles are hidden by default, and the sellers are untouched.
+  const def = filterListingsMatrix(m, DEFAULT_LISTINGS_FILTERS);
+  assert.deepEqual(
+    def.columns.map((c) => c.venueSeriesId),
+    ["polymarket:btc-up-or-down-5m", "polymarket:eth-up-or-down-5m"],
+    "three series nobody lists drop out",
+  );
+  assert.deepEqual(def.rows.map((r) => r.slug), ["claude-4", "veteran"], "name order by default");
+  assert.equal(def.totalListings, 3, "counts follow what is on screen");
+
+  // …and the toggle puts them back.
+  const withEmpty = filterListingsMatrix(m, { ...DEFAULT_LISTINGS_FILTERS, hideEmptySeries: false });
+  assert.equal(withEmpty.columns.length, 5);
+
+  // Cheapest first is cheapest ANYWHERE on screen: veteran's 0.07 ETH listing
+  // beats claude-4's 0.5, even though veteran's BTC price is astronomical.
+  const price = (direction: "asc" | "desc") =>
+    filterListingsMatrix(m, { ...DEFAULT_LISTINGS_FILTERS, sort: "price", direction });
+  assert.equal(DEFAULT_SORT_DIRECTION.price, "asc", "price opens on the cheap end");
+  assert.deepEqual(price("asc").rows.map((r) => r.slug), ["veteran", "claude-4"]);
+  assert.deepEqual(price("desc").rows.map((r) => r.slug), ["claude-4", "veteran"], "and reverses");
+
+  // Record opens on the BEST floor, not the alphabetical or ascending one.
+  const record = (direction: "asc" | "desc") =>
+    filterListingsMatrix(m, { ...DEFAULT_LISTINGS_FILTERS, sort: "record", direction });
+  assert.equal(DEFAULT_SORT_DIRECTION.record, "desc", "record opens on the best floor");
+  assert.deepEqual(record("desc").rows.map((r) => r.slug), ["veteran", "claude-4"]);
+  // Reversing must not promote the unscored seller: a missing score is not the
+  // lowest score, and it stays last in BOTH directions.
+  assert.deepEqual(record("asc").rows.map((r) => r.slug), ["veteran", "claude-4"]);
+
+  // Name reverses plainly.
+  assert.deepEqual(
+    filterListingsMatrix(m, { ...DEFAULT_LISTINGS_FILTERS, direction: "desc" }).rows.map((r) => r.slug),
+    ["veteran", "claude-4"],
+  );
+
+  // One market narrows the columns AND drops sellers who do not list it.
+  const eth = filterListingsMatrix(m, {
+    ...DEFAULT_LISTINGS_FILTERS,
+    venueSeriesId: "polymarket:eth-up-or-down-5m",
+  });
+  assert.equal(eth.columns.length, 1);
+  assert.deepEqual(eth.rows.map((r) => r.slug), ["veteran"], "claude-4 has nothing to show here");
+
+  // The name filter reads the handle and the display name, case-insensitively.
+  assert.equal(filterListingsMatrix(m, { ...DEFAULT_LISTINGS_FILTERS, agent: "VET" }).rows.length, 1);
+  assert.equal(filterListingsMatrix(m, { ...DEFAULT_LISTINGS_FILTERS, agent: "Claude 4" }).rows.length, 1);
+
+  // Filtering to nothing is a query result, not an empty deployment: the
+  // matrix-level empty state must stay silent and the filter one must speak.
+  const none = filterListingsMatrix(m, { ...DEFAULT_LISTINGS_FILTERS, agent: "nobody" });
+  assert.equal(none.rows.length, 0);
+  assert.equal(matrixEmptyState(m), null, "the deployment is not empty");
+  const said = filteredEmptyState(m, none, { ...DEFAULT_LISTINGS_FILTERS, agent: "nobody" });
+  assert.ok(said && said.includes("nobody"), said ?? "");
+  assert.equal(filteredEmptyState(m, def, DEFAULT_LISTINGS_FILTERS), null, "a full view says nothing");
 }
 
 // ─── Layout: columns keep a usable width instead of being squeezed ──────────

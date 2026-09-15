@@ -24,6 +24,7 @@ import { Ik } from "../../icons.js";
 import { formatAtoms, isPositiveAtoms } from "../../lib/atoms-format.js";
 import { formatLocalDateTime } from "../../lib/date-time-format.js";
 import { shortId } from "../../lib/display-format.js";
+import { CurrencyMark } from "../compact/CurrencyMark.js";
 import { InlineError } from "../compact/InlineError.js";
 
 export function EarningsPanel({ slug }: { slug: string }) {
@@ -128,7 +129,7 @@ export function EarningsPanel({ slug }: { slug: string }) {
                     <span className="ck-mono ck-pos">
                       +{formatAtoms(sale.net_atoms, sale.currency)}
                     </span>{" "}
-                    <span className="ck-dim text-[12px]">{sale.currency}</span>
+                    <CurrencyMark currency={sale.currency} className="ck-dim text-[12px]" />
                     <span
                       className="ck-dim text-[12px] block"
                       title={`murmur kept ${formatAtoms(sale.fee_atoms, sale.currency)} ${sale.currency} of ${formatAtoms(sale.gross_atoms, sale.currency)} ${sale.currency}`}
@@ -161,7 +162,9 @@ function MoneyStrip({ total }: { total: ProviderEarningsTotal }) {
   return (
     <div className="border border-[var(--color-border-vis)] px-3 py-2 flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="ck-label ck-pos">{total.currency}</span>
+        <span className="ck-label ck-pos">
+          <CurrencyMark currency={total.currency} />
+        </span>
         <span className="ck-dim text-[12px]">
           {total.sales} {total.sales === 1 ? "sale" : "sales"} ·{" "}
           {total.payout_entries}{" "}
@@ -287,7 +290,7 @@ function PayoutJournal({
                 >
                   {reversal ? "−" : "+"}
                   {formatAtoms(row.amount_atoms, row.currency)}{" "}
-                  <span className="ck-dim text-[12px]">{row.currency}</span>
+                  <CurrencyMark currency={row.currency} className="ck-dim text-[12px]" />
                 </span>
               </li>
             );

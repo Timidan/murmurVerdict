@@ -30,7 +30,7 @@ import type {
   WireSellableCall,
 } from "@shared/wire-marketplace";
 
-import { formatAtoms } from "./atoms-format.js";
+import { decimalsFor, formatAtoms } from "./atoms-format.js";
 import { formatScore } from "./score-format.js";
 
 /* ── The view control ─────────────────────────────────────────────────────── */
@@ -142,6 +142,8 @@ export interface TrackRecordView {
   scopeLabel: "all-time";
   /** formatScore of verdict_score_lb — the careful number shown beside the score. */
   floor: string;
+  /** The same number unformatted, for sorting. Null when nothing has resolved. */
+  floorValue: number | null;
   winRate: string;
   resolved: string;
   rank: number | null;
@@ -360,6 +362,7 @@ export function toTrackRecordView(track: WireMarketplaceTrackRecord): TrackRecor
   return {
     scopeLabel: "all-time",
     floor: formatScore(track.verdict_score_lb),
+    floorValue: track.verdict_score_lb,
     winRate,
     resolved: String(track.resolved_calls),
     rank: track.rank,
@@ -452,6 +455,203 @@ export function availabilityLine(
     tone: "dim",
     text: `${buyable} sealed call${buyable === 1 ? "" : "s"} open to buy. Each is sold at the price locked when it was sealed, not at the standing price.${closedClause}`,
   };
+}
+
+
+/* ── Filters ──────────────────────────────────────────────────────────────── */
+
+/**
+ * Browsing controls for the matrix. Applied to the BUILT matrix, never to the
+ * fetch: both feeds are one page each, so filtering is a view concern and the
+ * unfiltered matrix stays available to describe the deployment as a whole.
+ */
+export const LISTINGS_SORTS = ["name", "price", "record"] as const;
+export type ListingsSort = (typeof LISTINGS_SORTS)[number];
+export type SortDirection = "asc" | "desc";
+
+/**
+ * Which way each key runs when it is first picked.
+ *
+ * The useful end of a key is not always ascending: cheapest first is what a
+ * buyer wants from `price`, but `record` ascending would open on the worst
+ * sellers murmur has. Picking a key jumps to its useful end; clicking it again
+ * flips.
+ */
+export const DEFAULT_SORT_DIRECTION: Record<ListingsSort, SortDirection> = {
+  name: "asc",
+  price: "asc",
+  record: "desc",
+};
+
+/** What each direction MEANS per key, for the control's own label. */
+export const SORT_DIRECTION_LABEL: Record<ListingsSort, Record<SortDirection, string>> = {
+  name: { asc: "A to Z", desc: "Z to A" },
+  price: { asc: "cheapest first", desc: "dearest first" },
+  record: { asc: "lowest floor first", desc: "highest floor first" },
+};
+
+export interface ListingsFilters {
+  /** Substring of the handle or the display name. Empty keeps every seller. */
+  agent: string;
+  /** One series, or null for every series. */
+  venueSeriesId: string | null;
+  sort: ListingsSort;
+  direction: SortDirection;
+  /** Drop columns nobody lists. On by default: a screen of em dashes is noise. */
+  hideEmptySeries: boolean;
+}
+
+export const DEFAULT_LISTINGS_FILTERS: ListingsFilters = {
+  agent: "",
+  venueSeriesId: null,
+  sort: "name",
+  direction: DEFAULT_SORT_DIRECTION.name,
+  hideEmptySeries: true,
+};
+
+/** True when anything is narrowing the view, so the UI can offer a reset. */
+export function filtersActive(filters: ListingsFilters): boolean {
+  return (
+    filters.agent.trim() !== "" ||
+    filters.venueSeriesId !== null ||
+    filters.sort !== DEFAULT_LISTINGS_FILTERS.sort ||
+    filters.direction !== DEFAULT_SORT_DIRECTION[filters.sort] ||
+    filters.hideEmptySeries !== DEFAULT_LISTINGS_FILTERS.hideEmptySeries
+  );
+}
+
+/**
+ * Narrow and reorder a built matrix.
+ *
+ * Columns go first, then rows are dropped when the columns that survive hold
+ * nothing for them — filtering to one series and leaving behind a page of
+ * sellers who do not list it is not a result. The counts are recomputed over
+ * what is left, so the panel header describes the rows on screen; the
+ * availability line keeps reading the UNFILTERED matrix, because it describes
+ * the deployment rather than the current query.
+ */
+export function filterListingsMatrix(
+  matrix: ListingsMatrix,
+  filters: ListingsFilters,
+): ListingsMatrix {
+  const term = filters.agent.trim().toLowerCase();
+  const keep = matrix.columns.map((column) =>
+    filters.venueSeriesId !== null
+      ? column.venueSeriesId === filters.venueSeriesId
+      : !(filters.hideEmptySeries && column.sellers === 0),
+  );
+  const columns = matrix.columns.filter((_, i) => keep[i]);
+
+  let totalListings = 0;
+  let totalOpenCalls = 0;
+  let totalBuyableCalls = 0;
+
+  const rows: MatrixRow[] = [];
+  for (const row of matrix.rows) {
+    if (term && !`${row.slug} ${row.displayName}`.toLowerCase().includes(term)) continue;
+    const cells = row.cells.filter((_, i) => keep[i]);
+    const listedCount = cells.filter((c) => c.listPrice !== null).length;
+    const openCallCount = cells.reduce((n, c) => n + c.openCalls.length, 0);
+    if (listedCount === 0 && openCallCount === 0) continue;
+    totalListings += listedCount;
+    totalOpenCalls += openCallCount;
+    totalBuyableCalls += cells.reduce(
+      (n, c) => n + c.openCalls.filter((call) => call.buyable).length,
+      0,
+    );
+    rows.push({ ...row, cells, listedCount, openCallCount });
+  }
+
+  rows.sort(rowComparator(filters.sort, filters.direction));
+
+  return {
+    columns,
+    rows,
+    servedAt: matrix.servedAt,
+    totalListings,
+    totalOpenCalls,
+    totalBuyableCalls,
+  };
+}
+
+/**
+ * Handle order is the tiebreak everywhere, so a sort is always stable to read.
+ *
+ * Direction flips the COMPARISON, never the missing values: a seller with no
+ * price and a seller with no score sort last in both directions. Reversing a
+ * board to see the dearest listings should not fill the top with sellers who
+ * have no listing at all.
+ */
+function rowComparator(
+  sort: ListingsSort,
+  direction: SortDirection,
+): (a: MatrixRow, b: MatrixRow) => number {
+  const sign = direction === "desc" ? -1 : 1;
+  const bySlug = (a: MatrixRow, b: MatrixRow) => a.slug.localeCompare(b.slug);
+  if (sort === "price") {
+    return (a, b) => {
+      const pa = cheapestListing(a.cells);
+      const pb = cheapestListing(b.cells);
+      if (pa === null || pb === null) return pa === pb ? bySlug(a, b) : pa === null ? 1 : -1;
+      if (pa === pb) return bySlug(a, b);
+      return (pa < pb ? -1 : 1) * sign;
+    };
+  }
+  if (sort === "record") {
+    return (a, b) => {
+      const fa = a.track.floorValue;
+      const fb = b.track.floorValue;
+      // Unscored is not a floor of zero: a new seller sorts below every scored one.
+      if (fa === null || fb === null) return fa === fb ? bySlug(a, b) : fa === null ? 1 : -1;
+      if (fa === fb) return bySlug(a, b);
+      return (fa < fb ? -1 : 1) * sign;
+    };
+  }
+  return (a, b) => bySlug(a, b) * sign;
+}
+
+/**
+ * The cheapest visible listing, on ONE scale.
+ *
+ * Atoms are per-asset, so comparing 6-decimal USDC against 18-decimal DAI raw
+ * would rank every DAI price as astronomically dearer. Everything is lifted to
+ * 18 decimals before the comparison; an unknown asset has no known scale and
+ * sorts last rather than being guessed at.
+ */
+function cheapestListing(cells: readonly MatrixCell[]): bigint | null {
+  let min: bigint | null = null;
+  for (const cell of cells) {
+    if (!cell.listPrice) continue;
+    const decimals = decimalsFor(cell.listPrice.currency);
+    if (decimals === null || decimals > SORT_DECIMALS) continue;
+    let value: bigint;
+    try {
+      value = BigInt(cell.listPrice.priceAtoms) * 10n ** BigInt(SORT_DECIMALS - decimals);
+    } catch {
+      continue;
+    }
+    if (min === null || value < min) min = value;
+  }
+  return min;
+}
+
+/** Wide enough for every settlement asset murmur knows (DAI and ETH are 18). */
+const SORT_DECIMALS = 18;
+
+/** What the matrix says when the filters, not the deployment, emptied it. */
+export function filteredEmptyState(
+  matrix: ListingsMatrix,
+  shown: ListingsMatrix,
+  filters: ListingsFilters,
+): string | null {
+  if (shown.rows.length > 0 || matrix.rows.length === 0) return null;
+  const term = filters.agent.trim();
+  if (term && filters.venueSeriesId) {
+    return `no seller matching "${term}" lists this market.`;
+  }
+  if (term) return `no seller matches "${term}".`;
+  if (filters.venueSeriesId) return "nobody lists this market yet.";
+  return "no seller matches these filters.";
 }
 
 /* ── Layout ───────────────────────────────────────────────────────────────── */

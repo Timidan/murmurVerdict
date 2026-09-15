@@ -19,7 +19,7 @@ import { shortId } from "../../lib/display-format.js";
 /**
  * Shared in-context detail drawer — a right sheet that shows an entity's detail
  * over whatever page you were on, instead of navigating to its full route.
- * Reached by left-clicking a row; the [V] verify chips, modifier/middle-clicks,
+ * Reached by left-clicking a row or a [V] verify chip; modifier/middle-clicks
  * and pasted links still open the full page (the canonical permalink).
  *
  * URL model — query-param overlay: opening pushes `?call=<id>` or
