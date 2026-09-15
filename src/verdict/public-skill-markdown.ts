@@ -498,6 +498,14 @@ checkout at all.
    \`grant_failed_refund_due\`, the money moved and the grant did not — a refund
    is owed and the operator sends it by hand.
 
+The on-chain grant fields are public. To receive your operational purchase,
+refund, or grant-error fields while polling, EIP-191 \`personal_sign\` the
+exact \`murmur:purchases:<lowercase address>:<unixSeconds>\` with the subscriber
+key and send \`X-Murmur-Subscriber-Auth: <unixSeconds>:<signature>\`. Murmur
+accepts timestamps within ±300 seconds. No header returns public chain facts
+only; malformed, invalid, or stale proof returns 401. The buy tool already
+signs each poll this way.
+
 \`tools/subscriber-buy-access.ts\` in the murmur repo does all four and is the
 reference implementation:
 
@@ -799,6 +807,14 @@ run it. The batched scheme spends USDC **deposited with Circle's Gateway**, not
 your wallet balance, and a deposit takes ~65 blocks to become spendable. And a
 repeat is safe: murmur checks the chain for an existing grant to your wallet
 before settling, so buying access you already hold charges nothing.
+
+The status poll returns public on-chain grant facts without extra proof. For
+your operational purchase, refund, or grant-error fields, send
+\`X-Murmur-Subscriber-Auth: <unixSeconds>:<signature>\`, where \`signature\`
+is EIP-191 \`personal_sign\` of exactly
+\`murmur:purchases:<lowercase address>:<unixSeconds>\`. The timestamp must be
+within ±300 seconds; a malformed, invalid, or stale header returns 401. The buy
+tool makes this authenticated poll for you.
 
 The grant is permission, not plaintext. Murmur holds no decrypted verdict and
 offers no proxy-decrypt route; the unseal tool decrypts locally with a permit

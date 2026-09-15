@@ -51,7 +51,7 @@ import { COFHE_404_RETRY_TIMEOUT_MS } from "../src/integrations/cofhe-decrypt-tu
 const RETRY_INTERVAL_MS = 3_000;
 
 const GETTER_ABI = parseAbi([
-  "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 revealOpenAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
+  "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 grantCloseAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
 ]);
 
 async function main(): Promise<void> {
@@ -77,10 +77,10 @@ async function main(): Promise<void> {
     functionName: "getDecryptAccess",
     args: [callId as Hex, account.address],
   })) as readonly [number, bigint, string, string, boolean];
-  const [state, revealOpenAt, binaryIndexCtHash, confidenceCtHash, alreadyGranted] = view;
+  const [state, grantCloseAt, binaryIndexCtHash, confidenceCtHash, alreadyGranted] = view;
 
   process.stdout.write(
-    `call=${callId} state=${state} revealOpenAt=${revealOpenAt} granted=${alreadyGranted}\n`,
+    `call=${callId} state=${state} grantCloseAt=${grantCloseAt} granted=${alreadyGranted}\n`,
   );
   if (!alreadyGranted) {
     throw new Error(

@@ -92,7 +92,7 @@ export default defineConfig({
   // invalidating chunks the browser has already fetched. The result is a 404 on
   // a deps chunk and "Failed to fetch dynamically imported module". Pre-bundle
   // it so there is no second pass.
-  optimizeDeps: { include: ["@privy-io/react-auth"] },
+  optimizeDeps: { include: ["@privy-io/react-auth", "@radix-ui/react-select", "viem", "viem/chains", "@cofhe/sdk/web", "@cofhe/sdk/chains", "@cofhe/sdk"] },
   build: {
     outDir: path.resolve(__dirname, "dist"),
     emptyOutDir: true,
@@ -110,7 +110,13 @@ export default defineConfig({
       },
     },
   },
+  // CoFHE's browser decrypt worker is loaded only from the lazy checkout
+  // chunk. Rollup cannot emit an IIFE worker inside this code-split build.
+  worker: { format: "es" },
   server: {
+    // Bind IPv4 loopback explicitly: localhost resolved to IPv6-only here,
+    // leaving browser requests to 127.0.0.1 refused.
+    host: "127.0.0.1",
     port: 5173,
     // QA finding #2 (post-Codex audit): dev-only proxy for /v1/*, /share,
     // /embed.js so `npm run dashboard` against a local daemon works

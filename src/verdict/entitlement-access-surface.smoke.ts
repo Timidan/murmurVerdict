@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { privateKeyToAccount } from "viem/accounts";
 
 import type {
   GrantChainAdapter,
@@ -16,6 +17,7 @@ import {
   type EntitlementPaymentBroker,
   type EntitlementAccessSurfaceDeps,
 } from "./entitlement-access-surface.js";
+import { subscriberAuthMessage } from "./gateway-purchases-surface.js";
 
 /**
  * Eligibility now fails closed on an unknown submission class, so a sale test
@@ -63,7 +65,8 @@ process.stdout.write("murmur entitlement access surface smoke\n");
 
 const CHAIN_ID = 84532;
 const CONTRACT = "0x1B74A4bAb1E06Ed107780a245c85337AB9dEcD1A";
-const PAYER = "0xCAFEbabeCAFEbabeCAFEbabeCAFEbabeCAFEbabe";
+const subscriberAccount = privateKeyToAccount(`0x${"11".repeat(32)}`);
+const PAYER = subscriberAccount.address;
 const CALL = "0x" + "ab".repeat(32);
 const NOW = new Date("2026-07-20T00:00:00.000Z");
 const NOW_SEC = Math.floor(NOW.getTime() / 1000);
@@ -198,7 +201,9 @@ function newDb() {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-// Eligible + payment → granted 200.
+// The public status tier contains chain facts only. A proof from this wallet
+// adds its private payment/grant state; a bad proof rejects instead of falling
+// back to the public tier.
 {
   const { db, tmp } = newDb();
   seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, CALL);
@@ -211,14 +216,29 @@ function newDb() {
   assert.equal(r.status, 200);
   assert.equal((r.body as { granted: boolean }).granted, true);
 
-  // Status endpoint returns ct handles + FheTypes hints + grantCloseAt.
-  const status = await entitlementStatusResponse({
+  db.prepare(
+    `UPDATE entitlements
+        SET status = 'grant_failed_refund_due', refund_status = 'refund_due',
+            grant_tx_hash = @tx, grant_block_number = 42, grant_attempts = 3,
+            last_error = @error
+      WHERE chain_id = @chain_id AND contract_address = @contract_address
+        AND onchain_call_id = @onchain_call_id AND subscriber_address = @subscriber_address`,
+  ).run({
+    chain_id: CHAIN_ID,
+    contract_address: CONTRACT.toLowerCase(),
+    onchain_call_id: CALL.toLowerCase(),
+    subscriber_address: PAYER.toLowerCase(),
+    tx: `0x${"cd".repeat(32)}`,
+    error: "provider rejected https://user:secret@rpc.example.test/v1 with Bearer token-secret",
+  });
+
+  const publicStatus = await entitlementStatusResponse({
     deps: d,
     onchainCallId: CALL,
     subscriberAddress: PAYER,
   });
-  assert.equal(status.status, 200);
-  const body = status.body as {
+  assert.equal(publicStatus.status, 200);
+  const publicBody = publicStatus.body as {
     status: string;
     ciphertexts: {
       binaryIndex: { handle: string; fheType: string };
@@ -226,12 +246,51 @@ function newDb() {
     };
     grantCloseAt: number;
     grant: { onchainGranted: boolean };
+    refundStatus?: unknown;
+    lastError?: unknown;
   };
-  assert.equal(body.status, "granted");
-  assert.equal(body.ciphertexts.binaryIndex.fheType, "Uint8");
-  assert.equal(body.ciphertexts.confidenceBps.fheType, "Uint16");
-  assert.equal(body.ciphertexts.binaryIndex.handle, openView.binaryIndexCtHash);
-  assert.equal(body.grantCloseAt, openView.grantCloseAt);
+  assert.equal(publicBody.status, "none");
+  assert.equal(publicBody.ciphertexts.binaryIndex.fheType, "Uint8");
+  assert.equal(publicBody.ciphertexts.confidenceBps.fheType, "Uint16");
+  assert.equal(publicBody.ciphertexts.binaryIndex.handle, openView.binaryIndexCtHash);
+  assert.equal(publicBody.grantCloseAt, openView.grantCloseAt);
+  assert.equal(publicBody.refundStatus, undefined);
+  assert.equal(publicBody.lastError, undefined);
+  assert.deepEqual(publicBody.grant, { onchainGranted: false });
+  assert.ok(!JSON.stringify(publicBody).includes("secret"));
+
+  const unixSeconds = Math.floor(NOW.getTime() / 1000);
+  const signature = await subscriberAccount.signMessage({
+    message: subscriberAuthMessage(PAYER, unixSeconds),
+  });
+  const privateStatus = await entitlementStatusResponse({
+    deps: d,
+    onchainCallId: CALL,
+    subscriberAddress: PAYER,
+    authHeader: `${unixSeconds}:${signature}`,
+  });
+  assert.equal(privateStatus.status, 200);
+  const privateBody = privateStatus.body as {
+    status: string;
+    refundStatus: string | null;
+    grant: { txHash: string | null; attempts: number };
+    lastError: string | null;
+  };
+  assert.equal(privateBody.status, "grant_failed_refund_due");
+  assert.equal(privateBody.refundStatus, "refund_due");
+  assert.equal(privateBody.grant.txHash, `0x${"cd".repeat(32)}`);
+  assert.equal(privateBody.grant.attempts, 3);
+  assert.ok(privateBody.lastError?.includes("https://rpc.example.test/<redacted>"));
+  assert.ok(!privateBody.lastError?.includes("secret"));
+
+  const invalid = await entitlementStatusResponse({
+    deps: d,
+    onchainCallId: CALL,
+    subscriberAddress: PAYER,
+    authHeader: `${unixSeconds}:0x${"00".repeat(65)}`,
+  });
+  assert.equal(invalid.status, 401);
+  assert.equal((invalid.body as { error: string }).error, "SubscriberAuthInvalid");
   db.close();
   rmSync(tmp, { recursive: true, force: true });
 }

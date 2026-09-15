@@ -266,6 +266,7 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
         deps: deps.entitlementAccess,
         onchainCallId: String(req.params.callId ?? ""),
         subscriberAddress: String(req.query.subscriber ?? ""),
+        authHeader: req.header(SUBSCRIBER_AUTH_HEADER),
       });
       res.status(result.status).json(result.body);
     }),

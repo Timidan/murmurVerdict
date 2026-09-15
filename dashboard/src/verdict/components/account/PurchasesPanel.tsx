@@ -17,8 +17,9 @@
 // murmur holds no settlement receipt for that row — NOT that the payment
 // failed — and softening it either way would be a guess about somebody's money.
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSignMessage, useWallets } from "@privy-io/react-auth";
+import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
+import { useSignMessage, useWallets, type ConnectedWallet } from "@privy-io/react-auth";
+import * as Select from "@radix-ui/react-select";
 
 import {
   purchasesAuthMessage,
@@ -31,6 +32,7 @@ import { Ik } from "../../icons.js";
 import { formatAtoms } from "../../lib/atoms-format.js";
 import { formatLocalDateTime } from "../../lib/date-time-format.js";
 import { shortId } from "../../lib/display-format.js";
+import { DecryptCall } from "../compact/BuyAccessPanel.js";
 import { InlineError } from "../compact/InlineError.js";
 
 export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
@@ -56,17 +58,40 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
   // controller wallet is often a different one, so the panel offers both
   // rather than choosing for them. Connected wallets come first — only those
   // can sign. A bound wallet that is not connected still reads unsigned.
-  const options: Array<{ address: string; name: string }> = wallets.map((w) => ({
-    address: w.address,
-    name:
-      (w.walletClientType === "privy" ? "privy wallet" : w.walletClientType) +
-      (isBound(w.address) ? " · controller wallet" : ""),
-  }));
+  // Purchases belong to an address, even when several wallet apps expose it.
+  const options: Array<{ address: string; wallets: ConnectedWallet[] }> = [];
+  for (const wallet of wallets) {
+    const existing = options.find((o) => o.address.toLowerCase() === wallet.address.toLowerCase());
+    if (existing) existing.wallets.push(wallet);
+    else options.push({ address: wallet.address, wallets: [wallet] });
+  }
   for (const b of boundAddresses) {
     if (!options.some((o) => o.address.toLowerCase() === b.toLowerCase())) {
-      options.push({ address: b, name: "controller wallet · not connected" });
+      options.push({ address: b, wallets: [] });
     }
   }
+
+  const walletLabel = (option: (typeof options)[number]) => (
+    <span className="flex min-w-0 items-center gap-2">
+      <span className="flex shrink-0 items-center gap-1">
+        {option.wallets.map((wallet, index) => {
+          // Privy's embedded icon is a React component despite its URL type.
+          const Icon = wallet.meta.icon as string | ComponentType<{ className: string }> | undefined;
+          const name = wallet.meta.name || wallet.walletClientType;
+          return (
+            <span key={index} title={name} role="img" aria-label={name}>
+              {typeof Icon === "string" ? (
+                <img src={Icon} alt="" className="size-4 object-contain" />
+              ) : Icon ? <Icon className="size-4" /> : <Ik name="tab-wallet" />}
+            </span>
+          );
+        })}
+      </span>
+      <span className="truncate" title={option.address}>{shortId(option.address, 8, 6)}</span>
+      {isBound(option.address) && <span title="controller wallet" role="img" aria-label="controller wallet"><Ik name="controller-wallet" /></span>}
+      {option.wallets.length === 0 && <span className="text-[12px]">not connected</span>}
+    </span>
+  );
 
   const fallback =
     wallets.find((w) => isBound(w.address))?.address ??
@@ -75,6 +100,7 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
     boundAddresses[0] ??
     null;
   const address = picked ?? fallback;
+  const selectedOption = options.find((o) => o.address.toLowerCase() === address?.toLowerCase());
   const connected =
     wallets.find((w) => w.address.toLowerCase() === address?.toLowerCase()) ??
     null;
@@ -185,22 +211,31 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
         </p>
 
         {options.length > 1 ? (
-          <label className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <span className="ck-label">wallet</span>
-            <select
+            <Select.Root
               value={address ?? ""}
-              onChange={(e) => setPicked(e.currentTarget.value)}
+              onValueChange={setPicked}
               disabled={busy}
-              className="ck-mono ck-select"
-              title="the wallet whose purchases you are reading"
             >
-              {options.map((o) => (
-                <option key={o.address} value={o.address} title={o.address}>
-                  {shortId(o.address, 8, 6)} · {o.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              <Select.Trigger aria-label="wallet" className="ck-mono ck-select min-w-0 text-left">
+                <Select.Value>
+                  {selectedOption && walletLabel(selectedOption)}
+                </Select.Value>
+              </Select.Trigger>
+              <Select.Portal>
+                <Select.Content position="popper" sideOffset={4} className="z-[70] w-[var(--radix-select-trigger-width)] max-h-[var(--radix-select-content-available-height)] overflow-hidden border border-[var(--color-border-vis)] bg-[var(--color-surface)] text-[var(--color-primary)] font-mono text-[14px]">
+                  <Select.Viewport>
+                    {options.map((o) => (
+                      <Select.Item key={o.address} value={o.address} textValue={o.address} className="cursor-pointer px-2 py-2 outline-none data-[highlighted]:bg-[var(--color-raised)] data-[state=checked]:text-[var(--color-display)]">
+                        <Select.ItemText>{walletLabel(o)}</Select.ItemText>
+                      </Select.Item>
+                    ))}
+                  </Select.Viewport>
+                </Select.Content>
+              </Select.Portal>
+            </Select.Root>
+          </div>
         ) : address ? (
           <p className="ck-dim text-[12px]">
             wallet <span className="ck-mono" title={address}>{shortId(address, 8, 6)}</span>
@@ -209,7 +244,7 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
           <p className="ck-mono ck-dim">No controller wallet is bound yet.</p>
         )}
 
-        <span className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2" role="group" aria-label="Purchase history actions">
           <button
             type="button"
             className="ck-btn ck-btn-bracket"
@@ -217,7 +252,7 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
             disabled={busy || !address}
           >
             <Ik name="all-calls" />
-            show granted purchases
+            view granted
           </button>
           <button
             type="button"
@@ -227,9 +262,9 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
             title="signs a message. It is not a transaction and moves no money."
           >
             <Ik name="attest" />
-            sign to show everything
+            sign for full history
           </button>
-        </span>
+        </div>
 
         {error && <InlineError error={error} className="text-[12px]" />}
 
@@ -251,7 +286,7 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
             )}
             <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
               {view.purchases.map((row) => (
-                <PurchaseRow key={`${row.onchain_call_id}-${row.created_at}`} row={row} />
+                <PurchaseRow key={`${row.onchain_call_id}-${row.created_at}`} row={row} wallet={connected} />
               ))}
             </ul>
             {view.next_cursor && (
@@ -271,7 +306,7 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
   );
 }
 
-function PurchaseRow({ row }: { row: WalletPurchaseRow }) {
+function PurchaseRow({ row, wallet }: { row: WalletPurchaseRow; wallet: ConnectedWallet | null }) {
   const granted = row.status === "granted";
   const refundOwed =
     row.refund_status !== null &&
@@ -318,6 +353,11 @@ function PurchaseRow({ row }: { row: WalletPurchaseRow }) {
           </span>
         )}
       </span>
+      {granted && wallet && (
+        <div className="col-span-2">
+          <DecryptCall key={wallet.address + row.onchain_call_id} wallet={wallet} onchainCallId={row.onchain_call_id} />
+        </div>
+      )}
     </li>
   );
 }

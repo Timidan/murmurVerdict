@@ -864,11 +864,18 @@ export const verdictApi = {
     rawPost(`/v2/gateway/calls/${encodeURIComponent(onchainCallId)}/access`, {
       "PAYMENT-SIGNATURE": paymentSignature,
     }),
-  /** Payment + grant status for one (call, subscriber). Public; no plaintext. */
-  callAccessStatus: (onchainCallId: string, subscriber: string) =>
+  /** Public chain status; a fresh wallet proof additionally reveals private payment state. */
+  callAccessStatus: (
+    onchainCallId: string,
+    subscriber: string,
+    auth?: { unixSeconds: number; signature: string },
+  ) =>
     rawGet(
       `/v2/gateway/calls/${encodeURIComponent(onchainCallId)}/access/status` +
         `?subscriber=${encodeURIComponent(subscriber)}`,
+      auth
+        ? { "X-Murmur-Subscriber-Auth": `${auth.unixSeconds}:${auth.signature}` }
+        : undefined,
     ),
   feedAvailability: (feed_id: string) =>
     get<{

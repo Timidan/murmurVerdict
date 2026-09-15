@@ -17,6 +17,10 @@ import {
 import { fhenixSealedCallsRepo } from "./repos/fhenix-sealed-calls-repo.js";
 import { entitlementsRepo } from "./repos/entitlements-repo.js";
 import { entitlementPaymentBindingsRepo } from "./repos/entitlement-payment-bindings-repo.js";
+import {
+  verifySubscriberAuth,
+} from "./gateway-purchases-surface.js";
+import { redactedErrorText } from "../integrations/fhenix-gateway-runtime.js";
 
 // HTTP surface for Flow 2 paid private decrypt-grant (grant-only v1):
 //   POST /v2/gateway/calls/:callId/access         — pay, then broker the grant.
@@ -204,6 +208,7 @@ export async function entitlementStatusResponse(input: {
   deps: EntitlementAccessSurfaceDeps;
   onchainCallId: string;
   subscriberAddress: string;
+  authHeader?: string | undefined;
 }): Promise<EntitlementSurfaceResponse> {
   const { deps, onchainCallId, subscriberAddress } = input;
   if (!BYTES32.test(onchainCallId)) {
@@ -211,6 +216,15 @@ export async function entitlementStatusResponse(input: {
   }
   if (!ADDRESS.test(subscriberAddress)) {
     return { status: 400, body: { error: "BadSubscriber" } };
+  }
+
+  const auth = await verifySubscriberAuth({
+    header: input.authHeader,
+    subscriberAddress,
+    now: deps.access.now(),
+  });
+  if (auth.kind === "rejected") {
+    return { status: auth.status, body: { error: auth.error, message: auth.message } };
   }
 
   const chain = deps.access.grantChain;
@@ -234,6 +248,37 @@ export async function entitlementStatusResponse(input: {
     return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
   })();
 
+  const body = {
+    chainId: chain.chainId,
+    contract: chain.contractAddress,
+    callId: onchainCallId,
+    subscriber: subscriberAddress,
+    // The public tier reflects only the chain view, never a wallet's local
+    // payment, refund, or broadcaster state.
+    status: view.alreadyGranted ? "granted" : "none",
+    grant: {
+      // On-chain source of truth for the subscriber's access.
+      onchainGranted: view.alreadyGranted,
+    },
+    ciphertexts: {
+      binaryIndex: { handle: view.binaryIndexCtHash, fheType: BINARY_INDEX_FHE_TYPE },
+      confidenceBps: { handle: view.confidenceCtHash, fheType: CONFIDENCE_FHE_TYPE },
+    },
+    // `grantCloseAt` is when BUYING closes (the prediction window opening).
+    // Exposed alongside the reveal time because they used to be the same
+    // field and are now days apart — a client that assumed one value would
+    // otherwise silently read the wrong deadline.
+    //
+    // Deliberately NOT re-using the old `revealOpenAt` name for this value:
+    // keeping the old key with new semantics is how a caller silently starts
+    // trusting the wrong timestamp. Clients still reading `revealOpenAt` get
+    // the reveal time, which is what that name always meant.
+    grantCloseAt: view.grantCloseAt,
+    revealOpenAt: publicRevealAtSec,
+    publicRevealAt: publicRevealAtSec,
+  };
+  if (auth.kind !== "ok") return { status: 200, body };
+
   const row = entitlementsRepo.byReservation(deps.access.db, {
     chainId: chain.chainId,
     contractAddress: chain.contractAddress,
@@ -242,53 +287,31 @@ export async function entitlementStatusResponse(input: {
   });
 
   // Confirmed once the grant is terminal-granted, or once a broadcast tx has a
-  // successful receipt. The on-chain getDecryptAccess.alreadyGranted below is
-  // the authoritative signal; confirmations is a coarse mined/not-mined hint.
+  // successful receipt. The on-chain getDecryptAccess.alreadyGranted above is
+  // the authority; this is private local broadcaster detail.
   let confirmations = 0;
   if (row?.grant_tx_hash) {
     const receipt = await chain.getReceipt(row.grant_tx_hash);
     if (receipt?.success) confirmations = receipt.confirmations;
   }
   if (confirmations === 0 && row?.status === "granted") {
-    // Terminal-granted with the tx unreadable now (or granted via on-chain
-    // reconciliation without a stored block) still reports at least 1.
     confirmations = 1;
   }
 
   return {
     status: 200,
     body: {
-      chainId: chain.chainId,
-      contract: chain.contractAddress,
-      callId: onchainCallId,
-      subscriber: subscriberAddress,
+      ...body,
       status: row?.status ?? "none",
       refundStatus: row?.refund_status ?? null,
       grant: {
+        ...body.grant,
         txHash: row?.grant_tx_hash ?? null,
         blockNumber: row?.grant_block_number ?? null,
-        // On-chain source of truth for the subscriber's access.
-        onchainGranted: view.alreadyGranted,
         confirmations,
         attempts: row?.grant_attempts ?? 0,
       },
-      ciphertexts: {
-        binaryIndex: { handle: view.binaryIndexCtHash, fheType: BINARY_INDEX_FHE_TYPE },
-        confidenceBps: { handle: view.confidenceCtHash, fheType: CONFIDENCE_FHE_TYPE },
-      },
-      // `grantCloseAt` is when BUYING closes (the prediction window opening).
-      // Exposed alongside the reveal time because they used to be the same
-      // field and are now days apart — a client that assumed one value would
-      // otherwise silently read the wrong deadline.
-      //
-      // Deliberately NOT re-using the old `revealOpenAt` name for this value:
-      // keeping the old key with new semantics is how a caller silently starts
-      // trusting the wrong timestamp. Clients still reading `revealOpenAt` get
-      // the reveal time, which is what that name always meant.
-      grantCloseAt: view.grantCloseAt,
-      revealOpenAt: publicRevealAtSec,
-      publicRevealAt: publicRevealAtSec,
-      lastError: row?.last_error ?? null,
+      lastError: row?.last_error ? redactedErrorText(row.last_error) : null,
     },
   };
 }

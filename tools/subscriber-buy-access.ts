@@ -29,6 +29,7 @@ import { createPublicClient, getAddress, http, parseAbi } from "viem";
 import { baseSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { BatchEvmScheme, GatewayClient } from "@circle-fin/x402-batching/client";
+import { subscriberAuthMessage } from "../src/verdict/gateway-purchases-surface.js";
 
 const onchainCallId = process.argv[2];
 if (!onchainCallId || !/^0x[0-9a-fA-F]{64}$/.test(onchainCallId)) {
@@ -283,8 +284,13 @@ if (paidRes.status >= 400) process.exit(1);
 // 5m58s. The previous 60-poll (5 min) budget expired ~30s before that, so the
 // one message that tells the buyer a refund is owed was unreachable.
 for (let i = 0; i < 100; i++) {
+  const unixSeconds = Math.floor(Date.now() / 1000);
+  const signature = await account.signMessage({
+    message: subscriberAuthMessage(account.address, unixSeconds),
+  });
   const st = await fetch(
     `${daemon}/v2/gateway/calls/${onchainCallId}/access/status?subscriber=${account.address}`,
+    { headers: { "X-Murmur-Subscriber-Auth": `${unixSeconds}:${signature}` } },
   );
   const s = (await st.json()) as {
     status?: string;

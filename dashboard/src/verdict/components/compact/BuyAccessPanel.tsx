@@ -25,6 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useCreateWallet,
   usePrivy,
+  useSignMessage,
   useSignTypedData,
   useWallets,
   type ConnectedWallet,
@@ -32,7 +33,7 @@ import {
 
 import { PrivyProvider } from "../../auth/PrivyProvider.js";
 import { isPrivyConfigured } from "../../auth/privy-config.js";
-import { callAccessUrl, verdictApi, type RawResponse } from "../../api.js";
+import { callAccessUrl, purchasesAuthMessage, verdictApi, type RawResponse } from "../../api.js";
 import { Ik } from "../../icons.js";
 import {
   buyLine,
@@ -62,6 +63,26 @@ import {
   parseAccessChallenge,
 } from "../../lib/x402-batch-payment.js";
 import { shortId } from "../../lib/display-format.js";
+import { formatAtoms } from "../../lib/atoms-format.js";
+import { clearGatewayDeposit, decryptGrantedCall, depositGatewayUsdc, gatewayBalance, gatewayDepositReverted, gatewayShortfall, saveGatewayDeposit, savedGatewayDeposit } from "../../lib/browser-call-access.js";
+import { parseMarketConfig } from "../../lib/market-meta.js";
+
+type GatewayFunding =
+  | { kind: "checking" }
+  | { kind: "ready"; spendable: bigint; pending: boolean }
+  | { kind: "submitting" }
+  | { kind: "submitted"; transactionHash: string }
+  | { kind: "error"; message: string };
+
+type AccessDetails = AccessStatusBody & {
+  chainId?: number;
+  contract?: string;
+  callId?: string;
+  ciphertexts?: {
+    binaryIndex?: { handle?: string };
+    confidenceBps?: { handle?: string };
+  };
+};
 
 /** The provider island. See the header note on why it is mounted here. */
 export function BuyAccessPanel({ call, onClose }: { call: OpenCallView; onClose: () => void }) {
@@ -81,7 +102,9 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
   const { wallets } = useWallets();
   const { createWallet } = useCreateWallet();
   const { signTypedData } = useSignTypedData();
+  const { signMessage } = useSignMessage();
   const [state, setState] = useState<BuyState>({ step: "idle" });
+  const [funding, setFunding] = useState<GatewayFunding>({ kind: "checking" });
   const configured = isPrivyConfigured();
 
   // Strictly the Privy embedded wallet, for the reason AgentOnboardPage gives:
@@ -101,6 +124,36 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
       live.current = false;
     };
   }, []);
+
+  const refreshFunding = useCallback(async (quote: ReturnType<typeof quoteFromChallenge>) => {
+    if (quote.challenge.chainId !== 84532) {
+      setFunding({ kind: "error", message: `Gateway funding is available only on Base Sepolia (84532), not chain ${quote.challenge.chainId}.` });
+      return;
+    }
+    setFunding({ kind: "checking" });
+    try {
+      const balance = await gatewayBalance(wallet!.address);
+      if (!live.current) return;
+      const saved = savedGatewayDeposit({
+        chainId: quote.challenge.chainId,
+        asset: quote.challenge.requirements.asset,
+        gateway: quote.challenge.requirements.extra.verifyingContract,
+        amount: quote.challenge.requirements.amount,
+      }, wallet!.address);
+      if (saved && balance.spendable < BigInt(quote.challenge.requirements.amount)) {
+        if (!(await gatewayDepositReverted(saved))) {
+          setFunding({ kind: "submitted", transactionHash: saved });
+          return;
+        }
+        clearGatewayDeposit({ chainId: quote.challenge.chainId, asset: quote.challenge.requirements.asset, gateway: quote.challenge.requirements.extra.verifyingContract, amount: quote.challenge.requirements.amount }, wallet!.address);
+      }
+      if (saved) clearGatewayDeposit({ chainId: quote.challenge.chainId, asset: quote.challenge.requirements.asset, gateway: quote.challenge.requirements.extra.verifyingContract, amount: quote.challenge.requirements.amount }, wallet!.address);
+      setFunding({ kind: "ready", ...balance });
+    } catch (error) {
+      if (!live.current) return;
+      setFunding({ kind: "error", message: error instanceof Error ? error.message : "Could not check Gateway funds." });
+    }
+  }, [wallet]);
 
   const start = useCallback(async () => {
     if (!wallet) {
@@ -145,11 +198,12 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
         quote,
         stale: stalePriceNotice(call.lockedPriceAtoms, quote),
       });
+      void refreshFunding(quote);
     } catch (err) {
       if (!live.current) return;
       setState({ step: "stopped", stop: unreachableStop("quote", err) });
     }
-  }, [call.lockedPriceAtoms, call.onchainCallId, wallet]);
+  }, [call.lockedPriceAtoms, call.onchainCallId, refreshFunding, wallet]);
 
   // Quote as soon as the panel has a wallet to quote for. Step 1 is an unpaid
   // read — it spends nothing and prompts nothing — so making a buyer click
@@ -166,11 +220,13 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
   const pay = useCallback(async () => {
     if (state.step !== "quoted" || !wallet) return;
     const quote = state.quote;
+    if (funding.kind !== "ready" || funding.spendable < BigInt(quote.challenge.requirements.amount)) return;
     setState({ step: "signing", quote });
 
     // (2) Sign the EIP-3009 authorization. This is the whole identity step —
     // the address that signs is the address murmur grants decrypt access to.
     let header: string;
+    let auth: { unixSeconds: number; signature: string };
     try {
       const built = buildBatchPayment({ challenge: quote.challenge, from: wallet.address });
       const { signature } = await signTypedData(built.typedData, { address: wallet.address });
@@ -180,6 +236,12 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
         signature,
         resource: accessResource(callAccessUrl(quote.onchainCallId), quote.onchainCallId),
       });
+      const unixSeconds = Math.floor(Date.now() / 1000);
+      const statusSignature = await signMessage(
+        { message: purchasesAuthMessage(wallet.address, unixSeconds) },
+        { address: wallet.address },
+      );
+      auth = { unixSeconds, signature: statusSignature.signature };
     } catch (err) {
       if (!live.current) return;
       setState({ step: "stopped", stop: stopFromSignature(err) });
@@ -222,7 +284,29 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
       if (!live.current) return;
       let polled: RawResponse;
       try {
-        polled = await verdictApi.callAccessStatus(quote.onchainCallId, subscriber);
+        if (Date.now() - auth.unixSeconds * 1000 >= 240_000) {
+          try {
+            const unixSeconds = Math.floor(Date.now() / 1000);
+            const signed = await signMessage(
+              { message: purchasesAuthMessage(subscriber, unixSeconds) },
+              { address: subscriber },
+            );
+            auth = { unixSeconds, signature: signed.signature };
+          } catch (error) {
+            setState({
+              step: "stopped",
+              stop: {
+                code: "StatusAuthDeclined",
+                headline: "status read paused",
+                detail: "Payment was already submitted. The signed status refresh was declined, so check the purchases panel before trying again.",
+                tone: "dim",
+                retryable: false,
+              },
+            });
+            return;
+          }
+        }
+        polled = await verdictApi.callAccessStatus(quote.onchainCallId, subscriber, auth);
       } catch {
         // A blip on the status route is not a failed purchase. Keep waiting.
         continue;
@@ -241,7 +325,39 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
       setState({ step: "waiting", quote, subscriber, polls: i + 1, settlement });
     }
     if (live.current) setState({ step: "stopped", stop: pollTimeoutStop(settlement) });
-  }, [signTypedData, state, wallet]);
+  }, [funding, signMessage, signTypedData, state, wallet]);
+
+  const deposit = useCallback(async () => {
+    if (state.step !== "quoted" || !wallet || funding.kind !== "ready") return;
+    const needed = BigInt(state.quote.challenge.requirements.amount);
+    const shortfall = gatewayShortfall(funding, needed);
+    if (shortfall === null) return;
+    setFunding({ kind: "submitting" });
+    let submitted = false;
+    try {
+      // Privy returns a fresh provider after a chain switch, so switch before retrieving it.
+      await wallet.switchChain("0x14a34");
+      const provider = await wallet.getEthereumProvider();
+      const transactionHash = await depositGatewayUsdc(provider, wallet.address, {
+        chainId: state.quote.challenge.chainId,
+        asset: state.quote.challenge.requirements.asset,
+        gateway: state.quote.challenge.requirements.extra.verifyingContract,
+        amount: state.quote.challenge.requirements.amount,
+      }, shortfall, (hash) => {
+        submitted = true;
+        saveGatewayDeposit({ chainId: state.quote.challenge.chainId, asset: state.quote.challenge.requirements.asset, gateway: state.quote.challenge.requirements.extra.verifyingContract, amount: state.quote.challenge.requirements.amount }, wallet.address, hash);
+        if (live.current) setFunding({ kind: "submitted", transactionHash: hash });
+      });
+      if (!live.current) return;
+      setFunding({ kind: "submitted", transactionHash });
+    } catch (error) {
+      if (submitted) return;
+      if (!live.current) return;
+      setFunding({ kind: "error", message: error instanceof Error ? error.message : "Gateway deposit failed." });
+    }
+  }, [funding, state, wallet]);
+
+
 
   const line = buyLine(state);
   const busy = isBusy(state);
@@ -323,6 +439,10 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
               {shortId(wallet.address, 8, 6)}
             </span>
           </p>
+          <p className="ck-dim m-0 break-all">
+            fund this wallet with Base Sepolia ETH for gas and USDC: <span className="ck-mono">{wallet.address}</span>{" "}
+            <button type="button" className="ck-btn ck-btn-bracket" onClick={() => void navigator.clipboard.writeText(wallet.address)}>copy</button>
+          </p>
 
           {/* The price is stated in exactly ONE element on this page, and it is
               the label of the button that authorizes it — built from the 402's
@@ -332,16 +452,35 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
           {state.step === "quoted" && (
             <>
               {state.stale && <p className="ck-neg m-0">{state.stale}</p>}
+              {funding.kind === "checking" && <p className="ck-dim m-0">checking Circle Gateway balance…</p>}
+              {funding.kind === "error" && <p className="ck-neg m-0">{funding.message}</p>}
+              {funding.kind === "ready" && funding.spendable < BigInt(state.quote.challenge.requirements.amount) && (
+                <p className="ck-dim m-0">
+                  {funding.pending
+                    ? "A Gateway deposit is pending. Wait for Circle to credit it, then refresh instead of depositing again."
+                    : "Deposit the exact shortfall to Circle Gateway before paying. Credit can take several minutes and may arrive after this call's sale closes."}
+                </p>
+              )}
+              {funding.kind === "submitted" && <p className="ck-dim m-0 break-all">Deposit submitted: <span className="ck-mono">{funding.transactionHash}</span>. Wait for Circle to credit it, then refresh the Gateway balance.</p>}
               <span className="flex flex-wrap gap-3 items-center">
                 <button
                   type="button"
                   className="ck-btn ck-btn-bracket ck-pos"
                   onClick={() => void pay()}
+                  disabled={funding.kind !== "ready" || funding.spendable < BigInt(state.quote.challenge.requirements.amount)}
                   title={`Signs an authorization for ${quoteLabel(state.quote)} against Circle's Gateway. Nothing is charged until murmur verifies it.`}
                 >
                   <Ik name="x402" />
                   pay {quoteLabel(state.quote)}
                 </button>
+                <button type="button" className="ck-btn ck-btn-bracket" onClick={() => void refreshFunding(state.quote)} disabled={funding.kind === "checking" || funding.kind === "submitting"}>
+                  refresh Gateway
+                </button>
+                {funding.kind === "ready" && funding.spendable < BigInt(state.quote.challenge.requirements.amount) && !funding.pending && (
+                  <button type="button" className="ck-btn ck-btn-bracket ck-pos" onClick={() => void deposit()}>
+                    deposit {formatAtoms((BigInt(state.quote.challenge.requirements.amount) - funding.spendable).toString(), "USDC")} USDC
+                  </button>
+                )}
                 <span className="ck-dim" title={`pricing ${state.quote.pricingVersion}`}>
                   locked at seal time
                 </span>
@@ -375,16 +514,78 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
           and a tooltip is unreachable on touch, so it is rendered. */}
       {state.step === "stopped" && <p className="ck-dim m-0">{state.stop.detail}</p>}
 
-      {state.step === "granted" && (
-        <p className="ck-dim m-0" title="The unseal tool reads the ciphertext handles from the status route and decrypts them with a permit only your wallet can sign. Murmur is not involved in the decrypt.">
-          Unseal it from your own machine:{" "}
-          {/* The WHOLE call id. A shortened one is not an argument the tool can
-              take, and this line is meant to be copied and run. */}
-          <span className="ck-mono break-all">
-            tsx tools/subscriber-unseal-granted-call.ts {call.onchainCallId}
-          </span>
-        </p>
+      {state.step === "granted" && wallet && (
+        <DecryptCall key={wallet.address + call.onchainCallId} wallet={wallet} onchainCallId={call.onchainCallId} marketId={call.marketId} />
       )}
+    </div>
+  );
+}
+
+
+/** Available from both checkout and purchase history, even after sales close. */
+export function DecryptCall({ wallet, onchainCallId, marketId }: {
+  wallet: ConnectedWallet;
+  onchainCallId: string;
+  marketId?: string;
+}) {
+  const [decrypted, setDecrypted] = useState<{ binaryIndex: bigint; confidenceBps: bigint; outcomeLabel: string } | null>(null);
+  const [decryptError, setDecryptError] = useState<string | null>(null);
+  const [decrypting, setDecrypting] = useState(false);
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => { live.current = false; };
+  }, []);
+
+  const decrypt = useCallback(async () => {
+    if (!wallet) return;
+    setDecrypting(true);
+    setDecryptError(null);
+    try {
+      const response = await verdictApi.callAccessStatus(onchainCallId, wallet.address);
+      const details = response.body as AccessDetails;
+      const binary = details.ciphertexts?.binaryIndex?.handle;
+      const confidence = details.ciphertexts?.confidenceBps?.handle;
+      if (
+        response.status !== 200 ||
+        details.grant?.onchainGranted !== true ||
+        details.chainId !== 84532 ||
+        details.callId?.toLowerCase() !== onchainCallId.toLowerCase() ||
+        !/^0x[\da-f]{40}$/i.test(details.contract ?? "") ||
+        !binary ||
+        !confidence
+      ) {
+        throw new Error("This call is not ready to decrypt for this wallet on Base Sepolia.");
+      }
+      await wallet.switchChain("0x14a34");
+      const provider = await wallet.getEthereumProvider();
+      const result = await decryptGrantedCall({ provider, address: wallet.address, chainId: details.chainId, binaryIndexCtHash: binary, confidenceCtHash: confidence });
+      if (result.binaryIndex !== 0n && result.binaryIndex !== 1n) throw new Error(`Invalid binary outcome index ${result.binaryIndex}.`);
+      if (result.confidenceBps < 0n || result.confidenceBps > 10_000n) throw new Error(`Invalid confidence ${result.confidenceBps} bps.`);
+      let outcomeLabel = "outcome";
+      try {
+        const market = marketId ? await verdictApi.market(marketId) : null;
+        const outcomes = market ? parseMarketConfig(market.market)?.outcomes : undefined;
+        if (typeof outcomes?.[Number(result.binaryIndex)] === "string") outcomeLabel = outcomes[Number(result.binaryIndex)];
+      } catch {
+        // The decrypt is still true if venue labels are temporarily unavailable.
+      }
+      if (!live.current) return;
+      setDecrypted({ ...result, outcomeLabel });
+    } catch (error) {
+      if (live.current) setDecryptError(error instanceof Error ? error.message : "Could not decrypt this call.");
+    } finally {
+      if (live.current) setDecrypting(false);
+    }
+  }, [marketId, onchainCallId, wallet]);
+
+  return (
+    <div className="flex flex-col gap-2 items-start">
+      <button type="button" className="ck-btn ck-btn-bracket ck-pos" onClick={() => void decrypt()} disabled={decrypting}>
+        {decrypting ? "decrypting locally…" : "decrypt locally"}
+      </button>
+      {decryptError && <p className="ck-neg m-0">{decryptError}</p>}
+      {decrypted && <p className="ck-pos m-0">prediction: {decrypted.outcomeLabel} (index {decrypted.binaryIndex}) · confidence: {(Number(decrypted.confidenceBps) / 100).toFixed(2)}%</p>}
     </div>
   );
 }
