@@ -82,6 +82,11 @@ const EXPECTED_ACCOUNT_ROUTES = [
   "DELETE /v1/account/agents/:slug/market-registrations/:venueSeriesId",
   "GET /v1/account/agents/:slug/earnings",
   "GET /v1/account/agents/:slug/payouts",
+  // The only route in murmur that can cause money to leave. It is ownership
+  // gated like every other agent-scoped write, and it reserves rather than
+  // sends — the payout worker does the transfer.
+  "GET /v1/account/agents/:slug/withdrawals",
+  "POST /v1/account/agents/:slug/withdrawals",
   "GET /v1/account/agents/:slug/reveals",
   "PATCH /v1/account/agents/:slug/profile",
   "POST /v1/account/agents/:slug/retire",

@@ -741,6 +741,48 @@ export interface WalletPurchasesView {
   page: { limit: number; returned: number };
 }
 
+
+/** One currency's release position, from GET /v1/account/agents/:slug/withdrawals. */
+export interface ProviderReleaseBalanceView {
+  currency: string;
+  accrued_net_atoms: string;
+  accepted_net_atoms: string;
+  held_net_atoms: string;
+  cancelled_net_atoms: string;
+  unenrolled_net_atoms: string;
+  net_paid_atoms: string;
+  reserved_atoms: string;
+  available_atoms: string;
+  accepted_sales: number;
+  held_sales: number;
+  cancelled_sales: number;
+  unenrolled_sales: number;
+}
+
+export interface ProviderWithdrawalView {
+  id: number;
+  client_request_id: string;
+  chain_id: number;
+  currency: string;
+  amount_atoms: string;
+  destination_address: string;
+  state: "reserved" | "signed" | "submitted" | "paid" | "failed" | "needs_review";
+  tx_hash: string | null;
+  status_note: string;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderWithdrawalsView {
+  schema_version: number;
+  /** False where this deployment runs no payout rail. Hide the control. */
+  withdrawals_available: boolean;
+  payout_asset: { chain_id: number; token_address: string; currency: string } | null;
+  balances: ProviderReleaseBalanceView[];
+  withdrawals: ProviderWithdrawalView[];
+}
+
 export const verdictApi = {
   apiUrl: API_URL,
   meta: () => get<MetaResponse>("/v1/meta"),
@@ -1555,6 +1597,33 @@ export const verdictApi = {
     ),
 
   /** The payout journal for one agent, newest first. Append-only, read-only. */
+  /** Balances plus recent withdrawal requests for the earnings page. */
+  getAgentWithdrawals: (privyToken: string, slug: string) =>
+    get<ProviderWithdrawalsView>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/withdrawals`,
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  /**
+   * Ask to be paid. `clientRequestId` is the idempotency key and must be
+   * generated ONCE per intent, not per attempt — retrying with the same id
+   * replays the original reservation instead of taking a second one.
+   *
+   * Omitting `amountAtoms` withdraws everything available, which avoids the
+   * race where a client names a number that went stale in flight.
+   */
+  createAgentWithdrawal: (
+    privyToken: string,
+    slug: string,
+    clientRequestId: string,
+    amountAtoms?: string,
+  ) =>
+    post<{ replayed: boolean; withdrawal: ProviderWithdrawalView }>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/withdrawals`,
+      { client_request_id: clientRequestId, amount_atoms: amountAtoms ?? null },
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
   getAgentPayouts: (privyToken: string, slug: string) =>
     get<ProviderPayoutsView>(
       `/v1/account/agents/${encodeURIComponent(slug)}/payouts`,

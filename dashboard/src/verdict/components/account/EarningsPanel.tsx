@@ -19,6 +19,8 @@ import {
   type ProviderEarningsTotal,
   type ProviderEarningsView,
   type ProviderPayoutsView,
+  type ProviderReleaseBalanceView,
+  type ProviderWithdrawalsView,
 } from "../../api.js";
 import { Ik } from "../../icons.js";
 import { formatAtoms, isPositiveAtoms } from "../../lib/atoms-format.js";
@@ -30,6 +32,7 @@ import { InlineError } from "../compact/InlineError.js";
 export function EarningsPanel({ slug }: { slug: string }) {
   const [earnings, setEarnings] = useState<ProviderEarningsView | null>(null);
   const [payouts, setPayouts] = useState<ProviderPayoutsView | null>(null);
+  const [withdrawals, setWithdrawals] = useState<ProviderWithdrawalsView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,6 +53,13 @@ export function EarningsPanel({ slug }: { slug: string }) {
       ]);
       setEarnings(e);
       setPayouts(p);
+      // Separate and non-fatal: a deployment with no payout rail still has an
+      // earnings page, and a failure here must not blank the ledger above it.
+      try {
+        setWithdrawals(await verdictApi.getAgentWithdrawals(token, slug));
+      } catch {
+        setWithdrawals(null);
+      }
     } catch (e) {
       setError((e as Error)?.message ?? "unknown error");
     } finally {
@@ -79,8 +89,9 @@ export function EarningsPanel({ slug }: { slug: string }) {
       <div className="px-4 py-4 flex flex-col gap-4">
         <p className="ck-dim text-[12px]">
           A subscriber pays to read your call before it becomes public. Murmur
-          keeps a fee and records the rest as yours. An operator sends your
-          share by hand and writes it down below.
+          keeps a fee and the rest is yours. Your share becomes withdrawable
+          once the buyer confirms they received the call, or once the call is
+          published and anyone can check it.
         </p>
 
         {error && <InlineError error={error} className="text-[12px]" />}
@@ -96,7 +107,16 @@ export function EarningsPanel({ slug }: { slug: string }) {
         ) : (
           <div className="flex flex-col gap-2">
             {totals.map((total) => (
-              <MoneyStrip key={total.currency} total={total} />
+              <MoneyStrip
+                key={total.currency}
+                total={total}
+                slug={slug}
+                balance={
+                  withdrawals?.balances.find((b) => b.currency === total.currency) ?? null
+                }
+                withdrawalsAvailable={withdrawals?.withdrawals_available ?? false}
+                onWithdrawn={() => void refresh()}
+              />
             ))}
           </div>
         )}
@@ -144,6 +164,10 @@ export function EarningsPanel({ slug }: { slug: string }) {
           </div>
         )}
 
+        {withdrawals && withdrawals.withdrawals.length > 0 && (
+          <WithdrawalList rows={withdrawals.withdrawals} />
+        )}
+
         <PayoutJournal payouts={payouts} loading={loading} />
       </div>
     </section>
@@ -157,8 +181,22 @@ export function EarningsPanel({ slug }: { slug: string }) {
  * of them is ever non-zero, and the label changes with the sign so the number
  * can never be read the wrong way round.
  */
-function MoneyStrip({ total }: { total: ProviderEarningsTotal }) {
+function MoneyStrip({
+  total,
+  slug,
+  balance,
+  withdrawalsAvailable,
+  onWithdrawn,
+}: {
+  total: ProviderEarningsTotal;
+  slug: string;
+  /** null while the withdrawals read is loading, or where no rail runs. */
+  balance: ProviderReleaseBalanceView | null;
+  withdrawalsAvailable: boolean;
+  onWithdrawn: () => void;
+}) {
   const overpaid = isPositiveAtoms(total.overpaid_atoms);
+  const owed = !overpaid && isPositiveAtoms(total.owed_atoms);
   return (
     <div className="border border-[var(--color-border-vis)] px-3 py-2 flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-3">
@@ -202,12 +240,166 @@ function MoneyStrip({ total }: { total: ProviderEarningsTotal }) {
           }
         />
       </div>
+      {/* The withdraw control lives HERE, beside the number it moves. Where no
+          payout rail runs, the same spot says so instead of offering a button
+          the deployment cannot honour. */}
+      {balance && withdrawalsAvailable && (
+        <WithdrawRow slug={slug} balance={balance} onWithdrawn={onWithdrawn} />
+      )}
+      {owed && !withdrawalsAvailable && (
+        <p className="ck-dim text-[12px]">
+          Payouts are not automated on this deployment. An operator sends your
+          share by hand and writes it in the journal below.{" "}
+          <a
+            href={`#/account/agent/${encodeURIComponent(slug)}/payout`}
+            className="ck-pos"
+          >
+            Check where it goes
+          </a>
+          .
+        </p>
+      )}
       {overpaid && (
         <p className="ck-neg text-[12px]">
           Murmur paid you more than you earned. The operator corrects this with
           a reversal entry.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * Available, held, and the button.
+ *
+ * `available` and `owed` are different numbers and the difference is the whole
+ * point of the delivery gate: money is OWED as soon as a call sells, and
+ * becomes AVAILABLE once the buyer has confirmed they received it (or the call
+ * went public and anyone can check it). Showing only one of them would either
+ * promise money that cannot move yet, or hide money that was earned.
+ */
+function WithdrawRow({
+  slug,
+  balance,
+  onWithdrawn,
+}: {
+  slug: string;
+  balance: ProviderReleaseBalanceView;
+  onWithdrawn: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Generated ONCE per intent, not per click: the same id retried replays the
+  // original reservation instead of taking a second one.
+  const [requestId] = useState(() => `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+
+  const available = BigInt(balance.available_atoms);
+  const held = BigInt(balance.held_net_atoms);
+  const reserved = BigInt(balance.reserved_atoms);
+  const unenrolled = BigInt(balance.unenrolled_net_atoms);
+
+  const withdraw = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error("Your session expired. Sign in again.");
+      await verdictApi.createAgentWithdrawal(token, slug, requestId);
+      onWithdrawn();
+    } catch (e) {
+      setError((e as Error)?.message ?? "unknown error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-[var(--color-border)] pt-2 mt-1">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex flex-col">
+          <span className="ck-label ck-dim">available to withdraw</span>
+          <span className={"ck-mono " + (available > 0n ? "ck-pos" : "ck-dim")}>
+            {formatAtoms(balance.available_atoms, balance.currency)}{" "}
+            <CurrencyMark currency={balance.currency} className="ck-dim text-[12px]" />
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={() => void withdraw()}
+          disabled={busy || available <= 0n}
+          className="ck-btn ck-btn-bracket min-h-[32px] disabled:opacity-50"
+          title={
+            available > 0n
+              ? `Send ${formatAtoms(balance.available_atoms, balance.currency)} ${balance.currency} to your payout address.`
+              : "Nothing is available to withdraw yet."
+          }
+        >
+          {busy ? "requesting…" : "withdraw"}
+        </button>
+      </div>
+
+      {/* Each of these is a different thing for the owner to do about it, so
+          none of them is collapsed into a single "pending" figure. */}
+      {held > 0n && (
+        <p className="ck-dim text-[12px] m-0">
+          {formatAtoms(balance.held_net_atoms, balance.currency)} from{" "}
+          {balance.held_sales} sale{balance.held_sales === 1 ? "" : "s"} is waiting on the
+          buyer. It unlocks when they confirm, or when the call is published.
+        </p>
+      )}
+      {reserved > 0n && (
+        <p className="ck-dim text-[12px] m-0">
+          {formatAtoms(balance.reserved_atoms, balance.currency)} is already on its way.
+        </p>
+      )}
+      {unenrolled > 0n && (
+        <p className="ck-dim text-[12px] m-0">
+          {formatAtoms(balance.unenrolled_net_atoms, balance.currency)} is from sales made
+          before murmur tracked delivery. An operator has to check those by hand.
+        </p>
+      )}
+      {error && <InlineError error={error} className="text-[12px]" />}
+    </div>
+  );
+}
+
+/** Withdrawals in flight, and what happened to the ones that finished. */
+function WithdrawalList({ rows }: { rows: ProviderWithdrawalsView["withdrawals"] }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="ck-label ck-pos">withdrawals</h3>
+      <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
+        {rows.map((row) => (
+          <li key={row.id} className="grid grid-cols-[1fr_auto] items-baseline gap-3 px-3 py-2">
+            <span className="min-w-0">
+              <span className="ck-mono">
+                {formatAtoms(row.amount_atoms, row.currency)}{" "}
+                <CurrencyMark currency={row.currency} className="ck-dim text-[12px]" />
+              </span>
+              <span className="ck-dim text-[12px] block">{row.status_note}</span>
+            </span>
+            <span className="text-right">
+              <span
+                className={
+                  "ck-mono text-[12px] " +
+                  (row.state === "paid"
+                    ? "ck-pos"
+                    : row.state === "needs_review" || row.state === "failed"
+                      ? "ck-neg"
+                      : "ck-dim")
+                }
+              >
+                {row.state}
+              </span>
+              {row.tx_hash && (
+                <span className="ck-dim text-[12px] block" title={row.tx_hash}>
+                  {shortId(row.tx_hash)}
+                </span>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

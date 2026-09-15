@@ -121,6 +121,42 @@ services:
       MURMUR_NANOPAY_PIPELINES: "${MURMUR_NANOPAY_PIPELINES:-}"
       MURMUR_NANOPAY_PIPELINE_AGENT_MAP: "${MURMUR_NANOPAY_PIPELINE_AGENT_MAP:-}"
 
+      # ── Provider payouts (withdrawals) ─────────────────────────────────────
+      # OFF by default. When on, owners withdraw their accepted sales from the
+      # dashboard and a worker sends the USDC.
+      #
+      # MURMUR_PAYOUT_PRIVATE_KEY must derive MURMUR_NANOPAY_SELLER_ADDRESS —
+      # the daemon refuses to start otherwise. Sales settle into the seller
+      # wallet, so a payout signed by any other key would send from an empty
+      # one, and you would only find out when a withdrawal reverted.
+      #
+      # FUND THE FLOAT. x402 settles sales into Circle Gateway's BATCHED
+      # credit, which is not spendable ERC-20 until it is withdrawn from
+      # Gateway. The worker checks the seller's liquid token balance before it
+      # signs and waits rather than burning a nonce on a transfer that would
+      # revert. Topping that float up is a manual treasury step.
+      #
+      # EXACTLY ONE write-enabled process per payout key: this worker owns that
+      # key's nonce lane. Do NOT scale this service past one replica with
+      # payouts enabled — a second replica would allocate the same nonce
+      # against the same wallet and can send a provider's money twice.
+      MURMUR_PAYOUT_ENABLED: "${MURMUR_PAYOUT_ENABLED:-false}"
+      MURMUR_PAYOUT_PRIVATE_KEY: "${MURMUR_PAYOUT_PRIVATE_KEY:-}"
+      MURMUR_PAYOUT_RPC_URL: "${MURMUR_PAYOUT_RPC_URL:-}"
+      MURMUR_PAYOUT_CHAIN_ID: "${MURMUR_PAYOUT_CHAIN_ID:-}"
+      MURMUR_PAYOUT_TOKEN_ADDRESS: "${MURMUR_PAYOUT_TOKEN_ADDRESS:-}"
+      MURMUR_PAYOUT_CURRENCY: "${MURMUR_PAYOUT_CURRENCY:-USDC}"
+      MURMUR_PAYOUT_CONFIRMATIONS: "${MURMUR_PAYOUT_CONFIRMATIONS:-2}"
+      MURMUR_PAYOUT_TICK_SEC: "${MURMUR_PAYOUT_TICK_SEC:-30}"
+      MURMUR_PAYOUT_MAX_JOBS_PER_TICK: "${MURMUR_PAYOUT_MAX_JOBS_PER_TICK:-5}"
+      MURMUR_PAYOUT_RETRY_BASE_MS: "${MURMUR_PAYOUT_RETRY_BASE_MS:-5000}"
+      MURMUR_PAYOUT_RETRY_MAX_MS: "${MURMUR_PAYOUT_RETRY_MAX_MS:-300000}"
+      # Refuse to sign below this much native gas. Stuck beats half-sent.
+      MURMUR_PAYOUT_MIN_GAS_WEI: "${MURMUR_PAYOUT_MIN_GAS_WEI:-20000000000000000}"
+      # How often delivery deadlines are swept, so a silent buyer cannot
+      # freeze a provider's money forever.
+      MURMUR_DELIVERY_SWEEP_TICK_SEC: "${MURMUR_DELIVERY_SWEEP_TICK_SEC:-120}"
+
       MURMUR_ACK_MANUAL_REFUNDS: "${MURMUR_ACK_MANUAL_REFUNDS:-false}"
       FHENIX_GRANT_ENABLED: "${FHENIX_GRANT_ENABLED:-false}"
       FHENIX_GRANT_PRIVATE_KEY: "${FHENIX_GRANT_PRIVATE_KEY:-}"

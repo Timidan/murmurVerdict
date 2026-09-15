@@ -27,6 +27,8 @@ export interface DaemonTickerIntervals {
   operatorAlertMs: number;
   polymarketDiscoveryMs: number;
   statsMs: number;
+  payoutWorkerMs?: number;
+  deliverySweepMs?: number;
 }
 
 export interface DaemonTickerLogger {
@@ -42,6 +44,13 @@ export interface DaemonTickersDeps {
   fhenixGateway: Tickable | null;
   fhenixRevealWorker: Tickable | null;
   fhenixGrantReconciler?: Tickable | null;
+  /**
+   * Moves money. Null on every deployment that does not run a payout rail,
+   * which is the default — see src/verdict/payout-config.ts.
+   */
+  providerPayoutWorker?: Tickable | null;
+  /** Settles delivery deadlines so a silent buyer cannot freeze a provider. */
+  deliverySweep?: Tickable | null;
   polymarketDiscovery: Tickable | null;
   liveCanaries: LiveCanaryProvider;
   /** Contract this deployment runs. Gateway alerts scope to it so a retired
@@ -80,6 +89,8 @@ export function startDaemonTickers(
     fhenixGateway,
     fhenixRevealWorker,
     fhenixGrantReconciler,
+    providerPayoutWorker,
+    deliverySweep,
     polymarketDiscovery,
     liveCanaries,
     fhenixContractAddress,
@@ -103,6 +114,38 @@ export function startDaemonTickers(
     );
   } else {
     logger.warn("[daemon] resolver ticker not started (no resolver supplied)");
+  }
+
+  // Delivery deadlines. Cheap and local — it reads murmur's own ingested
+  // reveal status, never an RPC — so it ticks on its own modest schedule.
+  if (deliverySweep) {
+    tickers.push(
+      setIntervalGuarded(
+        logger,
+        intervals.deliverySweepMs ?? 120_000,
+        "delivery-sweep",
+        async () => {
+          await deliverySweep.tick();
+        },
+      ),
+    );
+  }
+
+  // The payout worker. EXACTLY ONE write-enabled process per payout key: it
+  // owns that key's nonce lane, and a second replica would allocate the same
+  // nonce against the same wallet. Scaling this service past one replica with
+  // payouts enabled is how you send a provider's money twice.
+  if (providerPayoutWorker) {
+    tickers.push(
+      setIntervalGuarded(
+        logger,
+        intervals.payoutWorkerMs ?? 30_000,
+        "provider-payouts",
+        async () => {
+          await providerPayoutWorker.tick();
+        },
+      ),
+    );
   }
 
   if (fhenixIngestor) {

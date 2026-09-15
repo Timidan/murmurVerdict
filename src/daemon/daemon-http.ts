@@ -29,6 +29,7 @@ import type {
   PolymarketMarketRegistrationGammaAdapter,
 } from "../verdict/polymarket-market-registration.js";
 import { accountRouter } from "../verdict/routes/account.js";
+import type { PayoutAssetConfig } from "../verdict/provider-withdrawals.js";
 import { privyWebhookRouter } from "../verdict/routes/privy-webhooks.js";
 import { createPrivyWebhookVerifier } from "../verdict/auth/privy-webhook-verify.js";
 import { reparentAccount } from "../verdict/auth/account-reparent.js";
@@ -80,6 +81,8 @@ export interface DaemonHttpSurfaceDeps {
   operatorAlertSink?: OperatorAlertSinkConfig | null;
   nanopayRuntime?: DaemonNanopayRuntime | null;
   entitlementAccess?: EntitlementAccessSurfaceDeps | null;
+  /** Where provider withdrawals send from; null when no payout rail runs. */
+  payoutAsset?: PayoutAssetConfig | null;
   /**
    * Narrow read handle on the live venue ticker. Constructed inert before the
    * surface so the two `/v2/venue/*` routes can close over it, then started
@@ -198,6 +201,10 @@ export function createDaemonHttpSurface(
     // then reports no deadline instead of printing the loader's 300s default
     // as though it were policy.
     revealGraceSeconds: deps.config.fhenixRuntime.revealWorker?.graceSeconds ?? null,
+    // The asset withdrawals go out in, or null where no payout rail runs.
+    // Null is what makes the dashboard hide the withdraw control instead of
+    // offering one this deployment cannot honour.
+    payoutAsset: deps.payoutAsset ?? null,
     now: deps.now,
   }));
 

@@ -28,6 +28,11 @@ import {
   type EntitlementAccessSurfaceDeps,
 } from "../entitlement-access-surface.js";
 import { gatewayAttemptResponse } from "../gateway-attempt-surface.js";
+import {
+  acceptDelivery,
+  disputeDelivery,
+  deliveryActionMessage,
+} from "../entitlement-delivery.js";
 import { listSellableCallsResponse } from "../gateway-sellable-surface.js";
 import {
   listSubscriberPurchasesResponse,
@@ -54,6 +59,20 @@ export interface GatewayRouterDeps {
   fhenixChain?: { chainId: number; sealedVerdictsAddress: string | null } | null;
   /** Deployment-wide fallback terms for pre-070 calls; null when unset. */
   legacyCallTerms?: CallTerms | null;
+}
+
+/** Delivery refusals map to the status that says what the caller should do. */
+function statusForDelivery(code: string): number {
+  switch (code) {
+    case "not_found":
+      return 404;
+    case "bad_signature":
+      return 401;
+    case "unknown_ground":
+      return 400;
+    default:
+      return 409;
+  }
 }
 
 export function gatewayRouter(deps: GatewayRouterDeps): Router {
@@ -307,6 +326,111 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
         now: deps.now,
       });
       sendOperatorGatewayStatusJsonResponse(res, result);
+    }),
+  );
+
+  // ── Delivery: the buyer says whether they got what they paid for ─────────
+  //
+  // This is the gate on paying the provider. It is about DELIVERY and never
+  // about accuracy: the dispute grounds are a closed list of delivery defects,
+  // and a call that simply lost is not one of them. The refusal says so.
+  //
+  // Both routes are authorized by a signature over an ACTION-SPECIFIC message
+  // — not by a session. The buyer is a wallet, possibly an autonomous agent
+  // with no browser, and the signature binds the action, the deployment, the
+  // entitlement and the signer so that nothing minted for one purpose can be
+  // replayed for another.
+
+  // The exact string to sign, so a client never has to reconstruct it.
+  router.get(
+    "/v2/gateway/entitlements/:id/delivery-message",
+    asyncHandler(async (req, res) => {
+      const action = String(req.query.action ?? "accept_delivery");
+      if (action !== "accept_delivery" && action !== "dispute_delivery") {
+        res.status(400).json({ error: "unknown action", code: "bad_request" });
+        return;
+      }
+      const ground = req.query.ground ? String(req.query.ground) : undefined;
+      const row = deps.db
+        .prepare(
+          `SELECT chain_id, contract_address, onchain_call_id, subscriber_address
+             FROM entitlements WHERE id = ?`,
+        )
+        .get(Number(req.params.id ?? 0)) as
+        | {
+            chain_id: number;
+            contract_address: string;
+            onchain_call_id: string;
+            subscriber_address: string;
+          }
+        | undefined;
+      if (!row) {
+        res.status(404).json({ error: "no such purchase", code: "not_found" });
+        return;
+      }
+      res.status(200).json({
+        message: deliveryActionMessage({
+          action,
+          audience: deps.popAudience ?? "murmur.verdict",
+          entitlementId: Number(req.params.id ?? 0),
+          chainId: row.chain_id,
+          contractAddress: row.contract_address,
+          onchainCallId: row.onchain_call_id,
+          subscriberAddress: row.subscriber_address,
+          ground: ground as never,
+        }),
+      });
+    }),
+  );
+
+  router.post(
+    "/v2/gateway/entitlements/:id/accept",
+    json,
+    asyncHandler(async (req, res) => {
+      const body = (req.body ?? {}) as { signature?: unknown; subscriber_address?: unknown };
+      const out = await acceptDelivery(
+        { db: deps.db, now: deps.now },
+        {
+          entitlementId: Number(req.params.id ?? 0),
+          subscriberAddress: String(body.subscriber_address ?? ""),
+          signature: String(body.signature ?? "") as `0x${string}`,
+          audience: deps.popAudience ?? "murmur.verdict",
+        },
+      );
+      if (!out.ok) {
+        res.status(statusForDelivery(out.code)).json({ error: out.message, code: out.code });
+        return;
+      }
+      res.status(200).json({ state: out.state });
+    }),
+  );
+
+  router.post(
+    "/v2/gateway/entitlements/:id/dispute",
+    json,
+    asyncHandler(async (req, res) => {
+      const body = (req.body ?? {}) as {
+        signature?: unknown;
+        subscriber_address?: unknown;
+        ground?: unknown;
+        evidence?: unknown;
+      };
+      const out = await disputeDelivery(
+        { db: deps.db, now: deps.now },
+        {
+          entitlementId: Number(req.params.id ?? 0),
+          subscriberAddress: String(body.subscriber_address ?? ""),
+          signature: String(body.signature ?? "") as `0x${string}`,
+          audience: deps.popAudience ?? "murmur.verdict",
+          ground: String(body.ground ?? ""),
+          evidence: body.evidence == null ? null : String(body.evidence),
+        },
+      );
+      if (!out.ok) {
+        res.status(statusForDelivery(out.code)).json({ error: out.message, code: out.code });
+        return;
+      }
+      res.status(200).json({ state: out.state });
     }),
   );
 

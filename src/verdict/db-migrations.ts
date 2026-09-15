@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 79 as const;
+export const LATEST_DB_MIGRATION_VERSION = 80 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1556,6 +1556,14 @@ export function applyMigrations(db: Database.Database): void {
       set.run("schema_version", "79");
     }).immediate();
     v = 79;
+  }
+
+  if (v < 80) {
+    db.transaction(() => {
+      db.exec(MIGRATION_080_DELIVERY_AND_WITHDRAWALS);
+      set.run("schema_version", "80");
+    }).immediate();
+    v = 80;
   }
 }
 
@@ -4560,6 +4568,162 @@ const MIGRATION_075_AGENT_PROVIDER_TERMS_REKEY = `
       REFERENCES agent_market_registrations(agent_id, venue_series_id)
       ON DELETE CASCADE
   ) WITHOUT ROWID;
+`;
+
+
+// ─── 080 — delivery acceptance, and the withdrawal outbox ───────────────────
+//
+// Two tables, one per half of "a provider can be paid".
+//
+// `entitlement_delivery` answers WHETHER a sale may be released. A buyer pays
+// for early private access; the money is only releasable to the provider once
+// the buyer has what they paid for. That is a fact about DELIVERY, never about
+// whether the prediction was right — a losing call is delivered exactly as
+// completely as a winning one, and nothing in this table can express the
+// difference. The dispute grounds are a closed list for the same reason.
+//
+// `provider_withdrawals` is the outbox that moves the money. It exists because
+// an ERC-20 transfer has no idempotency of its own: the only thing standing
+// between a crash and a double-send is a row written BEFORE the broadcast that
+// names the exact nonce and the exact signed bytes. Every state here is a
+// claim about what may have already reached the chain.
+const MIGRATION_080_DELIVERY_AND_WITHDRAWALS = `
+  -- One row per sale that carries a delivery policy. The entitlement IS the
+  -- identity, exactly as in provider_earnings: a sale cannot be accepted twice.
+  CREATE TABLE IF NOT EXISTS entitlement_delivery (
+    -- CASCADE, not RESTRICT: a reservation that never settled is deleted by
+    -- releaseReservation, and a delivery record for a sale that never happened
+    -- is meaningless. The money record (provider_earnings) is what must not be
+    -- deletable, and it holds its own reference — an entitlement that ever
+    -- accrued cannot be released in the first place.
+    entitlement_id      INTEGER PRIMARY KEY REFERENCES entitlements(id) ON DELETE CASCADE,
+    -- pending         paid and granted; nobody has spoken yet
+    -- buyer_accepted  the buyer signed an acceptance
+    -- auto_accepted   a finalized VALID reveal made the call independently
+    --                 checkable and the buyer never objected
+    -- disputed        the buyer raised one of the closed grounds in time
+    -- rejected        adjudicated against the sale; gross refund is owed
+    state               TEXT NOT NULL CHECK (state IN (
+                          'pending',
+                          'buyer_accepted',
+                          'auto_accepted',
+                          'disputed',
+                          'rejected'
+                        )),
+    -- Frozen at purchase from the call's publicRevealAt. A deadline that could
+    -- move is not a deadline: re-reading the market later would let a
+    -- rescheduled horizon extend or collapse a window the buyer already paid
+    -- against.
+    accept_deadline_at  TEXT NOT NULL,
+    -- accept_deadline_at + the disclosed grace. Adjudication ends here.
+    dispute_longstop_at TEXT NOT NULL CHECK (dispute_longstop_at >= accept_deadline_at),
+    -- The buyer's signed attestation. Records that they said it, not proof
+    -- that decryption succeeded — plaintext never leaves their browser.
+    accepted_at         TEXT,
+    acceptance_signature TEXT,
+    -- The exact digest that was signed, so a stored signature stays checkable.
+    acceptance_digest   TEXT,
+    -- Objective grounds only. "The prediction lost" is deliberately absent and
+    -- must stay absent: it is not a delivery defect.
+    dispute_ground      TEXT CHECK (dispute_ground IS NULL OR dispute_ground IN (
+                          'decrypt_unavailable',
+                          'malformed_prediction',
+                          'market_mismatch',
+                          'late_delivery'
+                        )),
+    dispute_evidence    TEXT,
+    disputed_at         TEXT,
+    -- Who ended it: the buyer, the deadline rule, or an operator adjudicating
+    -- a dispute. Never inferred from the state alone.
+    decided_by          TEXT CHECK (decided_by IS NULL OR decided_by IN ('buyer','auto','operator')),
+    decided_at          TEXT,
+    decision_note       TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    -- A settled delivery names its decider, and an unsettled one cannot.
+    CHECK (
+      (state IN ('pending','disputed') AND decided_by IS NULL AND decided_at IS NULL)
+      OR (state IN ('buyer_accepted','auto_accepted','rejected')
+          AND decided_by IS NOT NULL AND decided_at IS NOT NULL)
+    ),
+    -- A dispute names its ground.
+    CHECK (state <> 'disputed' OR dispute_ground IS NOT NULL)
+  );
+
+  -- The deadline sweep reads pending rows by deadline; the release calculation
+  -- reads settled rows by state.
+  CREATE INDEX IF NOT EXISTS idx_entitlement_delivery_due
+    ON entitlement_delivery(state, accept_deadline_at);
+
+  -- The withdrawal outbox. One row is one intent to move money, and it is
+  -- written before anything is signed.
+  CREATE TABLE IF NOT EXISTS provider_withdrawals (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    producer_agent_id   TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+    -- The caller's own key for this request. Two requests carrying the same one
+    -- are the SAME withdrawal, however many times a flaky client retries.
+    client_request_id   TEXT NOT NULL CHECK (length(client_request_id) > 0),
+    chain_id            INTEGER NOT NULL,
+    token_address       TEXT NOT NULL,
+    currency            TEXT NOT NULL,
+    amount_atoms        TEXT NOT NULL CHECK (
+                          amount_atoms GLOB '[1-9]*'
+                          AND amount_atoms NOT GLOB '*[^0-9]*'
+                        ),
+    -- Snapshots, not lookups. Where it went is decided when the reservation is
+    -- taken, so a destination edited mid-flight cannot redirect a signed
+    -- transfer, and the journal can say where the money actually went.
+    destination_address TEXT NOT NULL,
+    sender_address      TEXT NOT NULL,
+    -- reserved     funds held, nothing signed — the only state that is
+    --              certainly not on chain
+    -- signed       bytes exist, so it MAY have been broadcast already
+    -- submitted    broadcast returned a hash
+    -- paid         a finalized receipt AND a matching transfer event
+    -- failed       finalized revert; the reservation is released
+    -- needs_review the chain could not be read conclusively; the reservation
+    --              is HELD, because releasing it would let the same earnings
+    --              fund a second transfer
+    state               TEXT NOT NULL CHECK (state IN (
+                          'reserved','signed','submitted','paid','failed','needs_review'
+                        )),
+    -- Allocated once, owned for the life of the row. A replacement fee must
+    -- reuse it, or the original can still confirm alongside its replacement.
+    nonce               INTEGER CHECK (nonce IS NULL OR nonce >= 0),
+    -- The exact bytes. Rebroadcast sends these again; it never re-signs.
+    signed_raw_tx       TEXT,
+    tx_hash             TEXT,
+    attempts            INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    last_error          TEXT,
+    next_attempt_at     TEXT,
+    -- The journal row this became, written in the same transaction as 'paid'.
+    payout_id           INTEGER REFERENCES provider_payouts(id),
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    UNIQUE (producer_agent_id, chain_id, token_address, client_request_id),
+    -- Anything that CLAIMS to have reached the chain carries the bytes that
+    -- went and the nonce they went under. 'failed' and 'needs_review' are
+    -- deliberately exempt: both are reachable before signing (a bad
+    -- destination, an operator hold), and forcing bytes onto them would mean
+    -- inventing a transaction to record that none was ever made.
+    CHECK (
+      state NOT IN ('signed','submitted','paid')
+      OR (signed_raw_tx IS NOT NULL AND nonce IS NOT NULL)
+    ),
+    -- Paid means journalled. The two cannot come apart.
+    CHECK (state <> 'paid' OR (payout_id IS NOT NULL AND tx_hash IS NOT NULL))
+  );
+
+  -- The worker's due-work scan, and the reservation sum. Both are by agent.
+  CREATE INDEX IF NOT EXISTS idx_provider_withdrawals_open
+    ON provider_withdrawals(producer_agent_id, state);
+  CREATE INDEX IF NOT EXISTS idx_provider_withdrawals_due
+    ON provider_withdrawals(state, next_attempt_at);
+  -- One nonce, one transfer. A second row claiming a live nonce on the same
+  -- sender is the double-send this whole table exists to prevent.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_withdrawals_nonce
+    ON provider_withdrawals(chain_id, sender_address, nonce)
+    WHERE nonce IS NOT NULL;
 `;
 
 // ─── Re-export ground type for migration knowledge ───────────────────────────

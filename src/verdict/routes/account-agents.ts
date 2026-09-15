@@ -19,6 +19,11 @@ import {
   unregisterAgentFromSeries,
 } from "../agent-market-registration-surface.js";
 import { readProviderEarnings } from "../provider-earnings-surface.js";
+import {
+  createWithdrawal,
+  readWithdrawals,
+} from "../provider-withdrawals-surface.js";
+import type { PayoutAssetConfig } from "../provider-withdrawals.js";
 import { readProviderPayouts } from "../provider-payout-journal.js";
 import { readAccountAgentReveals } from "../account-agent-reveals-surface.js";
 import {
@@ -31,6 +36,12 @@ import {
 export interface AccountAgentsRouterDeps {
   requireAccount: RequireAccount;
   db: Database.Database;
+  /**
+   * The asset payouts go out in, or null where no payout rail runs. Null is
+   * not an error: the surface says `withdrawals_available: false` and the
+   * dashboard hides the control rather than offering one nothing can honour.
+   */
+  payoutAsset?: PayoutAssetConfig | null;
   createAgentLimiter: RequestHandler;
   listAgentsLimiter: RequestHandler;
   json: RequestHandler;
@@ -227,6 +238,49 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
         limit: numeric(query.limit),
         offset: numeric(query.offset),
       });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  // ── Withdrawals: the owner asks to be paid ───────────────────────────────
+  //
+  // GET is the balance breakdown plus recent requests. POST is the only route
+  // in murmur that can cause money to leave — and even it does not send: it
+  // reserves, and the payout worker does the transfer. `client_request_id`
+  // is required, because a withdrawal is exactly the kind of request a flaky
+  // network retries.
+  router.get(
+    "/v1/account/agents/:slug/withdrawals",
+    listAgentsLimiter,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = readWithdrawals({
+        db,
+        accountId: resolved.account_id,
+        slug: String((req as unknown as { params: { slug?: string } }).params.slug ?? ""),
+        now,
+        asset: deps.payoutAsset ?? null,
+      });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  router.post(
+    "/v1/account/agents/:slug/withdrawals",
+    createAgentLimiter,
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = createWithdrawal(
+        {
+          db,
+          accountId: resolved.account_id,
+          slug: String((req as unknown as { params: { slug?: string } }).params.slug ?? ""),
+          now,
+          asset: deps.payoutAsset ?? null,
+        },
+        (req as unknown as { body?: unknown }).body,
+      );
       res.status(out.status).json(out.body);
     }),
   );

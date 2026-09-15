@@ -30,6 +30,7 @@ import express from "express";
 import type Database from "better-sqlite3";
 import { accountSessionRouter } from "./account-session.js";
 import { accountAgentsRouter } from "./account-agents.js";
+import type { PayoutAssetConfig } from "../provider-withdrawals.js";
 import { accountControllerWalletRouter } from "./account-controller-wallet.js";
 import { accountRuntimeKeyRouter } from "./account-runtime-keys.js";
 import { accountKillSwitchRouter } from "./account-kill-switch.js";
@@ -76,6 +77,12 @@ export interface AccountRouterDeps {
    * read MURMUR_PROTOCOL_FEE_BPS itself (direct/test construction).
    */
   protocolFeeBps?: number | null;
+  /**
+   * The asset provider withdrawals go out in, or null where no payout rail
+   * runs here. Null makes the withdraw surface say so rather than offering a
+   * control the deployment cannot honour.
+   */
+  payoutAsset?: PayoutAssetConfig | null;
   /**
    * FHENIX_REVEAL_WORKER_GRACE_SEC as this deployment is configured, threaded
    * from the parsed daemon config for the reveals duty list. `null`/undefined
@@ -186,6 +193,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     deliverableCap: deps.deliverableCap,
     protocolFeeBps: deps.protocolFeeBps,
     revealGraceSeconds: deps.revealGraceSeconds,
+    payoutAsset: deps.payoutAsset ?? null,
     now,
   }));
 

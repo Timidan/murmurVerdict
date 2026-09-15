@@ -16,6 +16,7 @@ import {
   NON_TERMINAL_ENTITLEMENT_STATUSES,
   type EntitlementRow,
 } from "./repos/entitlements-repo.js";
+import { openDelivery } from "./entitlement-delivery.js";
 import {
   accrueIfEligible,
   grantAndAccrue,
@@ -390,6 +391,27 @@ export async function purchaseEntitlementAccess(
     });
     if (reserved === null) return eligibilityError("cohort_full");
     id = reserved;
+    // Open the delivery record in the SAME breath as the reservation, carrying
+    // the deadlines the buyer was shown before they paid. Frozen here and never
+    // re-read: a market rescheduled after the sale must not move a window the
+    // buyer already agreed to.
+    //
+    // Best-effort by design. A sale that cannot open a delivery record is
+    // still a sale — it simply is not releasable until an operator reconciles
+    // it, which is the safe direction to fail in.
+    try {
+      const sealed = fhenixSealedCallsRepo.byOnchainCall(deps.db, {
+        chain_id: key.chainId,
+        contract_address: key.contractAddress,
+        onchain_call_id: key.onchainCallId,
+      });
+      if (sealed?.reveal_open_at) {
+        openDelivery({ db: deps.db, now: deps.now }, id, sealed.reveal_open_at);
+      }
+    } catch {
+      // Never fails the purchase: the buyer's money is already committed at
+      // this point, and refusing the sale over bookkeeping would be worse.
+    }
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = entitlementsRepo.byReservation(deps.db, key);

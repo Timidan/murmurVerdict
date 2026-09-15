@@ -4,6 +4,12 @@ import { createPrivyAuthVerifier, type PrivyAuthVerifier } from "../verdict/auth
 import { VerdictEventBus } from "../verdict/events.js";
 import { createResolutionFanout } from "../verdict/resolution-fanout.js";
 import { Resolver } from "../verdict/resolver.js";
+import { createViemPayoutChainAdapter } from "../integrations/payout-chain-viem.js";
+import { payoutWorkerTick } from "../integrations/provider-payout-worker.js";
+import { createDbRevealVerifier } from "../verdict/reveal-verifier.js";
+import { sweepDeliveryDeadlines } from "../verdict/entitlement-delivery.js";
+import { loadPayoutConfig } from "../verdict/payout-config.js";
+import type { PayoutAssetConfig } from "../verdict/provider-withdrawals.js";
 import { startWebhookDispatcher } from "../verdict/webhooks.js";
 import type { FhenixEventVerifier } from "../integrations/fhenix-events.js";
 import type { FhenixGatewayBroadcaster } from "../integrations/fhenix-gateway.js";
@@ -45,6 +51,12 @@ export interface DaemonRuntimeAdapters {
   /** Flow 2 grant reconciler ticker; null unless the grant runtime + its
    *  reconciler are enabled. */
   fhenixGrantReconciler: { tick: () => Promise<unknown> } | null;
+  /** Moves money. Null unless MURMUR_PAYOUT_ENABLED is fully configured. */
+  providerPayoutWorker: { tick: () => Promise<unknown> } | null;
+  /** Settles delivery deadlines. Runs wherever the payout rail runs. */
+  deliverySweep: { tick: () => Promise<unknown> } | null;
+  /** The asset withdrawals go out in, for the owner's withdraw surface. */
+  payoutAsset: PayoutAssetConfig | null;
   /** Flow 2 paid decrypt-access HTTP surface deps; null unless the grant
    *  runtime is enabled AND nanopay payment infra is mounted. */
   entitlementAccess: EntitlementAccessSurfaceDeps | null;
@@ -258,10 +270,65 @@ export async function loadDaemonRuntimeAdapters(
     };
   }
 
+  // ── The payout rail ──────────────────────────────────────────────────────
+  //
+  // Off unless explicitly configured. When it IS on, the config loader has
+  // already proven the signing key derives the seller address, so by the time
+  // we build a worker the key is known to own the wallet sales land in.
+  //
+  // ONE write-enabled process per payout key. This worker owns that key's
+  // nonce lane; a second replica would hand out the same nonce twice.
+  const payout = loadPayoutConfig(env);
+  let providerPayoutWorker: { tick: () => Promise<unknown> } | null = null;
+  let deliverySweep: { tick: () => Promise<unknown> } | null = null;
+  let payoutAsset: PayoutAssetConfig | null = null;
+
+  if (payout.enabled) {
+    const cfg = payout.config;
+    const chain = createViemPayoutChainAdapter({
+      chainId: cfg.chainId,
+      rpcUrl: cfg.rpcUrl,
+      tokenAddress: cfg.tokenAddress,
+      account: cfg.account,
+    });
+    payoutAsset = {
+      chainId: cfg.chainId,
+      tokenAddress: cfg.tokenAddress,
+      currency: cfg.currency,
+      senderAddress: cfg.senderAddress,
+    };
+    providerPayoutWorker = {
+      tick: () =>
+        payoutWorkerTick({
+          db,
+          now,
+          chain,
+          config: {
+            confirmations: cfg.confirmations,
+            maxJobsPerTick: cfg.maxJobsPerTick,
+            retryBaseMs: cfg.retryBaseMs,
+            retryMaxMs: cfg.retryMaxMs,
+            minGasBalanceWei: cfg.minGasBalanceWei,
+          },
+          log: (line) => console.log(line),
+        }),
+    };
+    const verifier = createDbRevealVerifier(db, now);
+    deliverySweep = { tick: () => sweepDeliveryDeadlines({ db, now }, verifier) };
+    console.log(
+      `[daemon] payout rail ON — ${cfg.currency} on chain ${cfg.chainId} from ${cfg.senderAddress}. Owners can withdraw accepted sales.`,
+    );
+  } else {
+    console.log(`[daemon] payout rail OFF (${payout.reason}); withdrawals are unavailable.`);
+  }
+
   let stopped = false;
 
   return {
     events,
+    providerPayoutWorker,
+    deliverySweep,
+    payoutAsset,
     fhenixChainId,
     fhenixGateway: fhenixRuntime.gateway,
     fhenixIngestor: fhenixRuntime.ingestor,
