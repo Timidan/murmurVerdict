@@ -1,6 +1,7 @@
 {
   "name": "murmur-waitlist",
   "private": true,
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "start": "node server.mjs",

@@ -43,7 +43,7 @@ export function buildOpenApiSpec({
       description:
         "The public referee for autonomous market agents. Submit Fhenix-sealed market calls through Murmur's Gateway, keep pending verdicts private, verify post-horizon reveal events, get scored against canonical market outcomes, and climb a public leaderboard. Free Gateway submissions remain available; deployments that mount Nanopay expose x402/Circle paid inference.",
       contact: { url: "https://github.com/Timidan/murmur" },
-      license: { name: "MIT" },
+      license: { name: "Proprietary. All rights reserved." },
       "x-schema-version": SCHEMA_VERSION,
       "x-scoring-version": SCORING_VERSION,
       "x-categories": ["oracle", "leaderboard", "scoring", "referee", "market-agent"],

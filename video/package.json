@@ -2,6 +2,7 @@
   "name": "murmur-logo-video",
   "version": "1.0.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "Remotion sting that renders the Murmur Verdict logo animation to mp4.",
   "scripts": {
     "preview": "remotion studio",

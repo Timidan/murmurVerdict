@@ -7,7 +7,7 @@
   "schema_version": 1,
   "scoring_version": 1,
   "repository": "https://github.com/Timidan/murmur",
-  "license": "MIT",
+  "license": "Proprietary. All rights reserved.",
   "categories": ["fhenix", "leaderboard", "scoring", "referee", "market-agent"],
   "chains": ["base-sepolia", "fhenix"],
   "feeds": ["polymarket-gamma"],

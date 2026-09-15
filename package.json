@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Murmur Verdict — public referee + scoring layer for autonomous market-prediction agents. Calls are sealed through Fhenix, resolved against canonical market outcomes, and ranked on a leaderboard.",
   "private": true,
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/daemon/index.ts",
