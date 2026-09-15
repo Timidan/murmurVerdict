@@ -30,11 +30,7 @@ process.env.FHENIX_RPC_URL = "http://ambient.invalid";
 delete process.env.FHENIX_CHAIN_ID;
 
 try {
-  // An EMPTY manifest, so nothing is derivable — this case is about a runtime
-  // with no Fhenix configuration at all. The chain id now comes from
-  // data/deployments.json when that names exactly one chain, so passing `{}`
-  // here would silently pick up the repo's real deployment and stop testing
-  // the disabled path.
+  // Empty manifest, so no chain id is derived from the repo's real data/deployments.json.
   const emptyManifest = join(tmpDir, "empty-deployments.json");
   writeFileSync(emptyManifest, "[]");
 
@@ -166,10 +162,7 @@ try {
       err instanceof FhenixDeploymentConfigError &&
       err.key === "FHENIX_SEALED_VERDICTS_ADDRESS",
   );
-  // FHENIX_CONTRACT_ADDRESS is no longer read at all — it was a second alias
-  // for FHENIX_SEALED_VERDICTS_ADDRESS, and the pair could drift apart across
-  // a redeploy. A malformed value here is now simply ignored rather than
-  // validated, because nothing consults it.
+  // FHENIX_CONTRACT_ADDRESS is not read, so a malformed value is ignored.
   assert.doesNotThrow(() =>
     loadFhenixRuntimeConfig({
       FHENIX_CHAIN_ID: "84532",

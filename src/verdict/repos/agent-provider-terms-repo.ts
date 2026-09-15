@@ -3,16 +3,10 @@ import type Database from "better-sqlite3";
 
 import { prep } from "../db-statements.js";
 
-/**
- * What an agent owner charges for early decrypt access to their calls.
- *
- * Replaces a deployment-wide price and cohort cap. Murmur is a referee, not
- * the one who sets the terms of somebody else's product: the provider prices
- * their own signal and says how many subscribers they will serve.
- */
+/** What an agent owner charges for early decrypt access; the provider prices their own signal. */
 export interface AgentProviderTermsRow {
   agent_id: string;
-  /** The venue series these terms price. Terms are per-series (migration 075). */
+  /** The venue series these terms price; terms are per series. */
   venue_series_id: string;
   /** Access price in the settlement asset's atomic units. Always > 0. */
   price_atoms: string;
@@ -20,13 +14,8 @@ export interface AgentProviderTermsRow {
   /** Stamps which commercial terms a subscriber agreed to. */
   pricing_version: string;
   /**
-   * The owner's BUSINESS ceiling, or null for "as many as murmur can serve".
-   *
-   * Null is not "unlimited" in practice — every grant is its own transaction
-   * and they must all confirm inside the delivery budget, so murmur clamps
-   * this to what it can actually deliver. The owner's number and the
-   * deployment's deliverability are different constraints and are kept apart
-   * on purpose.
+   * The owner's business ceiling, or null for "as many as murmur can serve".
+   * Murmur still clamps it to what it can deliver (see effectiveCohortCap).
    */
   max_subscribers_per_call: number | null;
   created_at: string;
@@ -66,17 +55,8 @@ export const agentProviderTermsRepo = {
   },
 
   /**
-   * Set or update an owner's terms.
-   *
-   * Mutable by design — an owner may reprice whenever they like. That is safe
-   * only because every sealed call SNAPSHOTS the terms it was sold under
-   * (fhenix_sealed_calls.provider_*), so a change here never reaches a call a
-   * subscriber has already bought into.
-   *
-   * A registration for (agent_id, venue_series_id) is a precondition: the row's
-   * composite foreign key into agent_market_registrations refuses terms for a
-   * series the agent does not serve. With foreign keys enforced at db open this
-   * is a native constraint failure, not a silent write.
+   * Set or update an owner's terms. Repricing is safe: sealed calls snapshot the terms they
+   * were sold under. Requires a registration for (agent_id, venue_series_id) (composite FK).
    */
   upsert(db: Database.Database, input: AgentProviderTermsInput): void {
     if (!/^[0-9]+$/.test(input.price_atoms) || BigInt(input.price_atoms) <= 0n) {
@@ -84,9 +64,7 @@ export const agentProviderTermsRepo = {
         `price_atoms must be a positive integer atomic amount (got "${input.price_atoms}")`,
       );
     }
-    // The rail settles in exactly one asset. The HTTP schema enforces this too,
-    // but the invariant belongs where every writer passes — a price recorded in
-    // a currency nothing charges is a mislabel waiting to reach a receipt.
+    // The rail settles in one asset; checked here so every writer passes through it.
     if (input.currency.toUpperCase() !== SETTLEMENT_CURRENCY) {
       throw new Error(
         `currency must be ${SETTLEMENT_CURRENCY} — the settlement rail charges in ` +
@@ -133,18 +111,8 @@ export const agentProviderTermsRepo = {
 };
 
 /**
- * The cohort size murmur will actually sell for one call.
- *
- * Two independent limits, and the smaller wins:
- *
- *   ownerMax        what the provider is willing to serve (business)
- *   deliverableMax  what this deployment can grant inside the delivery budget
- *                   (physics — each grant is its own transaction)
- *
- * An owner who names no limit gets the deliverable one. An owner who names a
- * larger one is clamped, and callers surface that rather than silently
- * overselling: taking payment murmur cannot deliver means a refund obligation,
- * and refunds are manual today.
+ * Cohort size murmur will sell for one call: the smaller of ownerMax (business) and
+ * deliverableMax (grants that fit the delivery budget). Callers surface a clamp, never oversell.
  */
 export function effectiveCohortCap(
   ownerMax: number | null | undefined,

@@ -1,16 +1,11 @@
-// Shared REST wire types — leaderboard surfaces (global, per-market,
-// per-family, cross-family). Browser-safe; see wire-agent.ts for the rules.
-// Producer guards in src/verdict/wire-contract-guards.ts pin each of these
-// against the daemon's authoritative type.
+// Shared REST wire types: leaderboards (global, per-market, per-family, cross-family).
+// Browser-safe; see wire-agent.ts.
 
 import type { WireAgentKind } from "./wire-agent.js";
 
 export type WireLeaderboardTier = "main" | "provisional";
 
-/** One row of GET /v1/leaderboard. Mirrors the daemon's zod-inferred
- *  `LeaderboardRow` (src/verdict/schema.ts LeaderboardRowSchema) exactly —
- *  including the reserved reveal-reliability / marketplace / trust axes the
- *  daemon emits on every row. */
+/** One row of GET /v1/leaderboard. Mirrors the daemon's `LeaderboardRow`. */
 export interface WireLeaderboardRow {
   agent_id: string;
   display_slug: string;
@@ -24,25 +19,18 @@ export interface WireLeaderboardRow {
   win_rate: number | null;
   pending_calls: number;
   last_resolved_at: string | null;
-  // The daemon emits the reserved reveal-reliability / marketplace / trust axes
-  // on every row, but a lean SSE delta carries none of them — the dashboard
-  // re-reads the ladder over REST for these — so they are optional here and the
-  // producer guard pins the daemon output via `Conforms`.
-  /** Reveal reliability = non-daemon reveals / (non-daemon + daemon-fallback +
-   *  genuine misses). `agent_reveals` counts reveals published without the
-   *  murmur fallback; `daemon_fallback_reveals` counts reveals the murmur-owned
-   *  fallback worker guaranteed. */
+  // Optional: REST rows carry these, lean SSE deltas do not.
+  /** agent_reveals / (agent_reveals + daemon_fallback_reveals + misses). */
   reveal_reliability?: number | null;
   agent_reveals?: number;
   daemon_fallback_reveals?: number;
   marketplace_eligible?: boolean;
-  /** RESERVED axes for v0.3+ (currently 0 / null). */
+  /** Reserved; currently 0 / null. */
   operator_trust_score?: number | null;
   stake_at_risk?: string | null;
 }
 
-/** One row of GET /v1/families/:family/leaderboard. Mirrors the daemon's
- *  AgentFamilyRow (src/verdict/leaderboard-families.ts). */
+/** One row of GET /v1/families/:family/leaderboard. */
 export interface WireAgentFamilyRow {
   agent_id: string;
   display_slug: string;
@@ -59,8 +47,7 @@ export interface WireAgentFamilyRow {
   distinct_markets: number;
 }
 
-/** One row of GET /v1/leaderboard/general. Mirrors the daemon's
- *  AgentCrossFamilyRow (src/verdict/leaderboard-families.ts). */
+/** One row of GET /v1/leaderboard/general. */
 export interface WireAgentCrossFamilyRow {
   agent_id: string;
   display_slug: string;
@@ -81,9 +68,7 @@ export interface WireAgentCrossFamilyRow {
   cross_family_main_tier: boolean;
 }
 
-/** One row of GET /v1/markets/:market_id/leaderboard and the cells of
- *  GET /v1/agents/:slug/grid. Mirrors the daemon's AgentMarketRow
- *  (src/verdict/leaderboard-markets.ts). */
+/** One row of GET /v1/markets/:market_id/leaderboard and the cells of GET /v1/agents/:slug/grid. */
 export interface WireAgentMarketRow {
   agent_id: string;
   display_slug: string;
@@ -98,20 +83,11 @@ export interface WireAgentMarketRow {
   last_resolved_at: string | null;
   /** resolved_calls >= MAIN tier threshold at this market. */
   market_main_tier: boolean;
-  /** Chronological per-call score series (nulls mark void /
-   *  oracle_unavailable resolutions), powering the trend sparkline. Optional:
-   *  the daemon always emits it, but a lean SSE delta does not — the dashboard
-   *  re-reads the ladder over REST to refill it. */
+  /** Chronological per-call scores (null = void / oracle_unavailable). Absent on lean SSE deltas. */
   call_scores?: (number | null)[];
   /**
-   * The market's own question, e.g. "XRP Up or Down - August 24,
-   * 5:25AM-5:30AM ET" — the same string the market page uses as its title.
-   *
-   * Here because `market_id` is a 66-character hex condition id, and an agent
-   * profile listing forty-seven of them tells a reader nothing about what the
-   * agent actually called. Null for native price markets (no config_json) and
-   * for any market row that has since been deleted; renderers must fall back
-   * to the id. Optional on the wire so an older daemon still type-checks.
+   * The market's question, e.g. "XRP Up or Down - August 24, 5:25AM-5:30AM ET".
+   * Null for native price markets and deleted rows; fall back to the id.
    */
   market_label?: string | null;
 }

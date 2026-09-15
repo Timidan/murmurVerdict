@@ -1,27 +1,7 @@
 // ─── dispatcher.smoke.ts ───────────────────────────────────────────────────
-//
-// Characterization smoke for the tier-aware auth dispatcher (dispatcher.ts).
-// dispatchAuth is the centralized auth entry point — Privy bearer, then
-// Runtime Key, then legacy account API key — and __resolveCasualIdentity
-// owns the §7.1 ownership policy. dispatcher.ts:82-92 documents that
-// __resolveCasualIdentity was exported (with __ prefix) precisely so a smoke
-// could drive every branch without minting real Privy tokens; this is that
-// smoke. It locks the CURRENT behavior before the planned shared-resolver
-// refactor so any drift in:
-//   - the fallthrough ORDER (Privy → Runtime Key → API key),
-//   - the throw-don't-fall-through short-circuit on an unowned slug
-//     (a held Privy token must not get a second auth chance), and
-//   - the §7.1 ownership policy branches
-// fails loudly.
-//
-// Scope boundary: the positive Runtime Key branch (dispatcher.ts:209) and
-// the Runtime Key slug-mismatch throw (dispatcher.ts:212) require a bound +
-// currently-attested Controller Wallet and are OUTSIDE the planned
-// Privy-resolver refactor's blast radius (that refactor only touches the
-// Privy path + account resolution, not the Runtime Key block). They are
-// deliberately left unpinned here; this smoke locks the Privy policy
-// branches, the dispatch ORDER, the Runtime Key OPT-IN gate, and the
-// fallthrough — the behavior the refactor actually moves.
+// Pins dispatchAuth: order (Privy → Runtime Key → API key), the throw on an unowned slug
+// (a held Privy token gets no second chance), and each ownership branch of __resolveCasualIdentity.
+// The positive Runtime Key path needs an attested controller wallet and is not covered here.
 
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -153,7 +133,7 @@ async function main(): Promise<void> {
     linkAgentToAccount(db, accountB, "agent-b1", { linkedAt: at });
     linkAgentToAccount(db, accountB, "agent-b2", { linkedAt: at });
 
-    // ── A. __resolveCasualIdentity — every §7.1 policy branch ─────────
+    // ── A. __resolveCasualIdentity — every ownership policy branch ─────
 
     await check("slug for unknown agent → throws unknown_agent 404", () => {
       assert.throws(
@@ -190,9 +170,7 @@ async function main(): Promise<void> {
     });
 
     await check("slug for an existing but UNOWNED agent → throws agent_not_owned_by_account 403", () => {
-      // agent-orphan has no ownership row, so getAccountForAgent returns no
-      // owner; undefined !== account_id → 403. Distinct from the
-      // owned-by-another-account branch above (null owner vs different owner).
+      // No ownership row: a null owner, distinct from a different owner above.
       assert.throws(
         () => __resolveCasualIdentity(db, ownerAClaims, "agent-orphan"),
         (err) =>
@@ -291,11 +269,7 @@ async function main(): Promise<void> {
     });
 
     await check("READ-ONLY: dispatch auth for a fresh Privy user creates NO account row", async () => {
-      // The dispatcher account lookup is "read" mode — gateway/feed/dispatch
-      // auth must never create an account as a side effect. A Privy user with
-      // no account hits Path B (no agent) and must leave the accounts table
-      // untouched. Guards against the refactor accidentally wiring
-      // create_or_touch into the dispatch path.
+      // Dispatch auth looks accounts up read-only; it must never create one.
       const freshClaims: PrivyClaims = {
         ...ownerAClaims,
         privy_user_id: "did:privy:dispatch-must-not-create",
@@ -316,8 +290,7 @@ async function main(): Promise<void> {
     });
 
     await check("SECURITY: valid Bearer + unowned slug + valid API key → THROWS, no fall-through to API key", async () => {
-      // A held Privy token asking to act as an unowned agent must NOT get a
-      // second auth chance via the API-key header. dispatcher.ts:76-80.
+      // A held Privy token must not get a second chance via the API-key header.
       await assert.rejects(
         () =>
           dispatchAuth(
@@ -347,10 +320,7 @@ async function main(): Promise<void> {
     });
 
     await check("Runtime Key opt-in OFF: runtime-key path never consulted, falls through to api_key", async () => {
-      // Sentinel: dispatchAuth only calls now() inside the Runtime Key block
-      // (verifiedAt = deps.now()). A throwing clock proves the block is NOT
-      // entered when allowRuntimeKey is unset — a dispatcher that ignored the
-      // opt-in gate would call now() and blow up instead of falling through.
+      // now() is only called in the Runtime Key block, so a throwing clock proves it is skipped.
       const throwingNow = () => {
         throw new Error("now() must not be called when allowRuntimeKey is off");
       };
@@ -396,9 +366,7 @@ async function main(): Promise<void> {
     });
 
     // ── C. verifyPrivyBearer — the shared extraction's exact contract ──
-    // These pin the load-bearing helper contract by test rather than review:
-    // a try/catch or empty-token guard would silently change the
-    // dispatcher/webhooks fall-through-vs-propagate behavior.
+    // A try/catch or empty-token guard would change fall-through vs propagate.
 
     await check("verifyPrivyBearer: no verifier → null (even with valid Bearer)", async () => {
       assert.equal(
@@ -408,9 +376,7 @@ async function main(): Promise<void> {
     });
 
     await check("verifyPrivyBearer: non-Bearer Authorization header → null WITHOUT calling verify", async () => {
-      // A non-Bearer scheme must short-circuit before verify — otherwise the
-      // helper would feed a Basic-auth blob to Privy. Sentinel verifier proves
-      // verify is never invoked.
+      // A non-Bearer scheme must short-circuit before verify.
       let called = false;
       const sentinel: PrivyAuthVerifier = {
         isEnabled: () => true,

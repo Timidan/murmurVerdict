@@ -44,8 +44,7 @@ assert.equal(series.submission_open_lead_sec, 300);
 assert.equal(series.embargo_sec, 600);
 assert.equal(series.status, "active");
 
-// The display name is the ONLY mutable field. Everything else is a term
-// consumers arm against.
+// The display name is the only mutable field.
 marketSeriesRepo.upsert(db, {
   series_id: SERIES,
   venue: "polymarket",
@@ -58,10 +57,7 @@ marketSeriesRepo.upsert(db, {
 const reread = marketSeriesRepo.get(db, SERIES);
 assert.equal(reread?.display_name, "BTC up/down 5m (renamed)", "display name updates");
 
-// The cohort cap FAILS CLOSED too. This case used to assert 30 -> 40 was
-// allowed. It is not: eligibility reads the CURRENT series row, so an upsert
-// that changed the cap retroactively resized every cohort in the series,
-// including calls already sold under the stored cap.
+// The cohort cap fails closed too: eligibility reads the current series row.
 assert.throws(
   () =>
     marketSeriesRepo.upsert(db, {
@@ -82,11 +78,7 @@ assert.equal(
   "the stored cap is untouched by the rejected upsert",
 );
 
-// Changing a clock constant under an existing series id must THROW, not be
-// silently ignored. Silently keeping the stored values splits one series id
-// across two configurations: existing markets keep on-chain schedules derived
-// from the old constants while newly derived clocks use the new ones, so every
-// existing market fails its exact-schedule check and gets frozen.
+// Changing a clock constant under an existing series id must throw, not be ignored.
 assert.throws(
   () =>
     marketSeriesRepo.upsert(db, {
@@ -121,11 +113,7 @@ assert.equal(
   "a rejected upsert leaves the stored constants untouched",
 );
 
-// market_clocks.market_id is a real FK to markets. That ordering is
-// deliberate — a clock snapshot describes a registered market, so it cannot
-// exist before one. Seed a minimal row so the FK is satisfied.
-// Use the rows the base schema already seeds rather than inventing parents —
-// markets has FKs to both assets and oracles.
+// market_clocks.market_id is an FK to markets; seed minimal markets from the base schema's assets and oracles.
 const seededAsset = (db.prepare("SELECT asset_id FROM assets LIMIT 1").get() as { asset_id: string }).asset_id;
 const seededOracle = (db.prepare("SELECT oracle_id FROM oracles LIMIT 1").get() as { oracle_id: string }).oracle_id;
 
@@ -203,12 +191,8 @@ assert.throws(
 );
 
 // ── The acceptance-equality invariant ──────────────────────────────────────
-// The acceptance guard demands EXACT equality between the daemon's expected
-// reveal time and the on-chain publicRevealAt. The chain stores
-// endDate + embargo; the adapter derives its value from config_json and
-// defaults embargoSec to 0 when absent. So registration MUST stamp embargoSec
-// into config_json — without it the daemon expects endDate + 0 and rejects
-// every submission to that market, permanently and silently.
+// Acceptance needs exact equality with the on-chain publicRevealAt (endDate + embargo). The
+// adapter defaults embargoSec to 0, so registration must stamp it into config_json.
 {
   const { expectedRevealOpenMsForMarket, marketResolutionMsForMarket } = await import(
     "../market-adapter-config.js"

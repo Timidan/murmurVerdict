@@ -8,10 +8,8 @@ export interface FeedAdminRouterDeps {
   newFeedPacketId?: FeedPacketIdAdapter;
   newFeedSlaIncidentId?: FeedSlaIncidentIdAdapter;
   /**
-   * MURMUR_ACK_FEED_REVEAL_MANUAL. The packet backfill route lands packets in
-   * SLA and public feed state, so it is gated on the same acknowledgement as
-   * live submission — otherwise turning feeds off would still leave a way to
-   * publish delivery evidence for a lane with no reveal path.
+   * MURMUR_ACK_FEED_REVEAL_MANUAL. Packet backfill publishes delivery evidence, so it needs
+   * the same acknowledgement as live submission.
    */
   feedRevealAcknowledged?: boolean;
   now: () => Date;

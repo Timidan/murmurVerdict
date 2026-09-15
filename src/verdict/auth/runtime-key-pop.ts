@@ -1,28 +1,15 @@
 // ─── Runtime-key proof-of-possession (murmur-rk-v2) ──────────────────────────
-//
-// A Runtime Key whose controller-signed policy carries `signing_pubkey` is
-// PoP-bound: the bearer secret alone no longer authenticates. Each request
-// must additionally carry an Ed25519 signature, made with a private key that
-// only the agent host holds (generated client-side at mint; the server never
-// sees it), over a canonical string that pins:
+// A key whose signed policy carries `signing_pubkey` needs a per-request Ed25519 signature,
+// from a private key only the agent host holds, over:
 //
 //   murmur-rk-v2\n<audience>\n<runtime_key_id>\n<timestamp>\n<nonce>\n
 //   <METHOD>\n<path-and-query>\n<raw-body-sha256>
 //
-// Design notes:
-//   - The audience is a CONFIGURED deployment identifier, never the inbound
-//     Host header (proxies rewrite it), so signatures can't cross deployments.
-//   - runtime_key_id in the string stops cross-key reuse when one signing
-//     keypair is (wrongly) shared between keys.
-//   - The NONCE is part of the signed string (v2). In v1 it was only a header,
-//     so a captured request could be replayed inside the freshness window by
-//     substituting a fresh nonce — the signature still verified. v1 is
-//     rejected outright; there are no deployed v1 clients.
-//   - The body hash covers the RAW bytes captured by express.json's verify
-//     hook — hashing a re-serialized req.body is not the same bytes.
-//   - Replay: timestamp skew is bounded AND the (runtime_key_id, nonce) pair
-//     is consumed exactly once. Retention comfortably exceeds max skew, so a
-//     nonce can never be replayed after falling out of the window.
+//   - Audience is a configured deployment id, never the Host header.
+//   - runtime_key_id stops reuse across keys that share a keypair.
+//   - The nonce is signed, so it cannot be swapped; v1 is rejected.
+//   - The body hash covers the raw bytes, not a re-serialized req.body.
+//   - Replay: bounded skew, each (runtime_key_id, nonce) consumed once, retention > max skew.
 
 import { createPublicKey, verify as ed25519Verify } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -63,7 +50,7 @@ export function buildRuntimeKeyPopSigningString(input: {
   audience: string;
   runtimeKeyId: string;
   timestamp: number;
-  /** Normalized lowercase 32-hex request nonce — signed since v2. */
+  /** Normalized lowercase 32-hex request nonce. */
   nonce: string;
   method: string;
   pathAndQuery: string;

@@ -1,97 +1,45 @@
 // ─── Privy access-token verification ────────────────────────────────────────
-//
-// Verifies a Privy access token through @privy-io/node and returns normalized
-// claims, or `null` when Privy auth is off or the token is bad. Null, not a
-// throw, because the dispatcher falls through to API-key auth — an exception
-// here would make every client route around it. Privy unreachable with a cold
-// key cache also yields null, so the surface fails closed.
-//
-// Uses PrivyClient rather than the standalone verifyAccessToken so the parsed
-// JWKS is cached on the instance instead of re-imported per request, and so
-// the same client can later hydrate email via users().get().
-//
-// With no PRIVY_VERIFICATION_KEY set — the recommended shape — the constructor
-// builds a remote-JWKS getter against Privy's own endpoint (60m cache, 10m
-// cooldown, so unknown-kid floods can't hammer them) and picks up Privy's key
-// rotations on its own. Setting the PEM instead pins the verifier to one key.
-// PRIVY_APP_SECRET is required either way: PrivyClient demands it even for
-// verify-only flows.
-//
-// The access token carries app_id, issuer, issued_at, expiration, session_id
-// and user_id — NOT email or login_method. Those live in the identity token.
-//
-// The token is a bearer credential with a short exp and no server-side nonce
-// table. CSRF is the calling context's problem: SameSite cookies for browser
-// flows, an Authorization header for CLI ones.
+// Returns normalized claims, or null when Privy is off, the token is bad, or Privy is unreachable
+// with a cold key cache. Null, not a throw: the dispatcher falls through to API keys. Fails closed.
+// No PRIVY_VERIFICATION_KEY uses Privy's remote JWKS; a PEM pins one key. APP_SECRET is always required.
+// The access token has no email or login_method. CSRF is the caller's job (SameSite cookie or header).
 
 import type { PrivyClient as PrivyClientType } from "@privy-io/node";
 
 export interface PrivyClaims {
   /** The Privy user DID, e.g. 'did:privy:xxxxx'. Stable per user. */
   privy_user_id: string;
-  /** The session ID. Useful for log correlation. */
   session_id: string;
   /** Token expiration as ISO-8601 (UTC). */
   expires_at: string;
-  /**
-   * Optional — derived if available. The access token does NOT carry an
-   * email; this stays undefined here. Identity-token
-   * verifier (privy.users().get({id_token})) can populate it.
-   */
+  /** Not in the access token; undefined from verify(). */
   email?: string;
-  /**
-   * Optional — derived if available. Same caveat as `email`: not in the
-   * access token. Set to undefined here so the type lines up with what
-   * the accounts repo expects.
-   */
+  /** Not in the access token; undefined from verify(). */
   primary_login_method?: string;
 }
 
 export interface PrivyAuthConfig {
   appId: string | null;
   appSecret: string | null;
-  /**
-   * Optional PEM-pinned override. `null` (default) leaves the SDK to fetch
-   * + cache the JWKS endpoint. Set only when a deploy wants to lock
-   * verification to a specific key (defense against Privy infra
-   * compromise, air-gapped audits, etc.).
-   */
+  /** Optional PEM pin. Null lets the SDK fetch and cache the JWKS. */
   jwtVerificationKey: string | null;
 }
 
 export interface PrivyAuthVerifier {
   isEnabled(): boolean;
   verify(authToken: string): Promise<PrivyClaims | null>;
-  /**
-   * Best-effort profile hydration for account CREATION only. Looks up the
-   * Privy user's linked accounts to derive an email + primary login method
-   * the access token never carries. NEVER throws — returns `{}` when Privy
-   * is disabled, the client can't be built, or the lookup fails, so callers
-   * can treat it as a pure enrichment with no failure mode.
-   */
+  /** Best-effort email + login method for account creation. Never throws; `{}` on any failure. */
   hydrateProfile(userId: string): Promise<{ email?: string; primary_login_method?: string }>;
 }
 
-/**
- * Narrow structural request shape so this module stays uncoupled from
- * express — `verifyPrivyBearer` only needs to read headers.
- */
+/** Minimal request shape so this module does not depend on express. */
 export interface PrivyBearerRequest {
   header(name: string): string | undefined;
 }
 
 /**
- * Shared `Authorization: Bearer <privy>` extraction + verification, used by
- * the dispatcher and the account / webhook route auth paths. Returns the
- * verified claims, or `null` when there is no verifier, no/non-Bearer
- * header, or the token does not verify — every case those callers currently
- * treat as fall-through.
- *
- * Contract preservation: this MUST NOT add a try/catch around `verify` and
- * MUST NOT add an empty-token guard. The three current call sites do
- * neither — a verifier exception propagates and an empty token is passed
- * straight to `verify` (which returns null) — and this helper keeps that
- * exact behavior so it is a pure extraction, not a behavior change.
+ * Verify `Authorization: Bearer <privy>`. Null when there is no verifier, no Bearer header,
+ * or the token fails. Verifier errors propagate; empty tokens go to `verify` (which returns null).
  */
 export async function verifyPrivyBearer(
   req: PrivyBearerRequest,
@@ -124,18 +72,13 @@ export function loadPrivyAuthConfig(
     jwtVerificationKey: nonEmpty(env.PRIVY_VERIFICATION_KEY),
   };
 
-  // Pair-required: APP_ID + APP_SECRET must be set together. If either is
-  // set without the other, the deploy is misconfigured and we fail loudly
-  // instead of silently disabling Privy. VERIFICATION_KEY is an optional
-  // override and never independently triggers the requirement (the SDK
-  // falls back to JWKS auto-fetch when it's null).
+  // APP_ID and APP_SECRET must be set together; one without the other throws.
   const idOrSecretSet = Boolean(config.appId || config.appSecret);
   if (idOrSecretSet) {
     assertPrivyConfigPart(config.appId, "PRIVY_APP_ID");
     assertPrivyConfigPart(config.appSecret, "PRIVY_APP_SECRET");
   } else if (config.jwtVerificationKey) {
-    // VERIFICATION_KEY without APP_ID/APP_SECRET is nonsense — the key
-    // can't verify anything if no client is constructed. Surface it.
+    // VERIFICATION_KEY without APP_ID/APP_SECRET can verify nothing.
     assertPrivyConfigPart(config.appId, "PRIVY_APP_ID");
   }
 
@@ -159,9 +102,7 @@ export function createPrivyAuthVerifier(
     }
     if (!enabled()) return null;
 
-    // Dynamic import keeps the SDK and its hpke / jose / svix deps out of
-    // the import graph for deploys that don't enable Privy. A static import
-    // would pull them into every entrypoint regardless.
+    // Dynamic import keeps the SDK out of deploys that don't enable Privy.
     let PrivyClient: typeof PrivyClientType;
     try {
       const mod = (await import("@privy-io/node")) as {
@@ -178,9 +119,7 @@ export function createPrivyAuthVerifier(
     }
 
     try {
-      // Only forward `jwtVerificationKey` when it's set. Passing `undefined`
-      // (NOT empty string) lets PrivyClient's internal `createPrivyAppJWKS`
-      // route to the remote JWKS endpoint with default 60-min cache.
+      // Omit jwtVerificationKey (never "") so the SDK uses the remote JWKS.
       const clientOpts: {
         appId: string;
         appSecret: string;
@@ -195,10 +134,7 @@ export function createPrivyAuthVerifier(
       client = new PrivyClient(clientOpts);
       return client;
     } catch (err) {
-      // Constructor can throw on malformed verification key (jose's
-      // importSPKI bombs on a non-PEM string, for example). Treat as
-      // disabled rather than crash the request loop. Warn once so the
-      // operator sees it in logs.
+      // A malformed verification key throws here: treat as disabled and warn once.
       clientCtorError = err instanceof Error ? err : new Error(String(err));
       // eslint-disable-next-line no-console
       console.warn(
@@ -233,9 +169,7 @@ export function createPrivyAuthVerifier(
           expires_at: expiresAtIso,
         };
       } catch {
-        // Invalid / expired / wrong-issuer / wrong-audience token. The SDK
-        // throws InvalidAuthTokenError — we treat all failures uniformly so we
-        // never leak which check failed (timing/error-shape side channel).
+        // Uniform null for every failure, so which check failed never leaks.
         return null;
       }
     },
@@ -278,10 +212,7 @@ function assertPrivyConfigPart(
 }
 
 function privyConfigEnabled(config: PrivyAuthConfig): boolean {
-  // JWKS-by-default: VERIFICATION_KEY is optional. Privy is "enabled" as
-  // soon as APP_ID + APP_SECRET are both set (loadPrivyAuthConfig already
-  // enforced pair-required). When VERIFICATION_KEY is null the SDK uses
-  // the remote JWKS endpoint; when set it pins to that PEM.
+  // Enabled once APP_ID + APP_SECRET are set; VERIFICATION_KEY is optional.
   return Boolean(config.appId && config.appSecret);
 }
 

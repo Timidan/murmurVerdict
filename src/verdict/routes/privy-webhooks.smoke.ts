@@ -1,9 +1,5 @@
 // ─── privy-webhooks.smoke.ts ────────────────────────────────────────────────
-//
-// Characterization smoke for POST /v1/privy/webhooks (routes/privy-webhooks.ts).
-// The verifier and reparent core are INJECTED as fakes, so this smoke needs
-// neither @privy-io/node nor the real account-reparent module — it locks the
-// route's status-code matrix and the exact args the route forwards to reparent.
+// Locks the POST /v1/privy/webhooks status matrix and reparent args, with a fake verifier and reparent.
 //
 // Matrix covered:
 //   valid transfer            → reparent called with {from,to} → 200

@@ -74,10 +74,7 @@ try {
     schemaVersion: 99,
   });
 
-  // REGRESSION GATE: the resolver used to be constructed only when the
-  // price-oracle runtime produced a Chainlink/Pyth client, so a deployment
-  // without Base RPC env silently resolved nothing. This config sets NO
-  // oracle env at all — the resolver must still exist.
+  // No oracle env at all; the resolver must still exist.
   assert(
     adapters.resolver,
     "resolver must be constructed unconditionally, with zero oracle configuration",
@@ -91,9 +88,7 @@ try {
   assert.equal(adapters.fhenixIngestor, null);
   assert.equal(adapters.fhenixGateway, null);
   assert.equal(adapters.nanopayRuntime, null);
-  // Default config leaves the polymarket-gamma adapter (and therefore its
-  // canary) enabled — only an explicit =false disables it, so the canary
-  // set is non-empty even with an empty live-canary env.
+  // The polymarket-gamma canary is on by default, so the set is non-empty.
   assert.equal(adapters.liveCanaries.hasEnabledChecks(), true);
   assert.equal(
     adapters.operatorAlertSink.webhookUrl,
@@ -157,8 +152,7 @@ try {
   configuredFhenixAdapters.stop();
 
   assert.equal(warns.length, 0);
-  // Nothing in the runtime reads a Base/Chainlink/Pyth env var any more, so
-  // the daemon must NOT log about one.
+  // Nothing reads Base/Chainlink/Pyth env, so the daemon must not log about one.
   assert.equal(
     logs.some((line) => /BASE_MAINNET_RPC_URL|CHAINLINK|PYTH/i.test(line)),
     false,

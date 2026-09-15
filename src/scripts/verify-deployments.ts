@@ -11,10 +11,7 @@ const VERDICTS_ABI = parseAbi([
   "function owner() view returns (address)",
   "function relayers(address) view returns (bool)",
   "function grantors(address) view returns (bool)",
-  // Six-instant schedule shape. A pre-redesign deployment answers this with
-  // three words instead of seven, which is the ONE check that distinguishes a
-  // stale manifest entry from a healthy one — every role check above passes
-  // against the old contract.
+  // Six-instant schedule; the only check that catches a stale contract revision.
   "function markets(bytes32) view returns (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active)",
 ]);
 const ESCROW_ABI = parseAbi([
@@ -24,9 +21,7 @@ const ESCROW_ABI = parseAbi([
 ]);
 
 async function main() {
-  // Derived from the relayer key, not configured. AGENT_ADDRESS is optional
-  // now — set it only if you want the check to be explicit, and it must then
-  // agree with the key.
+  // Derived from the relayer key. AGENT_ADDRESS is optional; if set it must agree.
   const relayerKey = process.env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY?.trim();
   if (!relayerKey) {
     console.error("FHENIX_GATEWAY_RELAYER_PRIVATE_KEY unset");
@@ -75,10 +70,8 @@ async function main() {
   if (!vRelayer) { console.error(`✗ verdicts.relayers(${EXPECTED_OWNER}) = false`); failures++; }
   else { console.log(`✓ verdicts.relayers(${EXPECTED_OWNER}) = true`); }
 
-  // The grantor role is what paid decrypt-grants run on, and it is deliberately
-  // a DIFFERENT key from the relayer. Unverified, a deploy can look healthy
-  // while every grant reverts NotGrantor after the subscriber has paid.
-  // Same rule: the grant key determines the grantor address.
+  // Paid grants run on the grantor role, a different key from the relayer; unchecked,
+  // every grant reverts NotGrantor after the buyer paid. The grant key sets the address.
   const grantKey = process.env.FHENIX_GRANT_PRIVATE_KEY?.trim();
   const grantorAddress = grantKey
     ? deriveAddressFromKey({
@@ -90,9 +83,7 @@ async function main() {
     : process.env.GRANTOR_ADDRESS?.trim();
   const grantsEnabled = process.env.FHENIX_GRANT_ENABLED?.trim() === "true";
   if (!grantorAddress && grantsEnabled) {
-    // Fail, do not skip. Skipping here printed a green verification for a
-    // deployment whose paid-grant path cannot work; the daemon then refuses to
-    // start, after the operator has already been told the deploy is good.
+    // Fail, do not skip: the daemon would refuse to start anyway.
     console.error(
       "✗ FHENIX_GRANT_ENABLED=true but neither FHENIX_GRANT_PRIVATE_KEY nor GRANTOR_ADDRESS is set — the grantor " +
         "role cannot be verified, and paid grants will not work",
@@ -116,11 +107,7 @@ async function main() {
     }
   }
 
-  // ABI SHAPE, not just roles. The manifest can point at a contract that is
-  // owned correctly and staffed correctly and still be the WRONG REVISION —
-  // and nothing else in this script or in verify:readiness would notice,
-  // because the offline suite never touches a live address. The daemon then
-  // fails at runtime with LegacyContractError on the first discovery tick.
+  // ABI shape, not just roles: a correctly owned contract can still be the wrong revision.
   try {
     await client.readContract({
       address: getAddress(verdicts.address),

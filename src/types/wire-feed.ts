@@ -1,8 +1,4 @@
-// Shared REST wire types — GET /v1/feed/today (the live tape). Browser-safe;
-// see wire-agent.ts for rules. Mirrors the daemon's TodayFeed / TodayFeedRow /
-// TodayMover (src/verdict/feed.ts). The row keeps a few optional legacy /
-// plaintext keys the Today page tolerates; the daemon guard pins the fields
-// the daemon actually emits.
+// Shared REST wire types: GET /v1/feed/today (the live tape). Browser-safe; see wire-agent.ts.
 
 export interface WireTodayFeedRow {
   call_id: string;
@@ -16,7 +12,7 @@ export interface WireTodayFeedRow {
   adapter_id?: string;
   market_family?: string;
   market_id?: string;
-  // Pre-reveal-absent plaintext / legacy client-side decoration.
+  // Plaintext; absent before reveal.
   side?: "BUY" | "SELL";
   asset_id?: string;
   horizon_hours?: number;

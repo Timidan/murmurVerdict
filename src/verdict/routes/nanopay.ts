@@ -13,36 +13,14 @@ export type {
 } from "../nanopay-types.js";
 
 /**
- * Nanopayments HTTP route.
- *
- * Mounts `POST /v2/nanopay/infer/:pipelineId` on the daemon. The
- * `@circle-fin/x402-batching/server` owns canonical requirement discovery,
- * verification, settlement, and 402 challenge encoding. Murmur deliberately
- * orchestrates those SDK operations separately so persistence can sit between
- * verification and settlement. Responsibilities:
- *   1. Look up the pipeline + the latest sealed-Fhenix anchored call.
- *   2. Compute the EIP-712 `requestSignalId` binding hash.
- *   3. Verify the signed payment with Circle without settling it yet.
- *   4. Insert a durable `nanopay_receipts` row in `settling` state.
- *   5. Settle through Circle, then conditionally transition that same
- *      row to `settled` before serving the bound signal.
- *
- * The no-payment branch still delegates to the SDK middleware so the
- * canonical x402 V2 challenge stays SDK-owned. Signed requests use the
- * SDK's public facilitator methods separately, creating the durable
- * insertion point between `verify` and `settle`. A transport-unknown
- * settlement remains `settling` and is never blindly retried; the
- * production reconciler remains a separate operational phase.
- *
- * Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
+ * `POST /v2/nanopay/infer/:pipelineId`. The Circle x402 SDK owns the 402 challenge, verify and
+ * settle; Murmur calls them separately so a durable `settling` receipt is written between verify
+ * and settle. A transport-unknown settle stays `settling` and is never blindly retried.
  */
 
 export function createNanopayRouter(
   deps: NanopayRouterDeps,
-  // Router-construction Adapter (NOT settlement-domain data on
-  // NanopayRouterDeps): the Circle facilitator factory. Defaults to the real
-  // SDK facade; a fake here lets an end-to-end paid-inference test run through
-  // startDaemon without touching Circle.
+  // Circle facilitator factory; defaults to the real SDK, a fake lets tests skip Circle.
   gatewayFactory?: NanopayGatewayFactory,
 ): Router {
   const router = Router();

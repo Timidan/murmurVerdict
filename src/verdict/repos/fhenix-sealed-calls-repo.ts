@@ -14,23 +14,14 @@ export interface FhenixSealedCallInsert {
   reveal_open_at: string;
   /**
    * On-chain SubmissionClass: 1 = EarlyAccess, 2 = LateUnsellable, 0 unknown.
-   * Canonical home for the class — reputation must read it from here, not from
-   * the gateway attempt audit row, because direct/operator intake never
-   * creates a gateway attempt.
+   * Read it here, not from the gateway attempt row: direct intake creates none.
    */
   submission_class: number | null;
   created_at: string;
   /**
-   * The provider's terms AS SOLD for this call, snapshotted at acceptance.
-   *
-   * Never updated. An owner may reprice at any time; that must not reach a
-   * call a subscriber already bought into, so the access path prices from
-   * here rather than from the live agent_provider_terms row.
-   *
-   * NULL means one of two very different things, told apart by
-   * `provider_terms_snapshotted`: a legacy call sealed before providers could
-   * price (fall back to the deployment-wide price), or a provider who is not
-   * selling access at all (no sale, at any price).
+   * Provider terms as sold, snapshotted at acceptance and never updated, so a reprice cannot
+   * reach a bought call. NULL is either a legacy call (use the deployment price) or "not
+   * selling"; `provider_terms_snapshotted` tells them apart.
    */
   provider_price_atoms?: string | null;
   provider_currency?: string | null;
@@ -38,32 +29,18 @@ export interface FhenixSealedCallInsert {
   /** Owner's business ceiling as sold; murmur still clamps to deliverability. */
   provider_max_subscribers?: number | null;
   /**
-   * Murmur's cut of a sale of THIS call, in basis points, frozen at the seal.
-   *
-   * Snapshotted for the same reason the price is: an operator changing
-   * MURMUR_PROTOCOL_FEE_BPS must not re-cut calls already on offer. Written
-   * whenever provider terms are snapshotted — a priced call with no fee beside
-   * it is a sale whose split nobody can reconstruct, so acceptance fails loudly
-   * rather than storing NULL here.
-   *
-   * NULL means "no terms snapshot" (not selling), or a row predating
-   * migration 071.
+   * Murmur's cut of this call in bps, frozen at the seal so a fee change cannot re-cut it.
+   * Always written with provider terms; NULL means not selling, or a legacy row.
    */
   provider_fee_bps?: number | null;
   /**
-   * 1 when this row was written by a build that snapshots provider terms, so a
-   * NULL price beside it is a deliberate "not selling" rather than an absence
-   * of information. 0 only on rows predating migration 070.
-   *
-   * Not optional at the storage layer — `insert` always writes 1. It is
-   * optional here so callers building an insert do not have to restate it.
+   * 1 = terms were snapshotted, so a NULL price means "not selling"; 0 only on legacy rows.
+   * `insert` always writes 1; optional here only for callers.
    */
   provider_terms_snapshotted?: number;
 }
 
-// Normalized reveal attribution (migration 057). `reveal_source` is derived
-// from the successful publishReveal tx `from` — see classifyRevealSource in
-// src/verdict/fhenix-reveal-attribution.ts.
+// `reveal_source` comes from the successful publishReveal tx sender (classifyRevealSource).
 export type FhenixRevealSource =
   | "agent"
   | "daemon_fallback"
@@ -192,16 +169,8 @@ export const fhenixSealedCallsRepo = {
   },
 
   /**
-   * The agent that PRODUCED an on-chain call, for revenue attribution.
-   *
-   * Joins the sealed call to its submission, which is where the owning agent
-   * lives. Acceptance writes both rows in ONE transaction, so a sealed call
-   * that exists always has its submission beside it — the join cannot see a
-   * half-written pair.
-   *
-   * Returns null when the call is unknown to this deployment (never accepted
-   * here, or accepted against a different contract). Callers must treat that as
-   * "cannot attribute", never as a reason to invent an owner.
+   * The agent that produced an on-chain call, for revenue attribution. Acceptance writes both
+   * joined rows in one transaction. Null when unknown here: treat as "cannot attribute".
    */
   producerAgentIdByOnchainCall(
     db: Database.Database,
@@ -292,12 +261,9 @@ export const fhenixSealedCallsRepo = {
     }
   },
 
-  // Fallback-worker candidate set: pending calls whose agent grace window has
-  // elapsed at the confirmed safe head. SQLite only NOMINATES candidates — the
-  // worker decides the action from getCall(...) at the safe head (verifying the
-  // stored ct handles), never from these columns. `submissions.status` is NOT
-  // joined here: the public-reveal obligation survives an inconsistent internal
-  // status.
+  // Fallback-worker candidates: pending calls past the grace window. SQLite only nominates;
+  // the worker decides from getCall(...) at the safe head. submissions.status is not joined:
+  // the public-reveal obligation survives an inconsistent internal status.
   listRevealCandidates(
     db: Database.Database,
     input: {

@@ -6,12 +6,7 @@ import {
   type FhenixGatewayTxStatus,
 } from "./fhenix-gateway-attempt-lifecycle.js";
 
-/**
- * Sealed-call Gateway Attempt Records. Owns the sealed-call entity columns
- * (market identity, CoFHE inputs, call linkage) plus the sealed-only
- * in-flight quota reads; every status-machine transition comes from the
- * shared Gateway Attempt Lifecycle Records.
- */
+/** Sealed-call Gateway Attempt records: entity columns and quota reads; transitions come from the shared lifecycle. */
 
 export interface FhenixGatewayTxAttemptInsert {
   attempt_id: string;
@@ -36,8 +31,8 @@ export interface FhenixGatewayTxAttemptInsert {
   strategy_tag: string | null;
   binary_index_input_json: string;
   confidence_input_json: string;
-  /** murmur-idem-v1 hash of the reserving request's validated body; NULL on
-   *  pre-060 rows. Compared on every client_order_id duplicate exit. */
+  /** murmur-idem-v1 hash of the reserving request's body, checked on every client_order_id
+   *  duplicate. NULL on legacy rows. */
   request_fingerprint: string | null;
   /** How the reserving request authenticated: 'pop-v1' or NULL (bearer). */
   auth_proof: string | null;
@@ -175,13 +170,7 @@ export const fhenixGatewayTxRepo = {
       confidence_ct_hash: string;
       accepted_at: string;
       reveal_open_at: string;
-      /**
-       * On-chain SubmissionClass (1 EarlyAccess, 2 LateUnsellable). Decoded
-       * from the submit event and persisted here because reputation must
-       * distinguish the two: a provider who only ever submits in the late,
-       * unsellable window predicts with strictly more information than one
-       * who sells.
-       */
+      /** On-chain SubmissionClass (1 EarlyAccess, 2 LateUnsellable); reputation must tell them apart. */
       submission_class: number;
       updated_at: string;
     },

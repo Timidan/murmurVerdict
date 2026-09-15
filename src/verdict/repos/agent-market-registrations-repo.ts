@@ -3,16 +3,8 @@ import type Database from "better-sqlite3";
 import { prep } from "../db-statements.js";
 
 /**
- * Which venue series an agent is registered to serve (migration 075).
- *
- * Row presence IS the registration — there is no status column. A row is
- * backfilled for every (agent, series) the agent has historically submitted
- * into, and written going forward when an agent takes on a new series.
- *
- * The table's foreign keys carry the lifecycle: CASCADE from agents (a deleted
- * agent's registrations go with it) and RESTRICT from the series. Provider
- * terms in turn FK to THIS table, so a registration is the precondition for a
- * price and unregistering cascades the price away.
+ * Which venue series an agent serves; row presence is the registration.
+ * FKs: CASCADE from agents, RESTRICT from series. Provider terms FK here, so unregistering drops the price.
  */
 export interface AgentMarketRegistrationRow {
   agent_id: string;
@@ -42,10 +34,7 @@ export const agentMarketRegistrationsRepo = {
     ).run(input.agentId, input.venueSeriesId, input.now);
   },
 
-  /**
-   * Drop a registration. With foreign keys enforced (they are, at db open) this
-   * cascades the agent's provider terms for that series away in the same step.
-   */
+  /** Drop a registration; cascades the agent's provider terms for that series. */
   unregister(db: Database.Database, key: AgentMarketRegistrationKey): void {
     prep(
       db,

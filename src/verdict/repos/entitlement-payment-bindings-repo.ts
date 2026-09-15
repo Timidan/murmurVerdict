@@ -3,26 +3,13 @@ import type Database from "better-sqlite3";
 import { prep } from "../db-statements.js";
 
 /**
- * Binds a settled x402 payment to the one resource it bought.
- *
- * The access broker used to compute a payload hash and a requirements hash and
- * discard both, under a comment claiming the entitlement reservation was the
- * real anti-double-charge guard. It is not: the reservation is unique per
- * (call, subscriber), so the SAME signed payment header replayed against a
- * DIFFERENT call at the same price satisfied every local check. Whether it
- * actually settled twice then depended entirely on the facilitator's nonce
- * handling — someone else's guarantee, not one this service makes.
+ * Binds a settled x402 payment to the one resource it bought, so one signed header cannot buy
+ * two calls. The entitlement reservation alone is per (call, subscriber) and does not stop that.
  */
 export const entitlementPaymentBindingsRepo = {
   /**
-   * Claim `payload_hash` for `resource_fingerprint`.
-   *
-   * Returns true when the payment is now bound to that resource — either
-   * because this call bound it, or because it was already bound to the SAME
-   * resource (clients retry, and a retry of one purchase must still work).
-   *
-   * Returns false when the hash is already bound to a DIFFERENT resource:
-   * that is a replay, and the caller refuses it before any settlement.
+   * Claim `payload_hash` for `resource_fingerprint`. True when bound to this resource (a retry
+   * counts). False when bound to a different one: a replay, refused before any settlement.
    */
   bind(
     db: Database.Database,

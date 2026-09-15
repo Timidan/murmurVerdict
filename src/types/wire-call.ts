@@ -1,16 +1,8 @@
-// Shared REST wire types — call projections (agent calls list, single call
-// detail, per-market calls feed). Browser-safe; see wire-agent.ts for rules.
-//
-// These operator-blind projections never surface plaintext (side / asset_id /
-// horizon_hours / confidence / rationale) for a PENDING sealed call. The
-// plaintext fields kept below are optional because they can appear post-reveal
-// via the fhenix.revealed_verdict path / legacy rows; the daemon guard pins
-// the fields the daemon actually guarantees.
+// Shared REST wire types: call projections. Browser-safe; see wire-agent.ts.
+// Operator-blind: a PENDING sealed call never carries plaintext; those fields are optional
+// because they can appear after reveal.
 
-/** One row of GET /v1/agents/:slug/calls. Mirrors the daemon's
- *  PublicAgentCallProjection (src/verdict/sealed-call-public-projection.ts).
- *  Resolution fields are optional — the daemon only forwards them when the
- *  underlying row carries them. */
+/** One row of GET /v1/agents/:slug/calls. Mirrors PublicAgentCallProjection. */
 export interface WireAgentCallRow {
   call_id: string;
   status: string;
@@ -33,11 +25,7 @@ export interface WireAgentCallRow {
   resolved_at?: string | null;
 }
 
-/** GET /v1/calls/:call_id. Mirrors the daemon's PublicSealedCallView
- *  (src/verdict/sealed-call-public-projection.ts, audience
- *  "public-call-detail"). The submission block keeps a few optional legacy
- *  plaintext keys the detail page still renders defensively; the daemon guard
- *  pins the operator-blind core. */
+/** GET /v1/calls/:call_id. Mirrors PublicSealedCallView ("public-call-detail"). */
 export interface WireFullCall {
   submission: {
     call_id: string;
@@ -58,8 +46,7 @@ export interface WireFullCall {
   t0: { t0: string; p0: string; feed: string } | null;
   resolution: {
     t1: string;
-    // Native-price price-anchor evidence; null for adapter /
-    // oracle-unavailable resolutions (daemon migration 055).
+    // Null for adapter and oracle-unavailable resolutions.
     p1: string | null;
     t1_feed: string | null;
     signed_return: string | null;
@@ -67,9 +54,7 @@ export interface WireFullCall {
     call_score: number | null;
     resolved_at: string;
   } | null;
-  // Sealed-Fhenix lifecycle projection. Present only when privacy_mode is
-  // "sealed_fhenix". Pre-reveal it carries opaque ciphertext handles +
-  // lifecycle timestamps; post-publish it gains `revealed_verdict`.
+  // Only for "sealed_fhenix". Ciphertext handles pre-reveal; `revealed_verdict` after publish.
   fhenix?: {
     chain_id: number;
     contract_address: string;
@@ -91,9 +76,7 @@ export interface WireFullCall {
   };
 }
 
-/** One row of GET /v1/markets/:market_id/calls. Mirrors the daemon's
- *  PublicMarketCallProjection (src/verdict/sealed-call-public-projection.ts) —
- *  the per-market twin of WireAgentCallRow with the agent display_name. */
+/** One row of GET /v1/markets/:market_id/calls. Mirrors PublicMarketCallProjection. */
 export interface WireMarketCallRow {
   call_id: string;
   agent_slug?: string;
@@ -103,7 +86,7 @@ export interface WireMarketCallRow {
   submitted_at?: string;
   privacy_mode: string;
   commit_hash: string | null;
-  /** Wave 4b — receipts subsystem dropped; always null on the wire. */
+  /** Always null on the wire. */
   acceptance_receipt_hash: string | null;
   adapter_id: string;
   market_family: string;

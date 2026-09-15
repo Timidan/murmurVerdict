@@ -67,11 +67,7 @@ export interface MarketRow {
   adapter_id: string | null;
   market_family: string | null;
   config_json: string;
-  /**
-   * The durable venue series this instance belongs to (migration 075), or null
-   * for markets that name no valid series in their config. Nullable on purpose:
-   * a null here reads downstream exactly like "no provider terms" — unsellable.
-   */
+  /** The venue series this instance belongs to, or null; null reads downstream as unsellable. */
   venue_series_id: string | null;
 }
 
@@ -150,11 +146,7 @@ export const oraclesRepo = {
 };
 
 export const marketsRepo = {
-  /**
-   * Replace a market's adapter config. Used at registration to stamp series
-   * values (e.g. `embargoSec`) that the adapter reads back when computing the
-   * reveal time the acceptance guard compares against the chain.
-   */
+  /** Replace a market's adapter config; registration stamps series values (e.g. `embargoSec`) here. */
   setConfigJson(db: Database.Database, marketId: string, configJson: string): void {
     db.prepare(
       `UPDATE markets SET config_json = @config_json WHERE market_id = @market_id`,
@@ -162,17 +154,8 @@ export const marketsRepo = {
   },
 
   /**
-   * Mark a market as halted by an operator, and set its status, in one write.
-   *
-   * The halt is what makes an operator's freeze survive discovery. Discovery
-   * relists a frozen market on two paths — the post-receipt transaction, and
-   * the mid-registration repair in promoteCandidate — and neither could tell
-   * an operator's halt from discovery's own repair freeze, because the ledger
-   * looks identical. This marker breaks the tie.
-   *
-   * It lives on `markets` deliberately. An earlier version put it on
-   * discovery's ledger, where an UPDATE against a market discovery had never
-   * seen matched zero rows and marked nothing at all.
+   * Halt a market by operator and set its status in one write. The marker lets discovery tell
+   * an operator's freeze from its own repair freeze, so it never relists over it.
    */
   haltByOperator(
     db: Database.Database,
@@ -274,13 +257,8 @@ export const marketsRepo = {
       status: RegistryStatus;
       created_at: string;
       /**
-       * The durable venue series this instance belongs to (migration 075), or
-       * null when the config names no valid series. Optional so callers that
-       * never had a series (fixtures, legacy smokes) stay unchanged and land
-       * null exactly as before; the Polymarket registration path passes the
-       * derived value. Set on BOTH the insert and the conflict-update: a
-       * re-registration restates it from the same fresh projection config_json
-       * comes from, so the two never disagree.
+       * The venue series this instance belongs to, or null. Written on insert and on
+       * conflict, from the same projection as config_json, so the two never disagree.
        */
       venue_series_id?: string | null;
     },

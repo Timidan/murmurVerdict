@@ -2,13 +2,8 @@ import type Database from "better-sqlite3";
 
 import { prep } from "../db-statements.js";
 
-// Durable state machine for the murmur-owned fallback reveal worker. Exactly
-// ONE row per sealed call the worker has taken responsibility for; the phase
-// column is the crash-recovery boundary so a restart never re-opens or
-// re-publishes a call whose tx receipt was lost. See
-// src/integrations/fhenix-reveal-worker.ts for the transition logic and
-// contracts/src/MurmurSealedVerdicts.sol for the on-chain CallState this
-// mirrors.
+// Durable state machine for the murmur-owned fallback reveal worker: one row per sealed call it
+// owns. The phase is the crash-recovery boundary, so a restart never re-opens or re-publishes.
 export type FhenixRevealJobPhase =
   | "eligible"
   | "open_tx_pending"
@@ -121,13 +116,8 @@ export const fhenixRevealJobsRepo = {
     );
   },
 
-  // Due, non-terminal jobs ordered by next_attempt_at. Single write-enabled
-  // process per reveal EOA (documented) means no lease is required for
-  // correctness; the on-chain WrongState guard is the real safety boundary.
-  // Scoped by (chain_id, contract_address): a worker is bound to ONE deployed
-  // contract, so an unscoped read would hand it a job persisted against a
-  // previous deployment and it would open/publish that call at the wrong
-  // address.
+  // Due, non-terminal jobs. One process per reveal EOA, so no lease; the on-chain WrongState
+  // guard is the safety boundary. Scoped to one contract so an old deployment's job never returns.
   listDue(
     db: Database.Database,
     input: {

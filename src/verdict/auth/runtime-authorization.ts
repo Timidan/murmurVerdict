@@ -97,10 +97,8 @@ export function authorizeRuntimeKeyGatewayIntent(
   opts: {
     now: () => Date;
     /**
-     * Duplicate exits re-apply pure policy (chain match, market allowlist,
-     * feed flag) before handing back a pinned attempt — a key narrowed since
-     * the original reservation must not retrieve orders outside its policy —
-     * but a replay is not new work, so it must not burn rate-limit quota.
+     * Duplicate exits still re-check pure policy (a narrowed key must not fetch orders
+     * outside it) but skip rate limits, since a replay is not new work.
      */
     skipRateLimits?: boolean;
   },

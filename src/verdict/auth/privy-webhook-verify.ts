@@ -1,20 +1,7 @@
 // ─── Privy inbound webhook verification (login-method transfer) ──────────────
-//
-// A login-method transfer fires a signed `user.transferred_account` webhook and
-// DELETES the source Privy user. This adapter runs the raw body + svix headers
-// through the SDK's signature check and normalizes the one event murmur cares
-// about into a transfer descriptor.
-//
-// The payload MUST be the raw JSON string and the svix headers must keep their
-// casing. Verification throws on a bad signature or a timestamp outside svix's
-// 5-minute tolerance. Read the DIDs off event.fromUser.id / event.toUser.id —
-// there is no `transferred_account` field.
-//
-// Pass the dashboard signing secret UNCHANGED, `whsec_` prefix and all: the
-// SDK strips and base64-decodes it internally.
-//
-// Dynamic import, mirroring auth/privy.ts — a deploy that never enables the
-// transfer receiver shouldn't pay to load hpke/jose/svix.
+// Verifies the raw JSON body + svix headers and normalizes `user.transferred_account`.
+// DIDs come from event.fromUser.id / event.toUser.id. Pass the signing secret unchanged,
+// `whsec_` prefix included. Dynamic import, as in privy.ts.
 
 import type { PrivyClient as PrivyClientType } from "@privy-io/node";
 
@@ -65,10 +52,7 @@ export function createPrivyWebhookVerifier(
   const enabled = (): boolean =>
     Boolean(cfg.appId && cfg.appSecret && cfg.signingSecret);
 
-  // Cache the constructed client. A rejected build is NOT cached permanently:
-  // we null the promise on failure so the next delivery retries construction
-  // (e.g. a transiently-unresolvable dynamic import) rather than wedging the
-  // receiver into a permanent 400 loop.
+  // Cache the client, but drop a failed build so the next delivery retries.
   let clientPromise: Promise<PrivyClientType> | null = null;
 
   const buildClient = (): Promise<PrivyClientType> => {
@@ -95,8 +79,7 @@ export function createPrivyWebhookVerifier(
     async verify(rawBodyUtf8, headers): Promise<PrivyWebhookEvent> {
       const client = await buildClient();
 
-      // Throws InvalidWebhookError on bad signature / stale timestamp. We let
-      // that propagate — the route maps a throw to HTTP 400.
+      // Throws on bad signature / stale timestamp; the route maps that to 400.
       const event = client.webhooks().verify({
         payload: rawBodyUtf8,
         headers: {
@@ -107,9 +90,7 @@ export function createPrivyWebhookVerifier(
       });
 
       if (event.type === "user.transferred_account") {
-        // Runtime-validate the two DIDs even though the SDK types them — a
-        // signature-valid but structurally-degenerate payload must not reach
-        // the reparent core with an empty DID.
+        // Validate at runtime: a signed payload with an empty DID must not reach reparent.
         const fromPrivyUserId = event.fromUser?.id;
         const toPrivyUserId = event.toUser?.id;
         if (typeof fromPrivyUserId !== "string" || fromPrivyUserId.length === 0) {

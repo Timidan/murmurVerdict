@@ -1,7 +1,4 @@
-// Shared REST wire types — operator / admin surfaces (token-gated): fhenix
-// gateway, live canaries, fhenix lifecycle, controller identity, operator
-// alerts, feed-SLA. Browser-safe; see wire-agent.ts for rules. Producer
-// guards pin these against the daemon operator snapshots / presenters.
+// Shared REST wire types: token-gated operator/admin surfaces. Browser-safe; see wire-agent.ts.
 
 /* ── Fhenix gateway ──────────────────────────────────────────────────────── */
 
@@ -367,8 +364,7 @@ export interface WireFeedSlaIncident {
   incident_id: string;
   feed_id: string;
   agent_id: string;
-  // The daemon presenter (publicFeedSlaIncident) widens these enum-ish fields
-  // to `string`, so the wire contract does too — see wire-contract-guards.ts.
+  // `string` because the daemon presenter widens these fields.
   incident_kind: string;
   status: string;
   expected_sequence: number;

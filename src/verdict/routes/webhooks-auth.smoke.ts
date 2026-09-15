@@ -1,14 +1,7 @@
 // ─── webhooks-auth.smoke.ts ─────────────────────────────────────────────────
-//
-// Characterization smoke for the POST /v1/webhooks account-only auth helper
-// (authenticateWebhookAccount in routes/webhooks.ts). Before this wave the
-// webhook ROUTE auth path had no coverage — webhooks.smoke.ts exercises
-// OUTBOUND webhook dispatch, not inbound auth. This locks the behavior the
-// shared-Privy-resolver refactor touches:
-//   - a verified Privy bearer with an existing account → privy identity,
-//   - a verified bearer with NO Murmur account FALLS THROUGH to the api-key
-//     tier (must not 401 — a client sending both creds still succeeds),
-//   - read-only: that fall-through must NOT create an account row,
+// Locks authenticateWebhookAccount (auth/webhook-account-auth.ts), the POST /v1/webhooks auth:
+//   - verified bearer + existing account → privy identity,
+//   - verified bearer, no account → falls through to the api-key tier, creating no account,
 //   - api key alone → api_key identity,
 //   - no usable credential → null (the route turns this into 401).
 

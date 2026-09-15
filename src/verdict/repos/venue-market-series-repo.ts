@@ -3,14 +3,8 @@ import type Database from "better-sqlite3";
 import { prep } from "../db-statements.js";
 
 /**
- * The venue's DURABLE market identity (migration 075).
- *
- * A market instance is ephemeral — a new one every few minutes — so nothing
- * lasting can key to `market_id`. The recurring SERIES it belongs to is the
- * stable thing, and it is what a registration or a price keys to instead.
- *
- * Identity is (venue, series_slug). `venue_series_id` is the derived
- * Polymarket-form `'<venue>:<series_slug>'` primary key every later FK stores.
+ * The venue's durable market identity. Instances are ephemeral, so registrations and prices
+ * key to the series. Identity is (venue, series_slug); the key is `'<venue>:<series_slug>'`.
  */
 export interface VenueMarketSeriesRow {
   venue_series_id: string;
@@ -33,7 +27,6 @@ export interface VenueMarketSeriesInput {
   now: string;
 }
 
-/** The stored primary key for a series, derived from its identity. */
 export function venueSeriesId(venue: string, seriesSlug: string): string {
   return `${venue}:${seriesSlug}`;
 }

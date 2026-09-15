@@ -185,14 +185,8 @@ export function bindControllerWallet(
       );
     }
 
-    // Cross-account uniqueness only. A single Privy account may control
-    // many agents from the same embedded wallet; the architecture says
-    // wallet ↔ Privy account, agents are owned by that account. The
-    // collision check therefore filters by `account_id != ?` so the
-    // same wallet binding to multiple agents under the SAME account is
-    // allowed. Cross-account binding stays forbidden — otherwise an
-    // attacker who controlled a wallet could attach victim accounts to
-    // their wallet by racing into the binding row.
+    // Cross-account uniqueness only: one account may bind a wallet to many agents, but a
+    // second account never may, or a wallet holder could attach victim accounts to it.
     const walletOwner = db
       .prepare(
         `SELECT agent_id, account_id FROM agent_controller_wallets

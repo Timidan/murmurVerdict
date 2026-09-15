@@ -9,11 +9,7 @@ import type {
 export interface ResolutionWriteInput {
   call_id: string;
   t1: string;
-  // LEGACY PERSISTED COLUMNS. p1 / t1_feed / signed_return were the
-  // native-price anchor evidence; migration 055 made them nullable and
-  // Murmur no longer observes prices, so every row written today passes NULL.
-  // The columns stay so historical rows remain readable — they are never
-  // dropped.
+  // Legacy price columns: always NULL now, kept so historical rows stay readable.
   p1: string | null;
   t1_feed: string | null;
   signed_return: string | null;
@@ -45,8 +41,7 @@ export interface FullCallResolutionView {
   resolution:
     | {
         t1: string;
-        // Native-price price-anchor evidence; NULL for adapter /
-        // oracle-unavailable resolutions (migration 055).
+        // Null for adapter and oracle-unavailable resolutions.
         p1: string | null;
         t1_feed: string | null;
         signed_return: string | null;
@@ -60,11 +55,8 @@ export interface FullCallResolutionView {
 }
 
 /**
- * Submission statuses that mark a call's verdict as final. Once a submission
- * reaches one of these, the t1_resolutions row should never be overwritten —
- * a concurrent oracle_unavailable / late adapter tick must not clobber a real
- * resolved/disputed/etc. verdict. The guard lives in the repo so all writers
- * inherit it; bypassing requires an explicit re-resolution path.
+ * Statuses that make a verdict final: the t1_resolutions row is never overwritten after.
+ * Enforced in the repo so every writer inherits it.
  */
 export const TERMINAL_RESOLUTION_STATUSES = [
   "resolved",
@@ -79,12 +71,8 @@ const TERMINAL_LIST_SQL = TERMINAL_RESOLUTION_STATUSES.map((s) => `'${s}'`).join
 
 export const resolutionsRepo = {
   /**
-   * Insert or update the t1_resolutions row for a call. Returns `true` when a
-   * row was written and `false` when the write was skipped because the
-   * submission has already reached a terminal status — see
-   * [[TERMINAL_RESOLUTION_STATUSES]]. The guard is enforced in SQL (single
-   * statement, atomic vs the submissions.status read) to close the race
-   * window where a concurrent writer could overwrite a finalized verdict.
+   * Insert or update a call's t1_resolutions row; false when skipped because the submission is
+   * terminal. The guard is in the same SQL statement, so it cannot race the status read.
    */
   setResolution(
     db: Database.Database,

@@ -1,15 +1,7 @@
 // ─── Account kill switch ─────────────────────────────────────────────────────
-//
-// One account-level timestamp is the enforcement primitive; the bulk
-// revoke/rotate is bookkeeping (revoke-all alone
-// is not durable because API-key mint is Privy-gated only, so a compromised
-// Privy session could immediately re-mint). While engaged:
-//   - runtime-key and API-key dispatch reject (dispatcher),
-//   - both key mints reject (surfaces),
-//   - queued gateway attempts refuse to claim a broadcast (attempt machine).
-// Release is a separate deliberate ceremony and does NOT resurrect revoked
-// or rotated credentials — the owner re-mints, which for runtime keys means
-// a fresh controller-wallet signature.
+// The account timestamp is the enforcement; bulk revoke alone is not durable (a compromised
+// Privy session could re-mint). While engaged, key dispatch, both key mints and gateway
+// broadcast claims reject. Release does not restore revoked or rotated credentials.
 
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -17,11 +9,7 @@ import type Database from "better-sqlite3";
 import { agentSecurityEventsRepo } from "../repos/agent-security-events-repo.js";
 import { ERROR_CODES, VerdictError } from "../schema.js";
 
-/**
- * Shared by dispatch (runtime + API key), both key-mint surfaces (and the
- * runtime-key challenge, so the wallet never signs an authorization that
- * cannot mint), and gateway attempt claiming.
- */
+/** Used by key dispatch, both key mints, the runtime-key challenge, and gateway attempt claims. */
 export function assertAgentCredentialsEnabled(
   db: Database.Database,
   accountId: string,
@@ -65,8 +53,7 @@ export function engageAccountKillSwitch(
   db.transaction(() => {
     const existing = agentCredentialsDisabledAt(db, input.account_id);
     if (existing) {
-      // Idempotent re-engage: keep the original timestamp, revoke nothing
-      // again, emit nothing — the audit log records ONE engagement.
+      // Idempotent: keep the original timestamp; revoke and emit nothing.
       result = {
         already_engaged: true,
         disabled_at: existing,
@@ -126,16 +113,8 @@ export function releaseAccountKillSwitch(
   const nowIso = input.now().toISOString();
   let result: ReleaseKillSwitchResult | null = null;
   db.transaction(() => {
-    // A CLOSED account can never be reopened from here.
-    //
-    // Deactivation (migration 073) engages this switch as one of its
-    // consequences, so without this guard the release route — which exists to
-    // clear agent_credentials_disabled_at — would re-arm minting on an account
-    // the owner had closed. The two states are stored in separate columns for
-    // exactly this reason; read the other one before clearing this one.
-    //
-    // Read inline rather than through account-lifecycle.ts, which imports this
-    // module: one column, no import cycle.
+    // A closed account can never be reopened here (deactivation engages this switch).
+    // Read inline: account-lifecycle.ts imports this module.
     const deactivatedAt = (
       db
         .prepare("SELECT deactivated_at FROM accounts WHERE account_id = ?")

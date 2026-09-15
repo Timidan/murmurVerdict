@@ -43,11 +43,7 @@ export const webhooksRepo = {
     return row ?? null;
   },
 
-  /**
-   * Fix 4 — count active (non-disabled) subscriptions for a given agent
-   * slug, used to enforce the per-agent subscription cap in
-   * registerWebhookSubscription. `null` slug counts global subscriptions.
-   */
+  /** Count active subscriptions for an agent slug (null = global), for the per-agent cap. */
   countActiveForAgentSlug(
     db: Database.Database,
     agent_slug: string | null,

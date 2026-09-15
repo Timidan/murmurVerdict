@@ -1,21 +1,7 @@
 /**
- * Singleton {@link MarketMakerRegistry} for the verdict runtime.
- *
- * Concrete market-maker adapters land as a sibling file plus a single
- * `register()` call at module load. Lookups dispatch by `name` and
- * (optionally) `version`; the highest semver-sorted version wins when
- * `version` is omitted.
- *
- * Every registered adapter is an EXTERNAL venue: Murmur never authors or
- * resolves a market itself. The resolver dispatches BOTH t1 observation
- * (`adapter.observeResolution(marketRef, ctx)`) AND scoring
- * (`scoreOutcomeVector(commitment, outcome, adapter)` → `adapter.score(...)`)
- * through this registry, so the abstraction is load-bearing, not decorative.
- * An adapter this daemon does not register cannot mint or settle a call —
- * see requireMintableExternalMarket in ../external-market-guard.ts.
- *
- * Cite: V2_IMPLEMENTATION_PLAN.md "MarketMaker Adapter Framework",
- *       V2_DECISION_RECORD.md §2.4.
+ * Singleton {@link MarketMakerRegistry}. Every adapter is an external venue; the resolver
+ * dispatches observation and scoring through it, and an unregistered adapter cannot mint or
+ * settle a call (see requireMintableExternalMarket). Omitting `version` picks the highest semver.
  */
 
 import { MarketMakerRegistry, type MarketMakerAdapter } from "../../markets/types.js";
@@ -30,22 +16,12 @@ const registry = new MarketMakerRegistry();
 // an operator syncs/upserts a market or the resolver observes a listed row.
 registry.register(polymarketGammaAdapter);
 
-/**
- * Returns the process-wide {@link MarketMakerRegistry} singleton. Callers MUST
- * NOT cache the registry across `import.meta.url` boundaries; treat it as a
- * runtime accessor so test harnesses can swap the implementation under their
- * feet (jest's `vi.mock` style is sufficient — no DI plumbing needed).
- */
+/** The process-wide registry. Do not cache it across modules; tests may swap it. */
 export function getMarketMakerRegistry(): MarketMakerRegistry {
   return registry;
 }
 
-/**
- * Convenience for late-binding adapters at boot. Equivalent to
- * `getMarketMakerRegistry().register(adapter)` — exposed as a top-level
- * function so the registration call site stays terse and grep-able
- * (`grep -rn registerMarketMaker src/` enumerates every concrete adapter).
- */
+/** Register an adapter at boot; `grep -rn registerMarketMaker src/` lists every one. */
 export function registerMarketMaker(adapter: MarketMakerAdapter): void {
   registry.register(adapter);
 }

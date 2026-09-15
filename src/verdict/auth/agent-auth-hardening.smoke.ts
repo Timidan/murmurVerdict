@@ -1,19 +1,8 @@
 // ─── Agent-auth hardening smoke ──────────────────────────────────────────────
-//
-// Pins the two security mechanisms added after the PayBox competitive review:
-//
-//   A. Proof-of-possession runtime keys (murmur-rk-v2): a key whose
-//      controller-signed policy carries signing_pubkey REQUIRES a valid
-//      Ed25519 request signature and fails CLOSED — never falling through to
-//      API-key auth — on any defect (missing headers, bad signature, stale
-//      timestamp, replayed nonce, missing request context). Bearer-only keys
-//      keep the old contract untouched.
-//
-//   B. Account kill switch: agent_credentials_disabled_at blocks runtime-key
-//      AND api-key dispatch even for still-valid credentials (the race
-//      window), while engageAccountKillSwitch also bulk-revokes/rotates and
-//      writes an append-only security event. Release does not resurrect
-//      credentials.
+// A. PoP runtime keys (murmur-rk-v2) need a valid Ed25519 signature and fail closed on any
+//    defect, never falling through to API keys. Bearer-only keys are unchanged.
+// B. The kill switch blocks runtime- and api-key dispatch even for still-valid credentials;
+//    engage revokes/rotates and logs one event; release does not restore credentials.
 
 import { strict as assert } from "node:assert";
 import { generateKeyPairSync, randomUUID, sign as edSign, createHash } from "node:crypto";
@@ -279,8 +268,7 @@ async function main() {
     });
 
     await check("captured signature with a SUBSTITUTED nonce is rejected (v2 signs the nonce)", async () => {
-      // v1 regression: the nonce was only a header, so one captured signature
-      // could be replayed with any fresh nonce inside the freshness window.
+      // A captured signature must not verify with a different nonce.
       const captured = popHeaders({ nonce: "cc".repeat(16) });
       const first = await dispatchAuth(
         fakeRequest({ "x-murmur-runtime-key": popKey.secret, ...captured }, popContext),

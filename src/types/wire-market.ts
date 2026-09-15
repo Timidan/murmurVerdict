@@ -1,7 +1,5 @@
-// Shared REST wire types — markets registry, taxonomy, oracle + venue
-// snapshots. Browser-safe; see wire-agent.ts for rules. Producer guards pin
-// these against the daemon's EnrichedMarketRegistryRow / market-taxonomy /
-// oracle / venue-snapshot types.
+// Shared REST wire types: markets registry, taxonomy, oracle and venue snapshots.
+// Browser-safe; see wire-agent.ts.
 
 export type WireMarketStatus = "draft" | "listed" | "frozen" | "retired";
 
@@ -72,17 +70,13 @@ export interface WireMarketTaxonomyResponse {
   reserved_resolution_classes: WireMarketResolutionClass[];
 }
 
-/** One outcome's live venue price (0..1 probability). The daemon types
- *  `price` as number; Gamma's own wire uses decimal strings — the union keeps
- *  callers coercing before math. */
+/** One outcome's live venue price (0..1). May be a decimal string; coerce before math. */
 export interface WireMarketVenuePricePoint {
   outcome: string;
   price: number | string;
 }
 
-/** Live venue snapshot stamped onto venue-adapter market rows. Mirrors the
- *  daemon's MarketVenueSnapshot. Fail-soft: null fields when the venue is
- *  down. */
+/** Live venue snapshot on venue-adapter market rows. Null fields when the venue is down. */
 export interface WireMarketVenueSnapshot {
   prices: WireMarketVenuePricePoint[] | null;
   volume: number | null;
@@ -93,13 +87,8 @@ export interface WireMarketVenueSnapshot {
 }
 
 /**
- * The market's immutable schedule snapshot. Milliseconds since epoch, in UTC —
- * the dashboard formats them in the viewer's own locale and timezone, and the
- * matrix groups markets that share one window by these instants.
- *
- * Absent on markets that were never bound to a series (native markets, and
- * markets discovery froze before listing). Absent means "no submission window
- * exists", which is not the same as "the window has passed".
+ * The market's immutable schedule. Epoch milliseconds, UTC.
+ * Absent means no submission window exists, not that it has passed.
  */
 export interface WireMarketClock {
   series_id: string;
@@ -111,12 +100,7 @@ export interface WireMarketClock {
   public_reveal_at_ms: number;
 }
 
-/**
- * One market row from GET /v1/markets (+ single read). Mirrors the daemon's
- * VenueEnrichedMarketRegistryRow (src/verdict/market-read-surface.ts). The
- * daemon emits more registry columns than the dashboard reads; the index
- * signature preserves them through without hand-copying each one.
- */
+/** One market row from GET /v1/markets. Extra registry columns pass through the index signature. */
 export interface WireMarketRow {
   market_id: string; // venue conditionId, e.g. "0x1f2e…"
   asset_id: string; // venue synthetic, e.g. "polymarket:event"
@@ -127,9 +111,7 @@ export interface WireMarketRow {
   void_band: string; // decimal as string
   status: WireMarketStatus;
   market_config_version: number;
-  /** Provider key ("polymarket-gamma"). Emitted by the registry read since the
-   *  adapter-identity spread; typed explicitly so the provider level of the
-   *  dashboard hierarchy is a contract, not an index-signature accident. */
+  /** Provider key ("polymarket-gamma"). */
   adapter_id?: string;
   market_taxonomy?: WireMarketTaxonomyAssignment;
   oracles?: WireMarketOracleSummary;
@@ -137,6 +119,5 @@ export interface WireMarketRow {
   venue?: WireMarketVenueSnapshot;
   /** Scheduled markets ONLY — the window instants the matrix groups by. */
   clock?: WireMarketClock;
-  // Backend may include additional registry fields; preserve them through.
   [extra: string]: unknown;
 }

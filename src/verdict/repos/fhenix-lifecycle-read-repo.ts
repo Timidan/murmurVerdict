@@ -37,15 +37,7 @@ export interface FhenixLifecycleCursorRow {
   updated_at: string;
 }
 
-/**
- * Latest sealed-Fhenix call for a (agent, market)
- * pair, used by the Nanopayments resolver to bind a paid request to
- * the most recent anchored signal. Returns the columns the binding
- * tuple needs from `fhenix_sealed_calls` + `submissions`, joined on
- * `call_id`. Filters out rows that pre-date the commit-hash backfill
- * (`commit_hash` / `commit_scheme` null) because the binding tuple
- * requires both. Returns `null` if no qualifying row exists.
- */
+/** Binding-tuple columns returned by latestSealedCallForPipeline. */
 export interface LatestSealedCallForPipelineRow {
   chain_id: number;
   contract_address: string;
@@ -132,28 +124,10 @@ export const fhenixLifecycleReadRepo = {
   },
 
   /**
-   * Used by the Nanopayments resolver
-   * (`resolveLatestSealedCall`) to find the latest **servable**
-   * sealed call for a (agent, market) pair. Returns the columns
-   * needed to build a `FhenixAnchorTuple` plus the binding metadata.
-   *
-   * Filters:
-   *   - `s.commit_hash IS NOT NULL` / `s.commit_scheme IS NOT NULL`:
-   *     the binding tuple requires both; rows missing them pre-date
-   *     the commit-hash backfill and aren't bindable.
-   *   - `f.reveal_status IN ('pending','revealed')`:
-   *     2026-05-24 — `'invalid'` / `'missed'` rows are terminal-bad
-   *     and the reveal can never resolve, so binding to them would
-   *     guarantee the buyer pays for a signal that never resolves.
-   *     Skip them; the resolver falls back to the next eligible row
-   *     because we `ORDER BY created_at DESC LIMIT 1` over the
-   *     filtered set — i.e. the next-most-recent servable row.
-   *
-   * Ordering: `fhenix_sealed_calls.created_at DESC` matches the
-   * "latest sealed-Fhenix call" semantic — the row indexed most
-   * recently from the chain. Tie-break on `call_id DESC` for
-   * deterministic order under same-millisecond inserts (rare but
-   * possible with multiple agents per `created_at` precision).
+   * Latest servable sealed call for an (agent, market), for the Nanopayments resolver.
+   * Needs commit_hash and commit_scheme (the binding uses both) and a pending or revealed
+   * status: invalid/missed calls never resolve, so a buyer must not pay for them.
+   * Newest created_at first; call_id breaks ties. Null if none.
    */
   latestSealedCallForPipeline(
     db: Database.Database,

@@ -1,16 +1,8 @@
 import { keccak256, toHex } from "viem";
 
-// Canonical JSON encoder used as the pre-image for receipt hashes.
-//
-// Rules:
-//   - Object keys are sorted lexicographically at every depth.
-//   - undefined fields are dropped (JSON.stringify default is preserved).
-//   - Arrays preserve order; their elements are canonicalized recursively.
-//   - Primitives serialize via JSON.stringify (matches RFC 8259 number form).
-//   - No trailing newline, no whitespace.
-//
-// keccak256 is computed over the UTF-8 bytes of the canonical string. The
-// returned hash is a 0x-prefixed lowercase 32-byte hex string.
+// Canonical JSON, the pre-image for receipt hashes: keys sorted at every depth, undefined
+// dropped, arrays keep order, primitives via JSON.stringify, no whitespace.
+// The hash is keccak256 over the UTF-8 bytes, as 0x-prefixed lowercase hex.
 
 export function canonicalize(value: unknown): string {
   return stableStringify(value);

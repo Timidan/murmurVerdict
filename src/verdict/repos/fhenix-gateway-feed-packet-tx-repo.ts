@@ -7,12 +7,7 @@ import {
   type FhenixGatewayTxStatus,
 } from "./fhenix-gateway-attempt-lifecycle.js";
 
-/**
- * Feed-packet Gateway Attempt Records. Owns the feed entity columns (feed
- * identity, packet kind/sequence, reveal/deadline timing, CoFHE inputs,
- * packet linkage) plus the feed-only sequence reads; every status-machine
- * transition comes from the shared Gateway Attempt Lifecycle Records.
- */
+/** Feed-packet Gateway Attempt records: entity columns and sequence reads; transitions come from the shared lifecycle. */
 
 export type FhenixGatewayFeedPacketTxStatus = FhenixGatewayTxStatus;
 
@@ -42,8 +37,8 @@ export interface FhenixGatewayFeedPacketTxAttemptInsert {
   reveal_after: string;
   action_input_json: string;
   signal_input_json: string;
-  /** murmur-idem-v1 hash of the reserving request's validated body; NULL on
-   *  pre-060 rows. Compared on every client_order_id duplicate exit. */
+  /** murmur-idem-v1 hash of the reserving request's body, checked on every client_order_id
+   *  duplicate. NULL on legacy rows. */
   request_fingerprint: string | null;
   /** How the reserving request authenticated: 'pop-v1' or NULL (bearer). */
   auth_proof: string | null;
@@ -138,11 +133,8 @@ export const fhenixGatewayFeedPacketTxRepo = {
   },
 
   /**
-   * Returns true iff a non-terminal gateway attempt already holds
-   * (feed_id, sequence). Used to reject explicit-body.sequence submits
-   * that would collide before the accepted-packet UNIQUE constraint
-   * catches them, saving the relayer a wasted broadcast. The lookup
-   * is by an index on (feed_id, sequence) per Migration 045.
+   * True iff a non-terminal attempt already holds (feed_id, sequence), so a colliding explicit
+   * sequence is rejected before the relayer wastes a broadcast.
    */
   hasNonTerminalSequence(
     db: Database.Database,

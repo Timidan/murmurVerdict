@@ -55,10 +55,7 @@ assert.throws(
     err instanceof DaemonConfigError &&
     err.key === "MURMUR_REQUIRE_LIVE_CANARIES",
 );
-// The Gamma flag is a KILL SWITCH (single shared derivation): default ON,
-// disabled only on an explicit false/0/no. An unrecognized value is tolerated
-// as ON rather than throwing — this is what keeps daemon-config, the live
-// canaries, and the API router in agreement.
+// The Gamma flag is a kill switch: ON unless explicitly false/0/no; unknown values read as ON.
 assert.equal(
   loadDaemonRuntimeConfig({
     OPENSERV_API_KEY: "test",
@@ -160,8 +157,7 @@ assert.equal(
   "whsec_dGVzdA==",
 );
 
-// Set WITHOUT PRIVY_APP_ID / PRIVY_APP_SECRET → hard config error (must not
-// pretend the receiver is enabled when the verifier has no Privy client).
+// Set WITHOUT PRIVY_APP_ID / PRIVY_APP_SECRET → hard config error.
 assert.throws(
   () =>
     loadDaemonRuntimeConfig({
@@ -171,11 +167,7 @@ assert.throws(
 );
 
 // ── The cohort cap must never silently become 0 ─────────────────────────────
-// docker-compose renders an UNSET variable as the empty string, which is not
-// nullish — so `??` skipped the FHENIX_GRANT_MAX_ARMED_PER_CALL fallback and
-// the blank reached parseIntegerRange, which returned its fallback without
-// validating it. A cap of 0 makes every cohort look full, so a clean Docker
-// deployment following .env.example could not sell any decrypt access.
+// docker-compose renders an unset var as "", and a cap of 0 makes every cohort look full.
 const DISCOVERY_BASE = {
   OPENSERV_API_KEY: "test",
   POLYMARKET_DISCOVERY_ENABLED: "true",
@@ -189,9 +181,7 @@ const DISCOVERY_BASE = {
   // fee is required alongside the relayer.
   MURMUR_PROTOCOL_FEE_BPS: "1000",
 };
-// ONE name for the cap. POLYMARKET_DISCOVERY_MAX_ARMED_PER_CALL was a second
-// name for the same number and is gone; the two disagreeing meant discovery
-// stamped a series cap eligibility would not honour.
+// FHENIX_GRANT_MAX_ARMED_PER_CALL is the only name for the cap.
 assert.equal(
   loadDaemonRuntimeConfig({
     ...DISCOVERY_BASE,
@@ -203,7 +193,7 @@ assert.equal(
   loadDaemonRuntimeConfig({
     ...DISCOVERY_BASE,
     FHENIX_GRANT_MAX_ARMED_PER_CALL: "25",
-    // Ignored — the old name no longer participates.
+    // Retired name; ignored.
     POLYMARKET_DISCOVERY_MAX_ARMED_PER_CALL: "999",
   }).polymarketDiscovery.maxArmedPerCall,
   25,
@@ -227,11 +217,8 @@ assert.equal(
 );
 
 // ── Window duration is a SET ───────────────────────────────────────────────
-// One daemon can discover several window lengths; each becomes its own clock
-// series. A bare value stays a set of one so existing deployments are
-// untouched, and malformed or duplicate entries throw rather than being
-// dropped — a silently ignored entry runs the daemon against a window set the
-// operator never asked for, visible only as markets that never appear.
+// Each window length becomes its own clock series. A bare value is a set of one;
+// malformed or duplicate entries throw rather than being dropped.
 const withWindows = (raw?: string) =>
   loadDaemonRuntimeConfig({
     ...DISCOVERY_BASE,

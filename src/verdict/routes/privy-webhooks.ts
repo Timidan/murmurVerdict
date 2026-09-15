@@ -1,21 +1,7 @@
 // ─── POST /v1/privy/webhooks — inbound Privy transfer receiver ───────────────
-//
-// Receives Privy's signed `user.transferred_account` webhook (fired by a
-// dashboard "Login method transfer", which also DELETES the source Privy
-// user) and reparents Murmur ownership from the source DID's account to the
-// destination DID's account.
-//
-// This route is UNAUTHENTICATED by design — authenticity comes entirely from
-// the svix signature, verified inside `deps.verifier.verify`. It therefore
-// bypasses the bearer/account auth every other write route requires, and is
-// mounted BEFORE the general verdict/account routers so its raw-body parser
-// governs only this path (the account router installs a JSON parser that would
-// otherwise consume the body before the signature can be checked against the
-// exact bytes Privy signed).
-//
-// Decoupling: the reparent implementation is injected as `deps.reparent` so
-// this router is testable with a fake and stays independent of the reparent
-// core module's construction.
+// Reparents Murmur ownership on a signed `user.transferred_account` webhook.
+// Unauthenticated by design: authenticity is the svix signature. Mounted before the other
+// routers so its raw-body parser sees the exact signed bytes.
 //
 // Status matrix:
 //   verifier disabled (secret unset)        → 503  (no body processing)
@@ -33,11 +19,7 @@ import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 
 import type { PrivyWebhookVerifier } from "../auth/privy-webhook-verify.js";
 
-/**
- * Reparent function contract. Kept structural (not an import of the reparent
- * core) so this router can be exercised with a fake and does not couple to
- * that module. The real `reparentAccount` satisfies this shape.
- */
+/** Reparent contract, structural so the router can run with a fake; `reparentAccount` fits it. */
 export type ReparentFn = (
   db: Database.Database,
   args: { fromPrivyUserId: string; toPrivyUserId: string },
@@ -60,11 +42,8 @@ export function privyWebhookRouter(deps: PrivyWebhookRouterDeps): Router {
   const { db, verifier, reparent } = deps;
   const logger = deps.logger ?? console;
 
-  // Unauthenticated IP limiter, mounted BEFORE the raw parser so anonymous
-  // probes are bounded before any body is buffered. The window/limit are
-  // deliberately generous: Privy retries a failed delivery with backoff and a
-  // single transfer can redeliver a handful of times, so a legitimate sender
-  // must never be throttled. This only exists to cap abusive flooding.
+  // IP limiter before the raw parser, so no body is buffered for floods. Generous so Privy's
+  // redeliveries are never throttled.
   const ipLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 1000,

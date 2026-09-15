@@ -2,19 +2,9 @@ import type Database from "better-sqlite3";
 
 import { prep } from "../db-statements.js";
 
-// Durable state machine for the murmur-owned fallback reveal worker, feed
-// lane. Exactly ONE row per sealed feed packet the worker has taken
-// responsibility for; the phase column is the crash-recovery boundary so a
-// restart never re-opens or re-publishes a packet whose tx receipt was lost.
-//
-// This mirrors fhenix-reveal-jobs-repo.ts (the call lane) rather than sharing
-// it: that table's primary key is a real FK into fhenix_sealed_calls, so one
-// shared table would need a polymorphic key and a rebuild of a populated
-// table. The WORKER is shared — one signer, one nonce manager, one serial
-// broadcast queue — and drives both repos through target adapters.
-//
-// See contracts/src/MurmurSealedVerdicts.sol for the on-chain packet state
-// this mirrors (openFeedPacketReveal / publishFeedPacketReveal).
+// Fallback reveal worker state machine, feed lane: one row per sealed feed packet it owns; the
+// phase is the crash-recovery boundary. Separate table from the call lane (whose key is an FK
+// into fhenix_sealed_calls), but one shared worker, signer and nonce manager drive both.
 export type FeedPacketRevealJobPhase =
   | "eligible"
   | "open_tx_pending"
@@ -116,9 +106,7 @@ export const feedPacketRevealJobsRepo = {
     );
   },
 
-  // Scoped by (chain_id, contract_address) for the same reason the call lane
-  // is: a worker is bound to ONE deployed contract, and an unscoped read
-  // would hand it a job persisted against a previous deployment.
+  // Scoped to one contract so an old deployment's job is never returned.
   listDue(
     db: Database.Database,
     input: {

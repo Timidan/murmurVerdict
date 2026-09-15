@@ -39,38 +39,20 @@ export interface WebhookRouterDeps {
   urlPolicy: WebhookUrlPolicy;
   urlDnsLookup?: WebhookDnsLookup;
   /**
-   * FOLLOW-UP 1 — Privy auth verifier. When provided, POST /v1/webhooks
-   * accepts a verified Privy bearer for authentication. When undefined,
-   * Bearer auth is disabled but `X-Murmur-Api-Key` is still honored;
-   * requests carrying neither valid credential are rejected with 401.
-   * Runtime keys are always rejected for this route (webhook config is
-   * a human-owner action, not a bot credential).
+   * Without it, Bearer auth is off but X-Murmur-Api-Key still works. Runtime keys are always
+   * rejected here: webhook config is an owner action.
    */
   privyAuth?: PrivyAuthVerifier;
-  /**
-   * FOLLOW-UP 1 — outer IP-keyed limiter mounted BEFORE auth so the
-   * auth path itself can't be DoS'd by anonymous spam. Generous (30/hr)
-   * since the next limiter tightens to account scope.
-   */
+  /** Outer IP limiter, before auth, so anonymous spam cannot DoS the auth path. */
   subscriptionIpLimiter?: RequestHandler;
-  /**
-   * FOLLOW-UP 1 — inner limiter keyed by verified account_id, mounted
-   * AFTER auth so it sees req.verdictAuth.account_id. Tight (10/hr).
-   * Replaces the single Fix-4 IP-only limiter once auth is wired.
-   */
+  /** Inner limiter keyed by the verified account_id, after auth. */
   subscriptionAccountLimiter?: RequestHandler;
 }
 
 export function webhookRouter(deps: WebhookRouterDeps): Router {
   const router = Router();
 
-  // FOLLOW-UP 1 — verify the caller before any body parse / DB read.
-  // We deliberately use a local account-only helper instead of the
-  // shared dispatcher: the shared dispatcher resolves
-  // `X-Murmur-Agent-Slug` at auth time with a 404/403 split that leaks
-  // slug existence. Webhook creation carries the slug in the body and
-  // owns its own uniform-403 ownership check; auth here only proves
-  // the account.
+  // Account-only auth before any body parse; the shared dispatcher's 404/403 slug split would leak.
   const requireWebhookAuth: RequestHandler = asyncHandler(
     async (req: WebhookAuthedRequest, _res, next) => {
       const authResult = await authenticateWebhookAccount(req, {
@@ -114,10 +96,7 @@ export function webhookRouter(deps: WebhookRouterDeps): Router {
     }),
   );
 
-  // Reading a subscription exposes its delivery URL and failure counts —
-  // an owner's private operational data. It was anonymous (bounded only by an
-  // unguessable id), and it sits outside /v1/account/ so no auth matrix
-  // covered it. Gated on the same secret its sibling DELETE requires.
+  // Exposes the owner's delivery URL and failure counts, so it needs the same secret as DELETE.
   router.get("/v1/webhooks/:id", (req, res) => {
     const id = String(req.params.id ?? "");
     const result = loadWebhookSubscription({

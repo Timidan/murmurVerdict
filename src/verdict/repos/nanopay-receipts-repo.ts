@@ -16,16 +16,9 @@ function normalizeSourceDomain(sourceDomain: string): string {
 }
 
 /**
- * Nanopayments receipts. Persists the composite idempotency key, the status
- * state machine, and the Fhenix anchor binding for every paid-inference call
- * served via POST /v2/nanopay/infer.
- *
- * insertSettlingIntent writes its row BEFORE Circle /settle, so a crash
- * mid-settle leaves something to reconcile rather than free-serving.
- *
- * `payment_handle` is the old `eip3009_nonce` column, renamed in v52. It holds
- * the signed nonce again; Circle's transaction UUID has its own column. The
- * general name stays so no reversing migration is needed.
+ * Receipts for POST /v2/nanopay/infer: idempotency key, status machine, Fhenix anchor binding.
+ * insertSettlingIntent writes BEFORE Circle /settle, so a crash leaves a row to reconcile.
+ * `payment_handle` holds the signed nonce; Circle's transaction UUID has its own column.
  */
 export interface NanopayReceiptRow {
   readonly id: number;
@@ -61,11 +54,7 @@ export interface InsertSettlingIntentInput {
   readonly createdAt: Date;
 }
 
-/**
- * Legacy import helper for a payment that was already settled before the
- * daemon learned about it. The live HTTP rail uses insertSettlingIntent +
- * markSettled so it never creates an irreversible persistence gap.
- */
+/** Legacy import of an already-settled payment. The live rail uses insertSettlingIntent + markSettled. */
 export interface InsertSettledInput {
   readonly payer: string;
   readonly paymentHandle: string;
@@ -104,13 +93,8 @@ const COLUMNS = `id, payer, payment_handle, source_domain, payment_payload_hash,
 
 export const nanopayReceiptsRepo = {
   /**
-   * Insert a row in `settling` state BEFORE calling Circle /settle.
-   * The composite UNIQUE index guards against double-insert under
-   * race; concurrent insert of an identical composite key will throw
-   * SQLITE_CONSTRAINT_UNIQUE, which the route layer must catch and
-   * resolve via findByCompositeKey (treat as a same-payload replay).
-   *
-   * Returns the inserted row id.
+   * Insert as `settling` BEFORE Circle /settle. A racing identical insert throws
+   * SQLITE_CONSTRAINT_UNIQUE; the route resolves it via findByCompositeKey. Returns the id.
    */
   insertSettlingIntent(db: Database.Database, input: InsertSettlingIntentInput): number {
     const stmt = db.prepare(`
@@ -145,14 +129,8 @@ export const nanopayReceiptsRepo = {
   },
 
   /**
-   * Insert directly in `settled` state for legacy imports/reconstruction.
-   * New HTTP settlement must use insertSettlingIntent → markSettled.
-   *
-   * Same race safety as `insertSettlingIntent`: the schema's prefix
-   * UNIQUE on (payer, payment_handle, source_domain) prevents
-   * duplicate rows; concurrent identical inserts throw
-   * SQLITE_CONSTRAINT_UNIQUE and the caller should re-read via
-   * `findByPayerHandleDomain` to serve cached.
+   * Insert directly as `settled`, for legacy imports only. A duplicate prefix throws
+   * SQLITE_CONSTRAINT_UNIQUE; re-read via findByPayerHandleDomain.
    */
   insertSettled(db: Database.Database, input: InsertSettledInput): number {
     const settledAt = nowIso(input.settledAt);
@@ -190,15 +168,8 @@ export const nanopayReceiptsRepo = {
   },
 
   /**
-   * Transition `settling` → `settled`. Persists Circle's transaction
-   * UUID and (optionally) the reveal artifact if the sealed-Fhenix
-   * horizon was already open at settle time.
-   *
-   * Conditional UPDATE on status='settling' prevents accidentally
-   * re-settling an already-settled or failed row (e.g. a delayed
-   * reconciler hit after the route handler already finalized state).
-   *
-   * Throws if no row updated (caller should re-read state).
+   * `settling` → `settled`. Conditional on status, so a late reconciler cannot re-settle.
+   * Throws if no row changed; the caller should re-read.
    */
   markSettled(db: Database.Database, input: MarkSettledInput): void {
     const stmt = db.prepare(`
@@ -224,13 +195,7 @@ export const nanopayReceiptsRepo = {
     }
   },
 
-  /**
-   * Transition `settling` → `failed`. Records the failure reason
-   * (Circle 4xx body, network error, etc.) for operator diagnostics.
-   *
-   * Conditional UPDATE on status='settling' prevents marking an
-   * already-settled row as failed.
-   */
+  /** `settling` → `failed`. Conditional on status, so a settled row is never marked failed. */
   markFailed(db: Database.Database, input: MarkFailedInput): void {
     const stmt = db.prepare(`
       UPDATE nanopay_receipts
@@ -251,11 +216,7 @@ export const nanopayReceiptsRepo = {
     }
   },
 
-  /**
-   * Exact composite-key lookup. Returns the row if a replay-equivalent
-   * settlement attempt was previously recorded. Route handler returns
-   * a cached response when this returns a `settled` row.
-   */
+  /** Exact composite-key lookup; a `settled` hit is served as a cached replay. */
   findByCompositeKey(
     db: Database.Database,
     key: {
@@ -286,23 +247,9 @@ export const nanopayReceiptsRepo = {
   },
 
   /**
-   * Partial-key lookup used by the pre-settle conflict-detection step.
-   * Returns the unique row matching (payer, payment_handle, source_domain)
-   * if one exists, else null.
-   *
-   * Per the v52 migration, `(payer, payment_handle, source_domain)` is
-   * UNIQUE in the schema. So at most one row exists for any prefix.
-   * The route handler:
-   *   1. Calls this to find the existing row (if any).
-   *   2. Compares payment_payload_hash + payment_requirements_hash:
-   *      - identical → cached-replay branch (return cached response).
-   *      - different → 409 Conflict (do NOT call Circle /settle again).
-   *   3. If no row, INSERT settling_intent (may race; catch SQLITE_CONSTRAINT_UNIQUE
-   *      and re-read via this helper to resolve).
-   *
-   * Codex audit 2026-05-23 corrected the v1 comment claiming the
-   * composite UNIQUE alone prevented prefix conflicts — it doesn't;
-   * the schema now has a separate prefix UNIQUE that does.
+   * Pre-settle lookup by the UNIQUE prefix (payer, payment_handle, source_domain).
+   * Same hashes → cached replay; different → 409, never call /settle again.
+   * No row → insert the settling intent; on SQLITE_CONSTRAINT_UNIQUE, re-read here.
    */
   findByPayerHandleDomain(
     db: Database.Database,
@@ -323,11 +270,6 @@ export const nanopayReceiptsRepo = {
     return row ?? null;
   },
 
-  /**
-   * Debug/admin: read a single row by id. Phase 1 uses this in
-   * integration tests; Phase 3 reconciler will use it after find-stuck
-   * lookups.
-   */
   findById(db: Database.Database, id: number): NanopayReceiptRow | null {
     const stmt = db.prepare(`
       SELECT ${COLUMNS}

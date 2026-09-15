@@ -17,10 +17,7 @@ const pipelineId = `0x${"1".repeat(64)}`;
 const sellerAddress = `0x${"2".repeat(40)}`;
 const domainContract = `0x${"3".repeat(40)}`;
 
-// The x402 binding domain is DERIVED from the Fhenix deployment now, not
-// configured: MURMUR_NANOPAY_DOMAIN_CHAIN_ID / _DOMAIN_CONTRACT are gone. A
-// separately-set domain could only agree with the Fhenix config or bind
-// payments to a contract that is not the one being paid for.
+// The x402 binding domain is derived from the Fhenix deployment, not configured.
 const ambientEnvKeys = [
   "MURMUR_NANOPAY_ENABLED",
   "MURMUR_NANOPAY_PIPELINES",

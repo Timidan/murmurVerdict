@@ -41,14 +41,8 @@ export function accountSessionRouter(deps: AccountSessionRouterDeps): Router {
     }),
   );
 
-  // GET /v1/account/session — the ONE account route a closed account may still
-  // call.
-  //
-  // Every other account route refuses a deactivated account, which is correct
-  // and also leaves the dashboard with nothing to render: a client that only
-  // ever gets 403 cannot tell "your account is closed" from "the server is
-  // broken". This route answers that one question, and only that question. It
-  // reads state, writes nothing, and is therefore safe to keep open.
+  // GET /v1/account/session — the one account route a closed account may call, so the
+  // dashboard can tell "closed" from "broken". Read-only.
   router.get(
     "/v1/account/session",
     sessionLimiter,

@@ -1,22 +1,9 @@
 import type Database from "better-sqlite3";
 
 // ─── Account reparenting (Privy "Login method transfer") ─────────────────────
-//
-// When Privy moves a login from a source user (DID) to a destination user and
-// DELETES the source, Murmur must move its ownership from the source account to
-// the destination account. Ownership is keyed by accounts.account_id, and every
-// owned child row FK-references accounts(account_id) ON DELETE CASCADE — so a
-// naive "delete the source account" would cascade-erase the children. We must
-// therefore MOVE the children onto the destination account before deleting the
-// source row.
-//
-// Idempotency: Privy webhooks may be redelivered. The FIRST delivery renames or
-// merges the source into the destination and (for a merge) deletes the source
-// account row. A SECOND delivery of the same transfer resolves the source by its
-// old DID, finds it absent (already renamed/merged away), and returns
-// "source_absent" as a no-op. No compensating state is required — the operation
-// is naturally idempotent because it keys off the source DID that no longer maps
-// to any account after the first run.
+// Privy moves a login to another user and deletes the source. Child rows FK accounts
+// ON DELETE CASCADE, so they must move to the destination before the source row is deleted.
+// Idempotent: a redelivery finds no account for the old DID and returns "source_absent".
 
 export type ReparentStatus =
   | "source_absent"
@@ -33,15 +20,8 @@ export interface ReparentResult {
 }
 
 /**
- * The seven child tables that FK-reference accounts(account_id) ON DELETE
- * CASCADE. Ownership rides entirely on the account_id column, so a merge MOVES
- * these rows to the destination before the source account row is deleted.
- *
- * DELIBERATELY EXCLUDED: agent_security_events. It carries an account_id column
- * but has NO foreign key to accounts, and BEFORE UPDATE / BEFORE DELETE triggers
- * RAISE(ABORT, 'agent_security_events rows are append-only'). Touching it would
- * abort the whole transaction, so the audit trail is left pointing at the source
- * account_id on purpose — a merge preserves history, it does not rewrite it.
+ * Child tables that FK accounts(account_id) ON DELETE CASCADE; a merge moves them first.
+ * agent_security_events is excluded: no FK, and its append-only triggers would abort the txn.
  */
 const OWNERSHIP_CHILD_TABLES = [
   "account_agents",
@@ -54,11 +34,8 @@ const OWNERSHIP_CHILD_TABLES = [
 ] as const;
 
 /**
- * Thrown when the live schema's set of accounts-referencing FK tables no longer
- * equals {@link OWNERSHIP_CHILD_TABLES}. This is a hard stop: a newly added
- * ownership table that we don't move here would be silently cascade-deleted when
- * the source account row is removed. Adding a table to the schema must be paired
- * with adding it to OWNERSHIP_CHILD_TABLES.
+ * The live accounts-referencing FK tables differ from {@link OWNERSHIP_CHILD_TABLES}.
+ * Hard stop: an unlisted table would be cascade-deleted with the source account.
  */
 export class AccountReparentSchemaDriftError extends Error {
   readonly code = "account_reparent_schema_drift" as const;
@@ -69,11 +46,7 @@ export class AccountReparentSchemaDriftError extends Error {
   }
 }
 
-/**
- * Thrown if, after moving every child table, any source-owned row still remains.
- * This should be impossible under the one-agent-per-account invariant; it guards
- * against a partial move silently dropping data on the subsequent source delete.
- */
+/** Source-owned rows remain after the move; guards the cascade on source delete. */
 export class AccountReparentIncompleteMoveError extends Error {
   readonly code = "account_reparent_incomplete_move" as const;
 
@@ -87,11 +60,7 @@ interface ForeignKeyListRow {
   table: string;
 }
 
-/**
- * Enumerate every table whose foreign keys reference `accounts`, then assert the
- * set equals OWNERSHIP_CHILD_TABLES exactly. Runs inside the reparent txn so a
- * drift aborts (and rolls back) before any mutation.
- */
+/** Assert the tables with an FK to `accounts` equal OWNERSHIP_CHILD_TABLES. Runs before any mutation. */
 function assertOwnershipTablesUnchanged(db: Database.Database): void {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -126,7 +95,7 @@ interface AccountIdentityRow {
   primary_login_method: string | null;
   /** Kill switch. Reversible — but a merge must not reverse it. */
   agent_credentials_disabled_at: string | null;
-  /** Account closed by its owner (migration 073). Terminal. */
+  /** Account closed by its owner. Terminal. */
   deactivated_at: string | null;
 }
 
@@ -144,13 +113,7 @@ function resolveByPrivyUserId(
   return row ?? null;
 }
 
-/**
- * The earlier of two timestamps, ignoring nulls. Null when both are null.
- *
- * Used to carry a lockout across a merge: whichever side locked first is when
- * this identity stopped being usable, and that is the honest timestamp for the
- * survivor to keep.
- */
+/** Earlier of two timestamps, ignoring nulls; carries a lockout across a merge. */
 function earlierMarker(a: string | null, b: string | null): string | null {
   if (!a) return b ?? null;
   if (!b) return a;
@@ -158,21 +121,11 @@ function earlierMarker(a: string | null, b: string | null): string | null {
 }
 
 /**
- * Move Murmur ownership from the account behind `fromPrivyUserId` to the account
- * behind `toPrivyUserId`, mirroring a Privy "Login method transfer" that deleted
- * the source user. Runs in a single BEGIN IMMEDIATE transaction so it serializes
- * against other writers and any thrown error rolls the whole thing back.
- *
- * Statuses:
- *   - "source_absent" — no account for `fromPrivyUserId` (fresh, or an already
- *     processed/redelivered transfer). No-op.
- *   - "same_account"  — from and to resolve to the same account. No-op.
- *   - "renamed"       — destination DID has no account row yet; the source
- *     account is re-pointed to the destination DID, preserving account_id and
- *     every child row.
- *   - "merged"        — destination account exists; children are moved onto it,
- *     its blank profile fields are backfilled from the source, and the source
- *     account row is deleted.
+ * Mirror a Privy login transfer in one BEGIN IMMEDIATE transaction.
+ *   - "source_absent": no source account (fresh or redelivered). No-op.
+ *   - "same_account": both resolve to one account. No-op.
+ *   - "renamed": no destination account; the source row is re-pointed to the destination DID.
+ *   - "merged": children move to the destination, blank profile fields backfill, source deleted.
  */
 export function reparentAccount(
   db: Database.Database,
@@ -208,8 +161,7 @@ export function reparentAccount(
         };
       }
 
-      // 3. Schema-drift guard — abort before any mutation if the set of
-      //    accounts-referencing FK tables no longer matches what we move.
+      // 3. Abort before any mutation if the FK table set drifted.
       assertOwnershipTablesUnchanged(db);
 
       // 4. Destination-absent rename fast path. Re-point the source account row
@@ -226,14 +178,9 @@ export function reparentAccount(
         };
       }
 
-      // 5. Destination exists → MERGE. Move each child table's source-owned rows
-      //    onto the destination account, recording how many moved.
-      // Credentials do not survive a change of hands (security review R2).
-      // The source's runtime keys are revoked and its api keys rotated BEFORE
-      // the ownership move, with their own reason — deliberately NOT via
-      // engageAccountKillSwitch, which would stamp a disabled-marker that the
-      // fail-closed merge below would then impose on a destination that never
-      // chose it. Owners re-mint deliberately after a merge.
+      // 5. Destination exists → MERGE.
+      // Credentials do not survive a change of hands: revoke/rotate the source's keys first.
+      // Not via engageAccountKillSwitch: its marker would be merged onto the destination.
       const reparentTs = new Date().toISOString().replace(/\.\d+Z$/, "Z");
       db.prepare(
         `UPDATE agent_runtime_keys
@@ -255,17 +202,8 @@ export function reparentAccount(
         moved[table] = result.changes;
       }
 
-      // Backfill the destination's profile from the source ONLY where the
-      // destination is blank — a populated destination field always wins.
-      //
-      // FAIL-CLOSED on the two lockout markers, which is the opposite rule.
-      //
-      // Profile fields merge permissively because a blank email is an absence.
-      // A kill switch or a closed account is not an absence; it is a decision,
-      // and a merge that dropped it would let an owner un-close an account by
-      // transferring a login onto it — a route that never asked anyone whether
-      // reopening was intended. So the survivor inherits EITHER side's marker,
-      // stamped at whichever moment came first.
+      // Profile fields backfill only where the destination is blank.
+      // Lockout markers fail closed: the survivor keeps either side's, at the earlier time.
       const mergedDisabledAt = earlierMarker(
         source.agent_credentials_disabled_at,
         dest.agent_credentials_disabled_at,
@@ -295,10 +233,7 @@ export function reparentAccount(
         toId: dest.account_id,
       });
 
-      // A closed account owns no working agents. The agents that just moved
-      // here came from (or joined) a closed account, so retire everything the
-      // survivor now owns — including the destination's own agents, which are
-      // equally covered by the surviving closed state.
+      // A closed account owns no working agents: retire everything the survivor owns.
       if (mergedDeactivatedAt) {
         db.prepare(
           `UPDATE agents

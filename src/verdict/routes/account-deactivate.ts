@@ -2,14 +2,8 @@
 //
 //   POST /v1/account/deactivate   { confirm: "close-my-account" }
 //
-// One route, one direction. There is deliberately no reactivate endpoint: an
-// account that can reopen itself is a pause, and this is not a pause. Reopening
-// goes through the operator, with a person on the other end of it.
-//
-// The route itself is exempt from the deactivation guard the rest of the
-// account router carries — a second POST from a client that never saw the
-// first response returns `already_deactivated: true` instead of 403, which is
-// what an idempotent close should do.
+// No reactivate endpoint; reopening goes through the operator.
+// Exempt from the deactivation guard, so a repeat POST returns `already_deactivated: true`, not 403.
 
 import { Router, type RequestHandler } from "express";
 import type Database from "better-sqlite3";

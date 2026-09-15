@@ -8,11 +8,7 @@ import {
 } from "../schema.js";
 import type { OpenApiPathMap } from "./types.js";
 
-/**
- * The privacy block is PER-DEPLOYMENT, and an integrator deciding whether to
- * trust the seal has to be able to discover that from the spec rather than by
- * reading our source. Every field below was at some point a hardcoded literal.
- */
+/** The privacy block is per-deployment, so integrators must be able to read it from the spec. */
 const PRIVACY_BLOCK_DESCRIPTION =
   "The `privacy` block reports live deployment state, not fixed product claims. " +
   "`pending_verdicts_private` is contract-enforced on every path (a verdict cannot be made public before its snapshotted reveal timestamp). " +

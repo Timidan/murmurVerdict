@@ -4,20 +4,9 @@ import { prep } from "../db-statements.js";
 import type { EntitlementRow } from "./entitlements-repo.js";
 
 // ─── provider_earnings — what each sale owes the agent's owner ──────────────
-//
-// One row per PAID, GRANTED entitlement (migration 071). The entitlement id is
-// the primary key: the sale is the identity, so a double-fire of the accrual
-// path cannot produce a second row for the same sale.
-//
-// FINANCIAL HISTORY. Rows are append-only and never deleted or updated — there
-// is no `update` or `delete` here on purpose. Correcting an accrual means
-// writing a compensating record in whatever payout journal ships later, not
-// rewriting what was recorded at the time.
-//
-// PAYOUT EXECUTION IS NOT HERE. This table says what accrued; nothing in this
-// iteration moves money. Circle settles every sale to the single seller address
-// (MURMUR_NANOPAY_SELLER_ADDRESS) because the rail pays one recipient; paying
-// providers out of that balance is a manual operator duty, exactly like refunds.
+// One row per paid, granted entitlement, keyed by its id so a double accrual adds nothing.
+// Append-only financial history: no update or delete; corrections are compensating records.
+// Moves no money: Circle settles to one seller address; paying providers is a manual operator duty.
 
 export type ProviderEarningAccrualSource = "sale_snapshot" | "legacy_fallback";
 
@@ -63,13 +52,8 @@ const ENTITLEMENT_COLUMNS = `e.id, e.chain_id, e.contract_address, e.call_id,
 
 export const providerEarningsRepo = {
   /**
-   * Record an accrual. Returns true iff this call created the row.
-   *
-   * ON CONFLICT(entitlement_id) DO NOTHING — targeted at the one collision that
-   * is legitimate (the same sale accrued twice by two convergent writers).
-   * Deliberately NOT `INSERT OR IGNORE`, which also swallows every CHECK and
-   * NOT NULL violation: a malformed amount or a missing producer would then
-   * vanish silently instead of failing where it can be seen.
+   * Record an accrual; true iff this call created the row. ON CONFLICT(entitlement_id) only,
+   * not INSERT OR IGNORE, which would also swallow CHECK and NOT NULL failures.
    */
   insert(db: Database.Database, input: ProviderEarningInsert): boolean {
     const result = prep(
@@ -121,12 +105,8 @@ export const providerEarningsRepo = {
   },
 
   /**
-   * Lifetime totals per currency, summed in BigInt IN JS.
-   *
-   * Never SUM()/CAST() these columns in SQLite. Atomic amounts routinely exceed
-   * 2^53, CAST(... AS INTEGER) on a TEXT column silently truncates at the first
-   * non-digit, and SUM over a large enough set goes through a float. A total
-   * that is quietly wrong is worse than no total at all.
+   * Lifetime totals per currency, summed as BigInt in JS. Never SUM()/CAST() these in SQLite:
+   * atomic amounts exceed 2^53, and CAST truncates while SUM goes through a float.
    */
   totalsForAgent(
     db: Database.Database,
@@ -168,18 +148,9 @@ export const providerEarningsRepo = {
   },
 
   /**
-   * The repair queue behind the ledger's one invariant: a paid, granted
-   * entitlement has exactly one earnings row.
-   *
-   * `granted` is terminal and excluded from the reconciler's `listDue`, so a
-   * row that reached it without accruing — a receipt attached after another
-   * writer had already granted it, a crash in an older build — would never be
-   * revisited. This query is what makes the invariant self-healing rather than
-   * aspirational.
-   *
-   * NOT scoped to one chain/contract. Accrual is local bookkeeping that never
-   * touches a chain, and scoping it would strand the ledger of a contract that
-   * has since been redeployed.
+   * Repair queue for the invariant: a paid, granted entitlement has exactly one earnings row.
+   * `granted` is outside listDue, so this is what heals a missed accrual. Not scoped to one
+   * chain/contract, so a redeployed contract's ledger is not stranded.
    */
   listAccruableEntitlements(
     db: Database.Database,

@@ -3,14 +3,8 @@ import type Database from "better-sqlite3";
 import { prep } from "../db-statements.js";
 
 /**
- * Gateway Attempt Lifecycle Records — the single home of the status
- * machine, claim-token protocol, and broadcast/receipt telemetry shared by
- * sealed-call and feed-packet Gateway Attempts. CONTEXT.md defines a
- * Gateway Attempt as one concept that "may produce one Sealed Call or one
- * feed packet"; the two attempt tables differ only in entity metadata, so
- * every lifecycle transition below is written once and instantiated per
- * table. Entity-specific writes (insert, byClientOrder, markConfirmed,
- * markAccepted, quota/sequence reads) live with their own Records module.
+ * Status machine, claim-token protocol and telemetry shared by both Gateway Attempt tables
+ * (sealed calls and feed packets). Entity-specific writes live in each table's own module.
  */
 
 export type FhenixGatewayTxStatus =
@@ -22,27 +16,19 @@ export type FhenixGatewayTxStatus =
   | "failed_terminal";
 
 /**
- * The statuses from which a Gateway Attempt may (re)enter broadcast: freshly
- * queued rows and rows parked as retryable after a recoverable failure. This
- * is the single authority for "which statuses are broadcastable/retryable" —
- * the Gateway Attempt Machine's broadcast guard and the operator-retry guard
- * consume {@link isBroadcastableStatus}, and every lifecycle SQL statement
- * that filters on this set builds its `IN (...)` clause from
- * {@link BROADCASTABLE_STATUS_SQL}. Do not re-declare the literal elsewhere.
+ * Statuses a Gateway Attempt may (re)enter broadcast from. The single source: guards use
+ * {@link isBroadcastableStatus}, SQL uses {@link BROADCASTABLE_STATUS_SQL}. Do not re-declare it.
  */
 export const BROADCASTABLE_STATUSES = [
   "queued",
   "failed_retryable",
 ] as const satisfies readonly FhenixGatewayTxStatus[];
 
-/** True iff `status` is one a Gateway Attempt can be (re)broadcast from. */
 export function isBroadcastableStatus(status: string): boolean {
   return (BROADCASTABLE_STATUSES as readonly string[]).includes(status);
 }
 
-/** SQL fragment for the broadcastable set, e.g. `'queued','failed_retryable'`.
- *  The values are compile-time status literals, so interpolating them into a
- *  prepared statement's `IN (...)` clause is safe. */
+/** SQL fragment for the broadcastable set. Compile-time literals, so interpolating is safe. */
 const BROADCASTABLE_STATUS_SQL = BROADCASTABLE_STATUSES.map(
   (status) => `'${status}'`,
 ).join(",");
@@ -77,12 +63,7 @@ export interface FhenixGatewayTelemetrySummary {
   last_receipt_observed_at: string | null;
 }
 
-/**
- * The lifecycle columns both attempt tables share — everything the
- * transitions below read or write. Lane row types extend this with their
- * entity metadata, which keeps the factory's casts constrained instead of
- * an unbounded generic.
- */
+/** Lifecycle columns shared by both attempt tables; each row type extends this. */
 export interface GatewayAttemptLifecycleRow {
   attempt_id: string;
   status: FhenixGatewayTxStatus;
@@ -136,11 +117,8 @@ export function gatewayAttemptLifecycleRepo<
     },
 
     /**
-     * Record a successful broadcast. If `claim_token` is non-null the UPDATE
-     * is conditional on the row still carrying that token — protects against
-     * the case where a slow writeContract returns AFTER sweepStuckClaims has
-     * reclaimed the row and another writer has already submitted it. Returns
-     * true iff the row actually transitioned to 'submitted'.
+     * Record a successful broadcast. With a claim_token, only while the row still holds it,
+     * so a slow write returning after a sweep cannot clobber. True iff it moved to 'submitted'.
      */
     markSubmitted(
       db: Database.Database,
@@ -189,25 +167,8 @@ export function gatewayAttemptLifecycleRepo<
     },
 
     /**
-     * Reconciliation path: the contract already has the call/packet (a
-     * previous writeContract landed but its receipt was lost to a timeout).
-     * Persist the recovered tx_hash without incrementing attempt_count (no
-     * new on-chain write happened in this tick) and clear retryable
-     * error/claim state so the normal confirmation watcher can pick the row
-     * up.
-     */
-    /**
-     * Journal a transaction hash that WAS sent but whose guarded write lost
-     * its claim race.
-     *
-     * Records the hash and nothing else — no status change, no claim change.
-     * The obvious fallback, markReconciledSubmitted, has no claim guard and
-     * clears whatever claim exists: a slow worker A whose claim had been swept
-     * and re-taken by B would land its transaction, fail its guarded write,
-     * and then wipe B's live claim on the way out.
-     *
-     * `tx_hash IS NULL` keeps it from overwriting a hash someone else already
-     * recorded. Losing the race is not a reason to lose the transaction.
+     * Journal a hash that WAS sent but whose guarded write lost its claim race. Hash only,
+     * no status or claim change, so a re-taken claim survives. Never overwrites a recorded hash.
      */
     journalLateTxHash(
       db: Database.Database,
@@ -226,25 +187,9 @@ export function gatewayAttemptLifecycleRepo<
     },
 
     /**
-     * Promote a row that ALREADY carries a journalled hash to `submitted`, so
-     * the confirmation loop picks it up.
-     *
-     * Used by the claimant that discovered an earlier worker's late hash in
-     * preBroadcast. It cannot use markSubmitted — that refuses to overwrite an
-     * existing hash, which is exactly the protection that makes the handoff
-     * race-safe — and it cannot use markReconciledSubmitted, which requires an
-     * unclaimed row while this caller holds the claim.
-     *
-     * Sets status and releases its own claim. Nothing touches tx_hash: the
-     * recorded one is the transaction that landed.
-     *
-     * `claim_token: null` is the UNCLAIMED form, used by the pre-claim check
-     * that catches a broadcastable row already carrying a hash. That is the
-     * general case — the specific ones (late journal, first-wins refusal) are
-     * just how the hash gets there. Without it, a row whose earlier write
-     * landed would be re-broadcast, the duplicate would revert during gas
-     * estimation, and the generic catch would mark it retryable forever while
-     * the landed transaction was never confirmed.
+     * Promote a row that already has a journalled hash to `submitted` and release the caller's
+     * claim; tx_hash is untouched. `claim_token: null` is the unclaimed form: a broadcastable
+     * row with a hash must never be re-broadcast, or its landed tx is never confirmed.
      */
     adoptJournalledTxHash(
       db: Database.Database,
@@ -306,11 +251,7 @@ export function gatewayAttemptLifecycleRepo<
       return info.changes === 1;
     },
 
-    /**
-     * Reconciliation read path failed (RPC dropped, range too wide, etc).
-     * Mark the row retryable WITHOUT incrementing attempt_count — no on-chain
-     * write happened in this tick, this was a read-only lookup.
-     */
+    /** Reconciliation read failed: retryable, without incrementing attempt_count (no write happened). */
     markReconciliationFailure(
       db: Database.Database,
       input: {
@@ -398,11 +339,8 @@ export function gatewayAttemptLifecycleRepo<
     },
 
     /**
-     * Release stale claims whose holding process never recorded a result.
-     * A claim is considered stuck if broadcast_started_at is older than
-     * stuckBeforeIso and the row is still in a pre-broadcast status.
-     * Released rows fall back to failed_retryable so the next tick picks
-     * them up. Returns the count of released rows for tick telemetry.
+     * Release claims older than stuckBeforeIso on still-broadcastable rows; they fall back to
+     * failed_retryable. Returns the count released.
      */
     sweepStuckClaims(
       db: Database.Database,
@@ -464,39 +402,11 @@ export function gatewayAttemptLifecycleRepo<
     },
 
     /**
-     * Terminal failure.
-     *
-     * `expect_claim_token` decides whether the claim is released:
-     *
-     * - Omitted (a PRE-claim decision — revoked key, kill switch, deployment
-     *   mismatch): the update is a compare-and-set on `broadcastable AND
-     *   unclaimed`, and RETURNS FALSE if the row is claimed or has moved on.
-     *
-     *   It used to clear the claim unconditionally, which stole an in-flight
-     *   worker's claim: that worker's token-guarded markSubmitted then matched
-     *   zero rows, and a transaction that actually landed was recorded
-     *   nowhere. Simply leaving the claim alone was not enough either — the
-     *   row went terminal WITH a live claim, which the stuck-claim sweep does
-     *   not cover (it only scans broadcastable rows), so it stranded forever;
-     *   and the same write could overwrite a `submitted` row set by another
-     *   process, dropping a real transaction out of confirmation.
-     *
-     *   A claimed row is therefore left entirely to its owner, or to the
-     *   stuck-claim sweep that will release it. The caller must respect the
-     *   false return and skip rather than assume it terminalized.
-     *
-     * - `expect_status` (a POST-broadcast decision — a reverted receipt, an
-     *   acceptance failure): CAS on that exact status instead. Those rows are
-     *   `submitted`/`confirmed` and hold no claim (markSubmitted released it),
-     *   so the broadcastable-and-unclaimed predicate would match nothing and
-     *   the row would be retried forever.
-     * - Set (this caller owns the claim): the claim is released too, so a
-     *   terminal row does not sit in stuck-claim telemetry forever. The
-     *   `WHERE` clause makes it a compare-and-set — a stale token changes
-     *   nothing.
-     *
-     * Returns whether a row changed, so a caller holding a token can tell that
-     * it lost the race rather than assume it won.
+     * Terminal failure, as a compare-and-set; returns whether a row changed.
+     * - No options (pre-claim decision, e.g. revoked key): only if broadcastable AND unclaimed.
+     *   A claimed row is left to its owner or the sweep; on false, skip.
+     * - `expect_status` (post-broadcast, e.g. reverted receipt): only at that status; no claim held.
+     * - `expect_claim_token` (caller owns the claim): only with that token; releases the claim.
      */
     markTerminalFailure(
       db: Database.Database,

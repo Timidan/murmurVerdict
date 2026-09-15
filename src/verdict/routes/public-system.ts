@@ -28,16 +28,10 @@ export interface PublicSystemRouterDeps {
   nanopayX402Mounted?: boolean;
   now: () => Date;
   publicOrigin: MurmurPublicOrigin;
-  /**
-   * This deployment's PoP audience. Published in the skill's signing example,
-   * so it MUST match what the verifier accepts — the doc used to hardcode the
-   * default while the verifier checked a configured value, and every signature
-   * built from the published example 401'd.
-   */
+  /** This deployment's PoP audience, published in the skill's signing example; must match the verifier. */
   popAudience?: string;
   requireLiveCanaries?: boolean;
-  /** Reveal worker CONFIGURED (constructed), not proven live. Required: an
-   *  optional guarantee silently defaults to a promise. */
+  /** Reveal worker configured, not proven live. Required so it cannot silently default. */
   revealWorkerConfigured: boolean;
   /** Gateway accepts plaintext (owned sealing). Required, same reason. */
   acceptsPlaintextSubmission: boolean;

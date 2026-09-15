@@ -153,10 +153,7 @@ assert.ok(
 );
 assert.equal(entitlementsRepo.byId(db, id2)?.refund_status, "refund_due");
 
-// listDue is the GRANT reconciler's queue. It must exclude both terminal
-// statuses: `granted` (nothing owed) and `grant_failed_refund_due` (money owed,
-// but no grant work possible). Including the latter let a backlog of dead rows
-// consume every tick's budget and starve live grants.
+// listDue (the grant queue) excludes both granted and grant_failed_refund_due.
 const due = entitlementsRepo.listDue(db, {
   now: "2026-07-20T01:00:00.000Z",
   limit: 10,
@@ -189,13 +186,9 @@ assert.equal(counts.granted, 1);
 assert.equal(counts.refunded, 1);
 
 // ── the reconciler and a slow payment rail, racing over one reservation ─────
-// The reconciler labels a reservation `settlement_unknown` without knowing how
-// the payment ended — it only knows nobody has reported back. Both possible
-// answers can arrive afterwards, and both used to be dropped on the floor.
+// The reconciler labels `settlement_unknown` without the payment result; either answer can arrive later.
 
-// (a) A DEFINITIVE REJECTION arriving late. No money moved, so the reservation
-//     must go: leaving it blocks the subscriber's retry and later ages into a
-//     refund owed on a payment nobody took.
+// (a) A late definitive rejection: no money moved, so the reservation goes.
 const lateReject = entitlementsRepo.reserve(db, {
   ...key,
   subscriberAddress: "0x1111111111111111111111111111111111111111",
@@ -215,9 +208,7 @@ assert.ok(
 );
 assert.equal(entitlementsRepo.byId(db, lateReject), null, "and the row is gone");
 
-// (b) A SUCCESSFUL SETTLEMENT arriving late. The receipt is the evidence of
-//     real money; it must be recorded whichever of the two states the row is
-//     in when the answer lands.
+// (b) A late successful settlement: the receipt is recorded from either state.
 const lateSettle = entitlementsRepo.reserve(db, {
   ...key,
   subscriberAddress: "0x2222222222222222222222222222222222222222",
@@ -251,9 +242,7 @@ assert.equal(settledLate?.status, "grant_queued");
 assert.equal(settledLate?.nanopay_receipt_id, "receipt-late");
 assert.equal(settledLate?.amount, "37000");
 
-// (c) attachReceipt is the last resort when the row has moved somewhere
-//     `transition` will not act on. It records evidence WITHOUT claiming a
-//     status, and never overwrites a receipt already there.
+// (c) attachReceipt records evidence without changing status, and never overwrites a receipt.
 entitlementsRepo.transition(db, lateSettle, ["grant_queued"], {
   status: "grant_failed_refund_due",
   refundStatus: "refund_due",
@@ -275,10 +264,7 @@ assert.equal(
 );
 assert.equal(afterAttach?.status, "grant_failed_refund_due", "and status is untouched");
 
-// (c2) The slowest case: the settle stayed pending past the unknown-resolution
-//      budget, so the reconciler TERMINALIZED the row before the rejection
-//      arrived. A refund_due with no receipt is a refund owed on money nobody
-//      took — and it blocked the subscriber from ever retrying.
+// (c2) A rejection after the reconciler terminalized the row still clears the receipt-less refund_due.
 const terminalized = entitlementsRepo.reserve(db, {
   ...key,
   subscriberAddress: "0x4444444444444444444444444444444444444444",
@@ -303,8 +289,7 @@ assert.ok(
 );
 assert.equal(entitlementsRepo.byId(db, terminalized), null);
 
-// ...but a refund_due that DID settle keeps its row. The receipt is what makes
-// the difference, and deleting it would erase a real refund obligation.
+// ...but a settled refund_due keeps its row: the receipt marks a real obligation.
 const owedReal = entitlementsRepo.reserve(db, {
   ...key,
   subscriberAddress: "0x5555555555555555555555555555555555555555",
@@ -328,8 +313,7 @@ assert.ok(
 );
 assert.equal(entitlementsRepo.byId(db, owedReal)?.status, "grant_failed_refund_due");
 
-// An adopted on-chain grant is ALSO receipt-less (nothing was paid). Its
-// status is what protects it, which is why both conditions are kept.
+// An adopted on-chain grant is also receipt-less; its status protects it.
 const adopted = entitlementsRepo.adoptOnchainGrant(db, {
   ...key,
   subscriberAddress: "0x6666666666666666666666666666666666666666",
@@ -343,8 +327,7 @@ assert.ok(
   "a receipt-less GRANTED row is access the subscriber already holds, never released",
 );
 
-// (d) A reservation is NOT handed to the reconciler while its request is still
-//     settling — that grace is what stops the race in the first place.
+// (d) A still-settling reservation is not handed to the reconciler until its grace expires.
 const inFlight = entitlementsRepo.reserve(db, {
   ...key,
   subscriberAddress: "0x3333333333333333333333333333333333333333",

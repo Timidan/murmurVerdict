@@ -178,10 +178,7 @@ assert.equal(counts.opened_confirmed, 1);
 assert.equal(counts.eligible, 1);
 process.stdout.write("  ok counts by phase\n");
 
-// REGRESSION: a worker is bound to ONE deployed contract. A job persisted
-// against a previous deployment must never be handed to it — opening or
-// publishing that call at the wrong address would revert (or worse, hit an
-// unrelated call id).
+// A job from a previous deployment must never be handed to this contract's worker.
 const OTHER_CONTRACT = "0x" + "cd".repeat(20);
 const callOther = randomUUID();
 seed(callOther, "2026-05-14T13:40:00Z");

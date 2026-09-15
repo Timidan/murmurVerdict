@@ -3,15 +3,9 @@ import type Database from "better-sqlite3";
 import type { SeriesClock, SeriesClockConfig } from "../series-clock.js";
 
 /**
- * Series + per-instance clock persistence.
- *
- * `market_clocks` is a SNAPSHOT, written once at registration and never
- * updated. That is the whole point: the venue can move its own end time, and
- * re-deriving a schedule on read would silently retime a market that consumers
- * have already armed and providers have already submitted against. Drift is
- * detected by comparing the venue's current end date against
- * `derived_from_end_date_ms` and is resolved by delisting and refunding — never
- * by rebinding the schedule someone already paid against.
+ * Series and per-instance clock persistence. `market_clocks` is a snapshot written once at
+ * registration and never updated, so a venue end-time change cannot retime an armed market.
+ * Drift is detected against `derived_from_end_date_ms` and settled by delist and refund.
  */
 
 export interface MarketSeriesRow {
@@ -47,12 +41,7 @@ function prep(db: Database.Database, sql: string) {
   return db.prepare(sql);
 }
 
-/**
- * A series' cohort cap changed without a version bump. Separate from
- * SeriesClockConflictError because the failure mode differs: a clock change
- * bulk-freezes live markets, while a cap change silently resizes cohorts that
- * subscribers already bought into.
- */
+/** A series' cohort cap changed without a version bump; it would resize cohorts already sold. */
 export class SeriesCapConflictError extends Error {
   constructor(
     readonly seriesId: string,
@@ -101,11 +90,7 @@ export const marketSeriesRepo = {
       now: string;
     },
   ): void {
-    // FAIL CLOSED on a clock-constant change. Silently keeping the stored
-    // values (the previous behaviour) split a single series id across two
-    // configurations: existing markets keep on-chain schedules from the old
-    // constants while newly derived clocks use the new ones, so every existing
-    // market fails its exact-schedule check and gets frozen.
+    // Fail closed on a clock-constant change: existing markets carry schedules from the stored values.
     const existing = marketSeriesRepo.get(db, input.series_id);
     if (existing) {
       const stored: SeriesClockConfig = {
@@ -124,11 +109,7 @@ export const marketSeriesRepo = {
       if (existing.window_seconds !== input.window_seconds) {
         throw new SeriesClockConflictError(input.series_id, stored, incoming);
       }
-      // The cohort cap is as immutable as the clock. Eligibility reads the
-      // CURRENT series row, so an upsert that changed it retroactively resized
-      // every cohort in the series — including calls already sold under the
-      // old cap. Change it the same way a clock constant changes: bump the
-      // series version so new markets bind to a new series.
+      // The cohort cap is as immutable as the clock: eligibility reads the current series row.
       if (existing.max_armed_per_call !== input.max_armed_per_call) {
         throw new SeriesCapConflictError(
           input.series_id,
@@ -186,11 +167,7 @@ export const marketSeriesRepo = {
 };
 
 export const marketClocksRepo = {
-  /**
-   * Write the immutable snapshot. Deliberately INSERT-only with no upsert: a
-   * second write for the same market would be a retime, which is the exact
-   * failure this table exists to prevent. A duplicate throws.
-   */
+  /** Write the immutable snapshot. INSERT-only: a second write would be a retime, so a duplicate throws. */
   insert(
     db: Database.Database,
     input: {
@@ -232,11 +209,7 @@ export const marketClocksRepo = {
     ) as MarketClockRow | undefined) ?? null;
   },
 
-  /**
-   * Record that the venue moved its end date away from what this snapshot was
-   * derived from. Records only — the schedule itself is never touched, so a
-   * flagged market is settled by the delist/refund path.
-   */
+  /** Flag that the venue moved its end date. The schedule is never touched; delist/refund settles it. */
   flagDrift(
     db: Database.Database,
     marketId: string,
@@ -250,10 +223,7 @@ export const marketClocksRepo = {
     return res.changes > 0;
   },
 
-  /**
-   * Snapshots whose venue end date no longer matches. Cheap enough to compare
-   * in the caller, but exposed here so drift scans do not have to re-derive.
-   */
+  /** True when the venue's current end date differs from the snapshot's. */
   hasDrifted(row: MarketClockRow, currentEndDateMs: number): boolean {
     return row.derived_from_end_date_ms !== currentEndDateMs;
   },

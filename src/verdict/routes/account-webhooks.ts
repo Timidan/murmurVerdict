@@ -3,10 +3,8 @@
 //   GET    /v1/account/webhooks       — every subscription on agents you own
 //   DELETE /v1/account/webhooks/:id   — remove one, by ownership
 //
-// Creation still lives on POST /v1/webhooks, which already authenticates the
-// account and hands back the HMAC secret exactly once. These two routes exist
-// because after that dialog closes there was no way to see or remove what you
-// had created: the read was by-id only and the delete required the secret.
+// Creation stays on POST /v1/webhooks, which returns the HMAC secret once. These let an owner
+// list and remove subscriptions by ownership, without the secret.
 
 import { Router, type RequestHandler } from "express";
 import type Database from "better-sqlite3";

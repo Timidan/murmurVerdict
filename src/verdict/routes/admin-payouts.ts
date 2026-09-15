@@ -2,14 +2,9 @@
 //
 //   POST /v1/admin/payouts
 //
-// Paying a provider is a manual step — the payment rail settles every sale to
-// murmur's single seller address — so this route is how the operator writes
-// down that the transfer happened. The owner reads the same rows back at
-// GET /v1/account/agents/:slug/payouts and can check them against what accrued.
-//
-// Admin-token auth, exactly like /v1/admin/entitlements/refunds: this moves the
-// number an agent owner is shown as owed, and a Privy session must never be
-// able to write it.
+// Providers are paid manually (the rail settles to one seller address); the operator records
+// the transfer here, and owners read it at GET /v1/account/agents/:slug/payouts.
+// Admin-token auth only: a Privy session must never write what an owner is shown as owed.
 
 import { Router, type Request, type Response } from "express";
 import express from "express";

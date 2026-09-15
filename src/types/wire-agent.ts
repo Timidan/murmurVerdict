@@ -1,25 +1,14 @@
-// Shared REST wire types — agent identity surface.
-//
-// The SINGLE source of truth for the public agent DTOs consumed by BOTH the
-// daemon (src/verdict/wire-contract-guards.ts pins these against the
-// zod-inferred / presenter types) and the dashboard
-// (dashboard/src/verdict/api.ts imports them via the `@shared` alias →
-// ../src/types). Browser-safe by construction: interfaces + type-aliases
-// only — NO zod, NO better-sqlite3, NO viem, NO node imports. Anything added
-// here MUST stay free of backend imports so the dashboard can compile it.
+// Shared REST wire types: agent identity. Shared by the daemon and the dashboard (`@shared`).
+// Browser-safe: types only, no backend or node imports, so the dashboard can compile it.
+// src/verdict/wire-contract-guards.ts pins these against the daemon types.
 
-/**
- * Agent taxonomy on the wire. Canonical value set mirrors the daemon
- * `AgentKind` (src/verdict/schema.ts `AgentKindSchema`); the producer guard
- * asserts equality so a future enum addition fails the daemon build rather
- * than silently diverging from the dashboard.
- */
+/** Mirrors the daemon `AgentKind`; the producer guard asserts equality. */
 export type WireAgentKind =
   | "benchmark"
-  // Canonical Privy-owned default — was "casual" pre-Wave-3.
+  // Privy-owned default.
   | "agent"
   | "internal_test"
-  // V2 §7.1 attested tier — Olas Service Registry bond + Safe multisig.
+  // Olas Service Registry bond + Safe multisig.
   | "attested";
 
 /** GET /v1/agents/:slug — the public agent profile. Mirrors the daemon's
@@ -31,7 +20,7 @@ export interface WireAgentProfile {
   display_name: string;
   created_at: string;
   bio?: string;
-  /** Lowercase 0x+40hex; top-level since P1.5 phase-1. */
+  /** Lowercase 0x+40hex. */
   wallet_address?: string;
   /** CAIP-2, e.g. eip155:8453. */
   chain_id?: string;

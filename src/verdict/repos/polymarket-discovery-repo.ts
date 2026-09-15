@@ -94,13 +94,8 @@ export const polymarketDiscoveryRepo = {
   },
 
   /**
-   * Enter (or re-enter) broadcasting.
-   *
-   * `resetWatermark` restarts the stuck clock, which a genuinely NEW attempt
-   * must do: after a reverted receipt the row stays `broadcasting`, so
-   * preserving the old timestamp would make a fresh attempt inherit a
-   * warning/critical age it never earned. Leave it false when retrying the
-   * SAME in-flight transaction, where the accumulated age is the real signal.
+   * Enter or re-enter broadcasting. `resetWatermark` restarts the stuck clock for a genuinely
+   * new attempt; leave it false when retrying the same in-flight transaction.
    */
   markBroadcasting(
     db: Database.Database,
@@ -143,17 +138,9 @@ export const polymarketDiscoveryRepo = {
   },
 
   /**
-   * Fill in `registered_onchain_at` for a registration the ledger never
-   * recorded — a receipt wait that failed on a tx that actually landed, or a
-   * market registered out-of-band. Returns true only when THIS call did the
-   * stamping, so callers can charge it to the spend caps exactly once; the
-   * `registered_onchain_at IS NULL` predicate makes a double count impossible.
-   *
-   * Deliberately narrower than markConfirmed: it preserves `listed` status and
-   * never nulls existing gas telemetry. markConfirmed means "the broadcast we
-   * were waiting on just confirmed" and owns those columns; using it to
-   * back-fill a stamp demoted already-listed rows and erased their gas
-   * numbers.
+   * Back-fill `registered_onchain_at` for a registration the ledger missed. True only when this
+   * call stamped it, so spend caps count it once. Unlike markConfirmed, keeps `listed` status
+   * and existing gas telemetry.
    */
   stampRegisteredOnchain(
     db: Database.Database,
@@ -381,11 +368,7 @@ export const polymarketDiscoveryRepo = {
     ).run(args);
   },
 
-  /**
-   * Flip the health row to disabled when the daemon boots with discovery
-   * off. Without this, a previously enabled row keeps the stale-tick alert
-   * firing forever after the operator turns discovery off.
-   */
+  /** Disable the health row when the daemon boots with discovery off, so the stale-tick alert stops. */
   markDisabled(db: Database.Database, now_iso: string): void {
     prep(
       db,
