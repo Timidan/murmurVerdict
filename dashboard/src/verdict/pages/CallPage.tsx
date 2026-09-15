@@ -2,19 +2,13 @@ import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { CallDetail } from "../components/compact/CallDetail.js";
 import { Ik } from "../icons.js";
 
-/**
- * Full #/calls/:id route — the canonical, shareable permalink for a call
- * (the target of every [V] verify link). The detail body is shared with the
- * in-context call drawer via <CallDetail/>; this page just frames it with the
- * topbar + footer chrome.
- */
+/** #/calls/:id: the shareable permalink for a call; body shared with the drawer via <CallDetail/>. */
 export function CallPage({ callId }: { callId: string }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <TopbarCrumb><span className="inline-flex items-center gap-1.5">
             <Ik name="verdict" />
-            {/* The word `calls` stays, so the crumb's accessible name is
-                unchanged — no sr-only stand-in needed here. */}
+            {/* The visible word `calls` names the crumb; no sr-only needed. */}
             <span>
               calls <span className="ck-dim mx-1">/</span>
               <span className="ck-pos">{callId.slice(0, 8)}</span>

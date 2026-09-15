@@ -1,15 +1,5 @@
-// Close the account.
-//
-// This is the only control on the dashboard with no undo, so the confirmation
-// names every consequence and then asks the owner to type the words out. The
-// typed phrase is not theatre: the kill switch beside it is a pause with a
-// release button, and the two must never be confused for one another by
-// somebody moving quickly.
-//
-// Nothing here offers a reactivate button, because there is no reactivate
-// endpoint. Reopening a closed account goes through the operator, with a
-// person on the other end of it, and the copy says so instead of implying a
-// control that does not exist.
+// Close the account. No undo, so the owner types a phrase to confirm. There is
+// no reactivate endpoint; reopening goes through the operator.
 
 import { useCallback, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
@@ -89,9 +79,6 @@ export function DeactivateAccountPanel({
             void close();
           }}
         >
-          {/* A visible label, not a placeholder: the instruction for the most
-              destructive control on the dashboard has to survive the first
-              keypress. */}
           <label htmlFor="account-close-confirm" className="ck-label">
             type close my account to confirm
           </label>
@@ -124,12 +111,8 @@ export function DeactivateAccountPanel({
 }
 
 /**
- * What a closed account sees instead of the dashboard.
- *
- * Rendered from GET /v1/account/session, the one account route a closed
- * account may still call. Every other route answers 403, which on its own is
- * indistinguishable from an outage — this screen is the difference between
- * "murmur is broken" and "you closed this".
+ * What a closed account sees instead of the dashboard. Driven by
+ * GET /v1/account/session, the one account route a closed account may call.
  */
 export function AccountClosedScreen({
   deactivatedAt,

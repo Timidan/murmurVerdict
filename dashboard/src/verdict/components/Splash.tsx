@@ -1,5 +1,3 @@
-// dashboard/src/verdict/components/Splash.tsx
-//
 // Full-bleed brand entrance: the logo sting, played once on a visitor's first
 // landing-page load, then remembered. Dismisses on end, on any interaction,
 // and on a hard timeout. Every other route relies on <LogoLoader/> instead.
@@ -14,10 +12,8 @@ const STING_POSTER = "/brand/logo-sting-poster.png";
 const HARD_TIMEOUT_MS = 7000;
 const FADE_MS = 320;
 
-/** Landing route only — a deep link to /leaderboard should not sit through a
- *  sting. Resolved through the router's own parser: route.ts canonicalizes
- *  `#/x` to `/x` at module load, so a hash-only check here reads every deep
- *  link as an empty hash and plays the sting over it. */
+/** Landing route only. Uses the router's parser: route.ts rewrites `#/x` to
+ *  `/x` at load, so a hash check would miss deep links. */
 function onLanding(): boolean {
   return parseLocation(window.location).name === "landing";
 }

@@ -1,17 +1,7 @@
 // ─── RuntimeKeyMintModal — one-time plaintext runtime-key reveal ──────────
-//
-// Sibling of ApiKeyMintModal. Renders once on a successful POST
-// /v1/account/agents/:slug/runtime-keys. The `secret` returned is the ONE
-// place the API ever surfaces the raw runtime key.
-//
-// Same friction-load posture as the API-key modal: danger banner, checkbox-
-// guarded DONE, and dismissal by click-outside or Escape explicitly NOT
-// honored (footgun prevention — the key is unrecoverable once this unmounts).
-// The reveal is a TABBED ONE-BOX:
-// [ AGENT PROMPT ] [ KEY ] [ .ENV ] over a single scrolling content box with
-// one [ copy ] button — the same bracketed tab-strip idiom as CodeSnippetPanel.
-// AGENT PROMPT is the personalized operate-only runbook with the key baked in,
-// so the operator can paste ONE thing and their agent knows how to run.
+// The mint response is the only time the API returns the raw key, so DONE is
+// checkbox-gated and click-outside/Escape are ignored. Tabs: agent prompt (the
+// runbook with the key baked in), key, .env.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RuntimeKeyMintResponse } from "../../api.js";
@@ -53,10 +43,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
   const panelRef = useRef<HTMLElement | null>(null);
   const firstCopyRef = useRef<HTMLButtonElement | null>(null);
 
-  // Personalized runbook — fetched once on mount and cached with the key
-  // baked in. `promptText === null` while the fetch is in flight; on error we
-  // still populate a minimal note that carries the raw key line so the modal
-  // is never useless.
+  // Runbook with the key injected; null while loading.
   const [promptText, setPromptText] = useState<string | null>(null);
   const [promptLoading, setPromptLoading] = useState(true);
 
@@ -77,8 +64,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
       })
       .catch(() => {
         if (cancelled) return;
-        // Fallback — never leave the operator without the key even if the
-        // runbook route is unreachable. Still includes the raw key line.
+        // Fallback note still carries the raw key.
         setPromptText(
           `# operate ${slug}\n\n` +
             `(the personalized runbook could not be loaded — the key is still\n` +
@@ -104,10 +90,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
     };
   }, []);
 
-  // Block Escape — by spec, the user MUST tick the checkbox + click DONE.
-  // Same capturing window listener as the sibling ApiKeyMintModal, for the
-  // same reason: the runtime key is revealed exactly once, so a reflex Esc
-  // would unmount the modal and destroy a credential with no recovery path.
+  // Block Escape; the user must tick the checkbox and click DONE.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -119,11 +102,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // Focus lifecycle — same pattern as compact/MobileNav: move focus into
-  // the dialog on mount (first copy button, panel as fallback) and return
-  // it to the previously-focused element on unmount. Escape stays blocked
-  // (effect above) and click-outside is never wired — only the focus
-  // handling is added here.
+  // Focus the copy button on mount; restore previous focus on unmount.
   useEffect(() => {
     const prevFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -133,14 +112,9 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
     };
   }, []);
 
-  // Keep Tab / Shift+Tab within the dialog. The panel is mounted for this
-  // component's whole life, so the trap is unconditionally active.
   useFocusTrap(panelRef);
 
-  // Stash the just-minted secret for the integrate page handoff. The
-  // envelope auto-expires after 5 min and is single-use (consumeJustMinted
-  // clears it on read), so this is safe even if the operator never
-  // navigates — sessionStorage drops on tab close.
+  // Hand the secret to the integrate page; single-use, 5-min TTL, sessionStorage.
   useEffect(() => {
     stashJustMinted(slug, {
       secret: result.secret,
@@ -152,12 +126,8 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
   }, [slug, result.secret, result.runtime_key_id, result.runtime_key_prefix, signingPrivateKey]);
 
   const onOpenIntegrate = useCallback(() => {
-    // Navigate to the integrate page where the snippet panel will pick
-    // up the stashed secret. We deliberately DO NOT call onDone — some
-    // parents (AgentOnboardPage) chain a "#/account" navigation inside
-    // onDone, which would race with this hash assignment. The hash
-    // change here naturally unmounts the current route (and the modal
-    // with it), so the cleanup onDone normally does isn't needed.
+    // No onDone: some parents navigate inside it, racing this hash change.
+    // The route change unmounts the modal anyway.
     window.location.hash = `#/account/agent/${encodeURIComponent(slug)}/integrate`;
   }, [slug]);
 
@@ -181,8 +151,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
       : []),
   ].join("\n");
 
-  // The text the single [ copy ] button acts on — always the active tab's
-  // content. Empty only while the prompt is still resolving.
+  // The active tab's content; empty while the prompt loads.
   const activeText = useMemo(() => {
     if (active === "key") return result.secret;
     if (active === "env") return envLine;
@@ -204,8 +173,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
     copyTimerRef.current = setTimeout(() => setCopied(false), 1800);
   }, [activeText]);
 
-  // Reset the copy-feedback state when switching tabs so a stale "copied ✓"
-  // badge from the previous tab doesn't lie about the new one.
+  // Reset copy feedback on tab switch.
   useEffect(() => {
     setCopied(false);
     setCopyFallback(false);
@@ -229,10 +197,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
         <header className="flex items-center justify-between">
           <h3 id="runtime-key-mint-title" className="ck-title ck-title-ik">
             <Ik name="runtime-key" /> your new runtime key
-            {/* Seal stamp — the credential is sealed the instant this modal
-                mounts, so the glyph plays its one-shot close here and then
-                holds. Trailing, so the leading runtime-key marker keeps the
-                ck-title-ik convention; ink is inherited, never set. */}
+            {/* One-shot seal stamp on mount. */}
             <span className="mmr-seal-stamp" aria-hidden="true">
               <Ik name="seal" size={16} />
             </span>

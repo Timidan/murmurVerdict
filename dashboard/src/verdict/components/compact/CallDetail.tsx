@@ -15,16 +15,8 @@ import {
 } from "@shared/wire-call-status";
 
 /**
- * Shared call-detail body — the 3-stat header + submission / anchor·resolution
- * / identity-evidence panels. Fetches by `callId` and owns its own
- * loading / error / not-found states.
- *
- * Rendered in two places, so it lives here rather than inside CallPage:
- *   · variant="page"   — the full #/calls/:id route (3-column grid on ≥lg)
- *   · variant="drawer" — the in-context call drawer (always stacked, narrow)
- *
- * The layout is the ONLY thing the variant changes; the data, states, and
- * field rows are identical, so the page and the drawer can never drift.
+ * Call detail body for the #/calls/:id page and the call drawer; the variant
+ * changes layout only. Fetches by `callId` and owns loading/error/not-found.
  */
 export function CallDetail({
   callId,
@@ -37,11 +29,8 @@ export function CallDetail({
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
 
-  // A call's record is a REST read, so a `call.resolved` event for THIS call
-  // has to re-read it — the streamed row is the lean wire shape and carries
-  // none of the lifecycle evidence below. `live` is a dependency for the same
-  // reason: an event that fires while the socket is down never arrives, so a
-  // reconnect re-reads rather than trusting a snapshot with a hole in it.
+  // Re-read on a stream event for this call (the streamed row lacks the
+  // evidence) and on reconnect (events during downtime are lost).
   const { recentCalls, status } = useStream();
   const live = status === "open";
   const event = recentCalls.find((e) => e.call_id === callId);
@@ -75,17 +64,7 @@ export function CallDetail({
     };
   }, [callId, streamKey, live]);
 
-  // The privacy stat says which side of the reveal this call is on. It used to
-  // read "sealed" always — including on a call whose revealed side and
-  // confidence render two rows below it, under a tooltip insisting murmur
-  // cannot show them.
-  //
-  // The sealed tooltip states the guarantee precisely rather than the flat
-  // "murmur never sees the sealed prediction" it used to claim. That was true
-  // of the client-sealed path only — on /seal the operator IS handed the
-  // plaintext — and it ignored that early decrypt access rests on grantor key
-  // custody. The same overclaim was corrected in the agent card, README,
-  // OpenAPI and skill doc; this was the copy actual users read.
+  // Privacy stat: which side of the reveal this call is on.
   const revealed = Boolean(data?.fhenix?.revealed_verdict);
   const subjectLabel = !data ? "" : revealed ? "revealed" : "sealed";
   const privacyTitle = revealed
@@ -107,13 +86,8 @@ export function CallDetail({
           : "ck-dim";
 
   const page = variant === "page";
-  // `grid-rows-[auto_minmax(0,1fr)]` is load-bearing on the page variant. The
-  // grid is a flex child with `flex-1`, and `align-content: normal` spreads
-  // that surplus height across every AUTO-sized row equally — so the three-cell
-  // outcome ribbon, which needs 60px, was handed the same share as the panels
-  // and grew to 290px. A third of a 900px viewport went to three words. Pinning
-  // the ribbon row to `auto` and giving the panel row the `1fr` sends the
-  // surplus where the content is.
+  // `grid-rows-[auto_minmax(0,1fr)]` keeps the stat ribbon at its natural
+  // height and sends the flex-1 surplus to the panel row.
   const wrap = page
     ? "flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] lg:grid-rows-[auto_minmax(0,1fr)] min-h-0"
     : "flex flex-col";
@@ -204,10 +178,7 @@ export function CallDetail({
               <>
                 {data.fhenix.revealed_verdict ? (
                   <>
-                    {/* The venue names its own two outcomes. When it named
-                        this one, print its word; otherwise print the index,
-                        which is all murmur knows. Never an inferred direction:
-                        index 0 used to draw an up arrow on every market. */}
+                    {/* The venue's label, else the index; never an inferred direction. */}
                     <Kv
                       k="side"
                       v={
@@ -232,10 +203,7 @@ export function CallDetail({
             {data.submission.submitted_at && (
               <Kv
                 k="sent"
-                /* Absolute, not relative, on every row of this page: a call's
-                   seven lifecycle stamps fall inside one minute of each other,
-                   so "8d ago" printed seven times said nothing about the order
-                   or the gaps. The relative form moves to the tooltip. */
+                /* Absolute times: the lifecycle stamps sit within a minute. */
                 v={<TimeAgo iso={data.submission.submitted_at} absolute />}
                 title="when the agent sent this call"
               />
@@ -258,12 +226,7 @@ export function CallDetail({
             }
             className={panelCls}
           >
-            {/* PRICE-ANCHOR ROWS — legacy native-price calls only.
-                Murmur is a pure referee on external venues: a venue call has no
-                anchor, no anchor price and no price feed, so the old
-                "t0: awaiting anchor" placeholder promised machinery that is
-                never coming for it. The whole block is gated on the data now,
-                and the empty branch is gone. */}
+            {/* Anchor rows: legacy native-price calls only. */}
             {data.t0 && (
               <>
                 <Kv
@@ -291,9 +254,7 @@ export function CallDetail({
                   v={<TimeAgo iso={data.resolution.t1} absolute />}
                   title="when the market closed and the call became scorable"
                 />
-                {/* Same rule as the anchor block: a venue call carries no
-                    closing price and no feed, so the rows only appear when the
-                    daemon actually has them. */}
+                {/* Venue calls carry no closing price or feed. */}
                 {data.resolution.p1 !== null && data.resolution.p1 !== undefined && (
                   <Kv
                     k="closing price"
@@ -493,11 +454,7 @@ function revealWord(status: string): string {
   return REVEAL_TEXT[status] ?? status.replace(/_/g, " ");
 }
 
-/**
- * The public outcome, said in words. `oracle_unavailable` is the one that has
- * to change: it names retired price-feed machinery, and what actually happened
- * is that no outcome landed for this call.
- */
+/** The public outcome in words. */
 const OUTCOME_TEXT: Record<string, string> = {
   win: "win",
   loss: "loss",
@@ -509,13 +466,7 @@ function outcomeWord(outcome: string | null | undefined): string {
   return outcome ? (OUTCOME_TEXT[outcome] ?? outcome.replace(/_/g, " ")) : "—";
 }
 
-/**
- * A call with no resolution, said in the app's own words. "open" is reserved
- * for the canonical pending set (COPY.md: sealed, not resolved yet) — a
- * rejected call, a bad reveal and a missed reveal are terminal and will never
- * resolve, so calling all three "pending" both used a retired word and told the
- * reader to wait for a verdict that is not coming.
- */
+/** An unresolved call's state in words; "open" is only for the pending set. */
 const STATE_TEXT: Record<string, string> = {
   rejected: "rejected",
   invalid_reveal: "bad reveal",

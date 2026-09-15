@@ -1,31 +1,12 @@
 // ─── Gateway snippet templates ─────────────────────────────────────────────
-//
-// The pasteable text behind the Integrate page's three code tabs, kept out of
-// the React component so a smoke can render and assert on it without a DOM.
-//
-// Every key this dashboard mints is PoP-bound — onboarding always puts
-// `signing_pubkey` in the wallet-signed policy — so the bearer header ALONE is
-// a 401. Each snippet therefore builds the request-body bytes first, hashes
-// exactly those bytes, and signs the `murmur-rk-v2` canonical string defined in
-// src/verdict/auth/runtime-key-pop.ts. That string is mirrored here field for
-// field; changing it server-side means changing all three templates.
-//
-// Inputs: the market reference (and, on the TS tab, the prediction and the
-// confidence) are REQUIRED env reads that fail loudly when unset. No sample
-// market, outcome or confidence ships inside a snippet a reader will paste.
-//
-// Sealing: CoFHE ships a JS SDK, so only the TS tab seals end to end (it
-// mirrors tools/agent-side-cofhe-sealer.ts, including the CoFHE 0.7 pair of
-// setAccount + setConsumingContract). The PY and CURL tabs sign a correct
-// request around handles that sealer produced, and say so.
+// Pasteable text for the Integrate page's code tabs. Dashboard keys are
+// PoP-bound, so each snippet signs the `murmur-rk-v2` string from
+// src/verdict/auth/runtime-key-pop.ts; change both together. Only the TS tab
+// seals; PY and CURL take handles from tools/agent-side-cofhe-sealer.ts.
 
 export type SnippetLanguage = "typescript" | "python" | "curl";
 
-/**
- * Substitute the `{{base}}` and `{{key}}` placeholders in a template.
- * When `runtimeKey` is undefined, swap `{{key}}` for the env-var pattern
- * idiomatic to each language (handled via the `keyBlock` arg per call).
- */
+/** Substitute the `{{base}}` and `{{key}}` placeholders in a template. */
 function renderSnippet(
   template: string,
   base: string,
@@ -248,14 +229,8 @@ function pickTemplate(language: SnippetLanguage): string {
 }
 
 /**
- * Build the language-idiomatic credential block. A PoP-bound key needs four
- * values, not one: the bearer, the key id and the signing key it was minted
- * with, and this deployment's PoP audience (which the daemon prints in
- * /v1/skill.md — it is configurable, so guessing the default here would sign
- * requests that verify nowhere).
- *
- * Only the bearer is ever inlined, and only on the one-time post-mint path;
- * everything else stays an env read so the snippet is safe to share.
+ * Per-language credential block. Only the bearer is ever inlined (post-mint);
+ * key id, signing key and the per-deployment PoP audience stay env reads.
  */
 function buildKeyBlock(
   language: SnippetLanguage,
@@ -294,11 +269,7 @@ function buildKeyBlock(
     : `# Set MURMUR_RUNTIME_KEY in your shell first.\n${shellNote}`;
 }
 
-/**
- * Render one language's snippet against a daemon base URL. `runtimeKey` is the
- * one-time post-mint secret; when omitted the bearer falls back to an env read
- * so the text is safe to share.
- */
+/** Render one language's snippet; without `runtimeKey` the bearer is an env read. */
 export function renderGatewaySnippet(
   language: SnippetLanguage,
   base: string,

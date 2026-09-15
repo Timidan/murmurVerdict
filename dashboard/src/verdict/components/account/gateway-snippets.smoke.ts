@@ -1,23 +1,9 @@
 // ─── The Integrate page's snippets must actually authenticate ───────────────
-//
-// The panel calls these three snippets the canonical gateway path, and every
-// key this dashboard mints is PoP-bound, so a snippet that sends only
-// `X-Murmur-Runtime-Key` hands the reader a guaranteed 401. That is what
-// shipped until 2026-08-23.
-//
-// Two layers of guard:
-//   1. Structural, always on — every language sends all four auth headers and
-//      signs the murmur-rk-v2 fields in the server's order, taken from
-//      src/verdict/auth/runtime-key-pop.ts rather than restated here.
-//   2. Executable, when the toolchain is present — the PY and CURL snippets
-//      are RUN verbatim against a server that calls the real
-//      verifyRuntimeKeyPop. This is what caught `openssl pkeyutl -rawin`
-//      refusing a pipe ("unable to determine file size for oneshot
-//      operation"): the snippet read fine and did not work.
-//
-// The TS tab cannot be executed here — it seals through @cofhe/sdk against a
-// live relayer — so it is covered structurally, including the CoFHE 0.7 pair
-// of bindings that tools/agent-side-cofhe-sealer.ts uses.
+// 1. Structural: every snippet sends all four PoP headers and signs the
+//    murmur-rk-v2 fields in the server's order.
+// 2. Executable (when the toolchain exists): PY and CURL run verbatim against
+//    the real verifyRuntimeKeyPop. TS seals via a live relayer, so it is
+//    structural only.
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -112,9 +98,7 @@ for (const language of LANGUAGES) {
     );
   }
 
-  // The canonical string is signed in the server's field order, and the body
-  // hash is taken over bytes that already exist — a snippet that re-serializes
-  // after signing hashes something the server never receives.
+  // Fields signed in the server's order.
   let cursor = -1;
   for (const [index, token] of (FIELD_TOKENS[language] ?? []).entries()) {
     const at = snippet.indexOf(token, cursor + 1);
@@ -278,7 +262,7 @@ if (canRunBash || canRunPython) {
     MURMUR_BATCH_PROOF: `0x${"ab".repeat(64)}`,
     MURMUR_BINARY_CT_HASH: `0x${"11".repeat(32)}`,
     MURMUR_CONFIDENCE_CT_HASH: `0x${"22".repeat(32)}`,
-    // The market reference is a required input now; unset is a hard stop.
+    // Required market reference; unset is a hard stop.
     MURMUR_MARKET_PROTOCOL: "polymarket-gamma",
     MURMUR_MARKET_SOURCE_ID: "0x" + "cd".repeat(32),
     MURMUR_MARKET_CONFIG_VERSION: "1",

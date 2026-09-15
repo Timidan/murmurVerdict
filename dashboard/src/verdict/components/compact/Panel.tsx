@@ -2,14 +2,8 @@ import type { ReactElement, ReactNode } from "react";
 
 interface PanelProps {
   /**
-   * Panel name (lowercase chrome label). A plain string keeps the generic
-   * ::before square marker; pass an element beginning with an `<Ik/>` glyph
-   * (icon-adoption pattern P2) to give the panel a semantic marker instead.
-   *
-   * Narrower than ReactNode on purpose: the marker branch below decides on
-   * `typeof title === "string"`, so every non-string title MUST supply its own
-   * glyph. ReactNode would also admit numbers, `null` and arrays — values that
-   * fall into the glyph branch and render a title with no marker at all.
+   * A string keeps the ::before square; an element must start with its own
+   * `<Ik/>` glyph. Not ReactNode, since any non-string takes the glyph branch.
    */
   title: string | ReactElement;
   /** Right-aligned annotation (count, status, timestamp). */
@@ -21,14 +15,9 @@ interface PanelProps {
   className?: string;
 }
 
-/**
- * Cockpit panel — hairline frame + 22px header strip. No card chrome,
- * no rounding. Reach for this whenever you want a labeled region of
- * the screen (leaderboard panel, live feed panel, market matrix panel).
- */
+/** Cockpit panel: hairline frame + header strip. */
 export function Panel({ title, meta, actions, children, className }: PanelProps) {
-  // One marker per title, never two: a node title supplies its own glyph, so
-  // ck-title-ik suppresses the ::before square. String titles are untouched.
+  // A node title brings its own glyph; ck-title-ik drops the ::before square.
   const titleCls = typeof title === "string" ? "ck-title" : "ck-title ck-title-ik";
   return (
     <section className={"ck-frame flex flex-col min-h-0 " + (className ?? "")}>

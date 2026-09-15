@@ -1,16 +1,6 @@
 // ─── FamilyLeaderboards ────────────────────────────────────────────────────
-//
-// Per-family + general leaderboards. A `market_family` (e.g.
-// 'financial-direction', 'prediction-market-binary') groups markets that
-// share a scoring shape so single-family specialists aren't penalized
-// against generalists. This component:
-//
-//   1. Fetches /v1/families and renders a switcher of available families
-//      (sorted by submission count desc).
-//   2. Default view: top-10 general practitioners by conservative family
-//      coverage. Click a family chip to switch into that family's LB.
-//
-// Visual rhythm matches CompactSparkline/LiveFeed (Nothing density).
+// Cross-family top 10 by default; a family chip switches to that family's
+// leaderboard. Families group markets that score the same way.
 
 import { useEffect, useState } from "react";
 import { verdictApi, type AgentFamilyRow, type AgentCrossFamilyRow } from "../api.js";
@@ -50,8 +40,7 @@ export function FamilyLeaderboards() {
 
   useEffect(() => {
     let cancel = false;
-    // A failed view leaves its error behind, and the next view is a fresh
-    // request: keeping it would caption working rows with a dead error.
+    // Clear the previous view's error; this is a fresh request.
     setError(null);
     if (view === "cross") {
       setCross(null);
@@ -82,9 +71,7 @@ export function FamilyLeaderboards() {
   return (
     <div className="border border-[var(--color-border-vis)]">
       <div className="ck-header flex items-center gap-2 px-2 py-1">
-        {/* ck-title-ik: the `market` glyph REPLACES the generic ::before
-            square — one marker per title, never two. The 24-grid nav drawing
-            is the one that belongs beside 18px/700 title ink. */}
+        {/* ck-title-ik: the glyph replaces the ::before square. */}
         <span className="ck-title ck-title-ik">
           <IkNav name="market" /> families
         </span>
@@ -115,8 +102,7 @@ export function FamilyLeaderboards() {
       {error && (
         <InlineError error={error} className="px-2 py-2 ck-mono" />
       )}
-      {/* A request that failed never arrives, so its "loading…" would sit
-          there forever under the error that already explains it. */}
+      {/* No skeleton once the request has failed. */}
       {view === "cross" ? (
         cross === null ? (
           error ? null : <SkelRows />
@@ -152,12 +138,6 @@ function FamilyChip({
       onClick={onClick}
       title={title}
       aria-pressed={active}
-      /* One form per role. These wore a hairline BOX and typed-out `[ ]`
-         brackets at the same time, which is the badge signature and the button
-         signature stacked on one control (compact.css, "component form
-         grammar"). They are buttons, so they take the shared bracket button —
-         brackets from the pseudo-elements, no border, and the same active
-         underline every other toggle in the cockpit now uses. */
       className={"ck-btn ck-btn-bracket " + (active ? "ck-btn-active" : "")}
     >
       {label}
@@ -182,11 +162,6 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
   }
   return (
     <ul className="m-0 p-0 list-none ck-mono">
-      {/* The unit belongs in the header, once. Every row used to end with the
-          words "of families", which cost ~110px per row in a panel that is
-          290px wide at its narrowest — so the agent handle, the one thing a
-          reader is looking for, truncated to `operator-…` to make room for a
-          word repeated identically down the column. */}
       <li className="ck-fam-row px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
         <span>agent</span>

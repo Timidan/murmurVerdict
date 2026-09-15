@@ -1,18 +1,6 @@
 // ─── AgentSettingsPage — per-agent settings shell ──────────────────────────
-//
-// Route: #/account/agent/:slug   (default tab = payout)
-//        #/account/agent/:slug/payout
-//        #/account/agent/:slug/keys
-//
-// Auth-gated via AccountShell. Sub-tabs are HASH-driven, not
-// React state, so deep-linking + back/forward navigation work exactly the
-// way they do for the rest of the dashboard. The Router owns the `tab`
-// param; we just dispatch on it.
-//
-// Header carries the TierBadge + slug crumb so the user always knows
-// which agent they are editing. Body swaps between:
-//   · DestinationAddressForm (payout target + cooldown countdown)
-//   · ApiKeysPanel (list + rotate + mint)
+// Route: #/account/agent/:slug/:tab (default payout). Tabs are hash-routed, not
+// React state, so deep links and back/forward work; the Router owns `tab`.
 
 import { useEffect, useMemo } from "react";
 import { Ik, type IconName } from "../icons.js";
@@ -59,11 +47,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
     window.location.hash = `#/account/login?next=${next}`;
   }, [account.ready, account.isAuthenticated, slug, tab]);
 
-  // Pick the AccountAgent for this slug from the already-fetched list.
-  // The list comes back via /v1/account/agents on /account bootstrap, so
-  // landing directly on /payout (e.g. via a bookmark) doesn't trigger
-  // a separate round-trip — useAccount.refreshAgents is called on the
-  // window load + on every successful PATCH below.
+  // This slug's row from the already-fetched list; no extra round trip.
   const agent = useMemo<AccountAgent | null>(
     () => account.agents.find((a) => a.display_slug === slug) ?? null,
     [account.agents, slug],
@@ -75,14 +59,10 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
   if (!account.ready || !account.isAuthenticated) {
     return <LoadingShell slug={slug} />;
   }
-  // "you do not own this handle" is a claim about a list that landed. Before
-  // the session answers, and after it fails, the agent is unknown rather than
-  // missing — `!account.loading` alone said missing on both.
+  // Until the list lands (or if it fails) the agent is unknown, not missing.
   const listed = account.settled && !account.error;
 
-  // Tab state read off the AccountAgent row already in hand — no extra fetch.
-  // The other five tabs own their counts inside their panels, so they say
-  // nothing here rather than guess. Null while the row is still loading.
+  // Rail notes from the row in hand; other tabs show state in their own panels.
   const payoutNote = agent ? (agent.destination_address ? "set" : "not set") : null;
   const walletNote = agent ? (agent.controller_wallet ? "bound" : "not bound") : null;
 
@@ -101,9 +81,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             </a>
           </span></TopbarCrumb>
 
-      {/* ck-page owns the measure — one width for every account page, not one
-          per panel and not one per file. Panels inside are w-full and inherit
-          it; the rail and the body split it. */}
+      {/* ck-page sets one width for every account page. */}
       <main className="flex-1 px-3 py-4 ck-page flex flex-col gap-4">
         {/* ── Agent header ─────────────────────────────────────────── */}
         <header className="flex flex-wrap items-center justify-between gap-3 px-1">
@@ -136,8 +114,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
         {/* ── Rail + body — hash-routed, not state-driven ────────── */}
         <div className="ck-sidetabs">
           <nav className="ck-sidetab-rail" aria-label="agent settings tabs">
-            {/* payout is the deep-link default (route.ts) — keep it first so
-                the default tab lands topmost, not at the foot of the rail. */}
+            {/* payout is the default tab (route.ts); keep it first. */}
             <TabLink slug={slug} tab="payout" active={tab === "payout"} note={payoutNote}>
               payout
             </TabLink>
@@ -171,12 +148,8 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
 
           <div className="ck-sidetab-body flex flex-col gap-4">
             {/* ── Body ─────────────────────────────────────────── */}
-            {/* Codex P2 fix — `key={slug}` forces full remount when the user
-                navigates from one agent's settings to another's. Without it
-                React reuses the same component instance and the previous
-                agent's loaded keys / form input / confirm-id can leak under
-                the new header. On the keys tab the leak is destructive: a
-                stale confirm-id could rotate the wrong agent's key. */}
+            {/* `key={slug}` remounts per agent so state can't leak across
+                agents (a stale confirm-id could rotate the wrong key). */}
             {!agent ? (
               listed ? (
                 <NotFoundShell slug={slug} />
@@ -212,9 +185,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
             ) : tab === "keys" ? (
               <ApiKeysPanel key={slug} slug={slug} />
             ) : (
-              /* Profile and retirement share ONE tab — an agent's identity and
-                 its off switch. They used to render below every tab, which read
-                 as the same setting duplicated; now each lives in one place. */
+              /* Profile and retirement share one tab. */
               <>
                 <AgentProfilePanel
                   key={`profile-${slug}`}
@@ -237,11 +208,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
   );
 }
 
-/**
- * Compact re-attestation chip rendered next to the agent slug in the
- * settings header. Mirrors the chip on AccountPage rows; the wallet-tab
- * link doubles as a "re-attest now" affordance when overdue.
- */
+/** Re-attestation chip for the settings header; mirrors AccountPage's row chip. */
 function ReattestHeaderChip({
   controllerWallet,
   walletTabHref,
@@ -311,8 +278,7 @@ function TabLink({
   note?: string | null;
   children: React.ReactNode;
 }) {
-  // Icon-only, like the topbar nav: the glyph IS the link, the word rides in
-  // the hover tip. Labels in flow truncated ("payout · not\u2026") at rail width.
+  // Icon-only like the topbar nav; the word lives in the hover tip.
   const label = typeof children === "string" ? children : tab;
   return (
     <a

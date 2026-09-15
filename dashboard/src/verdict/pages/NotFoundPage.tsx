@@ -6,12 +6,7 @@ interface NotFoundPageProps {
   path?: string;
 }
 
-/**
- * Real 404 surface — rendered by the router's `not_found` fallback instead of
- * silently painting the landing page under an unknown URL. Static page: no
- * API calls of its own; CompactTopbar supplies the shared cockpit chrome.
- * Error idiom mirrors MarketDetailPage's local NotFound block.
- */
+/** 404 page for the router's `not_found` fallback. No API calls. */
 export function NotFoundPage({ path }: NotFoundPageProps) {
   const attempted = path && path.length > 0 ? path : window.location.pathname;
   return (
@@ -19,8 +14,6 @@ export function NotFoundPage({ path }: NotFoundPageProps) {
       <TopbarCrumb>404</TopbarCrumb>
       <main className="px-2 py-3 ck-mono">
         <div className="ck-label ck-dim mb-1">404</div>
-        {/* T1 (18px) — same fix as <ErrorState/>: at `ck-value-lg` (15px) this
-            headline sat under the 16px `ck-mono` path and sentence below it. */}
         <div className="ck-title">page not found</div>
         <div className="ck-mono ck-dim mt-1 max-w-[52ch] truncate" title={attempted}>
           {attempted}

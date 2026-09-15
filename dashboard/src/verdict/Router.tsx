@@ -16,13 +16,10 @@ const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => 
 const AdminGatewayPage = lazy(() => import("./pages/AdminGatewayPage.js").then((m) => ({ default: m.AdminGatewayPage })));
 const AdminOverviewPage = lazy(() => import("./pages/AdminOverviewPage.js").then((m) => ({ default: m.AdminOverviewPage })));
 
-// account-area pages. Lazy so the Privy SDK chunk isn't pulled
-// into the landing/leaderboard bundles.
+// Account-area pages; lazy so the Privy SDK stays out of public bundles.
 const AccountPage = lazy(() => import("./pages/AccountPage.js").then((m) => ({ default: m.AccountPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage.js").then((m) => ({ default: m.LoginPage })));
-// per-agent settings shell (payout + pricing + keys sub-tabs).
-// The tab union is IMPORTED, not restated: a tab added to the page but
-// missing from a local copy here would silently fall through to "payout".
+// Tab union is imported, not restated, so a new tab can't silently fall through to "payout".
 import type { AgentSettingsTab } from "./pages/AgentSettingsPage.js";
 import { LogoLoader } from "./components/LogoLoader.js";
 const AgentSettingsPage = lazy(() =>
@@ -30,25 +27,15 @@ const AgentSettingsPage = lazy(() =>
     default: m.AgentSettingsPage,
   })),
 );
-// Per-agent integration snippet view. Renders the CodeSnippetPanel keyed
-// to the agent + reads the most-recently-minted api-key secret out of
-// the sessionStorage handoff dropped by ApiKeyMintModal (mint flow now
-// lives under the /keys settings tab; the page falls back to a
-// secret-redacted snippet when no fresh secret is stashed).
 const IntegratePage = lazy(() =>
   import("./pages/IntegratePage.js").then((m) => ({ default: m.IntegratePage })),
 );
-// Primary new-agent surface — slug input + in-browser signing flow that
-// chains create-agent → controller-wallet bind → runtime-key mint and
-// surfaces the runtime key once via RuntimeKeyMintModal.
 const AgentOnboardPage = lazy(() =>
   import("./pages/AgentOnboardPage.js").then((m) => ({
     default: m.AgentOnboardPage,
   })),
 );
-// PrivyProvider mounts here, not in main.tsx, so public routes never load
-// the Privy SDK. One AccountShell instance wraps every /account/* route so
-// auth state survives navigation between login → list → onboarding/settings.
+// One AccountShell wraps every /account/* route so auth state survives navigation.
 const AccountShell = lazy(() => import("./auth/AccountShell.js").then((m) => ({ default: m.AccountShell })));
 
 const LandingPage = lazy(() =>
@@ -81,11 +68,7 @@ const NotFoundPage = lazy(() =>
   import("./pages/NotFoundPage.js").then((m) => ({ default: m.NotFoundPage })),
 );
 
-/**
- * extract the `?next=` deep-link from the hash query string.
- * Returns the raw (un-decoded) path so LoginPage can sanitize it before
- * navigation. Defensive URL parsing — no throws on malformed input.
- */
+/** Raw (un-decoded) `?next=` value from the hash query; never throws. */
 function parseNext(hash: string): string | null {
   const raw = (hash || "").replace(/^#/, "");
   const qIdx = raw.indexOf("?");
@@ -109,17 +92,8 @@ function RouteFallback() {
 }
 
 /**
- * The missing safety net: without a boundary, ANY throw inside a lazy page —
- * a component bug, an unexpected API shape, or a stale chunk after a rebuild
- * changed the hashes — unmounts React to a silent white screen. "The page
- * sometimes blanks out on navigation" was this.
- *
- * Two recoveries, by cause:
- *   stale chunk (dynamic import failed)  → reload once, automatically. The
- *     fresh document loads the new hashes; a sessionStorage latch stops a
- *     broken deploy from looping the reload forever.
- *   anything else → say so, in words, with a reload control. A blank page
- *     tells the reader nothing; an error panel tells them it is not them.
+ * Catches page render errors. A stale chunk reloads once (sessionStorage latch
+ * stops a reload loop); anything else shows an error panel with a reload button.
  */
 class RouteErrorBoundary extends React.Component<
   { locationKey: string; children: React.ReactNode },
@@ -132,7 +106,7 @@ class RouteErrorBoundary extends React.Component<
   }
 
   componentDidUpdate(prev: { locationKey: string }) {
-    // Navigating away clears the error — the next page deserves a fresh try.
+    // Navigating away clears the error.
     if (prev.locationKey !== this.props.locationKey && this.state.error) {
       this.setState({ error: null });
     }
@@ -156,8 +130,7 @@ class RouteErrorBoundary extends React.Component<
         <span className="ck-dim">
           It is not you — the page broke. The rest of murmur still works.
         </span>
-        {/* Dev only: a boundary that hides the error makes every crash a
-            guessing game. Production keeps the plain sentence above. */}
+        {/* Stack trace in dev only. */}
         {import.meta.env.DEV && (
           <pre className="ck-neg whitespace-pre-wrap break-all max-w-[90ch] leading-tight">
             {this.state.error.stack ?? String(this.state.error)}
@@ -176,10 +149,8 @@ class RouteErrorBoundary extends React.Component<
 }
 
 /**
- * Persistent app chrome. Mounted once, outside <Suspense>, so route changes swap
- * only the content: the topbar keeps its DOM node, its SSE subscription, and its
- * knowledge of the previous route (which is what makes the nav activation
- * animation fire at all).
+ * Persistent app chrome, mounted outside <Suspense> so the topbar keeps its DOM,
+ * SSE subscription, and previous route (needed for the nav animation).
  */
 function AppShell({ shellLess, children }: { shellLess: boolean; children: React.ReactNode }) {
   const [crumbSlot, setCrumbSlot] = useState<HTMLElement | null>(null);
@@ -201,9 +172,7 @@ export function VerdictRouter() {
   );
   useEffect(() => {
     const onLocation = () => {
-      // A legacy `#/…` click lands here; fold it into the canonical path
-      // BEFORE the key is read so the address bar never shows the doubled
-      // `/dashboard#/dashboard` form. replaceState fires no events — no loop.
+      // Canonicalize legacy `#/…` URLs before reading the key; replaceState fires no events.
       canonicalizeRouteLocation();
       setLocationKey(`${window.location.pathname}${window.location.search}${window.location.hash}`);
       window.scrollTo(0, 0);
@@ -218,10 +187,7 @@ export function VerdictRouter() {
 
   void locationKey;
   const route = parseLocation(window.location);
-  // Stamped AFTER parseLocation, which runs after canonicalizeRouteLocation()
-  // in the handler above — so a legacy `#/x` navigation never stamps a title
-  // for the pre-canonical URL. Pages with richer data (a market's question)
-  // refine it afterwards via setDocumentTitle.
+  // Must run after canonicalization; pages may refine the title via setDocumentTitle.
   useEffect(() => {
     applyRouteMeta(routeMeta(route));
   }, [route.name, route.params?.slug, route.params?.id]);
@@ -275,33 +241,20 @@ export function VerdictRouter() {
     </RouteErrorBoundary>
     </AppShell>
     </BackgroundInert>
-      {/* Route chords (`g` + key). Mounted here, once, as a sibling of the
-          drawer: it renders nothing and listens on `window`, so it must sit
-          outside <BackgroundInert/> — an inert subtree is exactly what the
-          keyboard layer should still work behind. */}
+      {/* Route chords (`g` + key); must sit outside <BackgroundInert/> to work while the drawer is open. */}
       <GlobalShortcuts />
       <DetailDrawer />
     </DetailDrawerProvider>
   );
 }
 
-/**
- * While the detail drawer is open, mark the page behind it `inert` so the
- * background is removed from the tab order AND the screen-reader tree — the
- * drawer's focus trap alone keeps Tab inside, but without inert a virtual
- * cursor could still wander the dimmed page. The drawer itself renders as a
- * sibling, outside this wrapper.
- */
+/** Marks the page `inert` while the detail drawer is open, hiding it from tab order and screen readers. */
 function BackgroundInert({ children }: { children: React.ReactNode }) {
   const { entity } = useDetailDrawer();
   return <div inert={entity !== null || undefined}>{children}</div>;
 }
 
-/**
- * Decode the `?next=` query value with the same defensive posture as the
- * market_id decoder above. Malformed percent sequences fall back to null,
- * so LoginPage cleanly defaults to /account.
- */
+/** Decode `?next=`; malformed percent sequences give null so LoginPage defaults to /account. */
 function decodeNext(raw: string | null): string | null {
   if (!raw) return null;
   try {

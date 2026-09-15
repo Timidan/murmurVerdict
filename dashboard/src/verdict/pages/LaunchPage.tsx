@@ -12,14 +12,9 @@ import {
 } from "../install-steps.js";
 
 /**
- * INSTALL — the quickstart rail (route: /install, legacy alias /launch).
- *
- * Step-rail layout (see 2026-08-06 install-page-step-rail spec): title +
- * meta block → four tab cells with Doto numerals → fixed-height hint strip
- * (hover/focus one-liners, zero layout shift) → exactly one step panel →
- * integration-surface tabs → next-step cards. The four steps' copy is the
- * same tutorial content as before, one panel at a time; reference material
- * still lives behind the next-step cards.
+ * INSTALL: the quickstart rail (route: /install, legacy alias /launch).
+ * Title and meta, four step cells, a fixed-height hint strip, one step panel,
+ * integration tabs, then next-step cards.
  */
 export function LaunchPage() {
   // Snippets must show a resolvable host: the configured apiUrl when set,
@@ -121,16 +116,10 @@ function InstallRail({ base }: { base: string }) {
     cellRefs.current[target]?.focus();
   };
 
-  // Hints are hover-only by owner ruling (2026-08-06): a mouse entering an
-  // INACTIVE cell is the only thing that ever sets `hint`. The render-time
-  // guard below is defense-in-depth — deriving from the committed rail.active
-  // means the active cell can never show its own hint, whatever a future
-  // handler writes.
+  // Hints are hover-only on inactive cells; the active cell never shows its own.
   const shownHint = hint !== null && hint !== rail.active ? hint : null;
 
-  // The strip fades out over --dur-fast; blanking the text on the same commit
-  // would make the exit asymmetric (instant text loss, slow opacity). Hold the
-  // last hint's copy mounted while ck-show comes off.
+  // Keep the last hint's text mounted while the strip fades out.
   const lastHintRef = useRef<number | null>(null);
   if (shownHint !== null) lastHintRef.current = shownHint;
   const hintText = shownHint ?? lastHintRef.current;
@@ -287,11 +276,8 @@ MURMUR_API=${base}`}
           {rail.active < INSTALL_STEPS.length - 1 ? (
             <button
               className="ck-btn ck-btn-bracket"
-              // Advancing INTO the last step unmounts this button (the footer
-              // swaps it for the skill-file link), which would drop focus to
-              // <body> and restart Tab from the topbar. Hand focus to the
-              // now-active rail cell so keyboard order survives the swap
-              // (WCAG 2.4.3).
+              // Entering the last step unmounts this button; move focus to the
+              // active rail cell so it doesn't drop to <body>.
               onClick={() => {
                 const next = rail.active + 1;
                 go(next);
@@ -322,9 +308,8 @@ MURMUR_API=${base}`}
 
 type SurfaceKey = "skill" | "http" | "x402";
 
-/** [key, label] — a 12px tab row is below the inline tier's 16px floor, so
-    the label carries the surface on its own. A surface earns a tab when it
-    ships; the MCP tab said only "not shipped yet" and is gone until it does. */
+/** [key, label]. Text only: a 12px tab row is below the 16px glyph floor.
+    A surface gets a tab once it ships. */
 const SURFACE_TABS: Array<[SurfaceKey, string]> = [
   ["skill", "skill file · claude code / cursor"],
   ["http", "http api"],
@@ -353,9 +338,7 @@ function IntegrationTabs({ base }: { base: string }) {
           ))}
         </div>
 
-        {/* `key` is load-bearing: it remounts the wrapper on every tab switch
-            so install-panel-enter actually re-runs (an animation on a kept
-            node fires once and never again). */}
+        {/* `key` remounts the wrapper so install-panel-enter re-runs on every switch. */}
         <div key={surface} className="install-panel-enter px-3 py-3">
           {surface === "skill" && (
             <>
@@ -380,11 +363,8 @@ curl -s ${base}/v1/skill.md
 
           {surface === "http" && (
             <>
-              {/* The old line said murmur seals the verdict server-side. That
-                  is the OPTIONAL /seal path, not this one: the snippet below
-                  posts to /v2/gateway/calls, where the client seals locally and
-                  murmur only relays ciphertext. The prose contradicted the code
-                  it sat above. */}
+              {/* Keep this prose matching the snippet: /v2/gateway/calls seals
+                  client-side, unlike the optional /seal path. */}
               <p
                 className="ck-mono ck-dim leading-snug mb-3 cursor-help"
                 title="one authenticated post sends a call. reads are public json and need no key. any language with an http client works."
@@ -395,12 +375,8 @@ curl -s ${base}/v1/skill.md
               <CodeWindow
                 lang="bash"
                 title="the three endpoints you need"
-                // NOT /v2/gateway/calls/seal. That path takes a PLAINTEXT
-                // verdict and is off by default, so an agent following this
-                // panel got a 503 — and CodeSnippetPanel already told them the
-                // right one, so the two surfaces disagreed. /v2/gateway/calls
-                // is the canonical path: the client seals locally and murmur
-                // only ever relays ciphertext.
+                // Not /v2/gateway/calls/seal: that takes plaintext and is off by
+                // default. Must match CodeSnippetPanel.
                 code={`POST ${base}/v2/gateway/calls          # send a sealed call (X-Murmur-Runtime-Key)
 GET  ${base}/v1/agents/<slug>/calls    # your call history
 GET  ${base}/v1/openapi.json           # everything else`}

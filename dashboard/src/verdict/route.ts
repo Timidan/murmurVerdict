@@ -54,11 +54,8 @@ export function readRouteQuery(location: LocationLike): URLSearchParams {
 }
 
 /**
- * Build a same-route URL carrying `params` as its query string, preserving the
- * active routing mode so we never produce a doubled `/leaderboard#/leaderboard`
- * address. Feed the result to `history.replaceState`: it updates the address
- * bar for bookmarking/sharing without a navigation, reload, or scroll jump
- * (replaceState fires neither `popstate` nor `hashchange`).
+ * Same-route URL with `params` as its query, in the active routing mode.
+ * Meant for `history.replaceState`, which fires neither `popstate` nor `hashchange`.
  */
 export function buildRouteQueryUrl(location: LocationLike, params: URLSearchParams): string {
   const qs = params.toString();
@@ -71,18 +68,9 @@ export function buildRouteQueryUrl(location: LocationLike, params: URLSearchPara
 }
 
 /**
- * Fold a legacy hash route into the canonical path form.
- *
- * Entry links use real paths and in-app links still use `#/…`, so the address
- * bar accumulates both: `/dashboard#/dashboard` when they agree, or the worse
- * `/leaderboard#/calls/x` where the visible path names a page the reader is
- * not on. The hash always wins at parse time, so the path part is a fossil of
- * wherever the reader entered — fold it away. `replaceState` fires neither
- * `popstate` nor `hashchange`, so this never loops and never navigates.
- *
- * Requires the host to serve the app shell for deep paths (the same SPA
- * fallback path-mode entry links already rely on); `/v1`–`/v2` API paths are
- * never produced here because hash routes always start with a page path.
+ * Fold a legacy `#/…` route into the canonical path (the hash wins at parse
+ * time, so the path part is stale). `replaceState` fires no events, so this
+ * never loops. Needs the host's SPA fallback for deep paths.
  */
 export function canonicalizeRouteLocation(): void {
   if (typeof window === "undefined") return;
@@ -169,7 +157,6 @@ export function parseLocation(location: LocationLike): ParsedRoute {
   if (agentCalls) return { name: "agent_calls", params: { slug: agentCalls[1] } };
   const agent = /^\/agents\/([^/]+)$/.exec(path);
   if (agent) return { name: "agent", params: { slug: agent[1] } };
-  // Unknown URL → real 404 (carrying the unmatched path) instead of silently
-  // rendering the landing page under a bad address.
+  // Unknown URL → 404 carrying the unmatched path.
   return { name: "not_found", params: { path } };
 }

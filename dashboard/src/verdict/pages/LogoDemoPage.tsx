@@ -1,16 +1,10 @@
-// dashboard/src/verdict/pages/LogoDemoPage.tsx
-//
-// Dev/review surface for AnimatedMark (route: /logo). Renders the component in
-// both playback modes plus the Splash configuration (no wordmark) on the app
-// background, so the full beat map can be eyeballed and captured mid-animation.
-// Not linked from the app chrome — reachable only by URL.
+// Dev/review surface for AnimatedMark (route: /logo). Not linked from the app chrome.
 
 import { useState } from "react";
 import { AnimatedMark } from "../components/AnimatedMark.js";
 
 export function LogoDemoPage() {
-  // Remount trick: bump the key to restart the CSS keyframes from beat 1 so a
-  // reviewer can replay the `once` assemble without a full page reload.
+  // Bump the key to remount and replay the `once` animation.
   const [replayKey, setReplayKey] = useState(0);
 
   return (

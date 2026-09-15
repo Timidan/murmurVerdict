@@ -1,19 +1,6 @@
 // ─── CodeWindow — framed, syntax-colored code presentation ────────────────
-//
-// A calm terminal-style code window for docs surfaces (install page,
-// integrate page). Header strip = title (left) + language badge and
-// [ copy ] (right); body = monospace pre with a tiny regex tokenizer for
-// color. No external highlighter dependency — four token classes in the
-// Nothing palette are enough at our scale, and shiki/prism would drag a
-// grammar bundle into the public route chunks.
-//
-// Color mapping (theme-aware via the ck CSS vars):
-//   comment      → --color-secondary   (dim)
-//   string       → --color-display     (bright)
-//   keyword      → --color-display, bold
-//   placeholder  → --color-accent      (<like-this>, $ENV_VARS — the bits
-//                                       the reader must replace; red is the
-//                                       "look here" spark, used sparingly)
+// Code window for docs pages with a tiny regex tokenizer; no highlighter
+// dependency, so no grammar bundle lands in the public route chunks.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -69,8 +56,7 @@ function tokenize(code: string, lang: CodeLang): Token[] {
     const s = STRING_RE.exec(code);
     if (s) {
       flush();
-      // strings may embed <placeholders> the reader must replace — keep the
-      // accent visible inside the quotes
+      // keep <placeholders> highlighted inside strings
       for (const part of splitPlaceholders(s[0])) out.push(part);
       i += s[0].length;
       continue;

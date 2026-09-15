@@ -1,27 +1,13 @@
-// dashboard/src/verdict/components/MMark.tsx
-//
-// Static SVG of the Murmur Verdict M waveform mark.
-// Geometry extracted from murmur-verdict__full-asset-pack__final/01_murmur-verdict__mark__dark.png
-// via the script in docs/plans/2026-05-16-paper-mode-and-mark-plan.md Task 2.1.
-//
-// Note on sub-pixel coordinates: geometry uses 2-decimal viewBox values
-// (e.g. 0.27, 11.77). At small render sizes (18px) edges antialias; this
-// preserves higher-DPI fidelity at the cost of slight 1× softness.
+// Static SVG of the Murmur Verdict M waveform mark, traced from the brand asset.
 
 export interface MMarkProps {
-  /** px size (rendered as square). Defaults to 18 (topbar size). */
+  /** px size (rendered as square). */
   size?: number;
-  /** Show the red verdict dot. Defaults to true. */
   showDot?: boolean;
   className?: string;
-  /**
-   * Mark the SVG as decorative (aria-hidden, no role).
-   * Use when the parent already owns the accessible name (e.g., a labeled
-   * anchor or wrapper). Mutually exclusive with `label`.
-   */
+  /** aria-hidden, no role; use when the parent owns the accessible name. */
   decorative?: boolean;
-  /** Optional aria-label override. Ignored if `decorative` is true.
-   * Defaults to "Murmur Verdict". */
+  /** Ignored if `decorative` is true. */
   label?: string;
 }
 
@@ -36,8 +22,7 @@ const BARS: Array<{ x: number; y: number; w: number; h: number }> = [
   { x: 79.70, y: 0.14,  w: 7.04, h: 99.59 },
 ];
 
-// Dot rendered as a square (geometric language: discrete, not circular).
-// Derived from {cx: 95.94, cy: 95.61, r: 3.92} via cx-r, cy-r, 2r.
+// Dot drawn as a square from the traced circle {cx: 95.94, cy: 95.61, r: 3.92}.
 const DOT = {
   x: 95.94 - 3.92,
   y: 95.61 - 3.92,
@@ -65,8 +50,7 @@ export function MMark({
       style={{ display: "inline-block", verticalAlign: "middle" }}
     >
       {BARS.map((b, i) => (
-        // rx = w/2 renders each bar as a capsule — the asset-pack bars have
-        // fully rounded ends, not square corners.
+        // rx = w/2 makes each bar a capsule.
         <rect
           key={i}
           x={b.x}

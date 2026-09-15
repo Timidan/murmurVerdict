@@ -1,19 +1,6 @@
-// Early access pricing — one price per market, set by the agent's owner.
-//
-// Murmur is a referee, not the seller. An owner LISTS their service on a
-// market at a price. A price used to be one number per
-// agent; it is now one per venue series, and a registration is its
-// precondition — an owner opts into serving a market, then prices it.
-// Dropping the registration cascades that market's price away with it.
-//
-// Two numbers, deliberately distinct:
-//
-//   your ceiling      how many subscribers YOU are willing to serve (optional)
-//   deliverable       how many murmur can actually grant before the market
-//                     opens — each grant is its own transaction
-//
-// We sell the smaller of the two and say so, because taking payment murmur
-// cannot deliver means a refund, and refunds are manual today.
+// Early access pricing: one price per venue series, set by the agent's owner.
+// A series must be registered before it can be priced. Murmur sells the smaller
+// of the owner's ceiling and what it can grant before open; refunds are manual.
 
 import { useCallback, useEffect, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
@@ -62,11 +49,7 @@ interface Note {
   bad: boolean;
 }
 
-/**
- * The three values a listing carries. They travel together because they are
- * saved together: version and ceiling used to be one pair for the whole panel,
- * so saving a price on ETH wrote BTC's version and cap over ETH's stored ones.
- */
+/** A row's price, version and ceiling; saved together, per row. */
 interface TermsDraft {
   price: string;
   version: string;
@@ -90,11 +73,8 @@ function draftFromTerms(terms: MarketRegistrationRow["terms"]): TermsDraft {
 export function ProviderTermsPanel({ slug }: { slug: string }) {
   const [rows, setRows] = useState<MarketRegistrationRow[] | null>(null);
   /**
-   * One draft per series, keyed by venue_series_id, holding price, pricing
-   * version and subscriber cap together. This is the whole isolation
-   * guarantee: editing BTC writes one key and leaves every other row's draft
-   * byte-identical. Writes patch only the row they touched rather than
-   * re-reading the list, so a save can never reseed a draft mid-edit.
+   * One draft per venue_series_id. Writes patch only their own row instead of
+   * re-reading the list, so a save never reseeds another draft mid-edit.
    */
   const [drafts, setDrafts] = useState<Record<string, TermsDraft>>({});
   /** Deployment-wide, so one series' read carries it for every row. */
@@ -160,8 +140,6 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
   const list = useCallback(
     async (series: string) => {
       setNote(null);
-      // Only this row's draft is read, so its stored version and cap survive a
-      // save on any other row.
       const draft = drafts[series] ?? EMPTY_DRAFT;
       const atoms = displayToAtoms(draft.price);
       if (!atoms) {
@@ -172,8 +150,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
         });
         return;
       }
-      // Blocking the save on an empty version stranded the owner. It is
-      // bookkeeping, so default it per row and let the sale through.
+      // Version is bookkeeping; default it rather than block the save.
       const effectiveVersion = draft.version.trim() || "v1";
       const parsedMax = draft.maxSubs.trim() === "" ? null : Number(draft.maxSubs);
       if (parsedMax !== null && (!Number.isInteger(parsedMax) || parsedMax <= 0)) {
@@ -316,8 +293,6 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                   </div>
 
                   {row.registered ? (
-                    /* The denomination rides ON the field. A bare number left
-                       the owner guessing what unit they were typing. */
                     <span
                       className={`${INPUT_CLASS} w-full min-w-0 flex items-center gap-1.5`}
                     >
@@ -330,9 +305,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                         title="What a subscriber pays, in USDC, to read this market's calls before they are public."
                         value={draft.price}
                         onChange={(e) => {
-                          // Refuse the keystroke rather than validating on save:
-                          // a field that accepts letters and then rejects them
-                          // teaches the wrong thing about what it holds.
+                          // Refuse invalid keystrokes instead of validating on save.
                           const next = e.currentTarget.value;
                           if (!PRICE_DRAFT.test(next)) return;
                           patchDraft(series, { price: next });
@@ -361,8 +334,6 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                     {row.terms ? "listed" : row.registered ? "registered" : "·"}
                   </span>
 
-                  {/* A listed row keeps its own save. Without it the edited
-                      price had nowhere to go but unlist, which cleared it. */}
                   <span className="justify-self-end flex items-center gap-2">
                     {row.terms && (
                       <button
@@ -399,9 +370,6 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                   </span>
                 </div>
 
-                {/* Version and ceiling belong to THIS market. Held panel-wide,
-                    they rode along on whichever row you saved and overwrote the
-                    terms of every other one. */}
                 {row.registered && (
                   <div className="px-4 pb-3 flex flex-wrap items-center gap-x-5 gap-y-2">
                     <label className="flex items-center gap-2">

@@ -3,12 +3,8 @@ import { isInDialog, isTypingTarget } from "../../lib/keyboard-target.js";
 import { NAV_CHORDS } from "./nav-chords.js";
 
 /**
- * Route chords: `g` then one of these keys. The key→route direction this
- * listener needs, inverted at module load from the canonical route→key map so
- * the two directions cannot drift (see nav-chords.ts).
- *
- * Inversion can only ever SHRINK the map, so it throws on a duplicate letter
- * rather than shipping a route that is silently unreachable by keyboard.
+ * key → route, inverted from NAV_CHORDS at load. Throws on a duplicate letter
+ * rather than leaving a route unreachable by keyboard.
  */
 const CHORDS: Record<string, string> = Object.entries(NAV_CHORDS).reduce(
   (acc, [href, key]) => {
@@ -20,11 +16,8 @@ const CHORDS: Record<string, string> = Object.entries(NAV_CHORDS).reduce(
 );
 
 /**
- * Terminal-style navigation chords, mounted once at the router root. `g`
- * opens a ~900ms window; the second key jumps to its route as a hash
- * assignment (the same navigation every data row uses). Never fires while a
- * field or an open dialog owns the keystroke, never with modifiers held; Esc
- * or timeout cancels a pending chord.
+ * `g` + key navigation chords, mounted once at the router root. `g` arms a
+ * 900ms window. Ignored in fields, open dialogs, and with modifiers held.
  */
 export function GlobalShortcuts() {
   const pending = useRef<number | null>(null);

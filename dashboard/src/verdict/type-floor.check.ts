@@ -1,39 +1,13 @@
 /**
- * The 12px floor, enforced.
+ * Enforces the 12px type floor: nothing in the cockpit renders under 12px.
  *
- * Owner ruling 2026-08-08: nothing in the cockpit renders under 12px. Until now
- * that was a convention — a sentence in dashboard/DESIGN.md and four rounds of
- * hand sweeping. A convention cannot fail a build, so the next 10px timestamp
- * would have shipped exactly like the last four did.
- *
- * This scans the SAME source set dashboard/src/styles.css declares to Tailwind
- * (`@source "./"` + `../index.html`). That pairing is the whole guarantee: the
- * stylesheet says "these files are the only things that can produce a utility",
- * and this check says "none of those files asks for a size under the floor" —
- * together they mean a sub-floor rule cannot reach the built CSS, whether it is
- * written in a className, an inline style, or a stylesheet.
- *
- * Three rules, all reported with file, line and resolved pixel value:
- *
- *   A. Arbitrary text-size utilities in any scanned file — including inside
- *      comments and prose, because Tailwind compiles a class name wherever it
- *      finds one. Variant prefixes (md:, hover:) are covered; the match is on
- *      the utility itself.
- *   B. React inline font sizes written as a literal (bare number = px in React,
- *      or a quoted px string). Computed expressions are out of reach and are
- *      left alone.
- *   C. Stylesheet `font-size` declarations and font-size custom properties,
- *      resolved from their px and rem literals (rem at the 16px root, which is
- *      what this app ships — it never restyles html { font-size }).
- *
- * Deliberately NOT covered: relative units (em, %, ex, ch). `.am-verdict` in
- * animated-mark.css is 0.62em of a wordmark whose size is set per instance, and
- * `.mmr-shell code` is `max(0.92em, 12px)` — its floor is already in the value.
- * A relative size has no fixed pixel value to check, so guessing one would only
- * add false failures. Values with no absolute literal are skipped for the same
- * reason (`inherit`, `var(...)`, `1em`).
- *
- * Documented in dashboard/DESIGN.md §2.5 ("The floor is enforced").
+ * Scans the same sources Tailwind reads (`@source "./"` + `../index.html`), plus
+ * the public cinematic landing, so no sub-floor size can reach the built CSS:
+ *   A. Arbitrary text-size utilities anywhere, comments included (Tailwind
+ *      compiles a class name wherever it appears).
+ *   B. Literal React inline font sizes (bare number = px, or a quoted px/rem).
+ *   C. Stylesheet `font-size` and font-size custom properties (rem at 16px).
+ * Relative units (em, %, ex, ch) and values with no absolute literal are skipped.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -47,14 +21,7 @@ const REM_PX = 16;
 const dashboardRoot = fileURLToPath(new URL("../../", import.meta.url));
 const SRC_ROOT = join(dashboardRoot, "src");
 const ENTRY_HTML = join(dashboardRoot, "index.html");
-/**
- * The cinematic landing is served from `public/`, so it never enters the
- * Tailwind bundle and was never scanned here — and it had drifted almost
- * entirely under the floor while the cockpit was being swept four times: the
- * nav at 11.5px, section labels at 10.4, the footer at 9.6. It is the first
- * page a visitor sees. The floor is a product ruling, not a bundler artefact,
- * so the check follows the pixels rather than the build graph.
- */
+/** The cinematic landing lives in `public/`, outside the Tailwind bundle; the floor still applies. */
 const LANDING_ROOT = join(dashboardRoot, "public", "landing-cinematic");
 
 interface Violation {
@@ -90,9 +57,7 @@ function lineAt(text: string, index: number): number {
   return line;
 }
 
-/** Blank out CSS comments while preserving offsets, so rule C never reads prose
-    (compact.css documents "an 11.04px `code`" in a comment — that is a note
-    about a rejected value, not a declaration, and must not fail the build). */
+/** Blank out CSS comments, preserving offsets, so rule C never reads prose. */
 function blankComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, (m) =>
     m.replace(/[^\n]/g, " "),
@@ -108,9 +73,7 @@ function toPx(value: string, unit: string): number | null {
   return null;
 }
 
-// Built from parts on purpose: a source scanner must not carry a literal of the
-// thing it bans, or Tailwind would compile this file's own regex into a rule
-// and the check would ship the violation it exists to prevent.
+// Built from parts: a literal here would make Tailwind compile the banned utility.
 const ARBITRARY_TEXT = new RegExp(
   "text-" + "\\[" + "(\\d+(?:\\.\\d+)?)(px|rem)" + "\\]",
   "g",
@@ -183,11 +146,7 @@ if (violations.length > 0) {
       `The cockpit's smallest legal size is ${FLOOR_PX}px (owner ruling 2026-08-08,\n` +
       `dashboard/DESIGN.md §2.5). Quiet the text with ink or tracking, or move it\n` +
       `up a tier — never take it under the floor.\n`,
-    // (Wording note: this file is itself a Tailwind source, so a bare utility
-    // word inside a sentence compiles to a real rule. An earlier draft of the
-    // line above ended on one and minted a stray utility into the built CSS —
-    // the same trap the @source scoping closes for docs. Prose inside src/
-    // still counts; keep the copy free of standalone utility words.)
+    // This file is a Tailwind source: keep standalone utility words out of this message.
   );
   for (const v of violations) {
     console.error(

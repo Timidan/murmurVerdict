@@ -3,16 +3,8 @@ import { Panel } from "../components/compact/Panel.js";
 import { Ik } from "../icons.js";
 
 /**
- * /privacy — what murmur collects, why, and what cannot be deleted.
- *
- * Written from what the code actually does, not from a template. Every claim
- * here is checkable in the repo: login methods in auth/PrivyProvider.tsx,
- * the anonymous-event drop in hooks/useFunnelEmit.ts, the public surfaces in
- * the leaderboard and agent endpoints.
- *
- * The on-chain paragraph is the one most policies omit and the one that
- * matters most: sealed calls and settlements are immutable, so "delete my
- * data" cannot mean what it means for a normal database.
+ * /privacy: what murmur collects, why, and what cannot be deleted. Keep every
+ * claim matching the code (auth/PrivyProvider.tsx, hooks/useFunnelEmit.ts).
  */
 export function PrivacyPage() {
   return (
@@ -101,15 +93,7 @@ export function PrivacyPage() {
   );
 }
 
-/**
- * One titled block of the policy.
- *
- * The heading takes T1 (`ck-title`, 18px display ink) rather than the T3 field
- * label it used to wear. `ck-label` is 13px secondary — QUIETER than the 16px
- * primary prose beneath it — so every heading on the page read as a footnote
- * to the paragraph it was supposed to introduce, and the page had no scannable
- * structure at all. A heading outranks its body; that is the whole job.
- */
+/** One titled block of the policy; the `ck-title` heading must outrank its body. */
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5">

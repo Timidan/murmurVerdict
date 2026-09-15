@@ -1,12 +1,5 @@
 // ─── LoginPage — public sign-in shell at #/account/login ───────────────────
-//
-// Renders the Nothing mmr-shell sign-in surface. Privy's hosted login
-// modal is invoked via `useAccount().signIn()`. After successful auth we
-// navigate to the `?next=…` deep-link if present, else default to /account.
-//
-// A later pass swaps the placeholder methods row for a richer presentation
-// (Google / email / passkey icons + wallet escape-hatch). For now we ship a
-// single "[ SIGN IN ]" CTA — the modal itself shows the method picker.
+// Opens Privy's modal via `useAccount().signIn()`; after auth, goes to `?next=` or /account.
 
 import { useCallback, useEffect } from "react";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
@@ -23,11 +16,8 @@ export function LoginPage({ next }: LoginPageProps) {
   const account = useAccount();
   const emitFunnel = useFunnelEmit();
 
-  // Auto-redirect once Privy reports an authenticated session — handles
-  // both "user clicks sign-in" and "user lands here already logged in".
-  // Clean path form (assigning `#<target>` here would stack a hash route
-  // onto the `/account/login` path); replace() so Back doesn't bounce
-  // through the login page, whose effect would immediately re-redirect.
+  // Redirect once authenticated. Clean path, not `#<target>`, and replace() so
+  // Back doesn't bounce through this page.
   useEffect(() => {
     if (!account.isAuthenticated) return;
     const target = sanitizeNext(next) ?? "/account";
@@ -38,17 +28,8 @@ export function LoginPage({ next }: LoginPageProps) {
   }, [account.isAuthenticated, next]);
 
   /**
-   * fire privy.modal_opened on the sign-in click. The actual
-   * Privy hosted modal opens inside account.signIn(); we emit BEFORE
-   * invoking it so a slow-network funnel event doesn't gate the modal.
-   *
-   * Known limitation: the user hasn't authenticated yet, so the emit
-   * has no Privy bearer to attach. useFunnelEmit drops it on the floor
-   * (the route requires auth). The downstream `privy.signed_in` emit
-   * fired from useAccount is the load-bearing signal — modal_opened is
-   * useful only if/when we add an anon-emit path or a client-side
-   * buffer-on-signin flush. Wired today so the call-site exists when
-   * either lands.
+   * Emit privy.modal_opened, then open the modal. With no bearer yet,
+   * useFunnelEmit drops it; `privy.signed_in` is the signal that lands.
    */
   const onSignInClick = useCallback(() => {
     void emitFunnel("privy.modal_opened");
@@ -65,11 +46,6 @@ export function LoginPage({ next }: LoginPageProps) {
       <main className="flex-1 flex items-center justify-center px-4">
         <section className="ck-frame w-full max-w-[480px]">
           <div className="ck-header">
-            {/* Just the action. The header used to be "sign in — you do not
-                need a wallet", and the first line of the body under it was
-                "You do not need a wallet." — the same sentence twice, four
-                lines apart, joined by an em dash the house voice does not
-                use. The reassurance is still there; it is only said once. */}
             <span className="ck-title">sign in</span>
             <span className="ck-mono ck-dim">privy</span>
           </div>
@@ -111,10 +87,7 @@ export function LoginPage({ next }: LoginPageProps) {
               sign in
             </button>
 
-            {/* No terms-of-service document exists in this repo yet — the
-                previous "by continuing you accept the tos." line referenced
-                a target that doesn't exist, so it was removed rather than
-                linked. Reinstate (with a real link) once terms ship. */}
+            {/* No terms of service exist yet; add a linked line once they ship. */}
             <p className="ck-dim text-[12px]">
               Privy handles sign-in. Nothing goes on chain here.
             </p>
@@ -126,22 +99,15 @@ export function LoginPage({ next }: LoginPageProps) {
 }
 
 /**
- * Defence-in-depth: only allow same-origin local paths. The Router already
- * percent-decodes `?next=` before it reaches here, so we validate the decoded
- * form. Accept ONLY a single leading "/" NOT followed by another "/" or "\",
- * with no backslash anywhere and no scheme prefix.
- *
- * Why the backslash guard matters: browsers normalize "\" to "/" when
- * navigating, so `location.replace("/\\evil.example")` resolves to the
- * protocol-relative `//evil.example` and leaves the origin. Rejecting a
- * leading "/\" (and any "\" at all) closes that bypass alongside the classic
- * protocol-relative "//host" one and the `javascript:`/`data:` scheme cases.
+ * Allow only same-origin local paths (validated after the Router decodes them):
+ * one leading "/" not followed by "/" or "\", no backslash anywhere, no scheme.
+ * Browsers normalize "\" to "/", so "/\evil.example" would leave the origin.
  */
 function sanitizeNext(next: string | null): string | null {
   if (!next) return null;
   // Single leading slash, and the next char (if any) is neither "/" nor "\".
   if (!/^\/(?![/\\])/.test(next)) return null;
-  // Belt-and-braces: no backslash anywhere (mid-path "\" also normalizes).
+  // No backslash anywhere (mid-path "\" also normalizes).
   if (next.includes("\\")) return null;
   if (/^\s*(javascript|data|vbscript):/i.test(next)) return null;
   return next;

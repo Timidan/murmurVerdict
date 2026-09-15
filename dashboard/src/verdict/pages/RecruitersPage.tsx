@@ -15,14 +15,7 @@ interface Sender {
   last_at: string;
 }
 
-/**
- * /#/recruiters — public attribution leaderboard.
- *
- * Sharers compete on (clicks × agents touched). Compact cockpit idiom —
- * CompactTopbar + hairline Panel + ck-* type scale, matching the leaderboard.
- * Rows link out to the sharer's X profile so a click on a row credits the
- * sharer further.
- */
+/** /#/recruiters: public attribution leaderboard. Rows link to the sender's X profile. */
 export function RecruitersPage() {
   const [rows, setRows] = useState<Sender[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,20 +70,14 @@ function sanitizeHandle(raw: string): string {
   return raw.toLowerCase().replace(/[^a-z0-9_-]/g, "");
 }
 
-/**
- * Inline "copy your ref" helper. Copies the `?ref=<handle>` SUFFIX rather
- * than a full templated /share/<agent> URL: agent slugs vary per share, so
- * a suffix that appends to any share link beats a template whose literal
- * <agent> placeholder pastes as a broken URL.
- */
+/** Copies the `?ref=<handle>` suffix, not a full URL, so it appends to any share link. */
 function RefLinkHelper() {
   const [handle, setHandle] = useState("");
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | null>(null);
   const handleRef = useRef<HTMLInputElement | null>(null);
 
-  // "/" focuses this page's one field — the same terminal idiom the market
-  // grid uses. Ignored while another field owns the keystroke.
+  // "/" focuses this page's one field.
   useSlashFocus(handleRef);
 
   useEffect(() => {

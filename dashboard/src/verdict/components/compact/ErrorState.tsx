@@ -1,10 +1,6 @@
 /**
- * Shared COMPACT error / empty surface. Turns a raw developer string
- * (`GET /v1/agents/x → 404`) into a humane, recoverable page: a quiet status
- * word, a plain-language headline, the looked-up id, a one-line explanation,
- * bracket recovery links, and the technical string tucked into a collapsed
- * <details> — never in the headline. Reused by AgentPage, CallPage and (for
- * generic errors) MarketDetailPage so every miss reads the same way.
+ * Shared compact error / not-found surface: status word, plain headline, the
+ * looked-up id, recovery links, and the raw detail collapsed in <details>.
  */
 
 interface ErrorStateProps {
@@ -30,13 +26,6 @@ export function ErrorState({ kind, what, id, detail }: ErrorStateProps) {
   return (
     <div className="px-2 py-3 ck-mono">
       <div className="ck-label ck-dim mb-1">{status}</div>
-      {/* T1 (18px) — the headline has to out-rank the body under it. It used to
-          be `ck-value-lg` (15px) sitting directly above 16px `ck-mono` lines, so
-          the explanation read LOUDER than the thing it explains. `ck-title` is
-          the shipped tier for the head of a region and carries display ink of
-          its own, which is why the `ck-pos` that used to supply that ink is
-          gone. Not an <h1>: in-shell an h1 has to out-rank ck-title (21px), and
-          this block is a state headline inside a page, not the page's title. */}
       <div className="ck-title">{headline}</div>
       {id && (
         <div className="ck-mono ck-dim mt-1 truncate" title={id}>

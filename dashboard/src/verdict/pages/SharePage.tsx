@@ -5,29 +5,15 @@ import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 
 /**
- * /#/share/:slug — the viral surface.
- *
- * Anatomy:
- *   - Live OG card (rendered server-side by /v1/og/<slug>.svg)
- *   - One-tap "tweet this" / "post on Discord" / "copy link" actions
- *   - Copy-paste embed (markdown / HTML)
- *
- * No agent-internal data shown. Pure share tools. Designed so a follower
- * can land here, hit one button, and broadcast the verdict in 5 seconds.
- * Compact cockpit idiom — CompactTopbar + hairline Panels + ck-* type scale,
- * matching recruiters / leaderboard.
+ * /#/share/:slug: share tools for an agent. OG card preview (/v1/og/<slug>.svg),
+ * post on X / Telegram / copy link, and markdown and HTML badge embeds.
  */
 export function SharePage({ slug }: { slug: string }) {
   const base = API_BASE;
   const ogUrl = `${base}/v1/og/${slug}.svg`;
   const badgeUrl = `${base}/v1/badge/${slug}.svg`;
-  // The dashboard hash URL (`origin/#/agents/<slug>`) is fine for in-app
-  // navigation, but social scrapers (X, Discord, Slack) ignore the URL
-  // fragment and only see the SPA's static index meta — so the per-agent
-  // OG card never renders. The daemon's `/share/:slug` is the OG-meta
-  // interceptor: it serves the right tags AND meta-refreshes browsers
-  // through to `#/share/<slug>`. Share that URL externally; keep the
-  // hash URL only for the in-app footer link below.
+  // Share the daemon's `/share/:slug` externally: scrapers ignore the hash, and
+  // it serves per-agent OG tags then redirects browsers to `#/share/<slug>`.
   const ref = parseRef();
   const shareUrl = ref
     ? `${base}/share/${slug}?ref=${encodeURIComponent(ref)}`
@@ -39,9 +25,7 @@ export function SharePage({ slug }: { slug: string }) {
 
   useEffect(() => {
     let cancel = false;
-    // Reset first: without it a new slug kept the previous agent's name (and
-    // the previous error) on screen, so the embed snippets copied the wrong
-    // agent under the new URL.
+    // Reset first, or a new slug's embeds carry the previous agent's name.
     setAgent(null);
     setError(null);
     setCopied(null);
@@ -90,10 +74,8 @@ export function SharePage({ slug }: { slug: string }) {
   const markdownEmbed = `[![${escapeMarkdown(alt)} on Murmur](${badgeUrl})](${shareUrl})`;
   const htmlEmbed = `<a href="${shareUrl}"><img src="${badgeUrl}" alt="${escapeHtmlAttr(alt)} on Murmur" /></a>`;
 
-  // A browser can refuse the clipboard, or not expose it at all on an insecure
-  // origin — the first throws asynchronously, the second synchronously. Either
-  // way the value stays on screen and selectable, and the button says to take
-  // it by hand rather than reporting a copy that never happened.
+  // The clipboard can reject (async) or be missing (sync); either way the
+  // button says to select the text by hand.
   const copy = (key: string, value: string) => {
     const done = (ok: boolean) => {
       setCopied(ok ? key : `${key}:failed`);
@@ -186,8 +168,7 @@ export function SharePage({ slug }: { slug: string }) {
               {copyLabel("link", "copy link")}
             </button>
           </div>
-          {/* The link itself, selectable — the same affordance the snippet
-              panels give, and the fallback when the clipboard is refused. */}
+          {/* The link, selectable: the fallback when the clipboard is refused. */}
           <div className="px-3 pb-3 ck-mono ck-dim break-all">{shareUrl}</div>
         </Panel>
 
@@ -251,10 +232,7 @@ function parseRef(): string | null {
   return safe.length === 0 ? null : safe;
 }
 
-/**
- * A display name is arbitrary text. Unescaped it broke both embeds: a `]` cut
- * the markdown alt short, and a `"` closed the HTML alt attribute early.
- */
+/** Display names are arbitrary text: escape them for markdown and HTML alt text. */
 function escapeMarkdown(value: string): string {
   return value.replace(/[\\[\]()!]/g, (ch) => `\\${ch}`);
 }

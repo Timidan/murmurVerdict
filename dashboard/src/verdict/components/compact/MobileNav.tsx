@@ -8,13 +8,7 @@ export interface NavItem {
   label: string;
 }
 
-/**
- * Is `href` the active nav target for the current `current` path? Exact match,
- * plus a section match so sub-routes (e.g. /account/agent/x) still light up
- * their top-level nav (/account). The root href is exempted from the section
- * rule so it can't match every path. Shared by the inline topbar nav and the
- * mobile drawer so both light up identically.
- */
+/** Exact match, or a sub-route of a non-root href (/account/agent/x → /account). */
 export function isNavItemActive(href: string, current: string): boolean {
   if (current === href) return true;
   if (href !== "/" && current.startsWith(href + "/")) return true;
@@ -22,15 +16,8 @@ export function isNavItemActive(href: string, current: string): boolean {
 }
 
 /**
- * COMPACT mobile menu — bracket trigger + full-height right drawer.
- *
- * Shown only below the `lg` breakpoint by <CompactTopbar/>; ≥1024px the inline
- * nav owns navigation. Links inherit the cinematic landing's canonical
- * Space Mono, unboxed, underline-on-intent treatment.
- *
- * Behaviour: opens on tap; closes on link click, [✕], backdrop tap, and
- * Escape. Focus moves to the first link on open and returns to the trigger on
- * close; Tab is kept inside the panel. No animation dependency (CSS only).
+ * Mobile menu drawer, shown below `lg`. Closes on link, close, backdrop and
+ * Escape; focus moves in on open and back to the trigger on close.
  */
 export function MobileNav({
   links,

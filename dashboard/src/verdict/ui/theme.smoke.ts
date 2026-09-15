@@ -1,13 +1,5 @@
-// dashboard/src/verdict/ui/theme.smoke.ts
-//
+// Resolution-order checks for resolveTheme({ stored, prefersLight }).
 // Run: tsx dashboard/src/verdict/ui/theme.smoke.ts
-//
-// Resolution order checks for resolveTheme({ stored, prefersLight }):
-//   1. stored "paper" -> "paper"
-//   2. stored "dark" -> "dark"
-//   3. stored null + prefersLight true -> "paper"
-//   4. stored null + prefersLight false -> "dark"
-//   5. stored invalid -> "dark" (fallback, ignore garbage)
 
 import { resolveTheme } from "./theme.js";
 

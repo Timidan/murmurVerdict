@@ -1,23 +1,7 @@
 /**
- * One hairline loading bar — the atom every skeleton on the dashboard composes.
- *
- * It owns exactly one property: the gray fill (`--color-border`). Everything
- * geometric — height, width, grid self-alignment — is the caller's, passed in
- * through `className`, because no two skeletons size their bars alike; even the
- * two bars inside `PanelSkeleton` below disagree on both height and width.
- *
- * That split is deliberate, not stylistic. Tailwind resolves competing
- * utilities by their order in the generated stylesheet, never by their order in
- * the `class` attribute, so a caller passing `bg-…` here could not reliably
- * beat the base fill. The contract is therefore: callers ADD properties, they
- * never contradict one. Nothing in the shell needs to: every loading state now
- * composes this atom — the last two holdouts, the agent ladder and the sender
- * ladder, traded their `bg-[var(--color-surface)] rounded-sm` bars for the
- * hairline fill and the shell's square corners. A skeleton that genuinely
- * needs a different fill, a radius or a pulse has to change the atom, not
- * smuggle it through `className`.
- *
- * No shimmer, no spinner, per DESIGN.md §10.
+ * One hairline loading bar. It owns only the fill; callers pass geometry via
+ * `className` and must not override the fill (Tailwind orders by stylesheet,
+ * not by class attribute).
  */
 export function SkeletonBar({ className }: { className?: string }) {
   return (
@@ -27,12 +11,7 @@ export function SkeletonBar({ className }: { className?: string }) {
   );
 }
 
-/**
- * Shared hairline loading skeleton for detail-page panels (call log, market
- * heat, agent ladder, verdicts, today feed). Renders `rows` hairline gray bar
- * rows matching FeedSkeleton / AccountPage's SkeletonRows — no spinner, no
- * shimmer, per DESIGN.md §10. Replaces the old bare `[loading…]` panel text.
- */
+/** Hairline loading skeleton for detail-page panels. */
 export function PanelSkeleton({ rows = 5 }: { rows?: number }) {
   return (
     <ul className="m-0 p-0 list-none">

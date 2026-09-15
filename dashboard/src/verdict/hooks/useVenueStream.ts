@@ -6,10 +6,8 @@ import type {
   WireVenueTickPayload,
 } from "@shared/wire-venue";
 
-// The venue wire types are declared ONCE, in src/types/wire-venue.ts, and
-// imported here through the `@shared` alias. Never import them from
-// src/integrations/venue-ticker.ts — that module pulls in better-sqlite3, ws
-// and the venue HTTP clients, and a browser bundle must not reach it.
+// Never import these from src/integrations/venue-ticker.ts: it pulls in
+// better-sqlite3 and ws, which a browser bundle must not reach.
 export type {
   WireVenueMarketRow as VenueMarketRow,
   WireVenueOutcomeQuote as VenueOutcomeQuote,
@@ -30,28 +28,15 @@ export interface VenueStreamSnapshot {
   /** Live quotes keyed by market_id. Replaced wholesale by the first tick on
    *  each connection, merged by later ones, pruned by `removed[]`. */
   markets: Record<string, WireVenueMarketRow>;
-  /** Settled outcomes keyed by market_id. Replaced wholesale by the first tick
-   *  on each connection (same frame as `markets`), then upserted and pruned by
-   *  `removed[]` — the two maps are always drawn from the same daemon state. */
+  /** Settled outcomes keyed by market_id. Replaced with `markets` by the first
+   *  tick, then upserted and pruned by `removed[]`. */
   resolutions: Record<string, WireVenueResolutionRow>;
   /** ISO stamp of the most recent tick, or null before the first one. */
   ts: string | null;
 }
 
-//
-// Same architecture as useStream.ts, and for the same reason: one EventSource
-// per TAB, not per component. Several widgets read venue prices, and the
-// browser's per-origin connection budget is small enough that a socket per
-// subscriber starves ordinary fetches. Deliberately a SEPARATE socket from
-// useStream's /v1/stream — venue ticks are the highest-rate stream murmur
-// emits and the daemon gives them their own bounded, drop-oldest route, so
-// pairing them on one connection would put a 5-updates/second feed behind the
-// same buffer as the leaderboard.
-//
-// Written as a sibling of useStream rather than a generalization of it: the
-// two differ in the parts that matter (first-frame-is-a-snapshot semantics,
-// 503-means-off, resolution upserts), and a shared abstraction would have to
-// carry all of it as options anyway.
+// One EventSource per tab, as in useStream.ts, but a separate socket: venue
+// ticks are high-rate and get their own drop-oldest route on the daemon.
 
 let snapshot: VenueStreamSnapshot = {
   status: "connecting",
@@ -64,12 +49,7 @@ const subscribers = new Set<(s: VenueStreamSnapshot) => void>();
 let es: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let attempt = 0;
-/**
- * The first `venue_tick` after a connection opens carries the daemon's WHOLE
- * cache; every later one carries only what changed. Merging the first frame
- * would leave markets the daemon has stopped tracking on screen forever, with
- * prices frozen at whatever they were when tracking stopped.
- */
+/** The first `venue_tick` per connection is the whole cache (replace); later ones are deltas. */
 let awaitingFullSnapshot = true;
 
 const BACKOFF_BASE_MS = 500;
@@ -83,12 +63,7 @@ function broadcast(): void {
 
 function setStatus(status: VenueStreamStatus): void {
   if (snapshot.status === status) return;
-  // Anything but `open` means nothing is quoting these markets any more, so
-  // what is cached is by definition the last thing seen. Freshness is the ONE
-  // field every renderer reads to decide whether to caveat a price, and it was
-  // frozen at `live` across a disconnect — the board went on showing a moving
-  // book that had stopped moving, with no badge. Staling here rather than in
-  // each row keeps that judgement in one place.
+  // Anything but `open` means cached quotes are no longer live: mark them stale.
   snapshot = {
     ...snapshot,
     status,
@@ -119,14 +94,7 @@ function applyTick(payload: WireVenueTickPayload): void {
     : { ...snapshot.markets, ...incoming };
   let resolutions = snapshot.resolutions;
   if (awaitingFullSnapshot) {
-    // BOTH maps are replaced together, from the same frame.
-    //
-    // Replacing markets while merging resolutions was the leak: the daemon
-    // only ever replayed the resolutions it still holds, so one it evicted
-    // while this tab was disconnected had no way to leave the tab. It stayed
-    // in the map for the life of the session, and any view keyed off
-    // `resolutions[market_id]` kept rendering a settled outcome for a market
-    // the board had otherwise forgotten.
+    // Both maps are replaced together, or resolutions evicted while offline linger.
     resolutions = {};
     for (const row of payload.resolutions ?? []) {
       resolutions[row.market_id] = row;
@@ -134,13 +102,7 @@ function applyTick(payload: WireVenueTickPayload): void {
   }
   const removed = Array.isArray(payload.removed) ? payload.removed : [];
   if (removed.length > 0) {
-    // A delta tick only ever ADDS, so without honoring these the map grows for
-    // the life of the tab and keeps painting markets the daemon stopped
-    // tracking, frozen at their last price under a stale badge.
-    //
-    // The resolution goes with it. Eviction means the market fell out of the
-    // daemon's 30-minute post-resolution lookback, so nothing on screen still
-    // refers to it — and `resolutions` has no other eviction path at all.
+    // Tombstones are the only eviction path for both maps; deltas only add.
     let prunedResolutions: Record<string, WireVenueResolutionRow> | null = null;
     for (const marketId of removed) {
       if (typeof marketId !== "string") continue;
@@ -163,9 +125,7 @@ function applyTick(payload: WireVenueTickPayload): void {
 }
 
 function applyResolution(payload: WireVenueResolutionRow): void {
-  // Idempotent by contract — the daemon replays resolutions across restarts,
-  // so this is an upsert and a repeat is a no-op that still costs a render if
-  // we are not careful. Bail when nothing actually changed.
+  // The daemon replays resolutions; skip the render when nothing changed.
   const existing = snapshot.resolutions[payload.market_id];
   if (
     existing &&
@@ -182,13 +142,7 @@ function applyResolution(payload: WireVenueResolutionRow): void {
   broadcast();
 }
 
-/**
- * Exponential backoff with jitter.
- *
- * The cap alone is not enough: every tab that lost the daemon at the same
- * moment would come back at the same moment, so the daemon's first breath
- * after a restart is spent serving a synchronized stampede. ±20% spreads them.
- */
+/** Exponential backoff with ±20% jitter so tabs don't reconnect in lockstep. */
 function backoffDelayMs(): number {
   const base = Math.min(
     BACKOFF_CAP_MS,
@@ -232,14 +186,8 @@ function connect(): void {
   };
 
   /**
-   * Reset the backoff on the first FRAME, not on open.
-   *
-   * `onopen` fires as soon as headers land, which a proxy or a daemon mid-
-   * restart will happily do before dropping the connection. Resetting there
-   * walks the backoff back to 500ms on every such attempt and the tab spins at
-   * the base delay indefinitely. The daemon writes a full-snapshot tick
-   * immediately on subscribe, so the first frame is the earliest honest proof
-   * the connection is actually serving us.
+   * Reset the backoff on the first frame, not on open: a proxy can send headers
+   * then drop, which would pin retries at the base delay.
    */
   const noteServing = (): void => {
     if (served) return;
@@ -252,8 +200,7 @@ function connect(): void {
     try {
       applyTick(JSON.parse(e.data) as WireVenueTickPayload);
     } catch {
-      // Malformed frame — ignore. A bad frame is not a reason to drop a
-      // working socket.
+      // Malformed frame; keep the socket.
     }
   };
   const handleResolution = (e: MessageEvent) => {
@@ -269,22 +216,9 @@ function connect(): void {
   source.addEventListener("venue_resolution", handleResolution);
 
   source.onerror = () => {
-    // EventSource exposes no status code, so a 503 (no ticker on this
-    // deployment) is indistinguishable from a dropped socket — EXCEPT that a
-    // 503 errors before the connection ever opens. That is the whole signal,
-    // and it has to be tracked per connection: keying off the retry counter
-    // instead would report "unavailable" on the first failure and
-    // "reconnecting" on every one after it, i.e. a deployment with the ticker
-    // switched off would start claiming it was about to reconnect to a stream
-    // that does not exist.
-    //
-    // The response to `unavailable` is to go QUIET — no error chrome, no
-    // console noise — while still retrying on the same capped backoff, so a
-    // ticker that comes up later is picked up without a reload.
-    //
-    // Always CLOSE before reconnecting. EventSource retries on its own once
-    // this handler returns; leaving the old object alive means two sockets
-    // racing, and the browser's per-origin budget is spent on duplicates.
+    // No status code on EventSource: a 503 (no ticker) is an error before open,
+    // tracked per connection. `unavailable` stays quiet but keeps retrying.
+    // Close first, or EventSource's own retry races ours.
     source.close();
     if (es === source) es = null;
     if (subscribers.size === 0) {
@@ -310,8 +244,7 @@ function disconnect(): void {
   attempt = 0;
   awaitingFullSnapshot = true;
   if (snapshot.status !== "closed") {
-    // Staled here too: the next page to mount reads this snapshot before its
-    // first frame lands, and those quotes are older than the socket.
+    // The next page reads this before its first frame; mark quotes stale.
     snapshot = {
       ...snapshot,
       status: "closed",

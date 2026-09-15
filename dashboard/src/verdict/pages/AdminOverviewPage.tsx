@@ -15,15 +15,8 @@ import { InlineError } from "../components/compact/InlineError.js";
 import { LogoLoader } from "../components/LogoLoader.js";
 
 /**
- * /admin/overview — the operator health cockpit. One tier above the
- * /admin/gateway relayer control plane: it loads the same six admin
- * observability snapshots (gateway, reveal lifecycle, canaries, operator
- * alerts, controller identity, feed SLA) and renders compact health cards
- * with an overall status banner, linking into #/admin/gateway for the deep
- * per-attempt tables. Token-gated like the gateway page and sharing the same
- * admin-token storage key, so a token entered on either page carries over.
- * That storage key + read/write/clear now live in the shared admin-session
- * module, so this page never touches localStorage directly.
+ * /admin/overview: operator health cockpit. Renders the six admin snapshots as
+ * health cards and links into #/admin/gateway for the per-attempt tables.
  */
 
 type Health = "nominal" | "warn" | "attention" | "unknown";
@@ -385,9 +378,7 @@ function StatusBanner({ health, cards }: { health: Health; cards: OverviewCard[]
         : health === "nominal"
           ? "all systems nominal"
           : "status unknown";
-  // The healthy sentence belongs to `nominal` only. It used to be the fallback,
-  // so an unread snapshot — including every render before the first load — read
-  // "status unknown" beside a line calling all six checks healthy.
+  // The healthy sentence belongs to `nominal` only.
   const unknown = cards.filter((c) => c.health === "unknown");
   const detail =
     attention.length > 0

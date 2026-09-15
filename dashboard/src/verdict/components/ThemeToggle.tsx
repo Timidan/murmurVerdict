@@ -1,9 +1,5 @@
-// dashboard/src/verdict/components/ThemeToggle.tsx
-//
-// Compact-shell two-state toggle. Click flips between dark and paper.
-// First-paint value comes from the inline bootstrap in dashboard/index.html;
-// runtime apply is delegated to `applyTheme` in ../ui/theme.ts so there is
-// a single source of truth for the DOM/meta/localStorage write.
+// Dark/paper theme toggle. First paint comes from the bootstrap in
+// dashboard/index.html; all writes go through `applyTheme`.
 
 import { useEffect, useState } from "react";
 import { applyTheme, resolveTheme, STORAGE_KEY, type Theme } from "../ui/theme.js";
@@ -18,10 +14,8 @@ function readCurrent(): Theme {
 export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(() => readCurrent());
 
-  // Keep every mounted toggle in sync with the root attribute `applyTheme`
-  // writes. The desktop and mobile toggles are two components holding two
-  // copies of the same state, and a same-tab flip fires no `storage` event —
-  // so one bar's label stayed on the old theme until it was clicked twice.
+  // Sync every mounted toggle (desktop + mobile) with the root attribute; a
+  // same-tab flip fires no `storage` event.
   useEffect(() => {
     const observer = new MutationObserver(() => setTheme(readCurrent()));
     observer.observe(document.documentElement, {
@@ -41,7 +35,7 @@ export function ThemeToggle() {
           window.matchMedia &&
           window.matchMedia("(prefers-color-scheme: light)").matches,
       });
-      if (next === theme) return; // idempotency short-circuit
+      if (next === theme) return;
       applyTheme(next);
       setTheme(next);
     }

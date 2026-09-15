@@ -11,10 +11,7 @@ import {
   STREAMLINE_ICON_NAMES,
 } from "./icons.js";
 
-// Every glyph renders as a self-contained currentColor svg, on whichever grid
-// its origin uses (16 for hand-drawn, 24 for Streamline-sourced — see below).
-// 28 − reputation (deleted: 0 call sites, drawing pass 2026-08-07) = 27, then
-// +10 agent-scoring glyphs for the summary tile grid (2026-08-10).
+// Every glyph renders as a currentColor svg on its origin's grid (16 hand-drawn, 24 Streamline).
 assert.equal(ICON_NAMES.length, 45);
 assert.equal(
   STREAMLINE_ICON_NAMES.length,
@@ -22,9 +19,7 @@ assert.equal(
   "16 of 45 inline concepts sourced from Streamline Sharp (2026-08-10 pass); the 8 tab-* rail glyphs are hand-drawn in the same grammar",
 );
 
-// The summary grid is icon-ONLY — the stat's word is gone from view, so a
-// renamed or dropped glyph here blanks the tile's whole visual identity rather
-// than degrading it. Pin all ten by exact name.
+// The summary grid is icon-only, so pin all ten scoring glyphs by exact name.
 for (const name of [
   "outcome-win",
   "outcome-loss",
@@ -54,22 +49,12 @@ for (const name of ICON_NAMES) {
   assert.ok(!/fill="#/.test(html), `${name}: no hardcoded fill color`);
 
   if (sourced) {
-    // Streamline Sharp Line ships at 1.5px on its native 24 grid — the same
-    // relative weight as the hand-drawn set's 1px-on-16 (1/16 === 1.5/24), so
-    // the two origins read as one family at any shared render size. These
-    // are real vector-tool exports, not hand-snapped geometry, so the
-    // half-grid/whole-pixel guards below (which exist specifically to catch
-    // hand-drawing drift) don't apply to them — skip straight to the next
-    // glyph once the weight is confirmed.
+    // Streamline: 1.5px on 24 (same weight as 1px on 16); vector exports skip the grid guards.
     assert.ok(html.includes('stroke-width="1.5"'), `${name}: streamline weight`);
     continue;
   }
 
-  // Half-grid guard — the inline tier's committed geometry gate (mirrors the
-  // nav tier's integer guard below). The grammar puts 1px H/V strokes on .5
-  // offsets and fills on integers, so every legal coordinate is a multiple of
-  // 0.5; anything else is drift (a 4.7 typo fails here, not in review). Only
-  // meaningful for the hand-drawn subset — see the `continue` above.
+  // Half-grid guard: every hand-drawn coordinate is a multiple of 0.5.
   for (const [, attr, val] of html.matchAll(/\s(d|x|y|width|height)="([^"]*)"/g)) {
     for (const n of val.match(/-?\d+(?:\.\d+)?/g) ?? []) {
       assert.ok(
@@ -78,12 +63,8 @@ for (const name of ICON_NAMES) {
       );
     }
   }
-  // Filled cells sit on whole pixels — a .5-coordinate fill renders soft.
-  // The pattern must close on the opening tag's `>`, NOT on `/>`:
-  // renderToStaticMarkup emits `<rect …></rect>` and never self-closes, so the
-  // `\/>` this once carried matched nothing and the assertion below never ran
-  // at all (dead from the day it was written until 2026-08-08). Same trap
-  // applies to the nav-tier copy of this loop further down.
+  // Filled cells sit on whole pixels. Match the opening tag's `>`, not `/>`:
+  // renderToStaticMarkup never self-closes.
   for (const el of html.matchAll(/<rect\b[^>]*fill="currentColor"[^>]*>/g)) {
     for (const [, attr, v] of el[0].matchAll(/\s(x|y|width|height)="(-?\d+(?:\.\d+)?)"/g)) {
       assert.ok(
@@ -94,12 +75,7 @@ for (const name of ICON_NAMES) {
   }
 }
 
-// Size prop flows to width/height. The contract is 16 or 32 — 16 is the
-// default, 32 the only other legal value, and the prop's literal type makes a
-// fractional size (the old 12/13/14/15) a compile error rather than a review
-// note. Nothing else may be asserted here: a runtime check for 12 would only
-// pass by lying about the type. Uses "seal" — hand-drawn, unaffected by the
-// 2026-08-10 Streamline pass — so this stays a pure size-contract check.
+// Size flows to width/height: 16 by default, 32 the only other value (typed).
 const atDefault = renderToStaticMarkup(createElement(Ik, { name: "seal" }));
 assert.ok(
   atDefault.includes('width="16"') && atDefault.includes('height="16"'),
@@ -111,21 +87,14 @@ assert.ok(
   "inline: size flows at 32",
 );
 
-// At 16 and 32 every edge already lands on a device pixel, so the glyph is hard
-// without asking the renderer to snap it. `shape-rendering` is gone with the
-// `crisp` prop it existed to carry (it papered over the fractional sizes the
-// type now forbids) — its return would mean the size contract slipped.
+// Integer sizes land on device pixels, so no `shape-rendering` is needed.
 assert.ok(!atDefault.includes("shape-rendering"), "inline: no shape-rendering");
 assert.ok(!at32.includes("shape-rendering"), "inline @32: no shape-rendering");
 
 // The two brand-class glyphs exist by exact name.
 assert.ok(ICON_NAMES.includes("x402") && ICON_NAMES.includes("mcp"));
 
-// The four gap glyphs exist by exact name — these back the credential-lifecycle
-// slots (rotate / kill switch / re-attest / linked logins), so a rename here
-// silently blanks those affordances rather than failing the build. All four
-// happen to be Streamline-sourced as of 2026-08-10; the assertion is about
-// the name existing, not the geometry's origin.
+// The four credential-lifecycle glyphs exist by exact name.
 for (const name of ["rotate", "kill-switch", "attest", "link"] as const) {
   assert.ok(ICON_NAMES.includes(name), `${name}: gap glyph present`);
 }
@@ -163,21 +132,11 @@ for (const name of NAV_ICON_NAMES) {
     assert.ok(!/(?:stroke|fill)="#/.test(html), `${name}/${state}: no hardcoded color`);
 
     if (sourced) {
-      // agent/badge: real Streamline vector-tool geometry (both rest AND
-      // active silhouettes carry non-half-grid decimals, e.g. the active
-      // silhouette's 0.2929/4.9142-style bezier-offset coordinates) — not
-      // hand-snapped, so the pixel-snap gate below doesn't apply to either
-      // state for these two. Rendered at the tier's existing 1px rest weight
-      // regardless (see IkNav), so no stroke-width assertion needed here.
+      // agent/badge are Streamline vector geometry: skip the pixel-snap gate.
       continue;
     }
 
-    // The tier's committed geometry gate — a flipped digit or a resized rect
-    // fails here, not in a scratchpad script. Rest outlines stroke at 1px, so
-    // their geometry sits on the half-grid (.5 offsets put a 1px ink band on
-    // exactly one device pixel at 24); active silhouettes fill whole pixels.
-    // Off-grid either way is drift. Only meaningful for the still-hand-drawn
-    // four (market, leaderboard, feed, confirm-live) — see the `continue` above.
+    // Geometry gate: rest outlines on the half-grid, active silhouettes on whole pixels.
     for (const [, attr, val] of html.matchAll(/\s(d|x|y|width|height)="([^"]*)"/g)) {
       for (const n of val.match(/-?\d+(?:\.\d+)?/g) ?? []) {
         assert.ok(
@@ -190,11 +149,7 @@ for (const name of NAV_ICON_NAMES) {
     }
   }
 
-  // Rest-state filled detail cells (live square, seal, the agent's head and
-  // eyes) sit on whole pixels like every other fill — a .5-coordinate fill
-  // renders soft. The half-grid pass above admits them; this pins them down.
-  // Closes on `>`, not `/>` — see the inline tier's note on the same trap.
-  // No-op for agent/badge (pure-path Streamline geometry, no <rect> fills).
+  // Rest-state filled cells sit on whole pixels (match `>`, not `/>`, as above).
   for (const el of rest.matchAll(/<rect\b[^>]*fill="currentColor"[^>]*>/g)) {
     for (const [, attr, v] of el[0].matchAll(/\s(x|y|width|height)="(-?\d+(?:\.\d+)?)"/g)) {
       assert.ok(
@@ -204,12 +159,7 @@ for (const name of NAV_ICON_NAMES) {
     }
   }
 
-  // Two fills hoist their source root's `fill="currentColor"` onto a <g>. That
-  // wrapper is inheritance-only, so a node added OUTSIDE it would inherit the
-  // root's `fill="none"` and paint nothing — while the whole-markup check below
-  // still passes on the <g> alone. Require every ungrouped node to paint itself.
-  // agent/badge's fill silhouettes are a single ungrouped <path fill="currentColor">
-  // each — this still applies to them and still passes.
+  // Every node outside a fill <g> must paint itself, or it inherits `fill="none"`.
   for (const el of current.replace(/<g\b[^>]*>[\s\S]*?<\/g>/g, "").matchAll(/<(path|rect|circle|polygon)\b[^>]*>/g)) {
     assert.ok(
       el[0].includes('fill="currentColor"'),
@@ -217,11 +167,7 @@ for (const name of NAV_ICON_NAMES) {
     );
   }
 
-  // Rest: the root strokes the outline at the tier's native weight (hairline,
-  // owner's thickness ruling 2026-08-07), and never fills — a root fill would
-  // flood every closed outline path solid. Applies uniformly to all six
-  // destinations, including the two Streamline-sourced ones: the root is
-  // IkNav's own svg tag, unaffected by which glyph set supplies the content.
+  // Rest: the root strokes a 1px hairline and never fills (a root fill floods closed paths).
   assert.ok(rootTag(rest).includes('stroke-width="1"'), `${name}/rest: hairline root`);
   assert.ok(rootTag(rest).includes('stroke="currentColor"'), `${name}/rest: stroked`);
   assert.ok(

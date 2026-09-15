@@ -6,11 +6,8 @@ import { FormulaTip } from "./FormulaTip.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
 
 /**
- * Cockpit-style top-N leaderboard. Single-line rows, mono-spaced
- * tabular columns. The "trend" column is reserved for a real per-agent
- * time-series once the daemon exposes /v1/agents/<slug>/series; until
- * then it renders as a hairline placeholder rather than a synthesized
- * shape, so the column never implies data we don't have.
+ * Top-N leaderboard. The trend column is a hairline placeholder until the
+ * daemon exposes a per-agent series.
  */
 export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
   const stream = useStream();
@@ -128,7 +125,7 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
 }
 
 function SkeletonRows() {
-  // Hairline skeleton matching the row grid. No spinner per DESIGN.md §10.
+  // Hairline skeleton matching the row grid.
   return (
     <ul className="m-0 p-0 list-none">
       {[0, 1, 2, 3, 4].map((i) => (

@@ -1,50 +1,24 @@
-// dashboard/src/verdict/components/AnimatedMark.tsx
-//
-// Animated SVG of the Murmur Verdict M waveform mark + optional horizontal
-// wordmark lockup. CSS-keyframes only (no framer-motion / gsap).
-//
-// Motion (v2, traced from murmursample.mkv — see the spec):
-//   Hold → SPIN & DISSOLVE (bars group rotates + shrinks, each bar's height
-//   collapses to its own width so the capsule becomes a dot, then fades; the
-//   red verdict dot sheds up-right; wordmark letters fly out right) → RESPAWN
-//   (3 orbit-dots — two cream + one red anchor — grow at centre in a triangle)
-//   → SWIRL/ORBIT (the <g class="am-orbit"> rotates 540°, dots pulse — the hero
-//   moment) → CONVERGE & REASSEMBLE (dots spiral inward + fade; bars group
-//   counter-rotates upright; bar heights grow back staggered L→R; red dot lands
-//   bottom-right) → WORDMARK REVEAL (letters pop in L→R) → Hold → seamless loop.
-//
-// One 6400ms keyframe timeline drives everything (loop). `once` mode replays the
-// same timeline via a negative animation-delay so it starts at the respawn beat
-// and ends on the assembled mark — the assembly-only reveal Splash uses.
-//
-// Geometry mirrors MMark.tsx. Groups spin about the viewBox centre (50,50) via
-// `transform-box: view-box`; bars/dots scale about their own centre via fill-box.
-//
-// Source of truth: docs/superpowers/specs/2026-07-11-murmur-logo-animation-design.md
+// Animated SVG of the Murmur M mark plus optional wordmark; CSS keyframes only.
+// One 6400ms timeline loops; `once` starts it at the respawn beat via a negative
+// delay and holds on the assembled mark. Geometry mirrors MMark.tsx.
 
 export interface AnimatedMarkProps {
-  /** px size of the square mark area. Defaults to 96. */
+  /** px size of the square mark area. */
   size?: number;
-  /** "once" plays the assembly (respawn → swirl → reassemble → wordmark) a
-   *  single time and holds on the mark; "loop" repeats the full cycle
-   *  seamlessly. Defaults to "once". */
+  /** "once" plays the assembly and holds; "loop" repeats the full cycle. */
   mode?: "once" | "loop";
-  /** Render the MURMUR + .VERDICT horizontal wordmark lockup. Default true. */
   showWordmark?: boolean;
   className?: string;
 }
 
-// x / y / width / height from MMark.tsx — the TRUE brand geometry. The bars are
-// NOT all centred on y=50: their staggered vertical positions (per-bar BAR_Y)
-// are what make the mark read as an "M", not a symmetric soundbar. Each bar
-// morphs bar↔dot by scaling about its OWN centre (fill-box), so the stagger is
-// preserved throughout.
+// The per-bar BAR_Y stagger is what makes it read as an M; bars scale about
+// their own centre (fill-box) so the stagger survives the bar↔dot morph.
 const BAR_X = [0.27, 11.77, 23.14, 34.37, 45.74, 56.83, 68.2, 79.7];
 const BAR_Y = [0.14, 20.3, 34.43, 48.01, 48.01, 34.43, 20.3, 0.14];
 const BAR_W = [7.04, 7.17, 7.17, 7.04, 7.04, 7.17, 7.17, 7.04];
 const H = [99.59, 79.42, 30.04, 30.18, 30.18, 30.04, 79.42, 99.59];
 
-// Red verdict dot at rest — square, bottom-right of the mark (per MMark/spec).
+// Red verdict dot at rest, bottom-right.
 const DOT = { x: 92.02, y: 91.69, size: 7.84 };
 
 // The 3 orbit-dots: two cream (currentColor = display) + one red anchor (C).

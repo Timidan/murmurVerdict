@@ -27,7 +27,7 @@ export function LogoLoader({
   );
 }
 
-/** Full-page centred variant — the Suspense/auth-gate loading surface. */
+/** Full-page variant for Suspense and the auth gate. */
 export function LogoLoaderScreen({ label = "Loading" }: { label?: string }) {
   return <LogoLoader label={label} />;
 }

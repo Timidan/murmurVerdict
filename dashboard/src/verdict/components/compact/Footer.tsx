@@ -1,8 +1,4 @@
-/**
- * The status footer, mounted once by the Router's AppShell — the same
- * arrangement as the topbar, and for the same reason: when pages owned it,
- * two drew their own and the rest had none.
- */
+/** The status footer, mounted once by the Router's AppShell. */
 export function CompactFooter() {
   return (
     <footer className="flex flex-wrap items-center gap-x-3 gap-y-0 px-2 py-1 border-t border-[var(--color-border)] ck-mono ck-dim">

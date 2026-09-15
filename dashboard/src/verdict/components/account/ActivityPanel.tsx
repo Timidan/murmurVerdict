@@ -1,7 +1,5 @@
-// Account-wide agent activity history — what each runtime key DID: gateway
-// attempt rows (sealed calls + feed packets) with key identity, auth proof,
-// and outcome. History, not forensic audit: rows advance as attempts
-// broadcast/confirm.
+// Account-wide gateway attempt history per runtime key (sealed calls + feed
+// packets); rows update as attempts broadcast and confirm.
 
 import { useCallback, useEffect, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
@@ -55,7 +53,6 @@ export function ActivityPanel() {
         <span className="ck-mono ck-dim">{rows.length} shown</span>
       </div>
       {error && <InlineError error={error} className="px-3 py-2 text-[12px]" />}
-      {/* The dropped second sentence explained a thing that has not happened. */}
       {rows.length === 0 && !loading && !error ? (
         <p
           className="px-3 py-2 text-[12px] ck-dim"
@@ -73,9 +70,7 @@ export function ActivityPanel() {
               <TimeAgo iso={r.created_at} className="ck-dim" />
               <span>{r.agent_slug ?? r.agent_id.slice(0, 8)}</span>
               <span>{r.kind === "sealed_call" ? "sealed call" : `feed packet ${r.feed_id ?? ""}`}</span>
-              {/* Market ids run long (venue slugs + question). Cap and
-                  ellipsize so one row can't push the key/status columns off
-                  the panel; the full id stays on the tooltip. */}
+              {/* Long market ids truncate; full id in the tooltip. */}
               {r.market_id && (
                 <span className="ck-dim truncate max-w-[140px]" title={r.market_id}>
                   {r.market_id}

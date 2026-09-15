@@ -15,11 +15,8 @@ interface CompactTopbarProps {
 }
 
 /**
- * Primary nav — single source of truth for order. Rendered inline on the
- * desktop (≥1024px) topbar and, verbatim, inside the mobile <MobileNav/> panel.
- * `href` is the route path; anchors render it as a `#/…` hash link so nav
- * clicks stay in-app (no full reload, SSE connection survives) — the same
- * client-side navigation every data row already uses.
+ * Primary nav in order, shared by the desktop bar and <MobileNav/>. Rendered as
+ * `#/…` hash links so navigation stays in-app and the SSE connection survives.
  */
 const NAV_LINKS = [
   { href: "/dashboard", label: "dashboard" },
@@ -33,21 +30,8 @@ const NAV_LINKS = [
 type NavHref = (typeof NAV_LINKS)[number]["href"];
 
 /**
- * Desktop nav glyphs, keyed by route so a reworded label can never silently
- * orphan its glyph. The desktop bar is icon-ONLY (owner amendment, 2026-08-07):
- * the label moves to `aria-label` plus a hover/focus tip, so this map is TOTAL —
- * every NAV_LINKS route must appear here or its link renders blank. Keying it
- * on `NavHref` (not `string`) makes the compiler enforce that: adding a nav
- * route without its glyph is now a type error, not a blank link at runtime. It
- * stays local to the desktop topbar on purpose: <MobileNav/> renders the same
- * NAV_LINKS as a text-only drawer list (small screens keep their words), and
- * NavItem stays icon-free so the two surfaces can't drift into needing the same
- * prop for different reasons.
- *
- * The values name glyphs on the NAV tier (24-grid, hairline-outline/fill pair)
- * — not the 16-grid inline set. The six concepts are spelled identically in
- * both tiers, so the type is what keeps this honest: `NavIconName` only admits
- * a name that NAV_GLYPHS actually draws.
+ * Desktop nav glyphs (icon-only bar, nav tier). Keyed on NavHref so a nav route
+ * without a glyph is a type error, not a blank link.
  */
 const NAV_ICONS: Record<NavHref, NavIconName> = {
   "/dashboard": "market",
@@ -58,27 +42,14 @@ const NAV_ICONS: Record<NavHref, NavIconName> = {
 };
 
 /**
- * Route chords, keyed on route exactly like NAV_ICONS above: `g` then this key
- * jumps here. The bar only TEACHES the shortcut (in the nav tip); the listener
- * lives in <GlobalShortcuts/> at the router root, because the chords have to
- * work on surfaces that never render this bar.
- *
- * Both sides read the same `NAV_CHORDS` literal, so there is nothing to keep in
- * step by hand. This annotated assignment is the load-bearing line: widening
- * `NAV_CHORDS` to `Record<NavHref, string>` is what makes the map TOTAL over
- * the nav routes, so adding a route to NAV_LINKS without giving it a chord is a
- * type error here rather than a tip that silently reads "· gundefined".
+ * Chord keys shown in the nav tips; the listener is <GlobalShortcuts/>. Typed
+ * on NavHref so a nav route without a chord is a type error.
  */
 const CHORD_KEY: Record<NavHref, string> = NAV_CHORDS;
 
 /**
- * Shared app chrome — 64px tall, single live-state dot, MMark glyph,
- * local clock, and the cinematic landing's canonical unboxed navigation.
- *
- * Below the `lg` breakpoint the inline nav links, clock and theme toggle
- * collapse into a menu drawer (see <MobileNav/>); the logo, live
- * status and menu trigger stay visible. The crumb slot truncates so no
- * breadcrumb (e.g. a full market id) can widen the document.
+ * Shared app chrome. Below `lg` the nav, clock and theme toggle collapse into
+ * <MobileNav/>; the crumb slot truncates so it can't widen the page.
  */
 export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
   const stream = useStream();
@@ -86,10 +57,7 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
   const [now, setNow] = useState(() => new Date());
   const currentPath = useActiveNavPath();
 
-  // Columns-land activation (owner-approved motion, 2026-08-07): the newly
-  // active link's fill assembles only on a route CHANGE. Initial mount keeps
-  // stamp 0 so page load never animates (house rule); each change bumps the
-  // stamp, which keys the active glyph so the CSS mount animation replays.
+  // Bumped on route change to replay the active glyph's animation; 0 on load.
   const prevPath = useRef(currentPath);
   const [activationStamp, setActivationStamp] = useState(0);
   useEffect(() => {
@@ -105,10 +73,7 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
   }, []);
 
   return (
-    /* `mmr-topbar` is the hook the hoverless branch needs: where the nav tips
-       are pinned open they hang 34px below a 64px bar, so the bar grows to
-       carry them and re-pins its rails to 64 (compact.css @media (hover: none)).
-       Without a class there was no way to reach the header from CSS. */
+    /* `mmr-topbar` lets compact.css grow the bar for pinned tips on hoverless devices. */
     <header className="mmr-topbar h-[64px] flex items-stretch border-b border-[var(--color-border)] sticky top-0 z-30 bg-[var(--color-bg)]">
       {/* Equal-width rails + shrink-0 nav pin the glyph row to viewport centre.
           Dropping basis-0, or sizing the nav, re-opens a 65px per-route drift. */}
@@ -156,11 +121,7 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
       {/* No min-w-0: squeezes are absorbed by the left rail's truncating crumb.
           Rail padding must stay equal both sides (28px) or the nav goes off-centre. */}
       <div className="flex-1 basis-0 flex h-full items-center justify-end gap-4 pl-3 pr-4">
-        {/* Local, with its zone named. This printed UTC with a bare `Z` while
-            every market window on the same screen was already rendered in the
-            reader's own zone (lib/date-time-format.ts states that rule and the
-            reason for it), so the cockpit carried two clocks hours apart and
-            labelled neither. UTC keeps the place it belongs, which is the wire. */}
+        {/* Local time with its zone, matching the market windows. */}
         <span
           aria-hidden="true"
           className="hidden lg:inline-flex mmr-topbar-meta ck-dim tabular-nums"
@@ -192,10 +153,8 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
 }
 
 /**
- * Current route path, normalized the same way route.ts resolves it: a legacy
- * `#/…` hash wins over the pathname, query string stripped. Kept in state and
- * refreshed on hashchange/popstate so the active nav marker follows in-app
- * (hash + back/forward) navigation without waiting on a full reload.
+ * Current route path normalized like route.ts (a `#/…` hash wins, query
+ * stripped); follows hashchange/popstate.
  */
 function useActiveNavPath(): string {
   const [path, setPath] = useState(() => normalizeNavPath());
@@ -224,19 +183,9 @@ function normalizeNavPath(): string {
 }
 
 /**
- * One desktop nav destination: the glyph alone, drawn on the nav tier's native
- * 24 grid so it renders 1px-hard without `crispEdges`. The word it replaces
- * lives in two places — `aria-label` for assistive tech, and a bracketed tip
- * that fades in under the icon on hover/focus-visible (CSS only, see
- * `.mmr-nav-tip`). The tip is aria-hidden so the name is announced once — and
- * it is also where the route chord is taught (`· gd`), dimmed so the word
- * still reads first. `aria-label` stays the bare word: the chord is a visual
- * affordance for a pointer/keyboard user who can see the bar, not part of the
- * link's accessible name.
- *
- * `active` is the single route truth for this link: the same boolean drives
- * `aria-current="page"` (which the CSS underline keys off) and the glyph's
- * filled state, so the mark and the rule can never disagree about where you are.
+ * One desktop nav link: glyph only. The word is the aria-label plus an
+ * aria-hidden tip that also shows the chord. `active` drives both
+ * aria-current and the filled glyph.
  */
 function CompactNavLink({
   href,

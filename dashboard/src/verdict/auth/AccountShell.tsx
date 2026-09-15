@@ -4,25 +4,10 @@ import { AccountProvider, useAccount } from "../hooks/useAccount.js";
 import { LogoLoader } from "../components/LogoLoader.js";
 
 /**
- * Mounts the Privy SDK + the shared <AccountProvider> once for the entire
- * `/account/*` area. PrivyProvider keeps the SDK chunk outside the
- * landing/leaderboard/today bundles. AccountProvider
- * hoists useAccount's session+agents state so every sibling panel reads
- * from the same context — without it, sibling panels (ControllerWalletPanel,
- * RuntimeKeysPanel) each got independent state and refreshes didn't
- * propagate (the callback-prop interim it required
- * is now redundant but kept for backward compatibility).
- *
- * <AccountGuard> centralizes the unauthenticated redirect for every
- * guarded /account/* screen (the login route is exempt). Guarded children
- * only mount once Privy reports a stable authenticated state, which also
- * guarantees no wallet hook (useWallets etc.) ever runs outside the
- * vendor provider — in the unconfigured state PrivyProvider renders an
- * inert wrapper, and any wallet hook reached under it logs
- * "useWallets was called outside the PrivyProvider component".
- *
- * Public routes never import this module — they get the original Privy-free
- * bundle.
+ * Mounts Privy and the shared <AccountProvider> once for all of `/account/*`;
+ * public routes never import this module, so they stay Privy-free.
+ * <AccountGuard> mounts guarded children only once authenticated, so no wallet
+ * hook ever runs outside the vendor provider.
  */
 export function AccountShell({ children }: { children: ReactNode }) {
   return (
@@ -35,10 +20,8 @@ export function AccountShell({ children }: { children: ReactNode }) {
 }
 
 /**
- * Current SPA path + query. Hash form (legacy `#/…` links) wins over the
- * clean pathname — the same precedence as route.ts `parseLocation` — and
- * the query string is preserved so `?next=` round-trips deep links
- * exactly (e.g. `/account/agent/<slug>/keys`, `/account?ref=landing-cta`).
+ * Current SPA path + query. Legacy `#/…` hash wins, as in route.ts `parseLocation`;
+ * the query is kept so `?next=` round-trips deep links.
  */
 function currentAppPath(): string {
   const hash = window.location.hash;
@@ -47,15 +30,8 @@ function currentAppPath(): string {
 }
 
 /**
- * Single auth gate for the account area. Replaces the per-page redirect
- * guards (AccountPage / AgentSettingsPage / IntegratePage / onboard kept
- * theirs as dead-code fallbacks) which each set `location.hash` and
- * produced stacked URLs like `/account#/account/login?next=%2Faccount`.
- *
- * Redirects use the clean path form `/account/login?next=<dest>` via
- * `location.replace` — a plain full-page navigation like the topbar's
- * anchor links, but without leaving the guarded URL in history as a
- * back-button trap.
+ * Single auth gate for the account area. Redirects to `/account/login?next=<dest>`
+ * via `location.replace` so the guarded URL doesn't become a back-button trap.
  */
 function AccountGuard({ children }: { children: ReactNode }) {
   const account = useAccount();
@@ -69,10 +45,7 @@ function AccountGuard({ children }: { children: ReactNode }) {
     window.location.replace(`/account/login?next=${dest}`);
   }, [blocked]);
 
-  // Wait for Privy's auth bootstrap before mounting guarded children so
-  // they never render (and immediately unrender) in a transient
-  // signed-out state. Unconfigured Privy reports ready=true immediately,
-  // so this branch only shows while a configured Privy SDK boots.
+  // Wait for Privy's bootstrap so guarded children never flash signed-out.
   if (!isLoginRoute && !account.ready) {
     return <GateScreen />;
   }
@@ -82,7 +55,6 @@ function AccountGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-/** Quiet full-viewport line in the compact idiom — no spinner, no chrome. */
 function GateScreen({ label }: { label?: string }) {
   return (
     <div className="flex-1 flex flex-col gap-3 items-center justify-center">

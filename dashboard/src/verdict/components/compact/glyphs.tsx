@@ -3,22 +3,9 @@ import type { ReactNode } from "react";
 import { Ik, IkNav } from "../../icons.js";
 
 /**
- * Compact monochrome glyphs — replace repeated enum TEXT with a recognizable
- * mark, always with a `title` tooltip carrying the full name. All glyphs are
- * single-color (inherit `currentColor`), so they never inject brand color into
- * the "color is an event" cockpit. Sizing is via the `size` prop (px).
- *
- * Marks the shared set covers are drawn from it (`icons.tsx` → `Ik`), so those
- * concepts have exactly one drawing everywhere they appear: that is `seal`, and
- * the `agent` case of the kind mark. Those two wrappers therefore inherit `Ik`'s
- * size contract — 16 or 32, nothing between — and pass it straight through, so a
- * kind mark can never be the fractional size the shared set forbids. The other
- * kinds render at the same size for one uniform column. The rest are still
- * hand-rolled here,
- * because `kind` and `side` are VARIANT sets (one drawing per enum value) whose
- * other values — benchmark, attested, internal_test, up, down — have no
- * shared-set equivalent. The venue mark reuses the grayscale
- * /brand/tokens/polymarket.png that AssetGlyph already ships.
+ * Monochrome glyphs (currentColor) standing in for enum text, each with a
+ * `title` tooltip. `seal` and the `agent` kind come from the shared `Ik` set
+ * and follow its 16/32 size contract; the rest are drawn here.
  */
 
 const SVG_BASE = {
@@ -56,20 +43,9 @@ function Wrap({
 }
 
 /* ── Agent kind ──────────────────────────────────────────────────────────────
-   agent → bot head · benchmark → ruler · attested → shield+check · internal → flask.
-   Tone follows the tier semantics: agent = full ink, attested = accent (its bond
-   is an event), benchmark/internal = dim.
+   agent → bot head · benchmark → ruler · attested → shield+check · internal → flask. */
 
-   `agent` is the one concept the shared 16-grid set covers, so it draws from
-   there. The other three have no shared-set equivalent and keep their
-   hand-rolled 24-grid geometry — see KindMeta. */
-
-/**
- * A kind's mark is EITHER a shared-set drawing (`mark`, which renders its own
- * <svg> and therefore replaces the 24-grid wrapper) OR inline `paths` drawn
- * inside SVG_BASE. The arms are mutually exclusive, so adopting a shared-set
- * drawing for one kind does not change how the others render.
- */
+/** Either a shared-set `mark` (brings its own <svg>) or 24-grid `paths`. */
 type KindMeta = { label: string; tone: string } & (
   | { mark: (size: 16 | 24 | 32 | 48) => ReactNode; paths?: never }
   | { paths: ReactNode; mark?: never }
@@ -79,8 +55,7 @@ const KIND_META: Record<string, KindMeta> = {
   agent: {
     label: "agent",
     tone: "ck-pos",
-    // 24/48 route through the nav tier: same silhouette, drawn FOR 24 (48 is
-    // its integer 2×) — Ik's 16/32 guard stays intact for the hand-drawn grid.
+    // 24/48 use the nav-tier drawing; Ik only allows 16/32.
     mark: (size) =>
       size === 16 || size === 32 ? (
         <Ik name="agent" size={size} />
@@ -128,8 +103,7 @@ export function KindGlyph({
   tone = true,
 }: {
   kind: string | null | undefined;
-  /** 16/32 per `Ik`'s contract, plus 24 — these paths are 24-grid natively,
-   *  so 24 is their 1:1 render (the hero-tile size). */
+  /** px; the hand-drawn paths are a 24 grid. */
   size?: 16 | 24 | 32 | 48;
   className?: string;
   /** Apply the tier tone (agent=ink, attested=accent, else dim). */
@@ -152,9 +126,6 @@ export function KindGlyph({
       tone={tone ? meta.tone : undefined}
       className={className}
     >
-      {/* Shared-set marks bring their own <svg> (and are aria-hidden by
-          contract — Wrap already carries role="img" + aria-label). Every other
-          kind renders through the untouched 24-grid path below. */}
       {meta.mark ? (
         meta.mark(size)
       ) : (
@@ -174,17 +145,13 @@ export function SealGlyph({
   className,
 }: {
   mode: string | null | undefined;
-  /** `Ik`'s contract — this mark IS the shared-set `seal` drawing. */
   size?: 16 | 32;
   className?: string;
 }) {
   if (!mode) return null;
-  // Human label for the tooltip. Only sealed_fhenix is known today; anything
-  // else shows its raw value so a new privacy mode is never silently hidden.
+  // Unknown modes show their raw value.
   const label = mode === "sealed_fhenix" ? "fhenix sealed" : mode;
   return (
-    // The wrapper keeps the accessible name (role="img" + aria-label + title);
-    // `Ik` is aria-hidden by contract, so the mark stays a single image node.
     <Wrap title={label} label={`privacy ${label}`} tone="ck-pos" className={className}>
       <Ik name="seal" size={size} />
     </Wrap>

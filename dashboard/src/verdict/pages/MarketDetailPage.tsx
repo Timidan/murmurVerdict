@@ -31,11 +31,8 @@ import { isTerminalFailureStatus } from "@shared/wire-call-status";
 import type { WireMarketClock } from "@shared/wire-market";
 
 /**
- * COMPACT per-market detail. Single-screen ladder with a live sidecar tape,
- * a sealed-verdicts feed, and a metrics ribbon. Venue markets add live
- * odds on the outcome chips + a vol cell from the venue snapshot (60s
- * poll). All numbers mono, no card chrome, sub-row shows verdict_lb under
- * the headline verdict score.
+ * Per-market detail: metrics ribbon, agent ladder, latest-verdicts feed, live
+ * tape. Venue markets add live odds and traded volume (60s poll).
  */
 export function MarketDetailPage({
   marketId,
@@ -55,19 +52,13 @@ export function MarketDetailPage({
   const [notFound, setNotFound] = useState(false);
   const stream = useStream();
 
-  // A markets.update event says this market's ladder MOVED. It is not the
-  // ladder: the event carries the top few agents in the lean wire shape, so
-  // rendering it replaced a 50-row REST ladder with a 5-row one and shrank
-  // every count on the page. Treat it as the trigger it is and re-read the
-  // same request the page loaded with. Keyed on the event's own stamp so an
-  // update to a DIFFERENT market does not refetch this one.
+  // markets.update only signals the ladder moved (it carries a lean top few),
+  // so re-read the REST ladder. Keyed on this market's stamp.
   const marketsUpdateAt = stream.markets[marketId]?.served_at;
   useEffect(() => {
     if (!marketsUpdateAt) return;
     let cancel = false;
-    // A window settles as a BURST — one event per resolved call — and each
-    // would otherwise be its own request. The cleanup cancels the pending
-    // timer on the next event, so a burst costs one re-read.
+    // Debounced: a settling window sends a burst of events, one per call.
     const timer = setTimeout(() => {
       fetchMarketLeaderboard(marketId, { limit: 50 })
         .then((lb) => {
@@ -92,10 +83,7 @@ export function MarketDetailPage({
     setError(null);
     setNotFound(false);
 
-    // "No such market" from the read surfaces: 404 market_not_found for
-    // well-formed unknown ids, 400 schema_invalid for malformed ones
-    // (e.g. a truncated 0x hash). Both mean the same thing to a viewer,
-    // so both route to the NotFound render instead of the error line.
+    // 404 (unknown id) and 400 (malformed id) both render as not found.
     const missing = (e: unknown) =>
       e instanceof ApiError && (e.status === 404 || e.status === 400);
 
@@ -114,11 +102,7 @@ export function MarketDetailPage({
         }
         throw e;
       }),
-      // The verdicts feed is NON-CRITICAL chrome. A 404/400 still means "no
-      // such market" (handled alongside the sibling reads), but any OTHER
-      // failure — 500, aborted request, network blip — must not throw out of
-      // Promise.all and collapse the whole page into the error state. It is
-      // caught into the feed panel's own error line instead.
+      // The feed is non-critical: other failures go to its own error line, not the page.
       fetchMarketCalls(marketId, { limit: 20 }).catch((e: unknown) => {
         if (missing(e)) {
           if (!cancel) setNotFound(true);
@@ -133,9 +117,7 @@ export function MarketDetailPage({
         setMarket(m);
         if (lb) setAgents(lb.agents);
         else if (m) setAgents([]);
-        // null callRows = the feed request failed. It stays UNKNOWN and the
-        // panel says so; "[no calls on this market yet]" would report an
-        // unreachable history as an empty one.
+        // null callRows means the feed failed: unknown, not empty.
         setCalls(callRows);
       })
       .catch((e: Error) => {
@@ -147,11 +129,7 @@ export function MarketDetailPage({
     };
   }, [marketId]);
 
-  // Venue prices carry a 60s server-side TTL — re-poll the single market
-  // while mounted so odds/volume stay fresh without a reload. Failures
-  // (and late responses after unmount / market change) silently keep the
-  // last-rendered data; the interval is torn down on unmount, marketId
-  // change, or once the page has fallen into notFound/error.
+  // Re-poll every 60s (the venue price TTL); failures keep the last data.
   useEffect(() => {
     if (notFound || error) return;
     let cancel = false;
@@ -172,14 +150,10 @@ export function MarketDetailPage({
 
   const cfg = useMemo(() => (market ? parseMarketConfig(market) : null), [market]);
   const isVenue = isVenueMarket(market);
-  // Live venue odds/volume snapshot — venue-adapter rows only. Gamma-down
-  // still delivers the skeleton with null prices/volume/liquidity.
+  // Venue rows only; fields are null when Gamma is down.
   const venue = (isVenue ? market?.venue : null) ?? null;
 
-  // 30s clock for the venue countdown only — the verdicts feed renders its
-  // timestamps through <TimeAgo/>, which lives off the shared module-level
-  // ticker. Gated on (venue + endDate) so a market with no countdown carries
-  // no interval at all.
+  // 30s clock for the venue countdown; the feed uses <TimeAgo/>'s shared ticker.
   const [nowMs, setNowMs] = useState(() => Date.now());
   // The status cell reads the window clock, so a market with a clock ticks too.
   const needsCountdownTick =
@@ -190,8 +164,7 @@ export function MarketDetailPage({
     return () => clearInterval(id);
   }, [needsCountdownTick]);
 
-  // Venue markets title the tab with the human question (fallback: market id);
-  // Refines the router-stamped title once the market's question is known.
+  // Refine the router-stamped title with a venue market's question.
   useEffect(() => {
     // In drawer mode the market isn't the page, so it must not hijack the tab.
     if (isDrawer || !market || !isVenueMarket(market)) return;
@@ -256,11 +229,7 @@ export function MarketDetailPage({
           {/* HEADING — venue markets lead with the human question ───────── */}
           {heading !== null && (
             <section className="px-2 py-2 border-b border-[var(--color-border)]">
-              {/* Title marker at heading scale: a 16px `market` glyph is the
-                  region marker (P2). This h1 is a display heading, not a
-                  .ck-title, so it carries no ::before square to replace —
-                  one marker either way. Baseline-aligned + block flex so a
-                  balanced two-line question still wraps as it does today. */}
+              {/* 16px `market` glyph as the marker; baseline flex so a two-line question wraps normally. */}
               <h1
                 className="ck-mono m-0 flex items-baseline gap-2"
                 style={{
@@ -292,9 +261,7 @@ export function MarketDetailPage({
               <RCell label="asset" value={assetSlug.toUpperCase()} />
             )}
             {isVenue ? (
-              /* Never "ends: ended" — the label already says "ends", so the
-                 value has to add something. While the market runs it counts
-                 down ("in 4m"); once it is over it states the closing time. */
+              /* Countdown while running ("in 4m"), closing time once over. */
               <RCell
                 label="ends"
                 value={endsLabel ?? "—"}
@@ -471,8 +438,7 @@ export function MarketDetailPage({
 }
 
 function Ladder({ rows }: { rows: AgentMarketRow[] }) {
-  // Only ranked agents hold a rank. Numbering every row gave an agent with
-  // three scored calls a position on a board it does not qualify for.
+  // Only ranked agents hold a rank.
   const rankByAgent = new Map(
     rows.filter((r) => r.market_main_tier).map((r, i) => [r.agent_id, i + 1]),
   );
@@ -481,11 +447,8 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
       <li className="ck-ladder ck-ladder--market px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
         <span>agent</span>
-        {/* Formulas are the ladder's, copied from LeaderboardPage so the same
-            column never explains itself two ways. Flex wrappers keep the cells
-            right-aligned around the inline-flex tip trigger. `res` and `p` stay
-            bare: they are plain counts (wire-leaderboard AgentMarketRow —
-            `resolved_calls` / `pending_calls`), not derived quantities. */}
+        {/* Formulas match LeaderboardPage. `scored` and `open` are plain counts,
+            so they get a title, not a formula. */}
         <span className="flex justify-end">
           <FormulaTip
             label="score"
@@ -592,10 +555,8 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
 }
 
 /**
- * Sealed-verdicts feed — one row per call: agent slug (ladder-style link),
- * lifecycle tag, time-ago. Pending rows are operator-blind on this wire
- * (existence + timestamps + agent only), so the row deliberately carries no
- * side/confidence. Newest first from the API; capped at 20, no pagination.
+ * One row per call: agent, lifecycle tag, time ago. Pending rows are
+ * operator-blind, so no side or confidence. Newest first, capped at 20.
  */
 function VerdictsFeed({ rows }: { rows: MarketCallRow[] }) {
   return (
@@ -635,16 +596,9 @@ function VerdictsFeed({ rows }: { rows: MarketCallRow[] }) {
 }
 
 /**
- * Settled, scored-or-void terminal states. The market-calls wire carries the
- * RAW CallStatus enum (src/verdict/schema.ts CallStatusSchema), passed
- * untransformed by projectCallRow — so this feed must map it, never render it
- * literally. A call is SEALED (operator-blind: pos tone, "·sealed") while it is
- * unresolved AND terminal in neither this set NOR the shared terminal-failure
- * set — i.e. submitted / preflighted / accepted / pending_t0 / pending_t1 /
- * disputed. The reveal-failed / rejected terminals are the SHARED
- * isTerminalFailureStatus set (@shared/wire-call-status), which the daemon
- * guard pins to CallStatus, so they are derived rather than re-listed here.
- * `void` is kept as a defensive legacy status literal (not in CallStatus).
+ * Settled terminal statuses. The wire carries the raw CallStatus enum, so map
+ * it, never render it. A call is sealed while unresolved and in neither this set
+ * nor isTerminalFailureStatus. `void` is a legacy literal not in CallStatus.
  */
 const SETTLED_TERMINAL_STATES: ReadonlySet<string> = new Set([
   "resolved",
@@ -658,10 +612,7 @@ function isTerminalCallState(status: string): boolean {
   return SETTLED_TERMINAL_STATES.has(status) || isTerminalFailureStatus(status);
 }
 
-/** Safe, dim display label per settled terminal state — keeps a raw enum from
- *  ever reaching the UI. `void` reads "·void"; resolved/re_resolved read
- *  "·resolved". Reveal-failed / rejected terminals are labelled "·void" in
- *  {@link verdictStatusTag}. Unlisted terminals fall back to "·resolved". */
+/** Labels for settled statuses; unlisted terminals fall back to "·resolved". */
 const SETTLED_TERMINAL_LABELS: Record<string, string> = {
   resolved: "·resolved",
   re_resolved: "·resolved",
@@ -669,10 +620,8 @@ const SETTLED_TERMINAL_LABELS: Record<string, string> = {
 };
 
 /**
- * Map a feed row's lifecycle to a display tag. Unresolved-non-terminal →
- * "·sealed" (pos). A present `resolved_at`, or any terminal status → a safe
- * dim label; reveal/rejection failures read "·void" (no valid verdict); an
- * unexpected terminal falls back to "·resolved". Never emits a raw enum value.
+ * Feed tag: unresolved non-terminal → "·sealed"; reveal or rejection failure →
+ * "·void"; else a settled label. Never a raw enum value.
  */
 function verdictStatusTag(
   status: string,
@@ -778,13 +727,7 @@ function settlementLabel(model: string | null | undefined): string {
   return SETTLEMENT_TEXT[model] ?? model.replace(/_/g, " ");
 }
 
-/**
- * The registry status, in words a reader can act on.
- *
- * The wire enum is `draft | listed | frozen | retired` (src/types/wire-market.ts).
- * "frozen" is the one that reads as a bug — it means the market no longer takes
- * calls, which is exactly what "closed" says (COPY.md §2.2).
- */
+/** Registry status (`draft | listed | frozen | retired`) in plain words; `frozen` reads "closed". */
 const MARKET_STATUS_TEXT: Record<string, { label: string; title: string }> = {
   draft: {
     label: "not listed",
@@ -805,12 +748,8 @@ const MARKET_STATUS_TEXT: Record<string, { label: string; title: string }> = {
 };
 
 /**
- * The status cell: what the registry says, corrected by the clock.
- *
- * `listed` only means the registry accepted the market. A listed five-minute
- * market spends most of its life not taking calls — before its window opens,
- * and after its submissions close — so the registry word alone told readers to
- * send a call that would be rejected.
+ * Registry status corrected by the window clock: a `listed` market takes no
+ * calls before its window opens or after submissions close.
  */
 function marketStatusCell(
   status: string | null | undefined,
@@ -868,13 +807,7 @@ function midTruncateId(id: string): string {
   return shortId(id, 10, 4);
 }
 
-/**
- * The `ends` ribbon cell, which must never read "ends: ended".
- *
- * While the market runs the value counts down — "in 4m". Once it is over the
- * countdown has nothing left to say, so the value states the closing time
- * instead. The label carries the verb either way.
- */
+/** The `ends` cell: a countdown ("in 4m") while running, the closing time once over. */
 function formatEnds(
   endDate: string | undefined,
   nowMs: number,
@@ -912,10 +845,8 @@ function formatUtcTitle(endDate: string): string | undefined {
 }
 
 /**
- * Live odds for one outcome chip. Returns null when the venue snapshot is
- * absent, Gamma is down (prices null), or the outcome has no price point —
- * the chip then stays name-only. Prices arrive as 0..1 numbers from the
- * daemon; coerce defensively in case the wire ever carries decimal strings.
+ * Live odds for one outcome chip, or null (chip stays name-only). Prices are
+ * 0..1; strings are coerced in case the wire sends them.
  */
 function venueOddsFor(
   venue: MarketVenueSnapshot | null,
@@ -934,11 +865,7 @@ function venueOddsFor(
   return { pct: formatOddsPct(n), title: `${hit.price}${asOf}` };
 }
 
-/**
- * A 0..1 probability as a percentage that never reads zero while the venue is
- * quoting one. `Math.round(0.004 * 100)` printed `0%`, which says the outcome
- * cannot happen; it can, at 0.4%.
- */
+/** A 0..1 probability as a percentage that never shows 0 for a quoted price (0.004 → "0.4"). */
 function formatOddsPct(price: number): string {
   const pct = price * 100;
   if (pct <= 0) return "0";

@@ -54,25 +54,9 @@ import {
 import { SkeletonBar } from "./PanelSkeleton.js";
 
 /**
- * The markets matrix.
- *
- * murmur's venue markets come in cohorts: five assets share one five-minute
- * window, settle together, and are replaced. The old grid rendered them as ten
- * independent rows with ten identical countdowns and a "10/10" counter — a
- * table of the data, not a picture of what is happening. This is the picture:
- * windows, each with one countdown and one phase, and the assets inside them.
- *
- * Three views, because "what is running", "what just settled" and "what
- * happened before" are three different questions with three different shapes:
- *
- *   live      the windows currently in flight (default)
- *   resolved  today's settled windows, newest first
- *   search    the whole archive, by text and by day
- *
- * The views are LINKS, not buttons — real `<a href>` carrying a `?mm=` query,
- * so cmd-click opens a view in a new tab, the address is shareable, and back
- * works. That also means no `role="tablist"` machinery: links already announce
- * themselves correctly, and `aria-current` states which one is active.
+ * The markets matrix: windows of assets sharing one clock. Views: live
+ * (default), resolved (today), search (archive). Views are real links carrying
+ * `?mm=`, so cmd-click, sharing and Back all work.
  */
 
 type MatrixView = "live" | "resolved" | "search";
@@ -88,9 +72,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     hasMore: boolean;
   } | null>(null);
   const [view, setView] = useState<MatrixView>(() => readViewFromLocation());
-  // The checkable tiers (venue → category → series → market), URL-backed so a
-  // narrowed board is shareable and survives refresh. Toggles replaceState
-  // rather than push: a chip is a refinement of this address, not a new one.
+  // Filter tiers, URL-backed so a narrowed board is shareable.
   const [filter, setFilter] = useState<MarketFilterState>(() =>
     readFilterFromLocation(),
   );
@@ -104,14 +86,11 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const nowMs = useSharedSecondTick();
 
-  // "/" focuses the archive search — the terminal idiom the old grid had. It
-  // only lands when the search view is mounted; switching views first would
-  // hijack a keystroke the reader may not have meant as navigation.
+  // "/" focuses the archive search, only while the search view is mounted.
   useSlashFocus(searchRef);
 
-  // The URL is the source of truth for the view AND the filter tiers. A link
-  // click updates it via pushState (no reload); Back/Forward and a pasted
-  // address re-sync here.
+  // The URL is the source of truth for view and filters; Back/Forward and a
+  // pasted address re-sync here.
   useEffect(() => {
     const sync = () => {
       setView(readViewFromLocation());
@@ -125,12 +104,8 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     };
   }, []);
 
-  // The registry is re-fetched on a cadence, not loaded once. New five-minute
-  // windows register continuously; a one-shot fetch meant the live board only
-  // learned about them on a full page reload (review finding #2). Sixty
-  // seconds matches the discovery tick, and a venue frame that mentions a
-  // market this list has never seen triggers an immediate refresh — that is
-  // the earliest possible signal a new window exists.
+  // Re-fetch the registry every 60s (the discovery tick); new windows register
+  // continuously. An unknown market on the venue stream refreshes immediately.
   const marketsRef = useRef<MarketRow[]>([]);
   const registryFetchInFlight = useRef(false);
   const refreshRegistry = useCallback(async (): Promise<void> => {
@@ -159,8 +134,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
         try {
           await refreshRegistry();
         } catch (e) {
-          // The raw ApiError reads "GET /v2/markets → 500". The board
-          // already retries every minute; say that instead.
+          // Plain message instead of the raw ApiError.
           if (!cancel) {
             setError("the markets board did not load. murmur retries every minute.");
           }
@@ -190,9 +164,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     }
   }, [venueMarkets, refreshRegistry]);
 
-  // Today's settled windows. Fetched on mount rather than on tab open because
-  // the header count states it ("10 taking calls · 23 resolved today") — a
-  // number the reader sees before choosing a view.
+  // Today's settled windows, fetched on mount because the header shows the count.
   const loadResolvedToday = useCallback(async (): Promise<void> => {
     const page = await fetchArchivedMarkets({
       from: startOfLocalDayEpochS(Date.now()),
@@ -201,26 +173,17 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     setResolvedToday({ rows: page.results, hasMore: page.has_more });
   }, []);
 
-  // Re-read when the SET of settled markets changes, or when the reader's own
-  // day rolls over. Keying on the count alone missed both: midnight keeps the
-  // count, and a replacement (one market evicted as another settles) does too,
-  // so the board sat on yesterday's results.
+  // Re-read when the set of settled markets changes or the local day rolls over.
   const resolutionSignature = Object.keys(resolutions).sort().join(",");
   const localDayStartS = startOfLocalDayEpochS(nowMs);
   useEffect(() => {
-    // The archive is a secondary surface; a failure here must not take the
-    // live board down with it, and it must not drop rows already on screen.
-    // Before the first success the state is null, which renders its own
-    // "unavailable" line and leaves the header count off.
+    // Secondary surface: a failure keeps rows on screen and spares the live board.
     loadResolvedToday().catch(() => undefined);
   }, [loadResolvedToday, resolutionSignature, localDayStartS]);
 
   const liveMarkets = useMemo(() => markets ?? [], [markets]);
 
-  // What the header states. "live" counted every LISTED row — upcoming and
-  // closed windows included — and read 0 before the registry landed. This is
-  // the markets whose window is taking calls right now, and null until the
-  // registry answers.
+  // Markets whose window is taking calls now; null until the registry answers.
   const takingCalls = useMemo(
     () =>
       markets === null
@@ -369,9 +332,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
     return symbols.size > 0 ? symbols : null;
   }, [effectiveFilter, filterRows, iconByMarketKey]);
 
-  // A window may only be pulled to `resolved` EARLY when every market in it
-  // carries a venue outcome. One resolution used to speak for the cohort,
-  // which declared four windows settled on the evidence of a fifth.
+  // A window resolves early only when every market in it has a venue outcome.
   const phaseOf = useCallback(
     (group: { resolutionAtMs: number; items: MarketRow[] }): MarketWindowPhase => {
       const allResolved = group.items.every(
@@ -412,9 +373,7 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
         resolvedToday={resolvedToday}
       />
 
-      {/* ONE stable polite region for the whole matrix. It announces phase
-          TRANSITIONS only — "1:25 window: submissions closed" — never the
-          ticking countdown, which would speak once a second forever. */}
+      {/* One polite region: phase transitions only, never the countdown. */}
       <p role="status" className="sr-only">
         {announcement}
       </p>
@@ -576,9 +535,7 @@ function MatrixHeader({
                 return; // let the browser open a new tab / window
               }
               e.preventDefault();
-              // pushState, not a hash assignment: it updates the address and
-              // the history entry without a reload, and Back still works
-              // (the popstate listener above re-syncs).
+              // pushState: no reload; Back re-syncs via the popstate listener.
               window.history.pushState(null, "", viewHref(option));
               onPick(option);
             }}
@@ -595,8 +552,6 @@ function MatrixHeader({
           </a>
         ))}
       </nav>
-      {/* Words, not "10/10". A ratio of two numbers nobody named is a puzzle;
-          this states what is on the board. */}
       <p className="ml-auto ck-mono ck-dim m-0">
         {takingCalls ?? "—"} taking calls
         {resolvedToday !== null && (
@@ -615,16 +570,8 @@ function MatrixHeader({
 // ─── Resolved board ─────────────────────────────────────────────────────────
 
 /**
- * Today's settled windows, newest first.
- *
- * Grouped by the instant they ended, which is the same cohort the live board
- * shows — the five assets that shared a window settle at the same moment, so
- * they stay together after the fact.
- *
- * These rows come from the archive endpoint, so the header states the END of
- * the window and not a range: an archived row carries the instant it ended,
- * and inventing a start from an assumed window length would be a guess
- * rendered as a fact.
+ * Today's settled windows, newest first, grouped by end instant. Archived rows
+ * carry only the end, so the header shows that rather than a guessed range.
  */
 function ResolvedBoard({
   page,
@@ -738,9 +685,7 @@ function EmptyLive({
 }
 
 function MarketsSkeleton() {
-  // Hairline skeleton matching the group shape — one header strip and its
-  // rows — so nothing shifts when the real windows land. No spinner
-  // (DESIGN.md §10).
+  // Hairline skeleton in the group shape so nothing shifts on load.
   return (
     <div>
       <p role="status" className="sr-only">
@@ -773,15 +718,8 @@ function MarketsSkeleton() {
 // ─── Shared clock ───────────────────────────────────────────────────────────
 
 /**
- * ONE interval for every countdown on the page.
- *
- * Each group needs a per-second re-render, and a timer per group means N
- * timers drifting apart — two windows counting the same second differently is
- * the kind of detail that makes a board look broken. One interval at the top,
- * one `nowMs` passed down.
- *
- * Aligned to the wall clock (it re-arms on the next whole second) so the
- * displayed seconds change when the reader's own clock does, not 400ms after.
+ * One wall-clock-aligned interval for every countdown on the page, so no two
+ * windows disagree on the second.
  */
 function useSharedSecondTick(): number {
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -802,22 +740,13 @@ function useSharedSecondTick(): number {
 
 // ─── Phase transitions ──────────────────────────────────────────────────────
 
-/**
- * Announce phase CHANGES, never phase state.
- *
- * The countdown re-renders every second and carries no live region; this does
- * the speaking, and only when something actually happened — "1:25 window:
- * sealed". The first render seeds the map silently, so mounting the page does
- * not read the whole board aloud.
- */
+/** Announce phase changes only; the first render seeds silently. */
 function usePhaseTransitionAnnouncement(
   groups: Array<{ key: string; label: string; text: string }>,
 ): string {
   const latest = useRef(groups);
   latest.current = groups;
-  // The array is rebuilt every tick, so it cannot be the dependency — the
-  // effect would run once a second forever. The SIGNATURE only changes when a
-  // group appears, disappears, or moves phase, which is exactly the trigger.
+  // Depend on the signature; the array itself is rebuilt every tick.
   const signature = groups.map((g) => `${g.key}:${g.text}`).join("|");
   const previous = useRef<Map<string, string> | null>(null);
   const [announcement, setAnnouncement] = useState("");

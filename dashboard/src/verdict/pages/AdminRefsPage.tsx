@@ -15,15 +15,8 @@ const REFS_CRUMB = (
 );
 
 /**
- * /#/admin/refs — token-gated full sender board.
- *
- * Mirrors /#/recruiters but with admin-only data (the first 200 senders)
- * and per-row delete actions. The token is read from ?token=<...> on
- * first visit and persisted to localStorage so the operator doesn't
- * paste it on every refresh. Token never enters the request URL —
- * always sent as X-Admin-Token header.
- *
- * Compact cockpit idiom — CompactTopbar + hairline Panel + ck-* type scale.
+ * /#/admin/refs: token-gated sender board (first 200 senders) with per-row delete.
+ * The token is sent as the X-Admin-Token header, never in a request URL.
  */
 export function AdminRefsPage() {
   const [token, setToken] = useState<string>(() => readAdminToken());
@@ -119,8 +112,7 @@ export function AdminRefsPage() {
           )}
 
           {rows && rows.length > 0 && (
-            /* min-w: the fixed tracks take 664px, so the 1fr sender column
-               collapsed to nothing before the panel started scrolling. */
+            /* min-w: fixed tracks take 664px; without it the sender column collapses. */
             <ul className="m-0 p-0 list-none min-w-[860px]">
               <li className={COLS + " border-b border-[var(--color-border-vis)] ck-colhead"}>
                 <span>rank</span>

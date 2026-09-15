@@ -1,7 +1,5 @@
-// Account-wide agent kill switch. Engage is one click (emergencies need
-// speed); release is a typed-confirm ceremony and does NOT resurrect the
-// revoked/rotated credentials — re-mint to resume, which for runtime keys
-// means a fresh controller-wallet signature.
+// Account-wide agent kill switch. Engage is one click; release needs the typed
+// word and does not restore revoked or rotated credentials.
 
 import { useCallback, useEffect, useState } from "react";
 import { getAccessToken } from "@privy-io/react-auth";
@@ -11,12 +9,7 @@ import { Ik } from "../../icons.js";
 import { InlineError } from "../compact/InlineError.js";
 import { TimeAgo } from "../compact/TimeAgo.js";
 
-/**
- * The word the operator must type to re-arm the account. Case-sensitive —
- * surrounding whitespace is forgiven (a pasted or auto-spaced word still
- * counts as typing it), but a different word never is. UI gate only: the
- * request payload does not carry this.
- */
+/** Typed to release. Case-sensitive, surrounding whitespace ignored; UI gate only. */
 const RELEASE_PHRASE = "release";
 
 /** Matches the shared input styling used by DestinationAddressForm. */
@@ -40,11 +33,7 @@ export function KillSwitchPanel() {
   const refresh = useCallback(async () => {
     try {
       const token = await getAccessToken();
-      // A silent return here left `engaged` at null forever: the status chip
-      // stuck on "…" and the engage button permanently disabled, with nothing
-      // saying why. Say it — same wording as DestinationAddressForm, and
-      // nothing clears this state before the operator acts on it (refresh
-      // runs once on mount; engage/release clear it only as they retry).
+      // Without a token `engaged` stays null and engage stays disabled; say why.
       if (!token) {
         setError("Your session expired. Sign in again.");
         return;
@@ -61,8 +50,7 @@ export function KillSwitchPanel() {
     void refresh();
   }, [refresh]);
 
-  // One click. An emergency stop that asks a second question is a stop that
-  // arrives late; the damage this undoes is worse than a stray click.
+  // One click, no confirm: an emergency stop must not be slowed down.
   const engage = useCallback(async () => {
     setBusy(true);
     setError(null);
@@ -82,9 +70,7 @@ export function KillSwitchPanel() {
     }
   }, []);
 
-  // Re-arming the account is the deliberate direction: it only runs once the
-  // operator has typed the word out. The gate re-arms on the way out either
-  // way — a failed release has to be re-typed, not re-clicked.
+  // Clears the typed word either way; a failed release must be re-typed.
   const release = useCallback(async () => {
     if (releaseInput.trim() !== RELEASE_PHRASE) return;
     setBusy(true);
@@ -137,10 +123,6 @@ export function KillSwitchPanel() {
                 void release();
               }}
             >
-              {/* Visible label, not a placeholder: the instruction for the
-                  account's most destructive control must survive the first
-                  keypress. It also names the word, so it is the accessible
-                  name too and no aria-label is needed. */}
               <label htmlFor="kill-switch-release" className="ck-label">
                 type release to confirm
               </label>

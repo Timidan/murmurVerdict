@@ -1,18 +1,6 @@
 // ─── AccountPage — authed dashboard shell at #/account ─────────────────────
-//
-// Auth-gated. Redirects unauthenticated visitors to /account/login with the
-// current hash preserved as `?next=`. Once authed, renders:
-//
-//   · topbar with "MURMUR · ACCOUNT" crumb and a small sign-out button
-//   · "YOUR AGENTS" panel listing AccountAgent rows
-//   · empty-state CTA pointing at #/agent/onboard
-//
-// This page deliberately does NOT mint API keys, expose secrets, or take the
-// user through agent creation. #/agent/onboard owns the full registration
-// flow (slug input + in-browser signing → runtime-key reveal modal).
-// Per-agent management (wallet rebind, additional runtime-key mints,
-// payout address, api-key mint) lives on the per-agent settings shell at
-// #/account/agent/:slug.
+// Owned agents plus account-level panels. Agent creation lives at
+// #/agent/onboard; per-agent management at #/account/agent/:slug.
 
 import { useEffect } from "react";
 import { Ik, IkNav } from "../icons.js";
@@ -33,11 +21,7 @@ import { useAccount } from "../hooks/useAccount.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import type { AccountAgent, AgentKind } from "../api.js";
 
-/**
- * read `?ref=<source>` from the hash query so we can attribute
- * funnel events to their entry point. Same defensive hash-parsing pattern
- * as Router.tsx's parseNext().
- */
+/** `?ref=<source>` from the hash query, for funnel attribution. */
 function readHashRef(): string | null {
   if (typeof window === "undefined") return null;
   const raw = window.location.hash.replace(/^#/, "");
@@ -63,26 +47,14 @@ export function AccountPage() {
     window.location.hash = `#/account/login?next=${next}`;
   }, [account.ready, account.isAuthenticated]);
 
-  // Re-pull the owned-agent list on every authenticated mount. useAccount's
-  // bootstrap fetches once per login; landing here after onboarding — or after
-  // any reload — must reflect current state, so refetch defensively instead of
-  // trusting the cached array. refreshAgents is a stable useCallback.
+  // Refetch on every authenticated mount; the bootstrap fetches only once per login.
   useEffect(() => {
     if (account.isAuthenticated) void account.refreshAgents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account.isAuthenticated]);
 
-  // fire compete.clicked only when the user actually arrived
-  // from the landing-page CTA. Two paths converge here:
-  //
-  //   1. Already-signed-in users hit `/account?ref=landing-cta` directly
-  //      (CTA URL is preserved through the route). Read the hash ref.
-  //   2. Unauth users bounce through `/account/login?next=/account` which
-  //      strips the `?ref=` before they land here. The CTA persists a
-  //      `murmur_funnel_compete_pending` latch in localStorage at click
-  //      time; we consume it post-auth.
-  //
-  // Either path emits exactly one compete.clicked per CTA click attempt.
+  // Emit compete.clicked only for landing-CTA arrivals: `?ref=landing-cta`
+  // directly, or the localStorage latch the CTA sets (login strips `?ref=`).
   useEffect(() => {
     if (!account.isAuthenticated) return;
     let ref: string | null = readHashRef();
@@ -92,9 +64,7 @@ export function AccountPage() {
         if (raw) {
           window.localStorage.removeItem("murmur_funnel_compete_pending");
           const parsed = JSON.parse(raw) as { ref?: string; ts?: number };
-          // Stale latches (>30 min) get dropped on the floor — the user
-          // clicked the CTA, abandoned, and came back hours later. That
-          // isn't the moment we want to attribute compete.clicked to.
+          // Drop latches older than 30 min.
           if (
             typeof parsed?.ref === "string" &&
             typeof parsed?.ts === "number" &&
@@ -124,9 +94,7 @@ export function AccountPage() {
     return <LoadingShell />;
   }
 
-  // A closed account gets the terminal screen and nothing else. Every panel
-  // below would 403 anyway; rendering them would only produce a wall of
-  // identical errors with no explanation among them.
+  // A closed account gets only the terminal screen; every panel would 403.
   if (account.deactivated) {
     return (
       <div className="flex-1 flex flex-col min-h-0">
@@ -143,9 +111,7 @@ export function AccountPage() {
     );
   }
 
-  // "0 owned" and "no agents yet" are claims about the account, and only a
-  // landed session backs them. Before that, and after a failure, the count is
-  // unknown — never zero.
+  // Before the list lands, or after a failure, the count is unknown, never zero.
   const listed = account.settled && !account.error;
 
   return (
@@ -161,9 +127,7 @@ export function AccountPage() {
             )}
           </span></TopbarCrumb>
 
-      {/* Bento, not a stack. Eight equal-width panels gave "no webhooks yet"
-          the same weight as the agent list; span sizes encode what matters.
-          Single column under md — a phone has one column of attention. */}
+      {/* Bento: span sizes encode weight. Single column under md. */}
       <main className="flex-1 px-3 py-3 grid grid-cols-1 md:grid-cols-6 gap-3 content-start ck-page">
         <section className="ck-frame md:col-span-6">
           <div className="ck-header">
@@ -203,8 +167,7 @@ export function AccountPage() {
             <SkeletonRows />
           )}
         </section>
-        {/* Row 2: the three that are usually empty or a single value. They
-            cost a third of a row each instead of a full one. */}
+        {/* Row 2: usually empty or single-value panels, a third of a row each. */}
         <div className="md:col-span-2 flex [&>*]:w-full">
           <LinkedLoginsPanel />
         </div>
@@ -215,18 +178,13 @@ export function AccountPage() {
           <ActivityPanel />
         </div>
 
-        {/* Row 3: purchases carries a wallet and two controls, so it earns
-            half a row. */}
+        {/* Row 3: purchases gets half a row. */}
         <div className="md:col-span-3 flex [&>*]:w-full">
           <PurchasesPanel agents={account.agents} />
         </div>
 
-        {/* ONE tile, two rows — not two stacked panels, which would reintroduce
-            the vertical stack this layout exists to remove. Both children keep
-            their own <details> and forms; mmr-safety only drops their frames so
-            they read as rows. Still ordered pause-then-close: one is a pause
-            with a release button, the other has no undo, so the reversible
-            control sits first in the path. */}
+        {/* One tile, two rows (mmr-safety drops the child frames). Pause before
+            close: the reversible control comes first. */}
         <section className="ck-frame md:col-span-3 mmr-safety">
           <div className="ck-header">
             <span className="ck-title ck-title-ik">
@@ -255,9 +213,7 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
   return (
     <ul className="divide-y divide-[var(--color-border)]">
       {agents.map((a) => {
-        // Settings page is the most common entry point (set payout, mint
-        // additional keys). Fall back to agent_id when the slug hasn't
-        // hydrated yet.
+        // Fall back to agent_id when the slug hasn't hydrated yet.
         const slugOrId = a.display_slug ?? a.agent_id;
         const settingsHref = `#/account/agent/${encodeURIComponent(slugOrId)}/payout`;
         const walletHref = `#/account/agent/${encodeURIComponent(slugOrId)}/wallet`;
@@ -287,14 +243,8 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
 }
 
 /**
- * Re-attestation status chip rendered on each agent row + the
- * AgentSettingsPage header. Uses the same `controller_wallet` shape both
- * places surface from `GET /v1/account/agents`. Three visual states:
- *
- *   · "no wallet" → controller_wallet is null, link to wallet tab.
- *   · "overdue" → backend flag, urgent. Renders as accent-colored chip
- *     with a [ re-attest → ] link to wallet tab.
- *   · "due in Xd" → normal countdown, dim. Just a label.
+ * Re-attestation chip on each agent row: no wallet or overdue (both link to the
+ * wallet tab), else a dim countdown.
  */
 function ReattestChip({
   controllerWallet,
@@ -361,7 +311,7 @@ function EmptyState() {
 }
 
 function SkeletonRows() {
-  // Hairline skeleton — no spinner. Per DESIGN.md §10 (no spinner > 800ms).
+  // Hairline skeleton, no spinner.
   return (
     <ul>
       {[0, 1, 2].map((i) => (

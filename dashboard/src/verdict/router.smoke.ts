@@ -22,9 +22,7 @@ assert.equal(
   "leaderboard",
 );
 
-// Agent-settings sub-tabs: every tab the page renders must be routable, or a
-// deep link falls through to the 404 branch. `pricing` was missing from the
-// alternation while <AgentSettingsPage/> already shipped the tab.
+// Every agent-settings tab the page renders must be routable.
 for (const tab of [
   "payout",
   "pricing",

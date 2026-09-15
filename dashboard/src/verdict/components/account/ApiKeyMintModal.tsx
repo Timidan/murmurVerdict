@@ -1,21 +1,6 @@
 // ─── ApiKeyMintModal — one-time plaintext key reveal ────────────────────────
-//
-// Renders once on a successful POST /v1/account/agents/:slug/api-keys. The
-// plaintext `secret` is the ONE place the API ever returns the raw key, so
-// the UX deliberately friction-loads dismissal:
-//
-//   · heavy danger banner ("⚠ THIS KEY WILL NOT BE SHOWN AGAIN. COPY IT NOW.")
-//   · monospace box with text-select: all so triple-click + Cmd-C works
-//   · TWO copy buttons — raw key + `.env` line
-//   · "I have saved this key" checkbox guards the DONE button
-//   · click-outside + Escape are explicitly NOT honored (footgun prevention)
-//
-// On DONE: caller decides where to navigate. The modal itself stays
-// storage-agnostic — onDone is still just a void callback. Today the
-// only caller is ApiKeysPanel under the `/keys` settings tab; callers
-// that want the `/integrate` snippet panel to show the freshly-minted
-// key can stash it in sessionStorage under
-// `murmur_just_minted:<slug>` (5-min TTL) before hash-navigating.
+// The mint response is the only time the API returns the raw key, so dismissal
+// requires the "saved" checkbox; click-outside and Escape are ignored.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MintApiKeyResponse } from "../../api.js";
@@ -25,30 +10,22 @@ import { useFocusTrap } from "../compact/useFocusTrap.js";
 export interface ApiKeyMintModalProps {
   /** The mint response. `secret` is the plaintext key (one-time). */
   result: MintApiKeyResponse;
-  /** Display slug of the agent the key belongs to — used in the .env line. */
   slug: string;
-  /**
-   * Fires when the user ticks the "saved" checkbox and clicks DONE. The
-   * parent decides what to do next (refresh agents list + navigate).
-   */
+  /** Fires on DONE, after the "saved" checkbox is ticked. */
   onDone: () => void;
 }
 
 export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) {
   const [saved, setSaved] = useState(false);
   const [copiedAt, setCopiedAt] = useState<"raw" | "env" | null>(null);
-  // When navigator.clipboard is unavailable (insecure
-  // origins, certain webviews) writeText() silently failed but the UI
-  // still claimed success. The key is one-time, so a false "copied"
-  // could trick the user into dismissing without saving. When we can't
-  // write, surface an explicit manual-copy hint instead.
+  // Set when the clipboard write fails; a false "copied" on a one-time key
+  // could get it dismissed unsaved, so show a manual-copy hint instead.
   const [copyFallback, setCopyFallback] = useState<"raw" | "env" | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const firstCopyRef = useRef<HTMLButtonElement | null>(null);
 
-  // Lock body scroll while the modal is open so the user can't accidentally
-  // scroll past + lose the key behind a stale rerender.
+  // Lock body scroll while open.
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -63,7 +40,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
     };
   }, []);
 
-  // Block Escape — by spec, the user MUST tick the checkbox + click DONE.
+  // Block Escape; the user must tick the checkbox and click DONE.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -75,10 +52,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // Focus lifecycle — same pattern as compact/MobileNav: move focus into
-  // the dialog on mount (first copy button, panel as fallback) and return
-  // it to the previously-focused element on unmount. Escape stays blocked
-  // (effect above) — only the focus handling is added here.
+  // Focus the first copy button on mount; restore previous focus on unmount.
   useEffect(() => {
     const prevFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -88,15 +62,10 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
     };
   }, []);
 
-  // Keep Tab / Shift+Tab within the dialog. The panel is mounted for this
-  // component's whole life, so the trap is unconditionally active.
   useFocusTrap(panelRef);
 
   const copyToClipboard = useCallback(async (text: string, which: "raw" | "env") => {
-    // Gate "copied" feedback on an actual successful write.
-    // Pre-flight check + try/catch around writeText; on either branch fail
-    // we flip to copyFallback so the UI shows a manual-copy hint and the
-    // saved-checkbox conscience doesn't ride on a no-op success message.
+    // Only show "copied" after a successful write.
     if (!navigator.clipboard?.writeText) {
       setCopyFallback(which);
       setCopiedAt(null);
@@ -118,9 +87,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
 
   return (
     <div
-      // Click-outside MUST NOT dismiss — the user has to acknowledge first.
-      // We render the backdrop as a non-interactive element + omit any
-      // onClick handler. Aria-modal blocks shortcut closure in screenreaders.
+      // No onClick: click-outside must not dismiss.
       role="dialog"
       aria-modal="true"
       aria-labelledby="mint-modal-title"
@@ -134,15 +101,9 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
         className="modal-enter-panel ck-frame-strong w-full max-w-[560px] max-h-full overflow-y-auto bg-[var(--color-bg)]"
       >
         <div className="ck-header">
-          {/* Title-marker upgrade (P2): the api glyph replaces the generic
-              ::before square. The ⚠ that follows is the error-prefix text
-              idiom, not a second marker; both sit in the title's ck-neg ink. */}
           <span id="mint-modal-title" className="ck-title ck-neg ck-title-ik">
             <Ik name="api" /> ⚠ your new api key
-            {/* Seal stamp — the credential is sealed the instant this modal
-                mounts, so the glyph plays its one-shot close here and then
-                holds. Trailing, so the leading api marker keeps its slot; the
-                seal inherits the title's ck-neg ink like the ⚠ does. */}
+            {/* One-shot seal stamp on mount. */}
             <span className="mmr-seal-stamp" aria-hidden="true">
               <Ik name="seal" size={16} />
             </span>

@@ -14,7 +14,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 function subscribe(cb: () => void): () => void {
   listeners.add(cb);
   if (timer === null) {
-    // refresh the snapshot on ticker (re)start — otherwise the first subscriber after an idle stretch reads a stale clock until the first tick
+    // refresh on (re)start so the first subscriber after idle isn't stale
     nowMs = Date.now();
     timer = setInterval(() => {
       nowMs = Date.now();
@@ -40,16 +40,8 @@ export function useNowMs(): number {
 }
 
 /**
- * Relative timestamp ("7m ago") that stays fresh off the shared ticker and
- * carries the exact ISO instant in its tooltip. `null`/`undefined` → "—".
- *
- * `absolute` swaps the visible text for the full local instant and keeps the
- * relative form in the tooltip. Use it wherever several timestamps sit in one
- * column and the reader's question is "in what order, how far apart" rather
- * than "how long ago" — a call's lifecycle being the case this exists for.
- * Relative time compresses hard: seven rows of a call's history all rendered
- * "8d ago", which reads as one instant repeated seven times rather than as a
- * sequence anyone can audit.
+ * Relative timestamp ("7m ago") with the ISO instant in its tooltip; null → "—".
+ * `absolute` shows the local instant instead, for columns where order matters.
  */
 export function TimeAgo({
   iso,
@@ -64,10 +56,7 @@ export function TimeAgo({
   if (!iso) return <span className={className}>—</span>;
   const relative = formatRelativeTime(iso, now);
   if (absolute) {
-    // Falls back to the relative form if the instant will not parse, so a bad
-    // timestamp costs precision, never the row.
-    // Short form, not the full one: this renders INSIDE a value column, and
-    // the exact instant is already on the tooltip below.
+    // Short form for value columns; falls back to relative if unparseable.
     const stamp = formatLocalDateTimeShort(iso);
     return (
       <span className={className} title={`${relative} · ${iso}`}>

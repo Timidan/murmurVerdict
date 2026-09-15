@@ -8,15 +8,9 @@ import {
 import { MarketAssetIcon } from "./MarketAssetIcon.js";
 
 /**
- * The checkable filter tiers above the markets matrix (owner sign-off
- * 2026-08-11): venue → category → series → market. Checked means on the
- * board. Every tier multi-selects in the same subtractive model the old
- * asset chips used, upper tiers narrow lower ones, and only what murmur
- * currently carries is ever offered — no option leads to an empty board.
- *
- * A tier holding exactly one value renders as a plain label, so today's
- * one-venue one-category board spends two quiet lines, not four control
- * rows. Series folds onto the category line until it branches.
+ * Checkable filter tiers above the markets matrix: venue → category → series →
+ * market. Upper tiers narrow lower ones; only carried values are offered. A
+ * one-value tier renders as a plain label.
  */
 export function MarketFilterBar({
   rows,
@@ -45,10 +39,7 @@ export function MarketFilterBar({
       ),
     });
 
-  // The series tier only earns a row when it groups: Gamma names one series
-  // per asset ("BTC Up or Down 5m"), and a tier whose every value holds
-  // exactly one market is the market tier wearing longer names. It appears
-  // once some series actually holds two or more leaves.
+  // Series gets a row only once some series holds two or more markets.
   const seriesGroups = options.series.length > 1 && seriesGroupsMarkets(rows);
 
   return (

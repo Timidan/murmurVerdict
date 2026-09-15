@@ -6,11 +6,7 @@ import "./verdict/styles/animated-mark.css";
 import { VerdictRouter } from "./verdict/Router.js";
 import { Splash } from "./verdict/components/Splash.js";
 
-// The Privy SDK was being loaded on every
-// route via a top-level <PrivyProvider> wrap. The provider now mounts
-// only when the router resolves an /account/* route — see
-// dashboard/src/verdict/auth/AccountShell.tsx, lazy-imported from
-// Router so landing / leaderboard / today never ship the SDK.
+// No PrivyProvider here: it mounts in auth/AccountShell.tsx so public routes never ship the SDK.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <Splash />

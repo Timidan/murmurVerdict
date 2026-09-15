@@ -24,10 +24,7 @@ import type { ReactNode } from "react";
 
 const GLYPHS = {
   /* ── Agent-settings rail ────────────────────────────────────────────────
-     Purpose-drawn so the rail reads by shape alone. Namespaced `tab-` because
-     every semantically-obvious mark (agent, seal, controller-wallet) is already
-     spoken for elsewhere, and the unused pool is outcome glyphs that mean call
-     results, not settings. Streamline Sharp: square caps, miter joins. */
+     Namespaced `tab-` because the obvious names are taken elsewhere. */
   "tab-payout": (
     // Money out to your address. 16-grid, half-grid coords: hand-drawn tier.
     <>
@@ -274,14 +271,8 @@ const GLYPHS = {
   ),
   "live-dot": (
     <>
-      {/* Two paths, not one subpath pair: identical coordinates to the former
-          combined `M… M…` d, split so the live-transmission animation can
-          drive the inbound and outbound chevrons on their own keyframes
-          (compact.css `.ck-live-tx`, matched by :first-of-type/:nth-of-type).
-          Order is load-bearing — in first, out second. This is why live-dot
-          stayed hand-drawn in the 2026-08-10 Streamline pass even though a
-          close match (rss-symbol) exists: swapping the geometry would
-          silently detune or break the app's one ambient animation. */}
+      {/* Two paths, in first then out: compact.css `.ck-live-tx` animates them
+          by :first-of-type/:nth-of-type. Order and geometry are load-bearing. */}
       <path d="M4.5 4.5L2.5 8L4.5 11.5" />
       <path d="M11.5 4.5L13.5 8L11.5 11.5" />
       {/* 4×4 core: the semantic payload must survive at 16 — documented
@@ -353,9 +344,7 @@ const GLYPHS = {
       <path d="M6.5 4.5V11.5" />
       <path d="M10.5 4.5V11.5" />
       <path d="M14.5 4.5V11.5" />
-      {/* The closing stroke leaves from under the first upright and lands over
-          the last, the way the fifth mark is actually drawn. 4-unit spacing,
-          not 3: at 3 the uprights fused into hatching at 16px. */}
+      {/* 4-unit spacing: at 3 the uprights fuse into hatching at 16px. */}
       <path d="M2.5 12.5L14.5 3.5" />
     </>
   ),
@@ -418,16 +407,8 @@ export const STREAMLINE_ICON_NAMES: readonly IconName[] = [
 ];
 
 /**
- * An inline glyph.
- *
- * SIZE CONTRACT: 16 or 32, enforced by the type. Hand-drawn glyphs sit on a
- * 16 grid at half-integer coordinates, so only an integer scale lands every
- * edge on a device pixel — 24 is worse than 12, not a safe middle. When 16 is
- * too big for the row, the answer is no glyph, not a smaller one. `IkNav` is
- * the right tool at 24/48.
- *
- * Decorative by contract: always aria-hidden, always beside visible text, so
- * dropping one never changes an accessible name.
+ * An inline glyph. Size is 16 or 32, enforced by the type: only integer scales
+ * keep the 16-grid edges on device pixels. Use `IkNav` at 24/48.
  */
 export function Ik({
   name,
@@ -459,14 +440,8 @@ export function Ik({
 }
 
 /**
- * Nav tier — the six topbar destinations, redrawn on a 24 grid because the
- * inline set only reaches 24/48 by fractional scaling.
- *
- * Two states per concept: `outline` at rest, `fill` when the route is
- * current. The fill is a separate silhouette carrying real mass, not a
- * filled-in outline — against the hairline rest state, that weight is the
- * whole active signal. Streamline geometry is rendered at this tier's 1px
- * stroke, not Streamline's native 1.5, so all six hold one weight in the row.
+ * Nav tier: the six topbar destinations on a 24 grid. `outline` at rest, a
+ * separate `fill` silhouette when current. Streamline glyphs render at 1px here.
  */
 const NAV_GLYPHS = {
   market: {
@@ -578,15 +553,9 @@ export const NAV_ICON_NAMES = Object.keys(NAV_GLYPHS) as readonly NavIconName[];
 export const NAV_STREAMLINE_ICON_NAMES: readonly NavIconName[] = ["agent", "badge"];
 
 /**
- * A topbar destination glyph. Both states are hard without `crispEdges`: the
- * outline strokes at 1px on half-pixel offsets, the fill sits on whole numbers.
- *
- * SIZE CONTRACT: 24, or an integer multiple (48 for 2×). A fractional scale
- * puts every edge back between pixels; use `Ik` at those sizes instead.
- *
- * The root supplies the stroke for `outline` and withdraws it for `fill`, so
- * fill silhouettes paint from their own fill and never grow an outline.
- * Decorative by contract — the destination name lives on the link's aria-label.
+ * A topbar destination glyph. Size is 24 or 48; fractional scales blur edges.
+ * The root strokes `outline` and drops the stroke for `fill`. The name lives on
+ * the link's aria-label.
  */
 export function IkNav({
   name,
@@ -620,13 +589,8 @@ export function IkNav({
 }
 
 /* ------------------------------------------------------------------------- *
- * HERO tier — stat-tile and panel leads (owner ruling 2026-08-12: heroes are
- * real marks, never the 16px garnish scaled up). 24×24, stroke 1.5, square
- * caps — the Streamline Sharp grammar the sourced inline set already speaks,
- * drawn with more mass because a hero IS the tile's subject, not garnish.
- * Renders at 16, 20 or 24; fractional scales are the old grey-soup failure.
- * The 48 hero is gone: at 48 against a 24px value the mark was twice the
- * height of the number it annotates (owner flag, 2026-08-27).
+ * HERO tier: stat-tile and panel leads, drawn as real marks rather than the
+ * 16px glyphs scaled up. 24×24, square caps. Renders at 16 or 24.
  * ------------------------------------------------------------------------- */
 
 const HERO_GLYPHS = {
@@ -691,8 +655,7 @@ export function IkHero({
   size?: 16 | 24;
   className?: string;
 }) {
-  // Stroke tracks the box. A flat 1.5 was 9% of a 16px glyph and filled the
-  // Sharp Line counters in.
+  // 1.5 at 16px fills the counters in.
   const strokeWidth = size === 16 ? 1 : 1.5;
   return (
     <svg
@@ -714,11 +677,8 @@ export function IkHero({
 }
 
 /* ------------------------------------------------------------------------- *
- * BRAND marks — third-party services show their REAL logo (owner ruling
- * 2026-08-12), the way asset chips already show real venue artwork. Google's
- * G keeps its own colors: a brand mark is the one place the monochrome rule
- * yields, because a recolored logo is not the logo. Non-brand identities
- * (email, wallet) stay currentColor house glyphs.
+ * BRAND marks: third-party services show their real logo in its own colors.
+ * Non-brand identities (email, wallet) stay currentColor house glyphs.
  * ------------------------------------------------------------------------- */
 
 const BRAND_MARKS = {
@@ -747,8 +707,7 @@ const BRAND_MARKS = {
       />
     </>
   ),
-  // Circle's USDC mark in its own brand blue. A price is denominated in a real
-  // asset, so it gets the real logo for the same reason Google's G does.
+  // Circle's USDC mark in its brand blue.
   usdc: (
     <>
       <circle cx="12" cy="12" r="12" fill="#2775CA" stroke="none" />

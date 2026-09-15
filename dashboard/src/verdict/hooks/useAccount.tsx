@@ -1,21 +1,6 @@
 // ─── useAccount — Privy session + Murmur backend bridge ─────────────────────
-//
-// Combines:
-//   1) Privy auth state (`usePrivy()` → user, ready, authenticated, login, logout)
-//   2) An access-token-aware getter (`getAccessToken()`) used by the API client
-//   3) /v1/account/session + /v1/account/agents — exchanged on first authed
-//      render so the dashboard has an `account_id` and an agent list.
-//
-// Architecture (2026-05-22 lift): the state engine lives in a single React
-// Context provided by <AccountProvider> (mounted in AccountShell). Every
-// consumer calling `useAccount()` reads from that one provider, so a
-// `refreshAgents()` call in one panel updates every panel — no callback
-// prop drilling required.
-//
-// Before the lift, each `useAccount()` call instantiated its OWN useState
-// engine. ControllerWalletPanel's refresh wouldn't propagate to its
-// sibling RuntimeKeysPanel. The interim fix was
-// to pass `onAgentChanged` callbacks; the provider supersedes that.
+// One <AccountProvider> (mounted in AccountShell) holds the state, so
+// `refreshAgents()` in one panel updates every panel.
 
 import {
   createContext,
@@ -52,20 +37,13 @@ export interface UseAccountResult {
   /** Most recent error from the backend session/list calls. */
   error: string | null;
   /**
-   * True once an account round trip has finished, success or failure, and
-   * false again while the next one runs. `loading` is false both before the
-   * bootstrap effect runs and after it fails, so it cannot tell "the list
-   * landed" from "the list has not been asked for yet".
+   * True once an account round trip has finished, success or failure; false
+   * while the next runs. Unlike `loading`, tells "landed" from "not asked yet".
    */
   settled: boolean;
   /**
-   * True once murmur says this account is closed (migration 073).
-   *
-   * A closed account is refused on every account route except
-   * GET /v1/account/session, so the bootstrap's POST fails with 403 and the
-   * agent list never loads. Without this flag the dashboard would render an
-   * empty page and an error string — indistinguishable from an outage. With
-   * it, AccountPage renders the terminal screen instead.
+   * Account is closed. Closed accounts are refused everywhere except
+   * GET /v1/account/session; this lets AccountPage tell that from an outage.
    */
   deactivated: boolean;
   deactivatedAt: string | null;
@@ -84,26 +62,18 @@ export interface UseAccountResult {
   signIn: () => void;
   /** Sign out of Privy + clear local agent cache. */
   signOut: () => Promise<void>;
-  /** Re-fetch /v1/account/agents (useful after create/rotate in 7b/c). */
+  /** Re-fetch /v1/account/agents. */
   refreshAgents: () => Promise<void>;
 }
 
 const AccountContext = createContext<UseAccountResult | null>(null);
 
-/**
- * Internal state engine — used only inside <AccountProvider>. Do not export.
- * The shape of the returned object is the public surface for consumers via
- * `useAccount()`.
- */
+/** State engine; used only inside <AccountProvider>. Do not export. */
 function useAccountState(): UseAccountResult {
   const configured = isPrivyConfigured();
 
-  // Privy hook is safe to call even when the provider isn't mounted —
-  // it returns a no-op default that reports `ready: false`. But to keep
-  // the hook order stable we never branch on `configured` before calling.
+  // Safe without the provider mounted; never branch on `configured` before it (hook order).
   const privy = usePrivy();
-  // useFunnelEmit is hook-stable and returns a memoized callback;
-  // it never re-fires its own emits across renders (dedupe is internal).
   const emitFunnel = useFunnelEmit();
 
   const [session, setSession] = useState<AccountSession | null>(null);
@@ -114,9 +84,7 @@ function useAccountState(): UseAccountResult {
   const [deactivated, setDeactivated] = useState<boolean>(false);
   const [deactivatedAt, setDeactivatedAt] = useState<string | null>(null);
 
-  // Guard against duplicate /session POSTs across StrictMode double-renders
-  // and rapid re-auth toggles. We only run the bootstrap once per
-  // (authenticated && configured) edge.
+  // DID whose bootstrap succeeded; stops duplicate /session POSTs.
   const bootstrappedRef = useRef<string | null>(null);
 
   const fetchAgents = useCallback(async (): Promise<void> => {
@@ -153,11 +121,7 @@ function useAccountState(): UseAccountResult {
       return;
     }
     const did = privy.user?.id ?? "anon";
-    // Skip only when a PRIOR attempt fully SUCCEEDED — the latch is set at the
-    // end of the async block below, after setAgents commits. Setting it HERE
-    // (before the fetch) was the bug: React StrictMode runs setup→cleanup→setup
-    // in dev, so the first attempt got cancelled, the second saw the latch and
-    // bailed, and `agents` stayed [] forever with no retry path.
+    // Skip only after a prior attempt fully succeeded (latch is set below).
     if (bootstrappedRef.current === did) return;
 
     let cancelled = false;
@@ -174,22 +138,13 @@ function useAccountState(): UseAccountResult {
         const s = await verdictApi.postAccountSession(token);
         if (cancelled) return;
         setSession(s);
-        // fire privy.signed_in once per authenticated edge.
-        //
-        // Now that AccountProvider mounts a single useAccountState per
-        // AccountShell, the per-mount inflation that originally
-        // fixed is no longer possible: there is exactly one instance
-        // for the whole /account/* tree. We keep the localStorage
-        // latch as a defense-in-depth measure in case AccountShell is
-        // remounted by a future route change.
+        // Emit privy.signed_in once; the localStorage latch survives AccountShell remounts.
         const signedInLatchKey = `murmur_funnel_signed_in:${s.privy_user_id}:${s.created ? "new" : "ret"}`;
         let alreadyEmitted = false;
         try {
           alreadyEmitted = window.localStorage.getItem(signedInLatchKey) === "1";
         } catch {
-          // localStorage unavailable (private mode etc.) — fall back to
-          // per-mount emit; one duplicate funnel row per session is
-          // acceptable in the no-storage path.
+          // No localStorage: emit per mount; a duplicate row is acceptable.
         }
         if (!alreadyEmitted) {
           void emitFunnel("privy.signed_in", {
@@ -205,17 +160,11 @@ function useAccountState(): UseAccountResult {
         const { agents: rows } = await verdictApi.getAccountAgents(token);
         if (cancelled) return;
         setAgents(rows);
-        // Latch this DID as bootstrapped ONLY here — after the agents fetch
-        // has actually committed and this attempt was not cancelled. A
-        // StrictMode-cancelled first pass therefore leaves the latch unset,
-        // so the second pass retries and populates the list.
+        // Latch only after success, so a StrictMode-cancelled first pass still retries.
         bootstrappedRef.current = did;
       } catch (e) {
         if (cancelled) return;
-        // The POST is a write and a closed account is refused on it, like
-        // every other account write. GET /v1/account/session is the one route
-        // that stays open, and it is the only way to tell "you closed this"
-        // apart from "murmur is down". Ask it before reporting a failure.
+        // A closed account fails the POST; GET /v1/account/session tells closed from down.
         try {
           const token = await getAccessToken();
           const state = token ? await verdictApi.getAccountSession(token) : null;
@@ -232,8 +181,7 @@ function useAccountState(): UseAccountResult {
             return;
           }
         } catch {
-          // Fall through to the original failure — the closed-account probe
-          // is a refinement of the message, never a new failure mode.
+          // Fall through to the original failure.
         }
         setError((e as Error).message ?? "session_failed");
       } finally {
@@ -266,12 +214,7 @@ function useAccountState(): UseAccountResult {
   }, [configured, privy]);
 
   const email = useMemo<string | null>(() => {
-    // The React SDK exposes camelCase state: a top-level `email.address` for
-    // the email-OTP flow, and `linkedAccounts` (LinkedAccountWithMetadata[])
-    // for everything else. The prior code read snake_case `linked_accounts`
-    // off a hand-cast shape — a field the React SDK never populates — so this
-    // always returned null for OAuth-only sign-ins. Prefer the direct email,
-    // else scan linked accounts for an email- or google_oauth-type identity.
+    // Direct email first, else the first email or google_oauth linked account.
     const u = privy.user;
     if (!u) return null;
     if (u.email?.address) return u.email.address;
@@ -302,21 +245,12 @@ function useAccountState(): UseAccountResult {
   };
 }
 
-/**
- * Mounts the single account-state engine for the /account/* subtree.
- * AccountShell renders this; consumers read via `useAccount()`.
- */
 export function AccountProvider({ children }: { children: ReactNode }) {
   const value = useAccountState();
   return <AccountContext.Provider value={value}>{children}</AccountContext.Provider>;
 }
 
-/**
- * Single source of truth for "who am I?" in the dashboard. Returns the
- * shared account state provided by <AccountProvider>. Throws if called
- * outside the provider — that's a programming error, not a runtime
- * surface to handle gracefully.
- */
+/** Shared account state from <AccountProvider>; throws outside it. */
 export function useAccount(): UseAccountResult {
   const ctx = useContext(AccountContext);
   if (!ctx) {

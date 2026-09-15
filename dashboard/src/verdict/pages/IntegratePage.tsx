@@ -1,29 +1,8 @@
 // ─── IntegratePage — agent welcome packet (post-mint handoff target) ──────
-//
-// Route: #/account/agent/:slug/integrate. Auth-gated.
-//
-// This is where a freshly-minted agent lands after [ open integrate guide → ]
-// in RuntimeKeyMintModal. Four panes behind a worded rail, so an integrator
-// who came for one of them does not scroll past the other three:
-//   · prompt  — the personalized runbook. When we arrived with a fresh mint
-//               the plaintext runtime key is baked into it (once, gone on
-//               refresh), so this is the pane the page opens on.
-//   · code    — TS / Python / curl snippets against the gateway.
-//   · files   — /v1/skill.md, the agent's ERC-8004 card, the OpenAPI spec.
-//   · manage  — public profile, runtime keys, controller wallet.
-//
-// Every pane stays MOUNTED and inactive ones are hidden, not unmounted: the
-// prompt fetch is what carries the one-shot key into view, and remounting it
-// on every rail click would re-request it and flash a loading line over the
-// one thing the reader came here to copy.
-//
-// SessionStorage handoff:
-//   RuntimeKeyMintModal stashes the secret in
-//   sessionStorage[`murmur_just_minted:${slug}`] before navigating here.
-//   consumeJustMinted reads + clears the entry; the secret survives one
-//   render in component state and then is gone. Rail selection is LOCAL
-//   state, never a route — a hash change here would remount the page and
-//   the key is already out of sessionStorage by then.
+// Route: #/account/agent/:slug/integrate. Panes: prompt, code, files, manage.
+// The one-shot runtime key arrives via sessionStorage[`murmur_just_minted:${slug}`],
+// cleared on read. So panes stay mounted (inactive ones hidden) and the rail is
+// local state, not a route: a remount or hash change would lose the key.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "../api.js";
@@ -39,16 +18,10 @@ import { connectionAt, unknownConnection } from "../lib/runtime-key-connection.j
 import { RuntimeKeyConnectionStatus } from "../components/account/RuntimeKeyConnectionStatus.js";
 
 const SESSION_KEY_PREFIX = "murmur_just_minted:";
-/** Handoff secrets older than this are treated as stale — see header comment. */
+/** Handoff secrets older than this are treated as stale. */
 const HANDOFF_TTL_MS = 5 * 60 * 1000;
 
-/**
- * Just-minted envelope. `source` discriminates between live runtime-key mints
- * (`"runtime"`) and the retired API-key path (`"api-key"`); IntegratePage
- * switches its copy + snippet-substitution behavior based on which one.
- * `runtime_key_id` + `runtime_key_prefix` let the next page show the same
- * key identifiers the operator will see in the runtime-keys management UI.
- */
+/** Just-minted envelope. `source` tells a live runtime-key mint from the retired API-key path. */
 interface JustMintedEnvelope {
   secret: string;
   expires_at: number;
@@ -61,14 +34,8 @@ interface JustMintedEnvelope {
 }
 
 /**
- * Read + immediately clear the handoff envelope for a slug. Returns null
- * when the entry is missing, malformed, or past its expiry. Clearing on
- * read is intentional — refreshing the page should not re-reveal the key.
- *
- * Returns the full envelope, `expires_at` included, so the
- * caller can schedule an expiry-driven clear. Earlier this only returned
- * the secret string, so state held the key past `expires_at` if the tab
- * was left idle.
+ * Read and clear the handoff envelope, so a refresh never re-reveals the key.
+ * Null when missing, malformed, or expired.
  */
 function consumeJustMinted(slug: string): JustMintedEnvelope | null {
   if (typeof window === "undefined") return null;
@@ -123,10 +90,8 @@ export function IntegratePage({ slug }: IntegratePageProps) {
   const account = useAccount();
   // Local, not routed. See the header note on why a hash tab would be wrong.
   const [section, setSection] = useState<IntegrateSection>("prompt");
-  // Consume the handoff exactly once. useState initializer is the single
-  // safe place to do this; a useEffect would either re-fire under
-  // StrictMode (double consume) or land too late (snippet renders with
-  // env-ref, then re-renders with the key — flash of stale content).
+  // Consume the handoff once, in the initializer: an effect would double-consume
+  // under StrictMode or flash stale content first.
   const [envelope, setEnvelope] = useState<JustMintedEnvelope | null>(() =>
     consumeJustMinted(slug),
   );
@@ -140,10 +105,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     clockTick: runtimeConnectionClockTick,
   } = useRuntimeKeyConnection(slug, trackedRuntimeKeyId);
 
-  // The handoff envelope carries `expires_at`; schedule a
-  // setTimeout to null out the secret when that wall-clock moment arrives.
-  // Earlier we only checked expiry at the initial sessionStorage read, so
-  // an idle tab past the TTL kept the secret visible until manual refresh.
+  // Drop the secret when the envelope's `expires_at` passes.
   useEffect(() => {
     if (envelope === null) return;
     const remaining = envelope.expires_at - Date.now();
@@ -155,9 +117,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     return () => clearTimeout(t);
   }, [envelope]);
 
-  // Resolve the matching agent row from the cached account list so snippets
-  // can display the canonical agent_id when needed by tooling around the
-  // sealed Fhenix flow.
+  // This slug's row from the cached account list.
   const agent = useMemo(
     () => account.agents.find((a) => a.display_slug === slug),
     [account.agents, slug],
@@ -184,9 +144,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
     return <LoadingShell slug={slug} />;
   }
 
-  // `envelope.source` distinguishes the live runtime-key path from the
-  // retired API-key path. Old call sites that didn't set `source` default
-  // to "runtime" in stashJustMinted, but be defensive at the read site too.
+  // A missing `source` means "runtime".
   const envSource = envelope?.source ?? "runtime";
   const arrivedWithFreshRuntimeKey = envelope !== null && envSource === "runtime";
   const arrivedWithRetiredApiKey = envelope !== null && envSource === "api-key";
@@ -231,16 +189,12 @@ export function IntegratePage({ slug }: IntegratePageProps) {
 
       <main className="flex-1 px-3 py-4 flex flex-col gap-3 ck-page">
         <header>
-          {/* Page title, so it has to out-rank the ck-title panel headings
-              below it (18px). 21px is the shipped page-h1 size — the same one
-              MarketDetailPage's market-question h1 carries — not a new tier:
-              t-display-sm would swap the font to Doto, which inside .mmr-shell
-              is reserved for the /install rail numerals alone. */}
+          {/* 21px page-h1, as on MarketDetailPage; t-display-sm would switch to
+              Doto, reserved for the /install rail numerals. */}
           <h1 className="ck-pos text-[21px] font-bold mb-1">
             integrate · {slug}
           </h1>
-          {/* One line each. The detail these used to carry rides in the
-              title= of the control it describes, next to the click. */}
+          {/* One line each; detail lives in the controls' title=. */}
           {promptCarriesKey && (
             <p className="ck-pos text-[12px] leading-relaxed max-w-[60ch]">
               Your runtime key is in the prompt.{" "}
@@ -289,9 +243,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           )}
         </header>
 
-        {/* Rail + panes — local state, not a route. Four jump targets so the
-            reader lands on the one they came for instead of scrolling past
-            the other three. */}
+        {/* Rail + panes: local state, not a route. */}
         <div className="ck-sidetabs ck-sidetabs--wide">
           <div
             className="ck-sidetab-rail"
@@ -370,9 +322,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                 </div>
                 <ul className="divide-y divide-[var(--color-border)]">
                   <li>
-                    {/* download, not navigate: the raw file rendering in a tab is
-                        a dead end for a reader — this is a file you save and feed
-                        to an agent. */}
+                    {/* download, not navigate: it's a file to feed an agent. */}
                     <a
                       href={`${API_BASE}/v1/skill.md`}
                       download="murmur-skill.md"
@@ -483,10 +433,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
   );
 }
 
-/**
- * One rail cell. A button, not a link: the selected pane is component state,
- * so there is no URL to point at (see the header note on why).
- */
+/** One rail cell. A button, not a link: the selected pane is component state. */
 function RailTab({
   id,
   current,
@@ -536,17 +483,7 @@ function Pane({
   return <div className={active ? "flex flex-col gap-3" : "hidden"}>{children}</div>;
 }
 
-/**
- * Public helper — modules that want to stash the just-minted secret for
- * IntegratePage to pick up. Kept here (rather than ad-hoc inline in the
- * modal) so the storage shape is owned by one file.
- *
- * The extended envelope carries `runtime_key_id`/`runtime_key_prefix`/
- * `minted_at` so IntegratePage can show the same identifiers the
- * operator will later see in the runtime-keys management UI, and a
- * `source` discriminator so it can switch its copy between the live
- * runtime-key path and the retired API-key warning path.
- */
+/** Stash a just-minted secret for IntegratePage; this file owns the storage shape. */
 export interface StashJustMintedInput {
   secret: string;
   /** Defaults to "runtime". Pass "api-key" only for the retired flow. */
@@ -580,9 +517,7 @@ export function stashJustMinted(
       JSON.stringify(env),
     );
   } catch {
-    // Sessionstorage write can fail (private mode, quota). The page
-    // gracefully degrades to the env-var path — log at debug so we
-    // notice in dev but don't surface an error toast.
+    // Write can fail (private mode, quota); the page falls back to the env-var path.
     if (typeof console !== "undefined") {
       console.debug("[integrate] could not stash just-minted secret");
     }
@@ -590,11 +525,8 @@ export function stashJustMinted(
 }
 
 /**
- * Agent-prompt panel — the personalized, operate-only runbook the agent's
- * LLM reads. Same `buildAgentPrompt` helper the RuntimeKeyMintModal uses, so
- * the modal and this page render the identical document. When we arrived with
- * a fresh runtime key the plaintext is baked into the prompt (one-time, gone
- * on refresh); otherwise the helper injects the mint-it placeholder.
+ * The runbook the agent's LLM reads, from the same `buildAgentPrompt` as
+ * RuntimeKeyMintModal. A fresh runtime key is baked in; otherwise a placeholder.
  */
 function AgentPromptPanel({
   slug,
@@ -665,8 +597,7 @@ function AgentPromptPanel({
               The clipboard is blocked. Select the text and press ⌘C or Ctrl-C.
             </span>
           )}
-          {/* The one-shot warning the header used to spell out in prose now
-              sits on the control that acts on it. */}
+          {/* The one-shot warning lives in the copy button's title. */}
           <button
             type="button"
             onClick={() => void doCopy()}

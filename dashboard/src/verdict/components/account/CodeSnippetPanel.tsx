@@ -1,35 +1,6 @@
 // ─── CodeSnippetPanel — tabbed multi-language snippet renderer ─────────────
-//
-// Three use sites planned (V2 §7 onboarding research):
-//   1. `IntegratePage` — reached via the [ integrate ] button on the
-//      per-agent settings shell. Shows the canonical Runtime Key Gateway
-//      path. Runtime Key plaintext is only shown by the runtime-key mint
-//      flow; snippets use env-var placeholders here.
-//   2. `LaunchPage` — public install track. The user is NOT
-//      authenticated, so the panel always renders the env-var fallback
-//      for MURMUR_RUNTIME_KEY.
-//   3. `AgentProfilePage` — public profile shows env-var-only
-//      snippets keyed to the agent's id so visitors who own that agent
-//      know exactly what to wire up.
-//
-// Design idiom:
-//   · Top strip = three bracketed tab buttons + a [ COPY ] button. Brackets
-//     are the Nothing-design convention used across account panels.
-//   · Body = monospace <pre> with no line numbers. Line numbers in a
-//     three-language tab strip make the visual diff between languages
-//     louder than the content — judgement-call dropped per spec.
-//   · Copy uses the account-panel clipboard fallback: we only
-//     show "copied" after writeText resolves, otherwise surface a manual-
-//     copy hint.
-//
-// API base URL: read from import.meta.env.VITE_VERDICT_API_URL, falling
-// back to the page's own origin (which proxies /v1 in dev and same-host
-// deploys). Substituted consistently across all three languages so users
-// can paste any one and get a working call.
-//
-// The pasteable text itself lives in ./gateway-snippets.ts so a smoke can
-// assert on it without a DOM. Read that file's header for the auth and
-// sealing contract each snippet has to satisfy.
+// Snippet text lives in ./gateway-snippets.ts; see its header for the auth and
+// sealing contract.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -42,35 +13,16 @@ import {
 export type { SnippetLanguage };
 
 export interface CodeSnippetPanelProps {
-  /**
-   * Optional pass-through — IntegratePage uses this to display the agent
-   * crumb. Not used inside the panel itself today, exposed for callers
-   * that want a label header without recomputing.
-   */
+  /** Not read by the panel. */
   agentSlug?: string;
-  /**
-   * When provided, the snippets substitute the plaintext runtime key
-   * directly into each language's auth line (with a "// remove before
-   * committing" comment). When omitted, snippets render the env-var
-   * placeholder pattern (process.env.MURMUR_RUNTIME_KEY, etc.). This is
-   * the one-time post-mint path — the secret is gone on refresh.
-   */
+  /** Plaintext key to inline (post-mint only); omitted uses env-var placeholders. */
   runtimeKey?: string;
   /** Subset of languages to render. Defaults to all three. */
   languages?: SnippetLanguage[];
-  /** Which tab opens active. Defaults to "typescript". */
   initialLanguage?: SnippetLanguage;
-  /**
-   * When false, omits the tab + copy strip entirely. The body still
-   * renders the initialLanguage snippet — useful for embedding inside
-   * a parent that wants its own header. Defaults to true.
-   */
+  /** False hides the tab + copy strip; the body still renders. */
   showHeader?: boolean;
-  /**
-   * Override the outer container class. Defaults to "ck-frame", which
-   * is the mmr-shell idiom used by the rest of the account flow.
-   * Pass "" to skip the framing entirely.
-   */
+  /** Pass "" to skip the frame. */
   containerClass?: string;
 }
 
@@ -82,14 +34,7 @@ const TAB_LABEL: Record<SnippetLanguage, string> = {
   curl: "CURL",
 };
 
-/**
- * Read the dashboard's configured daemon base URL, falling back to the
- * page's own origin. The old "https://murmur.verdict" placeholder made
- * copied snippets fail on every unconfigured deploy; the origin fallback
- * matches the API client's relative-URL behavior (dev proxies /v1, and
- * same-host deploys serve it directly), so pasted snippets always target
- * a resolvable host.
- */
+/** Configured API base URL, else the page origin (dev proxies /v1). */
 function getApiBase(): string {
   const env = (import.meta.env.VITE_VERDICT_API_URL ?? "").toString().trim();
   if (env.length > 0) return env.replace(/\/$/, "");
@@ -117,18 +62,12 @@ export function CodeSnippetPanel({
     return out;
   }, [languages]);
 
-  // Initial active tab — clamp to the available subset so a stale
-  // `initialLanguage="curl"` with languages=["typescript"] doesn't render
-  // an empty body.
+  // Clamp the initial tab to the available subset.
   const [active, setActive] = useState<SnippetLanguage>(() =>
     langs.includes(initialLanguage) ? initialLanguage : langs[0]!,
   );
 
-  // Same as ApiKeyMintModal: only set "copied"
-  // feedback after writeText resolves; surface a manual-copy hint when
-  // the clipboard API is unavailable or rejected. False-positive copies
-  // on snippet panels are less catastrophic than on a one-time key, but
-  // the muscle memory matters — keep the UI honest.
+  // "copied" only after writeText resolves; otherwise a manual-copy hint.
   const [copied, setCopied] = useState(false);
   const [copyFallback, setCopyFallback] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -163,8 +102,7 @@ export function CodeSnippetPanel({
     }
   }, [body]);
 
-  // Reset the copy-feedback state when switching tabs so a stale
-  // "[COPIED]" badge from the previous tab doesn't lie about the new one.
+  // Reset copy feedback on tab switch.
   useEffect(() => {
     setCopied(false);
     setCopyFallback(false);

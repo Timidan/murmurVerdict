@@ -107,8 +107,7 @@ export function AdminGatewayPage() {
     setError(null);
     try {
       await verdictApi.adminGatewayTick(token);
-      // Reload through load(): the tick's own snapshot is unfiltered, so
-      // installing it dropped the selected status filter without saying so.
+      // Reload via load(): the tick's own snapshot ignores the status filter.
       await load(token);
     } catch (e) {
       setError((e as Error).message);
@@ -613,9 +612,7 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
               <span className={`ck-mono ${revealStatusClass(row.reveal_status, row.overdue_grace)}`}>
                 {row.overdue_grace ? "overdue" : row.reveal_status}
               </span>
-              {/* title carries the FULL id — the cell itself already shortens
-                  a slug-less row to 8 chars, so the display expression is not
-                  the recoverable value. */}
+              {/* title carries the full id; the cell shortens slug-less rows. */}
               <span
                 className="ck-mono ck-dim truncate"
                 title={row.agent_slug ?? row.agent_id}
@@ -1075,8 +1072,7 @@ function shortHex(value: string | null | undefined): string {
   return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
-/** Local instant, zone named, year and seconds left to the wire. The old ISO
- *  slice printed a UTC stamp with no zone at all. */
+/** Local instant, zone named, year and seconds left to the wire. */
 function shortDate(value: string): string {
   return formatLocalDateTimeShort(value) ?? value;
 }

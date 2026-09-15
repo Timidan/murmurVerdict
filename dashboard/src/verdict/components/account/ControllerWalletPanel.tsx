@@ -1,16 +1,7 @@
 // ─── ControllerWalletPanel ────────────────────────────────────────────────
-//
-// Renders the per-agent Controller Wallet binding panel inside the agent
-// settings tab strip. Three states:
-//   · UNBOUND       → user has no `controller_wallet` yet; offer Bind
-//   · BOUND         → show address + provider + last-attested + due-at
-//   · OVERDUE       → bound but `reattestation_overdue=true`; offer Re-attest
-//
-// The signing pathway uses Privy's `useSignMessage` against whichever wallet
-// is active for the authenticated user (embedded by default). The daemon's
-// challenge route returns the exact `message` text the user must personal_sign;
-// the dashboard never composes the message itself. That keeps the binding
-// invariants entirely server-controlled.
+// Per-agent controller wallet binding: unbound, bound, or overdue for
+// re-attestation. The daemon's challenge supplies the exact message to sign;
+// the dashboard never composes it.
 
 import { useEffect, useState, type ReactNode } from "react";
 import { usePrivy, useSignMessage, useWallets, useCreateWallet } from "@privy-io/react-auth";
@@ -21,23 +12,10 @@ import { shortId } from "../../lib/display-format.js";
 import { InlineError } from "../compact/InlineError.js";
 import { TimeAgo } from "../compact/TimeAgo.js";
 
-// The daemon enforces that the Controller Wallet binding's chain_id equals
-// the Fhenix event chain (src/verdict/fhenix-common.ts:73-99). The previous
-// hard-pin to Base mainnet would silently break any local or Base-Sepolia
-// stack. We read the chain from /v1/meta so the dashboard tracks whatever
-// chain the daemon is actually running on.
-
 interface ControllerWalletPanelProps {
   slug: string;
   agent: AccountAgent | null;
-  /**
-   * Optional callback fired after a successful bind or re-attest. Since
-   * 3f41ee1 lifted useAccount into a shared React Context (mounted by
-   * AccountShell), this prop is no longer load-bearing — a refresh in
-   * any panel inside the provider already propagates to its siblings.
-   * The prop is kept for backward compatibility and to support callers
-   * that mount this panel outside an AccountProvider.
-   */
+  /** Fired after a successful bind or re-attest. */
   onAgentChanged?: () => Promise<void> | void;
 }
 
@@ -153,9 +131,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
         provider: wallet.provider,
       });
       setBusy("signing");
-      // Pin the signer to the wallet we're binding — without this, Privy's
-      // useSignMessage defaults to embedded HD index 0, which would silently
-      // sign with the wrong key if the user has multiple embedded wallets.
+      // Pin the signer; Privy otherwise defaults to embedded HD index 0.
       const { signature } = await signMessage(
         { message: challenge.message },
         { address: wallet.address },
@@ -170,21 +146,12 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
         signature,
       });
     } catch (e) {
-      // Frame the raw daemon detail in plain words — operators are devs,
-      // the detail is useful, but the failure should read as a sentence.
       setError(`We could not bind the wallet — ${(e as Error)?.message ?? "unknown error"}`);
       setBusy("idle");
       return;
     }
     setBusy("idle");
-    // Bind succeeded — invalidate the parent's account hook so sibling
-    // panels (RuntimeKeysPanel) see the new binding. Child-instance
-    // refresh dropped (the panel reads `cw` from the parent `agent`
-    // prop, so only the parent fetch matters). useAccount.refreshAgents
-    // catches internally today, so the defensive try below is unlikely
-    // to fire — kept so a future change to the hook's error posture
-    // surfaces here instead of as an unhandled rejection. InlineError
-    // adds the `[error] ` prefix, so the message stays plain.
+    // Refresh the parent so sibling panels see the new binding.
     try {
       await onAgentChanged?.();
     } catch (e) {
@@ -234,8 +201,6 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
       return;
     }
     setBusy("idle");
-    // Re-attest succeeded — see bind() comment for the defensive catch
-    // rationale. InlineError adds the `[error] ` prefix.
     try {
       await onAgentChanged?.();
     } catch (e) {
@@ -268,10 +233,6 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
             onClick={bind}
             disabled={busy !== "idle" || !ready}
           >
-            {/* The glyph names the OBJECT this button acts on, which doesn't
-                change while the signature is in flight — so it sits outside
-                the busy branch and only the label swaps. Hoisted out of the
-                ternary, the mark also stops flickering on every phase. */}
             <Ik name="controller-wallet" />
             {busy === "idle" ? "bind a controller wallet" : <BusyLabel busy={busy} />}
           </button>
@@ -317,11 +278,6 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
           )}
           {state === "bound" && (
             <>
-              {/* Re-signing early was possible in the API and impossible in the
-                  UI: the button only existed once the wallet was already
-                  overdue, which is the one moment an owner would rather not be
-                  discovering it. Same challenge + sign flow as the overdue
-                  path; only the framing changes. */}
               <p className="ck-dim text-[12px]">
                 You can sign again at any time. It resets the clock and keeps
                 your runtime keys minting without a gap.
@@ -368,11 +324,7 @@ function busyLabel(b: BusyState): string {
   return "…";
 }
 
-/**
- * The busy branch shared by all three signing CTAs — text only. Each CTA keeps
- * its own object glyph mounted outside this branch, so the mark never changes
- * mid-flight and the phase label is the only thing that moves.
- */
+/** Busy label shared by the signing CTAs; each keeps its glyph outside it. */
 function BusyLabel({ busy }: { busy: BusyState }) {
   return <>{busyLabel(busy)}</>;
 }

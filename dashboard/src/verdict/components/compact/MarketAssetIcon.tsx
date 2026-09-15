@@ -1,25 +1,9 @@
 import { useEffect, useState } from "react";
 
 /**
- * The venue's own market artwork, at 16px, with a fallback that cannot fail.
- *
- * DECORATIVE BY CONTRACT. Every place this renders, the asset's name is the
- * text immediately beside it, so the image carries no information of its own:
- * `alt=""` + `aria-hidden` keeps it out of the accessible name instead of
- * making a screen reader read "BTC BTC".
- *
- * Three failure modes, all handled without layout shift, because the box is a
- * fixed 16×16 in every branch:
- *
- *   · no `icon_url` at all — every market registered before the field existed,
- *     and it is deliberately never backfilled. Renders the glyph directly, no
- *     network request attempted.
- *   · the URL 404s or the host is down — `onError` swaps to the glyph.
- *   · the URL changes between renders — the failed flag resets, so a market
- *     that gains working artwork is not stuck on the fallback.
- *
- * `referrerPolicy="no-referrer"` because these are third-party S3 objects: the
- * venue has no business learning which murmur page a reader is on.
+ * The venue's market artwork at a fixed 16px, falling back to a letter glyph
+ * when there is no url or it fails to load. Decorative: the asset name always
+ * sits beside it. no-referrer because these are third-party objects.
  */
 export function MarketAssetIcon({
   iconUrl,

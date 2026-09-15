@@ -1,11 +1,7 @@
-// dashboard/src/verdict/ui/theme.ts
-//
 // Theme resolution + application primitives.
-//
-// IMPORTANT: the inline bootstrap script in dashboard/index.html duplicates
-// the resolution + apply logic verbatim because it must run before the JS
-// bundle loads. If you change the resolution order or theme-color hex pair
-// here, you MUST update the bootstrap script too.
+// The inline bootstrap script in dashboard/index.html duplicates this logic (it
+// runs before the bundle). Change the resolution order or theme-color hex pair
+// here and you must update it too.
 
 export type Theme = "dark" | "paper";
 
@@ -31,14 +27,7 @@ export const STORAGE_KEY = "murmur.theme";
 export const THEME_COLOR_PAPER = "#FCF9F2";
 export const THEME_COLOR_DARK = "#000000";
 
-/**
- * Apply a resolved theme to the document: set/remove `data-theme`,
- * update `meta-theme-color`, persist to `localStorage`. Side-effecting —
- * call from places that have already resolved the theme.
- *
- * Mirrored (but not imported) by the inline bootstrap script in
- * dashboard/index.html for first-paint application.
- */
+/** Apply a resolved theme: `data-theme`, theme-color meta, favicons, and localStorage. */
 export function applyTheme(theme: Theme): void {
   if (theme === "paper") {
     document.documentElement.setAttribute("data-theme", "paper");

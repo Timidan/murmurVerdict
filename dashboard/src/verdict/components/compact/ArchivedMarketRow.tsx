@@ -8,17 +8,9 @@ import {
 import { MarketAssetIcon } from "./MarketAssetIcon.js";
 
 /**
- * One archived market, as a link.
- *
- * Shared by the resolved board and the archive search so the two cannot drift:
- * both are lists of finished markets, and a reader who searches for what they
- * just watched settle should recognise the row.
- *
- * `resolution` is optional and usually absent. The venue ticker keeps
- * resolutions for a short lookback after a window ends, so the most recent
- * settlements carry a winner and older ones do not. An absent winner renders
- * as nothing rather than as "void" — we do not know, and saying we do would be
- * a claim about someone's money.
+ * One archived market as a link; shared by the resolved board and archive
+ * search. `resolution` is usually absent (the venue keeps it only briefly);
+ * absent renders nothing, never "void".
  */
 export function ArchivedMarketLinkRow({
   row,
@@ -61,10 +53,7 @@ export function ArchivedMarketLinkRow({
   );
 }
 
-/**
- * The winner, as glyph AND word. Colour is reinforcement, never the signal —
- * see the same rule in MarketWindowGroup's ResolvedOutcome.
- */
+/** The winner as glyph and word; colour only reinforces. */
 function WinnerTag({ resolution }: { resolution: WireVenueResolutionRow }) {
   const winner = resolution.winning_label;
   if (winner === null) {
