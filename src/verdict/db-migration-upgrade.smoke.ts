@@ -39,6 +39,8 @@ const path = join(tmp, "verdict.db");
   fresh.exec("DROP TABLE entitlement_payment_bindings");
   fresh.exec("ALTER TABLE agent_runtime_keys DROP COLUMN last_heartbeat_at");
   fresh.exec("ALTER TABLE agents DROP COLUMN deleted_at");
+  fresh.exec("ALTER TABLE agent_runtime_keys DROP COLUMN last_contact_at");
+  fresh.exec("ALTER TABLE agent_runtime_keys DROP COLUMN runtime_mode");
   fresh.prepare("UPDATE schema_meta SET value='64' WHERE key='schema_version'").run();
   fresh.close();
 }
@@ -88,6 +90,9 @@ const path = join(tmp, "verdict.db");
     runtimeKeyCols.some((c) => c.name === "last_heartbeat_at"),
     "an existing v64 database must gain runtime key heartbeat presence (077)",
   );
+
+  assert.ok(runtimeKeyCols.some((c) => c.name === "last_contact_at"));
+  assert.ok(runtimeKeyCols.some((c) => c.name === "runtime_mode"));
 
   const discoveryCols = upgraded
     .prepare("PRAGMA table_info(polymarket_discovery_state)")

@@ -93,7 +93,8 @@ try {
     assert.equal(disabledRes.status, 200);
     const disabledPrompt = await disabledRes.text();
     assert.ok(disabledPrompt.includes("MURMUR_OWNED_SEALING_ENABLED=false"));
-    assert.ok(!disabledPrompt.includes("```js"));
+    assert.ok(disabledPrompt.includes('signedFetch("/v2/gateway/heartbeat"'));
+    assert.ok(!disabledPrompt.includes('signedFetch("/v2/gateway/calls/seal"'));
   } finally {
     await closeServer(disabledServer);
   }

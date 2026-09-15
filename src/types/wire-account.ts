@@ -138,12 +138,16 @@ export interface WireRuntimeKeyRow {
 export type WireRuntimeKeyConnectionStatus =
   | "never_connected"
   | "connected"
-  | "stale"
+  | "idle"
+  | "heartbeat_overdue"
   | "authorization_required";
 
 export interface WireRuntimeKeyConnection {
   status: WireRuntimeKeyConnectionStatus;
   last_heartbeat_at: string | null;
+  last_contact_at: string | null;
+  runtime_mode: "interactive" | "continuous";
+  authorization_until: string | null;
   fresh_until: string | null;
   reason: string | null;
 }

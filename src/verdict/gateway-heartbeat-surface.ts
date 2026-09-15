@@ -19,7 +19,10 @@ import {
 import type { GatewaySubmissionRequest } from "./gateway-submission-surface.js";
 import { agentCredentialsDisabledAt } from "./auth/accounts.js";
 
-const HeartbeatBodySchema = z.object({ agent_slug: AgentSlugSchema }).strict();
+const HeartbeatBodySchema = z.object({
+  agent_slug: AgentSlugSchema,
+  runtime_mode: z.enum(["interactive", "continuous"]).default("interactive"),
+}).strict();
 
 export interface GatewayHeartbeatSurfaceDeps {
   db: Database.Database;
@@ -41,7 +44,7 @@ export interface GatewayHeartbeatResponse {
     runtime_key_id: string;
     server_time: string;
     heartbeat_interval_seconds: 60;
-    stale_after_seconds: 180;
+    stale_after_seconds: 300;
   };
 }
 
@@ -54,7 +57,7 @@ export async function gatewayHeartbeatResponse(input: {
   const parsed = HeartbeatBodySchema.safeParse(input.bodyJson);
   if (!parsed.success) {
     throw new VerdictError(
-      "heartbeat body must be exactly { agent_slug }",
+      "heartbeat requires agent_slug and optional runtime_mode (interactive or continuous)",
       ERROR_CODES.schema_invalid,
       400,
       { issues: parsed.error.format() },
@@ -111,6 +114,7 @@ export async function gatewayHeartbeatResponse(input: {
       account_id: identity.account_id,
       agent_id: identity.agent_id,
       observedAt,
+      runtime_mode: parsed.data.runtime_mode,
     });
   }).immediate();
   if (!recorded) {

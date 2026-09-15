@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 78 as const;
+export const LATEST_DB_MIGRATION_VERSION = 79 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1545,6 +1545,17 @@ export function applyMigrations(db: Database.Database): void {
       set.run("schema_version", "78");
     }).immediate();
     v = 78;
+  }
+  if (v < 79) {
+    db.transaction(() => {
+      applyAlterTableAddColumn(db, "agent_runtime_keys", "last_contact_at",
+        "ALTER TABLE agent_runtime_keys ADD COLUMN last_contact_at TEXT;");
+      applyAlterTableAddColumn(db, "agent_runtime_keys", "runtime_mode",
+        "ALTER TABLE agent_runtime_keys ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'interactive' CHECK (runtime_mode IN ('interactive', 'continuous'));");
+      db.exec("UPDATE agent_runtime_keys SET last_contact_at = last_heartbeat_at WHERE last_contact_at IS NULL;");
+      set.run("schema_version", "79");
+    }).immediate();
+    v = 79;
   }
 }
 

@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createHash, webcrypto } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -230,6 +230,10 @@ const submittedBodies: Buffer[] = [];
 let verifiedRequests = 0;
 let terminalSubmission = false;
 let wrongPong = false;
+let dropNextSubmission = false;
+let droppedSubmission: Buffer | undefined;
+let droppedSubmissionAttempts = 0;
+let returnCompletedDuplicate = false;
 
 const server = createServer(async (req, res) => {
   const chunks: Buffer[] = [];
@@ -277,22 +281,38 @@ const server = createServer(async (req, res) => {
 
     res.setHeader("Content-Type", "application/json");
     if (req.method === "POST" && pathAndQuery === "/v2/gateway/heartbeat") {
-      assert.deepEqual(JSON.parse(rawBody.toString()), { agent_slug: "alpha-bot" });
+      const heartbeat = JSON.parse(rawBody.toString());
+      assert.equal(heartbeat.agent_slug, "alpha-bot");
+      assert.ok(["interactive", "continuous"].includes(heartbeat.runtime_mode));
       res.end(JSON.stringify({
         pong: true,
         nonce: wrongPong ? "wrong-nonce" : req.headers[POP_HEADER_NONCE.toLowerCase()],
         agent_slug: "alpha-bot", runtime_key_id: runtimeKeyId,
         server_time: new Date().toISOString(),
-        heartbeat_interval_seconds: 60, stale_after_seconds: 180,
+        heartbeat_interval_seconds: 60, stale_after_seconds: 300,
       }));
       return;
     }
     if (req.method === "POST" && pathAndQuery === "/v2/gateway/calls/seal") {
       submittedBodies.push(rawBody);
+      if (dropNextSubmission) {
+        dropNextSubmission = false;
+        droppedSubmission = Buffer.from(rawBody);
+        droppedSubmissionAttempts++;
+        returnCompletedDuplicate = true;
+        req.socket.destroy();
+        return;
+      }
+      if (droppedSubmission) {
+        assert.deepEqual(rawBody, droppedSubmission);
+        droppedSubmission = undefined;
+      }
       res.statusCode = 202;
       res.end(JSON.stringify(terminalSubmission
         ? { attempt_id: "attempt-prompt-fail", status: "failed_terminal", error: "smoke failure" }
-        : { attempt_id: "attempt-prompt-smoke", status: "submitted" }));
+        : returnCompletedDuplicate
+          ? (returnCompletedDuplicate = false, { attempt_id: "", status: "accepted", call_id: "call-prompt-smoke" })
+          : { attempt_id: "attempt-prompt-smoke", status: "submitted" }));
       return;
     }
     if (req.method === "GET" && pathAndQuery === "/v2/gateway/attempts/attempt-prompt-smoke") {
@@ -333,33 +353,55 @@ async function run(): Promise<void> {
     const { code, stdout, stderr } = await runScript("submit.mjs");
     assert.equal(code, 0, stderr || stdout);
     assert.match(stdout, /call-prompt-smoke/);
-    assert.equal(verifiedRequests, 4, "check, submit heartbeat, submit and attempt read pass PoP");
+    assert.equal(verifiedRequests, 5, "check, continuous heartbeat, submit, attempt read and final interactive heartbeat pass PoP");
     assert.equal(submittedBodies.length, 1);
     const submitted = JSON.parse(submittedBodies[0]!.toString("utf8")) as {
       marketRef: { protocol: string; sourceId: string; configVersion: number };
       client_nonce: string;
+      verdict: { binary_index: number; confidence_bps: number };
     };
+    assert.ok(submitted.verdict.binary_index === 0 || submitted.verdict.binary_index === 1);
+    assert.ok(submitted.verdict.confidence_bps >= 5100 && submitted.verdict.confidence_bps <= 9500,
+      "the starter prediction must pass the contract's reveal bounds");
     assert.deepEqual(submitted.marketRef, {
       protocol: "polymarket-gamma",
       sourceId: "0x" + "ab".repeat(32),
       configVersion: 7,
     });
     assert.match(submitted.client_nonce, /^0x[0-9a-f]{64}$/);
+    assert.ok(!existsSync(join(workspaceTmp, ".murmur-pending-submission.json")));
+
+    dropNextSubmission = true;
+    const dropped = await runScript("submit.mjs");
+    assert.notEqual(dropped.code, 0, "a dropped submit response should leave a retry pending");
+    assert.equal(submittedBodies.length, 2);
+    const pendingFile = join(workspaceTmp, ".murmur-pending-submission.json");
+    assert.ok(existsSync(pendingFile), "the retry body must survive a dropped response");
+    assert.equal(statSync(pendingFile).mode & 0o777, 0o600);
+
+    const retried = await runScript("submit.mjs");
+    assert.equal(retried.code, 0, retried.stderr || retried.stdout);
+    assert.match(retried.stdout, /call-prompt-smoke/);
+    assert.equal(droppedSubmissionAttempts, 1, "the server received one initial submission");
+    assert.equal(returnCompletedDuplicate, false, "retry recovers the completed duplicate response");
+    assert.equal(submittedBodies.length, 3);
+    assert.deepEqual(submittedBodies[1], submittedBodies[2], "retry must preserve the complete body");
+    assert.ok(!existsSync(pendingFile), "a recovered call clears its pending body");
 
     wrongPong = true;
     const mismatched = await runScript("murmur.mjs");
     assert.notEqual(mismatched.code, 0);
     assert.ok(!mismatched.stdout.includes("Connected"), "wrong pong never prints success");
     assert.match(mismatched.stderr, /pong did not match/);
-    assert.equal(submittedBodies.length, 1);
+    assert.equal(submittedBodies.length, 3);
     wrongPong = false;
 
     terminalSubmission = true;
     const failed = await runScript("submit.mjs");
     assert.notEqual(failed.code, 0, "terminal submission should fail the runner");
     assert.match(failed.stderr + failed.stdout, /Submission failed:.*failed_terminal/s);
-    assert.equal(verifiedRequests, 7, "terminal submit and heartbeat also pass PoP verification");
-    process.stdout.write("  ok connection-only check, mismatched pong rejection, signed submit + observe\n");
+    assert.equal(verifiedRequests, 15, "all submitted requests pass PoP verification");
+    process.stdout.write("  ok connection check, durable dropped-submit retry, pong rejection, signed submit + observe\n");
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     db.close();

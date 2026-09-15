@@ -20,6 +20,8 @@ export interface RuntimeKeyRow {
   revoked_at: string | null;
   revoke_reason: string | null;
   last_heartbeat_at: string | null;
+  last_contact_at: string | null;
+  runtime_mode: "interactive" | "continuous";
 }
 
 export interface MintRuntimeKeyResult {
@@ -176,7 +178,7 @@ export function listRuntimeKeysForAccountAgent(
               policy_json, policy_hash, controller_wallet_address,
               controller_chain_id, authorization_nonce, authorization_message,
               authorization_signature, created_at, expires_at, revoked_at,
-              revoke_reason, last_heartbeat_at
+              revoke_reason, last_heartbeat_at, last_contact_at, runtime_mode
        FROM agent_runtime_keys
        WHERE account_id = ? AND agent_id = ?
        ORDER BY created_at DESC`
@@ -184,7 +186,7 @@ export function listRuntimeKeysForAccountAgent(
               policy_json, policy_hash, controller_wallet_address,
               controller_chain_id, authorization_nonce, authorization_message,
               authorization_signature, created_at, expires_at, revoked_at,
-              revoke_reason, last_heartbeat_at
+              revoke_reason, last_heartbeat_at, last_contact_at, runtime_mode
        FROM agent_runtime_keys
        WHERE account_id = ? AND agent_id = ? AND revoked_at IS NULL
        ORDER BY created_at DESC`;
@@ -199,14 +201,17 @@ export function recordRuntimeKeyHeartbeat(
     account_id: string;
     agent_id: string;
     observedAt: Date;
+    runtime_mode: RuntimeKeyRow["runtime_mode"];
   },
 ): boolean {
   const result = db.prepare(
     `UPDATE agent_runtime_keys
-        SET last_heartbeat_at = ?
+        SET last_heartbeat_at = ?, last_contact_at = ?, runtime_mode = ?
       WHERE runtime_key_id = ? AND account_id = ? AND agent_id = ?`,
   ).run(
     stripIso(input.observedAt),
+    stripIso(input.observedAt),
+    input.runtime_mode,
     input.runtime_key_id,
     input.account_id,
     input.agent_id,

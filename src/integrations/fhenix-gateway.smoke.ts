@@ -551,6 +551,12 @@ try {
   let attemptId = "";
   let feedAttemptId = "";
 
+  await check("murmur-owned sealing rejects confidence that would reveal invalid", () => {
+    assert.equal(MurmurOwnedSealedCallBodySchema.safeParse({
+      ...ownedBody, verdict: { binary_index: 1, confidence_bps: 5000 },
+    }).success, false);
+  });
+
   await check("murmur-owned sealing request rejects provider-created ciphertext", () => {
     const parsed = MurmurOwnedSealedCallBodySchema.safeParse({
       marketRef: {

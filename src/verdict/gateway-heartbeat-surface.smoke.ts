@@ -10,6 +10,7 @@ import { bindControllerWallet, getOrCreateAccount, linkAgentToAccount, mintRunti
 import { POP_HEADER_NONCE, POP_HEADER_SIGNATURE, POP_HEADER_TIMESTAMP } from "./auth/runtime-key-pop.js";
 import { openDb } from "./db.js";
 import { agentsRepo } from "./repos/agents-repo.js";
+import { dispatchAuth } from "./auth/dispatcher.js";
 import { gatewayHeartbeatResponse } from "./gateway-heartbeat-surface.js";
 
 process.stdout.write("murmur gateway heartbeat surface smoke\n");
@@ -63,14 +64,14 @@ try {
     createdAt: clock,
   });
 
-  const request = (agent_slug: string) => {
-    const body = JSON.stringify({ agent_slug });
+  const request = (agent_slug: string, runtime_mode = "interactive", path = "/v2/gateway/heartbeat") => {
+    const body = JSON.stringify({ agent_slug, runtime_mode });
     const timestamp = Math.floor(clock.getTime() / 1000);
     const nonce = randomUUID().replace(/-/g, "");
     const bodyHash = createHash("sha256").update(body).digest("hex");
     const signingString = [
       "murmur-rk-v2", "murmur-gateway", key.runtime_key_id, String(timestamp), nonce,
-      "POST", "/v2/gateway/heartbeat", bodyHash,
+      "POST", path, bodyHash,
     ].join("\n");
     const signature = edSign(null, Buffer.from(signingString), privateKey).toString("hex");
     const headers = new Map(Object.entries({
@@ -84,7 +85,7 @@ try {
       req: {
         header: (name: string) => headers.get(name.toLowerCase()),
         method: "POST",
-        originalUrl: "/v2/gateway/heartbeat",
+        originalUrl: path,
         murmurRawBodySha256: bodyHash,
       },
     };
@@ -101,7 +102,7 @@ try {
       runtime_key_id: key.runtime_key_id,
       server_time: "2026-09-04T12:00:00Z",
       heartbeat_interval_seconds: 60,
-      stale_after_seconds: 180,
+      stale_after_seconds: 300,
     },
   });
   let listing = listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "heartbeat-smoke", operationInstant: clock });
@@ -144,7 +145,29 @@ try {
   );
   clock = new Date("2026-09-04T12:03:01Z");
   listing = listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "heartbeat-smoke", operationInstant: clock });
-  assert.equal(listing.body.keys[0]?.connection.status, "stale");
+  assert.equal(listing.body.connection.status, "connected", "three minutes no longer marks contact idle");
+  clock = new Date("2026-09-04T12:05:01Z");
+  listing = listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "heartbeat-smoke", operationInstant: clock });
+  assert.equal(listing.body.connection.status, "idle");
+  assert.ok(listing.body.connection.last_heartbeat_at, "idle preserves the verified binding");
+  await dispatchAuth(request("heartbeat-smoke", "interactive", "/v2/gateway/calls/seal").req, { db, now, allowRuntimeKey: true });
+  listing = listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "heartbeat-smoke", operationInstant: clock });
+  assert.equal(listing.body.connection.status, "connected", "signed API activity refreshes contact");
+  assert.equal(listing.body.connection.last_heartbeat_at, "2026-09-04T12:00:00Z", "contact does not invent another binding check");
+  const invalid = request("heartbeat-smoke");
+  clock = new Date("2026-09-04T12:05:02Z");
+  await assert.rejects(() => dispatchAuth({ ...invalid.req,
+    header: (name) => name === POP_HEADER_SIGNATURE ? "00".repeat(64) : invalid.req.header(name),
+  }, { db, now, allowRuntimeKey: true }));
+  listing = listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "heartbeat-smoke", operationInstant: clock });
+  assert.equal(listing.body.connection.last_contact_at, "2026-09-04T12:05:01Z", "invalid signatures cannot refresh contact");
+  await gatewayHeartbeatResponse({ ...request("heartbeat-smoke", "continuous"), deps: { db, now } });
+  clock = new Date("2026-09-04T12:10:03Z");
+  listing = listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "heartbeat-smoke", operationInstant: clock });
+  assert.equal(listing.body.connection.status, "heartbeat_overdue");
+  await gatewayHeartbeatResponse({ ...request("heartbeat-smoke"), deps: { db, now } });
+  listing = listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "heartbeat-smoke", operationInstant: clock });
+  assert.equal(listing.body.connection.runtime_mode, "interactive", "a completed runtime returns to interactive mode");
   db.prepare("UPDATE agent_runtime_keys SET revoked_at=? WHERE runtime_key_id=?")
     .run(clock.toISOString(), key.runtime_key_id);
   listing = listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "heartbeat-smoke", operationInstant: clock });

@@ -4,15 +4,13 @@ import type {
   CofheInput,
   GatewaySealedCallBody,
 } from "./fhenix-gateway-schemas.js";
-import { Hex32Schema } from "../verdict/fhenix-common.js";
+import { FhenixRevealBodySchema, Hex32Schema } from "../verdict/fhenix-common.js";
 import { CommitmentSchema } from "../verdict/markets-core.js";
 
-export const MurmurOwnedSealedVerdictSchema = z
-  .object({
-    binary_index: z.number().int().min(0).max(255),
-    confidence_bps: z.number().int().min(0).max(10_000),
-  })
-  .strict();
+export const MurmurOwnedSealedVerdictSchema = FhenixRevealBodySchema.pick({
+  binary_index: true,
+  confidence_bps: true,
+});
 
 export const MurmurOwnedSealedCallBodySchema = z
   .object({

@@ -282,6 +282,9 @@ export async function dispatchAuth(
           },
           now: verifiedAt,
         });
+        // Only a verified request signature is evidence of runtime contact.
+        deps.db.prepare("UPDATE agent_runtime_keys SET last_contact_at = ? WHERE runtime_key_id = ?")
+          .run(verifiedAt.toISOString().replace(/\.\d+Z$/, "Z"), verified.runtime_key_id);
       }
       const out: AuthIdentity = {
         tier: "casual",

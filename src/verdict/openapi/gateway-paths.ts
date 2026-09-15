@@ -47,7 +47,10 @@ export function gatewayOpenApiPaths(input: {
               schema: {
                 type: "object",
                 required: ["agent_slug"],
-                properties: { agent_slug: { type: "string" } },
+                properties: {
+                  agent_slug: { type: "string" },
+                  runtime_mode: { type: "string", enum: ["interactive", "continuous"], default: "interactive" },
+                },
                 additionalProperties: false,
               },
             },
@@ -55,7 +58,7 @@ export function gatewayOpenApiPaths(input: {
         },
         responses: {
           "200": {
-            description: "Verified pong with server time and 60s/180s cadence constants.",
+            description: "Verified pong with server time and 60s heartbeat interval and 300s contact grace period.",
             content: {
               "application/json": {
                 schema: {
@@ -76,7 +79,7 @@ export function gatewayOpenApiPaths(input: {
                     runtime_key_id: { type: "string", format: "uuid" },
                     server_time: { type: "string", format: "date-time" },
                     heartbeat_interval_seconds: { type: "integer", enum: [60] },
-                    stale_after_seconds: { type: "integer", enum: [180] },
+                    stale_after_seconds: { type: "integer", enum: [300] },
                   },
                   additionalProperties: false,
                 },
@@ -157,8 +160,8 @@ export function gatewayOpenApiPaths(input: {
                     type: "object",
                     required: ["binary_index", "confidence_bps"],
                     properties: {
-                      binary_index: { type: "integer", minimum: 0, maximum: 255 },
-                      confidence_bps: { type: "integer", minimum: 0, maximum: 10000 },
+                      binary_index: { type: "integer", minimum: 0, maximum: 1 },
+                      confidence_bps: { type: "integer", minimum: 5100, maximum: 9500 },
                     },
                     additionalProperties: false,
                   },
