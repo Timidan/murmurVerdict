@@ -1,26 +1,8 @@
 /**
- * Polymarket sync ticker — drives the per-conditionId poll cadence the
- * resolver depends on.
- *
- * Why a ticker (RESEARCH §4, §7):
- *   The resolver itself polls per-call when a Polymarket call ages past
- *   its `resolve_after`. But Polymarket markets resolve in hours-to-weeks,
- *   and Gamma's 5-min CDN cache makes per-tick re-fetches wasteful for
- *   markets that aren't near `endDate`. The sync ticker maintains the
- *   `external_market_sync_state` row so we can adapt cadence per market:
- *
- *     · pre-endDate-1h     → poll every 5 min   (cheap; we're waiting)
- *     · endDate ±4h window → poll every 60 s    (high probability of resolution)
- *     · post-endDate+4h    → poll every 5 min   (slipped; we're chasing)
- *
- *   The ticker also fires two operator alerts:
- *     · `MARKET_DISAPPEARED`     — 24 consecutive 404s on a known conditionId
- *     · `MARKET_NEVER_RESOLVED`  — still unresolved 30 days past endDate
- *
- * NEVER throws from the tick body — the daemon's ticker harness expects
- * the inner function to handle its own errors.
- *
- * Cite: RESEARCH_polymarket_gamma_adapter.md §4, §6, §7, §8.
+ * Polymarket sync ticker. Keeps `external_market_sync_state` so each market
+ * polls at a cadence set by its endDate (60s near it, 5 min otherwise), and
+ * raises MARKET_DISAPPEARED (24 consecutive 404s) and MARKET_NEVER_RESOLVED
+ * (30 days past endDate). The tick never throws.
  */
 
 import type Database from "better-sqlite3";
@@ -64,8 +46,7 @@ export interface SyncStateRow {
 export interface SyncTickerOpts {
   db: Database.Database;
   client?: PolymarketGammaClient;
-  /** Shared CLOB fallback client — register.ts wires the same instance the
-   *  resolver uses so caching/breaker state spans both pollers. */
+  /** Shared with the resolver so cache and breaker state span both. */
   clobClient?: PolymarketClobClient;
   /** Operation clock for poll scheduling and alert timestamps. */
   nowMs: () => number;
@@ -116,15 +97,8 @@ function pickPollIntervalMs(nowMs: number, endDateMs: number | null): number {
 }
 
 /**
- * Post-end Gamma-404 recovery read against the CLOB fallback surface.
- * Returns:
- *   - `'resolved'` — CLOB serves the market with a scoreable terminal state
- *     (same fail-closed mapping the resolver uses); the Gamma disappearance
- *     is EXPECTED micro-market behavior, not an incident.
- *   - `'pending'`  — CLOB serves the market but it is not terminal yet
- *     (open / zero winners / archived / 50-50 held); no incident either.
- *   - `null`       — CLOB unavailable or mismatched; the existing 404 +
- *     MARKET_DISAPPEARED alert path is preserved.
+ * After a post-end Gamma 404, ask CLOB. 'resolved' / 'pending' mean Gamma
+ * just dropped the market (expected); null keeps the 404 alert path.
  * Never throws.
  */
 async function clobFallbackStatusForRow(input: {
@@ -161,9 +135,7 @@ async function clobFallbackStatusForRow(input: {
       snapshot: result.snapshot,
     });
     if (mapped.kind === "outcome") return "resolved";
-    // Present-but-pending states are not a disappearance incident; every
-    // other error code (bijection / consistency failures) preserves the
-    // existing alert so an operator investigates.
+    // Held-pending isn't a disappearance; other errors keep the alert.
     if (mapped.error === null || mapped.error.endsWith("_held_pending")) {
       return "pending";
     }
@@ -178,15 +150,7 @@ async function clobFallbackStatusForRow(input: {
 /** Last-resort CLOB client for standalone tick callers (see below). */
 let fallbackClobClient: PolymarketClobClient | null = null;
 
-/**
- * One pass of the sync ticker. Walks up to `rowsPerTick` rows whose
- * `next_poll_at <= now` (or that lack a row entirely — first-time
- * markets that landed via lazy-insert), fetches them via the client,
- * and updates `external_market_sync_state` + fires alerts.
- *
- * Idempotent: re-running with the same clock + DB state produces the
- * same row writes. Never throws.
- */
+/** One pass over up to `rowsPerTick` due rows. Idempotent; never throws. */
 export async function runPolymarketSyncTick(
   opts: SyncTickerOpts,
 ): Promise<SyncTickResult> {
@@ -196,10 +160,7 @@ export async function runPolymarketSyncTick(
   const clobClient =
     opts.clobClient ??
     getDefaultPolymarketClobClient() ??
-    // Memoized so standalone callers (no injected client, no configured
-    // singleton) keep LRU / negative-cache / breaker state across ticks.
-    // Captures the first caller's clock — acceptable for this last-resort
-    // path; the daemon always configures the shared singleton.
+    // Memoized so standalone callers keep cache state; keeps the first caller's clock.
     (fallbackClobClient ??= new PolymarketClobClient({ nowMs }));
   const onAlert =
     opts.onAlert ??
@@ -212,10 +173,7 @@ export async function runPolymarketSyncTick(
   const now = nowMs();
   const nowIso = nowIsoFromMs(now);
 
-  // 1) Seed sync_state rows for every Polymarket markets entry that doesn't
-  //    have one yet. Pure additive; the resolver's lazy-insert path creates
-  //    the markets row, and this helper bridges it into sync_state on
-  //    next tick.
+  // 1) Seed sync_state for Polymarket markets that have none.
   const unseeded = db
     .prepare(
       `SELECT m.market_id
@@ -235,9 +193,7 @@ export async function runPolymarketSyncTick(
   );
   for (const row of unseeded) insertSeed.run(row.market_id, ADAPTER_NAME, nowIso);
 
-  // 2) Select due rows. `next_poll_at IS NULL` qualifies for "never polled."
-  //    Resolved/disputed-final markets stop being scheduled here once
-  //    `last_observed_status === 'resolved'`.
+  // 2) Due rows, never-polled first. Resolved markets are never due.
   const due = db
     .prepare(
       `SELECT market_id, adapter_id, last_polled_at, last_observed_status,
@@ -269,8 +225,7 @@ export async function runPolymarketSyncTick(
   for (const row of due) {
     const conditionId = conditionIdForRow(db, row.market_id);
     if (conditionId === null) {
-      // Misconfigured markets row — no conditionId in config_json. Stay
-      // 'error', back off the full 5min, and skip.
+      // No conditionId in config_json: back off and skip.
       const nextPoll = nowIsoFromMs(now + POLL_FAR_MS);
       updateRow.run(
         nowIso,
@@ -292,9 +247,7 @@ export async function runPolymarketSyncTick(
       const result = await client.fetchMarketByConditionId(conditionId);
       polled += 1;
       if (result.error === "http_404") {
-        // Post-end Gamma 404s are expected for 5-min micro-markets (Gamma
-        // drops them after close) — consult the shared CLOB client before
-        // treating the disappearance as a failure.
+        // Gamma drops 5-min markets after close; ask CLOB before counting a failure.
         const clobStatus =
           endDateMs !== null && now > endDateMs
             ? await clobFallbackStatusForRow({
@@ -322,7 +275,6 @@ export async function runPolymarketSyncTick(
         failures = row.consecutive_failures + 1;
         lastError = result.error ?? "unknown";
       } else {
-        // Stamp status from the snapshot itself.
         if (result.snapshot.closed === true) {
           if (result.snapshot.umaResolutionStatus === "resolved") {
             observedStatus = "resolved";
@@ -336,16 +288,13 @@ export async function runPolymarketSyncTick(
         lastError = null;
       }
     } catch (err) {
-      // Cardinal-rule safety net: the client is engineered not to throw,
-      // but a future regression collapses here without aborting the tick.
+      // Safety net: the client shouldn't throw.
       observedStatus = "error";
       failures = row.consecutive_failures + 1;
       lastError = `tick_threw:${err instanceof Error ? err.message : String(err)}`;
     }
 
-    // Fire alerts BEFORE writing the row so the alert sink can read the
-    // pre-update state if it wants. The COALESCE in the UPDATE locks the
-    // alerted-at stamp in place once set.
+    // Alert once: COALESCE in the UPDATE keeps the first alerted-at stamp.
     let alertDisappearedAt: string | null = null;
     let alertNeverResolvedAt: string | null = null;
     if (
@@ -381,7 +330,7 @@ export async function runPolymarketSyncTick(
 
     const nextPollMs =
       observedStatus === "resolved"
-        ? now + POLL_RESOLVED_FREEZE_MS // resolved → freeze (next_poll_at far future)
+        ? now + POLL_RESOLVED_FREEZE_MS
         : now + pickPollIntervalMs(now, endDateMs);
     updateRow.run(
       nowIso,
@@ -399,12 +348,7 @@ export async function runPolymarketSyncTick(
 
 // ─── Long-running interval helper ──────────────────────────────────────────
 
-/**
- * Schedule the sync tick on an interval. Returns a stop handle. The
- * tick body is guarded against overlap — if a previous tick is still
- * running when the next interval fires, the new tick is skipped (the
- * resolver harness uses the same posture in src/daemon/index.ts).
- */
+/** Run the tick on an interval, skipping any tick that would overlap the previous one. */
 export function startPolymarketSyncTicker(
   opts: SyncTickerOpts & { intervalMs?: number },
 ): { stop: () => Promise<void> } {

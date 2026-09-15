@@ -9,9 +9,7 @@ import type { GammaMarketSnapshot } from "./transform.js";
 
 process.stdout.write("murmur Polymarket discovery candidate-selection smoke\n");
 
-// ── parseQuestionWindowDurationSec: the window length lives in the question
-//    text ("7:15PM-7:20PM"), NOT in startDate/endDate (Gamma's startDate is the
-//    market creation time ~24h before close). Verified against live data.
+// ── parseQuestionWindowDurationSec ─────────────────────────────────────────
 assert.equal(parseQuestionWindowDurationSec("Bitcoin Up or Down - July 19, 7:15PM-7:20PM ET"), 300);
 assert.equal(parseQuestionWindowDurationSec("Bitcoin Up or Down - July 19, 7:30PM-7:45PM ET"), 900);
 assert.equal(parseQuestionWindowDurationSec("Ethereum Up or Down - July 19, 11:55PM-12:00AM ET"), 300, "midnight rollover");
@@ -19,9 +17,7 @@ assert.equal(parseQuestionWindowDurationSec("Solana Up or Down - July 19, 7:55PM
 assert.equal(parseQuestionWindowDurationSec("no clock range here"), null);
 assert.equal(parseQuestionWindowDurationSec("Bitcoin Up or Down - 7:20PM-7:20PM ET"), null, "zero-length rejected");
 
-// ── selectDiscoveryCandidates: from a live-shaped mix (startDate = creation
-//    time, not window start), only the 5-minute Up/Down rows with enough lead
-//    and a matching asset survive.
+// ── selectDiscoveryCandidates: only 5-minute Up/Down rows with enough lead and a known asset survive.
 const nowMs = Date.UTC(2026, 6, 19, 23, 0, 0, 0);
 const creation = "2026-07-18T23:00:00Z"; // ~24h before close, as Gamma reports
 const upDown = JSON.stringify(["Up", "Down"]);
@@ -104,9 +100,7 @@ assert.deepEqual(
 void ethEarlier;
 
 // ── A SET of windows: one daemon, several series ───────────────────────────
-// `300,600` must admit BOTH a 5-minute and a 10-minute row from the same
-// Gamma page, and each candidate must carry ITS OWN window — that value, not
-// the config, decides which clock series the market lands in.
+// `300,600` admits both, and each candidate carries its own window.
 {
   const both: DiscoveryCandidateFilter = {
     ...filter,
@@ -149,9 +143,7 @@ void ethEarlier;
     "a single-window set is unchanged by the set plumbing",
   );
 
-  // An unrecognised question shape is REJECTED, never assigned a window from
-  // the configured set. Guessing here would register a market into a clock
-  // series whose schedule the venue never agreed to.
+  // An unrecognised question shape is rejected, never assigned a window.
   const shapeless = snap({
     conditionId: `0x${"a4".repeat(32)}`,
     question: "Bitcoin Up or Down - July 19, sometime this evening",
@@ -166,12 +158,8 @@ void ethEarlier;
 
 process.stdout.write("polymarket discovery candidate-selection smoke ok\n");
 
-// ── Regression: past minLeadSec but past arm close is NOT registrable ───────
-// This candidate clears minLeadSec (600s > 120s) but arming closed 60s ago
-// (endDate - 660s). Admitting it stages a draft, then reverts at gas
-// estimation, which aborts the tick — and because estimation failures do not
-// count as attempts, the same candidate heads the queue again next tick and
-// starves every registrable candidate behind it.
+// ── Past minLeadSec but past arm close is NOT registrable ───────────────────
+// Clears minLeadSec (600s > 120s) but arming closed 60s ago (endDate - 660s).
 {
   const tooLate = selectDiscoveryCandidates(
     [snap({ conditionId: `0x${"9".repeat(64)}`, endDate: "2026-07-19T23:10:00Z" })],

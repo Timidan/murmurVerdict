@@ -35,10 +35,7 @@ function snapshot(conditionId: string, endMs: number) {
     conditionId,
     question: "Bitcoin Up or Down - July 26, 2:40AM-2:45AM ET",
     slug: "btc-updown-5m",
-    // Gamma sends outcomes as a JSON-encoded STRING and parseOutcomeLabels
-    // only accepts that shape. A real array here is silently rejected, so
-    // every fresh candidate built from this fixture would be filtered out
-    // before selection and any assertion about them would be vacuous.
+    // Must be a JSON-encoded string like Gamma's; an array is silently filtered out.
     outcomes: '["Up", "Down"]',
     endDate: endIso,
     startDate: new Date(endMs - 86_400_000).toISOString(),
@@ -62,8 +59,7 @@ function engineWith(
 ) {
   return new PolymarketDiscoveryEngine({
     db,
-    // Never reached in these tests — they assert behaviour BEFORE any chain
-    // write, which is the whole point.
+    // Chain writes throw unless a test overrides them.
     registrar: {
       chainId: 84532,
       contractAddress: "0x" + "11".repeat(20),
@@ -125,9 +121,6 @@ function engineWith(
 }
 
 // ── Series-config conflict fails the tick BEFORE mutating any market ────────
-// A changed clock constant makes every already-registered market look like an
-// on-chain mismatch. Without this preflight the tick would bulk-freeze live
-// markets before the repository conflict check ever ran.
 {
   const { db, tmp } = newDb();
   marketSeriesRepo.upsert(db, {
@@ -176,10 +169,6 @@ function engineWith(
 }
 
 // ── An unscheduled market row is NOT treated as staged ─────────────────────
-// An admin can create an unscheduled draft (drafts are inert, so that is
-// allowed). Discovery must not treat the row's existence as proof of a
-// schedule and promote it — a listed market with no embargo stamp disagrees
-// with its own on-chain schedule and rejects every submission.
 {
   const { db, tmp } = newDb();
   const asset = (db.prepare("SELECT asset_id FROM assets LIMIT 1").get() as { asset_id: string }).asset_id;
@@ -197,8 +186,6 @@ function engineWith(
     now: "2026-07-25T00:00:00.000Z",
   });
 
-  // No clock snapshot exists for it — that is the defining property of an
-  // unscheduled row.
   assert.equal(marketClocksRepo.get(db, COND), null);
   const market = marketsRepo.get(db, COND);
   assert.equal(market?.status, "draft", "an unscheduled admin row stays a draft");
@@ -208,8 +195,6 @@ function engineWith(
 }
 
 // ── A clock snapshot from a DIFFERENT end date is stale, not usable ─────────
-// The venue can move its end date after we froze the schedule. A stale
-// snapshot must not be accepted as the market's schedule.
 {
   const { db, tmp } = newDb();
   marketSeriesRepo.upsert(db, {
@@ -251,8 +236,6 @@ function engineWith(
 }
 
 // ── A rejected schedule write rolls back the market too ─────────────────────
-// Schedule persistence shares the market upsert's transaction, so a series
-// conflict must leave NO market row behind.
 {
   const { db, tmp } = newDb();
   marketSeriesRepo.upsert(db, {
@@ -289,14 +272,7 @@ function engineWith(
 }
 
 // ── ENGINE: a RECOVERY row past arm close is frozen, never estimated ────────
-// Fresh candidates are already rejected at selection. Recovery rows (ones
-// discovery already owns, replayed from the ledger) skip that filter, so they
-// could reach gas estimation, revert, and abort the whole tick — and because
-// estimation failures do not increment attempt_count, the same row headed the
-// queue again every tick, starving every registrable candidate behind it.
-//
-// The registrar's estimate/register stubs THROW if reached, so reaching a
-// chain write fails this test outright.
+// Recovery rows skip the selection filter; the registrar stubs throw if a chain write is reached.
 {
   const { db, tmp } = newDb();
   marketSeriesRepo.upsert(db, {
@@ -309,12 +285,10 @@ function engineWith(
     now: "2026-07-25T00:00:00.000Z",
   });
 
-  // armCloseAt = end - 300 - 300 - 60 = end - 660s. Put "now" past it but
-  // still before end, so the old minLeadSec filter would have admitted it.
+  // armCloseAt = end - 660s: "now" is past it but before end.
   const endMs = NOW_MS + 400_000;
 
-  // Seed a ledger row so this is a RECOVERY candidate, which bypasses the
-  // fresh-selection filter.
+  // A ledger row makes this a recovery candidate.
   polymarketDiscoveryRepo.upsertDraft(db, {
     condition_id: COND,
     question: "Bitcoin Up or Down - July 26, 2:40AM-2:45AM ET",
@@ -335,21 +309,11 @@ function engineWith(
     0,
     "an unregistrable candidate must never reach a chain write",
   );
-  // Frozen — not merely skipped. This is the load-bearing assertion: it proves
-  // the candidate WAS processed and terminally resolved, rather than filtered
-  // out earlier for some unrelated reason. The registrar stubs throw if a
-  // chain write is attempted, so reaching one would fail the test outright.
+  // Frozen, not skipped: proves the candidate was processed, not filtered out.
   assert.equal(res.frozen, 1, "the candidate is terminally frozen, not silently skipped");
 
-  // POSITIVE CONTROL. Without this, the assertion above is one-sided: a
-  // regression that disabled all chain writes would still pass it. A candidate
-  // with the SAME setup but enough arm-window headroom must reach gas
-  // estimation, proving the freeze above came from the arm-window guard and
-  // not from something incidental.
-  //
-  // The Gamma stub must return a snapshot whose endDate matches this
-  // candidate: recovery rows carry `snapshot: null`, so registration refetches
-  // Gamma, and a null (or drifted) result bails out before estimation.
+  // Positive control: the same setup with arm-window headroom reaches estimation.
+  // Recovery rows refetch Gamma, so the stub's endDate must match.
   {
     const okCond = "0x" + "cd".repeat(32);
     const okEnd = NOW_MS + 900_000; // armCloseAt = end - 660s → ~4 min headroom
@@ -386,15 +350,11 @@ function engineWith(
 }
 
 // ── TWO WINDOW LENGTHS IN ONE TICK ─────────────────────────────────────────
-// A daemon configured with `300,600` must register a 5-minute AND a 10-minute
-// market from the same Gamma page, each into its OWN clock series, sharing
-// every other clock constant. Only window_seconds differs between the two.
+// `300,600` registers both markets, each in its own series; only window_seconds differs.
 {
   const { db, tmp } = newDb();
 
-  // The 300s series already exists, exactly as it does on a live deployment
-  // that has been running one window. Adding a second window must not read as
-  // drift on this row.
+  // Existing 300s series: adding a second window must not read as drift.
   marketSeriesRepo.upsert(db, {
     series_id: SERIES_ID,
     venue: "polymarket",
@@ -482,11 +442,6 @@ function engineWith(
   assert.equal(series10m?.window_seconds, 600);
 
   // ── ...sharing every other constant ──────────────────────────────────────
-  // The owner's decision: only window_seconds varies per series. The delivery
-  // budget and commit margin are technical (time to land N grants, and an
-  // ordering guard) and do not scale with the market; the submission lead and
-  // embargo are product choices that a longer market does not self-evidently
-  // change.
   for (const series of [series5m, series10m]) {
     assert.equal(series?.submission_open_lead_sec, CLOCK.submissionOpenLeadSec);
     assert.equal(series?.commit_margin_sec, CLOCK.commitMarginSec);
@@ -533,8 +488,6 @@ function engineWith(
   );
 
   // ── The drift guard stays quiet once BOTH series are stored ──────────────
-  // assertSeriesConfigUnchanged now checks one series per configured window.
-  // A second tick over a DB holding both must still pass.
   const second = await engineWith(
     db,
     { windowDurationSecs: [300, 600] },
@@ -554,9 +507,6 @@ function engineWith(
 }
 
 // ── A bare `300` still rejects a 600s candidate end-to-end ─────────────────
-// Widening the set is opt-in: an unlisted window must never reach a chain
-// write. The registrar stubs throw on estimate/register, so reaching one fails
-// this test outright.
 {
   const { db, tmp } = newDb();
   const COND_10M = "0x" + "53".repeat(32);
@@ -592,12 +542,7 @@ function engineWith(
 }
 
 // ── An ALREADY-REGISTERED 600s market is recognised, not mis-frozen ────────
-// This pins the schedule derivation itself, not just the persisted rows. A
-// market registered on-chain with no local clock snapshot (out-of-band, or a
-// crash before staging) is compared against a schedule derived FRESH from the
-// candidate. Deriving that from a daemon-wide window instead of the market's
-// own would read the chain's correct 600s schedule as a mismatch and freeze a
-// live market — the one failure the immutable-schedule rule cannot undo.
+// No local clock snapshot, so the schedule is derived fresh from the market's own window.
 {
   const { db, tmp } = newDb();
   const COND = "0x" + "54".repeat(32);
@@ -615,8 +560,7 @@ function engineWith(
     archived: false,
   } as never;
 
-  // The exact 600s schedule: window 600, lead 300, margin 60, delivery 60,
-  // embargo 600.
+  // window 600, lead 300, margin 60, delivery 60, embargo 600.
   const onchain = {
     armCloseAt: endSec - 960n,
     submissionOpenAt: endSec - 900n,
@@ -634,8 +578,7 @@ function engineWith(
       fetchMarketsClosingBetween: async () => ({ snapshots: [snap10m], error: null }),
       fetchMarketByConditionId: async () => ({ snapshot: snap10m, error: null }),
     },
-    // estimate/register still throw: recognising the existing registration
-    // must cost no gas.
+    // estimate/register still throw: recognising it must cost no gas.
     { getMarket: async () => onchain },
   ).tick();
 
@@ -653,12 +596,7 @@ function engineWith(
 }
 
 // ── A RECOVERED row carries its own window, even a de-configured one ───────
-// Ledger rows skip fresh selection by design, so their window cannot come from
-// the configured set. It is read from the row's own clock snapshot (or, before
-// one exists, its question text). Keeping recovery independent of the current
-// set is what stops a config change from stranding a registration already in
-// flight: here the operator has narrowed back to `300`, and the 600s row still
-// reconciles instead of being abandoned or judged against a 300s schedule.
+// Config narrowed to `300`; the in-flight 600s row still reconciles.
 {
   const { db, tmp } = newDb();
   const COND = "0x" + "55".repeat(32);

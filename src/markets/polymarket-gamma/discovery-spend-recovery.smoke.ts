@@ -11,16 +11,7 @@ import { polymarketDiscoveryRepo } from "../../verdict/repos/polymarket-discover
 import { deriveSeriesClock, type SeriesClockConfig } from "../../verdict/series-clock.js";
 import { PolymarketDiscoveryEngine } from "./discovery.js";
 
-// Discovery's hourly/daily spend caps count `registered_onchain_at`, and the
-// per-tick budget is computed ONCE before candidates are processed. A recovery
-// that stamps a previously-unrecorded registration therefore has to be charged
-// to that same budget, or the pre-recovery allowance stays fully available and
-// later candidates in the same tick broadcast past the cap.
-//
-// This regression has two halves and both are pinned here:
-//   1. the stamp itself must happen exactly once, from any branch that reaches
-//      it (repo-level, below);
-//   2. the tick budget must actually shrink when it does (engine-level).
+// A recovered registration is stamped exactly once and consumes this tick's spend budget.
 process.stdout.write("murmur polymarket discovery spend-recovery smoke\n");
 
 const CLOCK: SeriesClockConfig = {
@@ -44,17 +35,14 @@ function newDb() {
 }
 
 function snapshot(conditionId: string, endMs: number) {
-  // The window length is parsed out of the question text, so it has to agree
-  // with endDate.
+  // The question's clock range must agree with endDate.
   const startLabel = hhmm(endMs - 300_000);
   const endLabel = hhmm(endMs);
   return {
     conditionId,
     question: `Bitcoin Up or Down - July 26, ${startLabel}-${endLabel} ET`,
     slug: "btc-updown-5m",
-    // Gamma sends outcomes as a JSON-encoded STRING, and
-    // parseOutcomeLabels only accepts that shape — a real array is
-    // rejected, and the candidate silently never gets selected.
+    // Must be a JSON-encoded string like Gamma's; an array is silently filtered out.
     outcomes: '["Up", "Down"]',
     endDate: new Date(endMs).toISOString().replace(".000Z", "Z"),
     startDate: new Date(endMs - 86_400_000).toISOString(),
@@ -147,8 +135,7 @@ const UNREGISTERED = {
       "gas telemetry survives a later stamp attempt (markConfirmed used to null it)",
     );
 
-    // A `listed` row keeps its status: back-filling a stamp must not demote a
-    // live market to `confirmed` and make its coverage look understated.
+    // A `listed` row keeps its status.
     polymarketDiscoveryRepo.upsertDraft(db, draftRow(FRESH));
     polymarketDiscoveryRepo.markListed(db, {
       condition_id: FRESH,
@@ -273,12 +260,7 @@ const UNREGISTERED = {
 }
 
 // ── 3. An operator halt survives a full discovery tick ─────────────────────
-// The halt marker used to live on discovery's ledger and be set with an
-// UPDATE, so a market discovery had never seen was never actually marked. Even
-// once it moved to `markets`, discovery reached shared registration — which
-// cleared the halt — and the receipt path then listed the market. This drives
-// a whole tick against a halted market with NO ledger row and NO clock
-// snapshot: the exact shape that got through.
+// A halted market with no ledger row and no clock snapshot.
 {
   const { db, tmp } = newDb();
   try {

@@ -1,18 +1,7 @@
 /**
- * Boot wiring for the Polymarket Gamma adapter.
- *
- * ON by default (Gamma is a public key-less API and the sync ticker no-ops
- * with zero Polymarket markets). Set `MURMUR_POLYMARKET_GAMMA_ENABLED=false`
- * to opt out — the daemon then skips the dynamic import entirely and the
- * boot path stays byte-identical (mirrors the Z0 FHE loader posture in
- * src/daemon/index.ts).
- *
- * Side effects on `registerPolymarketGammaAdapter`:
- *   1. Idempotent register of the singleton {@link polymarketGammaAdapter}
- *      into the process-wide {@link MarketMakerRegistry}.
- *   2. Optional sync ticker start (caller passes the DB handle + clock).
- *
- * Cite: RESEARCH_polymarket_gamma_adapter.md §5, §10.
+ * Boot wiring for the Polymarket Gamma adapter: registers it and optionally
+ * starts the sync ticker. On by default; `MURMUR_POLYMARKET_GAMMA_ENABLED=false`
+ * makes the daemon skip it.
  */
 
 import type Database from "better-sqlite3";
@@ -32,7 +21,6 @@ import {
 } from "./sync.js";
 
 export interface RegisterPolymarketOpts {
-  /** When provided, also start the per-conditionId sync ticker. */
   db?: undefined;
   /** Configure the adapter default client from nowMs. */
   configureDefaultClient?: boolean;
@@ -57,11 +45,7 @@ export interface RegisterPolymarketWithSyncOpts {
   onAlert?: SyncTickerOpts["onAlert"];
 }
 
-/**
- * Register the Polymarket Gamma adapter in the market-maker registry. Safe
- * to call multiple times — re-registration is a no-op when the singleton
- * is already present.
- */
+/** Idempotent. */
 export function registerPolymarketGammaAdapter(
   opts: RegisterPolymarketOpts | RegisterPolymarketWithSyncOpts = {},
 ): { stop: () => void } {
@@ -78,9 +62,7 @@ export function registerPolymarketGammaAdapter(
     );
   }
   if (opts.configureDefaultClient && opts.nowMs) {
-    // One clock configures BOTH default clients (Gamma + CLOB fallback);
-    // the CLOB instance is shared with the sync ticker below so its LRU /
-    // single-flight / circuit breaker span the resolver and sync pollers.
+    // Configures both default clients; the CLOB one is shared with the ticker below.
     setDefaultPolymarketClock(opts.nowMs);
   }
   if (opts.db) {

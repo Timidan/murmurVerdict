@@ -1,27 +1,9 @@
 /**
- * PolymarketGammaAdapter — the first non-financial {@link MarketMakerAdapter}.
+ * Polymarket Gamma adapter: binary markets only (NegRisk legs list as
+ * separate binary markets).
  *
- * Maps Polymarket's `/markets` row (the only public per-conditionId entry
- * point Gamma offers; the cursor-paginated `/markets/keyset` doesn't
- * accept a conditionId filter) onto the universal payout-vector
- * {@link Outcome}. Binary YES/NO only at Tier 1 — NegRisk events are
- * exposed as N independent binary markets; categorical fusion is Tier 2.
- * On-chain CTF fallback is Tier 3.
- *
- * Cardinal rule:
- *   `observeResolution` MUST NEVER throw. Every Gamma / parser / schema
- *   failure collapses to `'pending'` plus an error-coded log line — a
- *   thrown exception aborts the resolver tick, freezing every market on
- *   the daemon. See RESEARCH §8.
- *
- * The resolver picks this adapter by reading `markets.adapter_id ===
- * 'polymarket-gamma'` from the row, then calls `observeResolution` with
- * an {@link ObservationContext} that the sync ticker has populated with
- * the conditionId. Submission privacy is handled before scoring: calls
- * remain sealed until the Fhenix reveal is published and attached as the
- * public commitment.
- *
- * Cite: RESEARCH_polymarket_gamma_adapter.md §1-§10, V2_DECISION_RECORD §2.4.
+ * `observeResolution` must never throw: a throw aborts the resolver tick for
+ * every market. Failures become 'pending' plus an error code.
  */
 
 import { z } from "zod";
@@ -53,19 +35,9 @@ export const ADAPTER_NAME = "polymarket-gamma" as const;
 export const ADAPTER_VERSION = "1.1.0" as const;
 export const MARKET_FAMILY = "prediction-market-binary" as const;
 
-// ─── Schemas — `.passthrough()` everywhere ─────────────────────────────────
+// ─── Schemas ────────────────────────────────────────────────────────────────
 
-/**
- * Narrows the universal {@link CommitmentSchema}:
- *   - `predictedOutcome.kind === 'binary'`
- *   - `payoutNumerators.length === 2`
- *   - `marketRef.protocol === 'polymarket-gamma'`
- *   - `marketRef.sourceId` is a 32-byte hex conditionId
- *
- * Probabilistic agents may still post `[7,3]/10`-style vectors; the
- * scoring path (multinomial-Brier via {@link callScore}) handles
- * asymmetric denominators correctly.
- */
+/** Universal commitment narrowed to a binary Polymarket conditionId. Fractional vectors like [7,3]/10 are fine. */
 export const commitmentSchema = CommitmentSchema.superRefine((c, ctx) => {
   if (c.predictedOutcome.kind !== "binary") {
     ctx.addIssue({
@@ -101,39 +73,24 @@ export const commitmentSchema = CommitmentSchema.superRefine((c, ctx) => {
 
 // ─── Observation context ────────────────────────────────────────────────────
 
-/**
- * Per-call context the resolver passes to {@link observeResolution}. The
- * adapter only reads `conditionId` directly — `market_id` is carried so the
- * sync ticker can log against the canonical `markets.id`, and `client` is
- * an optional override for the resolver harness / smoke driver to inject a
- * pre-wired Gamma client.
- *
- * Universal {@link ObservationContext} is `Record<string, unknown>`; we
- * narrow structurally inside the body without zod parsing on every tick.
- */
+/** Resolver context, narrowed structurally from {@link ObservationContext}. */
 export interface PolymarketGammaContext {
-  /** 32-byte hex conditionId — the resolver lifts this from
-   *  `markets.config_json.conditionId` or `markets.id`. */
+  /** From `config_json.conditionId`, else `markets.id`. */
   conditionId: string;
-  /** `markets.id` — used for logging / sync_state bookkeeping. */
   market_id: string;
-  /** Stored `config_json.endDate` — gates + timestamps the CLOB fallback. */
+  /** Stored endDate; gates and timestamps the CLOB fallback. */
   endDate?: string;
-  /** Stored `config_json.outcomes` — canonical payout-vector label order. */
+  /** Stored outcomes: the payout-vector label order. */
   outcomes?: string[];
-  /** Stored `normalized label → clob token_id` map (config.ts hardening). */
+  /** Stored `normalized label → clob token_id`. */
   clobTokenIds?: Record<string, string>;
-  /** Optional adapter-private Gamma client injection. Defaults to the
-   *  module-level singleton ({@link getDefaultClient}). */
+  /** Defaults to the module singleton. */
   client?: PolymarketGammaClient;
-  /** Optional CLOB fallback client injection. Defaults to the module-level
-   *  singleton ({@link getDefaultPolymarketClobClient}). */
+  /** Defaults to the module singleton. */
   clobClient?: PolymarketClobClient;
-  /** Fallback-gate clock (endDate-in-the-past check). Defaults to the boot
-   *  clock ({@link setDefaultPolymarketClock}), then Date.now. */
+  /** Defaults to the boot clock, then Date.now. */
   nowMs?: () => number;
-  /** Optional sink for error codes ('http_404', 'network:*', 'schema_drift:*').
-   *  The sync ticker forwards these to `external_market_sync_state`. */
+  /** Error codes ('http_404', 'network:*', 'schema_drift:*'). */
   onError?: (code: string) => void;
 }
 
@@ -188,26 +145,19 @@ function getDefaultClient(): PolymarketGammaClient | null {
 let defaultClobClient: PolymarketClobClient | null = null;
 let defaultNowMs: (() => number) | null = null;
 
-/**
- * Shared CLOB fallback client — one instance across the resolver and the
- * sync ticker so the LRU / single-flight / circuit breaker are effective
- * process-wide.
- */
+/** One process-wide CLOB client so the resolver and sync ticker share its cache and breaker. */
 export function getDefaultPolymarketClobClient(): PolymarketClobClient | null {
   return defaultClobClient;
 }
 
-/**
- * Test / boot-time injection. Set this to a fixture-driven client to make
- * `observeResolution` deterministic without monkey-patching globalThis.fetch.
- */
+/** Test/boot injection. */
 export function setDefaultPolymarketClient(
   client: PolymarketGammaClient | null,
 ): void {
   defaultClient = client;
 }
 
-/** Test / boot-time injection for the CLOB fallback client. */
+/** Test/boot injection. */
 export function setDefaultPolymarketClobClient(
   client: PolymarketClobClient | null,
 ): void {
@@ -222,22 +172,14 @@ export function setDefaultPolymarketClock(nowMs: () => number): void {
 
 // ─── CLOB fallback (post-disappearance resolution recovery) ────────────────
 
-/**
- * Consult the CLOB surface after Gamma returned no snapshot. Triggers ONLY
- * when the stored endDate is a valid timestamp in the past — Gamma remains
- * the primary surface (richer UMA status incl. disputes). Every failure
- * collapses to 'pending' + an error-coded log line; the never-throw
- * invariant of `observeResolution` is preserved by the caller's try/catch.
- */
+/** Ask CLOB once Gamma has no row, and only after the stored endDate has passed. */
 async function observeClobFallback(
   narrowed: PolymarketGammaContext,
 ): Promise<Outcome | "pending"> {
   const endDateMs =
     typeof narrowed.endDate === "string" ? Date.parse(narrowed.endDate) : Number.NaN;
   if (!Number.isFinite(endDateMs)) return "pending";
-  // Resolver-path contexts carry no clock (buildAdapterObservationContext
-  // spreads JSON config only), so fall back to the boot clock configured by
-  // setDefaultPolymarketClock before reaching for wall time.
+  // Resolver contexts carry no clock; prefer the boot clock over wall time.
   const nowMs = narrowed.nowMs
     ? narrowed.nowMs()
     : defaultNowMs
@@ -279,33 +221,17 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
   readonly commitmentSchema = commitmentSchema;
   readonly marketConfigSchema = marketConfigSchema;
 
-  /**
-   * Pull the universal {@link Outcome} for a Polymarket conditionId.
-   *
-   * Always returns one of:
-   *   - `'pending'`  — open / unresolved / schema drift / transient error
-   *   - `'disputed'` — UMA dispute in flight (informational; resolver waits)
-   *   - {@link Outcome} with `kind='binary'` (or `'invalid'` for cancelled)
-   *
-   * MUST NEVER THROW. Errors flow through `ctx.onError(code)` so the
-   * sync ticker can increment `consecutive_failures` and surface
-   * `MARKET_DISAPPEARED` / `MARKET_NEVER_RESOLVED` alerts at the
-   * configured thresholds.
-   */
+  /** Never throws; errors go to `ctx.onError`. */
   async observeResolution(
     marketRef: MarketRef,
     ctx: ObservationContext,
   ): Promise<Outcome | "pending" | "disputed"> {
     const narrowed = narrowContext(ctx);
     if (!narrowed) {
-      // Defensive: the resolver constructs the context inline; a missing
-      // conditionId means the markets row wasn't backfilled. Stay
-      // 'pending' so the operator can fix the row without a crash.
+      // No usable conditionId on the row: stay pending until it's fixed.
       return "pending";
     }
-    // The local commitment and lookup context must identify the same market.
-    // Continuing on a mismatch risks resolving and scoring the call against
-    // an unrelated condition.
+    // Never score a call against a different condition.
     if (marketRef.sourceId.toLowerCase() !== narrowed.conditionId.toLowerCase()) {
       narrowed.onError?.("conditionId_mismatch");
       return "pending";
@@ -320,10 +246,7 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
       if (result.error) narrowed.onError?.(result.error);
       const snapshot = result.snapshot;
       if (snapshot === null) {
-        // Gamma has no row. For 5-min micro-markets that is EXPECTED after
-        // close (Gamma drops them), so consult the CLOB fallback — but only
-        // once the stored endDate has passed; pre-end, a Gamma miss is a
-        // transient failure and CLOB must not be spammed.
+        // Gamma drops 5-min markets after close; fall back to CLOB.
         return await observeClobFallback(narrowed);
       }
       if (snapshot.conditionId.toLowerCase() !== marketRef.sourceId.toLowerCase()) {
@@ -333,18 +256,14 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
       try {
         return gammaMarketToOutcome(snapshot);
       } catch (err) {
-        // Defensive: transform.ts is designed not to throw, but a future
-        // bug or an unexpected runtime crash collapses here rather than
-        // propagating to the resolver tick.
+        // transform.ts shouldn't throw; keep the contract if it does.
         narrowed.onError?.(
           `transform_threw:${err instanceof Error ? err.message : String(err)}`,
         );
         return "pending";
       }
     } catch (err) {
-      // Defensive: client.fetchMarketByConditionId() is designed to swallow
-      // every error, but if a future version regresses we still honor the
-      // cardinal-rule contract.
+      // Same for the client.
       narrowed.onError?.(
         `observe_threw:${err instanceof Error ? err.message : String(err)}`,
       );
@@ -353,12 +272,8 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
   }
 
   /**
-   * PUBLIC REVEAL time = market end + series embargo.
-   *
-   * `embargoSec` is written into config_json at registration from the series
-   * clock. It defaults to 0 so markets registered before embargoes existed keep
-   * revealing at their end time — this value must match the on-chain
-   * `publicRevealAt` exactly or the acceptance guard rejects every submission.
+   * Market end + series embargo; must equal on-chain `publicRevealAt`.
+   * Markets without `embargoSec` use 0.
    */
   expectedRevealOpenAt(input: { config: Record<string, unknown> }): number | null {
     const endMs = this.#endDateMs(input.config);
@@ -366,10 +281,7 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
     return endMs + this.#embargoSec(input.config) * 1_000;
   }
 
-  /**
-   * MARKET RESOLUTION time = the venue's own end date, with no embargo. This is
-   * when the outcome is determined, which is what a prediction's horizon means.
-   */
+  /** The venue's end date, no embargo. */
   marketResolutionAt(input: { config: Record<string, unknown> }): number | null {
     return this.#endDateMs(input.config);
   }
@@ -415,23 +327,17 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
   }
 
   /**
-   * Score a Polymarket commitment via the universal multinomial-Brier
-   * {@link callScore}. No bespoke math — the universal scoring helper
-   * handles asymmetric denominators correctly:
+   * Multinomial Brier via {@link callScore}; `components` allows replay without Gamma.
    *
-   *   predicted=[1,0]/1  resolved=[1,0]/1 → 1.0 (YES wins)
-   *   predicted=[1,0]/1  resolved=[0,1]/1 → 0.0 (YES loses)
-   *   predicted=[1,0]/1  resolved=[1,1]/2 → 0.5 (resolved 50-50)
-   *
-   * `components` carries the resolved-vector + adapter tag so verifiers
-   * can replay the score against the stamped snapshot without re-fetching
-   * Gamma.
+   *   predicted=[1,0]/1  resolved=[1,0]/1 → 1.0
+   *   predicted=[1,0]/1  resolved=[0,1]/1 → 0.0
+   *   predicted=[1,0]/1  resolved=[1,1]/2 → 0.5
    */
   score(
     c: Commitment,
     o: Outcome,
   ): { call_score: number | null; components?: unknown } {
-    // Cancellation maps to kind='invalid'; resolver voids the call upstream.
+    // Cancelled: the resolver voids the call.
     if (o.kind === "invalid") {
       return {
         call_score: null,
@@ -466,20 +372,17 @@ class PolymarketGammaAdapter implements MarketMakerAdapter {
       },
     };
   }
-  // No subscribeResolutions — Polymarket Gamma doesn't push. The
-  // resolver-tick poll loop is the resolution driver (RESEARCH §1, §4).
+  // No subscribeResolutions: Gamma doesn't push, the resolver polls.
 }
 
-// ─── Singleton + registration helper ────────────────────────────────────────
+// ─── Singleton ──────────────────────────────────────────────────────────────
 
-/** Singleton adapter instance — registered via `./register.ts`. */
+/** Registered by `./register.ts`. */
 export const polymarketGammaAdapter: MarketMakerAdapter =
   new PolymarketGammaAdapter();
 
-// Type-only export so callers can reference the class without re-instantiating.
 export type { PolymarketGammaAdapter };
 
-// Re-exports for the smoke driver / sync ticker / register module.
 export { PolymarketGammaClient } from "./client.js";
 export {
   PolymarketClobClient,

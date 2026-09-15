@@ -30,10 +30,7 @@ function configFor(extra: Record<string, unknown>) {
   });
 }
 
-// ─── 1. The field is typed on the snapshot, not smuggled through the index
-//        signature. If `icon`/`image` ever stop being first-class this stops
-//        compiling, which is the point — a typo'd field name would otherwise
-//        silently produce iconless markets forever.
+// ─── 1. `icon`/`image` are typed fields, so a typo fails to compile ────────
 const typedSnapshot: Pick<GammaMarketSnapshot, "icon" | "image"> = {
   icon: ICON,
   image: IMAGE,
@@ -51,11 +48,6 @@ assert.equal(
 );
 
 // ─── 3. Non-https is REJECTED at ingestion ──────────────────────────────────
-//
-// Every one of these is a real hazard, not a hypothetical: http downgrades the
-// public page to mixed content (browsers block it outright), and the
-// javascript:/data: forms are script injection handed to us by an upstream we
-// do not control.
 
 for (const hostile of [
   "http://polymarket-upload.s3.amazonaws.com/SOL.png",
@@ -83,16 +75,13 @@ for (const hostile of [
   );
 }
 
-// A hostile `icon` still lets a good `image` through — one bad field must not
-// cost the market its artwork.
+// A hostile `icon` still lets a good `image` through.
 assert.equal(
   configFor({ icon: "http://insecure.example/a.png", image: IMAGE }).icon_url,
   IMAGE,
 );
 
-// Rejecting the icon never rejects the MARKET. Artwork is display metadata;
-// refusing to register a tradeable market over a bad image URL would be a far
-// worse failure than showing a letter glyph.
+// Rejecting the icon never rejects the market.
 {
   const config = configFor({ icon: "javascript:alert(1)" });
   assert.equal(config.conditionId, conditionId);
@@ -113,8 +102,7 @@ assert.equal(
 {
   const config = configFor({ icon: ICON });
   assert.deepEqual(marketConfigSchema.parse(config), config);
-  // The schema itself refuses a non-https value, so a hand-edited or
-  // hand-written config cannot validate its way in either.
+  // The schema itself refuses non-https.
   assert.throws(
     () => marketConfigSchema.parse({ ...config, icon_url: "http://x.example/a.png" }),
     /icon_url must be an https URL/,
@@ -122,9 +110,6 @@ assert.equal(
 }
 
 // ─── 6. The PUBLIC summary carries it ───────────────────────────────────────
-//
-// This is the half that was missing: the value was stored but the summary
-// omitted it, so every consumer reading the public projection saw no artwork.
 
 {
   const config = configFor({ icon: ICON });
@@ -142,9 +127,7 @@ assert.equal(
   assert.equal(viaRegistry.icon_url, ICON);
 }
 
-// A row that predates the ingestion guard (or was written by hand) cannot put
-// a non-https url onto the public page: the summary re-validates on the way
-// out, independently of what storage happens to hold.
+// A stored non-https url is dropped on the way out.
 {
   const summary = publicPolymarketGammaMarketConfigSummary({
     conditionId,
@@ -154,19 +137,14 @@ assert.equal(
   assert.equal("icon_url" in summary, false, "the read path re-checks the scheme");
 }
 
-// A market with no artwork produces no key, so consumers can rely on
-// `icon_url === undefined` meaning "render the glyph".
+// No artwork, no key: `icon_url === undefined` means "render the glyph".
 {
   const summary = publicPolymarketGammaMarketConfigSummary(configFor({}));
   assert.equal("icon_url" in summary, false);
 }
 
 // ─── 7. The ENRICHED read row sanitizes too ─────────────────────────────────
-//
-// `enrichedMarketRegistryRow` spread the raw MarketRow, so `config_json` went
-// to the wire verbatim — right past the summary's validated gate. The dashboard
-// parses that blob itself and puts `icon_url` into an <img src>, so the gate
-// only ever covered one of the two shapes murmur serves.
+// The dashboard parses this raw config_json itself.
 
 function enrichedConfig(iconUrl: unknown): Record<string, unknown> {
   const stored: Record<string, unknown> = {
@@ -184,9 +162,7 @@ function enrichedConfig(iconUrl: unknown): Record<string, unknown> {
   return JSON.parse(row.config_json) as Record<string, unknown>;
 }
 
-// A bare scheme is the exact value the dashboard's old `/^https:\/\//` prefix
-// test let through and `new URL()` rejects — it has no host, so it renders as a
-// broken image at best.
+// "https://" alone has no host and must be dropped too.
 for (const hostile of [
   "https://",
   "https:///",
@@ -217,8 +193,7 @@ for (const hostile of [
 // No key in, no key out — never a null the renderer would have to special-case.
 assert.equal("icon_url" in enrichedConfig(undefined), false);
 
-// An unparseable blob is passed through rather than rewritten: it carries no
-// readable icon anyway, and inventing a replacement would be worse.
+// An unparseable blob passes through unchanged.
 {
   const row = enrichedMarketRegistryRow({
     market_id: conditionId,
@@ -227,8 +202,6 @@ assert.equal("icon_url" in enrichedConfig(undefined), false);
   assert.equal(row.config_json, "{not json");
 }
 
-// The browser-side half of this gate is pinned separately, in
-// dashboard/src/verdict/lib/market-meta.smoke.ts — the root tsconfig sets
-// `rootDir: ./src` and excludes `dashboard`, so it cannot be imported here.
+// Browser-side half: dashboard/src/verdict/lib/market-meta.smoke.ts.
 
 process.stdout.write("OK Polymarket market icon passthrough smoke\n");

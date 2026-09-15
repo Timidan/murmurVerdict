@@ -1,24 +1,8 @@
 /**
- * Venue live-snapshot provider — decorates Polymarket Gamma market rows
- * with live odds / volume / liquidity for the public market surfaces
- * (`GET /v1/markets`, `GET /v1/markets/:market_id`).
- *
- * Design (mirrors the resolver-side client posture in ./client.ts):
- *   - The static half of the snapshot (`end_date`, `url`) always comes
- *     from `markets.config_json` — present even when Gamma is down.
- *   - The live half (`prices`, `volume`, `liquidity`, `fetched_at`) is
- *     fetched lazily on request through {@link PolymarketGammaClient}
- *     (which already carries the 60s-active-TTL LRU, single-flight,
- *     3× backoff, and hard 6s per-request timeout).
- *   - A per-market_id result cache (~60s TTL) sits above the client so
- *     repeat reads inside the TTL never re-enter the fetch path.
- *   - A hard fetch budget (default 2s) bounds request latency: when the
- *     upstream fetch cannot answer inside the budget (cold cache during
- *     a Gamma outage), the surface serves the static skeleton with
- *     `prices/volume/liquidity/fetched_at = null` NOW and the in-flight
- *     fetch keeps running in the background to warm the cache for the
- *     next request. `/v1/markets` therefore never blocks or fails on
- *     upstream trouble.
+ * Adds live Gamma odds / volume / liquidity to the public market rows.
+ * `end_date` and `url` come from stored config and survive outages. Live
+ * fields are cached per market (60s) and bounded by a 2s budget: past it the
+ * row is served without them while the fetch warms the cache in the background.
  */
 
 import {
@@ -191,8 +175,7 @@ export class PolymarketVenueSnapshotProvider
           );
         }
       } catch {
-        // client.fetchMarketByConditionId is contract-bound not to throw;
-        // honor the surface's always-200 posture if that ever regresses.
+        // The client shouldn't throw; stay always-200 if it does.
         live = null;
       } finally {
         this.inflight.delete(marketId);
@@ -277,12 +260,7 @@ function configOutcomeLabels(
   return null;
 }
 
-/**
- * Gamma serializes `outcomePrices` as a JSON-encoded STRING of decimal
- * strings (see transform.ts footgun note); tolerate a plain array too for
- * forward-compat. Returns null unless every entry coerces to a finite
- * number.
- */
+/** JSON-encoded string or plain array; null unless every entry is a finite number. */
 function decimalArray(raw: unknown): number[] | null {
   let parsed: unknown = raw;
   if (typeof raw === "string") {

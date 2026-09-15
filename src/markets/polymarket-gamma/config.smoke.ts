@@ -48,12 +48,7 @@ assert.equal(polymarketGammaMarketConfigJson({
   gamma_url: "https://polymarket.com/event/will-eth-break-5k",
 }));
 
-// A snapshot Gamma could not supply is REFUSED, never patched up. Both of
-// these fields are stored and published as real market facts: the slug becomes
-// the public `gamma_url`, and the labels are rendered as the market's outcomes
-// and used to resolve CLOB token ids. This case previously asserted the
-// fabricated values (`conditionId.slice(0, 10)` as a slug, ["YES","NO"] as the
-// outcomes of a market whose payload never said so).
+// Missing slug or outcomes are refused, never invented: both are published as market facts.
 assert.throws(
   () =>
     polymarketGammaMarketConfig({
@@ -130,12 +125,8 @@ assert.deepEqual(
       endDate: "2026-06-13T00:00:00Z",
     },
   };
-  // Tagged event: the highest-precedence ALLOWLISTED slug wins regardless of
-  // position, and the CANONICAL label is returned (the venue's own casing is
-  // ignored). Tag order here is the real one Gamma returns for a 5m series —
-  // the narrow `up-or-down` leads and `crypto` sits last — because taking
-  // tags[0] is exactly the bug this replaced. `solana` and `crypto-prices`
-  // are present and off-list, so they can never rank.
+  // The highest-precedence allowlisted slug wins regardless of position, with
+  // its canonical label. Real Gamma tag order for a 5m series: `crypto` last.
   const tagged = JSON.parse(polymarketGammaMarketConfigJson({
     ...base,
     snapshot: {
@@ -155,9 +146,7 @@ assert.deepEqual(
   assert.equal(tagged.series_title, "ETH Up or Down 5m");
   assert.equal(tagged.series_slug, "eth-up-or-down-5m");
 
-  // Two real categories on one market: the precedence ORDER decides, not tag
-  // ids (creation order) and not array position. Ids here are adversarial —
-  // tech's is lower AND tech is listed first, politics still wins.
+  // Precedence order decides, not tag id or position.
   const dual = JSON.parse(polymarketGammaMarketConfigJson({
     ...base,
     snapshot: {
@@ -172,8 +161,7 @@ assert.deepEqual(
   })) as Record<string, unknown>;
   assert.equal(dual.venue_category, "Politics", "precedence order, never tag id");
 
-  // The venue's own label casing is ignored: Gamma serves "health" lowercase;
-  // murmur shows the canonical form. Ids are entirely optional.
+  // Canonical label, not the venue's casing; ids are optional.
   const cased = JSON.parse(polymarketGammaMarketConfigJson({
     ...base,
     snapshot: {
@@ -191,8 +179,7 @@ assert.deepEqual(
     [],
     [{ tags: null, series: null }],
     [{ tags: [{ label: "" }, { nolabel: 1 }], series: [{ title: "  " }] }],
-    // Tags that are real but none of them top-level: uncategorised is the
-    // honest answer. Borrowing "Up or Down" as a category is what we stopped.
+    // Real tags, none top-level: uncategorised.
     [{ tags: [{ id: "102127", label: "Up or Down", slug: "up-or-down" }] }],
     [{ tags: [{ id: "818", label: "Solana", slug: "solana" }] }],
   ]) {

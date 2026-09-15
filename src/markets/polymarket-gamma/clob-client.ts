@@ -1,28 +1,11 @@
 /**
- * Minimal Polymarket CLOB HTTP client — the post-disappearance fallback
- * surface for `observeResolution` and the sync ticker.
+ * Polymarket CLOB client, only for the fallback read once Gamma drops a
+ * 5-minute market after close (CLOB keeps serving `closed` + `winner`).
  *
- * Gamma drops 5-minute micro-markets minutes after close (`/markets?
- * condition_ids=…` returns `200 []`), but the public, key-less
- * `GET clob.polymarket.com/markets/{conditionId}` keeps serving them with
- * `closed` + per-token `winner` flags. This client exists ONLY for that
- * fallback read — Gamma stays the primary surface (richer UMA status).
- *
- * Budget posture (tighter than the Gamma client on purpose — the resolver
- * walks pending calls sequentially, so a CLOB outage must not consume the
- * tick):
- *   - 2s per-request timeout, 1 retry (2 attempts total).
- *   - LRU caching keyed on conditionId:
- *       · 1h TTL once `closed=true` with exactly one winner (terminal)
- *       · 45s TTL for present-but-pending markets
- *       · 45s negative cache for 404s / final errors
- *   - Single-flight per conditionId.
- *   - Process-wide circuit breaker on transport failures (network, timeout,
- *     429, 5xx): after 5 consecutive transport failures the breaker opens
- *     for 60s and every fetch short-circuits to `circuit_open` without a
- *     network call. Any success / 404 closes it.
- *
- * NEVER throws — same no-throw result contract as the Gamma client.
+ * Tighter than the Gamma client so an outage can't eat the sequential
+ * resolver tick: 2s timeout, one retry, LRU with negative caching,
+ * single-flight, and a breaker that opens for 60s after 5 transport failures
+ * (any success or 404 closes it). Never throws.
  */
 
 import { z } from "zod";
@@ -150,9 +133,7 @@ export class PolymarketClobClient {
       };
     }
     if (this.breakerOpenUntilMs > now) {
-      // Circuit open — the CLOB surface is down; don't burn the resolver
-      // tick on more sequential timeouts. Not negative-cached: the breaker
-      // is process-wide and self-expiring.
+      // Breaker open: fail fast. Not negative-cached; the breaker self-expires.
       return { snapshot: null, source: "circuit_open", error: "circuit_open" };
     }
     // Coalesce concurrent fetches on the same key.

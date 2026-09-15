@@ -7,17 +7,8 @@ import { parseOutcomeLabels, type GammaMarketSnapshot } from "./transform.js";
 export const POLYMARKET_CONDITION_ID_REGEX = /^0x[0-9a-fA-F]{64}$/;
 
 /**
- * `icon_url` is DISPLAY metadata, not scoring config, so adding it does NOT
- * bump `market_config_version`: no resolver, score, or payout reads it, and a
- * market registered before this field existed is scored identically to one
- * registered after. Existing rows simply have no `icon_url` and never get one
- * backfilled — a re-registration picks it up from the venue, nothing else does.
- *
- * https only. The value is rendered as an `<img src>` in the public dashboard,
- * so an `http://` icon would downgrade the page to mixed content (blocked in
- * every current browser) and a `javascript:`/`data:` value is a script-injection
- * surface handed to us by an upstream we do not control. Anything that is not a
- * parseable https URL is DROPPED at ingestion — never stored, never served.
+ * https URLs only. The value lands in a public `<img src>`, so http (mixed
+ * content) and javascript:/data: (injection) are dropped, never stored.
  */
 export function httpsUrlOrNull(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -45,37 +36,25 @@ const httpsUrlSchema = z
     }
   }, "icon_url must be an https URL");
 
-/**
- * Stamped onto `markets.config_json` for Polymarket Gamma rows. Gamma adds
- * undocumented fields constantly, so the adapter-facing schema stays
- * passthrough while this Module owns Murmur's stable stored projection.
- */
+/** Stored `markets.config_json` for Gamma rows. Passthrough: Gamma adds fields constantly. */
 export const marketConfigSchema = z
   .object({
     conditionId: z.string().regex(POLYMARKET_CONDITION_ID_REGEX),
     questionID: z.string().regex(POLYMARKET_CONDITION_ID_REGEX).optional(),
-    /** Human question text from Gamma (e.g. "Will Argentina win…?"). */
     question: z.string().optional(),
     slug: z.string().min(1),
     outcomes: z.array(z.string()).length(2),
-    /** Immutable `normalized outcome label → CLOB token_id` map, persisted
-     *  at registration when Gamma supplies valid `clobTokenIds`. The CLOB
-     *  resolution fallback prefers this identity over label matching. */
+    /** `normalized label → CLOB token_id`, fixed at registration; the CLOB fallback prefers it over label matching. */
     clobTokenIds: z.record(z.string()).optional(),
     endDate: z.string().nullable(),
     umaBond: z.string().optional(),
     resolvedBy: z.string().optional(),
     resolution_class: ResolutionClassSchema.optional(),
-    /** Venue artwork, https-validated at ingestion. Absent on every market
-     *  registered before this field existed — deliberately NOT backfilled. */
+    /** Venue artwork, https-validated. Not backfilled on older markets. */
     icon_url: httpsUrlSchema.optional(),
-    /** Venue-declared category: first Gamma event tag label. Absent when the
-     *  venue does not tag the event (true for the 5m crypto series). */
+    /** Top-level Gamma event tag; absent for untagged events (e.g. 5m crypto). */
     venue_category: z.string().min(1).optional(),
-    /** Gamma recurring-series identity from the parent event, e.g.
-     *  "ETH Up or Down 5m". Display metadata — NOT a category (an
-     *  asset-specific series as a grouping key would just restore per-asset
-     *  parent groups). */
+    /** Gamma recurring series, e.g. "ETH Up or Down 5m". Display only, not a category. */
     series_title: z.string().min(1).optional(),
     series_slug: z.string().min(1).optional(),
     gamma_url: z.string().url(),
@@ -90,17 +69,13 @@ export interface PolymarketGammaMarketConfigInput {
     GammaMarketSnapshot,
     "slug" | "outcomes" | "endDate" | "umaBond" | "resolvedBy"
   > & {
-    /** Gamma forward-compat field; projected into config when present. */
     readonly question?: unknown;
-    /** Gamma JSON-encoded string of the two CLOB token ids; projected into
-     *  the `clobTokenIds` label→id map when parseable. */
+    /** JSON-encoded pair of CLOB token ids. */
     readonly clobTokenIds?: unknown;
-    /** Gamma venue artwork. `icon` wins over `image` when both are usable;
-     *  see {@link httpsUrlOrNull} for why anything non-https is dropped. */
+    /** `icon` wins over `image`. */
     readonly icon?: unknown;
     readonly image?: unknown;
-    /** Gamma embeds the parent event(s) on market rows; tags + series live
-     *  there. Forward-compat unknown — every read is runtime-guarded. */
+    /** Parent event(s), where tags and series live. */
     readonly events?: unknown;
   };
   resolutionClass?: ResolutionClass;
@@ -115,22 +90,9 @@ export class PolymarketGammaConfigError extends Error {
 }
 
 /**
- * Polymarket's top-level categories: tag slug → the label murmur displays.
- *
- * Gamma publishes no hierarchy to read: `/tags` is a flat unsorted list (junk
- * entries included), the tag object carries no parent or level, and `forceShow`
- * is a carousel flag rather than a rank — the broad `crypto` tag has it false
- * while the narrow `up-or-down` has it true. Tag ORDER is not hierarchy either:
- * the same event returns `Up or Down` first on one endpoint and `Crypto Prices`
- * first on another. So the top level has to be named here. Every slug was
- * verified against `/tags/slug/<slug>` before being added; anything not on
- * this list leaves the market uncategorised, which is the honest outcome.
- *
- * ARRAY ORDER IS PRECEDENCE. A market carrying two top-level tags (Politics +
- * Tech) categorises as the earlier entry, deterministically — never by tag id,
- * which is creation order, and never by the tag's own label, which Gamma cases
- * inconsistently ("health", "entertainment"). The label shown is always the
- * canonical one on the right.
+ * Polymarket top-level categories: tag slug → display label. Gamma exposes no
+ * tag hierarchy, so it is named here; other tags leave a market uncategorised.
+ * Array order is precedence when a market carries several.
  */
 const POLYMARKET_TOP_LEVEL_TAGS: ReadonlyArray<readonly [slug: string, label: string]> = [
   ["sports", "Sports"],
@@ -191,10 +153,6 @@ function seriesFromEvents(events: unknown): { title: string; slug: string | null
 export function polymarketGammaMarketConfig(
   input: PolymarketGammaMarketConfigInput,
 ): PolymarketGammaMarketConfig {
-  // No fabricated slug. The old fallback used the first 10 chars of the
-  // conditionId, which is not a slug — it produced a `gamma_url` pointing at a
-  // Polymarket event page that does not exist, stored and surfaced as if it
-  // were the real venue link. Refuse instead; the caller reports it.
   const slug = input.snapshot.slug;
   if (typeof slug !== "string" || slug.length === 0) {
     throw new PolymarketGammaConfigError(
@@ -207,13 +165,7 @@ export function polymarketGammaMarketConfig(
     input.snapshot.outcomes,
     input.snapshot.clobTokenIds,
   );
-  // ONE normalized url, not two raw passthrough fields. Gamma serves `icon`
-  // (square mark) and `image` (card art) and they are usually identical; the
-  // dashboard wants a single 16px mark, so the choice is made once here rather
-  // than in every renderer. `icon` wins; `image` is the fallback for rows that
-  // carry only the wide art. A market with neither — or with only non-https
-  // values — stores no key at all, which is what the renderer's glyph fallback
-  // is for.
+  // One normalized icon: the square `icon`, else the `image` card art.
   const iconUrl =
     httpsUrlOrNull(input.snapshot.icon) ?? httpsUrlOrNull(input.snapshot.image);
   const venueCategory = venueCategoryFromEvents(input.snapshot.events);
@@ -257,10 +209,7 @@ export function publicPolymarketGammaMarketConfigSummary(
     ...(typeof config.slug === "string" ? { slug: config.slug } : {}),
     ...(Array.isArray(config.outcomes) ? { outcomes: config.outcomes } : {}),
     ...(typeof config.endDate === "string" ? { endDate: config.endDate } : {}),
-    // Re-validated on the way OUT as well as on the way in. This summary is
-    // served to anonymous browsers, and the stored blob is `.passthrough()` —
-    // a row written before the ingestion guard existed, or hand-edited, must
-    // not be able to put a non-https url into an <img src> on the public page.
+    // Re-validated on the way out: this is public and the stored blob is passthrough.
     ...(httpsUrlOrNull(config.icon_url) !== null
       ? { icon_url: httpsUrlOrNull(config.icon_url) }
       : {}),
@@ -275,11 +224,8 @@ export function publicPolymarketGammaMarketConfigSummary(
 }
 
 /**
- * Build the immutable `normalized label → CLOB token_id` map. Gamma's
- * `clobTokenIds` is documented as index-aligned with `outcomes`. Fail-closed:
- * any parse failure, wrong cardinality, empty id, or non-unique normalized
- * label yields null and the market falls back to label matching at resolve
- * time (same behavior as pre-hardening rows).
+ * `normalized label → CLOB token_id`, index-aligned with `outcomes`. Null on
+ * any doubt; resolution then falls back to label matching.
  */
 function clobTokenIdMapForConfig(
   outcomes: unknown,
@@ -298,14 +244,7 @@ function clobTokenIdMapForConfig(
   return { [normalized[0]!]: ids[0]!, [normalized[1]!]: ids[1]! };
 }
 
-/**
- * Outcome labels, exactly as Gamma states them.
- *
- * The old fallback substituted ["YES","NO"] for anything unparseable. Those
- * labels are stored and rendered as the market's real outcomes, so a
- * Up/Down market whose payload glitched was published mislabelled — and the
- * CLOB label→token resolution keys off these strings.
- */
+/** Gamma's own outcome labels. Throws rather than guessing: the CLOB lookup keys off them. */
 function gammaOutcomeLabelsForConfig(outcomes: unknown, conditionId: string): string[] {
   const labels = parseOutcomeLabels(typeof outcomes === "string" ? outcomes : undefined);
   if (

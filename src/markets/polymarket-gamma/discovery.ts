@@ -1,20 +1,11 @@
 /**
- * Polymarket 5-minute market auto-discovery.
+ * Polymarket Up-or-Down auto-discovery. Registers each imminent window as a
+ * `draft` market row and on-chain via `registerFixedRevealMarket`, and lists
+ * it only after the chain state is verified.
  *
- * Finds imminent crypto "Up or Down" windows via the Gamma date-window
- * listing and registers each one in BOTH places an agent submission needs:
- * the `markets` DB row (staged as `draft`) and the on-chain
- * `registerFixedRevealMarket` entry whose reveal timestamp the sealed-call
- * acceptance guard pins to the market endDate. The DB row is promoted to
- * `listed` only after the chain state is verified, so agents can never see
- * a market the contract would reject.
- *
- * Dedupe is on-chain-aware: every candidate's `markets(bytes32)` tuple is
- * read and compared against the exact fixed-reveal shape before any write —
- * a DB row alone is never proof of registration. The durable
- * `polymarket_discovery_state` ledger carries intent, tx hashes, errors,
- * and gas telemetry across crashes so lost receipts reconcile from chain
- * state instead of re-spending gas.
+ * Chain state, never the DB row, is proof of registration. The
+ * `polymarket_discovery_state` ledger survives crashes so lost receipts
+ * reconcile from chain instead of re-spending gas.
  */
 
 import type Database from "better-sqlite3";
@@ -59,20 +50,10 @@ import { parseOutcomeLabels, type GammaMarketSnapshot } from "./transform.js";
 
 const CONDITION_ID_REGEX = /^0x[0-9a-f]{64}$/;
 const MAX_BROADCAST_ATTEMPTS = 5;
-/**
- * How close to armCloseAt a registration may still be broadcast. The tx must
- * CONFIRM before the deadline (the contract rejects armCloseAt <= now), so a
- * margin narrower than broadcast + one Base block loses the race — measured
- * live losing it with seconds to spare. 30s covers a slow relay comfortably;
- * markets recur every window, so an over-frozen boundary candidate costs
- * nothing.
- */
+/** The register tx must confirm before armCloseAt; 30s covers broadcast plus a slow block. */
 const REGISTRATION_BROADCAST_MARGIN_MS = 30_000;
 const LEDGER_SCAN_LIMIT = 200;
-// How long a persisted broadcast hash with no receipt is treated as
-// still-pending before a replacement write is allowed. Rebroadcasts carry
-// identical calldata, so the worst case of a late-landing original is a
-// duplicate no-op registration, not divergent chain state.
+// How long a broadcast hash with no receipt counts as still pending.
 const BROADCAST_PENDING_GRACE_MS = 90_000;
 
 // ─── Configuration ──────────────────────────────────────────────────────────
@@ -87,26 +68,13 @@ export interface PolymarketDiscoveryEngineConfig {
   questionFilter: string;
   /** Bounded asset names matched as whole words against the question. */
   assets: string[];
-  /**
-   * Window lengths (seconds) this daemon discovers. A candidate's own window
-   * is parsed from its question text and must be a MEMBER of this set;
-   * anything else — including an unrecognised question shape — is rejected.
-   *
-   * Each member is its own clock series with its own `market_series` row, so a
-   * 600s market can never land in the 300s series.
-   */
+  /** Accepted window lengths (seconds), parsed from each question. Each is its own series. */
   windowDurationSecs: number[];
-  /**
-   * Series clock constants, validated by assertSeriesClockConfig. Shared by
-   * EVERY window this daemon discovers: only the window length varies per
-   * series. These derive every on-chain instant from the market's endDate, so
-   * they must match what is registered in `market_series` for each series.
-   */
+  /** Clock constants shared by every window; must match each stored `market_series` row. */
   seriesClock: SeriesClockConfig;
   /**
-   * Cohort ceiling per call. An operational sales limit, NOT a gas bound —
-   * each grant is its own transaction, so size this from grantor funding and
-   * from how many grants can confirm inside the delivery budget.
+   * Sales limit per call, not a gas bound: each grant is its own tx, so size
+   * it from grantor funding and what confirms inside the delivery budget.
    */
   maxArmedPerCall: number;
   /** Bump to intentionally adopt new clock constants. See seriesId(). */
@@ -126,10 +94,7 @@ export interface PolymarketDiscoveryGammaSource {
   fetchMarketByConditionId(
     conditionId: string,
   ): Promise<{ snapshot: GammaMarketSnapshot | null; error: string | null }>;
-  /** Fill in `events[0].tags` (the venue category source) that `/markets`
-   *  omits. Called once per market actually registered, never on the window
-   *  walk. Optional and best-effort: absent or failing, the market registers
-   *  uncategorised rather than not at all. */
+  /** Fills `events[0].tags`, which `/markets` omits. Best-effort: on failure the market registers uncategorised. */
   enrichSnapshotEventTags?(
     snapshot: GammaMarketSnapshot,
   ): Promise<GammaMarketSnapshot>;
@@ -160,11 +125,7 @@ export interface DiscoveryCandidate {
   question: string | null;
   slug: string | null;
   endDateEpochSec: number;
-  /**
-   * THIS market's prediction-window length, parsed from its question text.
-   * Every schedule derivation and series lookup keys off it, never off a
-   * daemon-wide setting — that is what lets one daemon run several windows.
-   */
+  /** Parsed from this market's question; decides its schedule and series. */
   windowSec: number;
   /** Present for freshly fetched windows; null for ledger-recovered rows. */
   snapshot: GammaMarketSnapshot | null;
@@ -174,19 +135,13 @@ export interface DiscoveryCandidateFilter {
   nowMs: number;
   minLeadSec: number;
   /**
-   * Series clock. Selection must reject anything whose arm window has already
-   * closed: `minLeadSec` alone is not enough, because registration needs
-   * window + openLead + commitMargin of lead time, which is far more than the
-   * minimum lead. Admitting such a candidate stages a draft, then reverts at
-   * gas estimation (armCloseAt <= now), which aborts the whole tick — and
-   * since estimation failures do not count as attempts, the same candidate
-   * heads the queue again next tick and starves every registrable one behind
-   * it.
+   * Rejects candidates whose arm window has closed. minLeadSec alone isn't
+   * enough: such a candidate reverts at gas estimation and heads the queue
+   * again every tick.
    */
   seriesClock: SeriesClockConfig;
   questionFilter: string;
   assets: string[];
-  /** Accepted window lengths. Membership, not equality. */
   windowDurationSecs: readonly number[];
 }
 
@@ -201,10 +156,8 @@ export function selectDiscoveryCandidates(
 ): DiscoveryCandidate[] {
   const assetPatterns = filter.assets.map(
     (asset) =>
-      // Word-bounded match: blocks substring hits inside larger tokens
-      // ("Bitcoin" cannot match "Bitcoincash"), but a configured name still
-      // matches as the leading word of a longer name ("Ethereum" matches
-      // "Ethereum Classic") — configure exact asset names.
+      // Word-bounded: "Bitcoin" won't match "Bitcoincash", but "Ethereum"
+      // still matches "Ethereum Classic".
       new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(asset)}([^A-Za-z0-9]|$)`, "i"),
   );
   const filterLower = filter.questionFilter.toLowerCase();
@@ -230,14 +183,8 @@ export function selectDiscoveryCandidates(
     ) {
       continue;
     }
-    // Duration gate: the Gamma window mixes 5-minute, 10-minute and 15-minute
-    // series under the same question shape. Gamma's `startDate` is the market
-    // *creation* time (~24h before close), NOT the prediction window start, so
-    // endDate−startDate cannot separate the series. The window length lives
-    // only in the question text ("7:15PM-7:20PM ET"). Rows whose question shape
-    // is unrecognized are rejected, not guessed — and the parsed window is
-    // carried on the candidate, because it, not the config, decides which
-    // series this market belongs to.
+    // 5/10/15-minute series share one question shape and Gamma's startDate is
+    // creation time, so the window comes from the question ("7:15PM-7:20PM ET").
     const windowSec = parseQuestionWindowDurationSec(question);
     if (windowSec === null || !filter.windowDurationSecs.includes(windowSec)) {
       continue;
@@ -245,13 +192,9 @@ export function selectDiscoveryCandidates(
     if (typeof snapshot.endDate !== "string") continue;
     const endMs = Date.parse(snapshot.endDate);
     if (!Number.isFinite(endMs)) continue;
-    // The chain registers whole seconds while acceptance compares the
-    // persisted millisecond timestamp — sub-second endDates cannot satisfy
-    // both, so refuse them here.
+    // Chain stores whole seconds; acceptance compares ms.
     if (endMs % 1000 !== 0) continue;
     if (endMs - filter.nowMs < filter.minLeadSec * 1000) continue;
-    // Registrable means "arming has not closed yet", which is strictly
-    // stronger than the minimum lead.
     if (
       !isRegistrable(
         deriveSeriesClock({
@@ -286,10 +229,8 @@ const QUESTION_WINDOW_REGEX =
   /(\d{1,2}):(\d{2})\s*([AP]M)\s*-\s*(\d{1,2}):(\d{2})\s*([AP]M)/i;
 
 /**
- * Derive a Polymarket "Up or Down" window's length (seconds) from the clock
- * range in its question ("7:15PM-7:20PM ET" → 300). Returns null when the
- * shape is unrecognized so the caller fails closed. Handles the midnight
- * rollover ("11:55PM-12:00AM" → 300).
+ * Window length in seconds from the question's clock range
+ * ("7:15PM-7:20PM ET" → 300, "11:55PM-12:00AM" → 300). Null if unrecognized.
  */
 export function parseQuestionWindowDurationSec(question: string): number | null {
   const match = question.match(QUESTION_WINDOW_REGEX);
@@ -322,14 +263,7 @@ type CandidateOutcome =
 /** Mutable per-tick relayer balance, decremented per estimated write cost. */
 interface TickSpendState {
   balanceWei: bigint | null;
-  /**
-   * Registrations newly stamped by recovery during this tick.
-   *
-   * The write budget is computed once before candidate processing, so a
-   * recovery that discovers a previously uncounted registration must consume
-   * budget too — otherwise later candidates spend the full pre-recovery
-   * allowance and the persisted hourly/daily count exceeds its limit.
-   */
+  /** Registrations stamped by recovery this tick; they consume the write budget too. */
   recovered: number;
 }
 
@@ -354,10 +288,6 @@ export class PolymarketDiscoveryEngine {
   }
 
   async tick(): Promise<PolymarketDiscoveryTickResult> {
-    // Fail the tick BEFORE touching any market if the runtime clock constants
-    // no longer match the persisted series. Deriving schedules from changed
-    // constants would classify every already-registered market as an on-chain
-    // mismatch and bulk-freeze live markets.
     this.assertSeriesConfigUnchanged();
 
     const tickedAt = this.now();
@@ -372,9 +302,7 @@ export class PolymarketDiscoveryEngine {
     let balanceWei: bigint | null = null;
     let balanceStatus: "ok" | "warning" | "critical" | null = null;
     try {
-      // Pure-DB sweep first: ended `listed` markets are guaranteed to reject
-      // submissions, so they must freeze even when the RPC is down and every
-      // chain-dependent step below throws.
+      // DB-only sweep first so ended markets freeze even with the RPC down.
       result.frozen += this.freezeExpired(tickedAtMs);
 
       await this.ensurePreflight();
@@ -403,8 +331,7 @@ export class PolymarketDiscoveryEngine {
       });
       const candidates = this.mergeLedgerCandidates(fresh, tickedAtMs);
 
-      // Spend caps: per-tick, plus persisted per-hour/per-day counters so a
-      // crash-loop or broken filter cannot spend continuously.
+      // Per-tick cap plus persisted hourly/daily caps.
       const budget = Math.max(
         0,
         Math.min(
@@ -422,9 +349,7 @@ export class PolymarketDiscoveryEngine {
         ),
       );
 
-      // Shared per-tick spend state: each broadcast decrements the balance
-      // by its estimated cost so later candidates in the same tick check the
-      // reserve against what is actually left, not the tick-start reading.
+      // Each broadcast decrements the balance so later candidates check the reserve against what's left.
       const spend: TickSpendState = { balanceWei, recovered: 0 };
       for (const candidate of candidates) {
         const allowChainWrite =
@@ -471,12 +396,7 @@ export class PolymarketDiscoveryEngine {
 
   // ─── Preflight ────────────────────────────────────────────────────────────
 
-  /**
-   * One-time (per success) environment check before any owner-key write:
-   * the RPC must answer for the configured chain, the contract must have
-   * code, and the contract owner must be the relayer account this daemon
-   * signs with. Failure keeps every subsequent tick read-only.
-   */
+  /** Before any owner-key write: right chain, contract has code, owner is our relayer. */
   private async ensurePreflight(): Promise<void> {
     if (this.preflightOk) return;
     const chainId = await this.registrar.getChainId();
@@ -501,12 +421,7 @@ export class PolymarketDiscoveryEngine {
 
   // ─── Expiry sweep ─────────────────────────────────────────────────────────
 
-  /**
-   * Freeze at endDate, not later: an ended `listed` market is guaranteed to
-   * reject submissions, and frozen markets keep resolving existing calls.
-   * Covers both ledger rows and manually registered polymarket rows the
-   * ledger has never seen. No on-chain deactivation is needed.
-   */
+  /** Freeze ended markets, including polymarket rows the ledger never saw. Frozen markets still resolve. */
   private freezeExpired(nowMs: number): number {
     const now_iso = isoFromMs(nowMs);
     let frozen = 0;
@@ -548,12 +463,7 @@ export class PolymarketDiscoveryEngine {
 
   // ─── Candidate assembly ───────────────────────────────────────────────────
 
-  /**
-   * In-flight ledger rows (draft/broadcasting/confirmed) that the fresh
-   * window no longer returns still need reconciliation — a daemon crash
-   * between broadcast and promotion must not strand them. They are
-   * prepended so recovery work happens before new spend.
-   */
+  /** Re-queue in-flight ledger rows the window no longer returns, ahead of new spend. */
   private mergeLedgerCandidates(
     fresh: DiscoveryCandidate[],
     nowMs: number,
@@ -568,10 +478,7 @@ export class PolymarketDiscoveryEngine {
       if (row.end_date_epoch_s * 1000 <= nowMs) continue;
       const windowSec = this.ledgerCandidateWindowSec(row);
       if (windowSec === null) {
-        // No window means no schedule and no series — every step below would
-        // have to guess one, and guessing is what registers a market into the
-        // wrong clock series. Leave it; `freezeExpired` settles the row once
-        // its window ends.
+        // Never guess a window; freezeExpired settles the row later.
         this.logger.warn(
           `[polymarket-discovery] ${row.condition_id}: cannot determine window ` +
             `length from its clock snapshot or question — skipping recovery`,
@@ -590,16 +497,7 @@ export class PolymarketDiscoveryEngine {
     return [...recovered, ...fresh];
   }
 
-  /**
-   * The window length of a row discovery already owns.
-   *
-   * A bound clock snapshot outranks the question text: it is what the market
-   * was actually registered with, so it stays right even if the venue later
-   * rewords the question, and it keeps a row recoverable after its window is
-   * dropped from the configured set. `resolutionAt - submissionCloseAt` IS the
-   * window by construction (see deriveSeriesClock). The question is the
-   * fallback for rows that never got as far as a snapshot.
-   */
+  /** Window of an owned row: its bound clock snapshot (resolution − submissionClose), else the question. */
   private ledgerCandidateWindowSec(
     row: PolymarketDiscoveryStateRow,
   ): number | null {
@@ -620,42 +518,30 @@ export class PolymarketDiscoveryEngine {
     candidate: DiscoveryCandidate,
     opts: { nowMs: number; allowChainWrite: boolean; spend: TickSpendState },
   ): Promise<CandidateOutcome> {
-    // An operator halt is checked FIRST, before staging, estimation or any
-    // chain write. Later checks alone were not enough: a halted market with no
-    // ledger row still reached shared registration, which used to lift the
-    // halt, and the receipt path then listed it.
+    // Operator halt wins; check before any staging or chain write.
     if (marketsRepo.isOperatorHalted(this.db, candidate.conditionId)) {
       return "skipped";
     }
     const { conditionId, endDateEpochSec } = candidate;
     const now_iso = isoFromMs(opts.nowMs);
-    // Reassigned after a recovery stamp so downstream reads see current state.
     let ledger = polymarketDiscoveryRepo.get(this.db, conditionId);
-    // Terminal statuses need an operator, not a retry loop: `failed` rows
-    // already fired an alert, `frozen` windows are over.
+    // failed/frozen need an operator, not a retry.
     if (ledger && (ledger.status === "failed" || ledger.status === "frozen")) {
       return "skipped";
     }
-    // Not enough runway left to complete a NEW registration. Fresh
-    // candidates without history aren't worth a chain read; rows discovery
-    // already owns still get reconciled below — a listed market stays
-    // listed until its endDate, and confirmed chain state still promotes.
+    // Too late for a NEW registration; rows we already own still reconcile below.
     const leadShort =
       endDateEpochSec * 1000 - opts.nowMs < this.config.minLeadSec * 1000;
     if (leadShort && !ledger) {
       return "skipped";
     }
 
-    // On-chain truth FIRST. A DB row is never treated as proof of
-    // registration — that exact shortcut produced the live phantom-market
-    // failure this ticker exists to prevent.
+    // Chain state first: a DB row is never proof of registration.
     let chainState;
     try {
       chainState = await this.registrar.getMarket(conditionId as Hex);
     } catch (err) {
-      // A legacy deployment is a configuration fault, not a flaky read. Let it
-      // escape so the daemon surfaces it loudly instead of burning a tick per
-      // candidate forever against a contract it can never drive.
+      // A legacy contract is a config fault; surface it loudly.
       if (err instanceof LegacyContractError) throw err;
       this.recordCandidateError(conditionId, `chain_read:${describe(err)}`, now_iso);
       return "abort";
@@ -665,21 +551,15 @@ export class PolymarketDiscoveryEngine {
     const market = marketsRepo.get(this.db, conditionId);
 
     if (exact) {
-      // Stamp the registration if the ledger never recorded it. A registration
-      // whose receipt wait failed but which actually landed would otherwise
-      // keep registered_onchain_at NULL, and the hourly/daily spend caps count
-      // only that column — so recovered registrations were invisible to the
-      // very limits meant to bound gas spend.
+      // Stamp registrations whose receipt we missed so the spend caps count them.
       this.stampRecoveredRegistration(candidate, ledger, opts.spend, now_iso, {
         tx_hash: ledger?.tx_hash ?? null,
         gas_used: null,
         effective_gas_price_wei: null,
       });
-      // The stamp may have changed the row; re-read so the status checks below
-      // and promoteCandidate see current state rather than the pre-stamp copy.
       ledger = polymarketDiscoveryRepo.get(this.db, conditionId);
       if (endDateEpochSec * 1000 <= opts.nowMs) {
-        // Window closed mid-tick — registered on-chain but never listable.
+        // Window closed mid-tick: registered but never listable.
         this.freezeCandidate(conditionId, "window_ended", now_iso);
         return "frozen";
       }
@@ -689,26 +569,17 @@ export class PolymarketDiscoveryEngine {
       return this.promoteCandidate(candidate, ledger, market, now_iso);
     }
 
-    // Chain is absent or mismatched. A `listed` DB row is now a phantom —
-    // freeze it immediately; repair (below) relists after a verified write.
+    // Chain absent or mismatched: a `listed` row is a phantom. Repair relists after a verified write.
     if (market?.status === "listed") {
       marketsRepo.setStatus(this.db, conditionId, "frozen");
     }
     if (leadShort) {
-      // No time left to repair before the window closes; the market row (if
-      // any) is already frozen above, so nothing agent-facing remains.
       this.freezeCandidate(conditionId, "lead_time_elapsed", now_iso);
       return "frozen";
     }
     if (isRegisteredOnchain(chainState)) {
-      // FAIL CLOSED. Registration is one-shot on-chain, so a mismatch cannot be
-      // repaired by re-registering — and it must not be. Consumers arm and
-      // providers submit against a published schedule; silently rebinding it
-      // would change the deal underneath them after they had paid.
-      //
-      // The usual cause is Gamma moving the market's endDate after we
-      // registered. The correct response is to freeze this market and let the
-      // delist/refund path settle anyone already armed, never to retime it.
+      // Schedules are one-shot and buyers paid against them: never retime.
+      // Usually Gamma moved endDate; freeze and let delist/refund settle it.
       this.logger.warn(
         `[polymarket-discovery] on-chain schedule mismatch for ${conditionId} — ` +
           `freezing (schedules are immutable once registered). ` +
@@ -720,10 +591,7 @@ export class PolymarketDiscoveryEngine {
       return "frozen";
     }
 
-    // A persisted broadcast hash must be reconciled before any replacement
-    // write: a still-pending tx would otherwise be double-spent every tick
-    // until its receipt lands. NOTE: we no longer rebroadcast at a fresh nonce —
-    // see the past-grace branch below for why.
+    // Reconcile a persisted broadcast before any new write.
     if (ledger?.status === "broadcasting" && ledger.tx_hash) {
       const priorReceipt = await this.registrar.getReceipt(ledger.tx_hash as Hex);
       if (priorReceipt === null) {
@@ -731,20 +599,9 @@ export class PolymarketDiscoveryEngine {
         if (!Number.isFinite(broadcastAgeMs) || broadcastAgeMs < BROADCAST_PENDING_GRACE_MS) {
           return "skipped";
         }
-        // Past the grace window with no receipt.
-        //
-        // We deliberately do NOT rebroadcast here. A missing receipt does not
-        // prove the transaction is dead — the RPC may simply be lagging, and
-        // transport failures are reported as "missing" too. Sending a
-        // replacement takes the NEXT nonce from the shared relayer lane, so if
-        // the original was merely slow we leave a gap that stalls every later
-        // write from the same key, including the Gateway's. And if the
-        // original does land, the one-shot contract rejects the duplicate.
-        //
-        // Correctly recovering a stuck tx needs same-nonce replacement with a
-        // fee bump, which this engine has no transaction manager for. Until it
-        // does, surface it and let the operator decide rather than risking the
-        // shared nonce lane.
+        // No receipt past grace. Don't rebroadcast: it may be RPC lag, and a
+        // new nonce would gap the shared relayer lane. Safe recovery needs
+        // same-nonce fee bumping, so leave it to the operator.
         this.recordCandidateError(
           conditionId,
           `broadcast_unconfirmed_past_grace:${ledger.tx_hash} age=${Math.floor(broadcastAgeMs / 1000)}s`,
@@ -758,17 +615,9 @@ export class PolymarketDiscoveryEngine {
           now_iso,
         );
       } else {
-        // SUCCESS. The chain read above happened BEFORE this receipt landed,
-        // so `chainState` is stale — it still says unregistered. Acting on it
-        // would either freeze a registration that actually succeeded (the
-        // terminal ledger row is then skipped forever, so the market is never
-        // promoted) or broadcast a duplicate that the one-shot contract
-        // rejects. Re-read and reconcile against fresh truth instead.
+        // Success: chainState predates this receipt, so re-read.
         const freshState = await this.registrar.getMarket(conditionId as Hex);
         if (hasExactSchedule(freshState, expectedSchedule)) {
-          // Counts against this tick's budget for the same reason as the
-          // exact-state branch above: it newly stamps a registration the
-          // pre-tick budget did not know about.
           this.stampRecoveredRegistration(candidate, ledger, opts.spend, now_iso, {
             tx_hash: ledger.tx_hash,
             gas_used: priorReceipt.gasUsed?.toString() ?? null,
@@ -782,7 +631,7 @@ export class PolymarketDiscoveryEngine {
             now_iso,
           );
         }
-        // Registered but not matching: same immutable-schedule rule as above.
+        // Registered but mismatched: never retime.
         if (isRegisteredOnchain(freshState)) {
           this.freezeCandidate(
             conditionId,
@@ -793,11 +642,7 @@ export class PolymarketDiscoveryEngine {
           );
           return "frozen";
         }
-        // Receipt succeeded yet the read says unregistered. A success receipt
-        // proves execution, so this is far more likely RPC lag, a backend
-        // inconsistency, or a reorg boundary than a genuinely absent
-        // registration. Broadcasting again would spend gas on a one-shot call
-        // the contract rejects. Record it and retry reads next tick.
+        // Success receipt but unregistered read: likely RPC lag. Retry reads next tick.
         this.recordCandidateError(
           conditionId,
           `receipt_success_but_unregistered:${ledger.tx_hash}`,
@@ -807,34 +652,10 @@ export class PolymarketDiscoveryEngine {
       }
     }
 
-    // A recovery row skips the fresh-candidate lead filter, so it can reach
-    // here past armCloseAt. Registering it is impossible — the contract
-    // rejects armCloseAt <= now — and attempting it reverts at gas estimation,
-    // aborting the whole tick. Estimation failures do not increment
-    // attempt_count, so the same row heads the queue again next tick and
-    // starves every registrable candidate behind it.
-    //
-    // Placed AFTER the pending-receipt branch above, and this ordering is
-    // load-bearing: a registration tx can still be in flight when armCloseAt
-    // passes. Freezing before reconciling its receipt would strand a
-    // registration that then SUCCEEDS on-chain — the terminal frozen ledger
-    // row is skipped on later ticks, so the exact chain state is never
-    // promoted. By here, a pending tx inside its grace window has already
-    // returned "skipped", so only genuinely dead rows reach this check.
-    //
-    // The deadline comes from `expectedSchedule`, which returns a BOUND
-    // market's own frozen snapshot. Re-deriving from current config here would
-    // reintroduce the version-bump bug at this decision point: after a bump, a
-    // v1-bound draft would be judged against v2's arm deadline — frozen too
-    // early, or let through after its real v1 deadline had passed.
-    //
-    // WITH A BROADCAST MARGIN. Checking `now >= armCloseAt` exactly still let
-    // a candidate through whose deadline fell during the broadcast itself —
-    // seen live: armCloseAt 22:59:00, decision seconds earlier, tx mined
-    // after, contract reverted RevealAfterMustBeFuture. The register tx has to
-    // confirm before the deadline, so a candidate that cannot plausibly do
-    // that is frozen here instead of burning gas on a doomed broadcast. Losing
-    // a boundary market costs nothing — the venue lists another every window.
+    // Recovery rows skip the lead filter and can be past armCloseAt; they would
+    // revert at estimation and head the queue every tick. Must stay after the
+    // receipt branch so an in-flight tx isn't stranded, and use the bound
+    // schedule (not current config) plus the broadcast margin.
     if (
       !isRegisteredOnchain(chainState) &&
       opts.nowMs >= Number(expectedSchedule.armCloseAt) * 1000 - REGISTRATION_BROADCAST_MARGIN_MS
@@ -856,9 +677,7 @@ export class PolymarketDiscoveryEngine {
       return "skipped";
     }
 
-    // Stage DB state BEFORE spending gas: ledger draft + `draft` markets
-    // row. Draft markets are invisible to /v1/markets and rejected by the
-    // Gateway preflight, so a crash here leaves nothing agent-facing.
+    // Stage DB state before spending gas; drafts are invisible to agents.
     const staged = await this.stageDraft(candidate, ledger, market !== null, now_iso);
     if (!staged) return "skipped";
 
@@ -866,21 +685,9 @@ export class PolymarketDiscoveryEngine {
   }
 
   /**
-   * Stamp a registration the ledger never recorded and charge it to THIS
-   * tick's spend budget.
-   *
-   * The budget is computed once before candidate processing, so a recovery
-   * that newly stamps a registration would otherwise leave the full
-   * pre-recovery allowance available and let later candidates in the same tick
-   * exceed the hourly/daily cap.
-   *
-   * Creates the ledger row first when there is none: the stamp is an UPDATE,
-   * so an out-of-band registration with no row was silently not stamped and
-   * stayed invisible to the caps permanently.
-   *
-   * The repo's `registered_onchain_at IS NULL` predicate is what makes the
-   * count exact — a row already stamped reports false and is not re-counted,
-   * however many branches reach here.
+   * Stamp an unrecorded registration and charge it to this tick's budget.
+   * Creates the ledger row first (the stamp is an UPDATE); rows already
+   * stamped aren't recounted.
    */
   private stampRecoveredRegistration(
     candidate: DiscoveryCandidate,
@@ -916,39 +723,24 @@ export class PolymarketDiscoveryEngine {
     market: MarketRow | null,
     now_iso: string,
   ): Promise<CandidateOutcome> {
-    // An operator halt outranks every promotion reason, including a `draft`
-    // or `listed` row. Checked FIRST: the earlier version only looked at it in
-    // the frozen/retired branch, so a halted draft was relisted unconditionally.
+    // Operator halt outranks every promotion.
     if (marketsRepo.isOperatorHalted(this.db, candidate.conditionId)) {
       return "skipped";
     }
-    // Chain already carries the exact fixed-reveal state; only the DB needs
-    // work (crash after receipt, or market registered out-of-band).
+    // Chain is already right; only the DB needs work.
     if (!market) {
       const registered = await this.registerDraftMarketRow(candidate, now_iso);
       if (!registered) return "skipped";
     } else if (market.status !== "draft" && market.status !== "listed") {
-      // Promotion is sanctioned for missing/draft rows and for finishing
-      // discovery's own mid-registration repair freeze. Any other frozen or
-      // retired row is an operator decision — relisting it here would undo
-      // a deliberate halt on every tick.
+      // Only discovery's own mid-registration freeze may be relisted; other
+      // frozen/retired rows are operator decisions.
       const discoveryMidFlight =
         market.status === "frozen" &&
         (ledger?.status === "broadcasting" || ledger?.status === "confirmed");
       if (!discoveryMidFlight) return "skipped";
     }
-    // A market row existing is NOT proof it carries a schedule. An admin can
-    // create an unscheduled draft (allowed — drafts are inert), and promoting
-    // that to listed would publish a market whose config has no embargoSec
-    // stamp, so the daemon's expected reveal time disagrees with the chain and
-    // every submission to it is rejected. Refuse to promote without the
-    // snapshot rather than listing a market that cannot work.
-    // Listability is decided HERE, against FRESH time, for every promotion
-    // path. The post-receipt check used `opts.nowMs`, captured before
-    // estimation/broadcast/receipt-wait, and both recovery branches reached
-    // promotion without any window check at all — so a market whose submission
-    // window had closed could still be listed while the contract rejected
-    // every submission to it.
+    // List only inside the submission window (fresh time) and with a matching
+    // schedule snapshot; otherwise the contract rejects every submission.
     const schedule = this.expectedSchedule(candidate);
     if (this.now().getTime() >= Number(schedule.submissionCloseAt) * 1000) {
       this.logger.warn(
@@ -995,21 +787,11 @@ export class PolymarketDiscoveryEngine {
     if (!marketRowExists) {
       return this.registerDraftMarketRow(candidate, now_iso);
     }
-    // A market row existing is NOT proof it has a schedule. An admin can
-    // create an unscheduled draft, and previously this returned true for it —
-    // so discovery would register that market on-chain and list it with no
-    // embargoSec stamp, rejecting every submission to it.
-    //
-    // Re-run the schedule-aware registration to bind the schedule to the
-    // existing row. It is idempotent: the market upsert is a no-op on
-    // unchanged fields, the series conflict check is exact, and the clock
-    // insert is skipped when a snapshot already exists.
+    // An existing row may have no schedule (e.g. an admin draft); the
+    // idempotent schedule-aware registration binds one.
     if (!this.hasExactScheduleSnapshot(candidate)) {
-      // A CONFLICTING snapshot is not repairable. Shared registration skips the
-      // clock insert whenever any row exists, so re-running it would restamp
-      // config, return 201, spend gas on a one-shot registration, and only then
-      // fail the post-receipt guard — leaving a frozen market and an
-      // irreversible spend. Freeze first instead.
+      // A conflicting snapshot can't be repaired, and registering would waste
+      // a one-shot tx on a market that can't list. Freeze first.
       const existing = marketClocksRepo.get(this.db, candidate.conditionId);
       if (existing) {
         this.logger.warn(
@@ -1050,9 +832,7 @@ export class PolymarketDiscoveryEngine {
         return false;
       }
       snapshot = fetched.snapshot;
-      // The ledger's endDate drove chain reconciliation and the register
-      // write; a refetched snapshot with a different endDate would persist a
-      // config the acceptance guard can never match. Fail closed instead.
+      // A refetch with a different endDate would store a config acceptance can never match.
       const refetchedEndMs =
         typeof snapshot.endDate === "string"
           ? Date.parse(snapshot.endDate)
@@ -1070,10 +850,7 @@ export class PolymarketDiscoveryEngine {
       }
     }
     if (this.gamma.enrichSnapshotEventTags) {
-      // Window-walk snapshots carry `tags: null`; the category lives on
-      // `/events/<id>`. One extra request per REGISTRATION, not per walk.
-      // The port contract says nonfatal; the catch enforces it on ports that
-      // forget — a grouping label must never cost a market its registration.
+      // One extra request per registration; a category must never block one.
       try {
         snapshot = await this.gamma.enrichSnapshotEventTags(snapshot);
       } catch {
@@ -1087,12 +864,10 @@ export class PolymarketDiscoveryEngine {
       db: this.db,
       conditionId: candidate.conditionId,
       status: "draft",
-      // Stable horizon: the window duration, not "time remaining at
-      // registration" (which would drift across retries).
+      // Window length, not time remaining, so retries agree.
       horizon_seconds: candidate.windowSec,
       actor: DISCOVERY_ACTOR,
-      // Schedule travels WITH the registration so the market, its embargo
-      // stamp, its series and its clock snapshot are one atomic write.
+      // Written atomically with the market row.
       schedule: {
         seriesId: this.seriesId(candidate.windowSec),
         displayName: `polymarket ${candidate.windowSec}s binary`,
@@ -1116,20 +891,9 @@ export class PolymarketDiscoveryEngine {
   }
 
   /**
-   * Verify the runtime clock constants still match the persisted series BEFORE
-   * touching any market.
-   *
-   * The repository-level conflict check is real defense-in-depth, but it only
-   * fires when a NEW series row is written. Candidate processing derives the
-   * expected on-chain schedule from the current runtime config first, so a
-   * changed constant makes every already-registered market look like an
-   * on-chain mismatch and bulk-freezes live markets before the repo ever
-   * throws. Fail the tick instead, mutating nothing.
-   *
-   * Checked PER CONFIGURED WINDOW. Each window is its own series row, so a
-   * single check would leave the others unguarded — and comparing one series'
-   * stored window against a different configured window reads as drift on a
-   * series that never changed.
+   * Fail the tick, before touching any market, if runtime clock constants
+   * differ from any configured window's stored series. Otherwise every live
+   * market reads as an on-chain mismatch and freezes.
    */
   private assertSeriesConfigUnchanged(): void {
     for (const windowSec of this.config.windowDurationSecs) {
@@ -1147,12 +911,8 @@ export class PolymarketDiscoveryEngine {
       stored.commit_margin_sec === c.commitMarginSec &&
       stored.delivery_budget_sec === c.deliveryBudgetSec &&
       stored.embargo_sec === c.embargoSec &&
-      // Against THIS series' window, not the daemon's whole set: the series id
-      // already names the window, so a mismatch here is a genuinely rewritten
-      // series row, not a second window being added alongside.
       stored.window_seconds === windowSec;
-    // The cohort cap is part of the series contract too: registering the next
-    // market would otherwise rewrite it for every existing one.
+    // The cohort cap is part of the series contract.
     if (stored.max_armed_per_call !== this.config.maxArmedPerCall) {
       throw new SeriesCapConflictError(
         seriesId,
@@ -1175,23 +935,15 @@ export class PolymarketDiscoveryEngine {
   }
 
   /**
-   * Whether this market carries an immutable clock snapshot derived from the
-   * SAME end date we are about to register. A snapshot from a different end
-   * date means the venue moved the market after we froze its schedule; a
-   * missing one means the row was created outside the schedule-aware path
-   * (e.g. an admin draft) and has no embargo stamp.
+   * The market's clock snapshot came from this endDate, its config carries
+   * the matching embargo, and its series still exists.
    */
   private hasExactScheduleSnapshot(candidate: DiscoveryCandidate): boolean {
     const snap = marketClocksRepo.get(this.db, candidate.conditionId);
     if (!snap) return false;
-    // Derived from THIS end date — a snapshot from a moved end date is stale.
     if (snap.derived_from_end_date_ms !== candidate.endDateEpochSec * 1000) return false;
 
-    // The market's config must actually carry the embargo the snapshot
-    // implies. An unscheduled re-upsert overwrites config_json while leaving
-    // the clock row intact, so an end-date-only check passes a market whose
-    // stamp was stripped — and acceptance then derives end + 0 embargo and
-    // rejects the chain's embargoed reveal on every submission.
+    // An unscheduled re-upsert can strip embargoSec while leaving the clock row.
     const market = marketsRepo.get(this.db, candidate.conditionId);
     if (!market) return false;
     let embargoSec: unknown;
@@ -1204,24 +956,10 @@ export class PolymarketDiscoveryEngine {
       (snap.public_reveal_at_ms - snap.resolution_at_ms) / 1000;
     if (embargoSec !== impliedEmbargoSec) return false;
 
-    // And the snapshot must belong to a series whose constants still exist.
-    // A snapshot bound to a retired/unknown series is not a usable binding.
     return marketSeriesRepo.get(this.db, snap.series_id) !== null;
   }
 
-  /**
-   * Series identity. Includes an explicit VERSION so an intentional clock
-   * change has a supported path: bump the version and new markets bind to a
-   * new series, while existing markets keep the schedule they were registered
-   * with. Without it, changing a constant had no legal outcome — the preflight
-   * throws every tick and the error's "use a new series id" advice was
-   * impossible to follow because the id was derived only from window length.
-   *
-   * The window comes from the MARKET, not from config: one daemon discovers
-   * several window lengths and each is a distinct series, so a 600s market
-   * must land in `polymarket:binary-600s:v1` even while 300s markets register
-   * in the same tick.
-   */
+  /** One series per window. Bump seriesVersion to give new markets new clock constants. */
   private seriesId(windowSec: number): string {
     return `polymarket:binary-${windowSec}s:v${this.config.seriesVersion}`;
   }
@@ -1235,8 +973,7 @@ export class PolymarketDiscoveryEngine {
     const schedule = this.expectedSchedule(candidate);
     const now_iso = isoFromMs(this.now().getTime());
 
-    // Spend ceiling per write. A gas spike affects every candidate, so a
-    // breach stops the remainder of the tick rather than trying the next.
+    // Spend ceiling per write; a gas spike hits every candidate, so abort the tick.
     let costWei: bigint;
     try {
       costWei = await this.registrar.estimateRegisterCostWei(marketId, schedule);
@@ -1264,21 +1001,12 @@ export class PolymarketDiscoveryEngine {
       return "abort";
     }
 
-    // A genuinely NEW transaction, so restart the stuck clock. Reaching here
-    // after a reverted receipt leaves the row in `broadcasting`; without the
-    // reset the replacement would inherit the dead attempt's age and could
-    // alert as critical the moment it was sent.
-    // Last-moment halt re-check. The entry guard ran before an awaited gas
-    // estimate; an operator can halt during it, and registration is a
-    // one-shot on-chain write, so proceeding would spend gas permanently
-    // registering a market they just pulled. The receipt path stops the
-    // relist, but it cannot un-send the transaction.
+    // Re-check halt: an operator may have halted during the estimate, and the write is irreversible.
     if (marketsRepo.isOperatorHalted(this.db, conditionId)) {
       this.recordCandidateError(conditionId, "operator_halted_during_estimate", now_iso);
       return "skipped";
     }
-    // ...and again inside the broadcast slot, because the write below can
-    // still wait behind another relayer transaction after this point.
+    // ...and again right before broadcast, which may queue behind another relayer tx.
     const preBroadcast = () => {
       if (marketsRepo.isOperatorHalted(this.db, conditionId)) {
         throw new Error(`market ${conditionId} halted by operator before broadcast`);
@@ -1287,19 +1015,18 @@ export class PolymarketDiscoveryEngine {
     polymarketDiscoveryRepo.markBroadcasting(this.db, {
       condition_id: conditionId,
       now_iso,
+      // New tx: restart the stuck-tx clock.
       resetWatermark: true,
     });
     let hash: Hex;
     try {
       hash = await this.registrar.registerMarket(marketId, schedule, { preBroadcast });
     } catch (err) {
-      // Nonce, RPC, and ownership failures poison every later broadcast on
-      // this key — stop the tick; the ledger row reconciles next tick.
+      // Nonce/RPC/ownership failures poison later broadcasts; reconcile next tick.
       this.recordCandidateError(conditionId, `broadcast:${describe(err)}`, now_iso);
       return "abort";
     }
-    // Gas is spent whether or not the receipt succeeds; the estimated cost
-    // keeps the shared reserve check honest for the rest of the tick.
+    // Gas is spent either way.
     if (opts.spend.balanceWei !== null) {
       opts.spend.balanceWei -= costWei;
     }
@@ -1313,8 +1040,7 @@ export class PolymarketDiscoveryEngine {
     try {
       receipt = await this.registrar.waitForReceipt(hash);
     } catch (err) {
-      // Hash persisted above — next tick reads markets(conditionId) and
-      // promotes without a second transaction if this one landed.
+      // Hash is persisted; next tick promotes from chain if it landed.
       this.recordCandidateError(conditionId, `receipt:${describe(err)}`, now_iso);
       return "abort";
     }
@@ -1326,8 +1052,7 @@ export class PolymarketDiscoveryEngine {
       };
       const endPassed = endDateEpochSec * 1000 <= this.now().getTime();
       if (endPassed) {
-        // RevealAfterMustBeFuture: the window closed under us. Freeze; a
-        // retry can never succeed.
+        // Window closed under us; a retry can't succeed.
         this.freezeCandidate(
           conditionId,
           "reverted:window_ended",
@@ -1354,22 +1079,10 @@ export class PolymarketDiscoveryEngine {
         effective_gas_price_wei: receipt.effectiveGasPriceWei?.toString() ?? null,
         now_iso: settledIso,
       });
-      // Same schedule-binding invariant as promoteCandidate. This path lists a
-      // market directly after its own registration receipt, so without the
-      // check it silently bypasses the guard: an existing unscheduled draft
-      // (which stageDraft leaves untouched) would be published with no
-      // embargoSec stamp and reject every submission to it.
-      // `endStillFuture` is not sufficient: a market whose SUBMISSION window
-      // has already closed is publicly listed while the contract rejects every
-      // submission to it. Require the submission window to still be open.
-      // FRESH time. `opts.nowMs` was captured before estimation, broadcast and
-      // the receipt wait, so a receipt that crosses the deadline would still
-      // list a market the contract now rejects every submission to.
+      // Same listing rules as promoteCandidate: fresh time inside the
+      // submission window, a matching schedule snapshot, and no operator halt.
       const submissionStillOpen =
         this.now().getTime() < Number(schedule.submissionCloseAt) * 1000;
-      // An operator can freeze a market while this broadcast is in flight —
-      // the request returns and audits before the receipt lands. Relisting
-      // here would silently undo that halt.
       const halted = marketsRepo.isOperatorHalted(this.db, conditionId);
       if (
         !halted &&
@@ -1383,11 +1096,7 @@ export class PolymarketDiscoveryEngine {
           now_iso: settledIso,
         });
       } else {
-        // Receipt landed after the window ended — registered on-chain but
-        // never listable. Freeze instead of exposing a dead market.
-        //
-        // Not when halted: the operator's chosen status stands. Writing
-        // `frozen` here would demote a market they deliberately `retired`.
+        // Registered but not listable. A halted market keeps the operator's status.
         if (!halted) {
           marketsRepo.setStatus(this.db, conditionId, "frozen");
         }
@@ -1413,25 +1122,10 @@ export class PolymarketDiscoveryEngine {
     };
   }
 
-  /**
-   * The six-instant on-chain schedule for a market instance, derived from its
-   * endDate and this series' clock constants.
-   *
-   * Single source of truth for BOTH the on-chain equality check and the
-   * registration write — deriving them separately is exactly how a daemon and
-   * a chain drift into disagreeing about when submissions close.
-   */
+  /** On-chain schedule; the one source for both the chain equality check and the register write. */
   private expectedSchedule(candidate: DiscoveryCandidate): OnchainSchedule {
     const { conditionId, endDateEpochSec } = candidate;
-    // A market ALREADY BOUND to a schedule must be compared against its own
-    // frozen snapshot, never against current global config.
-    //
-    // Deriving from config meant that bumping the series version (or changing
-    // any constant) reinterpreted every live market: its exact, correct
-    // on-chain schedule was classified as a mismatch and the market was
-    // frozen. That is the precise opposite of what versioning is for —
-    // existing markets are supposed to keep the schedule they were registered
-    // with, and only NEW markets adopt the new constants.
+    // A bound market keeps its own snapshot; only new markets use current config.
     const bound = marketClocksRepo.get(this.db, conditionId);
     if (bound && bound.derived_from_end_date_ms === endDateEpochSec * 1000) {
       return {
@@ -1446,9 +1140,6 @@ export class PolymarketDiscoveryEngine {
     }
     const clock = deriveSeriesClock({
       endDateMs: endDateEpochSec * 1000,
-      // THIS market's window. Deriving from a daemon-wide setting would give
-      // every window length the 300s series' schedule once more than one is
-      // configured, so a 600s market's on-chain check would never match.
       windowSec: candidate.windowSec,
       config: this.config.seriesClock,
     });
@@ -1463,15 +1154,7 @@ export class PolymarketDiscoveryEngine {
     };
   }
 
-  /**
-   * Record a terminal freeze decision durably.
-   *
-   * `markFrozen` is an UPDATE, so with no ledger row it changes nothing. That
-   * happens for a market registered on-chain out-of-band: nothing records the
-   * decision, the candidate is rediscovered next tick, and it is logged as
-   * "newly frozen" forever. Seeding the ledger row first makes the freeze
-   * stick, so later ticks skip it.
-   */
+  /** Durable freeze. Seeds the ledger row first: markFrozen is an UPDATE, and a missing row is rediscovered every tick. */
   private freezeCandidate(
     conditionId: string,
     reason: string,

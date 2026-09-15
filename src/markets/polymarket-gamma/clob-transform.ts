@@ -1,26 +1,11 @@
 /**
- * Pure mapping — Polymarket CLOB market → universal Outcome.
- *
- * Fallback-only: this runs when a market has vanished from Gamma after its
- * endDate (5-minute micro-markets get dropped from `/markets?condition_ids`
- * minutes after close) while the public CLOB `GET /markets/{conditionId}`
- * still serves `closed` + per-token `winner` flags.
- *
- * Fail-closed contract (per the CLOB-fallback review):
- *   - Labels match ONLY as a trim+lowercase bijection: exactly two unique
- *     stored labels, exactly two unique CLOB labels, every CLOB label maps
- *     to exactly one stored label. No semantic aliasing (never `Yes → Up`).
- *   - When registration persisted a `normalized label → clob token_id` map,
- *     token-ID identity is preferred; a mismatch there is a hard `pending`.
- *   - Zero winners, `archived:true`, and `is_50_50_outcome:true` all hold
- *     `pending` in this release (never `invalid` — Gamma owns invalid /
- *     dispute mapping whenever it is available).
- *   - More than one winner or winner/loser prices inconsistent with 1/0 →
- *     `pending` plus an error code (inconsistent CLOB state, do not score).
- *   - `resolvedAt` comes from the STORED endDate (the CLOB row has no close
- *     stamp we trust), matching Gamma's endDate fallback in transform.ts.
- *
- * Side-effect-free and NEVER throws — same posture as transform.ts.
+ * CLOB market → Outcome, only once Gamma has dropped a market after its
+ * endDate. Pure, fail-closed, never throws:
+ *   - Prefer the stored token-id map; otherwise labels must match as a
+ *     trim+lowercase bijection (no aliasing like Yes → Up).
+ *   - Zero winners, archived and 50-50 stay 'pending'; Gamma owns 'invalid'.
+ *   - Multiple winners or prices other than 1/0 stay 'pending' with an error.
+ *   - `resolvedAt` is the stored endDate; CLOB has no close stamp we trust.
  */
 
 import type { Outcome } from "../../verdict/markets-core.js";
@@ -66,9 +51,7 @@ export function clobMarketToOutcome(input: ClobOutcomeInput): ClobOutcomeResult 
     return pending("condition_id_mismatch");
   }
   if (snapshot.closed !== true) return pending(null);
-  // Held-pending states: no invalid/cancelled inference from CLOB in this
-  // release — a real fixture (or the on-chain CTF payout) must confirm the
-  // representation first.
+  // No invalid/cancelled inference from CLOB until a real fixture confirms the shape.
   if (snapshot.archived === true) return pending("archived_held_pending");
   if (snapshot.is_50_50_outcome === true) {
     return pending("is_50_50_held_pending");
@@ -153,7 +136,7 @@ function storedIndexForWinner(
       if (winner.token_id === id1) return 1;
       return "token_id_mismatch";
     }
-    // Incomplete map (legacy row / drifted labels) → fall through to labels.
+    // Incomplete map: fall back to labels.
   }
 
   const clobNorm = tokens.map((t) => normalizeOutcomeLabel(t.outcome));
