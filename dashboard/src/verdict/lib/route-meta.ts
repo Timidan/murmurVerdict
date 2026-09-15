@@ -113,6 +113,11 @@ export function routeMeta(route: ParsedRoute): RouteMeta {
         title: `privacy · ${BRAND}`,
         description: "What murmur collects, why, and how to have it deleted.",
       };
+    case "credits":
+      return {
+        title: `credits · ${BRAND}`,
+        description: "Third-party work murmur uses and the licences it comes under.",
+      };
     case "not_found":
       return {
         title: `not found · ${BRAND}`,

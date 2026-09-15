@@ -48,7 +48,6 @@ export interface MurmurAgentCard {
     served_at: string;
     call_history_entrypoint: string;
     openapi: string;
-    manifest: string;
   };
 }
 
@@ -124,7 +123,6 @@ export function publicMurmurAgentCard(
       served_at: input.servedAt,
       call_history_entrypoint: `${apiBase}/v1/agents/${agent.display_slug}/calls`,
       openapi: `${apiBase}/v1/openapi.json`,
-      manifest: `${apiBase}/.well-known/murmur.json`,
     },
   };
   if (nanopayX402Mounted) {

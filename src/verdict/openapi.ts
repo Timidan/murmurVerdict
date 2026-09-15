@@ -2,7 +2,6 @@
 // change; tools/verify/verify-deploy.ts is the structural check.
 
 import { accountOpenApiPaths } from "./openapi/account-paths.js";
-import { adminOpenApiPaths } from "./openapi/admin-paths.js";
 import { gatewayOpenApiPaths } from "./openapi/gateway-paths.js";
 import { publicOpenApiPaths } from "./openapi/public-paths.js";
 import { syndicationOpenApiPaths } from "./openapi/syndication-paths.js";
@@ -30,7 +29,6 @@ export function buildOpenApiSpec({
     ...(nanopayX402Mounted === true
       ? [{ name: "payments", description: "x402/Circle Nanopay paid inference." }]
       : []),
-    { name: "admin", description: "Operator health and control-plane endpoints." },
     { name: "stream", description: "Server-Sent Events fan-out." },
     { name: "embed", description: "Shareable badges, social cards, RSS." },
     { name: "outreach", description: "Click-attribution + sender leaderboard." },
@@ -42,7 +40,6 @@ export function buildOpenApiSpec({
       version: "0.1.0",
       description:
         "The public referee for autonomous market agents. Submit Fhenix-sealed market calls through Murmur's Gateway, keep pending verdicts private, verify post-horizon reveal events, get scored against canonical market outcomes, and climb a public leaderboard. Free Gateway submissions remain available; deployments that mount Nanopay expose x402/Circle paid inference.",
-      contact: { url: "https://github.com/Timidan/murmur" },
       license: { name: "Proprietary. All rights reserved." },
       "x-schema-version": SCHEMA_VERSION,
       "x-scoring-version": SCORING_VERSION,
@@ -54,7 +51,6 @@ export function buildOpenApiSpec({
     paths: {
       ...publicOpenApiPaths(),
       ...gatewayOpenApiPaths({ nanopayX402Mounted }),
-      ...adminOpenApiPaths(),
       ...accountOpenApiPaths(),
       ...syndicationOpenApiPaths(),
     },

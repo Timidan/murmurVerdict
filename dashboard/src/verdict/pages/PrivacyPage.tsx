@@ -67,25 +67,12 @@ export function PrivacyPage() {
             <Section title="closing your account">
               Closing your account is in your account settings. There is no
               reactivate button: reopening a closed account goes through the
-              operator. If you would rather ask, or want a copy of what murmur
-              holds about you, open an issue on the repository below.
+              operator.
             </Section>
 
             <Section title="changes">
               If what murmur collects changes, this page changes with it.
             </Section>
-
-            <p className="ck-dim">
-              Questions:{" "}
-              <a
-                href="https://github.com/Timidan/murmur"
-                target="_blank"
-                rel="noreferrer"
-                className="ck-mono ck-pos no-underline hover:underline"
-              >
-                github.com/Timidan/murmur
-              </a>
-            </p>
           </div>
         </Panel>
       </main>
@@ -94,7 +81,7 @@ export function PrivacyPage() {
 }
 
 /** One titled block of the policy; the `ck-title` heading must outrank its body. */
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+export function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5">
       <h2 className="ck-title m-0">{title}</h2>

@@ -719,7 +719,7 @@ export function buyLine(state: BuyState): BuyLine | null {
             tone: "pos",
             text: "granted",
             title:
-              "Your wallet can now decrypt this call before its public reveal. Unseal it locally with tools/subscriber-unseal-granted-call.ts — murmur never sees the plaintext.",
+              "Your wallet can now decrypt this call before its public reveal. Decrypt it locally here or from your purchases. murmur never sees the plaintext.",
           };
     case "stopped":
       return { tone: state.stop.tone, text: state.stop.headline, title: state.stop.detail };

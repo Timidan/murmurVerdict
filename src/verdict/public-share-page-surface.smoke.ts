@@ -107,10 +107,8 @@ try {
   );
   assert.doesNotMatch(missing.body, /property="og:url"/);
   assert.doesNotMatch(missing.body, /http-equiv="refresh"/);
-  assert.match(
-    missing.body,
-    /Set <code>MURMUR_PUBLIC_URL<\/code> on the daemon to enable redirect\./,
-  );
+  // A visitor never sees operator configuration advice.
+  assert.doesNotMatch(missing.body, /MURMUR_PUBLIC_URL/);
   assert.match(missing.body, /murmur\.verdict &middot; share/);
   const missingRes = new FakePublicSharePageResponse();
   sendPublicSharePageResponse(missingRes, missing);

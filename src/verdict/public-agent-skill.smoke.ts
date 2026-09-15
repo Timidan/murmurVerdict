@@ -167,9 +167,8 @@ assert.ok(
 );
 assert.ok(
   integratorSkill.includes("SUBSCRIBER_PRIVATE_KEY=") &&
-    integratorSkill.includes("tools/subscriber-buy-access.ts") &&
-    integratorSkill.includes("tools/subscriber-unseal-granted-call.ts"),
-  "naming the key, the buy tool, and the decrypt tool",
+    !/tools\/[a-z-]+\.ts/.test(integratorSkill),
+  "naming the buyer key, and no private-repo tool a customer cannot obtain",
 );
 assert.ok(
   integratorSkill.includes("deposited with Circle's Gateway"),

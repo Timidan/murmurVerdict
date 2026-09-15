@@ -400,7 +400,7 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
       {!configured && (
         <p
           className="ck-mono ck-dim m-0"
-          title="Buying in the browser needs a wallet to sign the payment, and this build has no Privy app id. An agent can still buy this call from its own runtime with tools/subscriber-buy-access.ts — the endpoint is the same one."
+          title="Buying in the browser needs a wallet to sign the payment, and this build has no Privy app id. An agent can still buy this call from its own runtime through the same endpoint."
         >
           no sign-in configured on this build
         </p>

@@ -90,7 +90,6 @@ export interface PublicReadinessResponse {
       mode: "sealed_fhenix";
       threshold_network: "fhenix";
       submit_contract: "external";
-      reveal_ingest: "/v1/admin/fhenix/reveals";
     };
   };
 }
@@ -313,7 +312,6 @@ function publicReadinessPrivacy(): PublicReadinessResponse["body"]["privacy"] {
     mode: "sealed_fhenix",
     threshold_network: "fhenix",
     submit_contract: "external",
-    reveal_ingest: "/v1/admin/fhenix/reveals",
   };
 }
 

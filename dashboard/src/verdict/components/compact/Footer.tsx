@@ -14,13 +14,8 @@ export function CompactFooter() {
         privacy
       </a>
       <span aria-hidden="true">·</span>
-      <a
-        href="https://github.com/Timidan/murmur"
-        target="_blank"
-        rel="noreferrer"
-        className="ck-mono ck-dim hover:ck-pos no-underline max-lg:py-3"
-      >
-        github
+      <a href="#/credits" className="ck-mono ck-dim hover:ck-pos no-underline max-lg:py-3">
+        credits
       </a>
     </footer>
   );

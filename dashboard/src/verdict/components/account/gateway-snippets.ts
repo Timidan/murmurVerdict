@@ -2,7 +2,7 @@
 // Pasteable text for the Integrate page's code tabs. Dashboard keys are
 // PoP-bound, so each snippet signs the `murmur-rk-v2` string from
 // src/verdict/auth/runtime-key-pop.ts; change both together. Only the TS tab
-// seals; PY and CURL take handles from tools/agent-side-cofhe-sealer.ts.
+// seals; PY and CURL take the handles it produces.
 
 export type SnippetLanguage = "typescript" | "python" | "curl";
 
@@ -123,7 +123,7 @@ const accepted = await res.json();
 console.log(accepted.attempt_id, accepted.status);`;
 
 const PY_TEMPLATE = `# Signs a correct murmur-rk-v2 request. CoFHE ships a JS SDK only, so seal
-# with the TS tab (or tools/agent-side-cofhe-sealer.ts) and pass its two
+# with the TS tab and pass its two
 # handles plus the one shared batch proof in here.  pip install cryptography
 import base64
 import hashlib
@@ -193,9 +193,8 @@ with urllib.request.urlopen(req) as resp:
     print(accepted["attempt_id"], accepted["status"])`;
 
 const CURL_TEMPLATE = `# Signs a correct murmur-rk-v2 request. Needs OpenSSL 3.x (raw Ed25519).
-# CoFHE ships a JS SDK only: seal with the TS tab or
-# tools/agent-side-cofhe-sealer.ts, then export the two handles and the one
-# shared batch proof it prints.
+# CoFHE ships a JS SDK only: seal with the TS tab, then export the two
+# handles and the one shared batch proof it prints.
 {{key}}
 # The market fields come from GET /v1/markets?status=listed. Unset means stop.
 BODY='{"marketRef":{"protocol":"'"\${MURMUR_MARKET_PROTOCOL:?set the market protocol}"'","sourceId":"'"\${MURMUR_MARKET_SOURCE_ID:?set the market source id}"'","configVersion":'"\${MURMUR_MARKET_CONFIG_VERSION:?set the market config version}"'},"client_order_id":"'"$(uuidgen)"'","client_nonce":"0x'"$(openssl rand -hex 32)"'","privacy_mode":"sealed_fhenix","binary_index_input":{"ct_hash":"'"$MURMUR_BINARY_CT_HASH"'","security_zone":0,"utype":2,"signature":"'"$MURMUR_BATCH_PROOF"'"},"confidence_input":{"ct_hash":"'"$MURMUR_CONFIDENCE_CT_HASH"'","security_zone":0,"utype":3,"signature":"'"$MURMUR_BATCH_PROOF"'"}}'

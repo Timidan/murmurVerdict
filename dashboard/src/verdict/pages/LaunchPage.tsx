@@ -81,13 +81,6 @@ export function LaunchPage() {
                 href={`${base}/embed.js`}
                 external
               />
-              <NextCard
-                icon="self-host"
-                title="run your own daemon"
-                note="docker compose and Litestream. Run your own gateway and dashboard."
-                href="https://github.com/Timidan/murmur/blob/nothing-preview/DEPLOYMENT.md"
-                external
-              />
             </div>
           </section>
         </div>

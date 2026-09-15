@@ -447,7 +447,7 @@ export function gatewayOpenApiPaths(input: {
           "The public submit-event metadata backfill path has been removed from " +
           "agent flows. Agents submit through the Gateway: /v2/gateway/calls " +
           "(client-sealed, canonical) or /v2/gateway/calls/seal (server-sealed, " +
-          "off by default). Operator recovery uses /v1/admin/fhenix/backfill/calls.",
+          "off by default).",
         responses: {
           "410": { description: "Endpoint removed; use /v2/gateway/calls" },
         },

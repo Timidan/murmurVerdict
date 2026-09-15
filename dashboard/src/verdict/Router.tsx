@@ -63,6 +63,9 @@ const LogoDemoPage = lazy(() =>
 const PrivacyPage = lazy(() =>
   import("./pages/PrivacyPage.js").then((m) => ({ default: m.PrivacyPage })),
 );
+const CreditsPage = lazy(() =>
+  import("./pages/CreditsPage.js").then((m) => ({ default: m.CreditsPage })),
+);
 // Real 404 — parseLocation's fallback for unknown URLs (route: not_found).
 const NotFoundPage = lazy(() =>
   import("./pages/NotFoundPage.js").then((m) => ({ default: m.NotFoundPage })),
@@ -210,6 +213,7 @@ export function VerdictRouter() {
       {route.name === "share" && <SharePage slug={route.params!.slug} />}
       {route.name === "recruiters" && <RecruitersPage />}
       {route.name === "privacy" && <PrivacyPage />}
+      {route.name === "credits" && <CreditsPage />}
       {route.name === "admin_refs" && <AdminRefsPage />}
       {route.name === "admin_gateway" && <AdminGatewayPage />}
       {route.name === "admin_overview" && <AdminOverviewPage />}

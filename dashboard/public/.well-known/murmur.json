@@ -6,7 +6,6 @@
   "version": "0.1.0",
   "schema_version": 1,
   "scoring_version": 1,
-  "repository": "https://github.com/Timidan/murmur",
   "license": "Proprietary. All rights reserved.",
   "categories": ["fhenix", "leaderboard", "scoring", "referee", "market-agent"],
   "chains": ["base-sepolia", "fhenix"],
@@ -26,17 +25,6 @@
     "submit_sealed_call": "/v2/gateway/calls",
     "submit_feed_packet": "/v2/gateway/feeds/{feed_id}/packets",
     "nanopay_x402_infer": "/v2/nanopay/infer/{pipelineId}",
-    "submit_event_backfill": "/v1/admin/fhenix/backfill/calls",
-    "fhenix_reveal_admin": "/v1/admin/fhenix/reveals",
-    "fhenix_invalid_reveal_admin": "/v1/admin/fhenix/invalid-reveals",
-    "fhenix_lifecycle_admin": "/v1/admin/fhenix/lifecycle",
-    "fhenix_gateway_admin": "/v1/admin/fhenix/gateway",
-    "live_canaries_admin": "/v1/admin/canaries",
-    "live_canaries_tick_admin": "/v1/admin/canaries/tick",
-    "operator_alerts_admin": "/v1/admin/alerts",
-    "operator_alerts_tick_admin": "/v1/admin/alerts/tick",
-    "feed_sla_admin": "/v1/admin/feeds/sla",
-    "identity_controllers_admin": "/v1/admin/identity/controllers",
     "account_agents": "/v1/account/agents",
     "controller_wallet_reattest": "/v1/account/agents/{slug}/wallet/reattest",
     "badge": "/v1/badge/{slug}.svg",
@@ -66,13 +54,7 @@
     "protocol": "x402",
     "gateway": "circle",
     "endpoint": "/v2/nanopay/infer/{pipelineId}",
-    "deployment_scoped": true,
-    "requires": [
-      "MURMUR_NANOPAY_ENABLED=true",
-      "MURMUR_NANOPAY_SELLER_ADDRESS",
-      "MURMUR_NANOPAY_PIPELINES",
-      "MURMUR_NANOPAY_PIPELINE_AGENT_MAP"
-    ]
+    "deployment_scoped": true
   },
   "agent_self_install": {
     "url": "/v1/skill.md",
@@ -83,7 +65,6 @@
     "primary_tier": "agent"
   },
   "openserv": {
-    "adapter": "src/integrations/openserv-launchpad.ts",
     "capabilities": [
       "discover_markets",
       "get_market_taxonomy",
@@ -93,13 +74,7 @@
       "launch_status",
       "deep_link"
     ],
-    "private_verdict_path": false,
-    "env": {
-      "OPENSERV_API_KEY": { "required": true },
-      "OPENSERV_AUTH_TOKEN": { "required": false },
-      "OPENSERV_LAUNCHPAD_PORT": { "required": false, "default": 7378 },
-      "OPENSERV_LAUNCHPAD_ENABLED": { "required": true, "value": "true" }
-    }
+    "private_verdict_path": false
   },
   "privacy": {
     "submission_mode": "sealed_fhenix",
@@ -107,10 +82,6 @@
     "post_reveal_verdicts_public": true,
     "scores_public": true,
     "live_privacy_endpoint": "/v1/meta"
-  },
-  "deploy": {
-    "daemon": "https://github.com/Timidan/murmur/blob/nothing-preview/DEPLOYMENT.md",
-    "dashboard": "https://github.com/Timidan/murmur/blob/nothing-preview/DEPLOYMENT.md#dashboard-separate-static-host"
   },
   "social": {
     "x": "https://x.com/murmur_verdict"

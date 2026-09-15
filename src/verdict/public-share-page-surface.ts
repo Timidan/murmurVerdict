@@ -113,7 +113,7 @@ function renderPublicSharePage(input: {
     <p style="font-size:13px;color:#999;">
       ${input.dashboardOrigin
         ? `Redirecting to <a href="${escapeHtml(input.dashHash)}">${escapeHtml(input.dashHash)}</a> ...`
-        : `Set <code>MURMUR_PUBLIC_URL</code> on the daemon to enable redirect.`}
+        : ""}
     </p>
   </div>
 </body>

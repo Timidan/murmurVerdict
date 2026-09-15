@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { type Plugin, defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
@@ -69,12 +69,51 @@ function launchpadManifestOrigin(siteUrl: string | undefined) {
   };
 }
 
+/** Emits the licence texts of every npm package bundled into the site. */
+function thirdPartyLicenses(): Plugin {
+  return {
+    name: "murmur-third-party-licenses",
+    apply: "build",
+    generateBundle() {
+      const seen = new Map<string, string>();
+      for (const id of this.getModuleIds()) {
+        const file = id.replace(/^\0/, "").split("?")[0];
+        let dir = path.dirname(file);
+        // Walk up to the nearest package.json that names a package.
+        while (dir.includes(`${path.sep}node_modules${path.sep}`)) {
+          const manifest = path.join(dir, "package.json");
+          const pkg = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, "utf8")) : null;
+          if (pkg?.name && pkg?.version) {
+            const key = `${pkg.name}@${pkg.version}`;
+            if (!seen.has(key)) {
+              const licence = typeof pkg.license === "string" ? pkg.license : pkg.license?.type ?? "see package";
+              const texts = fs.readdirSync(dir)
+                .filter((f) => /^(licen[cs]e|copying|notice)(\.|-|$)/i.test(f))
+                .map((f) => fs.readFileSync(path.join(dir, f), "utf8").trim());
+              seen.set(key, `${pkg.name} ${pkg.version}\nLicense: ${licence}\n\n${texts.join("\n\n") || "(no licence file shipped with this package)"}`);
+            }
+            break;
+          }
+          dir = path.dirname(dir);
+        }
+      }
+      const entries = [...seen.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text);
+      this.emitFile({
+        type: "asset",
+        fileName: "third-party-licenses.txt",
+        source: `Third-party software included in this site\n\n${entries.join(`\n\n${"-".repeat(72)}\n\n`)}\n`,
+      });
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
     absoluteShareUrls(process.env.VITE_SITE_URL),
     launchpadManifestOrigin(process.env.VITE_SITE_URL),
+    thirdPartyLicenses(),
   ],
   root: path.resolve(__dirname),
   resolve: {
