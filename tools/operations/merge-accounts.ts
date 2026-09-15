@@ -1,29 +1,11 @@
 #!/usr/bin/env tsx
 /**
- * merge-accounts — one-time operator tool to merge one or more SOURCE Privy
- * accounts into a TARGET Privy account, reusing the same reparent core the
- * inbound `user.transferred_account` webhook uses.
+ * Merges SOURCE Privy accounts into a TARGET account with the same reparent core as the
+ * `user.transferred_account` webhook. Child rows move, then the source account row is deleted;
+ * `agent_security_events` keeps the source account_id (audit history is not rewritten).
  *
- * Use case: a user proved (out of band) that several Privy DIDs are the same
- * person, and Privy's automatic "Login method transfer" was not used at
- * sign-up time. Each source is reparented onto the target: owned child rows
- * (agents, api keys, controller wallets, runtime keys, reattestations, gateway
- * tx attempts) move to the target, then the source account row is deleted. The
- * append-only `agent_security_events` audit trail is INTENTIONALLY left
- * pointing at the source account_id — a merge preserves history, it does not
- * rewrite it.
- *
- * DRY-RUN BY DEFAULT: without --apply the DB is opened READ-ONLY and nothing is
- * mutated; the tool only resolves accounts and prints the per-source row counts
- * that a merge WOULD move. Pass --apply to perform the merge inside a single
- * outer immediate transaction (all sources succeed together or none do).
- *
- * Safety:
- *   - The target account MUST already exist (a typo must never create a fresh,
- *     inaccessible account to merge into).
- *   - Source DIDs must be distinct from each other and from the target.
- *   - A source with no account row is reported as "already merged", not an
- *     error and not a fake success — this makes reruns idempotent and honest.
+ * Dry-run by default (DB opened read-only, prints row counts). --apply merges every source in one transaction.
+ * The target must already exist; sources must be distinct and not the target; a missing source reports "already merged".
  *
  * Usage:
  *   tsx tools/operations/merge-accounts.ts \
@@ -41,11 +23,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..", "..");
 
-// The seven child tables that FK-reference accounts(account_id) ON DELETE
-// CASCADE and are therefore MOVED by a reparent. Mirrors OWNERSHIP_CHILD_TABLES
-// in src/verdict/auth/account-reparent.ts; kept as a local literal so this
-// read-only reporter does not import the mutating core. `agent_security_events`
-// is intentionally NOT here (append-only audit trail; see header).
+// Tables a reparent moves. Mirrors OWNERSHIP_CHILD_TABLES in src/verdict/auth/account-reparent.ts;
+// copied so this read-only reporter doesn't import the mutating core.
 const OWNERSHIP_CHILD_TABLES = [
   "account_agents",
   "api_keys",
@@ -142,8 +121,7 @@ async function main(): Promise<void> {
   console.log(`  db: ${absoluteDbPath}`);
   console.log(`  target DID: ${target}`);
 
-  // DRY-RUN reads open the DB read-only so a mistaken invocation cannot mutate.
-  // APPLY needs a writable handle for the reparent transaction.
+  // Dry-run opens the DB read-only so a mistaken invocation can't mutate.
   const db = openDb({ path: dbPath, readonly: !args.apply });
   try {
     const targetRow = getAccountByPrivyUserId(db, target);
@@ -171,7 +149,6 @@ async function main(): Promise<void> {
       return { did, account_id: row.account_id, counts, auditCount };
     });
 
-    // Report the plan for every source.
     for (const plan of plans) {
       if (plan.account_id === null) {
         console.log(`source ${plan.did}: already merged (no account for this DID)`);
@@ -200,10 +177,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    // APPLY: one outer immediate transaction wrapping every per-source
-    // reparent. reparentAccount opens its own transaction, which better-sqlite3
-    // runs as a SAVEPOINT when already inside one — so a failure on any source
-    // rolls back the entire batch.
+    // One outer immediate transaction; reparentAccount's own becomes a SAVEPOINT, so any failure rolls back all.
     const { reparentAccount } = await import(
       "../../src/verdict/auth/account-reparent.js"
     );

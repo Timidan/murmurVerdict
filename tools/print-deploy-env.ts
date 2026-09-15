@@ -1,17 +1,7 @@
 #!/usr/bin/env tsx
 /**
- * Prints the deploy-time addresses derived from the keys already in `.env`,
- * as shell exports.
- *
- * The Foundry deploy scripts read RELAYER_ADDRESS / GRANTOR_ADDRESS /
- * REVEAL_ADDRESS via `vm.envAddress`, and Solidity cannot derive an address
- * from a private key — so somebody has to compute them. Until now that was the
- * operator, by hand, from a documented snippet that referenced `$GRANT_ADDRESS`
- * — a variable defined nowhere in this repo. Copying it exported an empty
- * grantor and the deploy reverted.
- *
- * Each address here is derived from the key that will actually control it, so
- * they cannot disagree with the running daemon's identity.
+ * Prints the deploy-time addresses derived from the keys in `.env`, as shell exports.
+ * Foundry reads them via `vm.envAddress`; Solidity can't derive an address from a key.
  *
  * Usage:
  *   set -a; . ./.env; set +a
@@ -29,14 +19,11 @@ interface Derived {
 }
 
 const DERIVED: Derived[] = [
-  // Authorized to relay submitSealedFor. Same key the daemon's gateway signs
-  // with, so deriving it here guarantees the deploy authorizes the account
-  // that will actually be submitting.
+  // Relays submitSealedFor; the same key the daemon's gateway signs with.
   { envVar: "RELAYER_ADDRESS", keyVar: "FHENIX_GATEWAY_RELAYER_PRIVATE_KEY", required: true },
   // Authorized to broker paid decrypt access. Deliberately a different key.
   { envVar: "GRANTOR_ADDRESS", keyVar: "FHENIX_GRANT_PRIVATE_KEY", required: true },
-  // Optional at deploy time; when present the script enforces that all three
-  // roles are distinct.
+  // Optional; when present the deploy script enforces all three roles are distinct.
   { envVar: "REVEAL_ADDRESS", keyVar: "FHENIX_REVEAL_PRIVATE_KEY", required: false },
 ];
 

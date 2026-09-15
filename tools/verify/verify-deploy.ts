@@ -1,7 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Deploy verifier — hits a public daemon + dashboard pair and prints a
- * green/red diagnostic across 14 endpoint shapes.
+ * Deploy verifier: hits a public daemon + dashboard pair and prints a green/red result per endpoint check.
  *
  * Usage:
  *   tsx tools/verify/verify-deploy.ts \

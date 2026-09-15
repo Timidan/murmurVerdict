@@ -1,13 +1,6 @@
 #!/usr/bin/env node
-// Fail fast when a git submodule is declared but not populated.
-//
-// `forge-std` is a submodule, and `verify:readiness` runs Forge. A plain
-// `git clone` — or a CI checkout without `submodules: recursive` — leaves the
-// directory empty, and Forge then fails with an import error that looks like a
-// broken test rather than a checkout problem. A populated developer machine
-// passes the same gate, so the difference only ever shows up in CI.
-//
-// This turns that into one sentence naming the fix.
+// Fails fast when a git submodule is declared but empty (e.g. a CI checkout without
+// `submodules: recursive`), instead of Forge failing later with a misleading import error.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

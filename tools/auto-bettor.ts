@@ -1,24 +1,8 @@
 /**
- * tools/auto-bettor.ts — autonomous prediction agent that exercises the full
- * murmur sealed-call lifecycle against discovery-registered Polymarket 5-minute
- * markets, to accumulate a real leaderboard track record.
- *
- * It plays the role an external agent would: for each freshly-registered
- * `listed` polymarket-gamma market it hasn't bet on yet, it submits a sealed
- * call through the Gateway (plaintext in, daemon seals + relays), then at the
- * market's reveal window it drives openReveal → threshold decrypt →
- * publishReveal. The daemon watcher ingests the reveal and the resolver scores
- * it via the CLOB fallback.
- *
- * Key separation (avoids nonce contention during an unattended grind):
- *   - The DAEMON signs submitSealedFor (Gateway) + registerMarket
- *     (discovery) with the owner/relayer key, nonce-coordinated in-process.
- *   - THIS tool signs openReveal + publishReveal with a SEPARATE funded EOA
- *     (BETTOR_REVEAL_KEY). openReveal/publishReveal have no access control, so a
- *     distinct key is sufficient and keeps the two writers off each other's
- *     nonce.
- *
- * Gated behind MURMUR_ALLOW_FIXTURE_SEED=true (mints runtime keys into the DB).
+ * Autonomous agent that bets discovery-registered Polymarket 5-minute markets through the sealed-call
+ * Gateway, then drives openReveal and publishReveal, to build a real leaderboard record.
+ * Reveals are signed by a separate EOA (BETTOR_REVEAL_KEY) so it never shares a nonce with the daemon's relayer.
+ * Requires MURMUR_ALLOW_FIXTURE_SEED=true (mints runtime keys into the DB).
  *
  * Env:
  *   FHENIX_RPC_URL              archive+tx RPC (Alchemy)
@@ -59,10 +43,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 
 const CHAIN_ID = 84532;
-// Resolved from the SAME manifest the daemon reads, never hardcoded. It used
-// to pin 0x1B74…, an address two deployments stale: submissions went through
-// the daemon's current contract while getCall / openReveal / publishReveal hit
-// the old one, so the tool could never reveal the calls it had just created.
+// Read from the daemon's deployment manifest so reveals hit the contract submissions went to.
 const CONTRACT = (() => {
   const deployment = loadDeployment(CHAIN_ID, "MurmurSealedVerdicts");
   if (!deployment) {
@@ -82,9 +63,7 @@ const AGENT_SLUG = process.env.BETTOR_AGENT_SLUG ?? "operator-blind-test";
 const POLL_MS = 20_000;
 const DECRYPT_TIMEOUT_MS = 5 * 60 * 1000;
 const DECRYPT_RETRY_MS = 10_000;
-// Cap on the agent's concurrent unresolved calls; must stay <= the Gateway's
-// SUBMISSION_LIMITS.max_active_calls_per_agent or submits 429. Configurable so
-// a supply burst can be consumed fast.
+// Cap on concurrent unresolved calls; must stay <= SUBMISSION_LIMITS.max_active_calls_per_agent or submits 429.
 const MAX_ACTIVE = Number(process.env.BETTOR_MAX_ACTIVE ?? "5");
 
 const ABI = parseAbi([
@@ -108,12 +87,7 @@ interface InFlight {
   question: string;
   callId: string;
   onchainCallId: Hex | null;
-  /**
-   * Null until the daemon has persisted the authoritative reveal time from the
-   * on-chain submit event. The reveal loop parks the call until then: there is
-   * no safe substitute, and every guessed value that is too early makes the
-   * poller hammer openReveal against a contract that reverts.
-   */
+  /** Null until the daemon persists the on-chain reveal time; the reveal loop skips the call until then. */
   revealOpenAtSec: number | null;
   binaryIndex: number;
   confidenceBps: number;
@@ -149,7 +123,6 @@ async function main(): Promise<void> {
     createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }),
   );
   await cofheClient.connect(publicClient as never, walletClient as never);
-  // 0.7 renamed Permits to ACPs; same options, same create-and-sign semantics.
   const selfAcp = await cofheClient.acp.createSelf({ type: "self", issuer: account.address });
 
   const inflight = new Map<string, InFlight>();
@@ -203,17 +176,12 @@ async function main(): Promise<void> {
   while (ticks < 480) {
     ticks++;
     const nowSec = Math.floor(Date.now() / 1000);
-    // Stop opening NEW positions once the resolved target is met, but keep the
-    // reveal loop running below so already-submitted calls are never stranded
-    // sealed (which would later be marked missed and dent reveal reliability).
+    // Stop new bets once the target is met, but keep revealing so no submitted call is left sealed (marked missed).
     const needMore = resolvedCount() < TARGET;
 
     if (needMore) {
-    // ── SUBMIT: eligible = discovery-registered markets only. Joining the
-    // discovery ledger (status listed) guarantees the market is registered
-    // ON-CHAIN via registerFixedRevealMarket — betting a merely DB-listed
-    // polymarket market that was never put on-chain (e.g. a pre-existing FIFA
-    // market) reverts submitSealedFor with MarketNotFound and burns gas.
+    // ── SUBMIT: discovery-listed markets only, since those are registered on-chain.
+    // A DB-only market reverts submitSealedFor with MarketNotFound and burns gas.
     const eligible = db.prepare(
       `SELECT m.market_id AS market_id, m.market_config_version AS market_config_version,
               m.config_json AS config_json
@@ -377,11 +345,7 @@ async function submitOne(
     question,
     callId,
     onchainCallId,
-    // Reveal is embargoed PAST market end, so endMs is premature: falling back
-    // to it made the poller hammer openReveal for the whole embargo, every
-    // attempt reverting. There is no safe substitute — null parks the call
-    // until the daemon persists the authoritative value from the on-chain
-    // submit event, which the reveal loop then picks up.
+    // Reveal opens after market end, so endMs is no substitute; null waits for the daemon's value.
     revealOpenAtSec: (() => {
       const r = db
         .prepare("SELECT reveal_open_at FROM fhenix_sealed_calls WHERE call_id=?")
@@ -398,11 +362,7 @@ async function submitOne(
 
 async function revealOne(
   db: ReturnType<typeof openDb>,
-  // Structural, not `ReturnType<typeof createPublicClient>`: a CHAIN-typed
-  // client (createPublicClient({ chain: baseSepolia, … })) is not assignable to
-  // the un-parameterized return type — viem's getBlock transaction union
-  // differs. Naming only the two methods this uses keeps the file typechecked
-  // instead of excluded wholesale from tsconfig.tools.json.
+  // Structural type: a chain-typed viem client isn't assignable to ReturnType<typeof createPublicClient>.
   publicClient: {
     readContract: (args: {
       address: Address;

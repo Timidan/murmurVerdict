@@ -1,15 +1,7 @@
 #!/usr/bin/env tsx
 /**
- * tools/launch-readiness.ts — is this deployment fit to open to the public?
- *
- * One command, one answer. Every check states what it read and why it matters,
- * so a NO-GO is actionable without opening the source.
- *
- * Scope note: Fhenix CoFHE publishes no mainnet chain (the SDK ships
- * baseSepolia, arbSepolia, sepolia, hardhat, localcofhe). Murmur's sealed
- * verdict IS CoFHE, so a mainnet launch is not on the table and a testnet
- * chain id is correct rather than a finding. What this checks is whether the
- * deployment is honest and operable, not whether it is on mainnet.
+ * Is this deployment fit to open to the public? Each check says what it read and why it matters.
+ * A testnet chain id is expected, not a finding: Fhenix CoFHE has no mainnet.
  *
  * Usage: npx tsx tools/launch-readiness.ts [--json]
  */

@@ -1,41 +1,9 @@
 #!/usr/bin/env tsx
 /**
- * Operator-blind FHE round-trip — release-gate script.
- *
- * Drives one full sealed-call lifecycle against the live Base Sepolia
- * deployment of MurmurSealedVerdicts and asserts that the daemon's API
- * RESPONSE and the dashboard's RENDERED DOM stay opaque until publishReveal
- * lands.
- *
- * Scope, precisely: it reads HTTP and the browser DOM. It never opens SQLite,
- * so it cannot speak to what is stored — the header used to claim "stored
- * state", which was never what any assertion checked. And it runs against
- * /v2/gateway/calls/seal, where the daemon is handed the plaintext by design,
- * so it says nothing about whether Murmur SAW the verdict. It says the daemon
- * does not SURFACE it early.
- *
- * (NOTE: the V1/V2 Lean theorems model a PREVIOUS contract revision and do
- * not cover this one — see contracts/proofs/MurmurFV/README.md.)
- *
- * Five phases:
- *   0. pre-flight — env vars present, daemon + dashboard reachable.
- *   1. snapshot 0 — baseline of the daemon's API response before any new call.
- *   2. snapshot 1 — submit prediction intent through /v2/gateway/calls/seal,
- *      then assert daemon (A1) + DOM (A2) are opaque pre-reveal.
- *   3. contract steps — wait for reveal window, openReveal, poll cofhejs
- *      threshold network for plaintext + signatures, publishReveal.
- *   4. snapshot 2 — assert daemon + DOM (A3) carry plaintext post-publish.
- *
- * Invocation: `tsx tools/operator-blind-roundtrip.ts`. There is intentionally
- * no `npm run` shortcut (spec §8). Exit 0 on full PASS; non-zero with the
- * offending excerpt printed on any assertion failure.
- *
- * Develop-as-prod: no mocks. Account/agent/runtime-key prerequisites are real
- * daemon DB rows seeded by tools/seed-operator-blind-fixtures.ts; the submit
- * itself goes through the daemon's production Gateway broadcaster and real RPC.
- *
- * Spec: docs/superpowers/specs/2026-05-19-operator-blind-roundtrip-design.md
- * Sibling smoke (contract steps): src/integrations/murmur-sealed-verdicts.live-smoke.ts
+ * Operator-blind FHE round-trip release gate: runs one sealed call on live Base Sepolia and asserts
+ * the daemon API response and dashboard DOM stay opaque until publishReveal lands.
+ * Checks HTTP and DOM only, not stored state; the daemon sees plaintext at /v2/gateway/calls/seal by design.
+ * Run `tsx tools/operator-blind-roundtrip.ts` after tools/seed-operator-blind-fixtures.ts. No mocks.
  */
 
 import "dotenv/config";
@@ -55,16 +23,11 @@ import { privateKeyToAccount } from "viem/accounts";
 import { deriveAddressFromKey } from "../src/integrations/derived-addresses.js";
 import { baseSepolia } from "viem/chains";
 
-// ── @cofhe/sdk replaces the deprecated `cofhejs` package. cofhejs@0.3.1 +
-//    node-tfhe@0.11.1 could not deserialize the Fhenix testnet's TFHE 0.5
-//    public key format; the new SDK ships node-tfhe@1.5.3 which handles it.
-//    Migration verified via tools/cofhe-sdk-spike.ts (2026-05-20).
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { ACPUtils } from "@cofhe/sdk/acps";
 import type { ACP } from "@cofhe/sdk/acps";
 
-// ── deployments loader — same module the live-smoke uses.
 import { loadDeployment } from "../src/integrations/deployments.js";
 import {
   OPERATOR_BLIND_DEFAULT_MARKET_ID as DEFAULT_OPERATOR_BLIND_MARKET_ID,
@@ -82,9 +45,7 @@ import {
   startOperatorBlindRoundtrip,
 } from "../src/verdict/operator-blind-roundtrip-surface.js";
 
-// ── playwright is a dev dep; chromium browser is installed separately via
-//    `npx playwright install chromium`. The script gives a clear hint if it
-//    isn't installed.
+// Chromium is installed separately: `npx playwright install chromium`.
 import { chromium, type Browser, type Page } from "playwright";
 
 // ── pinned constants ──────────────────────────────────────────────────────
@@ -153,7 +114,7 @@ function fromSurface<T>(fn: () => T): T {
   }
 }
 
-// ── env-var pre-flight. All four are required; missing means abort. ──────
+// ── env-var pre-flight; any missing required var aborts. ──────
 interface PreflightEnv {
   baseRpcUrl: string;
   relayerKey: Hex;
@@ -186,9 +147,7 @@ function preflightEnv(): PreflightEnv {
   if (!dashboardUrl) die("pre-flight", "DASHBOARD_URL is required (e.g. http://localhost:5173)");
 
   const relayerKey = relayerKeyRaw as Hex;
-  // Derived from the relayer key. AGENT_ADDRESS is optional and, if set, must
-  // agree — the key already determines this address, so a separate var could
-  // only duplicate it or contradict it.
+  // Derived from the relayer key; AGENT_ADDRESS is optional and, if set, must agree.
   const agentRaw = deriveAddressFromKey({
     privateKey: relayerKeyRaw,
     configured: process.env.AGENT_ADDRESS,
@@ -206,9 +165,7 @@ function preflightEnv(): PreflightEnv {
     die("pre-flight", "OPERATOR_BLIND_MARKET_ID must be a 0x-prefixed bytes32 market id");
   }
   const marketId = marketRaw.toLowerCase() as Hex;
-  // marketRef.protocol must match the daemon market's adapter_id. Default is
-  // the seeded fixture's adapter (polymarket-gamma, the same adapter every real
-  // Murmur market uses); override to target a future venue adapter.
+  // marketRef.protocol must match the daemon market's adapter_id; default is the seeded fixture's.
   const marketProtocol =
     (process.env.OPERATOR_BLIND_MARKET_PROTOCOL ?? "polymarket-gamma").trim();
 
@@ -236,25 +193,18 @@ const ABI = parseAbi([
   "function publishReveal(bytes32 callId, uint8 binaryIndex, uint16 confidenceBps, bytes binaryIndexSignature, bytes confidenceSignature)",
   "function getCall(bytes32 callId) view returns (address agent, bytes32 marketId, uint64 acceptedAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, uint8 revealedBinaryIndex, uint16 revealedConfidenceBps, uint8 state)",
   "function callPublicRevealAt(bytes32 callId) view returns (uint64)",
-  // Needed to WAIT for the submission window; see submitGatewayCall below.
+  // Read to wait for the submission window in main().
   "function markets(bytes32 marketId) view returns (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active)",
 ]);
 
-// ── threshold network direct /decrypt call (same shape as live-smoke). The
-//    cofhejs.decrypt() helper discards the signature; publishReveal needs
-//    it, so we call the endpoint directly.
-//
-//    UNUSED since the SDK's decryptForTx path replaced it (see decryptWithRetry
-//    below) — kept as reference. The request's `permit` field name is 0.5-era
-//    and has NOT been re-verified against the 0.7 threshold network; check it
-//    before resurrecting this path.
+// Unused (main uses decryptForTx). Direct threshold /decrypt call that keeps the signature.
+// The `permit` field is unverified against the 0.7 threshold network.
 async function fetchDecryptWithSignature(
   ctHashBigint: bigint,
   acp: ACP,
 ): Promise<{ decrypted: bigint; signature: Hex }> {
   const ct_tempkey = ctHashBigint.toString(16).padStart(64, "0");
-  // Threshold network expects the public projection of the ACP (0.7's
-  // ACPPublic, formerly Permission). ACPUtils.getPublic does that projection.
+  // Threshold network expects the ACP's public projection.
   const permissionPayload = ACPUtils.getPublic(acp, true);
   const body = JSON.stringify({
     ct_tempkey,
@@ -402,10 +352,7 @@ async function submitGatewayCallAndWaitForAccepted(
   );
 }
 
-// ── daemon indexer poll. Waits until the call shows up with both ctHashes
-//    populated, OR fails the run with an indexer-lag diagnostic (NOT a
-//    privacy pass). Bounded at INDEXER_LAG_BUDGET_MS so we never silently
-//    retry past the budget.
+// Waits for the call with both ctHashes indexed; a timeout is an indexer-lag failure, not a privacy pass.
 async function waitForIndexedSealedCall(
   daemonUrl: string,
   callId: string,
@@ -448,9 +395,7 @@ async function waitForIndexedSealedCall(
   );
 }
 
-// ── daemon indexer poll for the post-publish state. Waits until the
-//    revealed_verdict sub-object appears with the spec-pinned field names.
-//    Same bounded-retry posture as waitForIndexedSealedCall.
+// Waits for the revealed sub-object after publish; same bound as waitForIndexedSealedCall.
 async function waitForIndexedReveal(
   daemonUrl: string,
   callId: string,
@@ -546,8 +491,7 @@ async function main() {
   }
   log("playwright chromium launched");
 
-  // ensure the screenshots dir exists (gitkeep is committed but the runner
-  // might be using a fresh worktree without the dir materialized)
+  // A fresh worktree may lack the screenshots dir.
   const screenshotDir = pathResolve(
     dirname(fileURLToPath(import.meta.url)),
     "operator-blind/screenshots",
@@ -555,13 +499,7 @@ async function main() {
   mkdirSync(screenshotDir, { recursive: true });
 
   try {
-    // 1. snapshot 0 — baseline. Nothing strictly required to assert here;
-    //    we just record that the daemon is alive enough to read calls and
-    //    that no prior call carries our runId nonce (defense in depth).
-    //    The spec calls for /api/calls?recent=20 but that route is the v0
-    //    name and not actually present on the daemon (the recent feed
-    //    lives at /v1/feed/today). Per "develop-as-prod, no mocks", we
-    //    probe what's actually there — /v1/feed/today.
+    // 1. snapshot 0: the feed is readable and no call carries our runId yet.
     let baseline: Response;
     try {
       baseline = await fetch(`${env.daemonUrl}/v1/feed/today`);
@@ -581,10 +519,7 @@ async function main() {
     }
     ok("snapshot-0: baseline taken (daemon reachable, runId not present yet)");
 
-    // 2. Gateway submit — market/account/agent/runtime-key fixtures are
-    //    seeded by tools/seed-operator-blind-fixtures.ts. The script submits
-    //    prediction intent to Murmur-owned sealing; the daemon encrypts,
-    //    then its broadcaster sends submitSealedFor.
+    // 2. Gateway submit: the daemon seals the verdict and its broadcaster sends submitSealedFor.
     const marketId = env.marketId;
     log(`using seeded gateway marketId=${marketId} agentAddress=${env.agentAddress}`);
     log(`initializing @cofhe/sdk client (chain=${CHAIN_ID})`);
@@ -594,7 +529,6 @@ async function main() {
     });
     const cofheClient = createCofheClient(cofheConfig);
     await cofheClient.connect(publicClient as never, walletClient as never);
-    // 0.7 renamed Permits to ACPs; same options, same create-and-sign semantics.
     const selfAcp = await cofheClient.acp.createSelf({
       type: "self",
       issuer: account.address,
@@ -618,21 +552,8 @@ async function main() {
     };
     const gatewayUrl = `${env.daemonUrl}/v2/gateway/calls/seal`;
 
-    // WAIT for the submission window. The fixture market is registered with a
-    // future armCloseAt (registration must complete before arming opens), so
-    // submissions are rejected until submissionOpenAt — and the contract
-    // reverts SubmissionWindowClosed once submissionCloseAt passes. This tool
-    // used to submit whenever it happened to get there, which made the gate a
-    // race against its own CoFHE init: too early reverted, and a slow init
-    // reverted at the other end.
-    // POLLED until the schedule is actually visible.
-    //
-    // The seeder registers this market moments before this script runs, and a
-    // load-balanced RPC can serve the read from a replica that has not seen
-    // the registration yet — returning an all-zero tuple. A single read then
-    // computes submissionOpenAt=0 and submissionCloseAt=0, concludes the
-    // window has closed, and fails a market that is perfectly fine. Same
-    // replica lag as the reads further down; bounded the same way.
+    // Wait for the submission window: the contract reverts before submissionOpenAt and after submissionCloseAt.
+    // Poll the schedule first; a lagging RPC replica can return an all-zero tuple right after seeding.
     const SCHEDULE_TIMEOUT_MS = 60_000;
     const scheduleDeadline = Date.now() + SCHEDULE_TIMEOUT_MS;
     let marketSchedule: readonly [bigint, bigint, bigint, bigint, bigint, bigint, boolean];
@@ -643,8 +564,7 @@ async function main() {
         functionName: "markets",
         args: [marketId as Hex],
       })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint, boolean];
-      // publicRevealAt is nonzero for every registered market, so a zero here
-      // means "not visible yet", never "registered with a zero schedule".
+      // publicRevealAt is nonzero for every registered market, so zero means not visible yet.
       if (marketSchedule[5] !== 0n) break;
       if (Date.now() > scheduleDeadline) {
         die(
@@ -701,12 +621,7 @@ async function main() {
     const prePage: Page = await browser.newPage();
     try {
       await prePage.goto(preUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      // Wait for the CallPage to render past the [loading…] placeholder.
-      // The sealed affordance is rendered as the literal text "sealed"
-      // inside the submission panel's confidence row (see
-      // dashboard/src/verdict/pages/CallPage.tsx) plus the privacy chip
-      // "fhenix sealed". We wait for either to appear before reading the
-      // innerText.
+      // Wait for the sealed affordance (CallPage.tsx renders "sealed") before reading innerText.
       await prePage.waitForFunction(
         () => {
           const t = document.body?.innerText ?? "";
@@ -729,8 +644,7 @@ async function main() {
       await prePage.close();
     }
 
-    // 4. contract steps 4-7 — wait for reveal window, openReveal, poll
-    //    threshold network, publishReveal.
+    // 4. contract steps: wait for reveal window, openReveal, decrypt, publishReveal.
     const revealOpenAt = await publicClient.readContract({
       address: contractAddress,
       abi: ABI,
@@ -768,9 +682,7 @@ async function main() {
     const binCtHashBigint = BigInt(binaryIndexCtHash);
     const confCtHashBigint = BigInt(confidenceCtHash);
 
-    // Threshold network needs ~5-30s to observe the on-chain FHE.allowPublic
-    // from openReveal before it will issue a decrypt signature. Retry on
-    // 403/Forbidden errors with backoff.
+    // Threshold network needs ~5-30s to observe openReveal's FHE.allowPublic; retry at a fixed interval.
     const decryptWithRetry = async (label: string, ctHash: bigint) => {
       const deadline = Date.now() + POLL_TIMEOUT_MS;
       let attempt = 0;
@@ -842,20 +754,13 @@ async function main() {
     );
     ok(`A3 (daemon): fhenix.${FHENIX_REVEALED_SUBOBJECT_KEY} populated with both spec-pinned plaintext fields`);
 
-    // ── A3 — dashboard side. Reload the page (the SPA refreshes its data
-    //    via the same /v1/calls fetch) and assert the sentinel is now in
-    //    the rendered text.
+    // ── A3 dashboard: load the page fresh and assert the sentinel renders.
     const postUrl = `${env.dashboardUrl}/#/calls/${callId}`;
     log(`playwright goto ${postUrl} (post-publish render)`);
     const postPage: Page = await browser.newPage();
     try {
       await postPage.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      // Give the SPA up to 30s to flip from sealed → revealed render. We
-      // poll for ANY sentinel form (raw "7531" or percent "75.31%") so
-      // either render path passes. CallPage.tsx today renders the percent
-      // form; we still accept the raw form so a future render-shape change
-      // (e.g. surfacing the bps integer next to the percent) doesn't
-      // false-fail this gate.
+      // Accept any sentinel form (raw "7531" or percent "75.31%") so either render passes.
       const postForms = sentinelTextForms(sentinelConfidence);
       await postPage.waitForFunction(
         (forms) => {

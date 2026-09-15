@@ -1,17 +1,7 @@
 #!/usr/bin/env tsx
 /**
- * Copy the daemon's SQLite database safely, while it is running.
- *
- * Copying the file by hand loses data, silently. SQLite runs in WAL mode:
- * recent writes live in a sibling `-wal` file and have not yet been folded
- * into the main one. `cp data/verdict.db backup.db` therefore produces a
- * database that is missing the newest rows, with no error and no warning —
- * it opens fine and simply lacks whatever was most recent. That cost a live
- * verification an hour: a call sealed seconds earlier was invisible in the
- * copy.
- *
- * SQLite's own backup API reads through the WAL and takes a consistent
- * snapshot even while the daemon writes. That is what this uses.
+ * Copies the daemon's SQLite database safely while it runs. A plain `cp` silently misses writes still
+ * in the `-wal` file; SQLite's backup API reads through the WAL for a consistent snapshot.
  *
  * Usage:
  *   npx tsx tools/backup-db.ts [source] [destination]
@@ -36,9 +26,7 @@ try {
   db.close();
 }
 
-// Prove the copy is consistent and complete rather than asserting it: open
-// the result and read the schema version plus a row count the caller can
-// eyeball against the live daemon.
+// Open the copy and print schema version and table count to check against the live daemon.
 const copy = new Database(dest, { readonly: true });
 const version = copy.prepare("SELECT value FROM schema_meta WHERE key='schema_version'").get() as
   | { value: string }

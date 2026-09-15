@@ -1,17 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * admin-claim — operator path to attach an existing agent_id (or mint a
- * new one for a given slug) to an account_id, bypassing Privy.
- *
- * Use cases:
- *   - Recovery: an agent owner lost access to their Privy login but the
- *     operator has out-of-band proof of ownership.
- *   - Bootstrap: pre-seeding accounts for benchmark / internal_test
- *     agents the operator runs directly.
- *
- * every successful claim appends an `admin_claim` row to
- * `agent_security_events`. The event is the canonical forensic trail;
- * stdout logging here is auxiliary.
+ * Attaches an existing agent_id (or mints one for a slug) to an account_id, bypassing Privy.
+ * For recovery with out-of-band proof of ownership, or pre-seeding operator-run agents.
+ * Every successful claim appends an `admin_claim` row to `agent_security_events`, the forensic trail.
  *
  * Usage:
  *   tsx tools/operations/admin-claim.ts \\
@@ -21,11 +12,8 @@
  *     [--bio "Short bio"] \\
  *     [--db-path ./data/verdict.db]
  *
- * Reads VERDICT_DB_PATH if --db-path is omitted; defaults to
- * `./data/verdict.db`. Refuses to run if the account_id isn't already in
- * the accounts table (operators should create the Privy account via the
- * normal /v1/account/session route first; this tool is for the linking
- * step that comes after).
+ * Reads VERDICT_DB_PATH if --db-path is omitted; defaults to `./data/verdict.db`.
+ * The account must already exist (create it via /v1/account/session first).
  */
 
 import { dirname, resolve } from "node:path";
@@ -82,8 +70,7 @@ async function main(): Promise<void> {
 
   const dbPath = args.dbPath ?? process.env.VERDICT_DB_PATH ?? resolve(REPO_ROOT, "data/verdict.db");
 
-  // Dynamic imports so the CLI can run without pulling the full
-  // daemon graph at module-load time.
+  // Dynamic imports so the CLI doesn't load the full daemon graph.
   const { openDb } = await import(
     "../../src/verdict/db.js"
   );

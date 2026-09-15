@@ -1,12 +1,6 @@
 #!/usr/bin/env node
-// Discovery-based smoke runner.
-//
-// The `.smoke.ts` naming convention IS the test interface, but the hand-
-// maintained `&&` chain in package.json ran only ~16 of ~140 smokes — every
-// new smoke silently defaulted to "not in CI". This runner globs every
-// `*.smoke.ts` under src/ and dashboard/src/ (excluding `*.live-smoke.ts`,
-// which hit the network) and runs each sequentially via tsx, so adding a smoke
-// is one file with zero package.json edits.
+// Runs every `*.smoke.ts` and `*.check.ts` under src/ and dashboard/src/ (not `*.live-smoke.ts`)
+// sequentially via tsx.
 //
 // Usage:
 //   node tools/run-smokes.mjs            # run all discovered smokes
@@ -20,24 +14,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 const ROOTS = ["src", "dashboard/src"];
 const repoRoot = process.cwd();
 
-// Smokes that already fail on `master` HEAD, independent of any current work —
-// surfaced (not caused) when this discovery runner first turned them all on.
-// They are reported LOUDLY but do not fail the run, so `smoke:all` still acts
-// as a regression gate for everything else. Fix + remove entries over time.
-//
-// STRICT MODE: set SMOKE_STRICT=1 to make these fail too. `verify:readiness`
-// does this, because a release gate that reports success while known files fail
-// is fail-open — and worse, a NEW regression inside an allowlisted file is
-// masked entirely.
-// Tracked-vs-on-disk corpus check.
-//
-// `verify:readiness` gates releases on this suite, so any test file that is not
-// tracked simply does not exist on a clean checkout or in CI — a green run
-// locally would then mean nothing there. (`.gitignore` used to exclude
-// `**/*.smoke.ts` wholesale; that policy was reversed for exactly this reason.)
-//
-// Reported loudly on every run, and fatal under SMOKE_STRICT so a release gate
-// cannot pass while its own corpus is unreproducible.
+// Warns about smokes git doesn't track (a clean checkout won't run them); fatal under SMOKE_STRICT.
 function reportUntrackedSmokes(files, repoRoot) {
   let tracked = new Set();
   try {
@@ -47,9 +24,7 @@ function reportUntrackedSmokes(files, repoRoot) {
     });
     tracked = new Set(out.split("\n").filter(Boolean));
   } catch (err) {
-    // Fail CLOSED under strict mode. A missing git binary or a source bundle
-    // without history is precisely when the corpus is least verifiable, so
-    // silently skipping the check there defeats its purpose.
+    // Fail closed under strict mode: without git the corpus can't be verified.
     if (process.env.SMOKE_STRICT === "1") {
       console.error(
         `\n  !! cannot verify the test corpus against git (${
@@ -74,6 +49,7 @@ function reportUntrackedSmokes(files, repoRoot) {
   return untracked.length;
 }
 
+// Known failures on master: reported but not gating, unless SMOKE_STRICT=1 (verify:readiness sets it).
 const KNOWN_PREEXISTING = new Map([
   [
     "src/daemon/index.smoke.ts",
@@ -93,9 +69,6 @@ function walk(dir, out) {
       if (entry === "node_modules" || entry === "dist") continue;
       walk(full, out);
     } else if (
-      // `.check.ts` files are the same kind of gate as smokes and were only
-      // wired through hand-listed npm scripts, so `smoke:all` never ran them
-      // and the release gate silently skipped them.
       (entry.endsWith(".smoke.ts") || entry.endsWith(".check.ts")) &&
       !entry.endsWith(".live-smoke.ts")
     ) {

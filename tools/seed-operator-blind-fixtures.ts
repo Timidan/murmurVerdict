@@ -1,17 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * TEST FIXTURE ONLY: seeds the operator-blind gateway round-trip prerequisites.
- *
- * This intentionally bypasses Privy and writes real rows directly to the
- * daemon SQLite DB so the production Runtime-Key + Gateway validation path can
- * be exercised by tools/operator-blind-roundtrip.ts. It also registers the
- * deterministic test market on-chain through the real RPC.
- *
- * GUARDED: refuses to run unless MURMUR_ALLOW_FIXTURE_SEED=true. The
- * develop-as-prod posture forbids fixture-backed runtime state by default;
- * this seeder is the explicit carve-out for the operator-blind release-gate
- * Playwright check (tools/operator-blind-roundtrip.ts). NEVER invoke this
- * against a production database.
+ * TEST FIXTURE ONLY: seeds tools/operator-blind-roundtrip.ts by writing daemon DB rows directly
+ * (bypassing Privy) and registering the test market on-chain.
+ * Refuses to run without MURMUR_ALLOW_FIXTURE_SEED=true. Never run against a production database.
  */
 
 import "dotenv/config";
@@ -117,10 +108,7 @@ async function registerOnchainMarket(): Promise<OnchainRegistration> {
   const publicClient = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
   const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http(rpcUrl) });
 
-  // The chain id MUST equal the DB fixture id — the roundtrip submits against
-  // the fixture market, so a per-run chain id would point at a market that was
-  // never registered. Registration is one-shot, so make the seeder idempotent
-  // instead: skip when this market is already registered.
+  // The on-chain market id must equal the DB fixture's. Registration is one-shot, so skip if already registered.
   const onchainMarketId = OPERATOR_BLIND_FIXTURE_MARKET_ID as Hex;
   const existing = (await publicClient.readContract({
     address,
@@ -133,8 +121,7 @@ async function registerOnchainMarket(): Promise<OnchainRegistration> {
       `[seed-operator-blind] market ${onchainMarketId} already registered ` +
         `(publicRevealAt=${existing[5]}) — schedules are immutable, skipping`,
     );
-    // Report the EXISTING schedule, not a fresh one: the DB fixture has to
-    // agree with what is actually on chain.
+    // Return the existing schedule; the DB fixture must match what is on chain.
     return {
       tx: null,
       endDateMs: Number(existing[4]) * 1000,
@@ -146,26 +133,13 @@ async function registerOnchainMarket(): Promise<OnchainRegistration> {
         // Compressed but strictly ordered; armCloseAt must be in the future.
         const base = BigInt(Math.floor(Date.now() / 1000));
         const h = BigInt(OPERATOR_BLIND_FIXTURE_MARKET_HORIZON_SECONDS);
-        // REGISTRATION_LEAD covers the whole write — gas estimation, the RPC
-        // round trip, and block inclusion. A 10s lead was NOT enough: the
-        // transaction mined well after the schedule was built, so the contract
-        // saw `armCloseAt <= block.timestamp` and reverted
-        // RevealAfterMustBeFuture on every seed. That is the contract behaving
-        // correctly — registration must complete before arming opens.
-        //
-        // Later instants are offset from armCloseAt, not from `base`, so
-        // widening the lead cannot silently compress a downstream window.
+        // The lead must cover gas estimation, RPC and inclusion, or the contract reverts RevealAfterMustBeFuture.
+        // Later instants offset from armCloseAt so widening the lead can't compress a later window.
         const REGISTRATION_LEAD = 90n;
         const armCloseAt = base + REGISTRATION_LEAD;
         return {
           armCloseAt,
-          // The submission window has to survive the WHOLE round-trip
-          // preamble: CoFHE SDK init, key fetch and input encryption, which
-          // together run to minutes on a cold cache. A 170s window meant the
-          // gate raced its own setup and reverted SubmissionWindowClosed.
-          // 10 minutes is generous on purpose — this is a hand-run release
-          // gate, not a tight loop, and a false failure here costs far more
-          // than the wait.
+          // 10-minute window: the round-trip's CoFHE init and encryption can take minutes on a cold cache.
           submissionOpenAt: armCloseAt + 10n,
           earlyAccessCutoffAt: armCloseAt + 570n,
           submissionCloseAt: armCloseAt + 600n,
@@ -211,8 +185,7 @@ async function main(): Promise<void> {
   }
   const dbPath =
     args.dbPath ?? process.env.VERDICT_DB_PATH ?? resolve(REPO_ROOT, "data/verdict.db");
-  // Derived from the relayer key that this seeder already uses to register the
-  // market on-chain; AGENT_ADDRESS remains an optional explicit cross-check.
+  // Derived from the relayer key; AGENT_ADDRESS is an optional cross-check.
   const agentWallet = deriveAddressFromKey({
     privateKey: requiredHexPrivateKey("FHENIX_GATEWAY_RELAYER_PRIVATE_KEY"),
     configured: process.env.AGENT_ADDRESS,
@@ -226,8 +199,7 @@ async function main(): Promise<void> {
   const seeded = seedOperatorBlindFixtureDb({
     db,
     agentWallet,
-    // The DB fixture must agree with the on-chain schedule exactly — the
-    // acceptance guard compares the two and refuses the call otherwise.
+    // Must match the on-chain schedule exactly or the acceptance guard refuses the call.
     revealSchedule: {
       endDateMs: registration.endDateMs,
       embargoSec: registration.embargoSec,

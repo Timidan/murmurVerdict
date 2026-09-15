@@ -23,13 +23,12 @@ import { randomBytes } from "node:crypto";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
-// 0.7 stopped echoing securityZone/utype per input, and the contract no longer
-// takes either at runtime — utype is a compile-time brand on externalEuint*.
+// The contract takes no securityZone/utype at runtime; utype is a compile-time brand on externalEuint*.
 const COFHE_SECURITY_ZONE = 0;
 
 const ABI = parseAbi([
   "function registerMarket(bytes32 marketId, (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active) schedule)",
-  // 0.7: two bare ciphertext handles plus the ONE proof covering both.
+  // Two ciphertext handles plus one proof covering both.
   "function submitSealedFor(address agent, bytes32 marketId, bytes32 binaryIndexInput, bytes32 confidenceInput, bytes inputProof, bytes32 clientNonce) returns (bytes32 callId)",
   "function grantDecryptAccess(bytes32 callId, address subscriber)",
   "function getDecryptAccess(bytes32 callId, address subscriber) view returns (uint8 state, uint64 grantCloseAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, bool alreadyGranted)",
@@ -61,11 +60,9 @@ async function main(): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
   const revealAfter = nowSec + revealSec;
 
-  // 1. register the market's six-instant schedule (owner == relayer here).
-  // Compressed for the proof run, but still strictly ordered with armCloseAt
-  // in the future, which registration enforces.
+  // 1. register the market's schedule (owner == relayer here); strictly ordered, armCloseAt in the future.
   const schedule = {
-    // Wide enough for CoFHE SDK init + input encryption; 30s was not.
+    // Windows wide enough for CoFHE SDK init + input encryption.
     armCloseAt: BigInt(nowSec + 10),
     submissionOpenAt: BigInt(nowSec + 20),
     earlyAccessCutoffAt: BigInt(nowSec + 150),
@@ -90,10 +87,8 @@ async function main(): Promise<void> {
   console.log(`[flow2] connecting @cofhe/sdk + encrypting inputs (binaryIndex=${BIN}, confidenceBps=${CONF})`);
   const cofhe = createCofheClient(createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }));
   await cofhe.connect(publicClient as never, relayerWallet as never);
-  // 0.7 renamed Permits to ACPs.
   await cofhe.acp.createSelf({ type: "self", issuer: relayer.address });
-  // 0.7 binds the consuming contract into a SINGLE batch signature and returns
-  // [...ctHashes, batchSignature] — one element more than the input count.
+  // Returns [...ctHashes, batchSignature]; one signature bound to the consuming contract.
   const enc = await cofhe
     .encryptInputs([Encryptable.uint8(BigInt(BIN)), Encryptable.uint16(BigInt(CONF))] as never)
     .setAccount(relayer.address)

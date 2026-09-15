@@ -31,8 +31,7 @@ import {
   cofheVerifierError,
 } from "../src/integrations/agent-side-cofhe-sealer-support.js";
 
-// 0.7 stopped echoing securityZone/utype per input; send what we asked the
-// verifier to sign.
+// The SDK doesn't echo securityZone/utype per input; send what we asked the verifier to sign.
 const COFHE_SECURITY_ZONE = 0;
 
 interface MetaResponse {

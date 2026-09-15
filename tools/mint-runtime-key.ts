@@ -1,13 +1,6 @@
 /**
- * tools/mint-runtime-key.ts — operator mint of a Gateway Runtime Key scoped
- * to a specific market, for an existing agent. Companion to the operator-blind
- * harness: the fixture seed mints a key scoped to the fixture market only, so
- * driving a real (e.g. polymarket-gamma) market end-to-end needs a key whose
- * policy allows that market.
- *
- * Gated behind MURMUR_ALLOW_FIXTURE_SEED=true — same develop-as-prod posture
- * as tools/seed-operator-blind-fixtures.ts: this writes runtime rows directly
- * to the daemon DB and must never run against a production database.
+ * Mints a Gateway Runtime Key scoped to one market for an existing agent.
+ * Requires MURMUR_ALLOW_FIXTURE_SEED=true: it writes DB rows directly. Never run against a production database.
  *
  * Usage:
  *   MURMUR_ALLOW_FIXTURE_SEED=true tsx tools/mint-runtime-key.ts \

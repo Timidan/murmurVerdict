@@ -1,21 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * tools/submit-test-calls.ts — stand in for an agent's own program and submit
- * sealed calls for one agent, so a manual UI walkthrough has something to look at.
- *
- * The dashboard onboards an agent and hands over a Runtime Key, but nothing in
- * the browser submits a call: that is the agent's job, and an agent is an
- * external program. Without a submitter every downstream screen (agent page,
- * call page, leaderboard, earnings, reveals, purchases) stays empty.
- *
- * Needs NO wallet key. The daemon signs `submitSealedFor` with its own relayer
- * and its reveal worker publishes the reveal when the window opens, so this
- * tool only has to be the agent: mint a scoped key, pick markets that are open
- * right now, and POST a verdict.
- *
- * Contrast with tools/auto-bettor.ts, which also drives openReveal/publishReveal
- * itself and therefore needs a funded EOA. Use that one for an unattended grind;
- * use this one to populate the UI before a manual test.
+ * Submits sealed calls for one agent, standing in for its own program, so a manual UI walkthrough has data.
+ * Needs no wallet key: the daemon relays submitSealedFor and its reveal worker publishes reveals.
+ * For an unattended grind that reveals itself, use tools/auto-bettor.ts.
  *
  * Env:
  *   MURMUR_ALLOW_FIXTURE_SEED=true   required — this mints runtime keys into the DB
@@ -74,15 +61,11 @@ async function main(): Promise<void> {
     );
   }
 
-  // Only markets whose early-access window is still open. Submitting after the
-  // cutoff produces a LateUnsellable call, which is valid but never sellable,
-  // and a call nobody can buy is the wrong thing to test a storefront with.
+  // Only markets whose early-access window is open; a later submit is LateUnsellable.
   const now = Date.now();
   const open = db
     .prepare(
-      // Restricted to series this agent has PRICED. A call on an unpriced market
-      // seals fine and then answers 404 NotForSale at checkout, which is the
-      // wrong thing to hand someone testing the buy path.
+      // Only series this agent has priced; an unpriced call answers 404 NotForSale at checkout.
       `SELECT m.market_id, m.market_config_version, c.early_access_cutoff_at_ms
          FROM markets m
          JOIN market_clocks c ON c.market_id = m.market_id
