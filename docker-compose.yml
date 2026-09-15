@@ -87,6 +87,9 @@ services:
       # is on. Defaults to false; /v2/gateway/calls/seal returns 503 unless this
       # is explicitly set true. Client-sealed /v2/gateway/calls is unaffected.
       MURMUR_OWNED_SEALING_ENABLED: "${MURMUR_OWNED_SEALING_ENABLED:-false}"
+      # Required whenever owned sealing is on: the daemon refuses to start
+      # without the fingerprint keyring, and .env is not baked into the image.
+      MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS: "${MURMUR_GATEWAY_FINGERPRINT_HMAC_KEYS:-}"
       MURMUR_ACK_FEED_REVEAL_MANUAL: "${MURMUR_ACK_FEED_REVEAL_MANUAL:-false}"
       # Empty = derive the start block from the deployment manifest. A literal
       # 0 is NOT "auto" — it scans from genesis.
@@ -140,6 +143,19 @@ services:
       # key's nonce lane. Do NOT scale this service past one replica with
       # payouts enabled — a second replica would allocate the same nonce
       # against the same wallet and can send a provider's money twice.
+      # ── Signer custody ─────────────────────────────────────────────────────
+      # Each writer lane signs with EITHER a raw key (the *_PRIVATE_KEY vars)
+      # OR a KMS key (these ids). Set the id and leave the key unset. The
+      # daemon refuses to start if two lanes resolve to one wallet, or if an
+      # id is set without AWS_REGION. Credentials for KMS come from the
+      # standard AWS provider chain (IAM Roles Anywhere on a VPS), never from
+      # this file.
+      AWS_REGION: "${AWS_REGION:-}"
+      FHENIX_GATEWAY_RELAYER_KMS_KEY_ID: "${FHENIX_GATEWAY_RELAYER_KMS_KEY_ID:-}"
+      FHENIX_GRANT_KMS_KEY_ID: "${FHENIX_GRANT_KMS_KEY_ID:-}"
+      FHENIX_REVEAL_KMS_KEY_ID: "${FHENIX_REVEAL_KMS_KEY_ID:-}"
+      MURMUR_PAYOUT_KMS_KEY_ID: "${MURMUR_PAYOUT_KMS_KEY_ID:-}"
+
       MURMUR_PAYOUT_ENABLED: "${MURMUR_PAYOUT_ENABLED:-false}"
       MURMUR_PAYOUT_PRIVATE_KEY: "${MURMUR_PAYOUT_PRIVATE_KEY:-}"
       MURMUR_PAYOUT_RPC_URL: "${MURMUR_PAYOUT_RPC_URL:-}"

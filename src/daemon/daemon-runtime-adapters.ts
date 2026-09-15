@@ -10,6 +10,7 @@ import { createDbRevealVerifier } from "../verdict/reveal-verifier.js";
 import { sweepDeliveryDeadlines } from "../verdict/entitlement-delivery.js";
 import { loadPayoutConfig } from "../verdict/payout-config.js";
 import type { PayoutAssetConfig } from "../verdict/provider-withdrawals.js";
+import type { DaemonSigners } from "../integrations/kms-account.js";
 import { startWebhookDispatcher } from "../verdict/webhooks.js";
 import type { FhenixEventVerifier } from "../integrations/fhenix-events.js";
 import type { FhenixGatewayBroadcaster } from "../integrations/fhenix-gateway.js";
@@ -89,6 +90,8 @@ export interface LoadDaemonRuntimeAdaptersDeps {
    * refund acknowledgement read the ambient process instead.
    */
   env: NodeJS.ProcessEnv;
+  /** KMS-backed signers resolved at startup; absent lanes use raw keys. */
+  signers?: DaemonSigners;
   gatewayFeedPacketId?: FeedPacketIdAdapter;
   gatewaySealedCallId?: SealedCallIdAdapter;
   /** Circle facilitator factory Adapter for the nanopay route; defaults to
@@ -278,7 +281,12 @@ export async function loadDaemonRuntimeAdapters(
   //
   // ONE write-enabled process per payout key. This worker owns that key's
   // nonce lane; a second replica would hand out the same nonce twice.
-  const payout = loadPayoutConfig(env);
+  const payout = loadPayoutConfig(env, {
+    account: deps.signers?.payout,
+    peerAddresses: [deps.signers?.relayer, deps.signers?.grantor, deps.signers?.reveal]
+      .filter((a): a is NonNullable<typeof a> => a !== undefined)
+      .map((a) => a.address),
+  });
   let providerPayoutWorker: { tick: () => Promise<unknown> } | null = null;
   let deliverySweep: { tick: () => Promise<unknown> } | null = null;
   let payoutAsset: PayoutAssetConfig | null = null;

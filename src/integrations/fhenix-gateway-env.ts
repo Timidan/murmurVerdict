@@ -4,6 +4,7 @@ import {
   http,
   nonceManager,
   type Hex,
+  type LocalAccount,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -66,6 +67,8 @@ export interface FhenixGatewayEnvConfig {
 export interface FhenixGatewayEnvConfigOptions {
   contractAddress?: string | null;
   enabled?: boolean;
+  /** A resolved signer (KMS-backed). When set, no raw key is read. */
+  account?: LocalAccount;
 }
 
 export class FhenixGatewayEnvConfigError extends Error {
@@ -124,10 +127,10 @@ export function loadFhenixGatewayEnvConfig(
       "FHENIX_GATEWAY_ENABLED=true requires FHENIX_CHAIN_ID",
     );
   }
-  if (!privateKey) {
+  if (!privateKey && !opts.account) {
     throw new FhenixGatewayEnvConfigError(
       "FHENIX_GATEWAY_RELAYER_PRIVATE_KEY",
-      "FHENIX_GATEWAY_ENABLED=true requires FHENIX_GATEWAY_RELAYER_PRIVATE_KEY",
+      "FHENIX_GATEWAY_ENABLED=true requires FHENIX_GATEWAY_RELAYER_PRIVATE_KEY or FHENIX_GATEWAY_RELAYER_KMS_KEY_ID",
     );
   }
   if (chainIdInput.kind === "invalid") {
@@ -144,7 +147,7 @@ export function loadFhenixGatewayEnvConfig(
       `FHENIX_GATEWAY_ENABLED=true but no contract address found: run sync-deployments to populate data/deployments.json for chainId ${chainId}, or set FHENIX_SEALED_VERDICTS_ADDRESS`,
     );
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+  if (!opts.account && !/^0x[0-9a-fA-F]{64}$/.test(privateKey ?? "")) {
     throw new FhenixGatewayEnvConfigError(
       "FHENIX_GATEWAY_RELAYER_PRIVATE_KEY",
       "must be a 32-byte 0x-prefixed private key",
@@ -204,7 +207,7 @@ export function loadFhenixGatewayEnvConfig(
   // allocation two overlapping broadcasts race the same nonce and one revert
   // is guaranteed. The queue serializes allocate/sign/broadcast only —
   // receipt waiting happens outside it.
-  const account = privateKeyToAccount(privateKey as Hex, { nonceManager });
+  const account = opts.account ?? privateKeyToAccount(privateKey as Hex, { nonceManager });
   const publicClient = createPublicClient({ transport: http(rpcUrl) });
   const walletClient = createWalletClient({
     account,

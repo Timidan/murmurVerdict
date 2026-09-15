@@ -5,6 +5,7 @@ import {
   nonceManager,
   parseAbi,
   type Hex,
+  type LocalAccount,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
@@ -69,6 +70,9 @@ export interface FhenixRevealWorkerEnvConfig {
 export interface FhenixRevealWorkerEnvOptions {
   contractAddress?: string | null;
   enabled?: boolean;
+  /** A resolved signer (KMS-backed). When set, no raw key is read and the
+   *  relayer-inequality check below is replaced by assertDistinctSigners. */
+  account?: LocalAccount;
 }
 
 // Strict, default-OFF loader. Returns null when disabled; throws (fail-closed)
@@ -102,13 +106,13 @@ export function loadFhenixRevealWorkerEnvConfig(
   const chainId = chainIdInput.chainId;
 
   const privateKey = env.FHENIX_REVEAL_PRIVATE_KEY?.trim();
-  if (!privateKey) {
+  if (!privateKey && !opts.account) {
     throw new FhenixRevealWorkerConfigError(
       "FHENIX_REVEAL_PRIVATE_KEY",
       "FHENIX_REVEAL_WORKER_ENABLED=true requires FHENIX_REVEAL_PRIVATE_KEY (a DEDICATED reveal EOA, not the relayer key)",
     );
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+  if (!opts.account && !/^0x[0-9a-fA-F]{64}$/.test(privateKey ?? "")) {
     throw new FhenixRevealWorkerConfigError(
       "FHENIX_REVEAL_PRIVATE_KEY",
       "must be a 32-byte 0x-prefixed private key",
@@ -124,7 +128,7 @@ export function loadFhenixRevealWorkerEnvConfig(
   }
 
   const relayerKey = env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY?.trim();
-  if (relayerKey && relayerKey.toLowerCase() === privateKey.toLowerCase()) {
+  if (!opts.account && relayerKey && relayerKey.toLowerCase() === privateKey!.toLowerCase()) {
     throw new FhenixRevealWorkerConfigError(
       "FHENIX_REVEAL_PRIVATE_KEY",
       "must differ from FHENIX_GATEWAY_RELAYER_PRIVATE_KEY — a dedicated key avoids nonce contention with the Gateway/discovery writers",
@@ -167,7 +171,7 @@ export function loadFhenixRevealWorkerEnvConfig(
     "FHENIX_REVEAL_WORKER_WITHOUT_PERMIT",
   );
 
-  const account = privateKeyToAccount(privateKey as Hex, { nonceManager });
+  const account = opts.account ?? privateKeyToAccount(privateKey as Hex, { nonceManager });
   const publicClient = createPublicClient({ transport: http(rpcUrl) });
   const walletClient = createWalletClient({ account, transport: http(rpcUrl) });
   // The reveal EOA's OWN serial broadcast queue — signer-agnostic helper reused
@@ -221,7 +225,7 @@ function createViemRevealChainAdapter(deps: {
   confirmations: number;
   publicClient: ReturnType<typeof createPublicClient>;
   walletClient: ReturnType<typeof createWalletClient>;
-  account: ReturnType<typeof privateKeyToAccount>;
+  account: LocalAccount;
   broadcastQueue: ReturnType<typeof createSerialBroadcastQueue>;
 }): RevealChainAdapter {
   const address = deps.contractAddress as Hex;

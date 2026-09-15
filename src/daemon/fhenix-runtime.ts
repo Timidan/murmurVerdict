@@ -1,3 +1,4 @@
+import type { DaemonSigners } from "../integrations/kms-account.js";
 import type Database from "better-sqlite3";
 import type { CallAcceptedEvent } from "../types/events.js";
 import { parseBooleanToken } from "../verdict/env-grammar.js";
@@ -126,6 +127,7 @@ export class FhenixRuntimeConfigError extends Error {
 
 export function loadFhenixRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env,
+  signers: DaemonSigners = {},
 ): FhenixRuntimeConfig {
   const chainId = resolveFhenixChainId(env);
   const gatewayEnabled = parseBooleanFlag(
@@ -176,14 +178,17 @@ export function loadFhenixRuntimeConfig(
   const revealWorker = loadFhenixRevealWorkerEnvConfig(childEnv, {
     contractAddress: deploymentAddresses.sealedVerdictsAddress,
     enabled: revealWorkerEnabled,
+    account: signers.reveal,
   });
   const gateway = loadFhenixGatewayEnvConfig(childEnv, {
     contractAddress: deploymentAddresses.sealedVerdictsAddress,
     enabled: gatewayEnabled,
+    account: signers.relayer,
   });
   const grant = loadFhenixGrantEnvConfig(childEnv, {
     contractAddress: deploymentAddresses.sealedVerdictsAddress,
     enabled: grantEnabled,
+    account: signers.grantor,
   });
 
   // Murmur's cut. Required by BOTH runtimes that can put a sale in motion:

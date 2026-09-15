@@ -6,6 +6,7 @@ import {
   parseAbi,
   type Address,
   type Hex,
+  type LocalAccount,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -149,6 +150,9 @@ export interface FhenixGrantEnvConfig {
 export interface FhenixGrantEnvOptions {
   contractAddress?: string | null;
   enabled?: boolean;
+  /** A resolved signer (KMS-backed). When set, no raw key is read and the
+   *  raw-key isolation checks below are replaced by assertDistinctSigners. */
+  account?: LocalAccount;
 }
 
 /** Default sales safety margin, in seconds. Mirrors FhenixGrantEnvConfig. */
@@ -245,34 +249,36 @@ export function loadFhenixGrantEnvConfig(
   const chainId = chainIdInput.chainId;
 
   const privateKey = env.FHENIX_GRANT_PRIVATE_KEY?.trim();
-  if (!privateKey) {
+  if (!privateKey && !opts.account) {
     throw new FhenixGrantConfigError(
       "FHENIX_GRANT_PRIVATE_KEY",
       "FHENIX_GRANT_ENABLED=true requires FHENIX_GRANT_PRIVATE_KEY (a DEDICATED grantor EOA, not the relayer or reveal key)",
     );
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
-    throw new FhenixGrantConfigError(
-      "FHENIX_GRANT_PRIVATE_KEY",
-      "must be a 32-byte 0x-prefixed private key",
-    );
-  }
-  // Key isolation: the grantor key must not equal the relayer key
-  // (nonce contention with submit/discovery) nor the reveal key (couples the
-  // privacy revenue path to the availability fallback).
-  const relayerKey = env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY?.trim();
-  if (relayerKey && relayerKey.toLowerCase() === privateKey.toLowerCase()) {
-    throw new FhenixGrantConfigError(
-      "FHENIX_GRANT_PRIVATE_KEY",
-      "must differ from FHENIX_GATEWAY_RELAYER_PRIVATE_KEY — a dedicated grantor key avoids nonce contention and privilege bleed",
-    );
-  }
-  const revealKey = env.FHENIX_REVEAL_PRIVATE_KEY?.trim();
-  if (revealKey && revealKey.toLowerCase() === privateKey.toLowerCase()) {
-    throw new FhenixGrantConfigError(
-      "FHENIX_GRANT_PRIVATE_KEY",
-      "must differ from FHENIX_REVEAL_PRIVATE_KEY — the grant path must not share the reveal EOA",
-    );
+  if (!opts.account) {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey ?? "")) {
+      throw new FhenixGrantConfigError(
+        "FHENIX_GRANT_PRIVATE_KEY",
+        "must be a 32-byte 0x-prefixed private key",
+      );
+    }
+    // Key isolation: the grantor key must not equal the relayer key
+    // (nonce contention with submit/discovery) nor the reveal key (couples the
+    // privacy revenue path to the availability fallback).
+    const relayerKey = env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY?.trim();
+    if (relayerKey && relayerKey.toLowerCase() === privateKey!.toLowerCase()) {
+      throw new FhenixGrantConfigError(
+        "FHENIX_GRANT_PRIVATE_KEY",
+        "must differ from FHENIX_GATEWAY_RELAYER_PRIVATE_KEY — a dedicated grantor key avoids nonce contention and privilege bleed",
+      );
+    }
+    const revealKey = env.FHENIX_REVEAL_PRIVATE_KEY?.trim();
+    if (revealKey && revealKey.toLowerCase() === privateKey!.toLowerCase()) {
+      throw new FhenixGrantConfigError(
+        "FHENIX_GRANT_PRIVATE_KEY",
+        "must differ from FHENIX_REVEAL_PRIVATE_KEY — the grant path must not share the reveal EOA",
+      );
+    }
   }
 
   const contractAddress = resolveContractAddress(env, chainId, opts);
@@ -368,7 +374,7 @@ export function loadFhenixGrantEnvConfig(
     env,
   );
 
-  const account = privateKeyToAccount(privateKey as Hex, { nonceManager });
+  const account = opts.account ?? privateKeyToAccount(privateKey as Hex, { nonceManager });
   const publicClient = createPublicClient({ transport: http(rpcUrl) });
   const walletClient = createWalletClient({ account, transport: http(rpcUrl) });
   // The grantor EOA's OWN serial broadcast queue — signer-agnostic helper
@@ -409,7 +415,7 @@ function createViemGrantChainAdapter(deps: {
   confirmations: number;
   publicClient: ReturnType<typeof createPublicClient>;
   walletClient: ReturnType<typeof createWalletClient>;
-  account: ReturnType<typeof privateKeyToAccount>;
+  account: LocalAccount;
   broadcastQueue: ReturnType<typeof createSerialBroadcastQueue>;
 }): GrantChainAdapter {
   const address = deps.contractAddress as Hex;

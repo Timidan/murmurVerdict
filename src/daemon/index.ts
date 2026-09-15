@@ -20,6 +20,12 @@ import { startDaemonHttpServer } from "./daemon-server.js";
 import { startDaemonOpenServLaunchpad } from "./openserv-launchpad-runtime.js";
 import { startDaemonPolymarketGammaRuntime } from "./polymarket-gamma-runtime.js";
 import { startDaemonTickers } from "./tickers.js";
+import {
+  assertDistinctSigners,
+  resolveDaemonSigners,
+  type KmsSignerFactory,
+} from "../integrations/kms-account.js";
+import { createAwsKmsSignerFactory } from "../integrations/kms-aws.js";
 
 // receipts subsystem and Filecoin pin callback retired.
 // The legacy makePinReceipt() helper that lived here was a no-op for any
@@ -53,6 +59,12 @@ export interface DaemonOpts {
   port?: number;
   /** Skip OpenServ Launchpad agent registration (useful in tests) */
   skipOpenServ?: boolean;
+  /**
+   * Builds a digest signer for a KMS key id. Required as soon as any
+   * *_KMS_KEY_ID is set; the daemon refuses to start otherwise rather than
+   * silently falling back to a raw key that may also be present.
+   */
+  makeKmsSigner?: KmsSignerFactory;
   /** Skip cron tickers (useful in tests; smoke driver still calls .tick() manually) */
   skipTickers?: boolean;
   /** Polymarket Gamma lookup Adapter for admin market registration. */
@@ -80,9 +92,20 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
   const logger = opts.logger ?? console;
   const now = opts.now ?? (() => new Date());
   const nowMs = () => now().getTime();
+  // Signers first: the config loaders compare addresses synchronously, so any
+  // KMS-backed lane has to be resolved before they run. One rule across all
+  // four lanes, raw or KMS: no two on one wallet.
+  // AWS by default. The factory is lazy: it builds a client only when a lane
+  // actually names a key, so a raw-key deployment never touches the SDK.
+  const signers = await resolveDaemonSigners(
+    env,
+    opts.makeKmsSigner ?? createAwsKmsSignerFactory({ region: env.AWS_REGION?.trim() }),
+  );
+  assertDistinctSigners(signers, env);
   const config = loadDaemonRuntimeConfig(env, {
     dbPath: opts.dbPath,
     port: opts.port,
+    signers,
   });
   const lifecycle = createDaemonLifecycle();
 
@@ -102,6 +125,7 @@ export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> 
       gatewaySealedCallId: opts.newSealedCallId,
       nanopayGatewayFactory: opts.nanopayGatewayFactory,
       env: env,
+      signers,
       logger,
       now,
       schemaVersion: SCHEMA_VERSION,

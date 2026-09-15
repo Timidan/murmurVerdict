@@ -1,3 +1,4 @@
+import type { DaemonSigners } from "../integrations/kms-account.js";
 import {
   assertSeriesClockConfig,
   type SeriesClockConfig,
@@ -124,6 +125,8 @@ export interface OpenServLaunchpadRuntimeConfig {
 export interface DaemonRuntimeOverrides {
   dbPath?: string;
   port?: number;
+  /** KMS-backed signers, resolved before this synchronous load runs. */
+  signers?: DaemonSigners;
 }
 
 export class DaemonConfigError extends Error {
@@ -183,7 +186,7 @@ export function loadDaemonRuntimeConfig(
   );
   const publicOrigin = loadMurmurPublicOrigin(env);
   const popAudience = env.MURMUR_POP_AUDIENCE?.trim() || undefined;
-  const fhenixRuntime = loadFhenixRuntimeConfig(env);
+  const fhenixRuntime = loadFhenixRuntimeConfig(env, overrides.signers ?? {});
   const privyAuth = loadPrivyAuthConfig(env);
   const polymarketGammaEnabled = resolvePolymarketGammaEnabled(env);
   const polymarketDiscovery = loadPolymarketDiscoveryRuntimeConfig(env, {

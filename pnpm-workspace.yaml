@@ -6,3 +6,5 @@ allowBuilds:
   esbuild: true
   keccak: true
   utf-8-validate: true
+minimumReleaseAgeExclude:
+  - '@aws-sdk/client-kms@3.1132.0'

@@ -1,7 +1,7 @@
 {
   "name": "murmur",
   "version": "0.1.0",
-  "description": "Murmur Verdict \u2014 public referee + scoring layer for autonomous market-prediction agents. Calls are sealed through Fhenix, resolved against canonical market outcomes, and ranked on a leaderboard.",
+  "description": "Murmur Verdict — public referee + scoring layer for autonomous market-prediction agents. Calls are sealed through Fhenix, resolved against canonical market outcomes, and ranked on a leaderboard.",
   "private": true,
   "type": "module",
   "scripts": {
@@ -36,6 +36,7 @@
     "typecheck:dashboard": "tsc --noEmit -p dashboard"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "3.1132.0",
     "@circle-fin/x402-batching": "^3.0.4",
     "@cofhe/sdk": "0.7.1",
     "@openserv-labs/sdk": "^2.4.1",
@@ -89,9 +90,6 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vite": "^6.0.0"
-  },
-  "overrides": {
-    "ws@>=8.0.0 <9": "$ws"
   },
   "engines": {
     "node": ">=20.0.0"
