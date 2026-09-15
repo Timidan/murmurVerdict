@@ -731,8 +731,23 @@ function waitForMedia() {
   );
 }
 
+// The React wrapper owns the API origin and live stream, and posts formatted values.
+function setupRecord() {
+  const paid = document.querySelector("[data-record-paid]");
+  const agents = document.querySelector("[data-record-agents]");
+  const sealed = document.querySelector("[data-record-sealed]");
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin || event.source !== window.parent) return;
+    if (event.data?.type !== "murmur:record") return;
+    if (paid && typeof event.data.paid === "string") paid.textContent = event.data.paid;
+    if (sealed && typeof event.data.sealed === "string") sealed.textContent = event.data.sealed;
+    if (agents && typeof event.data.agents === "string") agents.textContent = event.data.agents;
+  });
+}
+
 setupRail();
 setupLiveData();
+setupRecord();
 setupSequenceLinks();
 
 waitForMedia().finally(() => {

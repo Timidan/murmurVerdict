@@ -83,7 +83,13 @@ function applyEvent(event: VerdictEvent): void {
     };
   } else {
     // call.accepted | call.resolved
-    const next = [event, ...snapshot.recentCalls].slice(0, RECENT_CAP);
+    const next = [event, ...snapshot.recentCalls.filter(
+      (row) => row.call_id !== event.call_id || row.type !== event.type,
+    )].sort((a, b) => {
+      const at = a.type === "call.accepted" ? a.accepted_at : a.resolved_at;
+      const bt = b.type === "call.accepted" ? b.accepted_at : b.resolved_at;
+      return bt.localeCompare(at);
+    }).slice(0, RECENT_CAP);
     snapshot = { ...snapshot, recentCalls: next };
   }
   broadcast();

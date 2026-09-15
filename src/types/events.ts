@@ -134,6 +134,12 @@ export interface StatsTickEvent {
   wins_24h: number;
   losses_24h: number;
   void_24h: number;
+  /** All-time provider payout journal in USDC atoms (6 dp): payouts minus reversals. May be negative. */
+  provider_paid_usdc_atoms: string;
+  /** All-time registrations of kind agent/attested; deleted agents keep their row and stay counted. */
+  agents_registered: number;
+  /** All-time accepted sealed submissions, including those since resolved. */
+  calls_sealed: number;
 }
 
 export type VerdictEvent =

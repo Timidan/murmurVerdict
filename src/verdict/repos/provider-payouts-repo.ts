@@ -111,11 +111,16 @@ export const providerPayoutsRepo = {
       producer_agent_id: key.producerAgentId,
       currency: key.currency.toUpperCase(),
     }) as { entry_type: string; amount_atoms: string }[];
-    let net = 0n;
-    for (const r of rows) {
-      net += r.entry_type === "reversal" ? -BigInt(r.amount_atoms) : BigInt(r.amount_atoms);
-    }
-    return net;
+    return netOf(rows);
+  },
+
+  /** Net paid across ALL providers in one currency. Public aggregate only. */
+  netPaidAtomsForCurrency(db: Database.Database, currency: string): bigint {
+    const rows = prep(
+      db,
+      `SELECT entry_type, amount_atoms FROM provider_payouts WHERE currency = ?`,
+    ).all(currency.toUpperCase()) as { entry_type: string; amount_atoms: string }[];
+    return netOf(rows);
   },
 
   byId(db: Database.Database, id: number): ProviderPayoutRow | null {
@@ -212,3 +217,11 @@ export const providerPayoutsRepo = {
       }));
   },
 } as const;
+
+function netOf(rows: { entry_type: string; amount_atoms: string }[]): bigint {
+  let net = 0n;
+  for (const r of rows) {
+    net += r.entry_type === "reversal" ? -BigInt(r.amount_atoms) : BigInt(r.amount_atoms);
+  }
+  return net;
+}

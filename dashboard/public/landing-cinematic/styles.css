@@ -33,6 +33,8 @@
   --gutter: clamp(16px, 3vw, 32px);
   --cluster: clamp(24px, 4vw, 48px);
   --section: clamp(64px, 8vw, 96px);
+  /* Fixed record strip under the header; desktop fills the old --space-7 band. */
+  --record-h: 48px;
   --display: "Doto", "Arial Black", "Helvetica Neue", sans-serif;
   --sans: "Space Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "Space Mono", "SFMono-Regular", Consolas, monospace;
@@ -67,6 +69,7 @@ html {
   background: var(--bg);
   color: var(--ink);
   scroll-behavior: smooth;
+  scroll-padding-top: calc(64px + var(--record-h));
   scrollbar-color: #3a3a3a var(--bg);
 }
 
@@ -522,7 +525,7 @@ canvas {
   min-height: 100svh;
   display: grid;
   align-items: center;
-  padding: calc(64px + var(--space-7)) var(--gutter) var(--space-8);
+  padding: calc(64px + var(--record-h)) var(--gutter) var(--space-8);
 }
 
 .moment--hero {
@@ -652,6 +655,132 @@ canvas {
   width: 4px;
   height: 4px;
   background: currentColor;
+}
+
+/* The all-time record. Fixed to the viewport, not the pinned stage, so it
+   survives every fade and transform the sequence applies to its moments. */
+.record-strip {
+  position: fixed;
+  top: 64px;
+  right: 0;
+  left: 0;
+  z-index: var(--z-header);
+  height: var(--record-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(10, 10, 10, 0.94);
+}
+
+.hero-record {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(var(--space-5), 4vw, var(--space-7));
+  margin: 0;
+}
+
+.hero-record > div {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* Value first on screen; the dt stays first in source, so it is read first. */
+.hero-record dd {
+  order: -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--event);
+  font-family: var(--display);
+  font-size: 2rem;
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-record dd svg {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  color: var(--event);
+}
+
+.hero-record dt {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.3;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.hero-record__more {
+  display: block;
+}
+
+/* Not a figure, so it does not borrow the figures' type. */
+.hero-record .hero-record__note {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+/* Narrow: each figure stacks over its label; the long half of a label leaves
+   the screen but stays in the accessible name. */
+@media (max-width: 960px) {
+  :root {
+    --record-h: 56px;
+  }
+
+  .hero-record {
+    width: min(560px, 100%);
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .hero-record > div {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .hero-record dd {
+    gap: 6px;
+    font-size: clamp(1.125rem, 5.5vw, 1.5rem);
+  }
+
+  .hero-record dd svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .hero-record .hero-record__note {
+    font-size: 0.75rem;
+  }
+
+  .hero-record__more {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The reduced-motion flow trims hero padding to --section; keep the fixed band. */
+  .moment.moment--hero {
+    padding-top: calc(64px + var(--record-h));
+  }
 }
 
 .moment--sealed,
@@ -1425,7 +1554,7 @@ canvas {
 
   .moment,
   .rail-scene {
-    padding-top: calc(64px + var(--space-6));
+    padding-top: calc(64px + var(--record-h));
     padding-bottom: var(--space-8);
   }
 

@@ -1,3 +1,5 @@
+import { publicActivityWindow } from "./public-activity-window.js";
+import type { StatsTickEvent } from "./events.js";
 import type Database from "better-sqlite3";
 
 import {
@@ -19,6 +21,7 @@ import {
 } from "./repos/agents-repo.js";
 import { adapterIdentityForMarket } from "./markets.js";
 import type { MarketRow } from "./repos/market-registry-repo.js";
+import { providerPayoutsRepo } from "./repos/provider-payouts-repo.js";
 import {
   resolutionsRepo,
   type FullCallResolutionView,
@@ -222,5 +225,45 @@ export function publicMarketLeaderboardEventRow(
     resolved_calls: row.resolved_calls,
     pending_calls: row.pending_calls,
     market_main_tier: row.market_main_tier,
+  };
+}
+
+export function publicStatsTickEvent(
+  db: Database.Database,
+  servedAt: Date,
+): StatsTickEvent {
+  const activityWindow = publicActivityWindow(servedAt);
+  const row = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM submissions WHERE accepted_at >= ?) AS accepted_24h,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ?) AS resolved_24h,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome = 'win')  AS wins_24h,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome = 'loss') AS losses_24h,
+         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome IN ('void','oracle_unavailable')) AS void_24h,
+         -- Cumulative on purpose: deletion only sets deleted_at, so no deleted_at filter.
+         (SELECT COUNT(*) FROM agents WHERE kind IN ('agent','attested')) AS agents_registered,
+         (SELECT COUNT(*) FROM submissions WHERE privacy_mode = 'sealed_fhenix') AS calls_sealed`,
+    )
+    .get(
+      activityWindow.since_iso,
+      activityWindow.since_iso,
+      activityWindow.since_iso,
+      activityWindow.since_iso,
+      activityWindow.since_iso,
+    ) as {
+    accepted_24h: number;
+    resolved_24h: number;
+    wins_24h: number;
+    losses_24h: number;
+    void_24h: number;
+    agents_registered: number;
+    calls_sealed: number;
+  };
+  return {
+    type: "stats.tick",
+    served_at: activityWindow.served_at,
+    ...row,
+    provider_paid_usdc_atoms: providerPayoutsRepo.netPaidAtomsForCurrency(db, "USDC").toString(),
   };
 }

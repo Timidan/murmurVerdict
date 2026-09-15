@@ -76,6 +76,54 @@
       </a>
     </header>
 
+    <!-- Outside the pinned stage on purpose: every moment in it fades or moves. -->
+    <section class="record-strip" aria-label="All-time record">
+      <dl class="hero-record">
+        <div>
+          <dt>USDC paid <span class="hero-record__more">to providers</span></dt>
+          <dd>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="12" fill="#2775CA" stroke="none" />
+              <path
+              fill="#FFFFFF"
+              stroke="none"
+              d="M15.3 13.9c0-1.75-1.05-2.35-3.15-2.6-1.5-.2-1.8-.6-1.8-1.3s.5-1.15 1.5-1.15c.9 0 1.4.3 1.65.98a.38.38 0 0 0 .35.24h.8a.34.34 0 0 0 .35-.35v-.05a2.5 2.5 0 0 0-2.25-2.05V6.5a.38.38 0 0 0-.35-.35h-.75a.38.38 0 0 0-.35.35v1.1c-1.5.2-2.45 1.2-2.45 2.45 0 1.65 1 2.3 3.1 2.55 1.4.25 1.85.55 1.85 1.35s-.7 1.35-1.65 1.35c-1.3 0-1.75-.55-1.9-1.3a.36.36 0 0 0-.35-.28h-.85a.34.34 0 0 0-.35.35v.05c.2 1.25 1 2.15 2.65 2.4v1.13c0 .19.16.35.35.35h.75a.38.38 0 0 0 .35-.35v-1.13c1.5-.25 2.5-1.3 2.5-2.63z"
+              />
+              <path
+              fill="#FFFFFF"
+              stroke="none"
+              d="M9.65 19.15A7.51 7.51 0 0 1 12 4.65a.4.4 0 0 0 .3-.4v-.6a.35.35 0 0 0-.3-.38h-.1a9 9 0 0 0 0 17.45h.1a.35.35 0 0 0 .3-.38v-.6a.4.4 0 0 0-.3-.4 7.4 7.4 0 0 1-2.35-.19zm4.8-15.88h-.1a.35.35 0 0 0-.3.39v.6c0 .19.13.35.3.4a7.51 7.51 0 0 1 0 14.5.4.4 0 0 0-.3.4v.6c0 .21.14.38.3.38h.1a9 9 0 0 0 0-17.27z"
+              />
+            </svg>
+            <span data-record-paid>··</span>
+          </dd>
+        </div>
+        <div title="All accepted sealed calls, including calls since revealed or resolved.">
+          <dt><span class="hero-record__more">Calls</span> sealed</dt>
+          <dd>
+            <svg viewBox="0 0 16 16" stroke-width="1" fill="none" stroke="currentColor" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true" focusable="false">
+              <path d="M1.5 8L4.5 4.5H11.5L14.5 8L11.5 11.5H4.5L1.5 8Z" />
+              <circle cx="8" cy="8" r="2" />
+            </svg>
+            <span data-record-sealed>··</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Agents <span class="hero-record__more">registered</span></dt>
+          <dd>
+            <svg viewBox="0 0 24 24" stroke-width="1.5" fill="none" stroke="currentColor" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true" focusable="false">
+              <path d="M2 7h20v15H2V7Z" />
+              <path d="M2 16.5h3.5l2 2h9l2 -2H22" />
+              <path d="M12 7V1" />
+              <path d="M8 11v2.5" />
+              <path d="M16 11v2.5" />
+            </svg>
+            <span data-record-agents>··</span>
+          </dd>
+        </div>
+      </dl>
+    </section>
+
     <main>
       <!--
         Choreography informed by Amir Mushich's MIT-licensed

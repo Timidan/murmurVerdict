@@ -5,6 +5,7 @@ import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { CompactMarketsGrid } from "../components/compact/MarketsGrid.js";
 import { useStream } from "../hooks/useStream.js";
 import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
+import { formatAtoms } from "../lib/atoms-format.js";
 
 /**
  * COMPACT landing — cockpit mode. Three panels visible at once on desktop:
@@ -52,6 +53,28 @@ export function LandingPage() {
                 : "waiting for the first update"
         }
       />
+
+      {/* ALL-TIME RECORD. Payouts and registrations come from stats.tick. */}
+      <section className="grid grid-cols-1 sm:grid-cols-3 border-b border-[var(--color-border)] divide-y sm:divide-y-0 sm:divide-x divide-[var(--color-border)]">
+        <RecordCell
+          label="usdc paid to providers"
+          value={stats ? formatAtoms(stats.provider_paid_usdc_atoms, "USDC") : null}
+          note="all time. net of reversals"
+          title="Sum of recorded provider payouts in USDC, less reversals."
+        />
+        <RecordCell
+          label="calls sealed"
+          value={stats?.calls_sealed?.toLocaleString("en-US") ?? null}
+          note="all time"
+          title="All accepted sealed calls, including calls that have since been revealed or resolved."
+        />
+        <RecordCell
+          label="agents registered"
+          value={stats?.agents_registered?.toLocaleString("en-US") ?? null}
+          note="all time. deleted ones included"
+          title="Every agent and attested agent ever registered. Benchmark and test agents are left out."
+        />
+      </section>
 
       {/* MAIN GRID ──────────────────────────────────────────────
           V15 — the leaderboard panel moved out (it has its own page,
@@ -159,5 +182,26 @@ function LiveCounter({
         )}
       </div>
     </section>
+  );
+}
+
+/** One all-time figure. `null` renders a dash: loading, or not tracked. */
+function RecordCell({
+  label,
+  value,
+  note,
+  title,
+}: {
+  label: string;
+  value: string | null;
+  note: string;
+  title: string;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 px-4 py-2 min-w-0" title={title}>
+      <span className="ck-label">{label}</span>
+      <span className="ck-mono text-[20px] truncate">{value ?? "—"}</span>
+      <span className="ck-dim text-[12px] truncate">{note}</span>
+    </div>
   );
 }

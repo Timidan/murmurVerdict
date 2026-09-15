@@ -10,7 +10,7 @@ import {
   type OperatorAlertIdAdapter,
   type OperatorAlertSinkConfig,
 } from "../verdict/operator-alerts.js";
-import { publicActivityWindow } from "../verdict/public-activity-window.js";
+import { publicStatsTickEvent } from "../verdict/public-event-fanout.js";
 
 interface Tickable {
   tick(): Promise<unknown>;
@@ -218,7 +218,7 @@ export function startDaemonTickers(
 
   tickers.push(
     setIntervalGuarded(logger, intervals.statsMs, "stats", async () => {
-      emitStatsTick(db, events, now());
+      events.emit(publicStatsTickEvent(db, now()));
     }),
   );
 
@@ -232,40 +232,6 @@ export function startDaemonTickers(
   };
 }
 
-function emitStatsTick(
-  db: Database.Database,
-  events: VerdictEventBus,
-  servedAt: Date,
-): void {
-  const activityWindow = publicActivityWindow(servedAt);
-  const row = db
-    .prepare(
-      `SELECT
-         (SELECT COUNT(*) FROM submissions WHERE accepted_at >= ?) AS accepted_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ?) AS resolved_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome = 'win')  AS wins_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome = 'loss') AS losses_24h,
-         (SELECT COUNT(*) FROM t1_resolutions WHERE resolved_at >= ? AND outcome IN ('void','oracle_unavailable')) AS void_24h`,
-    )
-    .get(
-      activityWindow.since_iso,
-      activityWindow.since_iso,
-      activityWindow.since_iso,
-      activityWindow.since_iso,
-      activityWindow.since_iso,
-    ) as {
-    accepted_24h: number;
-    resolved_24h: number;
-    wins_24h: number;
-    losses_24h: number;
-    void_24h: number;
-  };
-  events.emit({
-    type: "stats.tick",
-    served_at: activityWindow.served_at,
-    ...row,
-  });
-}
 
 function setIntervalGuarded(
   logger: DaemonTickerLogger,

@@ -66,7 +66,7 @@ export function CompactLiveFeed({
     if (marketId && recentCalls.length > 0) {
       return (
         <div className="px-2 py-2 ck-mono ck-dim">
-          [no calls on this market have arrived in the live stream]
+          [no recent calls on this market]
         </div>
       );
     }
@@ -90,9 +90,9 @@ export function CompactLiveFeed({
       // Say what fills it, and offer the one action that does.
       return (
         <div className="px-2 py-2 ck-mono ck-dim flex flex-col items-start gap-1.5">
-          <span>[no calls have arrived in the live stream yet]</span>
+          <span>[no recent calls yet]</span>
           <span className="max-w-[42ch] leading-tight">
-            This tape carries what happens while you watch. Every sealed call
+            This tape shows recent calls and updates live. Every sealed call
             lands here the moment murmur accepts it, and again when the venue
             settles it.
           </span>
