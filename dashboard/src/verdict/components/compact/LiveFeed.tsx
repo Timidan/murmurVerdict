@@ -4,7 +4,8 @@ import { Ik } from "../../icons.js";
 import { formatScore } from "../../lib/score-format.js";
 import { isPlainLeftClick, useDetailDrawer } from "./DetailDrawer.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
-import { TimeAgo } from "./TimeAgo.js";
+import { TimeAgo, useNowMs } from "./TimeAgo.js";
+import { tapeRows } from "../../lib/live-tape.js";
 
 /**
  * The public outcome, in words. Slicing the raw enum to four characters used
@@ -24,8 +25,17 @@ function outcomeWord(outcome: string | null | undefined): string {
 }
 
 /**
- * COMPACT live tape — terminal-style scroll of accepted/resolved events.
- * One row per event, single line, monospace, dot prefix for outcome.
+ * COMPACT live tape — terminal-style scroll of recent calls.
+ *
+ * One row per CALL, not per event. The stream emits a call twice — once when
+ * murmur seals it and again when the venue settles it — and rendering both
+ * put every call on the tape two times, as `sealed` and then as its outcome.
+ * The resolved event supersedes the sealed one in place, so a row goes from
+ * `sealed` to `win` without moving.
+ *
+ * Bounded by time, not count: the last 24h, then one terminator line saying
+ * how many earlier calls the stream still holds. `limit` stays as a ceiling
+ * inside the window so a burst cannot make the panel unbounded either.
  */
 export function CompactLiveFeed({
   limit = 40,
@@ -49,16 +59,20 @@ export function CompactLiveFeed({
   const scoped = marketId
     ? recentCalls.filter((evt) => evt.market_id === marketId)
     : recentCalls;
-  const rows = scoped.slice(0, limit);
 
-  // tape-row-enter is for genuinely-new events only: latch the keys present
-  // in the first non-empty batch so first paint / remounts render still and
-  // only rows that arrive later slide in (plans/003).
+  // One row per call, last 24h, `limit` as a ceiling inside that. The shared
+  // 30s ticker slides the window without a second timer. See lib/live-tape.ts.
+  const nowMs = useNowMs();
+  const { rows, older, overflow } = tapeRows(scoped, nowMs, limit);
+  const recent = { length: rows.length + overflow };
+
+  // tape-row-enter is for genuinely-new calls only: latch the keys present in
+  // the first non-empty batch so first paint / remounts render still and only
+  // calls that arrive later slide in (plans/003). Keyed by call, so a row
+  // resolving in place is an update, not an entrance.
   const initialKeys = useRef<Set<string> | null>(null);
   if (initialKeys.current === null && rows.length > 0) {
-    initialKeys.current = new Set(
-      rows.map((evt) => evt.call_id + (evt.type === "call.resolved" ? "r" : "a")),
-    );
+    initialKeys.current = new Set(rows.map((evt) => evt.call_id));
   }
 
   if (rows.length === 0) {
@@ -67,7 +81,16 @@ export function CompactLiveFeed({
     if (marketId && recentCalls.length > 0) {
       return (
         <div className="px-2 py-2 ck-mono ck-dim">
-          [no recent calls on this market]
+          [no calls on this market in the last 24h]
+        </div>
+      );
+    }
+    // Calls exist, all older than the window. Say so rather than showing the
+    // connect-an-agent onboarding to a deployment that plainly has agents.
+    if (older > 0) {
+      return (
+        <div className="px-2 py-2 ck-mono ck-dim">
+          [nothing in the last 24h · {older} earlier call{older === 1 ? "" : "s"}]
         </div>
       );
     }
@@ -107,10 +130,11 @@ export function CompactLiveFeed({
   }
 
   return (
+    <>
     <ul role="log" aria-relevant="additions" className="m-0 p-0 list-none">
       {rows.map((evt) => {
         const isResolved = evt.type === "call.resolved";
-        const rowKey = evt.call_id + (isResolved ? "r" : "a");
+        const rowKey = evt.call_id;
         const isInitial = initialKeys.current?.has(rowKey) ?? true;
         return (
           <li
@@ -189,6 +213,17 @@ export function CompactLiveFeed({
         );
       })}
     </ul>
+    {/* The tape ENDS, and says why. A list that just stops is
+        indistinguishable from one that is still loading or was cut. */}
+    {(older > 0 || overflow > 0) && (
+      <p className="px-2 py-1.5 m-0 ck-mono ck-dim border-b border-[var(--color-border)]">
+        {overflow > 0
+          ? `showing ${rows.length} of ${recent.length} in the last 24h`
+          : "nothing older than 24h shown"}
+        {older > 0 ? ` · ${older} earlier call${older === 1 ? "" : "s"}` : ""}
+      </p>
+    )}
+    </>
   );
 }
 

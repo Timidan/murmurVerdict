@@ -193,6 +193,7 @@ function seedCall(
     accountId: h.accountId,
     slug: h.slug,
     revealGraceSeconds: 900,
+    status: "all",
   });
   assert.equal(out.status, 200);
   const body = out.body as {
@@ -202,6 +203,21 @@ function seedCall(
   };
   assert.equal(body.agent_slug, h.slug);
   assert.equal(body.reveals.length, 5);
+
+  // The DEFAULT is the duty list: only the call nobody has revealed yet. One
+  // row per sealed call ever is the fastest-growing list an owner has, and it
+  // used to stop at the page size in silence.
+  const open = readAccountAgentReveals({
+    db: h.db,
+    accountId: h.accountId,
+    slug: h.slug,
+    revealGraceSeconds: 900,
+  }).body as { reveals: AccountRevealRow[] };
+  assert.deepEqual(
+    open.reveals.map((r) => r.onchain_call_id),
+    ["0xaaa1"],
+    "open excludes every revealed row",
+  );
   // Newest window first.
   assert.deepEqual(
     body.reveals.map((r) => r.onchain_call_id),
@@ -236,6 +252,7 @@ function seedCall(
     accountId: h.accountId,
     slug: h.slug,
     revealGraceSeconds: 300,
+    status: "all",
     limit: 2,
     offset: 1,
   }).body as { reveals: AccountRevealRow[]; page: { returned: number } };

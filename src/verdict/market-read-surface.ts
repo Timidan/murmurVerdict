@@ -349,8 +349,15 @@ export function marketsGridSurface(input: MarketReadInput & {
   };
 }
 
+/** Markets per grid page. One row per market the agent ever called, and the
+ *  venue mints a new market every window, so this is the one read that had no
+ *  bound anywhere. The response says when the cap bit. */
+const GRID_DEFAULT_LIMIT = 100;
+const GRID_MAX_LIMIT = 500;
+
 export function agentMarketGridSurface(input: MarketReadInput & {
   slug: string;
+  limit?: number;
 }): MarketReadResult {
   const agent = agentsRepo.bySlug(input.db, input.slug);
   if (!agent) {
@@ -359,7 +366,11 @@ export function agentMarketGridSurface(input: MarketReadInput & {
       body: { error: "unknown_agent" },
     };
   }
-  const grid = getAgentMarketGrid(input.db, agent.agent_id);
+  const limit = Math.min(GRID_MAX_LIMIT, Math.max(1, Math.floor(input.limit ?? GRID_DEFAULT_LIMIT)));
+  // Ranked in full, then cut here rather than inside getAgentMarketGrid, so
+  // the cut is known and reported instead of silently applied.
+  const ranked = getAgentMarketGrid(input.db, agent.agent_id);
+  const grid = ranked.slice(0, limit);
   return {
     status: 200,
     body: {
@@ -370,6 +381,8 @@ export function agentMarketGridSurface(input: MarketReadInput & {
         kind: agent.kind,
       },
       grid,
+      total_markets: ranked.length,
+      truncated: ranked.length > grid.length,
       served_at: nowIso(input.servedAt),
     },
   };

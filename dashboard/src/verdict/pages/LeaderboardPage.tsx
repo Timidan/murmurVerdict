@@ -33,6 +33,9 @@ const SORTS: SortKey[] = ["rank", "score", "lb", "wr", "res", "pend"];
  */
 const REFRESH_DEBOUNCE_MS = 1_000;
 
+/** Rows the ladder reads. A full page means the board was cut, not exhausted. */
+const LADDER_LIMIT = 200;
+
 /**
  * Wire values stay in the URL and the API; only the WORD on the control
  * changes. `main`/`provisional` are internal tier names — a reader is told
@@ -142,7 +145,7 @@ export function LeaderboardPage() {
   useEffect(() => {
     let cancelled = false;
     verdictApi
-      .leaderboard({ tier: tier === "all" ? undefined : tier, limit: 200 })
+      .leaderboard({ tier: tier === "all" ? undefined : tier, limit: LADDER_LIMIT })
       .then((r) => {
         if (!cancelled) {
           setRows(r.rows);
@@ -423,101 +426,110 @@ export function LeaderboardPage() {
 
 function Ladder({ rows }: { rows: LeaderboardRow[] }) {
   return (
-    <ul className="m-0 p-0 list-none">
-      <li className="ck-ladder px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
-        <span title="rank">#</span>
-        <span title="the agent handle">agent</span>
-        <span className="ck-ladder-drop" title="what kind of agent this is">kind</span>
-        <span className="flex justify-end">
-          <FormulaTip
-            label="score"
-            plain="the agent's average call score, less a penalty for uneven results. Higher is better."
-            formula="score = mean(call score) − stdev(call score) / √n"
-          />
-        </span>
-        <span className="flex justify-end">
-          <FormulaTip
-            label="floor"
-            plain="the lowest score this record supports. Market and family boards rank agents on it."
-            formula="floor = mean(call score) − 1.6449 × standard error"
-          />
-        </span>
-        <span className="ck-ladder-drop flex justify-end">
-          <FormulaTip
-            label="win%"
-            plain="wins as a share of wins plus losses. Void calls are left out."
-            formula="win % = wins / (wins + losses)"
-          />
-        </span>
-        <span
-          className="ck-ladder-drop text-right"
-          title="scored — calls that finished and earned a score"
-        >
-          scored
-        </span>
-        {/* No trend column: GET /v1/leaderboard carries no per-call score
-            series (wire-leaderboard WireLeaderboardRow), and the column drew a
-            flat rule under a tooltip promising recent scores. The market
-            ladder keeps its trend because its rows DO carry `call_scores`. */}
-        <span
-          className="ck-ladder-drop text-right"
-          title="open — calls that are sealed and have not resolved yet"
-        >
-          open
-        </span>
-      </li>
-      {rows.map((r) => (
-        <li
-          key={r.agent_id}
-          className="relative ck-ladder px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
-        >
-          {/* Stretched row link — real box so keyboard focus lands. */}
-          <a
-            href={`#/agents/${r.display_slug}`}
-            aria-label={`open agent ${r.display_slug}`}
-            className="ck-rowlink"
-          />
-          <span className="contents">
-            <span className="ck-mono ck-dim">
-              {/* Plain count, never zero-padded: `01` reads as an identifier,
-                  not as first place (COPY.md §2.5). */}
-              {r.rank ? String(r.rank) : "—"}
-            </span>
-            <span className="ck-mono ck-pos truncate" title={r.display_name}>
-              {r.display_slug}
-            </span>
-            <span className="ck-ladder-drop ck-mono ck-dim truncate" title={r.kind}>
-              {r.kind.slice(0, 6).toLowerCase()}
-            </span>
-            <span
-              className={
-                "ck-mono text-right " +
-                ((r.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg")
-              }
-            >
-              {formatScore(r.verdict_score)}
-            </span>
-            <span
-              className={
-                "ck-mono text-right " +
-                ((r.verdict_score_lb ?? 0) >= 0 ? "ck-pos" : "ck-neg")
-              }
-            >
-              {formatScore(r.verdict_score_lb ?? null)}
-            </span>
-            <span className="ck-ladder-drop ck-mono ck-dim text-right">
-              {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
-            </span>
-            <span className="ck-ladder-drop ck-mono ck-dim text-right">
-              {String(r.resolved_calls)}
-            </span>
-            <span className="ck-ladder-drop text-right ck-mono ck-dim">
-              {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
-            </span>
+    <>
+      <ul className="m-0 p-0 list-none">
+        <li className="ck-ladder px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+          <span title="rank">#</span>
+          <span title="the agent handle">agent</span>
+          <span className="ck-ladder-drop" title="what kind of agent this is">kind</span>
+          <span className="flex justify-end">
+            <FormulaTip
+              label="score"
+              plain="the agent's average call score, less a penalty for uneven results. Higher is better."
+              formula="score = mean(call score) − stdev(call score) / √n"
+            />
+          </span>
+          <span className="flex justify-end">
+            <FormulaTip
+              label="floor"
+              plain="the lowest score this record supports. Market and family boards rank agents on it."
+              formula="floor = mean(call score) − 1.6449 × standard error"
+            />
+          </span>
+          <span className="ck-ladder-drop flex justify-end">
+            <FormulaTip
+              label="win%"
+              plain="wins as a share of wins plus losses. Void calls are left out."
+              formula="win % = wins / (wins + losses)"
+            />
+          </span>
+          <span
+            className="ck-ladder-drop text-right"
+            title="scored — calls that finished and earned a score"
+          >
+            scored
+          </span>
+          {/* No trend column: GET /v1/leaderboard carries no per-call score
+              series (wire-leaderboard WireLeaderboardRow), and the column drew a
+              flat rule under a tooltip promising recent scores. The market
+              ladder keeps its trend because its rows DO carry `call_scores`. */}
+          <span
+            className="ck-ladder-drop text-right"
+            title="open — calls that are sealed and have not resolved yet"
+          >
+            open
           </span>
         </li>
-      ))}
-    </ul>
+        {rows.map((r) => (
+          <li
+            key={r.agent_id}
+            className="relative ck-ladder px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          >
+            {/* Stretched row link — real box so keyboard focus lands. */}
+            <a
+              href={`#/agents/${r.display_slug}`}
+              aria-label={`open agent ${r.display_slug}`}
+              className="ck-rowlink"
+            />
+            <span className="contents">
+              <span className="ck-mono ck-dim">
+                {/* Plain count, never zero-padded: `01` reads as an identifier,
+                    not as first place (COPY.md §2.5). */}
+                {r.rank ? String(r.rank) : "—"}
+              </span>
+              <span className="ck-mono ck-pos truncate" title={r.display_name}>
+                {r.display_slug}
+              </span>
+              <span className="ck-ladder-drop ck-mono ck-dim truncate" title={r.kind}>
+                {r.kind.slice(0, 6).toLowerCase()}
+              </span>
+              <span
+                className={
+                  "ck-mono text-right " +
+                  ((r.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg")
+                }
+              >
+                {formatScore(r.verdict_score)}
+              </span>
+              <span
+                className={
+                  "ck-mono text-right " +
+                  ((r.verdict_score_lb ?? 0) >= 0 ? "ck-pos" : "ck-neg")
+                }
+              >
+                {formatScore(r.verdict_score_lb ?? null)}
+              </span>
+              <span className="ck-ladder-drop ck-mono ck-dim text-right">
+                {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
+              </span>
+              <span className="ck-ladder-drop ck-mono ck-dim text-right">
+                {String(r.resolved_calls)}
+              </span>
+              <span className="ck-ladder-drop text-right ck-mono ck-dim">
+                {r.pending_calls > 0 ? r.pending_calls : <span className="ck-dim">·</span>}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {/* The ladder ENDS, and says why. A full page is the cap, not the bottom
+          of the board, and a list that just stops reads as the whole field. */}
+      {rows.length === LADDER_LIMIT && (
+        <p className="px-2 py-1.5 m-0 ck-mono ck-dim border-b border-[var(--color-border)]">
+          showing the top {LADDER_LIMIT} · more agents are ranked below the cut
+        </p>
+      )}
+    </>
   );
 }
 

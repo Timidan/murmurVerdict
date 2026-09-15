@@ -90,6 +90,8 @@ export interface WireMarketplaceListings {
   served_at: string;
   series: WireMarketplaceSeries[];
   agents: WireMarketplaceAgent[];
+  /** True when more sellers exist than `limit` allowed onto this page. */
+  truncated: boolean;
 }
 
 /* ── GET /v2/gateway/calls/sellable ───────────────────────────────────────── */

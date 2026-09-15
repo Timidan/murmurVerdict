@@ -78,6 +78,7 @@ const series = (slug: string, title: string) => ({
 const catalog: WireMarketplaceListings = {
   schema_version: 1,
   served_at: "2026-08-26T22:56:54Z",
+  truncated: false,
   series: [
     series("btc-up-or-down-5m", "BTC Up or Down 5m"),
     series("doge-up-or-down-5m", "DOGE Up or Down 5m"),

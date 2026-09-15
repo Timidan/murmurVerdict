@@ -28,10 +28,17 @@ import { formatLocalDateTime } from "../../lib/date-time-format.js";
 import { shortId } from "../../lib/display-format.js";
 import { InlineError } from "../compact/InlineError.js";
 
+/** Rows per page. `open` is the duty list and stays small; `all` pages. */
+const PAGE = 25;
+
 export function RevealsPanel({ slug }: { slug: string }) {
   const [view, setView] = useState<AccountRevealsView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Open duties by default. One row per sealed call EVER is the fastest-
+  // growing list an owner has, and it used to stop at the page size in
+  // silence while the header counted duties the body never showed.
+  const [status, setStatus] = useState<"open" | "all">("open");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -42,17 +49,39 @@ export function RevealsPanel({ slug }: { slug: string }) {
         setError("Your session expired. Sign in again.");
         return;
       }
-      setView(await verdictApi.getAgentReveals(token, slug));
+      setView(await verdictApi.getAgentReveals(token, slug, { status, limit: PAGE, offset: 0 }));
     } catch (e) {
       setError((e as Error)?.message ?? "unknown error");
     } finally {
       setLoading(false);
     }
-  }, [slug]);
+  }, [slug, status]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // A full page means there may be more; a short one is the end.
+  const more = view !== null && view.reveals.length > 0 && view.reveals.length % PAGE === 0;
+  const [paging, setPaging] = useState(false);
+  const loadOlder = useCallback(async () => {
+    if (!view || !more) return;
+    setPaging(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      const next = await verdictApi.getAgentReveals(token, slug, {
+        status,
+        limit: PAGE,
+        offset: view.reveals.length,
+      });
+      setView({ ...next, reveals: [...view.reveals, ...next.reveals] });
+    } catch (e) {
+      setError((e as Error)?.message ?? "unknown error");
+    } finally {
+      setPaging(false);
+    }
+  }, [view, more, slug, status]);
 
   const open = view?.reveals.filter((r) => r.reveal_source === "pending").length ?? 0;
 
@@ -62,8 +91,25 @@ export function RevealsPanel({ slug }: { slug: string }) {
         <span className="ck-title ck-title-ik">
           <Ik name="seal" /> reveals
         </span>
-        <span className={"ck-mono " + (open > 0 ? "ck-pos" : "ck-dim")}>
-          {view ? `${open} open` : "…"}
+        <span className="flex items-center gap-3">
+          {/* Same bracket-toggle idiom as the ladder's tier control. */}
+          <span className="flex items-center gap-1">
+            {(["open", "all"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatus(s)}
+                aria-pressed={status === s}
+                className={"ck-btn ck-btn-bracket " + (status === s ? "ck-btn-active" : "")}
+                title={s === "open" ? "calls nobody has revealed yet" : "every sealed call, newest first"}
+              >
+                {s}
+              </button>
+            ))}
+          </span>
+          <span className={"ck-mono " + (open > 0 ? "ck-pos" : "ck-dim")}>
+            {view ? `${open} open` : "…"}
+          </span>
         </span>
       </div>
 
@@ -85,17 +131,31 @@ export function RevealsPanel({ slug }: { slug: string }) {
         ) : !view ? (
           <p className="ck-mono ck-dim">[reveals unavailable]</p>
         ) : view.reveals.length === 0 ? (
-          <p className="ck-mono ck-dim">No sealed calls yet.</p>
+          <p className="ck-mono ck-dim">
+            {status === "open" ? "Nothing waiting to be revealed." : "No sealed calls yet."}
+          </p>
         ) : (
-          <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
-            {view.reveals.map((row) => (
-              <RevealRow
-                key={row.call_id}
-                row={row}
-                fallbackEnabled={view.fallback.enabled}
-              />
-            ))}
-          </ul>
+          <>
+            <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
+              {view.reveals.map((row) => (
+                <RevealRow
+                  key={row.call_id}
+                  row={row}
+                  fallbackEnabled={view.fallback.enabled}
+                />
+              ))}
+            </ul>
+            {more && (
+              <button
+                type="button"
+                className="ck-btn ck-btn-bracket self-start"
+                onClick={() => void loadOlder()}
+                disabled={paging}
+              >
+                {status === "open" ? "show more open calls" : "show older calls"}
+              </button>
+            )}
+          </>
         )}
       </div>
     </section>

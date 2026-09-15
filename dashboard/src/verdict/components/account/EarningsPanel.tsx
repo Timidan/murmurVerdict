@@ -29,6 +29,14 @@ import { shortId } from "../../lib/display-format.js";
 import { CurrencyMark } from "../compact/CurrencyMark.js";
 import { InlineError } from "../compact/InlineError.js";
 
+/**
+ * Rows per page. The server's default is 100, which this panel used to take
+ * silently and render as if it were everything. A money ledger that ends
+ * without saying whether it is complete is lying by omission, so both lists
+ * page on the `page` the wire already carries.
+ */
+const PAGE = 25;
+
 export function EarningsPanel({ slug }: { slug: string }) {
   const [earnings, setEarnings] = useState<ProviderEarningsView | null>(null);
   const [payouts, setPayouts] = useState<ProviderPayoutsView | null>(null);
@@ -48,8 +56,8 @@ export function EarningsPanel({ slug }: { slug: string }) {
       // Both reads are ownership-gated the same way, so failing either one
       // means the whole page is wrong. Load them together.
       const [e, p] = await Promise.all([
-        verdictApi.getAgentEarnings(token, slug),
-        verdictApi.getAgentPayouts(token, slug),
+        verdictApi.getAgentEarnings(token, slug, { limit: PAGE, offset: 0 }),
+        verdictApi.getAgentPayouts(token, slug, { limit: PAGE, offset: 0 }),
       ]);
       setEarnings(e);
       setPayouts(p);
@@ -70,6 +78,48 @@ export function EarningsPanel({ slug }: { slug: string }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // A full page means there may be more; a short page is the end. Older rows
+  // append below, the same way purchases and activity already page.
+  const [paging, setPaging] = useState(false);
+  const moreSales = earnings !== null && earnings.page.returned === earnings.page.limit;
+  const morePayouts = payouts !== null && payouts.page.returned === payouts.page.limit;
+
+  const loadOlderSales = useCallback(async () => {
+    if (!earnings || !moreSales) return;
+    setPaging(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      const next = await verdictApi.getAgentEarnings(token, slug, {
+        limit: PAGE,
+        offset: earnings.sales.length,
+      });
+      setEarnings({ ...next, sales: [...earnings.sales, ...next.sales] });
+    } catch (e) {
+      setError((e as Error)?.message ?? "unknown error");
+    } finally {
+      setPaging(false);
+    }
+  }, [earnings, moreSales, slug]);
+
+  const loadOlderPayouts = useCallback(async () => {
+    if (!payouts || !morePayouts) return;
+    setPaging(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      const next = await verdictApi.getAgentPayouts(token, slug, {
+        limit: PAGE,
+        offset: payouts.payouts.length,
+      });
+      setPayouts({ ...next, payouts: [...payouts.payouts, ...next.payouts] });
+    } catch (e) {
+      setError((e as Error)?.message ?? "unknown error");
+    } finally {
+      setPaging(false);
+    }
+  }, [payouts, morePayouts, slug]);
 
   const totals = earnings?.totals ?? [];
   // The lifetime count, not `sales.length` — that page holds one page of rows.
@@ -161,6 +211,16 @@ export function EarningsPanel({ slug }: { slug: string }) {
                 </li>
               ))}
             </ul>
+            {moreSales && (
+              <button
+                type="button"
+                className="ck-btn ck-btn-bracket self-start"
+                onClick={() => void loadOlderSales()}
+                disabled={paging}
+              >
+                show older sales
+              </button>
+            )}
           </div>
         )}
 
@@ -168,7 +228,12 @@ export function EarningsPanel({ slug }: { slug: string }) {
           <WithdrawalList rows={withdrawals.withdrawals} />
         )}
 
-        <PayoutJournal payouts={payouts} loading={loading} />
+        <PayoutJournal
+          payouts={payouts}
+          loading={loading}
+          onOlder={morePayouts ? loadOlderPayouts : null}
+          paging={paging}
+        />
       </div>
     </section>
   );
@@ -434,9 +499,14 @@ function Figure({
 function PayoutJournal({
   payouts,
   loading,
+  onOlder,
+  paging,
 }: {
   payouts: ProviderPayoutsView | null;
   loading: boolean;
+  /** Null when the last page was short, i.e. the journal is complete. */
+  onOlder: (() => Promise<void>) | null;
+  paging: boolean;
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -488,6 +558,16 @@ function PayoutJournal({
             );
           })}
         </ul>
+      )}
+      {onOlder && (
+        <button
+          type="button"
+          className="ck-btn ck-btn-bracket self-start"
+          onClick={() => void onOlder()}
+          disabled={paging}
+        >
+          show older payouts
+        </button>
       )}
     </div>
   );

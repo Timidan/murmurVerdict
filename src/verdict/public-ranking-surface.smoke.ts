@@ -182,8 +182,11 @@ try {
   const today = publicTodayFeedResponse({ db, servedAt });
   assert.equal(today.status, 200);
   assert.equal(today.body.served_at, "2026-06-12T09:30:00Z");
-  assert.equal(today.body.accepted_recent.length, 3);
-  assert.equal(today.body.resolved_recent.length, 2);
+  // The three tapes are bounded by the same 24h window as the totals, so the
+  // two-day-old fixture call is out of every one of them.
+  assert.equal(today.body.accepted_recent.length, 2);
+  assert.equal(today.body.resolved_recent.length, 1);
+  assert.equal(JSON.stringify(today.body).includes(staleResolvedCallId), false);
   assert.equal(today.body.totals.accepted_24h, 2);
   assert.equal(today.body.totals.resolved_24h, 1);
   assert.equal(today.body.totals.wins_24h, 1);

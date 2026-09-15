@@ -75,6 +75,13 @@ export interface AccountRevealsSurfaceDeps {
    * rather than guessed.
    */
   revealGraceSeconds: number | null;
+  /**
+   * `open` keeps only calls nobody has revealed yet — the duty list. `all`
+   * is the full history, paged. Open is the default: one row per sealed call
+   * EVER is the fastest-growing list an owner has, and it silently stopped at
+   * the page size while the header counted duties the body never showed.
+   */
+  status?: "open" | "all";
   limit?: number;
   offset?: number;
 }
@@ -103,9 +110,15 @@ export function readAccountAgentReveals(
        FROM submissions s
        JOIN fhenix_sealed_calls f ON f.call_id = s.call_id
       WHERE s.agent_id = @agent_id
+        AND (@open = 0 OR f.reveal_status = 'pending')
       ORDER BY f.reveal_open_at DESC, s.call_id DESC
       LIMIT @limit OFFSET @offset`,
-  ).all({ agent_id: agent.agent_id, limit, offset }) as Array<{
+  ).all({
+    agent_id: agent.agent_id,
+    open: (deps.status ?? "open") === "open" ? 1 : 0,
+    limit,
+    offset,
+  }) as Array<{
     call_id: string;
     onchain_call_id: string;
     chain_id: number;

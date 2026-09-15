@@ -228,6 +228,15 @@ export function AgentListingsMatrix() {
         )}
       </Panel>
 
+      {/* The catalog is capped by SELLER on the server and says when the cap
+          bit. Same place as the availability line, for the same reason: it
+          must not scroll away with the grid it describes. */}
+      {catalog?.truncated && (
+        <p className="px-2 py-1.5 m-0 ck-mono ck-dim border-b border-[var(--color-border)]">
+          showing the first {matrix.rows.length} sellers. Narrow by market or name to find the rest.
+        </p>
+      )}
+
       {/* Availability sits OUTSIDE the scrolling grid so it never drifts
           sideways with it, and so it stays readable in every failure state. */}
       <p

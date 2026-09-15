@@ -51,6 +51,9 @@ import { isPlainLeftClick, useDetailDrawer } from "./DetailDrawer.js";
 /** Rows a day tab shows before the reader asks for the rest. */
 const DAY_PAGE = 10;
 
+/** Day tabs the strip shows before the reader asks for the rest. */
+const DAY_TABS = 7;
+
 /** The tab that tells the story rather than listing the calls. */
 const SUMMARY_TAB = "all";
 
@@ -162,6 +165,7 @@ function groupByLocalDay(calls: AgentCallRow[]): DayBucket[] {
 export function CallHistory({ calls }: { calls: AgentCallRow[] }) {
   const days = useMemo(() => groupByLocalDay(calls), [calls]);
   const [tab, setTab] = useState<string>(SUMMARY_TAB);
+  const [allDays, setAllDays] = useState(false);
   const [openDays, setOpenDays] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
@@ -170,6 +174,18 @@ export function CallHistory({ calls }: { calls: AgentCallRow[] }) {
   // story view rather than painting an empty tab.
   const active = days.some((d) => d.key === tab) ? tab : SUMMARY_TAB;
   const day = days.find((d) => d.key === active) ?? null;
+
+  // Days are capped the way a day's rows are: one batch of calls spread over a
+  // quiet deployment is one tab per call, and fifty wrapping tabs are not a
+  // navigation. The day being read stays in the strip even when it sits past
+  // the cap, so the selection can never point at a tab that is not there.
+  const visibleDays = useMemo(() => {
+    if (allDays || days.length <= DAY_TABS) return days;
+    const head = days.slice(0, DAY_TABS);
+    const current = days.find((d) => d.key === active);
+    return current && !head.includes(current) ? [...head, current] : head;
+  }, [days, allDays, active]);
+  const restDays = days.length - visibleDays.length;
 
   if (days.length === 0) {
     return <div className="px-2 py-2 ck-mono ck-dim">[no calls yet]</div>;
@@ -192,7 +208,7 @@ export function CallHistory({ calls }: { calls: AgentCallRow[] }) {
         >
           all <span className="ck-dim">·</span> summary
         </TabButton>
-        {days.map((d) => (
+        {visibleDays.map((d) => (
           <TabButton
             key={d.key}
             active={active === d.key}
@@ -202,10 +218,15 @@ export function CallHistory({ calls }: { calls: AgentCallRow[] }) {
             <span className="tabular-nums">{d.calls.length}</span>
           </TabButton>
         ))}
+        {restDays > 0 && (
+          <TabButton onSelect={() => setAllDays(true)}>
+            show {restDays} more {restDays === 1 ? "day" : "days"}
+          </TabButton>
+        )}
       </div>
 
       {day === null ? (
-        <DaySummary days={days} />
+        <DaySummary days={visibleDays} />
       ) : (
         <DayCalls
           day={day}
@@ -219,12 +240,14 @@ export function CallHistory({ calls }: { calls: AgentCallRow[] }) {
   );
 }
 
+/** `active` omitted means this is not one of the views: the strip's own
+ *  expander borrows the tab's shape without claiming a pressed state. */
 function TabButton({
   active,
   onSelect,
   children,
 }: {
-  active: boolean;
+  active?: boolean;
   onSelect: () => void;
   children: ReactNode;
 }) {

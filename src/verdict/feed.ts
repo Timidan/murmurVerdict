@@ -3,12 +3,15 @@ import { projectPublicCallRow } from "./sealed-call-public-projection.js";
 import { publicActivityWindow } from "./public-activity-window.js";
 
 // ─── /v1/feed/today data shape ────────────────────────────────────────────────
-// Live tape backing the Today page. Three rolling lists:
-//   - accepted_recent: last N accepted calls (the entry tape)
+// Live tape backing the Today page. Three rolling lists, all bounded by the
+// same 24h public activity window as the totals below — a count-only cap
+// backfills weeks-old rows under a "recent" header on a quiet deployment.
+// The limits are ceilings inside that window, not the window itself.
+//   - accepted_recent: accepted calls in the window (the entry tape)
 //   - pending_resolution: calls past their t1 expiry but not yet resolved
 //                         OR calls with the closest upcoming t1
 //                         (the suspense surface)
-//   - resolved_recent: last N resolutions (the outcome tape)
+//   - resolved_recent: resolutions in the window (the outcome tape)
 // All three return enough fields to render a card without a second fetch.
 //
 // Under sealed Fhenix, pending submissions never expose side / asset_id /
@@ -66,7 +69,7 @@ export interface TodayFeed {
   };
 }
 
-// Hand-tuned limits — tape is meant to be readable, not exhaustive.
+// Hand-tuned ceilings inside the window — tape is readable, not exhaustive.
 const ACCEPTED_LIMIT = 20;
 const PENDING_LIMIT = 20;
 const RESOLVED_LIMIT = 20;
@@ -86,10 +89,11 @@ export function getTodayFeed(db: Database.Database, now: Date): TodayFeed {
               s.adapter_id, s.market_family, s.market_id
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
+       WHERE s.accepted_at >= ?
        ORDER BY s.accepted_at DESC
        LIMIT ?`,
     )
-    .all(ACCEPTED_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
+    .all(activityWindow.since_iso, ACCEPTED_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
   const acceptedRows: TodayFeedRow[] = rawAccepted.map(toFeedRow);
 
   const rawPending = db
@@ -101,10 +105,11 @@ export function getTodayFeed(db: Database.Database, now: Date): TodayFeed {
        FROM submissions s
        JOIN agents a ON a.agent_id = s.agent_id
        WHERE s.status IN ('accepted','pending_t0','pending_t1')
+         AND s.accepted_at >= ?
        ORDER BY s.accepted_at DESC
        LIMIT ?`,
     )
-    .all(PENDING_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
+    .all(activityWindow.since_iso, PENDING_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
   // Pending rows do not expose the sealed horizon details needed to derive
   // a t1 estimate; the dashboard renders them without a countdown.
   const pendingRows: TodayFeedRow[] = rawPending.map(toFeedRow);
@@ -121,10 +126,11 @@ export function getTodayFeed(db: Database.Database, now: Date): TodayFeed {
        FROM t1_resolutions r
        JOIN submissions s ON s.call_id = r.call_id
        JOIN agents a ON a.agent_id = s.agent_id
+       WHERE r.resolved_at >= ?
        ORDER BY r.resolved_at DESC
        LIMIT ?`,
     )
-    .all(RESOLVED_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
+    .all(activityWindow.since_iso, RESOLVED_LIMIT) as Array<Record<string, unknown> & { agent_slug: string; agent_kind: string; agent_id: string }>;
   const resolvedRows: TodayFeedRow[] = rawResolved.map(toFeedRow);
 
   // Movers: agents with the most resolved-call activity in the last 24h.

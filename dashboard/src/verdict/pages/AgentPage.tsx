@@ -49,6 +49,8 @@ export function AgentPage({ slug }: { slug: string }) {
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [calls, setCalls] = useState<AgentCallRow[] | null>(null);
   const [grid, setGrid] = useState<AgentMarketRow[] | null>(null);
+  // Every market the agent ever called. The grid holds the top 100 of them.
+  const [gridTotal, setGridTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   // A failed dependent read is NOT an empty one. Both used to land on `[]`, so
@@ -111,6 +113,7 @@ export function AgentPage({ slug }: { slug: string }) {
           .then((g) => {
             if (cancel) return;
             setGrid(g?.grid ?? []);
+            setGridTotal(g?.total ?? 0);
             setGridFailed(false);
           })
           .catch(() => {
@@ -352,7 +355,7 @@ export function AgentPage({ slug }: { slug: string }) {
 
             <Panel
               title={<><IkNav name="market" /> markets</>}
-              meta={grid ? `${grid.length}` : ""}
+              meta={grid ? (gridTotal > grid.length ? `${grid.length} of ${gridTotal}` : `${grid.length}`) : ""}
               className="lg:border-r-0"
             >
               {grid === null && !gridFailed && <PanelSkeleton rows={5} />}
@@ -366,6 +369,13 @@ export function AgentPage({ slug }: { slug: string }) {
                 <div className="px-2 py-2 ck-mono ck-dim">[no market results yet]</div>
               )}
               {grid !== null && grid.length > 0 && <GridTable rows={grid} />}
+              {/* The venue mints a market every window, so this list had no
+                  bound anywhere. It ends where the cap does, and says so. */}
+              {grid !== null && gridTotal > grid.length && (
+                <p className="px-2 py-1.5 m-0 ck-mono ck-dim border-t border-[var(--color-border)]">
+                  showing the top {grid.length} of {gridTotal} markets by floor
+                </p>
+              )}
             </Panel>
 
             <Panel title={<><Ik name="verdict" /> summary</>}>

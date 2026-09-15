@@ -319,6 +319,7 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
         accountId: resolved.account_id,
         slug: pathSlug(req),
         revealGraceSeconds,
+        status: query.status === "all" ? "all" : "open",
         limit: numeric(query.limit),
         offset: numeric(query.offset),
       });

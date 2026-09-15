@@ -82,6 +82,8 @@ export interface MarketplaceListingsBody {
   served_at: string;
   series: MarketplaceSeriesRow[];
   agents: MarketplaceAgent[];
+  /** True when more sellers exist than `limit` allowed onto this page. */
+  truncated: boolean;
 }
 
 export interface MarketplaceListingsResponse {
@@ -128,8 +130,14 @@ export function marketplaceListingsResponse(
   // The query already orders by (lower(display_slug), agent_id, venue,
   // series_slug), so cells for one agent are contiguous and the response
   // ordering is the SQL's, not a re-sort that could disagree with it.
+  let truncated = false;
   for (const cell of cells) {
     if (openAgentId !== cell.agent_id) {
+      // The cap is on SELLERS, and it is reported, never applied in silence.
+      if (agents.length >= filters.limit) {
+        truncated = true;
+        break;
+      }
       const row = records.get(cell.agent_id);
       const track: MarketplaceTrackRecord = row
         ? {
@@ -163,6 +171,7 @@ export function marketplaceListingsResponse(
       served_at: nowIso(deps.now()),
       series,
       agents,
+      truncated,
     },
   };
 }

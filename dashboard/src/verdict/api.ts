@@ -275,6 +275,12 @@ async function get<T>(
   return (await res.json()) as T;
 }
 
+/** `?limit=&offset=` for the offset-paged account reads, or "" when unpaged. */
+function pageQuery(page?: { limit: number; offset: number }): string {
+  if (!page) return "";
+  return `?limit=${encodeURIComponent(page.limit)}&offset=${encodeURIComponent(page.offset)}`;
+}
+
 async function post<T>(path: string, body: unknown, headers?: HeaderMap): Promise<T> {
   const merged: HeaderMap = { "content-type": "application/json", ...(headers ?? {}) };
   const res = await fetch(`${API_URL}${path}`, {
@@ -833,6 +839,8 @@ export const verdictApi = {
       max_list_price_atoms?: string;
       min_resolved_calls?: number;
       min_score_floor?: number;
+      /** Most sellers per page; server default 200. The response says when it bit. */
+      limit?: number;
     } = {},
     signal?: AbortSignal,
   ) => {
@@ -843,6 +851,7 @@ export const verdictApi = {
     if (opts.min_resolved_calls !== undefined) {
       params.set("min_resolved_calls", String(opts.min_resolved_calls));
     }
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
     if (opts.min_score_floor !== undefined) {
       params.set("min_score_floor", String(opts.min_score_floor));
     }
@@ -1232,9 +1241,14 @@ export const verdictApi = {
     );
   },
   agentGrid: (slug: string) =>
-    get<{ agent: AgentGridSummary; grid: AgentMarketRow[]; served_at: string }>(
-      `/v1/agents/${encodeURIComponent(slug)}/grid`,
-    ),
+    get<{
+      agent: AgentGridSummary;
+      grid: AgentMarketRow[];
+      /** Every market the agent ever called; `grid` holds the top `limit` of them. */
+      total_markets: number;
+      truncated: boolean;
+      served_at: string;
+    }>(`/v1/agents/${encodeURIComponent(slug)}/grid`),
 
   /* ── Phase 7a — account-area endpoints (Privy bearer required) ─────── */
 
@@ -1590,9 +1604,18 @@ export const verdictApi = {
    * balance between them. `balance_atoms` is SIGNED: a negative balance means
    * murmur overpaid, and the UI states that rather than hiding it.
    */
-  getAgentEarnings: (privyToken: string, slug: string) =>
+  /**
+   * Paged with limit/offset. The server default is 100, which the panel
+   * used to take silently and render as though it were everything; the
+   * response's `page` says what was cut, and the caller pages on it.
+   */
+  getAgentEarnings: (
+    privyToken: string,
+    slug: string,
+    page?: { limit: number; offset: number },
+  ) =>
     get<ProviderEarningsView>(
-      `/v1/account/agents/${encodeURIComponent(slug)}/earnings`,
+      `/v1/account/agents/${encodeURIComponent(slug)}/earnings${pageQuery(page)}`,
       { Authorization: `Bearer ${privyToken}` },
     ),
 
@@ -1624,9 +1647,13 @@ export const verdictApi = {
       { Authorization: `Bearer ${privyToken}` },
     ),
 
-  getAgentPayouts: (privyToken: string, slug: string) =>
+  getAgentPayouts: (
+    privyToken: string,
+    slug: string,
+    page?: { limit: number; offset: number },
+  ) =>
     get<ProviderPayoutsView>(
-      `/v1/account/agents/${encodeURIComponent(slug)}/payouts`,
+      `/v1/account/agents/${encodeURIComponent(slug)}/payouts${pageQuery(page)}`,
       { Authorization: `Bearer ${privyToken}` },
     ),
 
@@ -1635,9 +1662,13 @@ export const verdictApi = {
    * configured, not a constant — `deadline` is null when no fallback worker
    * runs here.
    */
-  getAgentReveals: (privyToken: string, slug: string) =>
+  getAgentReveals: (
+    privyToken: string,
+    slug: string,
+    opts: { status: "open" | "all"; limit: number; offset: number },
+  ) =>
     get<AccountRevealsView>(
-      `/v1/account/agents/${encodeURIComponent(slug)}/reveals`,
+      `/v1/account/agents/${encodeURIComponent(slug)}/reveals?status=${opts.status}&limit=${opts.limit}&offset=${opts.offset}`,
       { Authorization: `Bearer ${privyToken}` },
     ),
 
@@ -1837,7 +1868,7 @@ export async function fetchArchivedMarkets(
 
 export async function fetchAgentGrid(
   slug: string,
-): Promise<{ agent: AgentGridSummary; grid: AgentMarketRow[] }> {
+): Promise<{ agent: AgentGridSummary; grid: AgentMarketRow[]; total: number }> {
   const r = await verdictApi.agentGrid(slug);
-  return { agent: r.agent, grid: r.grid };
+  return { agent: r.agent, grid: r.grid, total: r.total_markets };
 }

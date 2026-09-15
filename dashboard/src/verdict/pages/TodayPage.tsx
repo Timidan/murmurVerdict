@@ -28,22 +28,22 @@ const titlePending = (live: boolean) => (
     <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> recent open calls
   </>
 );
-/* "recent", not "last 24h": the feed builder caps every panel at the last 20
-   rows (ACCEPTED_LIMIT / RESOLVED_LIMIT / PENDING_LIMIT) with no time filter, so
-   on a quiet week they carry rows weeks old, and the counts in the headers are
-   rows shown rather than totals. The genuine 24h counters are feed.totals.*_24h.
-   "outcomes", not "scored": these twenty rows also carry void and no-outcome
-   calls, which settle without earning a score. */
+/* Every panel is the last 24h now: the feed builder bounds all three lists by
+   the same window as feed.totals.*_24h and keeps the twenty-row cap as a ceiling
+   inside it, so a quiet week shows a short panel instead of rows weeks old.
+   "outcomes", not "scored": these rows also carry void and no-outcome calls,
+   which settle without earning a score. */
 const TITLE_RESOLVED = (
   <>
     <Ik name="resolve" /> recent outcomes
   </>
 );
-/** A panel's count is the rows on screen, not a total — every list is capped
- *  at 20 server-side. */
-const shownMeta = (n: number) => (
-  <span title="how many calls this panel shows. The feed carries the latest 20.">
-    {n} shown
+/** The rows on screen, against the window they came from. `total` is the 24h
+ *  counter for panels that have one, so a panel at its twenty-row ceiling says
+ *  so instead of passing the cap off as the whole window. */
+const shownMeta = (shown: number, total?: number) => (
+  <span title="calls on screen, out of the last 24h. The feed carries at most 20 per panel.">
+    {total !== undefined && total > shown ? `${shown} of ${total}` : shown} in the last 24h
   </span>
 );
 const TITLE_ACCEPTED = (
@@ -140,7 +140,7 @@ export function TodayPage() {
           </Panel>
           <Panel
             title={TITLE_RESOLVED}
-            meta={shownMeta(feed.resolved_recent.length)}
+            meta={shownMeta(feed.resolved_recent.length, feed.totals.resolved_24h)}
             className="lg:border-r-0"
           >
             <FeedRows
@@ -149,7 +149,7 @@ export function TodayPage() {
               emptyLabel="[no outcomes yet — resolved calls appear here]"
             />
           </Panel>
-          <Panel title={TITLE_ACCEPTED} meta={shownMeta(feed.accepted_recent.length)}>
+          <Panel title={TITLE_ACCEPTED} meta={shownMeta(feed.accepted_recent.length, feed.totals.accepted_24h)}>
             <FeedRows
               rows={feed.accepted_recent}
               variant="sealed"

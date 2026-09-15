@@ -151,6 +151,7 @@ export function marketReadRouter(deps: MarketReadRouterDeps): Router {
       sendMarketReadJsonResponse(res, agentMarketGridSurface({
         db: deps.db,
         slug: String(req.params.slug ?? ""),
+        limit: req.query.limit === undefined ? undefined : Number(req.query.limit),
         servedAt: deps.now(),
       }));
     }),

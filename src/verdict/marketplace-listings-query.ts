@@ -59,6 +59,12 @@ export interface MarketplaceListingFilters {
   /** Repeatable `series=`; empty means every series. */
   series: string[];
   /**
+   * Most SELLERS on one page. The catalog is one read with no paging, and
+   * rows are agents, so this is what keeps the matrix from growing with every
+   * agent that ever published a price. The response says when it bit.
+   */
+  limit: number;
+  /**
    * Price bounds in ATOMS, compared as BigInt.
    *
    * Atoms are TEXT and routinely exceed Number.MAX_SAFE_INTEGER, so neither
@@ -74,12 +80,17 @@ export interface MarketplaceListingFilters {
   minScoreFloor: number | null;
 }
 
+/** Sellers per page. The response says when the cap bit. */
+export const DEFAULT_SELLERS = 200;
+const MAX_SELLERS = 500;
+
 export const NO_MARKETPLACE_FILTERS: MarketplaceListingFilters = {
   series: [],
   minListPriceAtoms: null,
   maxListPriceAtoms: null,
   minResolvedCalls: null,
   minScoreFloor: null,
+  limit: DEFAULT_SELLERS,
 };
 
 export interface MarketplaceFilterProblem {
@@ -123,6 +134,10 @@ export function parseMarketplaceListingFilters(
     );
   }
 
+  const limitParsed = nonNegativeIntParam(query?.["limit"], "limit");
+  if ("problem" in limitParsed) return { ok: false, problem: limitParsed.problem };
+  const limit = Math.min(MAX_SELLERS, limitParsed.value ?? DEFAULT_SELLERS) || DEFAULT_SELLERS;
+
   const minResolved = nonNegativeIntParam(query?.["min_resolved_calls"], "min_resolved_calls");
   if ("problem" in minResolved) return { ok: false, problem: minResolved.problem };
   const minScore = finiteNumberParam(query?.["min_score_floor"], "min_score_floor");
@@ -132,6 +147,7 @@ export function parseMarketplaceListingFilters(
     ok: true,
     filters: {
       series,
+      limit,
       minListPriceAtoms: minPrice.value,
       maxListPriceAtoms: maxPrice.value,
       minResolvedCalls: minResolved.value,
