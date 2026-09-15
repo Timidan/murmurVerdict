@@ -102,6 +102,17 @@ assert.equal(cached.source, "lru");
 assert.equal(cached.snapshot?.conditionId, conditionId);
 assert.equal(fetchCalls, 3);
 
+const closedClient = new PolymarketGammaClient({
+  nowMs: () => Date.now(),
+  fetchFn: async (url) => ({
+    ok: true, status: 200, headers: { get: () => "application/json" },
+    text: async () => JSON.stringify(new URL(url).searchParams.get("closed") === "true" ? [snapshot] : []),
+  }),
+});
+const resolved = await closedClient.fetchMarketByConditionId(conditionId);
+assert.equal(resolved.snapshot?.closed, true, "an empty default list must not hide a resolved market");
+assert.equal(resolved.error, null);
+
 const wrongConditionId = `0x${"56".repeat(32)}`;
 const mismatchClient = new PolymarketGammaClient({
   fetchFn: async () => ({

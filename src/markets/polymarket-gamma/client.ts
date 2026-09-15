@@ -271,7 +271,10 @@ export class PolymarketGammaClient {
   ): Promise<FetchResult> {
     let lastError: string = "unknown";
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
-      const result = await this.fetchOnce(conditionId);
+      let result = await this.fetchOnce(conditionId);
+      // Gamma's default list omits closed markets. Check that partition before
+      // caching a missing result, including the active-to-resolved transition.
+      if (result.kind === "not_found") result = await this.fetchOnce(conditionId, true);
       if (result.kind === "ok") {
         const ttl = result.snapshot.closed === true
           ? this.ttlResolvedMs
@@ -403,12 +406,13 @@ export class PolymarketGammaClient {
 
   private async fetchOnce(
     conditionId: string,
+    closed = false,
   ): Promise<
     | { kind: "ok"; snapshot: GammaMarketSnapshot }
     | { kind: "not_found" }
     | { kind: "transient"; error: string }
   > {
-    const url = `${this.baseUrl}/markets?condition_ids=${encodeURIComponent(conditionId)}&limit=1`;
+    const url = `${this.baseUrl}/markets?condition_ids=${encodeURIComponent(conditionId)}&limit=1${closed ? "&closed=true" : ""}`;
     const controller = new AbortController();
     const timer = this.timers.setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Awaited<ReturnType<FetchFnLike>>;
