@@ -1,7 +1,7 @@
 import type { Server } from "node:http";
 
 export interface DaemonHttpListenSurface {
-  listen(port: number, callback: () => void): Server;
+  listen(port: number, callback: (error?: Error) => void): Server;
 }
 
 export interface DaemonHttpServerRuntime {
@@ -19,7 +19,8 @@ export async function startDaemonHttpServer(
       listeningServer?.off("listening", onListening);
       reject(err);
     };
-    const onListening = (): void => {
+    const onListening = (error?: Error): void => {
+      if (error) return onError(error);
       if (!listeningServer) return;
       listeningServer.off("error", onError);
       resolve(listeningServer);

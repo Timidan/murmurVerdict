@@ -15,6 +15,7 @@ try {
   const res = await fetch(`http://127.0.0.1:${runtime.port}/health`);
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
+  await assert.rejects(startDaemonHttpServer(express(), runtime.port), { code: "EADDRINUSE" });
   const firstClose = runtime.close();
   const secondClose = runtime.close();
   assert.equal(
