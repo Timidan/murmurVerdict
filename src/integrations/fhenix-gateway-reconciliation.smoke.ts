@@ -1,13 +1,6 @@
 /**
- * Reconciliation error-classification smoke.
- *
- * Locks the fail-CLOSED contract of the broadcast-timeout reconciler: a proven
- * contract revert (CallNotFound / PacketNotFound) means "safe to broadcast"
- * (returns null), while any indeterminate RPC/transport failure must propagate
- * so the attempt stays retryable WITHOUT re-broadcasting a possibly-landed
- * write. Before this was fixed the reconciler swallowed every error into null,
- * which could broadcast a duplicate whose revert then marked the attempt a
- * false terminal failure.
+ * Locks the fail-closed reconciler: a proven revert returns null (safe to broadcast);
+ * an indeterminate RPC failure propagates so the attempt stays retryable without re-broadcasting.
  */
 
 import assert from "node:assert/strict";

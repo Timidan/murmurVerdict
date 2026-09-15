@@ -32,20 +32,11 @@ export interface FhenixGatewayRuntimeTimers {
 const COFHE_SECURITY_ZONE = 0;
 
 /**
- * CoFHE 0.7 verifies the (euint8, euint16) pair as ONE batch, so the two stored
- * inputs must agree on the proof and on the fields the contract no longer
- * accepts at runtime. Every mismatch below produces a transaction the verifier
- * would reject on-chain — burning relayer gas and failing the agent's submit —
- * so they are refused here, before the broadcast.
- *
- *  - The signature must be byte-identical: it covers keccak256(h_0 || h_1), not
- *    either hash alone, so two different values mean the record was written by
- *    a per-input signer that no longer exists.
- *  - The utypes must be euint8 then euint16, in that order — the batch digest
- *    binds both the type and the position of each input.
- *  - securityZone must be 0. 0.7 dropped runtime zones; the contract hardcodes
- *    0 into the digest it rebuilds, so any other stored value silently
- *    disagrees with what was signed.
+ * CoFHE 0.7 verifies the (euint8, euint16) pair as ONE batch; any mismatch would revert
+ * on-chain after burning gas, so it's refused before broadcast:
+ *  - signatures byte-identical (one signature covers keccak256(h_0 || h_1));
+ *  - utypes euint8 then euint16 (the digest binds type and position);
+ *  - securityZone 0 (the contract hardcodes 0 into the digest).
  */
 export function contractSealedPair(
   first: CofheInput,
@@ -193,29 +184,19 @@ export function errorMessage(err: unknown): string {
 }
 
 /**
- * Error text safe to PERSIST and to serve through account-facing APIs.
- * Provider errors (viem HTTP errors especially) embed the full request URL,
- * and RPC providers put credentials in the URL path or query
- * (…/v2/<API_KEY>, ?apikey=…). Strip every URL down to scheme + host and cap
- * the length so a raw provider error can never leak an operator credential
- * through `last_error` columns or /v1/account/activity.
+ * Error text safe to PERSIST and serve via account APIs. RPC URLs carry credentials,
+ * so every URL is cut to its host, auth values are redacted and length is capped.
  */
 export function redactedErrorText(input: unknown): string {
   const raw = typeof input === "string" ? input : errorMessage(input);
   const stripped = raw
     .replace(
       /https?:\/\/([^\s/"'\\]+)[^\s"'\\]*/gi,
-      // The capture is the whole AUTHORITY, which includes any `user:pass@`
-      // userinfo — keeping it verbatim published the operator's RPC
-      // credentials through /v1/account/activity and the attempt-status
-      // route, to any third-party agent whose submit happened to fail.
-      // Everything before the last `@` is credentials; drop it.
+      // The capture is the whole authority; everything before the last `@` is credentials.
       (_m, authority: string) =>
         `https://${String(authority).split("@").pop()}/<redacted>`,
     )
-    // Credentials also travel OUTSIDE a URL — a provider echoing the
-    // Authorization header it rejected ("401 (Basic dXNlcjpwYXNz)") leaks the
-    // same secret with no scheme for the rule above to match on.
+    // Also Authorization values echoed outside a URL ("401 (Basic dXNlcjpwYXNz)").
     .replace(/\b(Basic|Bearer)\s+[A-Za-z0-9+/=._~-]+/gi, "$1 <redacted>");
   return stripped.length > 600 ? `${stripped.slice(0, 600)}…` : stripped;
 }

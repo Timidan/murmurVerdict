@@ -1,40 +1,22 @@
 /**
- * Venue ticker — live Polymarket order-book + resolution feed for the
- * dashboard market board. DISPLAY ONLY.
+ * Venue ticker: live Polymarket order-book + resolution feed for the market board. DISPLAY ONLY.
  *
- * PURE-REFEREE BOUNDARY, asserted in both directions by
- * venue-ticker-referee.smoke.ts: no resolver module may import this file, and
- * this file imports none. It also avoids the adapter's Gamma/CLOB singletons,
- * so a display outage, a rate limit or a poisoned cache here can never reach a
- * scored verdict. Only pure leaves are shared — the config parser and the two
- * transforms. HTTP clients are shared as CLASSES; the instances are private,
- * with a much shorter cache TTL than the resolver wants.
+ * Pure-referee boundary (venue-ticker-referee.smoke.ts): no resolver module imports this and it
+ * imports none. Gamma/CLOB clients are private instances, never the adapter's singletons.
  *
- * CLOB websocket quirks, established by live probe against mainnet. Little of
- * this is documented upstream:
+ * CLOB websocket quirks (live-probed, mostly undocumented):
+ *  · `assets_ids` are CLOB token ids, not condition ids.
+ *  · Book order isn't guaranteed: best bid = max(bid.price), best ask = min(ask.price).
+ *  · Book frames recur mid-stream as arrays of any length.
+ *  · In price_change, `price`/`size`/`side` are the changed level; only best_bid/best_ask are quotes.
+ *  · Keepalive required: an idle socket is closed at ~126s (1006). Ping every 10s; no PONG = dead.
+ *  · No resubscribe (`INVALID OPERATION`); changing the tracked set means reconnecting.
+ *  · Empty `assets_ids` yields nothing, so "tracking nothing" = socket closed.
+ *  · ~380 frames/s for 80 assets, hence one batched frame per interval.
  *
- *  · `assets_ids` in the subscribe frame are CLOB token ids, not condition ids.
- *  · Observed book ordering was bids ascending / asks descending, so best bid
- *    is max(bid.price) and best ask is min(ask.price) — index 0 is not safe.
- *  · Book frames RECUR mid-stream as single-element arrays after larger
- *    trades, so an array of any length can arrive at any time.
- *  · In a price_change batch, `price`/`size`/`side` describe the level that
- *    changed and are NOT the market price. Only best_bid/best_ask are read.
- *  · KEEPALIVE IS REQUIRED: a quiet socket that never PINGs is closed by the
- *    server at ~126s with 1006. Ping every 10s; an unanswered PING is death.
- *  · RESUBSCRIBE IS NOT SUPPORTED — a second subscribe frame answers `INVALID
- *    OPERATION` and leaves the original subscription. Changing the tracked set
- *    requires a reconnect, which is what syncTrackedSet does.
- *  · An empty `assets_ids` is accepted and yields nothing, so "tracking
- *    nothing" is represented by keeping the socket closed instead.
- *  · An 80-asset subscription produced ~380 frames/second. Hence the
- *    coalescing: consumers get one batched frame per interval, never the feed.
- *
- * The websocket does not announce resolution. Markets past their
- * resolution_at_ms are polled, Gamma first, falling back to the CLOB market
- * endpoint — Gamma absence is NORMAL for 5-minute markets, which it drops
- * minutes after close. `resolved_at` always comes from the venue's own stamp,
- * never from poll time.
+ * Resolution isn't announced on the socket: markets past resolution_at_ms are polled, Gamma
+ * first, then CLOB (Gamma drops 5-minute markets minutes after close). `resolved_at` is always
+ * the venue's own stamp, never poll time.
  */
 
 import type Database from "better-sqlite3";
@@ -73,21 +55,15 @@ const DEFAULT_RECONNECT_BASE_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_SOCKET_GRACE_MS = 2_000;
 /**
- * A TCP connect that never completes the websocket handshake leaves the socket
- * in CONNECTING forever: `ws` fires neither 'open' nor 'close', so the close
- * handler that owns reconnect never runs and the feed is dead without ever
- * reporting so. Ten seconds is well past the observed handshake (<1s) and well
- * inside the venue's own ~126s idle kill.
+ * A handshake that never completes fires neither 'open' nor 'close', so nothing would
+ * reconnect. 10s is well past the observed <1s handshake and inside the ~126s idle kill.
  */
 const DEFAULT_HANDSHAKE_MS = 10_000;
 /** Spread on the reconnect delay, so every daemon does not retry in lockstep. */
 const RECONNECT_JITTER = 0.2;
 /**
- * Bounds a venue-supplied millisecond stamp. Below: a seconds-vs-milliseconds
- * mix-up or a zero/garbage value. Above: a stamp far enough ahead that it can
- * only be wrong. Anything outside — including a finite-but-absurd "1e100" —
- * would reach `new Date(ms).toISOString()`, which throws RangeError from inside
- * a setInterval callback and takes the daemon down.
+ * Bounds for a venue ms stamp (below: seconds/ms mix-up or garbage; above: impossible).
+ * An out-of-range value would throw RangeError in toISOString from a timer callback.
  */
 const VENUE_TS_MIN_MS = Date.UTC(2020, 0, 1);
 const VENUE_TS_FUTURE_SLACK_MS = 24 * 60 * 60 * 1000;
@@ -98,12 +74,7 @@ const GAMMA_TTL_NEGATIVE_MS = 30_000;
 export const VENUE_SNAPSHOT_MAX_MARKETS = 50;
 
 // ─── Public wire types (the dashboard consumes these verbatim) ─────────────
-//
-// DECLARED in src/types/wire-venue.ts and re-exported here under their
-// daemon-side names. This module is Node-only (better-sqlite3, ws, the Gamma
-// and CLOB HTTP clients), so the browser cannot reach into it for a type — but
-// every existing daemon-side importer keeps working unchanged, because these
-// names still resolve from here.
+// Declared in src/types/wire-venue.ts (this module is Node-only); re-exported under daemon-side names.
 
 import type {
   WireVenueOutcomeQuote as VenueOutcomeQuote,
@@ -123,12 +94,7 @@ export type {
   VenueSnapshotResult,
 };
 
-/**
- * The ticker's INTERNAL event union — a discriminated envelope around the wire
- * payloads. It stays here rather than in the shared wire types because the
- * `type` tag never reaches the wire: SSE carries the discriminator in the
- * `event:` line and `venue-ticker-surface.ts` strips it from the body.
- */
+/** Internal event union; the `type` tag never reaches the wire (SSE carries it in `event:`). */
 export type VenueTickerEvent =
   | {
       type: "venue_tick";
@@ -147,11 +113,7 @@ export interface VenueTickerSubscriber {
   onClose: () => void;
 }
 
-/**
- * The NARROW read interface handed to HTTP surfaces. No DB handle, no
- * websocket, no client, no mutation — a consumer cannot reach anything the
- * ticker owns.
- */
+/** Narrow read interface for HTTP surfaces: no DB, socket, client or mutation. */
 export interface VenueTickerReader {
   running(): boolean;
   snapshot(input?: { marketIds?: readonly string[] }): VenueSnapshotResult;
@@ -211,37 +173,15 @@ interface QuoteState {
   bestAsk: number | null;
   lastTradePrice: number | null;
   /**
-   * The venue has ANSWERED for this outcome — until then it is 'warming'.
-   *
-   * Answered, not quoted: a book with both sides empty seeds the outcome with
-   * null prices, because "there is no market here right now" is an answer. What
-   * does NOT seed is a frame we could not read — every value out of range, or
-   * levels present that all failed validation. That would flip an outcome out
-   * of 'warming' on the strength of nothing.
+   * The venue has ANSWERED for this outcome (until then 'warming'). An empty book is an
+   * answer; a frame we could not read is not.
    */
   seeded: boolean;
   /**
-   * Freshness is STORED per FIELD — the granularity at which a number is
-   * actually shown, and therefore the granularity at which it can lie.
-   *
-   * Each widening was the same mistake at a coarser scale: freshness inferred
-   * from something other than "did THIS number arrive".
-   *
-   *   · derived from `connected`, it was resolved at FLUSH time from a mutable
-   *     flag, and a replacement socket sets `connected` on 'open' before any
-   *     book — so a reconnect inside one batch interval turned the pending
-   *     stale frame into a `live` badge over pre-disconnect quotes;
-   *   · stored per MARKET, one frame cleared it for the whole row, so the
-   *     first outcome's book vouched for the other outcome;
-   *   · stored per OUTCOME, a partially answered book — or a standalone
-   *     `last_trade_price` — cleared it while `best_bid`/`best_ask` still held
-   *     pre-disconnect values, which then rendered as live.
-   *
-   * There is nothing finer below this: `price` is derived from these three.
-   *
-   * Flagged on every teardown; a flag clears only when THAT field is written by
-   * an answered frame — including a written null from an answered-empty side,
-   * because "there are no bids" is fresh information about bids.
+   * Staleness per FIELD, the granularity at which a number is shown (and can lie); anything
+   * coarser, or derived from `connected`, lets one value vouch for another.
+   * Set on every teardown; a flag clears only when THAT field is written by an answered
+   * frame, including a written null ("no bids" is fresh information).
    */
   stale: QuoteFieldStaleness;
 }
@@ -308,13 +248,7 @@ export class VenueTicker implements VenueTickerReader {
   private readonly resolutionProgress = new Map<string, ResolutionProgress>();
   private readonly subscribers = new Set<VenueTickerSubscriber>();
   private readonly dirty = new Set<string>();
-  /**
-   * Tombstones for the next delta frame. A tracked-set eviction is invisible to
-   * a connected client otherwise: delta ticks only ever ADD, so every client
-   * map would grow for the life of the tab and keep painting markets the daemon
-   * stopped tracking, frozen at their last price. Cleared on every flush, so
-   * this is bounded by one batch interval's worth of evictions.
-   */
+  /** Tombstones for the next delta frame (deltas only add). Cleared on every flush. */
   private readonly pendingRemovals = new Set<string>();
   private readonly inFlightPolls = new Set<Promise<void>>();
   /** Malformed-config markets we already complained about, so the "one log
@@ -326,12 +260,7 @@ export class VenueTicker implements VenueTickerReader {
   private trackedSignature = "";
   private started = false;
   private stopped = false;
-  /**
-   * Did the CURRENT socket complete its handshake? Drives the handshake
-   * timeout and nothing else. Deliberately NOT an input to freshness: it says
-   * a socket is open, which is not the same claim as "this row's numbers are
-   * current" — see MarketState.stale.
-   */
+  /** Did the CURRENT socket complete its handshake? Handshake timeout only; never freshness (see QuoteState.stale). */
   private connected = false;
   private reconnectAttempts = 0;
   private awaitingPong = false;
@@ -377,9 +306,7 @@ export class VenueTicker implements VenueTickerReader {
     this.reconnectMaxMs = positive(deps.reconnectMaxMs, DEFAULT_RECONNECT_MAX_MS);
     this.socketGraceMs = positive(deps.socketGraceMs, DEFAULT_SOCKET_GRACE_MS);
     this.handshakeMs = positive(deps.handshakeMs, DEFAULT_HANDSHAKE_MS);
-    // PRIVATE clients. The resolver's module-level singletons are deliberately
-    // untouched: a display-side rate limit or poisoned cache must never be
-    // able to reach a scored verdict.
+    // PRIVATE clients, never the resolver's singletons: display-side failures must not reach a verdict.
     this.gamma = new PolymarketGammaClient({
       nowMs: deps.nowMs,
       ...(deps.gammaBaseUrl !== undefined ? { baseUrl: deps.gammaBaseUrl } : {}),
@@ -511,15 +438,8 @@ export class VenueTicker implements VenueTickerReader {
   // ─── Tracked set ──────────────────────────────────────────────────────────
 
   /**
-   * Recompute the tracked set and, when its SIGNATURE changed, reconnect.
-   *
-   * The signature covers market ids, resolution instants AND token ids: a
-   * re-registered market can rewrite its token map under a stable id, and
-   * the socket would otherwise keep streaming the retired tokens.
-   *
-   * Both halves of the predicate matter. `status='listed'` alone loses every
-   * just-ended market, because discovery freezes ended listed rows within one
-   * 60s tick — so the lookback half also accepts `frozen`.
+   * Recompute the tracked set; reconnect when its signature (ids, resolution instants,
+   * token ids) changed. See TRACKED_SQL for the predicate.
    */
   syncTrackedSet(): void {
     if (this.stopped) return;
@@ -546,9 +466,7 @@ export class VenueTicker implements VenueTickerReader {
       const parsed = parseTrackedRow(row);
       if (parsed === null) {
         if (!this.skipped.has(row.market_id)) {
-          // Skipped ids are never re-tracked, so this set has no natural
-          // eviction; clear it wholesale rather than let it grow for the
-          // life of the process. Worst case one extra log line per id.
+          // No natural eviction, so clear wholesale past 1000 (worst case one extra log per id).
           if (this.skipped.size > 1_000) this.skipped.clear();
           this.skipped.add(row.market_id);
           this.logger.warn(
@@ -580,11 +498,8 @@ export class VenueTicker implements VenueTickerReader {
     const keep = new Set(tracked.map((m) => m.marketId));
     for (const marketId of [...this.markets.keys()]) {
       if (!keep.has(marketId)) {
-        // Everything keyed on this market goes with it. `resolution_at_ms` is
-        // fixed per market and only recedes, so a market that has aged out of
-        // the lookback can never re-enter and re-emit — which is what keeps
-        // all four of these maps bounded by the tracked cap rather than by
-        // daemon uptime.
+        // Drop everything keyed on it. An aged-out market never re-enters, so
+        // these maps stay bounded by the tracked cap.
         this.markets.delete(marketId);
         this.dirty.delete(marketId);
         this.resolutionProgress.delete(marketId);
@@ -670,16 +585,11 @@ export class VenueTicker implements VenueTickerReader {
       if (this.stopped || this.socket !== socket) return;
       this.clearHandshakeTimer();
       this.connected = true;
-      // NOT the place to reset the backoff. A server that accepts the TCP
-      // connection and then rejects or drops the subscription would reset the
-      // counter on every attempt and spin at the base delay forever; the first
-      // FRAME is the earliest proof the connection is actually serving us.
+      // Don't reset backoff here: the first FRAME, not 'open', proves the connection serves us.
       try {
         socket.send(JSON.stringify({ type: "market", assets_ids: assets }));
       } catch (err) {
-        // Same rule as the PING send: a throw here means the socket died
-        // between 'open' and this line, and a subscription that never left is
-        // a socket that will never carry data.
+        // A throw means the socket died after 'open'; same handling as a failed PING.
         this.logger.warn(`[venue-ticker] subscribe failed: ${errorText(err)}`);
         this.closeSocket();
         this.scheduleReconnect();
@@ -713,17 +623,10 @@ export class VenueTicker implements VenueTickerReader {
     });
   }
 
-  /**
-   * Freshness reports TRANSPORT health, so a dropped socket has to reach the
-   * board even when no price changed: without this, `rowFor` would keep
-   * answering 'live' to anyone who never asks again, and a client watching a
-   * dead reconnect sees a live badge over frozen numbers.
-   */
+  /** Freshness is TRANSPORT health, so a dropped socket must reach the board even if no price changed. */
   private markAllStale(): void {
     for (const [marketId, state] of this.markets) {
-      // Per FIELD: every number on screen has to be re-proved by its own
-      // arrival. Anything coarser lets one value vouch for another — one
-      // outcome for the other, or a fresh last trade for a stale bid.
+      // Per FIELD: every shown number must be re-proved by its own arrival.
       for (const quote of state.quotes.values()) {
         quote.stale.bid = true;
         quote.stale.ask = true;
@@ -756,10 +659,7 @@ export class VenueTicker implements VenueTickerReader {
       try {
         socket.send("PING");
       } catch {
-        // A send that throws means the socket is already gone in a way `ws`
-        // has not surfaced yet. Clearing the flag alone would leave a dead
-        // socket installed and no reconnect scheduled — the feed would simply
-        // stop, silently. Treat it exactly like an unanswered PING.
+        // A throwing send means the socket is gone; treat it like an unanswered PING.
         this.awaitingPong = false;
         this.closeSocket();
         this.scheduleReconnect();
@@ -773,9 +673,7 @@ export class VenueTicker implements VenueTickerReader {
       this.reconnectMaxMs,
       this.reconnectBaseMs * 2 ** Math.min(this.reconnectAttempts, 6),
     );
-    // ±20%. Without it, every daemon (and every tab) that lost the venue at the
-    // same instant retries at the same instant, so the venue's first breath
-    // after a blip is spent serving a synchronized stampede.
+    // ±20% so clients that lost the venue together don't retry together.
     const jitter = base * RECONNECT_JITTER * (Math.random() * 2 - 1);
     const delay = Math.max(0, Math.round(base + jitter));
     this.reconnectAttempts += 1;
@@ -793,28 +691,20 @@ export class VenueTicker implements VenueTickerReader {
     this.connected = false;
     this.socket = null;
     if (!socket) return;
-    // An INTENTIONAL close is exactly as fatal to freshness as a spontaneous
-    // one — the ping-triggered zombie teardown, a send failure, or a tracked-set
-    // reconnect all leave the board unverifiable. `removeAllListeners()` below
-    // means the 'close' handler that normally does this will NEVER run for this
-    // socket, so the stale transition has to be published here or clients keep
-    // showing "live" straight through a dead reconnect.
+    // An intentional close is as fatal to freshness as a spontaneous one, and
+    // removeAllListeners() means the 'close' handler never runs: mark stale here.
     this.markAllStale();
     socket.removeAllListeners();
-    // Re-arm an error sink BEFORE closing. Closing a socket that is still
-    // CONNECTING makes `ws` emit 'error' ("closed before the connection was
-    // established"), and an EventEmitter with no 'error' listener rethrows
-    // it as an uncaught exception that would take the daemon down mid-stop.
+    // Re-arm an error sink BEFORE closing: closing a CONNECTING socket emits
+    // 'error', which would otherwise be an uncaught exception.
     socket.on("error", () => undefined);
     try {
       socket.close();
     } catch {
       // Already closing.
     }
-    // A half-open TCP connection would keep the event loop alive past
-    // shutdown, so escalate to terminate() after a short grace window. The
-    // timer is unref'd — it must never itself be the reason we stay up — and
-    // is cleared as soon as the socket actually closes.
+    // Escalate to terminate() after a grace window so a half-open connection
+    // can't hold shutdown; the timer is unref'd.
     const grace = setTimeout(() => {
       try {
         socket.terminate();
@@ -872,23 +762,14 @@ export class VenueTicker implements VenueTickerReader {
     if (assetId === null) return;
     const target = this.quoteFor(assetId);
     if (target === null) return;
-    // Ordering is not part of the contract — take the extremes explicitly.
-    //
-    // "Answered" is a STRUCTURAL question, not a value one. An empty `bids`
-    // array is the venue stating there is no bid side right now — a real market
-    // state, and a perfectly good answer. Only a side that is missing, or one
-    // that carries levels we could not read, has failed to say anything.
-    // Collapsing those two cases left a genuinely empty book indistinguishable
-    // from garbage, so an outcome whose side legitimately has no market stayed
-    // 'warming' forever even though the venue had answered.
+    // Ordering is not part of the contract; take the extremes. "Answered" is
+    // structural: an empty side is an answer, a missing or unreadable side is not.
     const bid = bookSide(event.bids, "max");
     const ask = bookSide(event.asks, "min");
     const lastTrade = probabilityField(event.last_trade_price);
     if (!bid.answered && !ask.answered && lastTrade === null) return;
-    // Written per side, and freshness clears per side with it: an answered side
-    // lands (including its real null), a garbled one leaves whatever was
-    // already there rather than erasing a good quote on unreadable data — and
-    // keeps its stale flag, because nothing about it was re-proved.
+    // Per side: an answered side lands (null included) and clears its stale flag;
+    // a garbled side keeps its value and its flag.
     if (bid.answered) {
       target.quote.bestBid = bid.price;
       target.quote.stale.bid = false;
@@ -919,10 +800,7 @@ export class VenueTicker implements VenueTickerReader {
       // price. Only the top-of-book fields are quotes.
       const bid = probabilityField(record.best_bid);
       const ask = probabilityField(record.best_ask);
-      // Both quotes out of range ⇒ this change applies nothing. It used to
-      // set `seeded` and clear staleness regardless, so a stream of malformed
-      // numbers could carry an outcome from 'warming' to 'live' with every
-      // price still null.
+      // Both quotes out of range ⇒ apply nothing (no seeding, no stale clear).
       if (bid === null && ask === null) continue;
       // A price_change never carries a last trade, so it cannot refresh one.
       if (bid !== null) {
@@ -943,12 +821,9 @@ export class VenueTicker implements VenueTickerReader {
     if (assetId === null) return;
     const target = this.quoteFor(assetId);
     if (target === null) return;
-    // An out-of-range price applies nothing — already the early return here.
     const price = probabilityField(event.price);
     if (price === null) return;
-    // ONLY the last trade is refreshed. A trade print says nothing about where
-    // the book now rests, so `best_bid`/`best_ask` keep their stale flags — the
-    // whole reason this granularity exists.
+    // ONLY the last trade is refreshed; a trade says nothing about the book.
     target.quote.lastTradePrice = price;
     target.quote.stale.lastTrade = false;
     target.quote.seeded = true;
@@ -975,12 +850,7 @@ export class VenueTicker implements VenueTickerReader {
   private touch(marketId: string, venueTimestamp: unknown): void {
     const state = this.markets.get(marketId);
     if (state === undefined) return;
-    // Prefer the venue's own stamp; fall back to local time when the frame
-    // omits it or ships something outside the plausible range. `> 0` was not
-    // enough: `"1e100"` is finite and positive, and it reaches
-    // `new Date(ms).toISOString()` in rowFor(), which throws RangeError —
-    // from a setInterval callback, i.e. OUTSIDE the per-message try/catch, so
-    // one malformed frame killed the daemon.
+    // Prefer the venue's stamp; fall back to local time when absent or out of range.
     const now = this.nowMs();
     state.updatedAtMs = venueTimestampMs(venueTimestamp, now) ?? now;
     this.dirty.add(marketId);
@@ -1042,23 +912,12 @@ export class VenueTicker implements VenueTickerReader {
       state.quotes.get(outcome.tokenId),
     );
     const seeded = quotes.every((quote) => quote?.seeded === true);
-    // ANY seeded outcome still carrying pre-disconnect data makes the whole row
-    // stale. Both outcomes are quoted independently and neither can vouch for
-    // the other, so 'live' is the strictly stronger claim: EVERY outcome has
-    // been refreshed since the last transport failure.
+    // ANY seeded outcome with pre-disconnect data makes the row stale; outcomes can't vouch for each other.
     const anyStale = quotes.some(
       (quote) => quote?.seeded === true && quoteIsStale(quote),
     );
-    // Freshness reports TRANSPORT health, not market activity: a quiet market
-    // with a valid book is 'live', while a book we can no longer verify
-    // because the socket dropped is 'stale' however recent it looks.
-    //
-    // `warming` outranks `stale`: a row that never had a book has no numbers to
-    // be stale ABOUT, and "no data yet" is a different thing to say than "the
-    // data on screen cannot be verified".
-    //
-    // Read from each outcome's own stored flag, never from `this.connected` —
-    // see QuoteState.stale for both bugs that produced this rule.
+    // Transport health, not market activity. `warming` outranks `stale` (no data is
+    // not unverifiable data). Read stored per-field flags, never `this.connected`.
     const freshness: VenueFreshness = !seeded
       ? "warming"
       : anyStale
@@ -1124,12 +983,8 @@ export class VenueTicker implements VenueTickerReader {
   }
 
   /**
-   * A poll started before an eviction can land after it. Re-checked after EVERY
-   * await, because a late writer would otherwise resurrect the market: it
-   * re-populates `resolutions`/`resolutionProgress` for an id no longer in
-   * `markets`, so the entry is orphaned (nothing evicts it a second time — the
-   * eviction sweep only walks `markets`) and the emitted `venue_resolution`
-   * describes a market no client is tracking any more.
+   * A poll started before an eviction can land after it; re-check after EVERY await so a
+   * late write can't resurrect an evicted market (orphaned entries, stray emits).
    */
   private stillTracked(marketId: string): boolean {
     return !this.stopped && this.markets.has(marketId);
@@ -1299,10 +1154,7 @@ export function parseTrackedRow(row: TrackedRow): TrackedMarket | null {
   };
 }
 
-/** Ids AND token ids AND resolution instants — a re-registered market that
- *  rewrites its token map must force a resubscribe, and resubscribing on a
- *  live socket is refused by the venue (verified), so this drives a
- *  reconnect. */
+/** Ids, token ids and resolution instants; a rewritten token map must force a reconnect. */
 export function trackedSignature(tracked: readonly TrackedMarket[]): string {
   return tracked
     .map(
@@ -1325,10 +1177,7 @@ function resolutionRow(
   },
   source: "gamma" | "clob",
 ): VenueResolutionRow | null {
-  // The venue's own stamp, in SECONDS. A value outside the plausible range
-  // would throw out of `isoFromMs`; refusing the row is the honest answer,
-  // because substituting the poll time would publish a resolution instant
-  // murmur invented on a surface whose whole contract is that it did not.
+  // The venue's own stamp, in SECONDS. Out of range → refuse the row; never substitute poll time.
   const resolvedAtMs = outcome.resolvedAt * 1000;
   if (
     !Number.isFinite(resolvedAtMs) ||
@@ -1370,29 +1219,14 @@ function resolutionRow(
   };
 }
 
-/**
- * Live stamps keep milliseconds. The repo-wide `isoFromMs` strips them, which
- * is right for the second-granularity instants murmur records elsewhere, but
- * this feed updates several times per second — collapsing those to the same
- * string would make consecutive ticks indistinguishable to the UI.
- * `resolved_at` still uses `isoFromMs`: it is a venue resolution stamp and is
- * seconds-precision at the source.
- */
+/** Keeps milliseconds (ticks update several times a second); `resolved_at` uses `isoFromMs`. */
 function isoMillis(ms: number): string {
-  // Belt and braces. Every caller now passes a validated instant, but this is
-  // the single choke point where a bad number becomes a thrown RangeError on a
-  // timer callback, so it refuses to be that choke point.
+  // Last-resort guard: never throw RangeError from a timer callback.
   const date = new Date(ms);
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
 }
 
-/**
- * A venue millisecond stamp, or null when it is not one.
- *
- * The venue sends `timestamp` as a decimal string and has no obligation to send
- * a sane one. Bounded on BOTH sides: below the floor is a seconds/milliseconds
- * mix-up or a zero, above `now + 1 day` is a value that can only be wrong.
- */
+/** A venue ms stamp, or null if below the floor (seconds/ms mix-up, zero) or above now + 1 day. */
 export function venueTimestampMs(value: unknown, nowMs: number): number | null {
   const parsed = numberField(value);
   if (parsed === null) return null;
@@ -1403,14 +1237,7 @@ export function venueTimestampMs(value: unknown, nowMs: number): number | null {
   return ms;
 }
 
-/**
- * A 0..1 probability, or null.
- *
- * Every price on this feed is a share price on a binary outcome, so anything
- * outside [0,1] is a malformed frame — and a value like `1e100` reaching the
- * mid computation would render as a nonsense probability on a public board.
- * The out-of-range FIELD is dropped; the rest of the frame still applies.
- */
+/** A 0..1 share price, or null. Only the out-of-range field is dropped; the rest of the frame applies. */
 export function probabilityField(value: unknown): number | null {
   const parsed = numberField(value);
   if (parsed === null) return null;
@@ -1428,15 +1255,7 @@ function midPrice(
   return lastTradePrice;
 }
 
-/**
- * Is this outcome showing a number that predates the last transport failure?
- *
- * A flagged field only lies if it has something to lie WITH. A null field
- * renders as nothing at all — an empty cell cannot misinform anyone — so a
- * flagged null is ignored rather than holding the whole row on 'stale'
- * indefinitely. Non-null AND flagged is exactly the set of numbers a reader can
- * see but we cannot currently vouch for.
- */
+/** Is this outcome showing a number from before the last transport failure? A flagged null shows nothing, so it doesn't count. */
 function quoteIsStale(quote: QuoteState): boolean {
   return (
     (quote.bestBid !== null && quote.stale.bid) ||
@@ -1446,16 +1265,10 @@ function quoteIsStale(quote: QuoteState): boolean {
 }
 
 /**
- * One side of a book, split into "did the venue answer?" and "what did it say?".
- *
- * The two are genuinely independent, and conflating them is what made an empty
- * book look like a broken one:
- *   · not an array      → no answer (the frame omitted this side entirely);
- *   · empty array       → ANSWERED, price null. There is no market on this
- *                         side right now, which is a fact about the book, not
- *                         a failure to report one;
- *   · levels, none usable → no answer. The venue said something; we could not
- *                         read any of it, so we know nothing new.
+ * One side of a book:
+ *   · not an array        → no answer;
+ *   · empty array         → ANSWERED, price null (no market on this side);
+ *   · levels, none usable → no answer.
  */
 interface BookSideRead {
   answered: boolean;

@@ -10,10 +10,8 @@ export function gatewayCofheInputJson(input: CofheInput): string {
 }
 
 /**
- * The two stored inputs are ONE CoFHE 0.7 batch, not two independent inputs:
- * they share a single signature over both handles, in this order. They are
- * therefore resolved together rather than one at a time, so a record whose two
- * halves disagree is caught before the relayer spends gas on it.
+ * The two inputs are ONE CoFHE 0.7 batch: one signature over both handles, in this order.
+ * Resolved together so a mismatched pair is caught before the relayer spends gas.
  */
 export function sealedCallCofheContractInputs(attempt: {
   binary_index_input_json: string;

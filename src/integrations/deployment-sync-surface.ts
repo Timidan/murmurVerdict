@@ -1,29 +1,13 @@
 import type { DeploymentEntry } from "./deployments.js";
 
 /**
- * One contract can back SEVERAL env keys. `resolveFhenixContractAddress` falls
- * back from FHENIX_SEALED_VERDICTS_ADDRESS to the legacy
- * FHENIX_CONTRACT_ADDRESS, so patching only the primary left the alias
- * pointing at a DEAD deployment: correct today because the primary wins, and a
- * trap the moment anyone clears or comments it out.
- */
-/**
- * Contract → env keys holding a BLOCK NUMBER.
- *
- * Empty, deliberately. FHENIX_EVENT_START_BLOCK and
- * FHENIX_GATEWAY_RECONCILE_FROM_BLOCK used to live here; both were deleted in
- * favour of reading the manifest directly. Syncing a var that shadows the
- * manifest is a worse fix than not having the var — the value can still go
- * stale between a redeploy and the next sync.
- *
- * Kept as a seam: if a future contract genuinely needs a block pinned in env,
- * add it here and the patcher already handles it.
+ * Contract → env keys holding a BLOCK NUMBER. Empty on purpose: block numbers are
+ * read from the manifest, since an env copy can go stale between redeploy and sync.
  */
 export const MURMUR_DEPLOYMENT_BLOCK_ENV_KEYS_BY_CONTRACT: Record<string, string[]> = {};
 
 export const MURMUR_DEPLOYMENT_ENV_KEYS_BY_CONTRACT: Record<string, string[]> = {
-  // One name per value. FHENIX_CONTRACT_ADDRESS was a second alias for the
-  // same deployment and has been removed from the resolver entirely.
+  // One env key per contract.
   MurmurSealedVerdicts: ["FHENIX_SEALED_VERDICTS_ADDRESS"],
   MurmurEscrow: ["FHENIX_ESCROW_ADDRESS"],
 };

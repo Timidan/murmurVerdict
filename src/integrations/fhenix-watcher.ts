@@ -62,9 +62,7 @@ export interface FhenixEventIngestorConfig {
   db: Database.Database;
   verifier: FhenixEventVerifier;
   rpcUrl: string;
-  // Optional dedicated RPC for the watcher's getLogs/head reads. Falls back to
-  // rpcUrl. Lets operators point getLogs at an archive-capable endpoint while
-  // the verifier keeps using FHENIX_RPC_URL for receipt lookups.
+  // Optional dedicated (e.g. archive) RPC for getLogs/head reads; falls back to rpcUrl.
   watcherRpcUrl?: string;
   chainId: number;
   contractAddress: string;
@@ -164,16 +162,13 @@ export class FhenixEventIngestor {
   }
 
   async tick(): Promise<FhenixIngestTickResult> {
-    // Never advance a cursor against the wrong chain: a misconfigured RPC that
-    // returns a different chain's head/logs would otherwise silently corrupt
-    // cursors. Abort the whole tick before any scan work.
+    // Never advance a cursor against the wrong chain; abort before any scan work.
     const observedChainId = Number(await this.client.getChainId());
     if (!Number.isInteger(observedChainId) || observedChainId !== this.chainId) {
       throw new FhenixEventIngestorChainMismatchError(this.chainId, observedChainId);
     }
 
-    // Snapshot the head ONCE per tick so both event streams and the missed-
-    // reveal gate reason about the same safe block.
+    // Snapshot the head ONCE per tick so both event streams use the same safe block.
     const latest = Number(await this.client.getBlockNumber());
     const safeHead = latest - this.confirmations;
     const safeHeadValid = Number.isSafeInteger(safeHead) && safeHead >= 0;
@@ -220,17 +215,8 @@ export class FhenixEventIngestor {
       this.log(`[fhenix-watcher] VerdictRevealInvalid attach error: ${describeRpcError(err)}`);
     }
 
-    // NOTE (migration 057): the watcher NO LONGER auto-terminalizes overdue
-    // pending calls as `missed`. A sealed call has no on-chain reveal expiry —
-    // it is revealable forever — so any timer-based `missed` marking could
-    // strand a still-revealable call. The murmur-owned fallback reveal worker
-    // (src/integrations/fhenix-reveal-worker.ts) now guarantees publication and
-    // retries indefinitely; worker-health operator ALERTS (warn → escalate)
-    // replace the old terminal timeout. `missed_reveals_marked` stays in the
-    // result shape for compatibility and is always 0 here; `missed` is now
-    // reserved for a manually-established irrecoverable condition. The unused
-    // scan-completeness flags above are retained because the getLogs scan still
-    // gates cursor advancement.
+    // Overdue calls are never auto-marked `missed`: a sealed call stays revealable and
+    // the reveal worker owns liveness. `missed_reveals_marked` is always 0; these flags are unused.
     void safeHeadValid;
     void validReachedHead;
     void invalidReachedHead;
@@ -356,8 +342,7 @@ export class FhenixEventIngestor {
         if (Date.now() - startedAtMs >= this.tickTimeBudgetMs) break;
       }
     } catch (err) {
-      // A cursor was advanced only for batches that fully completed above, so
-      // no data is lost; report the error so the missed-reveal gate stays shut.
+      // Cursors only advanced for completed batches, so no data is lost.
       this.log(
         `[fhenix-watcher] ${eventName} scan error before reaching head: ${describeRpcError(err)}`,
       );
@@ -519,20 +504,13 @@ export function loadFhenixEventIngestorConfig(
   };
 }
 
-// FHENIX_EVENT_START_BLOCK unset OR 0 means "auto-derive from the deployment
-// manifest": use the block number from the manifest entry whose address matches
-// the active contract, so the watcher starts at the contract's deploy block
-// (not chain genesis). A POSITIVE env value is an explicit operator override.
+// Start at the deploy block of the manifest entry matching the active contract (0 if none).
 function resolveWatcherStartBlock(
   /** Only for manifestPath — the block itself is never read from env. */
   env: NodeJS.ProcessEnv,
   chainId: number,
   contractAddress: string,
 ): number {
-  // Manifest only. FHENIX_EVENT_START_BLOCK used to win over this, so a value
-  // left behind by a PREVIOUS deployment made the watcher scan the new
-  // contract from hundreds of thousands of blocks before it existed —
-  // no error, just reveals that were never indexed. Observed 2026-08-05.
   const entry = loadDeploymentByAddress(
     chainId,
     "MurmurSealedVerdicts",

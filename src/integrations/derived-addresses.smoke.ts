@@ -2,11 +2,7 @@ import { strict as assert } from "node:assert";
 
 import { deriveAddressFromKey } from "./derived-addresses.js";
 
-// An address env var beside the private key it belongs to is pure duplication:
-// the key already determines the address. So derive it — and when the operator
-// ALSO states one, refuse on disagreement rather than silently preferring
-// either. Picking one would mean signing with, or authorizing, an identity the
-// operator did not intend.
+// Derive the address from the key; refuse when a stated one disagrees.
 process.stdout.write("murmur derived addresses smoke\n");
 
 // Well-known test vector: hardhat account #0.

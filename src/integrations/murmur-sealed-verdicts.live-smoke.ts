@@ -1,44 +1,9 @@
 /**
- * Live smoke: CoFHE full-lifecycle round-trip against Base Sepolia.
+ * Live smoke: CoFHE full-lifecycle round-trip against Base Sepolia, via @cofhe/sdk
+ * (cofhejs cannot read the testnet's TFHE 0.5 CRS format).
  *
- * Uses @cofhe/sdk, not the deprecated cofhejs: cofhejs ships node-tfhe@0.11.1,
- * which cannot deserialize the testnet's TFHE 0.5 CompactPkeCrs key format.
- *
- * Discovered cofhejs@0.3.1 API surface (cofhejs/node):
- *   - cofhejs.initializeWithViem(params)
- *       params: { viemClient, viemWalletClient?, environment, generatePermit? }
- *       environment: "TESTNET" sets coFheUrl/verifierUrl/thresholdNetworkUrl to Fhenix testnet endpoints
- *       returns: Promise<Result<Permit | undefined>>
- *   - cofhejs.encrypt([ Encryptable.uint8(v), Encryptable.uint16(v), ... ])
- *       returns: Promise<Result<[CoFheInUint8, CoFheInUint16, ...]>>
- *       CoFheInItem = { ctHash: bigint, securityZone: number, utype: FheTypes, signature: string }
- *       (0.7 replaced this: encryptInputs().execute() returns
- *        [...ctHashes, batchSignature] and the contract takes bare handles)
- *   - cofhejs.decrypt(ctHash: bigint, utype: FheTypes)
- *       returns: Promise<Result<bigint>>   ← only decrypted value, NO signature
- *   - Threshold network /decrypt endpoint: POST { ct_tempkey, host_chain_id, permit }
- *       returns: { decrypted: number[], signature: string, encryption_type: number }
- *       (cofhejs.decrypt discards the signature field — we call it directly for publishReveal)
- *
- * Contract function signatures (derived from MurmurSealedVerdicts.sol):
- *   - registerMarket(bytes32 marketId, Market schedule)   [six-instant schedule]
- *   - submitSealedFor(address agent, bytes32 marketId,
- *       bytes32 binaryIndexInput, bytes32 confidenceInput,
- *       bytes inputProof, bytes32 clientNonce) returns (bytes32 callId)
- *   - openReveal(bytes32 callId)
- *   - publishReveal(bytes32 callId, uint8 binaryIndex, uint16 confidenceBps,
- *       bytes binaryIndexSignature, bytes confidenceSignature)
- *   - getCall(bytes32 callId) view returns (agent, marketId, acceptedAt,
- *       binaryIndexCtHash, confidenceCtHash, revealedBinaryIndex, revealedConfidenceBps, state)
- *   - callPublicRevealAt(bytes32 callId) view returns (uint64)
- *
- * Threshold network API base: https://testnet-cofhe-tn.fhenix.zone
- *   POST /decrypt { ct_tempkey: hex64, host_chain_id: number, permit: Permission }
- *     → { decrypted: number[], signature: string, encryption_type: number, error_message?: string }
- *
- * IMPORTANT: cofhejs.decrypt() and @cofhe/sdk decryptForView return only the plaintext value.
- * For publishReveal we need the threshold-network signature over (ctHash, result, chainId).
- * We call the threshold network /decrypt endpoint directly to retrieve it.
+ * registerMarket → submitSealedFor → wait for publicRevealAt → openReveal →
+ * decryptForTx (returns the threshold signature publishReveal needs) → publishReveal.
  */
 
 import "dotenv/config";
@@ -75,8 +40,7 @@ if (!agentAddress) throw new Error("AGENT_ADDRESS must be set");
 
 const sealed = loadDeployment(CHAIN_ID, "MurmurSealedVerdicts");
 if (!sealed) throw new Error("MurmurSealedVerdicts not in manifest; run sync-deployments");
-// 0.7 no longer echoes securityZone/utype back per input; we send what we
-// asked the verifier to sign.
+// 0.7 no longer echoes securityZone/utype; send what the verifier was asked to sign.
 const COFHE_SECURITY_ZONE = 0;
 const contractAddress = getAddress(sealed.address);
 console.log(`[smoke] MurmurSealedVerdicts @ ${contractAddress}`);
@@ -85,10 +49,7 @@ const account = privateKeyToAccount(relayerKey);
 const publicClient = createPublicClient({ chain: baseSepolia, transport: http(rpc) });
 const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http(rpc) });
 
-// Minimal ABI — only what the smoke calls
-// cofhe-contracts 0.2: each input is a bare bytes32 handle (externalEuint8 /
-// externalEuint16 are value types over bytes32) and the pair shares one
-// `inputProof` — the batch signature over keccak256(h_0 || h_1).
+// Minimal ABI. Inputs are bytes32 handles sharing one `inputProof` over keccak256(h_0 || h_1).
 const ABI = parseAbi([
   "function registerMarket(bytes32 marketId, (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active) schedule)",
   "function submitSealedFor(address agent, bytes32 marketId, bytes32 binaryIndexInput, bytes32 confidenceInput, bytes inputProof, bytes32 clientNonce) returns (bytes32 callId)",
@@ -105,27 +66,16 @@ async function main() {
   const startMs = Date.now();
   console.log("[smoke] starting");
 
-  // Step 1 — register a market with a compressed six-instant schedule.
-  // Every instant must be strictly ordered and armCloseAt must be in the
-  // future, so the whole schedule is anchored a few seconds out.
+  // Step 1: register a compressed six-instant schedule (strictly ordered, armCloseAt in the future).
   const marketId = keccak256(encodePacked(["string", "uint64"], [`smoke-${Date.now()}`, BigInt(Date.now())]));
   const base = BigInt(Math.floor(Date.now() / 1000));
-  // REGISTRATION_LEAD is the gap from "we built this schedule" to armCloseAt,
-  // and it has to cover the whole write: gas estimation, the RPC round trip,
-  // and inclusion in a block. A 10s lead was NOT enough — the transaction
-  // mined ~45s after the schedule was built, so the contract saw
-  // `armCloseAt <= block.timestamp` and reverted RevealAfterMustBeFuture on
-  // every run. That is the contract behaving correctly: registration must
-  // complete before arming opens.
-  //
-  // Everything downstream is offset from armCloseAt rather than from `base`,
-  // so widening the lead cannot silently compress a later window.
+  // Lead must cover estimation, RPC and inclusion: registration must land before armCloseAt.
+  // Later instants offset from armCloseAt, so widening the lead can't compress them.
   const REGISTRATION_LEAD = 90n;
   const armCloseAt = base + REGISTRATION_LEAD;
   const schedule = {
     armCloseAt,
-    // Wide enough for CoFHE SDK init + input encryption before the window
-    // closes; a 20s budget was not.
+    // Wide enough for CoFHE SDK init + input encryption.
     submissionOpenAt: armCloseAt + 10n,
     earlyAccessCutoffAt: armCloseAt + 140n,
     submissionCloseAt: armCloseAt + 170n,
@@ -159,7 +109,6 @@ async function main() {
   await cofheClient.connect(publicClient as never, walletClient as never);
 
   // Self-ACP, signed by the relayer, authorizing decryptForTx below.
-  // 0.7 renamed the Permit system to ACP; options and semantics are unchanged.
   const selfAcp = await cofheClient.acp.createSelf({
     type: "self",
     issuer: account.address,
@@ -167,9 +116,7 @@ async function main() {
 
   // Step 2 (continued) — encrypt binaryIndex=0 (euint8) and confidenceBps=7500 (euint16)
   console.log(`[smoke] encrypting inputs via @cofhe/sdk`);
-  // 0.7: the consuming contract is bound into the batch signature, and
-  // execute() returns [...ctHashes, batchSignature] — one element more than the
-  // input count, with a single signature covering both hashes in order.
+  // The consuming contract is bound into the signature; execute() returns [...ctHashes, batchSignature].
   const encryptedInputs = await cofheClient
     .encryptInputs([
       Encryptable.uint8(BigInt(0)),
@@ -212,12 +159,8 @@ async function main() {
   const callId = submittedLog!.topics[1] as Hex;
   console.log(`[smoke] ok: sealed call submitted (callId=${callId}, tx=${submitTx})`);
 
-  // Step 4 — wait until the reveal window opens (max 15 min guard)
-  // Polled, for the same reason as the final-state read below: the
-  // submitSealedFor receipt is confirmed, but a load-balanced RPC can serve
-  // this from a replica that has not seen the call yet, and the contract then
-  // reverts CallNotFound on a call that certainly exists. Bounded, so a call
-  // that genuinely never landed still fails.
+  // Step 4: wait for the reveal window (max 15 min). Polled and bounded: a lagging
+  // RPC replica can revert CallNotFound on a call that exists.
   const REVEAL_AT_TIMEOUT_MS = 60_000;
   const revealAtDeadline = Date.now() + REVEAL_AT_TIMEOUT_MS;
   let publicRevealAt: bigint | undefined;
@@ -275,13 +218,8 @@ async function main() {
   const confCtHashBigint = BigInt(confidenceCtHash);
   console.log(`[smoke] ctHashes: bin=${binaryIndexCtHash} conf=${confidenceCtHash}`);
 
-  // Step 6 — decrypt via the SDK's v2 `decryptForTx` path. It returns the
-  // threshold-network signature in the exact form `FHE.verifyDecryptResult`
-  // (and thus `publishReveal`) accepts on-chain. The older hand-rolled v1
-  // `/decrypt` signature is rejected by the current CoFHE verifier
-  // (`InvalidSignature`, 0x8baa579f). `openReveal` already called
-  // `FHE.allowPublic`; the threshold network needs ~5-30s to observe it, so
-  // retry transient errors. Mirrors tools/operator-blind-roundtrip.ts.
+  // Step 6: decryptForTx returns the signature `publishReveal` verifies on-chain.
+  // The threshold network needs ~5-30s to observe allowPublic, so retry.
   console.log(`[smoke] decrypting via @cofhe/sdk decryptForTx (timeout=${POLL_TIMEOUT_MS / 1000}s)`);
   const decryptForTxWithRetry = async (
     label: string,
@@ -334,15 +272,8 @@ async function main() {
   await publicClient.waitForTransactionReceipt({ hash: publishTx });
   console.log(`[smoke] ok: verdict revealed (tx=${publishTx})`);
 
-  // Step 8 — assert final state.
-  //
-  // POLLED, not read once. The publishReveal receipt is already confirmed
-  // above, but a load-balanced RPC can still serve this read from a replica
-  // that has not caught up — observed on Alchemy: the assertion failed while
-  // the contract genuinely held state=3 with the correct values. A single
-  // read here turns provider lag into a false privacy/lifecycle failure.
-  //
-  // Bounded, so a genuinely stuck reveal still fails rather than hanging.
+  // Step 8: assert final state. Polled and bounded: a lagging RPC replica can
+  // serve stale state after the receipt.
   const FINAL_STATE_TIMEOUT_MS = 60_000;
   const finalDeadline = Date.now() + FINAL_STATE_TIMEOUT_MS;
   let finalState = 0;

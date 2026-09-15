@@ -10,16 +10,8 @@ import { isLegacyMarketsDecodeError } from "./fhenix-market-registration.js";
 
 process.stdout.write("murmur fhenix legacy contract smoke\n");
 
-// A pre-schedule deployment's `markets()` returns 3 words; the six-instant ABI
-// expects 7. viem does NOT surface the decoder error directly — `readContract`
-// wraps it in a ContractFunctionExecutionError whose own message is human text
-// ("Position `127` is out of bounds"), while the matching decoder error name
-// lives on `cause`.
-//
-// This is a real regression test: an earlier version of the detector matched
-// only the OUTER name/message and therefore never fired, silently degrading
-// legacy detection back into a retryable chain-read error that burned one tick
-// per candidate forever against a contract that can never be driven.
+// A pre-schedule `markets()` returns 3 words where the ABI expects 7. viem wraps
+// the decode error in ContractFunctionExecutionError; the decoder error is on `cause`.
 let inner: unknown;
 try {
   decodeAbiParameters(

@@ -1,19 +1,11 @@
 import { parseAbi, type Address, type Hex } from "viem";
 
-/**
- * Narrow owner-plane ABI for MurmurSealedVerdicts market registration.
- * Deliberately excludes the relayer submit surface — the discovery ticker
- * only needs `owner()` (precondition check), the public `markets` mapping
- * (on-chain dedupe/reconciliation), and `registerFixedRevealMarket`.
- */
+/** Owner-plane ABI for market registration: `owner()`, the `markets` mapping, and `registerMarket`. */
 export const MURMUR_SEALED_VERDICTS_MARKET_REGISTRAR_ABI = parseAbi([
   "function owner() view returns (address)",
   "function markets(bytes32 marketId) view returns (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active)",
   "function registerMarket(bytes32 marketId, (uint64 armCloseAt, uint64 submissionOpenAt, uint64 earlyAccessCutoffAt, uint64 submissionCloseAt, uint64 resolutionAt, uint64 publicRevealAt, bool active) schedule)",
-  // The contract's registration-relevant errors. viem can only decode a revert
-  // it has the declaration for — without these, a plain schedule rejection
-  // logged as an anonymous selector (0x5f1c34b5) and cost a live investigation
-  // to identify as our own RevealAfterMustBeFuture.
+  // Declared so viem can decode registration reverts instead of logging bare selectors.
   "error NotOwner()",
   "error NotRelayer()",
   "error MarketAlreadyRegistered()",
@@ -51,16 +43,8 @@ export class LegacyContractError extends Error {
 }
 
 /**
- * Whether an error is (or wraps) an ABI decode failure.
- *
- * viem does NOT surface the decoder error directly: `readContract` wraps it in
- * a `ContractFunctionExecutionError` whose own message is human text like
- * "Data size of 96 bytes is too small", while the matching
- * `AbiDecodingDataSizeTooSmallError` name lives on `cause`. Matching only the
- * outer name/message therefore never fires — so the whole legacy-contract
- * detection silently degraded back to a retryable read error.
- *
- * Walk the cause chain instead.
+ * Whether an error is (or wraps) an ABI decode failure. viem wraps the decoder error
+ * in ContractFunctionExecutionError, so walk the cause chain.
  */
 export function isLegacyMarketsDecodeError(err: unknown): boolean {
   const seen = new Set<unknown>();
@@ -123,16 +107,8 @@ export function isRegisteredOnchain(state: OnchainMarketState): boolean {
 }
 
 /**
- * Whether the on-chain schedule matches the one we intend to register, exactly.
- *
- * Every instant must agree, not just the reveal time: the acceptance guard
- * compares against these values, and a mismatch anywhere means the daemon and
- * the chain disagree about when submissions open, when sales close, or when
- * the value goes public.
- *
- * There is no longer a "repair by re-registering" path — registration is
- * one-shot on-chain. A mismatch is a hard stop, not something to overwrite: the
- * schedule someone armed against must never move.
+ * Whether the on-chain schedule matches the intended one exactly, every instant.
+ * Registration is one-shot, so a mismatch is a hard stop, never overwritten.
  */
 export function hasExactSchedule(
   state: OnchainMarketState,
@@ -149,8 +125,7 @@ export function hasExactSchedule(
   );
 }
 
-// Structural client dependencies so the registrar stays testable without a
-// live viem stack (mirrors the FhenixGatewayClient injection posture).
+// Structural client deps so the registrar is testable without a live viem stack.
 
 export interface MarketRegistrarPublicClientLike {
   getChainId(): Promise<number>;
@@ -183,12 +158,8 @@ export interface RawRegistrarReceipt {
 }
 
 /**
- * Runs INSIDE the serialized broadcast slot, immediately before the signer
- * call — the same seam the Gateway has. Registration can sit behind another
- * relayer write for an unbounded time, and an operator halt that arrives
- * during that wait must still stop it: registration is one-shot on-chain, so
- * a broadcast sent after the halt permanently registers a market someone
- * deliberately pulled. Throwing aborts before any transaction is sent.
+ * Runs INSIDE the serialized broadcast slot, just before signing. Registration is one-shot,
+ * so a halt during the queue wait must still stop it. Throwing aborts before any tx is sent.
  */
 export type MarketRegistrarPreBroadcast = () => void;
 
@@ -209,11 +180,7 @@ export interface ViemFhenixMarketRegistrarDeps {
   contractAddress: string;
   relayerAddress: string;
   publicClient: MarketRegistrarPublicClientLike;
-  /**
-   * Broadcast entry point. The caller routes this through the shared
-   * relayer broadcast queue so market registrations and Gateway
-   * submitSealedFor writes never race the same account's nonces.
-   */
+  /** Routed through the shared relayer queue so registrations and gateway writes never race nonces. */
   writeContract: MarketRegistrarWriteFn;
 }
 
@@ -262,12 +229,7 @@ export class ViemFhenixMarketRegistrar implements FhenixMarketRegistrar {
         args: [marketId],
       })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint, boolean];
     } catch (err) {
-      // A pre-schedule deployment returns three words where this ABI expects
-      // seven, so viem throws a decode error rather than yielding a "legacy"
-      // state. That is NOT a transient chain-read failure and retrying it every
-      // tick is pointless — surface it as a configuration error naming the
-      // actual cause, so the operator points the daemon at a redeployed
-      // contract instead of chasing RPC ghosts.
+      // A pre-schedule deployment returns 3 words, not 7: a config error, not a transient read.
       if (isLegacyMarketsDecodeError(err)) {
         throw new LegacyContractError(
           `contract at ${this.contractAddress} predates the six-instant market schedule ` +

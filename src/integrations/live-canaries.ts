@@ -343,16 +343,8 @@ export function loadLiveCanaryConfig(
   env: NodeJS.ProcessEnv,
   opts: LoadLiveCanaryConfigOptions,
 ): LiveCanaryConfig {
-  // Which chain this deployment runs on — resolved exactly as the daemon
-  // runtime resolves it: derived from the manifest when it names one chain,
-  // refusing any explicit value that disagrees. Reading the raw var here meant
-  // an operator who correctly omitted FHENIX_CHAIN_ID got a working Fhenix
-  // runtime beside a canary that switched itself off and reported the chain
-  // unconfigured — the check disagreeing with the thing it checks.
-  //
-  // Re-raised as a LiveCanaryConfigError so this surface keeps reporting
-  // config problems keyed by the variable at fault, which its callers and the
-  // admin readiness route rely on.
+  // Resolve the chain exactly as the daemon runtime does, so the canary never disagrees with it.
+  // Re-raised as LiveCanaryConfigError so errors stay keyed by the variable at fault.
   let derivedChainId: number | null;
   try {
     derivedChainId = resolveFhenixChainId(env);

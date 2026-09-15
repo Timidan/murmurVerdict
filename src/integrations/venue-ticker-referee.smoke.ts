@@ -1,16 +1,6 @@
 // ─── Pure-referee boundary smoke ────────────────────────────────────────────
-//
-// Murmur is a referee: it never authors markets and never decides outcomes.
-// Its verdicts come from ONE path — the resolver → resolution lifecycle →
-// venue adapter registry. The venue ticker is a display feed reading the same
-// venue over a websocket, and the two must not touch.
-//
-// The failure this prevents is quiet and expensive: someone wires the live
-// ticker's cached price into a settlement decision (or the resolver starts
-// waiting on the ticker's socket), and murmur silently becomes a price
-// oracle. Comments cannot hold that line, so this smoke reads the actual
-// import graph in both directions.
-//
+// Verdicts come only from resolver → resolution lifecycle → venue adapter. The
+// venue ticker is a display feed and must never touch that path:
 //   1. no resolution-path module imports the venue ticker
 //   2. the venue ticker imports no resolution-path module
 //   3. the ticker does not touch the adapter's module-level client

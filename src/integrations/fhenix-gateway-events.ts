@@ -58,9 +58,7 @@ export function extractSealedCallSubmitEvent(
         agent: Address;
         marketId: Hex;
         acceptedAt: bigint;
-        // Contract field is publicRevealAt (market resolution + series
-        // embargo). Mapped onto the still-named reveal_open_at storage field
-        // downstream; see FhenixSealedCallSubmitMetadata.
+        // publicRevealAt (resolution + series embargo) maps to reveal_open_at downstream.
         publicRevealAt: bigint;
         binaryIndexCtHash: Hex;
         confidenceCtHash: Hex;

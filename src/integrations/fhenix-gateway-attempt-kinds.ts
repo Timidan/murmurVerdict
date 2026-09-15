@@ -40,14 +40,7 @@ import {
 import type { FeedPacketIdAdapter } from "../verdict/feed-packet-ingestion.js";
 import type { SealedCallIdAdapter } from "../verdict/sealed-call-acceptance.js";
 
-/**
- * The two Gateway Attempt lanes, expressed as Gateway Attempt Machine kind
- * adapters. Everything the machine needs to know about "sealed call vs
- * feed packet" lives here — contract function + args, reconciliation key,
- * submit-event decoding, confirmed-metadata persistence, acceptance,
- * terminal/audit/presenter wording. The machine itself never branches on
- * lane.
- */
+/** Sealed-call and feed-packet lanes as Gateway Attempt Machine kinds; the machine never branches on lane. */
 
 export function sealedCallAttemptKind(
   opts: {
@@ -59,9 +52,7 @@ export function sealedCallAttemptKind(
   return {
     label: "sealed_call",
     lifecycle: fhenixGatewayTxRepo,
-    // Market-scoped: the broadcast slot re-checks the operator halt against
-    // this, so a call queued while the market was live is not still sent after
-    // an operator pulls it.
+    // Market-scoped so the broadcast slot re-checks the operator halt before sending.
     marketId: (attempt) => attempt.market_id,
     deploymentOf: (attempt) => ({
       chainId: attempt.chain_id,
@@ -155,9 +146,7 @@ export function feedPacketAttemptKind(
       chainId: attempt.chain_id,
       contractAddress: attempt.contract_address,
     }),
-    // Feeds narrowed to `after_resolution` only; a per-packet delay cannot be
-    // enforced against a fixed market schedule. Attempts queued before that
-    // narrowing never saw the reservation-time guard, so re-check here.
+    // Only `after_resolution` feeds are supported; re-checked here as queued attempts may predate the guard.
     revalidate: (db, attempt) => {
       const feed = feedContractsRepo.byId(db, attempt.feed_id);
       if (!feed) return `feed ${attempt.feed_id} no longer exists`;
@@ -186,9 +175,8 @@ export function feedPacketAttemptKind(
           attempt.agent_wallet_address as Address,
           attempt.feed_id_hash as Hex,
           attempt.market_id_hash as Hex,
-          // No reveal-time argument: the contract takes it from the market's
-          // registered publicRevealAt. `attempt.reveal_after` is still stored
-          // for reconciliation (event extraction compares against it).
+          // No reveal-time arg: the contract uses the market's publicRevealAt.
+          // `reveal_after` is still stored for event matching.
           inputs.firstHandle,
           inputs.secondHandle,
           inputs.inputProof,

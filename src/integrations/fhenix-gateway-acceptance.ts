@@ -25,15 +25,7 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
   db: Database.Database;
   attempt: FhenixGatewayTxAttemptRow;
   newCallId?: SealedCallIdAdapter;
-  /**
-   * The live event bus. Acceptance BUILDS a `call.accepted` event and this
-   * path used to drop it on the floor — and since the gateway is the only
-   * route an agent can submit through, that meant no agent-submitted call
-   * ever reached the bus. Two things silently depended on it: the live tape
-   * (which backfills over REST, so it looked merely quiet rather than
-   * broken) and `call.accepted` webhook deliveries, which could never fire
-   * at all. Optional so tests and the reconciler can accept without one.
-   */
+  /** Live bus for `call.accepted`. Optional so tests and the reconciler can accept without one. */
   events?: { emit: (event: CallAcceptedEvent) => void };
   now: () => Date;
 }): Promise<boolean> {
@@ -51,8 +43,7 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: "confirmed gateway attempt is missing event metadata",
       updated_at: nowIso(now()),
-      // POST-broadcast: the row is `confirmed`, so it holds no claim and
-      // the pre-claim CAS would match nothing and retry it forever.
+      // Post-broadcast: row is `confirmed` with no claim; the pre-claim CAS would never match.
       expect_status: "confirmed" as const,
     });
     return false;
@@ -63,8 +54,7 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: `confirmed gateway attempt references unknown market ${attempt.market_id}`,
       updated_at: nowIso(now()),
-      // POST-broadcast: the row is `confirmed`, so it holds no claim and
-      // the pre-claim CAS would match nothing and retry it forever.
+      // Post-broadcast: row is `confirmed` with no claim; the pre-claim CAS would never match.
       expect_status: "confirmed" as const,
     });
     return false;
@@ -96,11 +86,7 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
         confidence_ct_hash: attempt.confidence_ct_hash,
         accepted_at: attempt.accepted_at,
         reveal_open_at: attempt.reveal_open_at,
-        // NULL on attempts confirmed before submission_class was recorded.
-        // 0 (None) is honest — "not decoded" — and is deliberately NOT
-        // defaulted to EarlyAccess: eligibility treats a recorded non-early
-        // class as unsellable, so inventing 1 here would sell calls the
-        // contract then refuses to grant.
+        // NULL when never recorded → 0 (not decoded), never 1: EarlyAccess would sell calls the contract won't grant.
         submission_class: attempt.submission_class ?? 0,
         agent_wallet: attempt.agent_wallet_address,
         market_id_hash: attempt.market_id_hash,
@@ -114,9 +100,7 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
       call_id: result.body.call_id,
       updated_at: nowIso(now()),
     });
-    // AFTER the durable write. The bus is in-process and non-durable, so a
-    // subscriber that misses this frame recovers by reading REST; a row that
-    // never got marked accepted would not.
+    // After the durable write: the bus is non-durable, missed frames recover via REST.
     if (result.event) params.events?.emit(result.event);
     return true;
   } catch (err) {
@@ -124,8 +108,7 @@ export async function acceptConfirmedSealedCallGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: errorMessage(err),
       updated_at: nowIso(now()),
-      // POST-broadcast: the row is `confirmed`, so it holds no claim and
-      // the pre-claim CAS would match nothing and retry it forever.
+      // Post-broadcast: row is `confirmed` with no claim; the pre-claim CAS would never match.
       expect_status: "confirmed" as const,
     });
     return false;
@@ -151,8 +134,7 @@ export async function acceptConfirmedFeedPacketGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: "confirmed gateway feed packet attempt is missing event metadata",
       updated_at: nowIso(now()),
-      // POST-broadcast: the row is `confirmed`, so it holds no claim and
-      // the pre-claim CAS would match nothing and retry it forever.
+      // Post-broadcast: row is `confirmed` with no claim; the pre-claim CAS would never match.
       expect_status: "confirmed" as const,
     });
     return false;
@@ -227,8 +209,7 @@ export async function acceptConfirmedFeedPacketGatewayAttempt(params: {
       attempt_id: attempt.attempt_id,
       last_error: errorMessage(err),
       updated_at: nowIso(now()),
-      // POST-broadcast: the row is `confirmed`, so it holds no claim and
-      // the pre-claim CAS would match nothing and retry it forever.
+      // Post-broadcast: row is `confirmed` with no claim; the pre-claim CAS would never match.
       expect_status: "confirmed" as const,
     });
     return false;

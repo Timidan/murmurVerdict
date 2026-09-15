@@ -1,14 +1,8 @@
 // ─── Venue ticker smoke ─────────────────────────────────────────────────────
-//
-// Drives the real `ws` client against a LOCAL websocket server replaying
-// frames captured from the live Polymarket CLOB feed on 2026-08-10, so every
-// shape asserted here is a shape the venue actually sends.
-//
-// Pins:
-//   · the tracked-set predicate, including the frozen lookback (discovery
-//     freezes ended listed markets within one 60s tick, so `listed` alone
-//     loses every just-resolved market), the operator-halt exclusion, the
-//     horizon bound, and the token-signature reconnect
+// Drives the real `ws` client against a local server replaying frames captured
+// from the live Polymarket CLOB feed (2026-08-10). Pins:
+//   · the tracked-set predicate (frozen lookback, operator-halt exclusion,
+//     horizon bound) and the token-signature reconnect
 //   · per-outcome quotes — both tokens independently, never 1 − the other
 //   · coalescing: a burst of frames yields ONE batched SSE tick
 //   · resolution through the pure transforms, Gamma first and the read-only
@@ -557,8 +551,7 @@ const server = await startServer();
   );
   console.log("  ok  live quotes + coalescing + SSE frames");
 
-  // Token-signature change forces a reconnect (resubscribing on a live
-  // socket is refused by the venue — verified `INVALID OPERATION`).
+  // Token-signature change forces a reconnect (the venue refuses resubscribe).
   const connectionsBefore = server.connections();
   seed([
     {
@@ -677,10 +670,8 @@ async function resolutionRun(input: {
           umaResolutionStatus: "resolved",
           umaResolutionStatuses: JSON.stringify(["proposed", "resolved"]),
           closed: true,
-          // Gamma also emits `"2026-08-10 04:45:03+00"` here, which
-          // Date.parse rejects (the offset needs `+00:00`); transform.ts
-          // then falls through to endDate. This fixture uses the ISO form so
-          // the assertion below tests the venue-stamp rule, not that quirk.
+          // ISO form; Gamma's "2026-08-10 04:45:03+00" form fails Date.parse and
+          // falls back to endDate, which this test is not about.
           closedTime: "2026-08-10T04:45:03Z",
           endDate: "2026-08-10T04:45:00Z",
         },
@@ -830,12 +821,7 @@ async function resolutionRun(input: {
 }
 
 // ─── 7. Backpressure: an overrunning client is CLOSED, never trimmed ──────
-//
-// The queue used to drop the oldest frame on overflow. That silently destroys
-// the one-shot state transitions this stream carries — a delta's `removed[]`
-// tombstones and a `venue_resolution` are emitted once and cleared at fan-out,
-// so a dropped frame is gone with no repair path and no way for either side to
-// notice. Closing hands the client back the authoritative full snapshot.
+// `removed[]` and resolutions are one-shot, so dropping frames would lose them.
 
 {
   seed([
@@ -1035,10 +1021,7 @@ async function resolutionRun(input: {
 }
 
 // ─── 9. Eviction tombstones reach connected clients ───────────────────────
-//
-// A delta tick only ever ADDS. Without `removed[]` a client's market map grows
-// for the life of the tab and keeps painting markets the daemon stopped
-// tracking, frozen at their last price.
+// Delta ticks only add, so evictions must ship as `removed[]`.
 
 {
   const keptId = conditionFor(21);
@@ -1126,9 +1109,7 @@ async function resolutionRun(input: {
     "a DELTA frame never restates the resolution set",
   );
 
-  // Evict EVERYTHING. An eviction-only frame must still ship — otherwise the
-  // one moment the client most needs to clear its map is the one it never
-  // hears about.
+  // Evict EVERYTHING: an eviction-only frame must still ship.
   seed([]);
   ticker.syncTrackedSet();
   ticker.flushBatch();
@@ -1150,11 +1131,7 @@ async function resolutionRun(input: {
 }
 
 // ─── 10. An INTENTIONAL close publishes 'stale' too ───────────────────────
-//
-// Freshness reports TRANSPORT health. The spontaneous-close handler marked the
-// board stale, but the ping-zombie teardown (and every other closeSocket path)
-// removes the listeners first, so that handler never ran — clients kept a
-// "live" badge over frozen numbers straight through a dead reconnect.
+// closeSocket() removes listeners first, so it must publish 'stale' itself.
 
 {
   const silent = new WebSocketServer({ port: 0, host: "127.0.0.1" });
@@ -1224,11 +1201,7 @@ async function resolutionRun(input: {
 }
 
 // ─── 11. Malformed timestamps and out-of-range quotes ─────────────────────
-//
-// `"1e100"` is finite, positive, and parses — and reached
-// `new Date(ms).toISOString()`, which throws RangeError from the batch timer,
-// i.e. OUTSIDE the per-message try/catch. One malformed frame killed the
-// daemon.
+// A finite-but-absurd stamp ("1e100") must never reach toISOString from the batch timer.
 
 {
   assert.equal(venueTimestampMs("1786336507696", NOW_MS), 1786336507696);
@@ -1334,13 +1307,7 @@ async function resolutionRun(input: {
 }
 
 // ─── 11b. An EMPTY book is an ANSWER; an unreadable one is not ────────────
-//
-// These two look identical if you only ask "did any price survive validation?"
-// — both yield null. Structurally they are opposites: `bids: []` is the venue
-// stating there is no bid side, while levels that all fail validation mean the
-// venue said something we could not read. Treating the first as the second left
-// an outcome whose side legitimately has no market stuck on 'warming' forever,
-// with the venue answering every second.
+// `bids: []` means no bid side; levels that all fail validation say nothing.
 
 const bookFrame = (
   assetId: string,
@@ -1549,9 +1516,7 @@ function freshTicker(): VenueTicker {
 // ─── 13. Reconnect machine: handshake timeout + backoff escalation ────────
 
 {
-  // (a) A TCP peer that accepts and never speaks leaves `ws` in CONNECTING
-  //     forever: neither 'open' nor 'close' fires, so the close handler that
-  //     owns reconnect never runs and the feed dies silently.
+  // (a) A peer that accepts TCP and never speaks leaves `ws` in CONNECTING forever.
   const net = await import("node:net");
   const held: import("node:net").Socket[] = [];
   const mute = net.createServer((socket) => {
@@ -1593,10 +1558,7 @@ function freshTicker(): VenueTicker {
   for (const socket of held) socket.destroy();
   await new Promise<void>((resolve) => mute.close(() => resolve()));
 
-  // (b) A server that ACCEPTS and then rejects must escalate the backoff. The
-  //     attempt counter used to reset on TCP open, so this shape spun the
-  //     daemon at the base delay indefinitely — the one failure mode backoff
-  //     exists to prevent.
+  // (b) An accept-then-reject server must escalate the backoff.
   const flapping = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   let connections = 0;
   flapping.on("connection", (socket) => {
@@ -1637,12 +1599,7 @@ function freshTicker(): VenueTicker {
 }
 
 // ─── 14. The snapshot frame carries the CURRENT resolution set ────────────
-//
-// The client replaces its market map on every connect but could only ever ADD
-// resolutions, because they arrived as separate one-shot frames. A resolution
-// the daemon evicted while a tab was disconnected therefore had no way to leave
-// that tab. Shipping the set on the snapshot frame is what makes "replace both
-// maps together" possible — and collapses the initial paint back to one frame.
+// So a client replaces both maps on connect, in one frame.
 
 {
   seed([
@@ -1740,9 +1697,7 @@ function freshTicker(): VenueTicker {
   assert.equal(settled.resolutions!.length, 1);
   assert.equal(settled.resolutions![0]!.market_id, BTC_CONDITION);
 
-  // Now evict it. A tab connecting after the eviction must NOT be handed it —
-  // this is the property that lets the client replace rather than merge, and
-  // the reason a stale resolution could otherwise outlive its market forever.
+  // Evict it: a tab connecting afterwards must NOT be handed it.
   seed([]);
   ticker.syncTrackedSet();
   assert.equal(ticker.snapshot().resolutions.length, 0, "the daemon dropped it");
@@ -1762,12 +1717,7 @@ function freshTicker(): VenueTicker {
 }
 
 // ─── 15. A fast reconnect cannot re-publish old quotes as 'live' ──────────
-//
-// `markAllStale()` only dirtied rows, and freshness was resolved at FLUSH time
-// from the mutable `connected` flag. A replacement socket sets `connected` on
-// 'open', which lands before any book — so a reconnect inside one batch
-// interval turned the pending stale frame into a `live` badge over quotes from
-// before the disconnect. Freshness is per-row stored state now.
+// Freshness is stored per field, not read from `connected` at flush time.
 
 {
   const toggling = new WebSocketServer({ port: 0, host: "127.0.0.1" });
@@ -1832,8 +1782,7 @@ function freshTicker(): VenueTicker {
   serveBooks = false;
   for (const socket of live) socket.terminate();
 
-  // Wait for the replacement socket to be fully established and subscribed —
-  // this is precisely the window in which the old code reported 'live'.
+  // Wait for the replacement socket to be established and subscribed.
   await until(() => subscribes.length >= 2, "the reconnect to re-subscribe");
   await sleep(120);
 
@@ -1864,11 +1813,7 @@ function freshTicker(): VenueTicker {
   const up = () => rowNow().outcomes.find((o) => o.label === "Up")!;
 
   // ── Per-OUTCOME, not per-market ──────────────────────────────────────────
-  //
-  // RECORDED_BOOK[0] is Down, [1] is Up. Refreshing ONE of them must not
-  // vouch for the other: clearing staleness at market level made the first
-  // book to arrive flip the whole row live while the other outcome was still
-  // rendering its pre-disconnect quotes.
+  // RECORDED_BOOK[0] is Down, [1] is Up; refreshing one must not vouch for the other.
   push([RECORDED_BOOK[0]]);
   await sleep(120);
   assert.equal(

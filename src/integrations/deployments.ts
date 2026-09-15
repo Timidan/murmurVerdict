@@ -64,23 +64,9 @@ export function parseFhenixChainIdInput(
 }
 
 /**
- * Which chain this deployment runs on.
- *
- * DERIVED from data/deployments.json when that manifest describes exactly one
- * chain — which is the normal case, and makes FHENIX_CHAIN_ID one more copy of
- * a fact the manifest already states. A copy is a thing that can go stale: the
- * sibling FHENIX_EVENT_START_BLOCK did exactly that and silently stopped the
- * watcher from indexing reveals.
- *
- * Still settable, for two real cases: a manifest spanning several chains (then
- * it is REQUIRED, since nothing else disambiguates), and an operator who wants
- * the value stated explicitly. Set and disagreeing with a single-chain
- * manifest is refused rather than resolved — a mismatch means the operator
- * believes they are on a different network, and picking either answer risks
- * signing against the wrong one.
- *
- * The RPC is not consulted here: config loading is synchronous, and the
- * gateway already asserts the RPC's chain matches before it broadcasts.
+ * Chain id, derived from data/deployments.json when it describes one chain.
+ * FHENIX_CHAIN_ID is required for a multi-chain manifest; a value that disagrees
+ * with a single-chain manifest is refused, never resolved. The RPC is not consulted.
  */
 export function resolveFhenixChainId(
   env: NodeJS.ProcessEnv = process.env,
@@ -138,8 +124,7 @@ export function readManifest(path: string = manifestPath()): DeploymentEntry[] {
   return ManifestSchema.parse(JSON.parse(raw));
 }
 
-/// @returns the most-recently-deployed entry for (chainId, contractName),
-///          or null if none exists.
+/// Latest-deployed entry for (chainId, contractName), or null.
 export function loadDeployment(
   chainId: number,
   contractName: string,
@@ -151,15 +136,8 @@ export function loadDeployment(
   return entries[0] ?? null;
 }
 
-/// @returns the deployment entry for (chainId, contractName) whose `address`
-///          matches `resolvedAddress` case-insensitively AND carries a
-///          positive blockNumber. Unlike loadDeployment (which returns the
-///          latest-by-name entry regardless of address), this lets a caller
-///          that already resolved a contract address pull the block number
-///          from the SAME manifest entry as that address — so a watcher never
-///          starts scanning from a block that belongs to a different (e.g.
-///          newer) deployment of the same contract name. Returns null when no
-///          such entry exists; the caller decides the fallback.
+/// Entry whose address matches `resolvedAddress` and has a positive blockNumber,
+/// so a watcher's start block comes from the same deployment as its address. Null if none.
 export function loadDeploymentByAddress(
   chainId: number,
   contractName: string,
@@ -180,9 +158,7 @@ export function loadDeploymentByAddress(
   return entries[0] ?? null;
 }
 
-// Single source of truth for resolving the MurmurSealedVerdicts address from
-// env or the deployment manifest. Watcher, gateway, verifier, daemon, canary,
-// and seed tools all share this so the allowlist they enforce can never drift.
+// Single source for the MurmurSealedVerdicts address (env, then manifest); shared so allowlists never drift.
 export function resolveFhenixContractAddress(
   chainId?: number,
   env: NodeJS.ProcessEnv = process.env,
@@ -193,9 +169,6 @@ export function resolveFhenixContractAddress(
   );
   if (sealedVerdictsAddress) return sealedVerdictsAddress;
 
-  // Two names for one value meant sync-deployments could update one and leave
-  // the other pointing at a dead contract — harmless only while the primary
-  // was set, and a live trap the moment it was cleared.
   if (chainId === undefined) return null;
   return loadDeployment(
     chainId,

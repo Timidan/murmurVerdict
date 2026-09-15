@@ -5,30 +5,17 @@ import {
   SEALED_CALL_SUBMITTED_EVENT,
 } from "./fhenix-event-primitives.js";
 
-// CoFHE 0.7 / cofhe-contracts 0.2: the per-input
-// (ctHash, securityZone, utype, signature) struct is gone. Each input is now a
-// bare bytes32 ciphertext handle (`externalEuint8` / `externalEuint16` are
-// user-defined value types over bytes32, so they encode as bytes32), and the
-// two handles share ONE `inputProof` — the batch signature over
-// keccak256(binaryIndexInput || confidenceInput). Handle order is part of the
-// signed digest; swapping the two arguments invalidates the proof.
+// CoFHE 0.7: each input is a bytes32 handle; both share ONE `inputProof` signed over
+// keccak256(binaryIndexInput || confidenceInput). Swapping the handles invalidates it.
 const MURMUR_SEALED_VERDICTS_GATEWAY_FUNCTIONS_ABI = parseAbi([
   "function submitSealedFor(address agent,bytes32 marketId,bytes32 binaryIndexInput,bytes32 confidenceInput,bytes inputProof,bytes32 clientNonce) returns (bytes32)",
   "function submitFeedPacketFor(address agent,bytes32 feedId,bytes32 marketId,bytes32 actionInput,bytes32 signalInput,bytes inputProof,bytes32 clientNonce) returns (bytes32)",
-  // View accessors used by the reconciliation path
-  // (src/integrations/fhenix-gateway-reconciliation.ts). They revert with
-  // CallNotFound / PacketNotFound if the id has never been written, which
-  // the reconciler treats as "no on-chain state → safe to retry".
+  // Reconciliation views; revert CallNotFound / PacketNotFound if the id was never written.
   "function getCall(bytes32 callId) view returns (address agent, bytes32 marketId, uint64 acceptedAt, bytes32 binaryIndexCtHash, bytes32 confidenceCtHash, uint8 revealedBinaryIndex, uint16 revealedConfidenceBps, uint8 state)",
   "function getFeedPacket(bytes32 packetId) view returns (address agent, bytes32 feedId, bytes32 marketId, uint64 acceptedAt, uint64 revealAfter, bytes32 actionCtHash, bytes32 signalCtHash, uint8 revealedAction, uint16 revealedSignalBps, uint8 state)",
 ]);
 
-// The Murmur Gateway ABI is the function surface plus the two submit events,
-// which are recovered via getLogs filtered on the indexed id when the
-// writeContract receipt was lost (timeout race). The event items are imported
-// from fhenix-event-primitives.ts (the single declaration shared with the
-// verifier primitive and the smokes) rather than re-stated here, so there is no
-// signature to keep "in lockstep".
+// Functions plus the two submit events, used to recover a lost receipt via getLogs.
 export const MURMUR_SEALED_VERDICTS_GATEWAY_ABI = [
   ...MURMUR_SEALED_VERDICTS_GATEWAY_FUNCTIONS_ABI,
   SEALED_CALL_SUBMITTED_EVENT,
@@ -37,11 +24,8 @@ export const MURMUR_SEALED_VERDICTS_GATEWAY_ABI = [
 
 export interface GatewayWriteOptions {
   /**
-   * Runs INSIDE the serialized broadcast slot, immediately before the signer
-   * call. Broadcasts can sit behind earlier work in the queue, so state
-   * checked at enqueue time (kill switch, key revocation) may be stale by the
-   * time the slot opens — this hook re-checks at the last possible moment.
-   * Throwing aborts the broadcast before any transaction is sent.
+   * Runs INSIDE the serialized broadcast slot, just before signing, to re-check state
+   * that went stale in the queue. Throwing aborts before any transaction is sent.
    */
   preBroadcast?: () => void;
 }
@@ -54,18 +38,9 @@ export interface FhenixGatewayClient {
     opts?: GatewayWriteOptions,
   ) => Promise<Hex>;
   getTransactionReceipt: (args: { hash: Hex }) => Promise<GatewayReceipt>;
-  /**
-   * Reconciliation read path: confirm the contract already accepted a
-   * deterministic id. Implementations should NOT throw on revert — wrap
-   * CallNotFound / PacketNotFound to return null so callers can branch on
-   * "exists vs not" cleanly.
-   */
+  /** Reconciliation read; return null on CallNotFound / PacketNotFound rather than throw. */
   readContract?: (args: GatewayReadContractArgs) => Promise<unknown>;
-  /**
-   * Reconciliation read path: filter SealedCallSubmitted / FeedPacketSubmitted
-   * by the indexed id topic to recover txHash + logIndex + blockNumber when
-   * the prior writeContract result was lost.
-   */
+  /** Reconciliation read: recover txHash, logIndex, blockNumber by indexed id when a write result was lost. */
   getLogs?: (args: GatewayGetLogsArgs) => Promise<readonly GatewayLog[]>;
 }
 
@@ -121,12 +96,8 @@ export type GatewayLog = {
 };
 
 /**
- * The contract-call form of one sealed (euint8, euint16) pair.
- *
- * Under CoFHE 0.7 the pair is verified as a single batch, so it travels as two
- * ciphertext handles plus ONE proof rather than two self-contained input
- * structs. `firstHandle` is the euint8 and `secondHandle` the euint16 —
- * the order the sealer encrypted them in, which the batch digest covers.
+ * One sealed (euint8, euint16) pair as contract args: two handles plus ONE batch proof.
+ * `firstHandle` is the euint8; the order is covered by the digest.
  */
 export type ContractSealedInputPair = {
   firstHandle: Hex;

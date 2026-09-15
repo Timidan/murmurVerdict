@@ -11,13 +11,8 @@ import {
 } from "viem";
 
 // ── Murmur Sealed Verdicts submit-event source of truth ─────────────────────
-// These two AbiEvent items are THE single declaration of the Sealed Call
-// Acceptance and Feed Packet submit events. The Murmur Gateway ABI
-// (fhenix-gateway-contract.ts) composes itself from these objects, the Fhenix
-// Runtime reconciliation path (fhenix-gateway-reconciliation.ts) filters logs
-// on them, and the smokes assert against their derived topic selectors — so
-// the event shape is written down exactly once. Their semantics track
-// contracts/src/MurmurSealedVerdicts.sol:88 / :118.
+// The single declaration of the submit events; the gateway ABI, reconciliation
+// and smokes all derive from these. Must match contracts/src/MurmurSealedVerdicts.sol.
 export const SEALED_CALL_SUBMITTED_EVENT = parseAbiItem(
   "event SealedCallSubmitted(bytes32 indexed callId,address indexed agent,bytes32 indexed marketId,uint64 acceptedAt,uint64 publicRevealAt,bytes32 binaryIndexCtHash,bytes32 confidenceCtHash,bytes32 clientNonce,uint8 submissionClass)",
 );
@@ -26,8 +21,7 @@ export const FEED_PACKET_SUBMITTED_EVENT = parseAbiItem(
   "event FeedPacketSubmitted(bytes32 indexed packetId,address indexed agent,bytes32 indexed feedId,bytes32 marketId,uint64 acceptedAt,uint64 revealAfter,bytes32 actionCtHash,bytes32 signalCtHash,bytes32 clientNonce)",
 );
 
-// Derived topic0 selectors (keccak of the canonical event signature). Consumers
-// filter/verify logs against these instead of hand-hashing the signature text.
+// Derived topic0 selectors (keccak of the canonical event signature).
 export const SEALED_CALL_SUBMITTED_TOPIC: Hex = toEventSelector(
   SEALED_CALL_SUBMITTED_EVENT,
 );
@@ -88,13 +82,8 @@ export interface FhenixSealedCallSubmitMetadata {
   confidence_ct_hash: string;
   accepted_at: string;
   /**
-   * When the sealed value becomes PUBLIC — the market's resolution time plus
-   * the series embargo. Decoded from the contract's `publicRevealAt`.
-   *
-   * NOTE: the storage name is still `reveal_open_at` for now. It no longer
-   * means "the sale window closed": sales close at the market's
-   * submissionCloseAt, which is strictly earlier. Renaming the column is a
-   * separate migration; until then this is the one place the two names meet.
+   * When the sealed value becomes public (resolution + series embargo); the contract's
+   * `publicRevealAt`. Not the sale close: sales close earlier, at submissionCloseAt.
    */
   reveal_open_at: string;
 }
@@ -139,13 +128,8 @@ export interface VerifyVerdictRevealInvalidInput extends FhenixInvalidRevealMeta
 
 export interface VerifiedSealedCallSubmitted extends FhenixSealedCallSubmitMetadata {
   /**
-   * 1 = EarlyAccess (submitted in time to be sold), 2 = LateUnsellable
-   * (refereed and scored, never granted). Mirrors the on-chain SubmissionClass
-   * enum, DECODED from the submit event.
-   *
-   * Deliberately not on the shared metadata base: it is an output of
-   * verification, never an input. A caller able to supply it could submit late
-   * — with strictly more information — and simply claim the call was sellable.
+   * On-chain SubmissionClass, decoded from the submit event: 1 = EarlyAccess (sellable),
+   * 2 = LateUnsellable (scored, never granted). Verification output only, never caller input.
    */
   submission_class: number;
   agent_wallet: string;

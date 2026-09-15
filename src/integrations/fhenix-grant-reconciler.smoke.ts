@@ -70,8 +70,7 @@ function accessDeps(
   now: () => Date,
   extra: Partial<EntitlementAccessDeps> = {},
 ): EntitlementAccessDeps {
-  // protocolFeeBps injected: the accrual path needs a split for any row that
-  // predates one, and a smoke must not depend on the ambient .env for it.
+  // protocolFeeBps injected so the smoke doesn't depend on the ambient .env.
   return {
     db,
     grantChain: c,
@@ -170,9 +169,8 @@ const grantedView: GrantDecryptAccessView = {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-// P1: crash-restart re-broadcast after the window closed. The earlier grant tx
-// ALREADY landed (getDecryptAccess.alreadyGranted=true), so the window-closed
-// revert on retry must NOT refund an already-granted subscriber — mark granted.
+// Re-broadcast after the window closed, but the earlier grant already landed:
+// the revert must NOT refund; mark granted.
 {
   const { db, tmp } = newDb();
   const clk = clock();
@@ -193,9 +191,7 @@ const grantedView: GrantDecryptAccessView = {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-// P0: a broadcast grant tx that never mines (getReceipt null forever) must not
-// strand the settled payment. The reconciler re-broadcasts within the grace
-// budget, then marks refund_due once attempts are exhausted.
+// A grant tx that never mines is re-broadcast, then refund_due once attempts run out.
 {
   const { db, tmp } = newDb();
   const clk = clock();
@@ -265,9 +261,6 @@ const grantedView: GrantDecryptAccessView = {
 }
 
 // Terminal refund_due rows must NOT consume the reconciler's per-tick budget.
-// They are terminal for grant work (reconcileEntitlement returns them
-// unchanged), so leaving them in the due query lets a backlog of them starve
-// real grant work forever — every tick re-reads the same dead rows.
 {
   const { db, tmp } = newDb();
   const clk = clock();

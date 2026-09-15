@@ -17,32 +17,12 @@ import {
 } from "./fhenix-gateway-cofhe-normalize.js";
 
 /**
- * CoFHE 0.7 changed the shape of a sealed batch.
- *
- * 0.5 returned one object per input, each carrying its own `signature`, and the
- * verifier signed each input independently (`POST /verify`, on-chain
- * `verifyInput`). 0.7 signs the whole batch ONCE (`POST /verifyBatch`, on-chain
- * `batchVerifyInputs`): `execute()` returns `[...ctHashes, batchSignature]` —
- * one element MORE than the input count — and the hashes come back as bare hex
- * strings, so `securityZone` / `utype` are no longer echoed per input.
- *
- * Two consequences the wire format has to absorb:
- *
- *  - `security_zone` / `utype` are now pinned here rather than read back. We
- *    send exactly the values we asked the verifier to sign, so the Gateway's
- *    per-field utype assertions still mean what they used to.
- *  - Both inputs carry the SAME `signature` — it authenticates
- *    keccak256(h_binary || h_confidence), not either hash alone. Splitting the
- *    batch across two transactions, or reordering the inputs, invalidates it.
- *
- * The two bindings the verifier folds into that signature:
- *
- *  - `setAccount` → the EOA that SENDS the submission (murmur's relayer). A
- *    proof signed for one relayer is not usable by another.
- *  - `setConsumingContract` → MurmurSealedVerdicts, the contract that calls
- *    `FHE.asEuint*s` with these hashes. NOT the relayer and NOT the
- *    TaskManager; a batch signed for one deployment cannot be replayed into
- *    another.
+ * CoFHE 0.7 signs the batch once: `execute()` returns `[...ctHashes, batchSignature]` and no
+ * longer echoes securityZone / utype, so they are pinned here.
+ * Both inputs carry the SAME signature over keccak256(h_binary || h_confidence);
+ * splitting or reordering invalidates it.
+ * Bound into it: `setAccount` = the relayer EOA that sends; `setConsumingContract` =
+ * MurmurSealedVerdicts (not the relayer or TaskManager).
  */
 const COFHE_SECURITY_ZONE = 0;
 

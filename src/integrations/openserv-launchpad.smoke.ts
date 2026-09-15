@@ -338,8 +338,7 @@ try {
   });
 
   await check("market discovery returns public registry metadata", async () => {
-    // Discovery serves LISTED external markets. eth.1h is the legacy
-    // native-price row retired by MIGRATION_061 and must never surface here.
+    // Discovery serves LISTED external markets; retired eth.1h must never surface.
     const result = await call("search_markets", { query: "Bitcoin", limit: 5 });
     assert.equal(result.kind, "murmur_market_search");
     assert.ok(

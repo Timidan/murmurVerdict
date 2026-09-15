@@ -113,11 +113,6 @@ assert.deepEqual(latestDeploymentsByContract([
   { ...escrow, chainId: 1 },
 ], chainId), new Map([["MurmurSealedVerdicts", newerSealed]]));
 
-// EVERY alias for a contract is patched, not just the primary.
-// resolveFhenixContractAddress falls back from FHENIX_SEALED_VERDICTS_ADDRESS
-// to the legacy FHENIX_CONTRACT_ADDRESS, so patching one left the other
-// pointing at a dead deployment — harmless while the primary is set, and a
-// live trap the moment it is cleared. Observed for real on a redeploy.
 const envPatch = patchDeploymentEnvBody({
   body: [
     "BASE_RPC_URL=https://base.example",
@@ -126,9 +121,7 @@ const envPatch = patchDeploymentEnvBody({
   ].join("\n"),
   latest: plan.latest,
 });
-// One key per contract. The block-number keys and the FHENIX_CONTRACT_ADDRESS
-// alias were deleted: both shadowed data/deployments.json, which is the thing
-// this tool maintains, so a stale copy could outlive a redeploy.
+// One key per contract; no block-number keys.
 assert.deepEqual(envPatch.patchedKeys, [
   "FHENIX_SEALED_VERDICTS_ADDRESS",
   "FHENIX_ESCROW_ADDRESS",

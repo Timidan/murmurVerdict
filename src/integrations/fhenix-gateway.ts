@@ -106,11 +106,7 @@ export interface FhenixGatewayConfig {
   client: FhenixGatewayClient;
   murmurOwnedSealer?: MurmurOwnedCofheSealer | null;
   fingerprintHmacKeyring?: GatewayFingerprintHmacKeyring | null;
-  /**
-   * Live event bus. Acceptance emits `call.accepted` onto it — without this
-   * the gateway (the only path an agent submits through) never reaches the
-   * live tape or `call.accepted` webhooks.
-   */
+  /** Live event bus; acceptance emits `call.accepted` (live tape, webhooks). */
   events?: { emit: (event: CallAcceptedEvent) => void };
   /** MURMUR_ACK_FEED_REVEAL_MANUAL. Feed packets 503 without it. */
   feedRevealAcknowledged?: boolean;
@@ -122,31 +118,18 @@ export interface FhenixGatewayConfig {
   maxAttempts?: number;
   stuckAfterMs?: number;
   /**
-   * Hard deadline for a single writeContract round-trip. The contract
-   * dedups by client_nonce, so a timeout that fires while a tx actually
-   * lands on-chain only costs wasted gas on the next retry (the second
-   * broadcast will revert). The default sits well below stuckAfterMs
-   * so a hung broadcast surfaces as a retryable failure long before
-   * sweepStuckClaims kicks in. 0 disables.
-  */
-  broadcastTimeoutMs?: number;
-  /**
-   * Block height the reconciliation log scan starts from when a previous
-   * writeContract timed out and we need to recover the on-chain tx_hash
-   * via getLogs. Defaults to 0 — the env-config layer in
-   * fhenix-gateway-env.ts:loadFhenixGatewayEnvConfig() prefers the
-   * manifest deployment block when available.
+   * Hard deadline for one writeContract round-trip; client_nonce dedups a tx that lands
+   * anyway. Default sits well below stuckAfterMs. 0 disables.
    */
+  broadcastTimeoutMs?: number;
+  /** Reconciliation getLogs start block. Default 0; env config prefers the manifest block. */
   reconcileFromBlock?: number;
   timers?: FhenixGatewayRuntimeTimers;
   newAttemptId?: () => string;
   newClaimToken?: () => string;
   newFeedPacketId?: FeedPacketIdAdapter;
   newSealedCallId?: SealedCallIdAdapter;
-  /**
-   * Adapter for `admin_fhenix_gateway_retry` audit event ids. Defaults to
-   * randomUUID inside makeAgentSecurityEvent.
-   */
+  /** Adapter for `admin_fhenix_gateway_retry` audit event ids. */
   newAgentSecurityEventId?: AgentSecurityEventIdAdapter;
   now: () => Date;
 }
@@ -173,24 +156,14 @@ export class FhenixGatewayBroadcaster {
   /** FHENIX_RECONCILE_OLD_FROM_BLOCK; null disables old-deployment recovery. */
   private readonly reconcileOldFromBlock: number | null;
 
-  /**
-   * Whether feed packets may be accepted at all. Read by the admin backfill
-   * route so both acceptance paths answer to ONE setting rather than each
-   * reading env for itself.
-   */
+  /** Whether feed packets may be accepted; the admin backfill route shares this one setting. */
   get feedRevealAcknowledged(): boolean {
     return this.feedRevealAcknowledgedFlag;
   }
 
   /**
-   * Does this deployment accept PLAINTEXT verdicts and seal them server-side?
-   *
-   * When true the operator can read every pending prediction, which is the
-   * opposite of what `privacy.pending_verdicts_private` claims on /v1/health
-   * and /v1/meta. Those surfaces published `true` unconditionally, so a
-   * deployment running owned sealing was advertising a privacy guarantee it
-   * had explicitly traded away. Exposed here so the public surfaces derive it
-   * rather than assert it.
+   * Whether plaintext verdicts are sealed server-side (the operator can then read pending
+   * predictions). Public privacy flags derive from this.
    */
   get acceptsPlaintextSubmission(): boolean {
     return this.murmurOwnedSealer !== null;
@@ -436,9 +409,7 @@ export class FhenixGatewayBroadcaster {
       };
     }
 
-    // Cheap pre-check only — the reservation transaction remains the
-    // authority. Sealing is the expensive step (CoFHE round-trip), and a
-    // retired agent should be refused before murmur pays that cost.
+    // Cheap pre-check before the costly sealing round-trip; the reservation stays the authority.
     assertAgentAcceptingCalls(this.db, runtimeIdentity.agent_id);
     const sealed = await this.murmurOwnedSealer.sealVerdict(parsed.data.verdict);
     return this.submitSealedCall({
@@ -458,16 +429,8 @@ export class FhenixGatewayBroadcaster {
     bodyJson: unknown;
   }): Promise<GatewayFeedPacketSubmitResult> {
     await this.assertChainMatchesRpc();
-    // Feed packets have NO reveal path. The shared reveal worker selects only
-    // sealed calls, and the watcher indexes only VerdictRevealed /
-    // VerdictRevealInvalid — so an accepted packet earns SLA credit, sits at
-    // `pending` forever, and never becomes public. Even a hand-sent on-chain
-    // reveal would not appear in Murmur's API.
-    //
-    // Accepting into that is worse than refusing: a provider builds a feed
-    // product on delivery evidence for a value no subscriber can ever read.
-    // Requiring the acknowledgement means nobody enables it believing reveal
-    // works. Same posture as MURMUR_ACK_MANUAL_REFUNDS.
+    // Feed packets have NO reveal path (worker and watcher cover sealed calls only),
+    // so they're refused unless explicitly acknowledged.
     if (!this.feedRevealAcknowledged) {
       throw new VerdictError(
         "feed packets are not accepted: Murmur has no feed reveal path yet " +
@@ -551,17 +514,8 @@ export class FhenixGatewayBroadcaster {
   }
 
   /**
-   * Confirm the RPC actually serves the configured chain, ONCE per process.
-   *
-   * Every deployment guard in the attempt machine compares configuration to
-   * configuration: the row's chain_id against `config.chainId`. Both come from
-   * env, so a `FHENIX_CHAIN_ID` that disagrees with the RPC behind
-   * `FHENIX_RPC_URL` passes every check and broadcasts onto the wrong chain —
-   * and `writeContract` uses `chain: null`, so viem does not catch it either.
-   * If the configured address happens to have code there, the write is real
-   * and the row's recorded chain identity is a lie.
-   *
-   * Cached because it is a network round trip on a path that runs every tick.
+   * Confirm the RPC serves the configured chain, once per process. The other guards
+   * compare config to config, and writeContract uses `chain: null`.
    */
   private async assertChainMatchesRpc(): Promise<void> {
     if (this.chainVerified) return;
@@ -585,9 +539,7 @@ export class FhenixGatewayBroadcaster {
       accepted: 0,
       failed: 0,
     };
-    // Release any claims held by crashed/killed broadcast processes BEFORE
-    // listing due attempts. Without this, an attempt whose claimant died
-    // mid-broadcast would stay claimed forever and never re-broadcast.
+    // Release claims held by dead broadcasters BEFORE listing due attempts.
     const stuckBeforeIso = isoFromMs(this.now().getTime() - this.stuckAfterMs);
     const sweepUpdatedAt = nowIso(this.now());
     this.sealedKind.lifecycle.sweepStuckClaims(this.db, {
@@ -601,14 +553,8 @@ export class FhenixGatewayBroadcaster {
       errorMessage: "broadcast claim stuck; reset by tick sweep",
     });
     await this.tickKind(this.sealedKind, counters);
-    // `broadcastFeeds: false` fences only the UNBROADCAST half of the feed
-    // lane. The submission gate alone was not enough: a `queued` or
-    // `failed_retryable` row reserved before the flag existed would still be
-    // picked up here and broadcast into a lane with no reveal path.
-    //
-    // Confirmation is deliberately NOT fenced — those transactions are already
-    // on-chain, and refusing to record them strands a real write and its SLA
-    // evidence without preventing anything.
+    // `broadcast: false` fences only unbroadcast feed rows. Confirmation is NOT fenced:
+    // those transactions are already on-chain.
     await this.tickKind(this.feedKind, counters, {
       broadcast: this.feedRevealAcknowledged,
     });
@@ -627,9 +573,7 @@ export class FhenixGatewayBroadcaster {
         ...this.broadcastConfig(),
         attemptId: attempt.attempt_id,
       });
-      // The machine reports the transition it performed; a fresh on-chain
-      // write ("submitted") counts as a broadcast, a "reconciled" recovery
-      // does not (no new write landed). Terminal outcomes count as failures.
+      // "reconciled" is not a new write, so only "submitted" counts as a broadcast.
       if (result.kind === "submitted") counters.broadcasted++;
       if (result.kind === "terminal_failure") counters.failed++;
     }
@@ -726,13 +670,8 @@ export class FhenixGatewayBroadcaster {
         },
       );
     }
-    // Fix 3 — emit `admin_fhenix_gateway_retry` audit in the same
-    // transaction as the queue-state mutation so the forensic record
-    // and the state change commit together. Resolve agent_id from the
-    // attempt's wallet so listForAgent surfaces the retry in the agent's
-    // own security timeline.
-    // agents.chain_id is CAIP-2 (schema.ts ChainIdSchema), so the lookup
-    // must use the eip155 form — a bare numeric string never matches.
+    // Audit event commits in the same transaction as the retry.
+    // agents.chain_id is CAIP-2, so look up with the eip155 form.
     const agent = agentsRepo.byWallet(
       this.db,
       attempt.agent_wallet_address,

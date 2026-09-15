@@ -57,9 +57,7 @@ assert.throws(
   /gateway_feed_packet_attempt\.action_input_json is not a valid CoFHE input/,
 );
 
-// The signature authenticates keccak256(h_0 || h_1), so two different
-// signatures cannot both be right — that record predates the 0.7 batch signer
-// and would revert on-chain after burning relayer gas.
+// One signature covers keccak256(h_0 || h_1); differing signatures would revert on-chain.
 assert.throws(
   () =>
     sealedCallCofheContractInputs({

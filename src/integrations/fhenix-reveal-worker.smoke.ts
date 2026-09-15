@@ -144,9 +144,7 @@ function seedSealedCall(
 const tmp = mkdtempSync(join(tmpdir(), "reveal-worker-"));
 const agentId = randomUUID();
 
-// Each check gets an isolated DB so listDue() never picks up another test's
-// jobs (all fakes would otherwise cross-drive each other through the shared
-// worker query).
+// Isolated DB per check so listDue() never picks up another test's jobs.
 function freshDb(): ReturnType<typeof openDb> {
   const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
   agentsRepo.insert(db, {

@@ -1,24 +1,10 @@
 /**
- * Fhenix Gateway broadcast-timeout reconciliation.
+ * Broadcast-timeout reconciliation. A timed-out write may still have landed; a retry
+ * would then revert CallAlreadyExists / PacketAlreadyExists and strand the row.
  *
- * Closes the race documented at src/integrations/fhenix-gateway-runtime.ts:45:
- * a writeContract timeout marks the attempt failed_retryable, but the RPC
- * was never cancelled — the submitSealedFor() / submitFeedPacketFor() may
- * still have landed. On retry the contract reverts CallAlreadyExists /
- * PacketAlreadyExists (see contracts/src/MurmurSealedVerdicts.sol:235 / :378)
- * and the local row is stranded with no submit_tx_hash.
- *
- * Strategy:
- *   1. Compute the deterministic id off-chain (same formula as the contract:
- *      keccak256(abi.encodePacked(chainId, contract, agent, [feedId,] marketId, clientNonce)))
- *   2. readContract.getCall / getFeedPacket — if it reverts (CallNotFound /
- *      PacketNotFound), no on-chain state, return null and let the broadcast
- *      proceed normally.
- *   3. If the contract has the id, getLogs filtered by the indexed id topic
- *      on SealedCallSubmitted / FeedPacketSubmitted to recover the actual
- *      tx_hash + log_index + block_number from the prior successful write.
- *   4. Return the recovered submit event; caller persists via
- *      fhenixGatewayTxRepo.markReconciledSubmitted().
+ *   1. Compute the deterministic id off-chain (same formula as the contract).
+ *   2. getCall / getFeedPacket: a proven revert means no on-chain state; return null.
+ *   3. Otherwise getLogs by the indexed id to recover tx_hash, log_index, block_number.
  */
 
 import {
@@ -45,9 +31,7 @@ import {
   type SealedCallReconciliationKey,
 } from "./fhenix-gateway-contract-ids.js";
 
-// The deterministic id derivations and their key shapes live in the dedicated
-// contract-id module; re-exported here so existing reconciliation importers
-// keep a single entry point.
+// Re-exported so reconciliation importers keep one entry point.
 export {
   computeFeedPacketId,
   computeSealedCallId,
@@ -58,15 +42,9 @@ export type {
 } from "./fhenix-gateway-contract-ids.js";
 
 /**
- * A `getCall` / `getFeedPacket` revert (CallNotFound / PacketNotFound) is a
- * PROVEN negative: the node executed the read and the contract reported the id
- * does not exist, so it is safe to broadcast. Any OTHER failure — an RPC
- * transport drop, a timeout, a malformed response — is INDETERMINATE: the
- * prior write may in fact have landed, and treating it as "not found" would
- * broadcast a duplicate. This classifier is deliberately safe-by-default: only
- * a positively-identified contract revert returns true; everything else is
- * indeterminate and the caller rethrows so the attempt stays retryable WITHOUT
- * re-broadcasting.
+ * Only a proven contract revert (CallNotFound / PacketNotFound) is a safe negative. Any
+ * other failure is indeterminate (the write may have landed): callers rethrow and stay
+ * retryable WITHOUT re-broadcasting.
  */
 const REVERT_ERROR_NAMES = new Set([
   "ContractFunctionRevertedError",
@@ -82,9 +60,7 @@ export function isProvenContractRevert(err: unknown): boolean {
     );
     if (revert) return true;
   }
-  // Fallback for gateway-client adapters (and test fakes) that surface a
-  // revert without extending viem's BaseError: they tag the emulated revert
-  // class on `.name` anywhere in the cause chain.
+  // Fallback for adapters and fakes that tag the revert class on `.name` in the cause chain.
   let cur: unknown = err;
   const seen = new Set<unknown>();
   while (cur != null && !seen.has(cur)) {
@@ -100,10 +76,7 @@ export interface ReconciliationConfig {
   client: FhenixGatewayClient;
   chainId: number;
   contractAddress: string;
-  /**
-   * Block height to start the log scan from. Use the contract's deployment
-   * block so we never scan from 0 (which most public RPCs reject).
-   */
+  /** Log scan start: the contract's deployment block, never 0 (most RPCs reject it). */
   reconcileFromBlock: number;
 }
 
@@ -114,18 +87,10 @@ export interface ReconciliationResult {
 }
 
 /**
- * Returns the recovered submit event for a sealed call id if the contract
- * already accepted it; null otherwise.
- *
- * Failure modes:
- *  - readContract PROVEN revert (CallNotFound) → returns null. Safe to
- *    broadcast a fresh write.
- *  - readContract indeterminate failure (RPC drop / timeout) → THROWS, so the
- *    caller keeps the row retryable WITHOUT broadcasting (the prior write may
- *    have landed).
- *  - readContract succeeds but getLogs fails / returns no rows → THROWS.
- *    The caller should keep the row retryable with a clear last_rpc_error
- *    rather than marking submitted without a tx_hash.
+ * Recovered submit event if the contract already accepted the call id, else null.
+ *  - proven revert (CallNotFound) → null; safe to broadcast.
+ *  - indeterminate read failure → throws; stay retryable without broadcasting.
+ *  - id exists but getLogs fails or finds nothing → throws.
  */
 export async function reconcileSealedCallSubmit(
   config: ReconciliationConfig,

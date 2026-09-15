@@ -1,16 +1,8 @@
 import { type Hex } from "viem";
 
 /**
- * Production CoFHE-input hex normalization.
- *
- * Owned in the gateway family so the production Murmur-owned sealer never has
- * to reach into the operator-blind release-gate SURFACE for basic hex
- * conversion (that inverted the dependency: a test surface defining a
- * production convention). The operator-blind surface now delegates to these
- * and retags failures into its own release-gate error type.
- *
- * `CofheNormalizeError` carries `detail` + `excerpt` so a caller that wants a
- * richer error taxonomy can reconstruct it without string-parsing.
+ * Production CoFHE-input hex normalization. `CofheNormalizeError` carries `detail` +
+ * `excerpt` so callers can retag errors without string-parsing.
  */
 export class CofheNormalizeError extends Error {
   constructor(

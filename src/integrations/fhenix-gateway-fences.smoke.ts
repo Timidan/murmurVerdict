@@ -128,17 +128,14 @@ try {
     assert.equal(row?.status, "failed_terminal");
     assert.match(row?.last_error ?? "", /deployment changed/);
     assert.match(row?.last_error ?? "", new RegExp(OLD_CONTRACT, "i"));
-    // The claim is released: a terminal row that still looks claimed makes
-    // stuck-claim telemetry report finished work forever.
+    // The claim is released, so stuck-claim telemetry doesn't count finished work.
     assert.equal(row?.broadcast_claim_token ?? null, null);
     assert.equal(row?.broadcast_started_at ?? null, null);
     db.close();
   }
 
   // ── A CHAIN change is caught too, even at an identical address ────────────
-  // Comparing the address alone missed this: the same address can exist on
-  // another chain, and repointing the daemon there would relay an old-chain
-  // intent onto it.
+  // The same address can exist on another chain.
   {
     const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
     const attemptId = seedAttempt(db);
@@ -196,9 +193,7 @@ try {
     db.close();
   }
   // ── The RPC's ACTUAL chain is checked, not just the configured one ────────
-  // Every other deployment guard compares config to config, so a
-  // FHENIX_CHAIN_ID that disagrees with the RPC behind FHENIX_RPC_URL passed
-  // all of them and broadcast onto the wrong chain.
+  // The other guards compare config to config; this one checks the RPC itself.
   {
     const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
     const gateway = new FhenixGatewayBroadcaster({
@@ -226,10 +221,6 @@ try {
   }
 
   // ── A terminal decision must not steal an in-flight worker's claim ────────
-  // markTerminalFailure used to clear broadcast_claim_token unconditionally.
-  // A worker mid-writeContract then found its token-guarded markSubmitted
-  // matched zero rows, and a transaction that actually landed was recorded
-  // nowhere.
   {
     const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
     const attemptId = seedAttempt(db);
@@ -241,12 +232,8 @@ try {
     });
     assert.equal(claimed, true, "worker A holds the claim");
 
-    // Worker B terminalizes WITHOUT a token (a pre-claim decision). It must
-    // report FALSE and change nothing: the row belongs to A, or to the
-    // stuck-claim sweep. Leaving the claim attached while flipping the status
-    // to terminal was the earlier bug — the sweep only scans broadcastable
-    // rows, so the claim would never be released and, if A's transaction had
-    // landed, its hash would never be recovered.
+    // Worker B terminalizes WITHOUT a token: must return false and change nothing;
+    // the row belongs to A or the stuck-claim sweep.
     assert.equal(
       fhenixGatewayTxRepo.markTerminalFailure(db, {
         attempt_id: attemptId,
@@ -298,10 +285,8 @@ try {
     db.close();
   }
   // ── A late transaction is journalled without stealing the new claim ───────
-  // Worker A's write lands after its claim was swept and re-taken by B. A's
-  // guarded markSubmitted matches nothing; the hash must still be recorded,
-  // and B's claim must survive. The obvious fallback (markReconciledSubmitted)
-  // has no claim guard and would have wiped it.
+  // A's write lands after B re-took the claim: the hash must be recorded and B's
+  // claim must survive (markReconciledSubmitted has no claim guard and would wipe it).
   {
     const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
     const attemptId = seedAttempt(db);
@@ -357,10 +342,7 @@ try {
     db.close();
   }
   // ── A late hash reaches CONFIRMATION, not terminal failure ────────────────
-  // The duplicate-broadcast guard threw GatewayBroadcastHaltedError, which the
-  // catch treats as terminal. Confirmation only scans `submitted` rows, so the
-  // transaction that actually landed was recorded and then never looked at
-  // again. It must be handed to the confirmation loop instead.
+  // Confirmation only scans `submitted` rows, so a late hash must not go terminal.
   {
     const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
     const attemptId = seedAttempt(db);
@@ -408,11 +390,8 @@ try {
     db.close();
   }
   // ── The hash write is FIRST-WINS across the non-atomic handoff ────────────
-  // preBroadcast and journalLateTxHash are two operations, so worker B can
-  // pass the check just BEFORE A's recovered hash appears. B then sends a
-  // duplicate — unavoidable once two workers hold the row — but its hash must
-  // not replace the one that landed, because the duplicate reverts and
-  // confirmation would then terminalize the row and strand the real write.
+  // preBroadcast and journalLateTxHash aren't atomic, so B can send a duplicate;
+  // its hash must not replace the landed one (the duplicate reverts).
   {
     const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
     const attemptId = seedAttempt(db);
@@ -453,9 +432,7 @@ try {
       landedHash,
       "the first-recorded hash stands; the duplicate does not replace it",
     );
-    // ...and the row must still REACH confirmation. Leaving it `queued` with
-    // the claim held meant confirmation (which scans `submitted`) never saw
-    // it, and once the claim was swept it rebroadcast duplicates forever.
+    // ...and the row still reaches confirmation.
     assert.equal(raced?.status, "submitted", "the row is handed to confirmation");
     assert.equal(
       raced?.broadcast_claim_token ?? null,
@@ -465,11 +442,8 @@ try {
     db.close();
   }
   // ── A row that already carries a hash is PROMOTED, never re-broadcast ─────
-  // The general case, and the one that bites in normal operation: viem's
-  // writeContract gas-estimates first, so a duplicate reverts with
-  // CallAlreadyExists BEFORE returning any hash. The generic catch then marked
-  // the row retryable, and every later tick did the same — the landed
-  // transaction was never confirmed.
+  // viem gas-estimates first, so a duplicate reverts CallAlreadyExists before
+  // returning a hash; the row must be promoted, not retried.
   {
     const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
     const landedHash = `0x${"7c".repeat(32)}`;
@@ -501,9 +475,7 @@ try {
     assert.equal(row?.tx_hash, landedHash, "keeping the hash that landed");
     assert.equal(row?.broadcast_claim_token ?? null, null);
 
-    // ...and it outranks the authorization checks. A kill switch engaged after
-    // the write landed does not un-send it; terminalizing here would drop the
-    // row out of confirmation and strand a real transaction.
+    // ...and it outranks the auth checks: a later kill switch doesn't un-send the tx.
     const killedId = seedAttempt(db);
     fhenixGatewayTxRepo.journalLateTxHash(db, {
       attempt_id: killedId,
@@ -537,10 +509,7 @@ try {
     db.close();
   }
   // ── ...and the same ordering holds INSIDE the broadcast slot ─────────────
-  // The hash arrives while the attempt waits in the serialized queue, and the
-  // account is kill-switched in the same window. The slot's auth checks used
-  // to run first, so the row went terminal while holding a hash for a
-  // transaction that had already landed.
+  // Hash and kill switch both arrive during the queue wait; the late-hash check wins.
   {
     const db = openDb({ path: join(tmp, `${randomUUID()}.db`) });
     const attemptId = seedAttempt(db);

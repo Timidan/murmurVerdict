@@ -1,38 +1,13 @@
 /**
- * Wave L.A — Circle Gateway integration via @circle-fin/x402-batching.
- *
- * Thin facade over the published SDK. The no-payment branch uses
- * `createGatewayMiddleware(config)` for canonical x402 challenges. Signed
- * requests use `BatchFacilitatorClient`'s `getSupported()`, `verify()`, and
- * `settle()` separately so Murmur can durably record a settlement intent
- * between verification and the irreversible settle call.
- *   - Type-safe canonical types: `PaymentPayload`, `PaymentRequirements`.
- *
- * This module deliberately does not infer settlement after a transport
- * error. Authoritative reconciliation remains a separate operational path.
- *
- * Pivot rationale: the previous hand-rolled
- * client was repeatedly catching wire-format mismatches — wrong
- * settle body shape, wrong response field names, wrong transfer/search
- * filter names, missing `success` check, wrong EIP-712 domain for
- * Base Sepolia USDC. The SDK encodes all these correctly. Use it.
- *
- * Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
+ * Circle Gateway facade over @circle-fin/x402-batching. verify() and settle() are
+ * separate so a settlement intent is recorded durably before the irreversible settle.
+ * Never infers settlement after a transport error; reconciliation is a separate path.
  */
 import type { RequestHandler } from "express";
 
 import { canonicalHash } from "../receipts/canonical.js";
 
-/**
- * The only asset this rail settles in.
- *
- * Circle Gateway batching selects the USDC asset from the facilitator's
- * supported kinds — the amount in a challenge is always USDC atoms. Exported
- * so surfaces that let a human name a currency validate against what will
- * ACTUALLY be charged, rather than recording a label nothing enforces: a
- * provider who typed "ETH" got buyers charged that number of USDC atoms and
- * receipts stamped ETH.
- */
+/** The only asset this rail settles in; challenge amounts are always USDC atoms. */
 export const SETTLEMENT_CURRENCY = "USDC" as const;
 
 export interface GatewayMiddlewareConfig {
@@ -244,23 +219,12 @@ export function createGatewayMiddleware(
 export const DEFAULT_TESTNET_FACILITATOR_URL = "https://gateway-api-testnet.circle.com";
 export const DEFAULT_MAINNET_FACILITATOR_URL = "https://gateway-api.circle.com";
 
-/**
- * Compute keccak256(canonicalize(requirements)) — used as the
- * `payment_requirements_hash` column of `nanopay_receipts` for post-settle
- * duplicate detection. Uses the single strict canonical-JSON encoder
- * (src/receipts/canonical.ts) so payment-hash pre-images share one definition
- * with every other hash pre-image in the codebase (a looser second encoder
- * risked hashing the same logical value differently).
- */
+/** keccak256(canonicalize(requirements)); `nanopay_receipts.payment_requirements_hash`. */
 export function paymentRequirementsHash(requirements: unknown): `0x${string}` {
   return canonicalHash(requirements);
 }
 
-/**
- * Compute keccak256(canonicalize(payload)) — same purpose as
- * `paymentRequirementsHash`, on the payload side of the composite
- * idempotency key.
- */
+/** keccak256(canonicalize(payload)); payload side of the idempotency key. */
 export function paymentPayloadHash(payload: unknown): `0x${string}` {
   return canonicalHash(payload);
 }

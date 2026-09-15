@@ -16,10 +16,7 @@ assert.equal(
   loadFhenixGrantEnvConfig({
     FHENIX_RPC_URL: "https://rpc.example",
     FHENIX_CHAIN_ID: "84532",
-    FHENIX_GRANT_PRIVATE_KEY: KEY_A,
-    // Price and currency are REQUIRED — there is deliberately no default, so
-    // a real subscriber can never be charged a number nobody chose.
-    FHENIX_GRANT_PRICE_ATOMS: "10000",
+    FHENIX_GRANT_PRIVATE_KEY: KEY_A,    FHENIX_GRANT_PRICE_ATOMS: "10000",
     FHENIX_GRANT_CURRENCY: "USDC",
     FHENIX_GRANT_PRICING_VERSION: "v1",
     FHENIX_GRANT_MAX_ARMED_PER_CALL: "25",
@@ -56,14 +53,12 @@ expectError(
   "missing grant key throws",
 );
 
-// Key isolation: grant key must differ from relayer and reveal keys.
+// A padded zero price is still zero.
 expectError(
   {
     FHENIX_RPC_URL: "https://rpc.example",
     FHENIX_CHAIN_ID: "84532",
     FHENIX_GRANT_PRIVATE_KEY: KEY_A,
-    // "00" is zero. The old check compared the literal string "0", so padded
-    // zeros booted fine and only failed later at the Circle gateway.
     FHENIX_GRANT_PRICE_ATOMS: "00",
     FHENIX_GRANT_CURRENCY: "USDC",
     FHENIX_GRANT_PRICING_VERSION: "v1",
@@ -72,14 +67,12 @@ expectError(
   "FHENIX_GRANT_PRICE_ATOMS",
   "padded zero price rejected",
 );
+// Key isolation: grant key must differ from relayer and reveal keys.
 expectError(
   {
     FHENIX_RPC_URL: "https://rpc.example",
     FHENIX_CHAIN_ID: "84532",
-    FHENIX_GRANT_PRIVATE_KEY: KEY_A,
-    // Price and currency are REQUIRED — there is deliberately no default, so
-    // a real subscriber can never be charged a number nobody chose.
-    FHENIX_GRANT_PRICE_ATOMS: "10000",
+    FHENIX_GRANT_PRIVATE_KEY: KEY_A,    FHENIX_GRANT_PRICE_ATOMS: "10000",
     FHENIX_GRANT_CURRENCY: "USDC",
     FHENIX_GRANT_PRICING_VERSION: "v1",
     FHENIX_GRANT_MAX_ARMED_PER_CALL: "25",
@@ -92,10 +85,7 @@ expectError(
   {
     FHENIX_RPC_URL: "https://rpc.example",
     FHENIX_CHAIN_ID: "84532",
-    FHENIX_GRANT_PRIVATE_KEY: KEY_A,
-    // Price and currency are REQUIRED — there is deliberately no default, so
-    // a real subscriber can never be charged a number nobody chose.
-    FHENIX_GRANT_PRICE_ATOMS: "10000",
+    FHENIX_GRANT_PRIVATE_KEY: KEY_A,    FHENIX_GRANT_PRICE_ATOMS: "10000",
     FHENIX_GRANT_CURRENCY: "USDC",
     FHENIX_GRANT_PRICING_VERSION: "v1",
     FHENIX_GRANT_MAX_ARMED_PER_CALL: "25",
@@ -110,10 +100,7 @@ const config = loadFhenixGrantEnvConfig(
   {
     FHENIX_RPC_URL: "https://rpc.example",
     FHENIX_CHAIN_ID: "84532",
-    FHENIX_GRANT_PRIVATE_KEY: KEY_A,
-    // Price and currency are REQUIRED — there is deliberately no default, so
-    // a real subscriber can never be charged a number nobody chose.
-    FHENIX_GRANT_PRICE_ATOMS: "10000",
+    FHENIX_GRANT_PRIVATE_KEY: KEY_A,    FHENIX_GRANT_PRICE_ATOMS: "10000",
     FHENIX_GRANT_CURRENCY: "USDC",
     FHENIX_GRANT_PRICING_VERSION: "v1",
     FHENIX_GRANT_MAX_ARMED_PER_CALL: "25",
@@ -136,9 +123,7 @@ assert.equal(config.pricingVersion, "v1");
 assert.equal(config.chain.grantorAddress, config.grantorAddress);
 assert.ok(config.grantorAddress.startsWith("0x"));
 
-// Price and currency have NO defaults. A hidden fallback would charge real
-// subscribers a number nobody chose, and would read as intentional in every
-// log and receipt.
+// Price, currency and pricing version have NO defaults; unset refuses to boot.
 {
   const base = {
     FHENIX_GRANT_ENABLED: "true",

@@ -1,37 +1,21 @@
 /**
- * Venue ticker HTTP surface — public, read-only, no auth. Both routes are
- * display surfaces; nothing here reaches the resolver. Payload shapes and the
- * rules a renderer must honor live in src/types/wire-venue.ts.
+ * Venue ticker HTTP surface: public, read-only, display only (never reaches the resolver).
+ * Payload shapes and renderer rules live in src/types/wire-venue.ts. Kept off `/v1/stream`,
+ * which has no backpressure; this route uses a bounded queue.
  *
- * Deliberately NOT on `/v1/stream`: that surface fans every event to every
- * consumer and ignores the result of `res.write()`, so a slow reader buffers
- * into the daemon's heap. Venue ticks are the highest-rate stream murmur emits,
- * so they get their own route with a bounded queue.
+ * GET /v2/venue/stream: SSE; 503 `venue_ticker_unavailable` when the ticker is off. The FIRST
+ * frame is a full-snapshot `venue_tick` with both maps (replace, don't merge); then deltas
+ * every 2s, `venue_resolution` frames, and `: heartbeat` every 25s. A reader that overruns
+ * the queue is disconnected (frames carry one-shot transitions); reconnect for a snapshot.
  *
- * GET /v2/venue/stream — text/event-stream. 503 `venue_ticker_unavailable` when
- * the ticker is off. Otherwise the FIRST frame is a full-snapshot `venue_tick`
- * carrying both maps; later frames are deltas every 2s, plus `venue_resolution`
- * frames as they occur and a `: heartbeat` comment every 25s. A client that
- * merges the first frame keeps markets and resolutions the daemon dropped.
- *
- * A reader that overruns the queue is DISCONNECTED, not silently trimmed:
- * these frames carry one-shot transitions (`removed[]`, resolutions) a later
- * frame cannot restate. Reconnect and take the snapshot again.
- *
- * GET /v2/venue/live — application/json. `?market=` repeats, and commas inside
- * one value also split. Omit it for every tracked market. A value that is not a
- * 32-byte hex condition id is a 400 `invalid_market_id`. Ids dedupe, at most 50
- * are answered, and `freshness:"unknown"` means a well-formed id this daemon
- * does not track.
+ * GET /v2/venue/live: JSON. `?market=` repeats and splits on commas; omit for all tracked.
+ * A non-condition-id is 400 `invalid_market_id`. Deduped, max 50; `freshness:"unknown"`
+ * means a well-formed id this daemon does not track.
  */
 
 import { Router } from "express";
 
-// The payload shapes come from the SHARED wire module, which is exactly what
-// the dashboard imports — so this surface and its only consumer are typed by
-// one declaration rather than two that happen to agree today. The reader
-// interface and the internal event envelope still come from the ticker itself;
-// neither crosses the wire.
+// Payload shapes from the shared wire module the dashboard also imports.
 import type { WireVenueSnapshotResult } from "../types/wire-venue.js";
 import type {
   VenueTickerEvent,
@@ -138,33 +122,16 @@ export function openVenueStream(
     if (closed) return;
     queue.push(chunk);
     if (queue.length > maxQueue) {
-      // OVERFLOW ⇒ CLOSE, rather than drop.
-      //
-      // This used to drop the oldest frame, on the reasoning that a live board
-      // only wants the newest prices. That is true of prices and false of
-      // everything else this stream carries: a delta tick's `removed[]`
-      // tombstones and a `venue_resolution` are one-shot STATE TRANSITIONS.
-      // The daemon clears `pendingRemovals` at fan-out and emits each
-      // resolution once, so a dropped frame is simply gone — the client keeps
-      // an evicted market on screen, or never learns a market settled, with no
-      // repair path and no way to detect it happened.
-      //
-      // Closing is the honest repair: the client reconnects and is handed the
-      // authoritative full snapshot, which is exactly the state it lost.
+      // Overflow ⇒ close, not drop: `removed[]` and resolutions are one-shot
+      // transitions. The client reconnects and gets the full snapshot.
       close();
       return;
     }
     flush();
   };
 
-  // Declared BEFORE the initial write, and nullable.
-  //
-  // `close()` is hoisted and the first `enqueue` below can reach it — a client
-  // that vanishes mid-write makes `res.write()` throw, `flush()` calls
-  // `close()`, and `close()` touched `unsubscribe`/`heartbeat`/`clearHeartbeat`
-  // while they were still in their temporal dead zone. That is a ReferenceError
-  // thrown out of the route handler on a perfectly ordinary disconnect, leaving
-  // the subscription installed on the ticker and the response never ended.
+  // Declared BEFORE the initial write, and nullable: close() can run from that
+  // first write (client gone), before these would otherwise exist.
   const scheduleHeartbeat =
     deps.setInterval ?? ((handler: () => void, ms: number) => setInterval(handler, ms));
   const clearHeartbeat =
@@ -173,14 +140,7 @@ export function openVenueStream(
   let unsubscribe: (() => void) | null = null;
   let heartbeat: unknown = null;
 
-  // ONE frame for the whole initial paint: markets AND resolutions together.
-  //
-  // The resolutions used to follow as one `venue_resolution` frame each. That
-  // could only ADD to the client's map, so a resolution evicted while the
-  // client was disconnected survived the reconnect and stayed on screen
-  // forever — the market map was replaced, the resolution map was not. It also
-  // made the initial paint one frame per settled market, which is precisely
-  // what overflowed a slow reader's queue at connect time.
+  // ONE frame for the initial paint, markets AND resolutions, so a reconnect replaces both maps.
   const snapshot = reader.snapshot();
   enqueue(
     sseFrame("venue_tick", {
@@ -190,8 +150,7 @@ export function openVenueStream(
     }),
   );
 
-  // Nothing below runs if the write above already closed us out — subscribing a
-  // dead transport to the ticker is exactly the leak this guard prevents.
+  // If the first write already closed us, don't subscribe a dead transport.
   if (closed) return { status: 200, close };
 
   unsubscribe = reader.subscribe({
@@ -200,8 +159,7 @@ export function openVenueStream(
         enqueue(
           sseFrame("venue_tick", {
             markets: event.markets,
-            // Tombstones ride the same frame. Omitted when empty so the common
-            // tick stays byte-identical to what it was.
+            // Tombstones ride the same frame; omitted when empty.
             ...(event.removed !== undefined && event.removed.length > 0
               ? { removed: event.removed }
               : {}),

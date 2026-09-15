@@ -1,26 +1,10 @@
 // ─── fhenix-gateway-race.smoke.ts ─────────────────────────────────────────
-//
-// Multi-connection regression for the claim-token race fix (805407a).
-//
-// The single-connection gateway smoke can't demonstrate the
-// double-broadcast race that Wave D closed — Node serializes calls on
-// one event loop, and one in-process better-sqlite3 instance never
-// races itself. This smoke opens TWO better-sqlite3 connections against
-// the SAME file-backed SQLite DB and exercises:
-//
+// Two connections on one file-backed DB exercise the claim-token race:
 //   1. Two connections claim the same attempt → exactly one wins.
-//   2. The losing connection observes the row as claimed (token set)
-//      via plain byId reads.
+//   2. The loser sees the row as claimed via plain byId reads.
 //   3. markSubmitted releases the token atomically with the status flip.
-//   4. sweepStuckClaims releases claims whose broadcast_started_at is
-//      older than the stuck threshold, flipping status back to
-//      failed_retryable so the next tick re-broadcasts.
-//
-// SQLite WAL mode (enabled in openDb) allows only one active writer.
-// The IMMEDIATE-equivalent semantics inside the conditional UPDATE
-// ensure that the second writer either sees the token already set
-// (rows = 0) or waits for the first to commit. Either way, never two
-// successful claims.
+//   4. sweepStuckClaims returns stale claims to failed_retryable.
+// WAL allows one writer; the conditional UPDATE never grants two claims.
 
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -99,10 +83,7 @@ async function main(): Promise<void> {
 
   try {
     // ── Bootstrap minimal FK rows ────────────────────────────────────
-    // The gateway attempt table FK-references accounts(account_id),
-    // agents(agent_id), and account_agents(agent_id) for ownership.
-    // For the race test we only need rows that satisfy those FKs;
-    // the application semantics around them aren't exercised here.
+    // Only enough rows to satisfy the attempt table's FKs.
     const accountId = randomUUID();
     const agentId = randomUUID();
     const ts = nowIso();
@@ -120,9 +101,7 @@ async function main(): Promise<void> {
     ).run(accountId, agentId, ts);
 
     function makeAttempt(suffix: string): FhenixGatewayTxAttemptInsert {
-      // Build a 32-byte hex from the suffix so client_nonce stays unique
-      // across attempts (the table has UNIQUE on chain/contract/agent/
-      // market/client_nonce).
+      // Unique client_nonce (UNIQUE on chain/contract/agent/market/client_nonce).
       const nonceSeed = (suffix + randomUUID()).replace(/-/g, "").padEnd(64, "0").slice(0, 64);
       return {
         attempt_id: randomUUID(),
@@ -164,13 +143,8 @@ async function main(): Promise<void> {
       const tokenB = randomUUID();
       const startedAt = nowIso();
 
-      // better-sqlite3 is synchronous + Node is single-threaded, so
-      // these two calls don't truly race in this process — but they
-      // exercise the same conditional UPDATE that arbitrates between
-      // separate OS processes. The conditional clause
-      // `broadcast_claim_token IS NULL` is the load-bearing piece;
-      // once dbA's claim commits, dbB's UPDATE sees the token set
-      // and matches zero rows.
+      // Not a true race in one process, but the same conditional UPDATE
+      // (`broadcast_claim_token IS NULL`) arbitrates between processes.
       const wonA = fhenixGatewayTxRepo.claimForBroadcast(dbA, {
         attempt_id: attempt.attempt_id,
         broadcast_started_at: startedAt,
@@ -225,10 +199,7 @@ async function main(): Promise<void> {
     await check("sweepStuckClaims resets stale claims back to failed_retryable", () => {
       const attempt = makeAttempt("stuck");
       fhenixGatewayTxRepo.insert(dbA, attempt);
-      // Directly stamp the row as claimed by a (simulated) crashed
-      // process whose broadcast_started_at is well past the stuck
-      // threshold. The repo helper insists on UPDATEs through its
-      // narrow conditional path, so we use raw SQL for the fixture.
+      // Raw SQL: stamp a stale claim from a simulated crashed process.
       const staleStart = isoMinus(600 * 2);
       dbA
         .prepare(
@@ -257,11 +228,8 @@ async function main(): Promise<void> {
     });
 
     // ── 4. markSubmitted refuses to write after claim was swept ─────
-    // The scenario this closes: a slow writeContract outlives
-    // stuckAfterMs, the sweep reclaims, another writer takes the row,
-    // then the original writer's markSubmitted returns LATE. Without
-    // the claim-token guard the late mark would clobber the new
-    // winner's submission state.
+    // A slow write outlives the sweep and another writer reclaims; the late
+    // markSubmitted must not clobber the new winner.
     await check("markSubmitted is a no-op after claim is swept + reclaimed", () => {
       const attempt = makeAttempt("swept-then-reclaimed");
       fhenixGatewayTxRepo.insert(dbA, attempt);
@@ -295,9 +263,7 @@ async function main(): Promise<void> {
       });
       assert.equal(ok, true, "B should reclaim after sweep");
 
-      // Process A's slow writeContract finally returns and tries to
-      // markSubmitted. The claim_token guard rejects it: rows = 0, no
-      // state change. Process B's claim survives intact.
+      // A's late markSubmitted is rejected by the token guard; B's claim survives.
       const stoleByA = fhenixGatewayTxRepo.markSubmitted(dbA, {
         attempt_id: attempt.attempt_id,
         tx_hash: "0x" + "cc".repeat(32),
@@ -332,9 +298,7 @@ async function main(): Promise<void> {
     });
 
     // ── 5. markRetryableFailure refuses to write after sweep+reclaim ─
-    // Symmetric to test #4 but for the catch-path mark. A late writer
-    // whose writeContract threw AFTER its claim was swept must not
-    // overwrite the new winner's state with a "retryable" status flip.
+    // Same as #4 for the catch-path markRetryableFailure.
     await check("markRetryableFailure is a no-op after claim is swept + reclaimed", () => {
       const attempt = makeAttempt("retryable-swept");
       fhenixGatewayTxRepo.insert(dbA, attempt);
@@ -410,20 +374,11 @@ async function main(): Promise<void> {
     });
 
     // ── 7. Reconciliation recovers tx_hash after writeContract timeout ──
-    //
-    // Fix 1's reconciliation path lives in fhenix-gateway-attempt-machine.ts
-    // (broadcastGatewayAttempt's reconcile-before-retry phase):
-    // when an attempt has `attempt_count > 0 && tx_hash IS NULL`, the next
-    // broadcast tick consults the contract via readContract.getCall plus
-    // getLogs filtered by the indexed callId. If the contract already has
-    // the row (the prior writeContract landed but its receipt was lost),
-    // markReconciledSubmitted persists the recovered tx_hash WITHOUT
-    // incrementing attempt_count and WITHOUT calling writeContract again.
+    // A prior timed-out write landed: getCall + getLogs recover its tx_hash,
+    // with no writeContract and no attempt_count increment.
     await check("reconciliation recovers tx_hash after writeContract timeout", async () => {
       const attempt = makeAttempt("recon");
-      // Deterministic agent/market/nonce so we can compute the on-chain
-      // callId off-chain via keccak256(abi.encodePacked(...)) — see
-      // fhenix-gateway-reconciliation.ts:computeSealedCallId.
+      // Deterministic agent/market/nonce so the callId can be computed off-chain.
       attempt.client_nonce = "0x" + "9c".repeat(32);
       attempt.market_id_hash = "0x" + "ad".repeat(32);
       attempt.agent_wallet_address = "0x" + "5a".repeat(20);
@@ -440,9 +395,7 @@ async function main(): Promise<void> {
       const landedBlock = 4242n;
       const landedLogIndex = 7;
 
-      // Simulate the outcome of a prior failed broadcast: attempt_count=1,
-      // tx_hash=null, status='failed_retryable' — matches what
-      // markRetryableFailure leaves after withTimeout rejects.
+      // What markRetryableFailure leaves after a timeout: attempt_count=1, tx_hash=null.
       dbA
         .prepare(
           `UPDATE fhenix_gateway_tx_attempts
@@ -456,8 +409,7 @@ async function main(): Promise<void> {
         )
         .run(nowIso(), nowIso(), nowIso(), attempt.attempt_id);
 
-      // ── Fake client: writeContract MUST NOT run; readContract +
-      //    getLogs return the landed-tx fixture.
+      // Fake client: writeContract must not run; reads return the landed tx.
       let writeContractCalls = 0;
       let readContractCalls = 0;
       let getLogsCalls = 0;
@@ -553,20 +505,11 @@ async function main(): Promise<void> {
     });
 
     // ── 7b. Kill switch engaged while the write waits in the broadcast queue ──
-    //
-    // The machine's halt checks at the top of broadcastGatewayAttempt run
-    // BEFORE the write enters the serial broadcast queue; an engagement that
-    // lands while the write is parked behind earlier queue work must still
-    // stop it. The preBroadcast seam runs inside the serialized slot — this
-    // pins that a late engagement halts the broadcast terminally and the
-    // signer call never runs.
+    // preBroadcast must halt a late engagement terminally; the signer never runs.
     await check("kill switch engaged while queued halts the broadcast (no tx)", async () => {
       const attempt = makeAttempt("queued-halt");
-      // Valid CoFHE input JSON so contractWrite() succeeds and the machine
-      // actually reaches the client — the halt must come from the
-      // preBroadcast seam, not from an argument-construction failure.
-      // One batch, one proof: 0.7 signs keccak256(h_0 || h_1), so the two
-      // halves must carry the SAME signature or contractWrite() refuses them.
+      // Valid input so the halt comes from preBroadcast, not contractWrite().
+      // Both halves share one proof (0.7 batch signature).
       const batchProof = "0x" + "bb".repeat(65);
       attempt.binary_index_input_json = JSON.stringify({
         ct_hash: "0x" + "aa".repeat(32),
@@ -585,9 +528,7 @@ async function main(): Promise<void> {
       const haltClient: FhenixGatewayClient = {
         getChainId: async () => 84532,
         getBlockNumber: async () => 1n,
-        // Mirrors the gateway-env queue wrapper: the hook fires inside the
-        // serialized slot, immediately before the signer call. Engaging the
-        // switch FIRST simulates it landing while this write sat in queue.
+        // Engage first to simulate the switch landing while this write sat in queue.
         writeContract: async (_args, opts) => {
           engageAccountKillSwitch(dbA, {
             account_id: accountId,
@@ -629,11 +570,7 @@ async function main(): Promise<void> {
     });
 
     // ── 8. Feed-lane reconciliation (same invariant, feed_packet kind) ──
-    //
-    // The Gateway Attempt Machine runs reconcile-before-retry for BOTH
-    // lanes through one implementation; this check pins the feed lane's
-    // deterministic-id wiring (getFeedPacket + packetId topic filter) so a
-    // future lane-adapter change can't silently drop feed recovery.
+    // Pins the feed lane's id wiring (getFeedPacket + packetId topic filter).
     await check("feed reconciliation recovers tx_hash after writeContract timeout", async () => {
       const feedId = randomUUID();
       dbA.prepare(

@@ -109,9 +109,7 @@ try {
   process.stdout.write("murmur fhenix watcher smoke\n");
   const db = openDb({ path: dbPath });
 
-  // Murmur ships no markets of its own (MIGRATION_062 removed the native
-  // catalogue), so sealed-call fixtures must register their own external
-  // market or reveal ingestion rejects them as an unknown market.
+  // Murmur ships no markets, so fixtures register their own external market.
   const WATCHER_MARKET_ID = `0x${"3f".repeat(32)}`;
   function seedWatcherMarket(target = db): void {
     marketsRepo.upsertExternalMarket(target, {
@@ -399,9 +397,7 @@ try {
     const result = await watcher.tick();
     assert.equal(result.indexed, 1);
     assert.equal(result.valid_reveals_attached, 1);
-    // Migration 057: the watcher never auto-terminalizes as `missed` — a sealed
-    // call is revealable forever, so the fallback worker + operator alerts own
-    // liveness instead of a timer.
+    // The watcher never auto-marks `missed`.
     assert.equal(result.missed_reveals_marked, 0);
 
     const valid = fhenixSealedCallsRepo.byCallId(db, validCallId);
@@ -443,9 +439,7 @@ try {
         needs_attention?: unknown[];
       };
       assert.equal(body.counts?.revealed, 2);
-      // No auto-missed anymore: the overdue call is still `pending`, so it shows
-      // up as an overdue-grace queue entry (needs_attention) rather than a
-      // terminal `missed` count.
+      // The overdue call stays `pending` and shows in needs_attention, not as `missed`.
       assert.equal(body.counts?.missed ?? 0, 0);
       assert.equal(body.queues?.terminal_failures, 0);
       assert.equal(body.queues?.needs_attention, 1);
@@ -558,11 +552,7 @@ try {
     assert.equal(cfg?.startBlock, 41870556);
     assert.equal(cfg?.watcherRpcUrl, "http://127.0.0.1:8545");
 
-    // FHENIX_EVENT_START_BLOCK is NO LONGER an override — the manifest is the
-    // only source. It used to win, so a block left behind by a PREVIOUS
-    // deployment made the watcher scan the new contract from long before it
-    // existed: no error, and reveals that were never indexed. Observed live on
-    // 2026-08-05, which is why the override is gone rather than documented.
+    // FHENIX_EVENT_START_BLOCK is ignored; the manifest is the only source.
     const ignoredOverride = loadFhenixEventIngestorConfig({
       FHENIX_RPC_URL: "http://127.0.0.1:8545",
       FHENIX_CHAIN_ID: String(chainId),

@@ -56,16 +56,11 @@ export type ReserveSealedCallAttemptResult =
     };
 
 /**
- * The ONE way a sealed-call client_order_id duplicate may exit (used by the
- * broadcaster's early checks, the pre-transaction checks here, the
- * in-transaction recheck, and unique-race recovery
- * 2026-08-02, every exit must compare fingerprints or the changed-parameter
- * guarantee is false under concurrency). Returns null when no duplicate
- * exists. Throws 409 when the same client_order_id carries DIFFERENT content,
- * and re-applies pure policy (no rate-limit burn) before handing back a
- * pinned attempt so a since-narrowed key can't retrieve orders outside its
- * policy. An accepted submission with no surviving attempt row has no stored
- * fingerprint — that replay keeps the legacy 200.
+ * The ONE exit for a duplicate sealed-call client_order_id; every path uses it so
+ * fingerprints are always compared. Null when no duplicate. Throws 409 when the same
+ * client_order_id carries different content. Re-applies pure policy (no rate-limit burn)
+ * before returning a pinned attempt. An accepted submission with no attempt row has no
+ * fingerprint and replays as 200.
  */
 export function sealedCallDuplicateExit(params: {
   db: Database.Database;
@@ -146,10 +141,7 @@ export function reserveSealedCallAttempt(params: {
   let inTxDuplicate: ReserveSealedCallAttemptResult | null = null;
   let createdAttemptId: string | null = null;
   const reserveAndInsert = params.db.transaction(() => {
-    // Re-check inside the lock: a competing process may have inserted the same
-    // Gateway Attempt or already promoted it to an accepted Sealed Call. The
-    // shared exit compares fingerprints, so a concurrent DIFFERENT body 409s
-    // instead of silently receiving the winner's attempt.
+    // Re-check inside the lock; a concurrent different body 409s rather than getting the winner's attempt.
     inTxDuplicate = sealedCallDuplicateExit({
       db: params.db,
       runtimeIdentity: params.runtimeIdentity,
@@ -161,24 +153,9 @@ export function reserveSealedCallAttempt(params: {
     if (inTxDuplicate) {
       return;
     }
-    // RETIREMENT GATE. This exact position is the whole point.
-    //
-    // AFTER the duplicate exit: a call the agent already sent must keep
-    // resolving to its existing attempt after the owner retires it. Gating
-    // first would turn a harmless client retry into an error for work already
-    // accepted.
-    //
-    // BEFORE the attempt insert, and INSIDE this BEGIN IMMEDIATE: the read and
-    // the write are then serialized, so a retire landing concurrently either
-    // loses the race entirely or is seen by this check. Gating outside the
-    // transaction would leave a window where a retired agent still queues one
-    // more call.
-    //
-    // And NOWHERE ELSE. Not in generic runtime-key auth — attempt READS go
-    // through that path, and an owner must still be able to read the history
-    // of an agent they retired. Not in post-chain acceptance — a call already
-    // broadcast has to be recorded, or retiring mid-flight orphans a confirmed
-    // on-chain call. Queued attempts finish; only new ones are refused.
+    // RETIREMENT GATE; position matters. After the duplicate exit (retries of sent work
+    // still resolve), before the insert and inside BEGIN IMMEDIATE (no race with a retire).
+    // Nowhere else: attempt reads must still work and broadcast calls must still be recorded.
     assertAgentAcceptingCalls(params.db, agentId);
     authorizeRuntimeKeyGatewayIntent(
       params.db,
@@ -225,9 +202,7 @@ export function reserveSealedCallAttempt(params: {
       createdAttemptId = attempt.attempt_id;
     } catch (err) {
       if (isUniqueViolation(err)) {
-        // Unique-race recovery goes through the same fingerprint-checked
-        // exit: the loser of a different-body race gets 409, not the
-        // winner's attempt.
+        // Unique-race recovery via the same fingerprint-checked exit.
         inTxDuplicate = sealedCallDuplicateExit({
           db: params.db,
           runtimeIdentity: params.runtimeIdentity,
@@ -330,16 +305,8 @@ export function reserveFeedPacketAttempt(params: {
   );
   validateFeedPacketMarket(params.db, params.feed, params.body.market_id ?? null);
 
-  // A persisted feed whose reveal policy murmur can no longer honour must not
-  // broadcast. Checked BEFORE the idempotent duplicate exit: a reservation that
-  // matches an existing attempt would otherwise return early and skip the
-  // guard, so a legacy fixed_delay/after_horizon/manual feed could still be
-  // retried and revealed on the market clock — breaking a promise it still
-  // publicly advertises.
-  //
-  // NOTE: attempts already queued before this narrowing are not covered here;
-  // they need a one-time audit (quarantine nonterminal attempts whose feed is
-  // not after_resolution) before enabling feeds in production.
+  // Unsupported reveal policy must not broadcast. Checked BEFORE the duplicate exit,
+  // which would otherwise return early and skip it.
   assertFeedRevealPolicySupported(params.feed);
 
   const preTxFeedDuplicate = feedPacketDuplicateExit({
@@ -356,14 +323,8 @@ export function reserveFeedPacketAttempt(params: {
 
   const now = params.now();
   const ts = nowIso(now);
-  // The MARKET's embargo is authoritative for a feed packet's reveal time.
-  // The contract overwrites whatever is passed with market.publicRevealAt, so
-  // persisting a feed-policy-derived value here would make confirmation reject
-  // the emitted log (extraction requires emitted == persisted) and strand an
-  // attempt against a packet that WAS created on-chain.
-  //
-  // The feed's reveal policy still bounds what a feed may request, but it can
-  // no longer set the on-chain schedule.
+  // The MARKET's embargo sets the reveal time: the contract uses market.publicRevealAt,
+  // and event extraction requires emitted == persisted.
   const feedMarket = marketsRepo.get(params.db, params.body.market_id);
   if (!feedMarket) {
     throw new VerdictError(
@@ -373,25 +334,9 @@ export function reserveFeedPacketAttempt(params: {
       { market_id: params.body.market_id },
     );
   }
-  // Read the IMMUTABLE clock snapshot, not the market's mutable config. The
-  // config can be re-stamped or stripped after registration, so recomputing
-  // from it could yield a time the on-chain market never had. The snapshot is
-  // frozen at registration and is what the chain schedule was derived from.
-  //
-  // The feed's `reveal_policy` no longer SETS this time.
-  //
-  // It used to set this timestamp. The contract now takes a packet's reveal
-  // time from the market's immutable schedule, so a per-packet policy cannot
-  // set it — and it cannot be enforced as a floor either: a policy expresses
-  // "at least N seconds after submission", while the market's reveal is a
-  // FIXED instant. Any market revealing sooner than now+N can never satisfy
-  // it, so a floor check would reject legitimate traffic rather than catch a
-  // misconfiguration.
-  //
-  // The real constraint is a registration-time one: a feed should only be
-  // attached to markets whose embargo satisfies its advertised delay. Until
-  // that check exists, `reveal_policy` is advisory metadata for feeds bound to
-  // scheduled markets, and the public schema overstates it.
+  // Read the IMMUTABLE clock snapshot, not mutable config: it's what the chain schedule came from.
+  // `reveal_policy` can't set or floor this fixed instant; until attach-time embargo
+  // checks exist it is advisory.
   const feedClock = marketClocksRepo.get(params.db, params.body.market_id);
   if (!feedClock) {
     throw new VerdictError(
@@ -412,10 +357,8 @@ export function reserveFeedPacketAttempt(params: {
       { reveal_after: revealAfter },
     );
   }
-  // Packets close at RESOLUTION, not at public reveal. The window between them
-  // is the embargo, during which the outcome is already known — a packet
-  // submitted there predicts nothing and would still be counted as delivered
-  // SLA evidence. Mirrors the contract's own cutoff.
+  // Packets close at RESOLUTION, not public reveal: in the embargo the outcome is known.
+  // Mirrors the contract's cutoff.
   if (now.getTime() >= feedClock.resolution_at_ms) {
     throw new VerdictError(
       "feed packet window closed: the market has already resolved",
@@ -444,11 +387,7 @@ export function reserveFeedPacketAttempt(params: {
         idempotentFeedReturn = competing.attempt;
         return;
       }
-      // Same retirement gate as sealed calls, same placement: inside the
-      // transaction, after the idempotent exit (an attempt that already
-      // exists must still return), before anything is inserted. A retired
-      // agent stops PRODUCING on every lane, not just verdicts (security
-      // review R3).
+      // Same retirement gate and placement as sealed calls.
       assertAgentAcceptingCalls(params.db, agentId);
       const sequence = params.body.sequence ?? Math.max(
         feedPacketsRepo.nextSequence(params.db, params.feed.feed_id),

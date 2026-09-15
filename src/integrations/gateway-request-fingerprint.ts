@@ -1,19 +1,8 @@
 // ─── Gateway request fingerprints (murmur-idem-v1) ───────────────────────────
-//
-// "Any changed parameter = a new request." Every client_order_id duplicate
-// exit on the gateway lanes compares the stored fingerprint of the request
-// that RESERVED the attempt against the fingerprint of the request being
-// replayed; a mismatch is a hard 409, never a silent idempotent 200 for
-// content the agent didn't submit. The fingerprint covers the VALIDATED
-// semantic body (post-zod parse, canonicalized) — the raw-byte hash used by
-// runtime-key PoP is a different concern and deliberately a different value.
-//
-// The domain prefix separates route kinds (and the dynamic feed id) so
-// structurally similar bodies in a shared client_order namespace can't
-// collide semantically. Owned sealing HMACs the ORIGINAL client body before
-// randomized CoFHE sealing, so byte-identical retries match across key rotation.
-//
-// Null legacy fingerprints remain non-comparable because they prove no mismatch.
+// Any changed parameter = a new request: duplicate exits compare the reserving request's
+// fingerprint (canonical validated body, domain-prefixed by route kind and feed id) with
+// the replay's; a mismatch is 409. Owned sealing HMACs the original body before sealing.
+// Null legacy fingerprints are non-comparable.
 
 import { createHash, createHmac } from "node:crypto";
 

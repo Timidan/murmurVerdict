@@ -8,7 +8,7 @@ import {
 } from "../verdict/repos/fhenix-reveal-jobs-repo.js";
 import { isoFromMs, nowIso } from "../verdict/time.js";
 
-// On-chain CallState (contracts/src/MurmurSealedVerdicts.sol:29).
+// Must match the contract's CallState enum.
 export const CALL_STATE = {
   None: 0,
   Sealed: 1,
@@ -28,11 +28,8 @@ export interface RevealChainReceipt {
   success: boolean;
 }
 
-// The chain seam the worker drives. The env builder supplies the viem-backed
-// implementation; smokes supply a fake so the state machine is exercised
-// without a network. openReveal / publishReveal broadcast through the reveal
-// EOA's own serial queue and MUST reject with a RevealWrongStateError when the
-// contract reverts WrongState (the permissionless-reveal race backstop).
+// Chain seam. openReveal / publishReveal broadcast through the reveal EOA's own serial
+// queue and MUST reject with RevealWrongStateError on a WrongState revert.
 export interface RevealChainAdapter {
   // Confirmed safe head = latest - confirmations. timestamp in unix seconds.
   safeHead(): Promise<{ blockNumber: number; timestamp: number }>;
@@ -85,12 +82,8 @@ export interface FhenixRevealWorkerConfig {
   graceSeconds: number;
   retryBaseMs: number;
   retryMaxMs: number;
-  // How long a broadcast open/publish tx may sit without a receipt before the
-  // worker re-broadcasts it. A dropped / nonce-gapped tx never yields a
-  // receipt, so without this the job would wait on null forever. Re-broadcast
-  // through the reveal EOA's own nonce-managed queue self-heals the stuck
-  // nonce; the contract's single-reveal guard makes a redundant broadcast a
-  // harmless WrongState revert (reconciled), never a double reveal.
+  // How long a broadcast tx may go receiptless before re-broadcast (dropped txs never
+  // get one). The single-reveal guard makes a redundant broadcast a harmless WrongState.
   rebroadcastMs: number;
   maxJobsPerTick: number;
   maxConcurrency: number;
@@ -218,9 +211,7 @@ export class FhenixRevealWorker {
     try {
       const call = await this.chain.getCall(job.onchain_call_id, head.blockNumber);
       if (call === null) {
-        // getter reverts / None at the safe head — DB/chain identity is
-        // inconsistent. Quarantine + alert; keep retrying slowly (a transient
-        // RPC hiccup that returned None-shaped errors can still recover).
+        // None at the safe head: DB/chain identity is inconsistent. Quarantine; retry slowly.
         this.quarantine(job, "getCall returned None at safe head");
         result.quarantined += 1;
         return;
@@ -277,11 +268,8 @@ export class FhenixRevealWorker {
     job: FhenixRevealJobRow,
     result: FhenixRevealWorkerTickResult,
   ): Promise<void> {
-    // If we already broadcast an open, do not double-broadcast while it is
-    // still live: wait for it to mine + confirm (state flips to Opened at the
-    // safe head). Re-open only when the receipt positively reverted, OR when a
-    // receiptless tx has gone stale — a dropped / nonce-gapped open never
-    // yields a receipt, so re-broadcasting is the only way to unstick it.
+    // An open is already out: wait while it's live. Re-open only on a reverted
+    // receipt or a stale receiptless tx.
     if (job.open_tx_hash) {
       const receipt = await this.chain.getReceipt(job.open_tx_hash);
       if (receipt && receipt.success) {
@@ -350,10 +338,8 @@ export class FhenixRevealWorker {
       }
     }
 
-    // Both ciphertexts decrypted. If a prior publish is still live, wait for it
-    // rather than double-broadcasting. Re-publish only on a positively reverted
-    // receipt, OR when a receiptless publish has gone stale (dropped /
-    // nonce-gapped tx never yields a receipt — re-broadcast to unstick it).
+    // If a prior publish is still live, wait. Re-publish only on a reverted
+    // receipt or a stale receiptless tx.
     if (job.phase === "publish_tx_pending" && job.publish_tx_hash) {
       const receipt = await this.chain.getReceipt(job.publish_tx_hash);
       if (receipt && receipt.success) {
@@ -404,10 +390,8 @@ export class FhenixRevealWorker {
     job: FhenixRevealJobRow,
     result: FhenixRevealWorkerTickResult,
   ): Promise<void> {
-    // terminal_daemon iff OUR publish tx landed successfully; otherwise the
-    // call was revealed by the agent or an external sender (terminal_external).
-    // The leaderboard attribution is authoritative via receipt.from in the
-    // ingestion path — this only tracks worker lifecycle.
+    // terminal_daemon iff OUR publish tx succeeded, else terminal_external.
+    // Attribution itself comes from receipt.from at ingestion.
     let phase: FhenixRevealJobPhase = "terminal_external";
     if (job.publish_tx_hash) {
       const receipt = await this.chain.getReceipt(job.publish_tx_hash);
@@ -521,11 +505,8 @@ export class FhenixRevealWorker {
     }
   }
 
-  // A broadcast tx whose receipt is still null is only re-broadcast once it has
-  // been outstanding longer than rebroadcastMs. A missing watermark (a job
-  // carrying a tx hash from before this column existed, or an interrupted
-  // write) is treated as stale so the worker self-heals rather than waiting on
-  // a receipt that may never come.
+  // Receiptless txs re-broadcast only after rebroadcastMs. A missing or bad
+  // watermark counts as stale so the worker self-heals.
   private isTxStale(txBroadcastAt: string | null): boolean {
     if (!txBroadcastAt) return true;
     const broadcastMs = Date.parse(txBroadcastAt);

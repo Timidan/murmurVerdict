@@ -56,9 +56,7 @@ try {
     kind: "invalid",
     raw: "0",
   });
-  // The chain id is DERIVED from the manifest when it describes one chain, so
-  // these cases pin an isolated manifest rather than reading the repo's real
-  // data/deployments.json — which is also why they used to expect null.
+  // Chain id derives from the manifest, so pin isolated manifests, not the repo's real one.
   const emptyManifest = join(tmp, "chainid-empty.json");
   writeFileSync(emptyManifest, "[]");
   const oneChainManifest = join(tmp, "chainid-one.json");
@@ -123,10 +121,7 @@ try {
     sealedVerdictsAddress: overrideSealed,
     escrowAddress: overrideEscrow,
   });
-  // FHENIX_CONTRACT_ADDRESS is NO LONGER a source. It was a second alias for
-  // the same deployment, and two names for one value meant sync-deployments
-  // could refresh one while the other kept pointing at a dead contract. A
-  // value set here is now simply ignored — the manifest answers.
+  // FHENIX_CONTRACT_ADDRESS is ignored; the manifest answers.
   assert.notEqual(
     resolveFhenixContractAddress(84532, { ...env, FHENIX_CONTRACT_ADDRESS: legacySealed }),
     legacySealed,

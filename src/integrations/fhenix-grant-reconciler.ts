@@ -10,30 +10,16 @@ import {
 } from "../verdict/repos/entitlements-repo.js";
 import { sweepUnaccruedGrants } from "../verdict/provider-earnings.js";
 
-// Background reconciler for Flow 2 entitlements stuck in a non-terminal state
-// after the synchronous access request returned (grant_queued /
-// grant_broadcast / settlement_unknown). It reuses reconcileEntitlement (the
-// same durable step logic the route drives inline) so a dropped grant tx, a
-// slow confirmation, or an uncertain settlement heals without operator
-// intervention. Default-off/gated by the daemon.
-//
-// grant_failed_refund_due is NOT handled here: it is terminal for grant work
-// and owed a refund instead. entitlementsRepo.listDue excludes it so a backlog
-// of dead rows cannot consume this reconciler's per-tick budget; the refund
-// path reads entitlementsRepo.listRefundDue.
-//
-// A settled payment is NEVER relabeled a plain failure: an ungrantable grant
-// ends in grant_failed_refund_due so the operator/refund path owes money back.
+// Background reconciler for entitlements left non-terminal after the access request
+// (grant_queued / grant_broadcast / settlement_unknown), via reconcileEntitlement.
+// grant_failed_refund_due is terminal and excluded from listDue so it can't eat the budget.
+// A settled payment is NEVER relabeled a plain failure: ungrantable ends in grant_failed_refund_due.
 export interface FhenixGrantReconcilerConfig {
   db: Database.Database;
   access: EntitlementAccessDeps;
   /** Max due rows processed per tick. */
   maxJobsPerTick?: number;
-  /**
-   * Max paid-but-unaccrued entitlements repaired per tick by the earnings
-   * audit sweep. Separate budget from the grant work: the two must not be able
-   * to starve each other.
-   */
+  /** Max unaccrued entitlements repaired per tick; separate budget so it can't starve grant work. */
   maxAccrualRepairsPerTick?: number;
   /** How many attempts before a still-unsettled row is marked settlement_unknown. */
   settlementUnknownAfterAttempts?: number;
@@ -103,12 +89,8 @@ export class FhenixGrantReconciler {
       }
     }
 
-    // Earnings audit. `granted` is terminal and absent from listDue, so a sale
-    // that reached it without accruing is never revisited by the loop above —
-    // a receipt attached after another writer granted the row, or a row written
-    // by a build that predates the ledger. This is the pass that makes "a paid,
-    // granted entitlement has exactly one earnings row" true rather than
-    // intended, and it reports every repair.
+    // Earnings audit: `granted` rows never reach listDue, so this pass ensures every
+    // paid, granted entitlement has exactly one earnings row.
     try {
       const sweep = sweepUnaccruedGrants(
         {
@@ -132,10 +114,8 @@ export class FhenixGrantReconciler {
   }
 
   private async advance(row: EntitlementRow): Promise<EntitlementRow> {
-    // A row still in payment_settling never settled durably — the request
-    // process crashed between reserve and settle. Without the payment payload we
-    // cannot re-settle, so mark it settlement_unknown for operator review; the
-    // subscriber has an on-chain-checkable record and no grant was issued.
+    // payment_settling never settled (crash between reserve and settle); without the
+    // payload we can't re-settle, so mark settlement_unknown for operator review.
     if (row.status === "payment_settling") {
       entitlementsRepo.transition(this.db, row.id, ["payment_settling"], {
         status: "settlement_unknown",
@@ -145,10 +125,7 @@ export class FhenixGrantReconciler {
       });
       return entitlementsRepo.byId(this.db, row.id) ?? row;
     }
-    // grant_queued / grant_broadcast advance through the shared step logic, as
-    // does settlement_unknown (retried under its own budget, then terminalized
-    // to grant_failed_refund_due). Terminal refund_due rows never reach here —
-    // listDue excludes them so they cannot starve live grants.
+    // Other due statuses advance through the shared step logic.
     return reconcileEntitlement(this.access, row);
   }
 }
