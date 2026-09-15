@@ -104,7 +104,7 @@ export function AgentProfilePanel({
             onChange={(e) => setDisplayName(e.currentTarget.value)}
             disabled={busy}
             maxLength={120}
-            className={INPUT_CLASS}
+            className={`${INPUT_CLASS} self-start w-[32ch] max-w-full min-w-0`}
           />
           <span className="ck-dim text-[12px]">
             What people see on the leaderboard and on your public page.

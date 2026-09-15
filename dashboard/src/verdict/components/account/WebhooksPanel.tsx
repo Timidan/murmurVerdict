@@ -150,7 +150,7 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
               void create();
             }}
           >
-            <label className="flex flex-col gap-1 flex-1 min-w-[240px]">
+            <label className="ck-mono flex flex-col gap-1 w-[40ch] max-w-full min-w-0">
               <span className="ck-label ck-pos">url</span>
               <input
                 type="url"
@@ -158,7 +158,7 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
                 onChange={(e) => setUrl(e.currentTarget.value)}
                 placeholder="https://your-server.example/murmur"
                 disabled={busy}
-                className={INPUT_CLASS}
+                className={`${INPUT_CLASS} min-w-0`}
               />
             </label>
             <label className="flex flex-col gap-1">

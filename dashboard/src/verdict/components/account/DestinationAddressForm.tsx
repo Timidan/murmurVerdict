@@ -207,7 +207,7 @@ export function DestinationAddressForm({
           <span className="ck-label ck-pos">current</span>
           {shownAddress ? (
             <code
-              className="ck-mono break-all px-2 py-1 border border-[var(--color-border)]"
+              className="ck-mono self-start w-[46ch] max-w-full break-all px-2 py-1 border border-[var(--color-border)]"
               style={{ userSelect: "all" }}
             >
               {shownAddress}
@@ -231,7 +231,7 @@ export function DestinationAddressForm({
             autoCapitalize="off"
             spellCheck={false}
             disabled={cooldownActive || submitting}
-            className="ck-mono bg-transparent border border-[var(--color-border-vis)] px-2 py-1 outline-none focus:border-[var(--color-display)] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="ck-mono self-start w-[46ch] max-w-full min-w-0 bg-transparent border border-[var(--color-border-vis)] px-2 py-1 outline-none focus:border-[var(--color-display)] disabled:opacity-50 disabled:cursor-not-allowed"
             aria-invalid={inlineError !== null}
             aria-describedby="addr-help"
           />

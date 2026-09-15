@@ -328,8 +328,10 @@ export function LinkedLoginsPanel() {
             onClick={() => startLink("email", linkEmail)}
             className="ck-btn ck-btn-bracket ck-pos"
             aria-label="link email"
+            title="Link email"
           >
-            + email
+            <span aria-hidden="true">+</span>
+            <IkBrand name="email" />
           </button>
         )}
         {!hasGoogle && (
@@ -339,8 +341,10 @@ export function LinkedLoginsPanel() {
             onClick={() => startLink("google", linkGoogle)}
             className="ck-btn ck-btn-bracket ck-pos"
             aria-label="link google"
+            title="Link Google"
           >
-            + google
+            <span aria-hidden="true">+</span>
+            <IkBrand name="google" />
           </button>
         )}
         <button
@@ -349,9 +353,10 @@ export function LinkedLoginsPanel() {
           onClick={() => startLink("wallet", linkWallet)}
           className="ck-btn ck-btn-bracket ck-pos"
           aria-label="link wallet"
+          title="Link wallet"
         >
-          <Ik name="controller-wallet" />
-          + wallet
+          <span aria-hidden="true">+</span>
+          <IkBrand name="wallet" />
         </button>
 
         {pending && (

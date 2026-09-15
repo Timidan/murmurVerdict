@@ -206,7 +206,7 @@ export function MarketsArchiveSearch({
         }}
         className="flex flex-wrap items-end gap-x-3 gap-y-2 px-2 py-2 border-b border-[var(--color-border)]"
       >
-        <span className="flex flex-col gap-1 min-w-0 flex-1">
+        <span className="ck-mono flex flex-col gap-1 w-[32ch] max-w-full min-w-0">
           <label htmlFor={inputId} className="ck-label">
             search the archive
           </label>

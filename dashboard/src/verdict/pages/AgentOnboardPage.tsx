@@ -349,6 +349,7 @@ export function AgentOnboardPage() {
       setMinted(result);
       setMintedSlug(slug);
       setPhase("done");
+      void account.refreshAgents();
     } catch (err) {
       const message = (err as Error)?.message ?? "unknown error";
       setError(formatError(attemptedPhase, message));
@@ -417,7 +418,7 @@ export function AgentOnboardPage() {
           autoFocus
           aria-labelledby="handle-label"
           className={
-            "border bg-[var(--color-bg)] ck-mono px-3 py-2 " +
+            "self-start w-[28ch] max-w-full min-w-0 border bg-[var(--color-bg)] ck-mono px-3 py-2 " +
             (slug.length === 0 || (slugValid && handleState !== "taken")
               ? "border-[var(--color-border-vis)]"
               : "border-[var(--color-accent-ink)]")
