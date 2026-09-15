@@ -156,11 +156,12 @@ migrationDb.exec(`
     ('canonical-feed', '${"cc".repeat(32)}');
 
   -- Minimal stubs for the tables the later migrations read/rewrite. This
-  -- fixture stamps schema_version 73, so 074 (the scrub under test), 075 and
-  -- 076 all run; 075 asserts agent_provider_terms is empty, then rekeys it and
-  -- backfills from markets/submissions, and 076 indexes market_clocks. All
+  -- fixture stamps schema_version 73, so 074 (the scrub under test) through
+  -- 077 run; 075 rekeys agent_provider_terms and backfills from markets/submissions,
+  -- 076 indexes market_clocks, and 077 adds Runtime Key presence. All
   -- empty here, so everything after 074 is a harmless no-op.
   CREATE TABLE agents (agent_id TEXT PRIMARY KEY);
+  CREATE TABLE agent_runtime_keys (runtime_key_id TEXT PRIMARY KEY);
   CREATE TABLE agent_provider_terms (agent_id TEXT PRIMARY KEY);
   CREATE TABLE markets (market_id TEXT PRIMARY KEY, config_json TEXT NOT NULL DEFAULT '{}');
   CREATE TABLE submissions (call_id TEXT PRIMARY KEY, agent_id TEXT, market_id TEXT);
