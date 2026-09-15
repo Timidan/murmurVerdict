@@ -1272,6 +1272,10 @@ export const verdictApi = {
       { Authorization: `Bearer ${privyToken}` },
     ),
 
+  permanentlyDeleteApiKey: (privyToken: string, keyId: string) =>
+    post<{ deleted: boolean }>(`/v1/account/api-keys/${encodeURIComponent(keyId)}/delete`,
+      { confirm: keyId }, { Authorization: `Bearer ${privyToken}` }),
+
   /**
    * Set/update the casual-tier payout destination. Surfaces 429 with
    * `retry_after_seconds` when the §7.4 24h cooldown is still active;
@@ -1514,6 +1518,10 @@ export const verdictApi = {
       reason ? { reason } : {},
     ),
 
+  permanentlyDeleteRuntimeKey: (privyToken: string, keyId: string) =>
+    post<{ deleted: boolean }>(`/v1/account/runtime-keys/${encodeURIComponent(keyId)}/delete`,
+      { confirm: keyId }, { Authorization: `Bearer ${privyToken}` }),
+
   /* ── Phase 7d — onboarding funnel emit (account-scoped audit trail) ──── */
 
   /**
@@ -1591,6 +1599,13 @@ export const verdictApi = {
     post<AgentRetirementResponse>(
       `/v1/account/agents/${encodeURIComponent(slug)}/unretire`,
       {},
+      { Authorization: `Bearer ${privyToken}` },
+    ),
+
+  postAgentDelete: (privyToken: string, slug: string, confirm: string) =>
+    post<{ deleted: boolean; deleted_at: string }>(
+      `/v1/account/agents/${encodeURIComponent(slug)}/delete`,
+      { confirm },
       { Authorization: `Bearer ${privyToken}` },
     ),
 

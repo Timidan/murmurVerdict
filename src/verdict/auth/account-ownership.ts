@@ -220,9 +220,10 @@ export function listAccountAgents(
 ): Array<{ agent_id: string; created_at: string }> {
   return db
     .prepare(
-      `SELECT agent_id, created_at FROM account_agents
-       WHERE account_id = ?
-       ORDER BY created_at ASC`,
+      `SELECT aa.agent_id, aa.created_at FROM account_agents aa
+       JOIN agents a ON a.agent_id = aa.agent_id
+       WHERE aa.account_id = ? AND a.deleted_at IS NULL
+       ORDER BY aa.created_at ASC`,
     )
     .all(account_id) as Array<{ agent_id: string; created_at: string }>;
 }
@@ -315,7 +316,7 @@ export function listAccountAgentsWithSetup(
        FROM account_agents aa
        LEFT JOIN agents a ON a.agent_id = aa.agent_id
        LEFT JOIN agent_controller_wallets cw ON cw.agent_id = aa.agent_id
-       WHERE aa.account_id = ?
+       WHERE aa.account_id = ? AND a.deleted_at IS NULL
        ORDER BY aa.created_at ASC`,
     )
     .all(account_id) as RawAccountAgentSetupRow[];

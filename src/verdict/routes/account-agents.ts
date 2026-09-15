@@ -22,6 +22,7 @@ import { readProviderEarnings } from "../provider-earnings-surface.js";
 import { readProviderPayouts } from "../provider-payout-journal.js";
 import { readAccountAgentReveals } from "../account-agent-reveals-surface.js";
 import {
+  deleteAccountAgent,
   retireAccountAgent,
   unretireAccountAgent,
   updateAccountAgentProfile,
@@ -314,6 +315,17 @@ export function accountAgentsRouter(deps: AccountAgentsRouterDeps): Router {
         slug: pathSlug(req),
         now,
       });
+      res.status(out.status).json(out.body);
+    }),
+  );
+
+  router.post(
+    "/v1/account/agents/:slug/delete",
+    json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      const out = deleteAccountAgent({ db, accountId: resolved.account_id,
+        slug: pathSlug(req), body: req.body, now });
       res.status(out.status).json(out.body);
     }),
   );

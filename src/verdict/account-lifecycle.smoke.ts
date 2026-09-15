@@ -12,7 +12,13 @@ import {
   unretireAccountAgent,
   updateAccountAgentProfile,
   deactivateAccountSurface,
+  deleteAccountAgent,
 } from "./account-agent-lifecycle-surface.js";
+import { listAccountAgentsWithSetup } from "./auth/account-ownership.js";
+import { mintApiKey, verifyApiKey } from "./auth/api-keys.js";
+import { mintRuntimeKey, verifyRuntimeKey } from "./auth/runtime-keys.js";
+import { mintAgentApiKeyResponse } from "./account-api-key-surface.js";
+import { __resolveCasualIdentity } from "./auth/dispatcher.js";
 import { readAccountAgentReveals } from "./account-agent-reveals-surface.js";
 import { readProviderEarnings } from "./provider-earnings-surface.js";
 import {
@@ -130,6 +136,38 @@ function expectVerdictError(fn: () => unknown, code: string, status: number): Ve
 }
 
 // ── 1. Retire / unretire, and the marker's timestamp ───────────────────────
+{
+  const h = newHarness();
+  const sibling = seedAccount(h, "sibling");
+  h.db.prepare("UPDATE account_agents SET account_id = ? WHERE agent_id = ?").run(h.accountId, sibling.agentId);
+  const key = mintApiKey(h.db, { account_id: h.accountId, agent_id: h.agentId, createdAt: NOW });
+  const siblingKey = mintApiKey(h.db, { account_id: h.accountId, agent_id: sibling.agentId, createdAt: NOW });
+  const runtime = mintRuntimeKey(h.db, {
+    account_id: h.accountId, agent_id: h.agentId, createdAt: NOW,
+    policy_json: "{}", policy_hash: "test", controller_wallet_address: "0x" + "11".repeat(20),
+    controller_chain_id: "eip155:84532", authorization_nonce: "test",
+    authorization_message: "delete test", authorization_signature: "test",
+  });
+  const input = { db: h.db, accountId: h.accountId, slug: h.slug, now: () => NOW };
+  expectVerdictError(() => deleteAccountAgent({ ...input, body: { confirm: "wrong" } }), "schema_invalid", 400);
+  assert.equal(agentsRepo.deletedAt(h.db, h.agentId), null);
+  const result = deleteAccountAgent({ ...input, body: { confirm: h.slug } });
+  assert.equal(result.status, 200);
+  assert.deepEqual(deleteAccountAgent({ ...input, body: { confirm: h.slug } }), result, "deletion retries are idempotent");
+  assert.deepEqual(listAccountAgentsWithSetup(h.db, h.accountId).map((a) => a.agent_id), [sibling.agentId]);
+  assert.equal(verifyApiKey(h.db, key.secret), null);
+  assert.equal(verifyRuntimeKey(h.db, { secret: runtime.secret, verifiedAt: NOW }), null);
+  assert.ok(verifyApiKey(h.db, siblingKey.secret), "sibling credentials still work");
+  assert.equal(agentsRepo.bySlug(h.db, h.slug)?.agent_id, h.agentId, "historical identity and handle survive");
+  expectVerdictError(() => assertAgentAcceptingCalls(h.db, h.agentId), "agent_retired", 409);
+  expectVerdictError(() => unretireAccountAgent(input), "unknown_agent", 404);
+  expectVerdictError(() => mintAgentApiKeyResponse({ ...input, operationInstant: NOW, body: {} }), "unknown_agent", 404);
+  expectVerdictError(() => __resolveCasualIdentity(h.db, {
+    privy_user_id: `privy-${h.accountId}`, session_id: "test", expires_at: NOW_ISO,
+  }, h.slug), "unknown_agent", 404);
+  close(h);
+}
+
 {
   const h = newHarness();
   const out = retireAccountAgent({

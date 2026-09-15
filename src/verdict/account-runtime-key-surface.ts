@@ -235,6 +235,7 @@ export async function mintAccountRuntimeKeyResponse(
     // fresh unrevoked key past an engagement or bind to a stale wallet.
     minted = input.db.transaction(() => {
       assertAgentCredentialsEnabled(input.db, input.accountId);
+      requireOwnedAgentBySlug(input.db, input.accountId, input.slug);
       const controllerNow = requireControllerWalletForAgent(
         input.db,
         agent.agent_id,
@@ -323,6 +324,32 @@ export function revokeAccountRuntimeKeyResponse(
     revokedAt: input.operationInstant,
   });
   return { status: 200, body: { revoked } };
+}
+
+export function deleteRevokedAccountRuntimeKeyResponse(input: AccountRuntimeKeySurfaceBase & {
+  keyId: string;
+  body: unknown;
+}): { status: 200; body: { deleted: true } } {
+  if (!z.object({ confirm: z.literal(input.keyId) }).strict().safeParse(input.body).success) {
+    throw new VerdictError("confirm the key ID to permanently delete it", ERROR_CODES.schema_invalid, 400);
+  }
+  return input.db.transaction(() => {
+    const key = input.db.prepare("SELECT revoked_at FROM agent_runtime_keys WHERE runtime_key_id = ? AND account_id = ?")
+      .get(input.keyId, input.accountId) as { revoked_at: string | null } | undefined;
+    if (!key) throw new VerdictError("runtime key not owned by this account", ERROR_CODES.agent_not_authorized, 403);
+    if (!key.revoked_at) throw new VerdictError("revoke the Runtime Key before deleting it", ERROR_CODES.schema_invalid, 409);
+    // ON DELETE SET NULL preserves history, but pending workers still need the
+    // key ID to enforce revocation before broadcasting or finish confirming.
+    for (const table of ["fhenix_gateway_tx_attempts", "fhenix_gateway_feed_packet_tx_attempts"]) {
+      if (input.db.prepare(`SELECT 1 FROM ${table} WHERE runtime_key_id = ? AND status NOT IN ('accepted', 'failed_terminal') LIMIT 1`).get(input.keyId)) {
+        throw new VerdictError("this key has pending transactions; wait for them to finish before deleting it", ERROR_CODES.schema_invalid, 409);
+      }
+    }
+    input.db.prepare("DELETE FROM agent_runtime_key_nonces WHERE runtime_key_id = ?").run(input.keyId);
+    input.db.prepare("DELETE FROM agent_runtime_keys WHERE runtime_key_id = ? AND account_id = ? AND revoked_at IS NOT NULL")
+      .run(input.keyId, input.accountId);
+    return { status: 200 as const, body: { deleted: true as const } };
+  }).immediate();
 }
 
 const SignatureSchema = z

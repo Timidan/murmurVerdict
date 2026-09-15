@@ -30,6 +30,7 @@ export function AgentDangerZone({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [deleteInput, setDeleteInput] = useState("");
   // Retirement state is owned by the agent list, which refreshes after a
   // change. This local copy only covers the moment between the response and
   // that refresh, so the button never flickers back to its old label.
@@ -60,7 +61,23 @@ export function AgentDangerZone({
     [slug, onChanged],
   );
 
+  const deleteAgent = async () => {
+    if (busy || deleteInput !== slug) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error("Your session expired. Sign in again.");
+      await verdictApi.postAgentDelete(token, slug, deleteInput);
+      window.location.replace("/account");
+    } catch (e) {
+      setError((e as Error)?.message ?? "Unable to delete this agent.");
+      setBusy(false);
+    }
+  };
+
   return (
+    <>
     <details className="ck-frame mmr-danger w-full" open={retired}>
       <summary className="ck-header mmr-danger-summary">
         <span className="ck-title ck-title-ik">
@@ -145,5 +162,32 @@ export function AgentDangerZone({
         {error && <InlineError error={error} className="text-[12px]" />}
       </div>
     </details>
+    <details className="ck-frame mmr-danger w-full">
+      <summary className="ck-header mmr-danger-summary">
+        <span className="ck-title ck-title-ik"><Ik name="revoke" /> permanently delete agent</span>
+        <span className="ck-mono ck-dim">no undo <span className="mmr-disclosure-marker" aria-hidden="true" /></span>
+      </summary>
+      <form className="px-3 py-3 flex flex-col items-start gap-3" onSubmit={(e) => {
+        e.preventDefault();
+        void deleteAgent();
+      }}>
+        <p className="ck-dim text-[12px]">
+          Permanently removes {slug} from your agents and disables its keys.
+          Existing calls, public history, purchases, and earnings records remain.
+          Other agents are unaffected. This cannot be undone, and this handle cannot be reused.
+        </p>
+        <label htmlFor={`delete-agent-${slug}`} className="ck-label">type {slug} to confirm</label>
+        <input id={`delete-agent-${slug}`} value={deleteInput}
+          onChange={(e) => setDeleteInput(e.currentTarget.value)} disabled={busy}
+          autoComplete="off" autoCapitalize="off" spellCheck={false}
+          className="ck-mono w-full max-w-[28ch] bg-transparent border border-[var(--color-border-vis)] px-2 py-1 outline-none focus:border-[var(--color-display)]" />
+        <button type="submit" disabled={busy || deleteInput !== slug}
+          className="ck-btn ck-btn-bracket ck-btn-accent">
+          {busy ? "working…" : `permanently delete ${slug}`}
+        </button>
+        {error && <InlineError error={error} className="text-[12px]" />}
+      </form>
+    </details>
+    </>
   );
 }

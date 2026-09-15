@@ -142,7 +142,7 @@ export function __resolveCasualIdentity(
   // ─── Path A: explicit slug provided ──────────────────────────
   if (slug) {
     const agent = agentsRepo.bySlug(db, slug);
-    if (!agent) {
+    if (!agent || agentsRepo.deletedAt(db, agent.agent_id)) {
       // Don't leak which slug exists by returning agent_not_owned;
       // unknown_agent is the same code we use for non-existent
       // submissions agents.

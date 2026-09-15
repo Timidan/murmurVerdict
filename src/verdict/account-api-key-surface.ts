@@ -140,3 +140,21 @@ export function rotateAccountApiKeyResponse(
   }
   return { status: 200, body: { rotated } };
 }
+
+export function deleteRevokedAccountApiKeyResponse(input: AccountApiKeySurfaceBase & {
+  keyId: string;
+  body: unknown;
+}): { status: 200; body: { deleted: true } } {
+  if (!z.object({ confirm: z.literal(input.keyId) }).strict().safeParse(input.body).success) {
+    throw new VerdictError("confirm the key ID to permanently delete it", ERROR_CODES.schema_invalid, 400);
+  }
+  return input.db.transaction(() => {
+    const key = input.db.prepare("SELECT rotated_at FROM api_keys WHERE api_key_id = ? AND account_id = ?")
+      .get(input.keyId, input.accountId) as { rotated_at: string | null } | undefined;
+    if (!key) throw new VerdictError("api key not owned by this account", ERROR_CODES.agent_not_authorized, 403);
+    if (!key.rotated_at) throw new VerdictError("revoke the API key before deleting it", ERROR_CODES.schema_invalid, 409);
+    input.db.prepare("DELETE FROM api_keys WHERE api_key_id = ? AND account_id = ? AND rotated_at IS NOT NULL")
+      .run(input.keyId, input.accountId);
+    return { status: 200 as const, body: { deleted: true as const } };
+  }).immediate();
+}

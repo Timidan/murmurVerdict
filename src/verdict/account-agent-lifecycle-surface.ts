@@ -3,6 +3,7 @@
 //   PATCH /v1/account/agents/:slug/profile   { display_name?, bio? }
 //   POST  /v1/account/agents/:slug/retire
 //   POST  /v1/account/agents/:slug/unretire
+//   POST  /v1/account/agents/:slug/delete    { confirm: slug }
 //   POST  /v1/account/deactivate             { confirm }
 //
 // Every route here is Privy-authed and, for the agent-scoped ones, gated by
@@ -13,7 +14,7 @@
 import { z } from "zod";
 import type Database from "better-sqlite3";
 
-import { requireOwnedAgentBySlug } from "./agent-identity.js";
+import { assertAgentOwnedBy, requireOwnedAgentBySlug } from "./agent-identity.js";
 import {
   accountDeactivatedAt,
   deactivateAccount,
@@ -141,6 +142,43 @@ export function unretireAccountAgent(deps: {
       retired_at: null,
     },
   };
+}
+
+/** Keep ownership and historical rows for receipts/payouts; remove agent access. */
+export function deleteAccountAgent(deps: {
+  db: Database.Database;
+  accountId: string;
+  slug: string;
+  body: unknown;
+  now: () => Date;
+}): AccountLifecycleResponse {
+  return deps.db.transaction(() => {
+    // Resolve ownership even after deletion so a lost response can be retried.
+    const agent = agentsRepo.bySlug(deps.db, deps.slug);
+    if (!agent) throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
+    assertAgentOwnedBy(deps.db, deps.accountId, agent.agent_id);
+    const parsed = z.object({ confirm: z.literal(agent.display_slug) }).strict().safeParse(deps.body);
+    if (!parsed.success) {
+      throw new VerdictError("type the agent handle to confirm permanent deletion", ERROR_CODES.schema_invalid, 400);
+    }
+    const timestamp = deps.now().toISOString();
+    deps.db.prepare(`UPDATE agents
+      SET deleted_at = COALESCE(deleted_at, ?), retired_at = COALESCE(retired_at, ?), api_key_hash = NULL
+      WHERE agent_id = ?`).run(timestamp, timestamp, agent.agent_id);
+    deps.db.prepare(`UPDATE agent_runtime_keys SET revoked_at = ?, revoke_reason = 'agent_deleted'
+      WHERE agent_id = ? AND revoked_at IS NULL`).run(timestamp, agent.agent_id);
+    deps.db.prepare(`UPDATE api_keys SET rotated_at = ?
+      WHERE agent_id = ? AND rotated_at IS NULL`).run(timestamp, agent.agent_id);
+    return {
+      status: 200,
+      body: {
+        schema_version: SCHEMA_VERSION,
+        agent_slug: agent.display_slug,
+        deleted: true,
+        deleted_at: agentsRepo.deletedAt(deps.db, agent.agent_id),
+      },
+    };
+  }).immediate();
 }
 
 /**

@@ -38,6 +38,9 @@ export function requireOwnedAgentBySlug(
     throw new VerdictError("unknown agent", ERROR_CODES.unknown_agent, 404);
   }
   assertAgentOwnedBy(db, accountId, agent.agent_id);
+  if (agentsRepo.deletedAt(db, agent.agent_id)) {
+    throw new VerdictError("this agent was permanently deleted", ERROR_CODES.unknown_agent, 404);
+  }
   return agent;
 }
 

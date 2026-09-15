@@ -2,6 +2,7 @@ import { Router, type RequestHandler } from "express";
 import type Database from "better-sqlite3";
 import {
   listAccountRuntimeKeysResponse,
+  deleteRevokedAccountRuntimeKeyResponse,
   mintAccountRuntimeKeyResponse,
   revokeAccountRuntimeKeyResponse,
   runtimeKeyChallengeResponse,
@@ -104,5 +105,13 @@ export function accountRuntimeKeyRouter(deps: AccountRuntimeKeyRouterDeps): Rout
     }),
   );
 
+  router.post("/v1/account/runtime-keys/:key_id/delete", rotateKeyLimiter, json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      sendAccountRuntimeKeyJsonResponse(res, deleteRevokedAccountRuntimeKeyResponse({
+        db, accountId: resolved.account_id, keyId: String(req.params.key_id ?? ""), body: req.body,
+      }));
+    }),
+  );
   return router;
 }

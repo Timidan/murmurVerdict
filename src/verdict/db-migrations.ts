@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 77 as const;
+export const LATEST_DB_MIGRATION_VERSION = 78 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1536,6 +1536,15 @@ export function applyMigrations(db: Database.Database): void {
       set.run("schema_version", "77");
     }).immediate();
     v = 77;
+  }
+
+  if (v < 78) {
+    db.transaction(() => {
+      applyAlterTableAddColumn(db, "agents", "deleted_at",
+        "ALTER TABLE agents ADD COLUMN deleted_at TEXT;");
+      set.run("schema_version", "78");
+    }).immediate();
+    v = 78;
   }
 }
 

@@ -93,6 +93,12 @@ export const agentsRepo = {
     return row?.retired_at ?? null;
   },
 
+  deletedAt(db: Database.Database, agent_id: string): string | null {
+    const row = prep(db, "SELECT deleted_at FROM agents WHERE agent_id = ?")
+      .get(agent_id) as { deleted_at: string | null } | undefined;
+    return row?.deleted_at ?? null;
+  },
+
   /**
    * Set or clear the retirement marker. Returns true iff the state changed, so
    * the caller can make retire/unretire idempotent without a second read.

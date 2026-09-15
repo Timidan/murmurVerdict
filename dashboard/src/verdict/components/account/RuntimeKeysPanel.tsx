@@ -31,7 +31,7 @@ export interface RuntimeKeysPanelProps {
   agent: AccountAgent | null;
 }
 
-type BusyState = "idle" | "challenging" | "signing" | "submitting" | "revoking";
+type BusyState = "idle" | "challenging" | "signing" | "submitting" | "revoking" | "deleting";
 
 export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
   const { signMessage } = useSignMessage();
@@ -136,7 +136,9 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     setConfirmId(null);
   }
 
-  async function confirmRevoke(id: string) {
+  async function confirmRevoke(id: string, permanently = false) {
+    if (busy !== "idle") return;
+    setBusy(permanently ? "deleting" : "revoking");
     setActionError(null);
     try {
       const token = await getAccessToken();
@@ -144,12 +146,12 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
         setActionError("Your session expired. Sign in again.");
         return;
       }
-      setBusy("revoking");
-      await verdictApi.deleteRuntimeKey(token, id);
+      if (permanently) await verdictApi.permanentlyDeleteRuntimeKey(token, id);
+      else await verdictApi.deleteRuntimeKey(token, id);
       setConfirmId(null);
       await refresh();
     } catch (e) {
-      setActionError(`We could not revoke the key — ${(e as Error)?.message ?? "unknown error"}`);
+      setActionError(`We could not ${permanently ? "delete" : "revoke"} the key — ${(e as Error)?.message ?? "unknown error"}`);
     } finally {
       setBusy("idle");
     }
@@ -241,23 +243,21 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
                   />
                 </span>
                 <span className="col-span-2 self-start md:col-span-1 md:self-auto md:text-right">
-                  {revoked ? (
-                    <span className="ck-dim text-[12px]">revoked</span>
-                  ) : confirmId === k.runtime_key_id ? (
+                  {confirmId === k.runtime_key_id ? (
                     <span className="confirm-enter inline-flex items-center gap-2">
                       <button
                         className="ck-btn ck-btn-bracket"
                         style={{ color: "var(--color-accent-ink)" }}
-                        onClick={() => void confirmRevoke(k.runtime_key_id)}
-                        disabled={busy === "revoking"}
+                        onClick={() => void confirmRevoke(k.runtime_key_id, revoked)}
+                        disabled={busy !== "idle"}
                       >
-                        {busy === "revoking" ? "…" : "confirm"}
+                        {busy !== "idle" ? "…" : revoked ? "confirm delete" : "confirm"}
                       </button>
                       <button
                         className="ck-btn ck-btn-bracket"
                         onClick={cancelRevoke}
-                        disabled={busy === "revoking"}
-                        aria-label="cancel revoke"
+                        disabled={busy !== "idle"}
+                        aria-label={revoked ? "cancel delete" : "cancel revoke"}
                       >
                         ×
                       </button>
@@ -268,7 +268,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
                       onClick={() => requestRevoke(k.runtime_key_id)}
                       disabled={busy !== "idle"}
                     >
-                      revoke
+                      {revoked ? "delete" : "revoke"}
                     </button>
                   )}
                 </span>
@@ -283,11 +283,9 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
           className="text-[12px]"
           style={{ color: "var(--color-accent-ink)" }}
         >
-          revoke{" "}
-          {keys.find((k) => k.runtime_key_id === confirmId)?.runtime_key_prefix ??
-            "this key"}
-          ? The agent stops working at once — its next call is rejected. Mint a
-          new key to start it again.
+          {keys.find((k) => k.runtime_key_id === confirmId)?.revoked_at
+            ? "Permanently delete this revoked key? This cannot be undone. Call and transaction history remain."
+            : "Revoke this key? Its next request is rejected. Mint a new key to start it again."}
         </p>
       )}
 
@@ -330,6 +328,7 @@ function busyLabel(b: BusyState): string {
   if (b === "signing") return "Approve in your wallet…";
   if (b === "submitting") return "Minting…";
   if (b === "revoking") return "Revoking…";
+  if (b === "deleting") return "Deleting…";
   return "…";
 }
 

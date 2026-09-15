@@ -86,6 +86,7 @@ const EXPECTED_ACCOUNT_ROUTES = [
   "PATCH /v1/account/agents/:slug/profile",
   "POST /v1/account/agents/:slug/retire",
   "POST /v1/account/agents/:slug/unretire",
+  "POST /v1/account/agents/:slug/delete",
   "GET /v1/account/webhooks",
   "DELETE /v1/account/webhooks/:id",
   "POST /v1/account/agents/:slug/wallet/challenge",
@@ -96,6 +97,7 @@ const EXPECTED_ACCOUNT_ROUTES = [
   "POST /v1/account/agents/:slug/runtime-keys/challenge",
   "POST /v1/account/agents/:slug/runtime-keys",
   "DELETE /v1/account/runtime-keys/:key_id",
+  "POST /v1/account/runtime-keys/:key_id/delete",
   "GET /v1/account/kill-switch",
   "POST /v1/account/kill-switch",
   "POST /v1/account/kill-switch/release",
@@ -103,6 +105,7 @@ const EXPECTED_ACCOUNT_ROUTES = [
   "GET /v1/account/agents/:slug/api-keys",
   "POST /v1/account/agents/:slug/api-keys",
   "DELETE /v1/account/api-keys/:key_id",
+  "POST /v1/account/api-keys/:key_id/delete",
   "PATCH /v1/account/agents/:slug/destination-address",
   "POST /v1/account/events",
 ].sort();
@@ -324,6 +327,7 @@ const crossTenant: Array<{ method: string; path: string; body?: unknown }> = [
   },
   { method: "POST", path: `/v1/account/agents/${bob.slug}/retire` },
   { method: "POST", path: `/v1/account/agents/${bob.slug}/unretire` },
+  { method: "POST", path: `/v1/account/agents/${bob.slug}/delete`, body: { confirm: bob.slug } },
   { method: "GET", path: `/v1/account/agents/${bob.slug}/market-registrations` },
   {
     method: "POST",

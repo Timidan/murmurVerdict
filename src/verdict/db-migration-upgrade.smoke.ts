@@ -38,6 +38,7 @@ const path = join(tmp, "verdict.db");
   fresh.exec("ALTER TABLE markets DROP COLUMN operator_halted_at");
   fresh.exec("DROP TABLE entitlement_payment_bindings");
   fresh.exec("ALTER TABLE agent_runtime_keys DROP COLUMN last_heartbeat_at");
+  fresh.exec("ALTER TABLE agents DROP COLUMN deleted_at");
   fresh.prepare("UPDATE schema_meta SET value='64' WHERE key='schema_version'").run();
   fresh.close();
 }
@@ -70,6 +71,8 @@ const path = join(tmp, "verdict.db");
     String(LATEST_DB_MIGRATION_VERSION),
     "upgrade reaches the latest schema version",
   );
+  assert.ok((upgraded.prepare("PRAGMA table_info(agents)").all() as { name: string }[])
+    .some((column) => column.name === "deleted_at"), "upgrade adds permanent agent deletion (078)");
 
   const cols = upgraded.prepare("PRAGMA table_info(fhenix_sealed_calls)").all() as {
     name: string;

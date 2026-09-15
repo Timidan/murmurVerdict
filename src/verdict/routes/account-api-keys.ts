@@ -2,6 +2,7 @@ import { Router, type RequestHandler } from "express";
 import type Database from "better-sqlite3";
 import {
   listAgentApiKeysResponse,
+  deleteRevokedAccountApiKeyResponse,
   mintAgentApiKeyResponse,
   rotateAccountApiKeyResponse,
   sendAccountApiKeyJsonResponse,
@@ -80,5 +81,13 @@ export function accountApiKeyRouter(deps: AccountApiKeyRouterDeps): Router {
     }),
   );
 
+  router.post("/v1/account/api-keys/:key_id/delete", rotateKeyLimiter, json,
+    asyncHandler(async (req, res) => {
+      const resolved = await requireAccount(req);
+      sendAccountApiKeyJsonResponse(res, deleteRevokedAccountApiKeyResponse({
+        db, accountId: resolved.account_id, keyId: String(req.params.key_id ?? ""), body: req.body,
+      }));
+    }),
+  );
   return router;
 }

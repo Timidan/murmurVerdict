@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  deleteRevokedAccountApiKeyResponse,
   listAgentApiKeysResponse,
   mintAgentApiKeyResponse,
   rotateAccountApiKeyResponse,
@@ -226,6 +227,13 @@ try {
     (err) => err instanceof VerdictError && err.httpStatus === 403,
   );
 
+  assert.throws(() => deleteRevokedAccountApiKeyResponse({ db, accountId: account.account_id,
+    keyId: minted.body.api_key_id, body: { confirm: minted.body.api_key_id } }),
+    (err) => err instanceof VerdictError && err.httpStatus === 409);
+  assert.throws(() => deleteRevokedAccountApiKeyResponse({ db, accountId: foreignAccount.account_id,
+    keyId: minted.body.api_key_id, body: { confirm: minted.body.api_key_id } }),
+    (err) => err instanceof VerdictError && err.httpStatus === 403);
+
   const firstRotate = rotateAccountApiKeyResponse({
     db,
     accountId: account.account_id,
@@ -267,6 +275,10 @@ try {
   assert.equal(afterRotate.body.keys.length, 1);
   assert.equal(afterRotate.body.keys[0].rotated_at, createdAt);
 
+  assert.equal(deleteRevokedAccountApiKeyResponse({ db, accountId: account.account_id,
+    keyId: minted.body.api_key_id, body: { confirm: minted.body.api_key_id } }).body.deleted, true);
+  assert.equal(listAgentApiKeysResponse({ db, accountId: account.account_id, slug: "account-key-agent" }).body.keys.length, 0);
+  assert.equal(listAgentApiKeysResponse({ db, accountId: account.account_id, slug: "account-key-peer" }).body.keys.length, 1);
   db.close();
 } finally {
   rmSync(tmp, { recursive: true, force: true });

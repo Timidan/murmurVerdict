@@ -92,7 +92,8 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
     setConfirmId(null);
   };
 
-  const doRotate = async (id: string): Promise<void> => {
+  const doRotate = async (id: string, permanently = false): Promise<void> => {
+    if (rotatingId) return;
     cancelConfirm();
     setRotatingId(id);
     setError(null);
@@ -102,7 +103,8 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
         setError("Your session expired. Sign in again.");
         return;
       }
-      await verdictApi.deleteApiKey(token, id);
+      if (permanently) await verdictApi.permanentlyDeleteApiKey(token, id);
+      else await verdictApi.deleteApiKey(token, id);
       await refresh();
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
@@ -110,7 +112,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
       } else if (e instanceof ApiError && e.status === 429) {
         setError("Too many requests. Wait a minute and try again.");
       } else {
-        setError(`We could not rotate the key: ${(e as Error).message ?? "unknown"}`);
+        setError(`We could not ${permanently ? "delete" : "rotate"} the key: ${(e as Error).message ?? "unknown"}`);
       }
     } finally {
       setRotatingId(null);
@@ -228,20 +230,22 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
           className="px-3 py-2 text-[12px] border-t border-[var(--color-border)]"
           style={{ color: "var(--color-accent-ink)" }}
         >
-          Rotate the key {confirmId.slice(0, 12)}? The old key stops working within a second.
+          {keys.find((k) => k.api_key_id === confirmId)?.rotated_at
+            ? `Permanently delete key ${confirmId.slice(0, 12)}? This cannot be undone. Call and transaction history remain.`
+            : `Rotate key ${confirmId.slice(0, 12)}? The old key stops working within a second.`}
         </p>
       )}
 
       {rotated.length > 0 && (
         <details className="border-t border-[var(--color-border)]">
           <summary className="px-3 py-2 ck-label ck-dim cursor-pointer select-none">
-            rotated keys · {rotated.length}
+            revoked keys · {rotated.length}
           </summary>
           <ul className="details-fade divide-y divide-[var(--color-border)]">
             {rotated.map((k) => (
               <li
                 key={k.api_key_id}
-                className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] items-center px-3 py-2 gap-3"
+                className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] items-center px-3 py-2 gap-3"
               >
                 <code className="ck-mono ck-dim truncate line-through" title={k.api_key_id}>
                   {shortId(k.api_key_id, 12, 4)}
@@ -250,7 +254,18 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
                   minted <TimeAgo iso={k.created_at} />
                 </span>
                 <span className="ck-dim text-[12px]">
-                  rotated <TimeAgo iso={k.rotated_at} />
+                  revoked <TimeAgo iso={k.rotated_at} />
+                </span>
+                <span className="flex items-center gap-2 justify-self-end">
+                  {confirmId === k.api_key_id ? <>
+                    <button type="button" className="ck-btn ck-btn-bracket ck-btn-accent"
+                      disabled={Boolean(rotatingId)} onClick={() => void doRotate(k.api_key_id, true)}
+                      aria-label={`confirm permanent deletion ${k.api_key_id}`}>confirm delete</button>
+                    <button type="button" className="ck-btn ck-btn-bracket" onClick={cancelConfirm}
+                      aria-label="cancel delete">×</button>
+                  </> : <button type="button" className="ck-btn ck-btn-bracket"
+                    disabled={Boolean(rotatingId)} onClick={() => armConfirm(k.api_key_id)}
+                    aria-label={`delete revoked API key ${k.api_key_id}`}>{rotatingId === k.api_key_id ? "deleting…" : "delete"}</button>}
                 </span>
               </li>
             ))}

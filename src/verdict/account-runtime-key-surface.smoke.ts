@@ -12,6 +12,7 @@ import {
 } from "./auth/account-kill-switch.js";
 
 import {
+  deleteRevokedAccountRuntimeKeyResponse,
   listAccountRuntimeKeysResponse,
   mintAccountRuntimeKeyResponse,
   revokeAccountRuntimeKeyResponse,
@@ -28,6 +29,7 @@ import {
   openDb,
 } from "./db.js";
 import { VerdictError } from "./schema.js";
+import { deleteAccountAgent } from "./account-agent-lifecycle-surface.js";
 
 class FakeAccountRuntimeKeyJsonResponse {
   statusCode: number | null = null;
@@ -302,6 +304,13 @@ try {
     (err) => err instanceof VerdictError && err.httpStatus === 400,
   );
 
+  assert.throws(() => deleteRevokedAccountRuntimeKeyResponse({ db, accountId: account.account_id,
+    keyId: minted.body.runtime_key_id, body: { confirm: minted.body.runtime_key_id } }),
+    (err) => err instanceof VerdictError && err.httpStatus === 409);
+  assert.throws(() => deleteRevokedAccountRuntimeKeyResponse({ db, accountId: "another-account",
+    keyId: minted.body.runtime_key_id, body: { confirm: minted.body.runtime_key_id } }),
+    (err) => err instanceof VerdictError && err.httpStatus === 403);
+
   const revoked = revokeAccountRuntimeKeyResponse({
     db,
     accountId: account.account_id,
@@ -345,6 +354,39 @@ try {
     };
   assert.equal(revokedRow.revoked_at, "2026-06-12T10:00:00Z");
   assert.equal(revokedRow.revoke_reason, "owner rotation");
+
+  db.prepare(`INSERT INTO fhenix_gateway_tx_attempts (
+    attempt_id, status, runtime_key_id, runtime_key_policy_hash, runtime_key_policy_json,
+    account_id, agent_id, chain_id, contract_address, relayer_address, agent_wallet_address,
+    market_id, market_id_hash, market_ref_protocol, market_config_version, client_order_id,
+    client_nonce, submitted_at, binary_index_input_json, confidence_input_json,
+    next_attempt_at, created_at, updated_at)
+    VALUES ('delete-key-attempt', 'queued', ?, 'policy', '{}', ?, ?, 84532,
+    'contract', 'relayer', 'wallet', 'market', 'hash', 'polymarket', 1, 'order', 'nonce',
+    ?, '{}', '{}', ?, ?, ?)`)
+    .run(minted.body.runtime_key_id, account.account_id, agentId, now().toISOString(), now().toISOString(), now().toISOString(), now().toISOString());
+  const deletion = { db, accountId: account.account_id, keyId: minted.body.runtime_key_id,
+    body: { confirm: minted.body.runtime_key_id } };
+  assert.throws(() => deleteRevokedAccountRuntimeKeyResponse(deletion),
+    (err) => err instanceof VerdictError && err.httpStatus === 409, "pending work keeps its revocation reference");
+  db.prepare("UPDATE fhenix_gateway_tx_attempts SET status='accepted', tx_hash='recorded-tx' WHERE attempt_id='delete-key-attempt'").run();
+  assert.equal(deleteRevokedAccountRuntimeKeyResponse(deletion).body.deleted, true);
+  assert.equal(listAccountRuntimeKeysResponse({ db, accountId: account.account_id, slug: "runtime-key-agent", operationInstant: now() }).body.keys.length, 0);
+  assert.deepEqual(db.prepare("SELECT runtime_key_id, tx_hash FROM fhenix_gateway_tx_attempts WHERE attempt_id='delete-key-attempt'").get(),
+    { runtime_key_id: null, tx_hash: "recorded-tx" }, "deleting a revoked credential preserves transaction history");
+
+  // Deletion during signature verification must not leave a usable new key.
+  await assert.rejects(() => mintAccountRuntimeKeyResponse({
+    db, accountId: account.account_id, slug: "runtime-key-agent", body: mintBody,
+    operationInstant: now(),
+    verifySignature: async () => {
+      deleteAccountAgent({ db, accountId: account.account_id, slug: "runtime-key-agent",
+        body: { confirm: "runtime-key-agent" }, now });
+      return true;
+    },
+  }), (err) => err instanceof VerdictError && err.httpStatus === 404);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM agent_runtime_keys WHERE agent_id = ? AND revoked_at IS NULL")
+    .get(agentId) as { n: number }).n, 0);
 
   db.close();
 } finally {
