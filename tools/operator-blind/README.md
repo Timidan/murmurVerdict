@@ -12,8 +12,7 @@ responses and the rendered DOM — never the database — so read the scope note
 below before citing it. It runs one full sealed-call lifecycle against the live Base Sepolia
 deployment of `MurmurSealedVerdicts` + the local daemon + the local dashboard,
 takes three snapshots, and asserts the plaintext sentinel is absent from those
-surfaces before reveal and present after. Implements the design at
-[`docs/superpowers/specs/2026-05-19-operator-blind-roundtrip-design.md`](../../docs/superpowers/specs/2026-05-19-operator-blind-roundtrip-design.md).
+surfaces before reveal and present after.
 
 This is a **release-gate** check, not CI. It requires a funded Base Sepolia EOA,
 takes ~7 minutes wall-clock, and is run by hand before any prod deploy.

@@ -7,6 +7,8 @@
  *   set -a; . ./.env; set +a
  *   eval "$(npx tsx tools/print-deploy-env.ts)"
  *   npm run deploy:contracts
+ *
+ * DEPLOY_PRIVATE_KEY must already be in your environment. This never prints a key.
  */
 import "dotenv/config";
 
@@ -53,9 +55,5 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-// The deployer signs; it is a key, not a derived address, so it passes through.
-if (process.env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY) {
-  lines.push(`export DEPLOY_PRIVATE_KEY=${process.env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY}`);
-}
 
 console.log(lines.join("\n"));

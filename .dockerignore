@@ -39,3 +39,26 @@ video
 
 # Local binary/media files
 *.png
+
+# Local state and working folders: never in the image
+data/*
+!data/deployments.json
+artifacts/
+.superpowers/
+.claude/
+.agents/
+.codex/
+.claire/
+.impeccable/
+tools/
+plans/
+dashboard/
+waitlist/
+local-archive/
+secrets/
+**/node_modules
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+!THIRD_PARTY_NOTICES.md

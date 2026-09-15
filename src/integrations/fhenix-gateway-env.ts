@@ -314,7 +314,7 @@ export interface SerialBroadcastQueue {
  * broadcast never poisons the chain — the tail always settles.
  *
  * In-process only: with multiple daemon replicas holding this key, exactly
- * one replica may run write-enabled (see DEPLOYMENT.md).
+ * one replica may run write-enabled (see the operator guide).
  */
 export function createSerialBroadcastQueue(): SerialBroadcastQueue {
   let tail: Promise<unknown> = Promise.resolve();

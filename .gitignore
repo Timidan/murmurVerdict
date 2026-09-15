@@ -112,13 +112,19 @@ contracts/broadcast/
 # Master never tracked these — kept local. To publish a specific file,
 # use `git add -f <path>`.
 /docs/*
-!/docs/superpowers/
-/docs/superpowers/*
-!/docs/superpowers/specs/
-!/docs/superpowers/specs/**
-!/docs/superpowers/plans/
-!/docs/superpowers/plans/**
 /OPENSERV_MEETING_BRIEF.md
+
+# Operator and planning docs: kept local, never pushed.
+/DEPLOYMENT.md
+/CONTEXT.md
+/HANDOFF.md
+/PRODUCT.md
+/*.excalidraw
+/plans/
+/dashboard/docs/
+/.impeccable/
+/waitlist/design/
+/local-archive/
 
 # Smoke / driver scripts colocated with their modules — local-only.
 # Covers both the legacy double-underscore convention (__smoke__.ts) AND

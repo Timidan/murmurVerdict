@@ -14,7 +14,7 @@
 # The Dashboard SPA is intentionally NOT in this compose file. Build it
 # (`npm run dashboard:build`) and host the dist on a static CDN
 # (Cloudflare Pages, Vercel, your own Nginx) with VITE_VERDICT_API_URL
-# pointed at the daemon's public URL. See DEPLOYMENT.md for the
+# pointed at the daemon's public URL. See the operator guide for the
 # split-deploy rationale.
 
 services:
@@ -63,7 +63,7 @@ services:
       # every sealed CALL is publicly revealed after the agent grace window, using
       # a DEDICATED reveal EOA (must differ from the relayer key). Exactly ONE
       # write-enabled process per reveal EOA — do not scale this service >1
-      # replica with the worker enabled (see DEPLOYMENT.md). Fund the key.
+      # replica with the worker enabled (see the operator guide). Fund the key.
       FHENIX_REVEAL_WORKER_ENABLED: "${FHENIX_REVEAL_WORKER_ENABLED:-false}"
       FHENIX_REVEAL_PRIVATE_KEY: "${FHENIX_REVEAL_PRIVATE_KEY:-}"
       FHENIX_REVEAL_WORKER_GRACE_SEC: "${FHENIX_REVEAL_WORKER_GRACE_SEC:-300}"
@@ -260,7 +260,7 @@ services:
   # and start the daemon. The path-based restore reads the configured
   # endpoint/region from the bind-mounted litestream.yml; the raw
   # `s3://<bucket>/...` REPLICA_URL form would drop the endpoint and
-  # break non-AWS providers. See DEPLOYMENT.md for the full recipe.
+  # break non-AWS providers. The operator guide has the full recipe.
   litestream:
     # Pinned to a specific 0.3 patch — `0.3` is a moving tag that Docker
     # Hub maps to the latest 0.3.x release. Bump explicitly when you've

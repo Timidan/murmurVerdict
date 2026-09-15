@@ -384,8 +384,7 @@ incidents, manual ticks, and safe retry actions for queued/retryable rows.
 
 ### 5.13 Spec (`#/spec`) — inline `SpecPage` in Router
 
-Renders a compact pointer to the tracked current system map and implementation
-handoff (`CONTEXT.md` + `HANDOFF.md`) instead of old launchpad scratch docs.
+Dev-only placeholder. Production builds route it to the 404 page.
 
 ---
 
@@ -486,7 +485,7 @@ readiness for Fhenix reveal automation.
 | 5 | Reduce-motion fallback for the live status dot — already handled? | Yes via `@media (prefers-reduced-motion: no-preference)` at `compact.css:94` | shipped |
 | 6 | Stat-cell hover tooltip (V14 decision 7) — formula reveal on hover | Build with the leaderboard polish pass | product |
 | 7 | `× UNFOLLOW` post-state (V14 decision 5) — does follow even matter without notifications? | Skip until we have a notification channel | product |
-| 8 | `#/spec` page should point where? | Render tracked current spec from `CONTEXT.md`/`HANDOFF.md` or remove the route | product |
+| 8 | `#/spec` page should point where? | Dev-only placeholder; remove the route once nothing uses it | product |
 | 9 | Operator-facing oracle health page — needed before mainnet? | Yes; resolver health is the gate for mainnet, surface it for the operator | infra |
 | 10 | Is `MarketHeatGrid` doing its job, or merge into the agent ladder cell? | Keep separate — different question (per-market spread vs per-call detail) | shipped |
 

@@ -12,8 +12,7 @@ dashboard bundle (its own `package.json` / `node_modules`).
 
 ## Beat map
 
-Reimplemented frame-for-frame from
-`docs/superpowers/specs/2026-07-11-murmur-logo-animation-design.md`
+Reimplemented frame-for-frame from the logo animation design spec
 (`frame = ms / 1000 * 30`):
 
 1. **Rise-in** (0–1000ms) — bars grow `0 → EQ_A[i]`, staggered 60ms/bar, ~+8% overshoot.

@@ -42,7 +42,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      # One command, because it is the same command the DEPLOYMENT.md release
+      # One command, because it is the same command the operator guide's release
       # gate names — a CI job that ran some other combination would drift from
       # it. It covers: both typechecks (`lint`), the dashboard build, the smoke
       # suite under SMOKE_STRICT (allowlisted failures fatal, untracked smokes

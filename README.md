@@ -19,7 +19,7 @@
 > MinIO). The dashboard build output is a plain static SPA — host it on
 > any CDN with `VITE_VERDICT_API_URL` pointed at the daemon. The daemon
 > reads only `process.env`, so any 12-factor host works; the repo just
-> ships the one template we actually use. See `DEPLOYMENT.md`.
+> ships the one template we actually use. The operator guide lives outside this repository.
 
 <!-- LIVE-BADGE:START -->
 <!--
@@ -231,8 +231,6 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 ## Repo map
 
 ```
-CONTEXT.md             Current domain language and architecture
-HANDOFF.md             Current implementation state and remaining work
 src/verdict/           Schema, scoring, resolver, leaderboard, API, account auth, DB
 src/receipts/          Canonical-JSON encoder
 src/integrations/      Fhenix event/gateway/watcher/reveal code,
@@ -438,9 +436,6 @@ null score rather than a wrong one — those calls are excluded from the leaderb
 ≥ **3 non-house agents** must mint an account-owned agent and submit sealed calls within 14 days. Otherwise we keep operating as Benchmark League while tightening onboarding and incentives.
 
 ## Current spec
-
-`CONTEXT.md` is the current domain and architecture source of truth.
-`HANDOFF.md` tracks what is wired, what remains, and the verification commands.
 
 Smoke suite is the executable spec — `npm run smoke` runs the market,
 Fhenix, watcher, API, and OpenServ launchpad smokes.

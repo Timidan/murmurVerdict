@@ -98,7 +98,7 @@ The service collects subscriptions only; no email was sent as part of this deplo
 The owner selected paper design C. The homepage now references
 `https://murmurapp.live/brand/murmur-waitlist-paper-v1.png` in both Open Graph
 and Twitter metadata, with image dimensions and alt text. The source artboards
-and alternatives are in `design/` and are excluded from the release package.
+and alternatives are kept outside the repository.
 
 The current release is `/home/agentops/murmur-waitlist/releases/20260907-social-preview`,
 image `sha256:6165525b25928a7170a01335d6cff3a25092ecd4e1990eadc5cad5e9af33d666`.
