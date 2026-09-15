@@ -36,7 +36,7 @@ const CONTRACT = "0x1B74A4bAb1E06Ed107780a245c85337AB9dEcD1A";
 const OTHER_CONTRACT = "0x00000000000000000000000000000000000000ff";
 const NOW = new Date("2026-08-10T12:00:00.000Z");
 const NOW_MS = NOW.getTime();
-const SAFETY_SEC = 180;
+const DELIVERY_SEC = 120;
 const LEGACY_TERMS: CallTerms = {
   priceAtoms: "1000",
   currency: "USDC",
@@ -53,7 +53,7 @@ const AGENTS = [
 
 interface SeedCall {
   key: string;
-  /** Absolute submission close; the sale closes SAFETY_SEC before it. */
+  /** Absolute submission close; the series delivery budget sets the sale close. */
   submissionCloseAtMs: number;
   agentId?: string;
   /** The venue series the call's MARKET belongs to; null leaves it unlinked. */
@@ -133,7 +133,7 @@ function seed(db: ReturnType<typeof openDb>, calls: SeedCall[]): void {
       series_id: seriesId,
       arm: close - 500_000,
       open: close - 400_000,
-      cutoff: close - 300_000,
+      cutoff: close - DELIVERY_SEC * 1000,
       close,
       resolution: close + 300_000,
       reveal: close + 600_000,
@@ -315,6 +315,7 @@ function list(
     cursor?: string | null;
     venueSeriesIds?: readonly string[];
     agentSlug?: string | null;
+    now?: Date;
   },
 ): ListingBody {
   const res = listSellableCallsResponse(
@@ -322,9 +323,8 @@ function list(
       db,
       chain: { chainId: CHAIN_ID, sealedVerdictsAddress: CONTRACT },
       legacyTerms: opts.legacyTerms,
-      salesSafetySeconds: SAFETY_SEC,
       purchaseAvailable: opts.purchaseAvailable ?? true,
-      now: () => NOW,
+      now: () => opts.now ?? NOW,
     },
     {
       limit: opts.limit,
@@ -360,8 +360,8 @@ function list(
   assert.equal(open.market.question, "Will BTC be up at 12:10?");
   assert.equal(
     open.sale_closes_at,
-    new Date(NOW_MS + 600_000 - SAFETY_SEC * 1000).toISOString(),
-    "sale closes a safety margin before submission close",
+    new Date(NOW_MS + 600_000 - DELIVERY_SEC * 1000).toISOString(),
+    "sale closes at the stored series cutoff",
   );
   assert.equal(open.reveal_open_at, new Date(NOW_MS + 600_000 + 600_000).toISOString());
 
@@ -383,6 +383,11 @@ function list(
   assert.equal(body.contract_address, CONTRACT);
   assert.equal(body.page.returned, 4);
   assert.equal(body.next_cursor, null, "a page shorter than the limit is the last one");
+
+  assert.ok(list(db, { legacyTerms: LEGACY_TERMS, now: new Date(NOW_MS + 450_000) })
+    .calls.some((call) => call.market.market_id === "market-open"), "still listed inside the old 180-second margin");
+  assert.ok(!list(db, { legacyTerms: LEGACY_TERMS, now: new Date(NOW_MS + 480_000) })
+    .calls.some((call) => call.market.market_id === "market-open"), "removed at the actual series cutoff");
 
   db.close();
   rmSync(tmp, { recursive: true, force: true });
@@ -433,7 +438,6 @@ function list(
     db,
     chain: null,
     legacyTerms: LEGACY_TERMS,
-    salesSafetySeconds: SAFETY_SEC,
     purchaseAvailable: false,
     now: () => NOW,
   });
@@ -591,7 +595,6 @@ function list(
       db,
       chain: { chainId: CHAIN_ID, sealedVerdictsAddress: CONTRACT },
       legacyTerms: LEGACY_TERMS,
-      salesSafetySeconds: SAFETY_SEC,
       purchaseAvailable: true,
       now: () => NOW,
     },

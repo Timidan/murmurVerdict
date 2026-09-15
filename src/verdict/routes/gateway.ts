@@ -5,7 +5,6 @@ import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 import type Database from "better-sqlite3";
 import type { FhenixGatewayBroadcaster } from "../../integrations/fhenix-gateway.js";
 import type { PrivyAuthVerifier } from "../auth/privy.js";
-import { DEFAULT_SALES_SAFETY_SECONDS } from "../../integrations/fhenix-grant-env.js";
 import {
   gatewayFeedPacketSubmissionResponse,
   gatewayMurmurSealedCallSubmissionResponse,
@@ -55,8 +54,6 @@ export interface GatewayRouterDeps {
   fhenixChain?: { chainId: number; sealedVerdictsAddress: string | null } | null;
   /** Deployment-wide fallback terms for pre-070 calls; null when unset. */
   legacyCallTerms?: CallTerms | null;
-  /** Sales close this many seconds before the market's submission close. */
-  salesSafetySeconds?: number;
 }
 
 export function gatewayRouter(deps: GatewayRouterDeps): Router {
@@ -157,7 +154,6 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
           db: deps.db,
           chain: deps.fhenixChain ?? null,
           legacyTerms: deps.legacyCallTerms ?? null,
-          salesSafetySeconds: deps.salesSafetySeconds ?? DEFAULT_SALES_SAFETY_SECONDS,
           purchaseAvailable: Boolean(deps.entitlementAccess),
           now: deps.now,
         },

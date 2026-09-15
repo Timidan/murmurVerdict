@@ -46,8 +46,6 @@ export interface SellableCallsDeps {
   chain: { chainId: number; sealedVerdictsAddress: string | null } | null;
   /** Deployment-wide fallback terms for pre-070 rows; null when unconfigured. */
   legacyTerms: CallTerms | null;
-  /** Sales close this many seconds before the market's submission close. */
-  salesSafetySeconds: number;
   /**
    * Whether THIS daemon can actually take the money.
    *
@@ -158,6 +156,7 @@ interface SellableQueryRow extends CallTermsSnapshot {
   provider_max_subscribers: number | null;
   series_max_armed_per_call: number;
   submission_close_at_ms: number;
+  early_access_cutoff_at_ms: number;
 }
 
 /**
@@ -223,7 +222,8 @@ function sellableSql(filters: SellableFilters): string {
     m.venue_series_id                AS venue_series_id,
     pds.question                     AS question,
     ms.max_armed_per_call            AS series_max_armed_per_call,
-    mc.submission_close_at_ms        AS submission_close_at_ms
+    mc.submission_close_at_ms        AS submission_close_at_ms,
+    mc.early_access_cutoff_at_ms     AS early_access_cutoff_at_ms
   FROM fhenix_sealed_calls f
   JOIN submissions s    ON s.call_id = f.call_id
   JOIN agents a         ON a.agent_id = s.agent_id
@@ -237,7 +237,7 @@ function sellableSql(filters: SellableFilters): string {
     AND lower(f.contract_address) = lower(@contract_address)
     AND f.submission_class = @early_access
     AND f.reveal_status = 'pending'
-    AND mc.submission_close_at_ms - @safety_ms > @now_ms
+    AND mc.early_access_cutoff_at_ms > @now_ms
     AND (
       (f.provider_price_atoms IS NOT NULL
         AND f.provider_currency IS NOT NULL
@@ -250,8 +250,7 @@ function sellableSql(filters: SellableFilters): string {
       OR (mc.submission_close_at_ms = @cursor_close_ms AND f.call_id > @cursor_call_id)
     )
     ${filterClauses(filters).sql}
-  -- sale_closes_at is submission_close_at_ms shifted by a constant, so ordering
-  -- on the raw column is the same order without recomputing it per row.
+  -- Keep the cursor's stable submission-close ordering across series.
   ORDER BY mc.submission_close_at_ms ASC, f.call_id ASC
   LIMIT @limit
 `;
@@ -277,7 +276,7 @@ function excludedLegacySql(filters: SellableFilters): string {
     AND lower(f.contract_address) = lower(@contract_address)
     AND f.submission_class = @early_access
     AND f.reveal_status = 'pending'
-    AND mc.submission_close_at_ms - @safety_ms > @now_ms
+    AND mc.early_access_cutoff_at_ms > @now_ms
     AND f.provider_terms_snapshotted != 1
     AND (f.provider_price_atoms IS NULL
       OR f.provider_currency IS NULL
@@ -354,7 +353,6 @@ export function listSellableCallsResponse(
     chain_id: deps.chain.chainId,
     contract_address: contractAddress,
     early_access: SUBMISSION_CLASS_EARLY_ACCESS,
-    safety_ms: deps.salesSafetySeconds * 1000,
     now_ms: deps.now().getTime(),
     ...filterBind,
   };
@@ -409,9 +407,8 @@ export function listSellableCallsResponse(
         : seatsRemaining !== null && seatsRemaining <= 0
           ? "full"
           : "available",
-      sale_closes_at: new Date(
-        row.submission_close_at_ms - deps.salesSafetySeconds * 1000,
-      ).toISOString(),
+      // This clock includes the series delivery budget used by checkout.
+      sale_closes_at: new Date(row.early_access_cutoff_at_ms).toISOString(),
       reveal_open_at: row.reveal_open_at,
     });
   }

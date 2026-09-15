@@ -186,7 +186,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     // enabled on this daemon.
     fhenixChain: runtime.fhenixChain,
     legacyCallTerms: runtime.saleTerms.legacyTerms,
-    salesSafetySeconds: runtime.saleTerms.salesSafetySeconds,
   }));
 
   router.use(operatorControlRouter({
