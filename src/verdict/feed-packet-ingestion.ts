@@ -80,11 +80,8 @@ export type FeedPacketIngestionResult =
 export function ingestFeedPacket(
   input: FeedPacketIngestionInput,
 ): FeedPacketIngestionResult {
-  // Duplicate detection FIRST. Market validation reads MUTABLE current status,
-  // so running it before the replay check makes a previously-accepted packet
-  // non-replayable the moment its market is frozen or retired — an idempotent
-  // retry would start failing for a packet already on-chain. New packets still
-  // get the full check below.
+  // Duplicate check first: market validation reads mutable status, so a frozen or retired market
+  // would otherwise break idempotent retries of an already-accepted packet.
   const fhenixEvent = normalizeFeedPacketFhenixEvent(input.fhenix);
   const existing = feedPacketsRepo.byFhenixEvent(input.db, fhenixEvent);
   if (existing) return { kind: "idempotent", packet: existing };

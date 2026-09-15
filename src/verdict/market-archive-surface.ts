@@ -1,75 +1,15 @@
 /**
- * `GET /v2/markets/archive` — public, read-only search over every market this
- * deployment has finished with.
+ * `GET /v2/markets/archive?q=&from=&to=&cursor=&limit=`: public read-only search over frozen markets.
  *
- * The live matrix shows ten markets: the two five-minute windows currently in
- * flight. Everything murmur has ever refereed before that is in
- * `polymarket_discovery_state` with `status='frozen'` — ~7.6k rows today,
- * growing ~1.4k/day — and until now the dashboard had no way to reach any of
- * it. This is that route.
- *
- * ─── THE CONTRACT ───────────────────────────────────────────────────────────
- *
- *   GET /v2/markets/archive?q=&from=&to=&cursor=&limit=
- *
- *   q       search term, matched case-insensitively against the venue question
- *           and the venue slug. `%`, `_` and `\` are escaped, so a user typing
- *           `100%` searches for the characters `100%` and not "anything".
- *           Capped at 120 characters.
- *   from    inclusive lower bound on the market's end time
- *   to      inclusive upper bound. Both accept either integer epoch SECONDS or
- *           an ISO-8601 instant; the dashboard's `<input type="date">` converts
- *           the chosen local day to its own local-midnight bounds and sends
- *           epochs, so a search for "August 9" means August 9 where the user is.
- *   cursor  opaque page token from a previous response's `next_cursor`
+ *   q       case-insensitive match on question or slug; LIKE metachars escaped; max 120 chars
+ *   from/to inclusive end-time bounds, epoch seconds or ISO-8601
+ *   cursor  opaque `next_cursor` from a previous page
  *   limit   1..50, default 50
  *
- *   200 {
- *     "schema_version": 1,
- *     "results": [{
- *       "market_id":  "0x…64hex",
- *       "question":   "Bitcoin Up or Down - August 10, 1:35AM-1:40AM ET" | null,
- *       "slug":       "btc-updown-5m-1786340100" | null,
- *       "ended_at":   "2026-08-10T05:40:00.000Z",
- *       "icon_url":   "https://…" | null,
- *       "sealed_window": true
- *     }, … ],
- *     "next_cursor": "…" | null,
- *     "has_more": false,
- *     "returned": 12
- *   }
- *
- *   400 {"code":"archive_query_invalid" | "archive_cursor_invalid", "message":…}
- *
- * Either a search term of at least two characters OR a date bound is REQUIRED.
- * An unfiltered request would page the entire archive one screen at a time,
- * which is a scrape, not a search.
- *
- * NO `COUNT(*)`. A total over a growing, filtered, LIKE-matched table is a full
- * scan on every keystroke to render a number nobody acts on; `has_more` is what
- * a "load more" button actually needs, and it costs one extra row (`LIMIT n+1`).
- *
- * `sealed_window` is the one fact that separates "murmur refereed this" from
- * "discovery saw it and let it go": a `market_clocks` row exists only for a
- * market that was bound to a series schedule. ~230 of the ~7.6k archived
- * markets have one, which is exactly why that join is LEFT — an inner join
- * would silently drop 97% of the archive.
- *
- * ─── WHY NOT FTS5 (yet) ─────────────────────────────────────────────────────
- *
- * `LIKE '%term%'` cannot use an index; it is a scan of the rows surviving the
- * status + date filter. At today's ~7.6k rows that scan is sub-millisecond, and
- * an FTS5 table would add a second copy of every question, trigger-maintained
- * on a write path (discovery) that must not get slower, plus tokenizer
- * decisions ("updown", "1:35AM", "5m") that a substring match gets right for
- * free on this corpus.
- *
- * REVISIT when either threshold trips:
- *   · the archive passes ~100k–250k rows (≈70–180 days at the current rate), or
- *   · search p95 passes 75–100ms measured at the route.
- * At that point the move is an FTS5 external-content table over
- * (question, slug) keyed by condition_id, joined back for the page — not a
- * bigger LIKE.
+ * Requires a 2+ char term or a date bound; an unfiltered request is a scrape.
+ * No COUNT(*); `has_more` comes from LIMIT n+1.
+ * `sealed_window` means a market_clocks row exists; the join is LEFT because most archived markets have none.
+ * LIKE scans; move to an FTS5 external-content table past ~100k rows or ~75ms p95.
  */
 
 import type Database from "better-sqlite3";
@@ -98,16 +38,9 @@ export interface MarketArchiveRow {
   icon_url: string | null;
   /** True when murmur bound a series schedule to this market. */
   sealed_window: boolean;
-  /** Provider key ("polymarket-gamma"). The archive is currently Polymarket-
-   *  only by construction — it starts from `polymarket_discovery_state` — so
-   *  this field is honest labelling, not multi-provider support. */
+  /** Provider key ("polymarket-gamma"); Polymarket-only since the query starts from `polymarket_discovery_state`. */
   provider: string;
-  /** The venue's own top-level category, or null when it published none.
-   *
-   *  Never murmur's taxonomy class. That field describes how a market SETTLES
-   *  (every prediction market is a "Binary event"), so as a grouping tier it
-   *  partitions nothing and reads as the venue's word for the market when it
-   *  is not. A row the venue never categorised groups as uncategorised. */
+  /** The venue's own top-level category, or null. Never murmur's taxonomy class, which describes settlement. */
   category_label: string | null;
 }
 
@@ -138,11 +71,7 @@ interface ArchiveCursor {
   conditionId: string;
 }
 
-/**
- * `end_epoch|condition_id`, base64url. Opaque on purpose: the pair IS the sort
- * key, and publishing it as two readable query params invites clients to build
- * their own — which silently breaks the moment the ordering changes.
- */
+/** `end_epoch|condition_id`, base64url. Opaque so clients don't build their own sort keys. */
 export function encodeArchiveCursor(cursor: ArchiveCursor): string {
   return Buffer.from(`${cursor.endEpochS}|${cursor.conditionId}`, "utf8")
     .toString("base64url");
@@ -156,11 +85,7 @@ export function decodeArchiveCursor(raw: string): ArchiveCursor | null {
   } catch {
     return null;
   }
-  // Node's base64 decoder is LENIENT: it skips characters it does not
-  // recognize and tolerates a truncated final group, so an arbitrary number of
-  // distinct strings decode to the same bytes. Re-encoding and demanding an
-  // exact match makes the token canonical — one page has exactly one cursor —
-  // which is the property "opaque page token" is supposed to mean.
+  // Node's base64 decoder is lenient; requiring an exact re-encode keeps one cursor per page.
   if (Buffer.from(decoded, "utf8").toString("base64url") !== raw) return null;
   const split = decoded.indexOf("|");
   if (split <= 0) return null;
@@ -168,9 +93,7 @@ export function decodeArchiveCursor(raw: string): ArchiveCursor | null {
   const conditionId = decoded.slice(split + 1);
   if (!/^\d{1,15}$/.test(epochPart)) return null;
   if (conditionId.length === 0 || conditionId.length > 128) return null;
-  // The id is a primary key value, never interpolated into SQL — it is bound.
-  // The shape check is here so a malformed cursor is a 400 rather than a page
-  // that silently matches nothing.
+  // The id is bound, not interpolated; the shape check makes a malformed cursor a 400.
   if (!/^[0-9a-zA-Z_:.-]+$/.test(conditionId)) return null;
   const endEpochS = Number(epochPart);
   if (!Number.isSafeInteger(endEpochS) || endEpochS <= 0) return null;
@@ -179,41 +102,18 @@ export function decodeArchiveCursor(raw: string): ArchiveCursor | null {
 
 // ─── Input hardening ────────────────────────────────────────────────────────
 
-/**
- * Escape the LIKE metacharacters so a user's `%` means a percent sign. Paired
- * with `ESCAPE '\'` in the SQL — without BOTH halves, `%` matches everything
- * and `_` matches any character, i.e. the filter quietly stops filtering.
- */
+/** Escape LIKE metacharacters so `%` means a percent sign. Must pair with `ESCAPE '\'` in the SQL. */
 export function escapeLikeTerm(term: string): string {
   return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
-/**
- * The ONLY ISO shapes this route accepts: a calendar date, optionally with a
- * `T…Z` UTC time. No offsets, no local times, no `Date.parse` dialects.
- */
+/** Accepted ISO shapes: a calendar date, optionally with a `T…Z` UTC time. No offsets or local times. */
 const ISO_BOUND_REGEX =
   /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(\.\d+)?Z)?$/;
 
 /**
- * Epoch seconds from either an integer string or an ISO-8601 instant.
- *
- * Zero is ACCEPTED: `from=0` is the honest way to say "no lower bound", and
- * rejecting it would force a caller wanting the whole archive to invent a
- * magic old date instead.
- *
- * STRICT on purpose. `Date.parse` was doing the work, and it is a dialect
- * parser, not a validator:
- *   · `2026-02-30` silently rolls forward to March 2 — a filter that answers a
- *     question the caller did not ask;
- *   · locale forms like `March 3, 2026` and `3/3/2026` parse in V8, so the
- *     route's own contract ("epoch seconds or an ISO-8601 instant") was not
- *     what it enforced, and the accepted set differed by engine;
- *   · a pre-epoch instant such as `1960-01-01T00:00:00Z` slipped past the
- *     `>= 0` check that the numeric branch applies, producing a negative bound.
- * Everything outside the regex — or that does not round-trip to the exact
- * components given, or that carries a non-zero fraction this second-granularity
- * store cannot honor — is rejected, and the caller gets a 400 saying so.
+ * Epoch seconds from an integer string or a strict ISO-8601 instant; null if invalid.
+ * Zero is accepted (no lower bound). Rejects rolled-over dates, locale forms, pre-epoch and non-zero fractions.
  */
 function parseEpochBound(raw: unknown): number | null {
   if (typeof raw === "number") {
@@ -228,14 +128,7 @@ function parseEpochBound(raw: unknown): number | null {
   }
   const match = ISO_BOUND_REGEX.exec(trimmed);
   if (match === null) return null;
-  // Sub-second precision is accepted only when it is zero.
-  //
-  // `end_date_epoch_s` is stored in SECONDS and the bounds are compared against
-  // it, so the fraction has nowhere to go — `Math.floor` discarded it and
-  // `…:59.999Z` silently behaved as `…:59.000Z`, quietly widening the range by
-  // most of a second and pulling in a row the caller asked to exclude. A bound
-  // that does not mean what it says is worse than a rejected one, so `.000` is
-  // allowed (it is what `toISOString()` emits) and anything else is a 400.
+  // Fractions only when zero; the column is whole seconds, so any other fraction would widen the bound.
   const fraction = match[7];
   if (fraction !== undefined && /[1-9]/.test(fraction)) return null;
   const year = Number(match[1]);
@@ -246,9 +139,7 @@ function parseEpochBound(raw: unknown): number | null {
   const second = match[6] === undefined ? 0 : Number(match[6]);
   const ms = Date.UTC(year, month - 1, day, hour, minute, second);
   if (!Number.isFinite(ms)) return null;
-  // Round-trip: `Date.UTC` rolls over out-of-range components rather than
-  // failing, so February 30 becomes March 2 unless the result is checked back
-  // against exactly what was written.
+  // Round-trip check: `Date.UTC` rolls February 30 into March 2 instead of failing.
   const date = new Date(ms);
   if (
     date.getUTCFullYear() !== year ||
@@ -261,14 +152,11 @@ function parseEpochBound(raw: unknown): number | null {
     return null;
   }
   const epochS = Math.floor(ms / 1000);
-  // Pre-epoch is out, exactly as it is for the numeric form.
   return epochS >= 0 ? epochS : null;
 }
 
 function firstScalar(raw: unknown): unknown {
-  // Express gives `?q=a&q=b` as an array. Take the first rather than
-  // stringifying the array into "a,b" — a repeated param is a client bug, not
-  // a compound search.
+  // Express parses `?q=a&q=b` as an array; take the first.
   return Array.isArray(raw) ? raw[0] : raw;
 }
 
@@ -334,8 +222,7 @@ export function parseMarketArchiveQuery(
     return badRequest("archive_query_invalid", "from must not be after to");
   }
 
-  // A term of one character matches most of the corpus, so it is a scrape with
-  // a filter attached. Either say something specific or bound the dates.
+  // A one-char term matches most of the corpus; require a real term or a date bound.
   const searchableChars = term === null ? 0 : term.replace(/\s+/g, "").length;
   const hasDateFilter = fromEpochS !== null || toEpochS !== null;
   if (searchableChars < ARCHIVE_MIN_QUERY_CHARS && !hasDateFilter) {
@@ -408,9 +295,7 @@ export function marketArchiveSurface(input: {
   if ("status" in parsed) return parsed;
 
   const where: string[] = [
-    // BOTH sides must say frozen. `polymarket_discovery_state` is discovery's
-    // own bookkeeping and `markets` is the registry; a row that disagrees is
-    // mid-transition and has no business in an archive.
+    // Both discovery state and the registry must say frozen; a disagreeing row is mid-transition.
     "p.status = 'frozen'",
     "m.status = 'frozen'",
   ];
@@ -432,9 +317,7 @@ export function marketArchiveSurface(input: {
     params.pattern = parsed.pattern;
   }
   if (parsed.cursor !== null) {
-    // Keyset, not OFFSET: the archive grows at the head while a user pages, so
-    // an offset page would re-show rows that shifted down. The pair matches the
-    // ORDER BY exactly, which is what makes idx_polymarket_archive_page a seek.
+    // Keyset, not OFFSET, since the archive grows at the head. Must match ORDER BY for the index seek.
     where.push(
       "(p.end_date_epoch_s < @cursor_epoch_s " +
         "OR (p.end_date_epoch_s = @cursor_epoch_s AND p.condition_id < @cursor_id))",
@@ -490,8 +373,7 @@ export function marketArchiveSurface(input: {
             : null,
           slug: typeof row.slug === "string" && row.slug.length > 0 ? row.slug : null,
           ended_at: new Date(row.end_date_epoch_s * 1000).toISOString(),
-          // Same https gate the ingestion path applies. The stored blob is
-          // passthrough, so the read side re-checks rather than trusting it.
+          // Re-check https; the stored blob is passthrough.
           icon_url: httpsUrlOrNull(config.icon_url),
           sealed_window: row.sealed_window === 1,
           provider: row.adapter_id ?? "polymarket-gamma",

@@ -1,28 +1,6 @@
-// Shared "is this market actually mintable?" gate for the two sealed-call
-// entry points: the gateway preflight (before we spend an owner-key broadcast)
-// and sealed-call acceptance (before we persist a call).
-//
-// It replaces the old `derivePolicyFromMarket` call both sites used to make.
-// That helper answered a native-price question — "which Chainlink/Pyth feeds
-// anchor this market?" — and returned `null` (i.e. "fine, carry on") for every
-// external adapter, which meant the external path was effectively ungated.
-//
-// Murmur is a pure referee over external venues, so the question the gate has
-// to answer is instead: does this row name a venue adapter this daemon can
-// actually observe a resolution from, and is the row shaped the way that
-// adapter's scoring expects? Five checks, all fail-closed:
-//
-//   1. `markets.adapter_id` is set and names a REGISTERED adapter.
-//   2. `markets.market_family` is set and equals that adapter's own
-//      `marketFamily`, so a row can't be dispatched to an adapter that
-//      classifies it differently.
-//   3. `markets.market_kind` is an externally-resolved kind (`event_binary`).
-//   4. `markets.scoring_kind` is the universal payout-vector scorer
-//      (`multinomial_brier`) — the only scorer left after the native
-//      signed-return path was removed.
-//   5. `markets.config_json` parses against the adapter's own
-//      `marketConfigSchema`, so a row missing e.g. Polymarket's conditionId is
-//      refused at submit time instead of sitting unresolvable in pending_t1.
+// Shared "is this market mintable?" gate for the gateway preflight and sealed-call acceptance.
+// Fail-closed checks: registered adapter, matching market_family, `event_binary` kind,
+// `multinomial_brier` scoring, and config_json valid against the adapter's schema.
 
 import type { MarketRow } from "./repos/market-registry-repo.js";
 import type { MarketMakerAdapter } from "../markets/types.js";
@@ -67,13 +45,8 @@ type GuardMarket = Pick<
 >;
 
 /**
- * Assert `market` is a live externally-resolved market this daemon can settle,
- * and return the adapter that owns it. Throws
- * {@link ExternalMarketValidationError} on the first failing check.
- *
- * Callers translate the typed `cause` into their own wire error; the guard
- * itself is transport-agnostic so the gateway preflight and the acceptance
- * path cannot drift apart.
+ * Returns the market's adapter, or throws {@link ExternalMarketValidationError} on the first failing check.
+ * Callers map the typed `cause` to their own wire error.
  */
 export function requireMintableExternalMarket(
   market: GuardMarket,

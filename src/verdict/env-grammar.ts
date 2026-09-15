@@ -1,18 +1,8 @@
-/**
- * Shared environment-variable grammar.
- *
- * One definition of "what counts as a boolean env flag" so configuration
- * Modules stop hand-rolling drifting copies (some accepted yes/no, some
- * threw on it). Callers keep their own error TYPE — this only recognizes
- * tokens; it never throws.
- */
+/** Shared env-var grammar. Recognizes tokens only and never throws; callers keep their own error type. */
 
 /**
- * Parse a boolean env token. Returns true/false for a recognized token, and
- * `undefined` for empty/unset OR an unrecognized value — the caller decides
- * whether `undefined` means "use the fallback" or "raise a config error".
- * Strict grammar is {true,1,false,0}; pass `{ yesNo: true }` to also accept
- * {yes,no}.
+ * Parses {true,1,false,0}, plus {yes,no} with `yesNo`. Returns undefined for unset or unrecognized;
+ * the caller decides between fallback and config error.
  */
 export function parseBooleanToken(
   raw: string | undefined,
@@ -30,11 +20,8 @@ export function parseBooleanToken(
 }
 
 /**
- * THE Polymarket Gamma venue-snapshot kill switch. Default ON (Gamma is a
- * public key-less API and the resolver needs the adapter registered for any
- * admin-registered polymarket market); disabled only on an explicit
- * false/0/no. Single derivation shared by daemon-config, the live canaries,
- * and the API router so the three can never disagree.
+ * Polymarket Gamma kill switch, shared by daemon-config, the live canaries and the API router.
+ * Default on (the resolver needs the adapter); off only on an explicit false/0/no.
  */
 export function resolvePolymarketGammaEnabled(env: NodeJS.ProcessEnv): boolean {
   return (

@@ -13,13 +13,8 @@ import {
 } from "./repos/agent-provider-terms-repo.js";
 import { venueMarketSeriesRepo } from "./repos/venue-market-series-repo.js";
 
-// An agent owner prices their own signal. Two properties carry the design:
-//
-//   1. Repricing NEVER reaches a call already sold. Terms are snapshotted onto
-//      the sealed call, so the live terms row can move freely.
-//   2. The owner's ceiling and murmur's deliverability are separate limits,
-//      and the smaller one wins — selling past what can be granted inside the
-//      delivery budget is a refund obligation, and refunds are manual.
+// 1. Repricing never reaches a sold call; terms are snapshotted onto it.
+// 2. Owner ceiling vs deliverability: the smaller wins.
 process.stdout.write("murmur provider terms smoke\n");
 
 const tmp = mkdtempSync(join(tmpdir(), "provider-terms-"));
@@ -33,8 +28,7 @@ try {
        '2026-08-05T00:00:00Z', NULL, NULL, NULL)`,
   ).run(agentId);
 
-  // Terms are per venue series (migration 075): stand a series up and register
-  // the agent for it, since a price now FKs to a registration.
+  // Terms are per venue series and FK to a registration.
   const series = venueMarketSeriesRepo.upsert(db, {
     venue: "polymarket",
     series_slug: "btc-up-or-down-5m",
@@ -132,9 +126,7 @@ try {
   );
 
   // ── THE POINT: a sold call keeps the terms it was sold under ─────────────
-  // Snapshot columns on the call, written at acceptance. If the access path
-  // read the live terms row instead, this reprice would silently change what
-  // an in-flight buyer is charged — and disagree with the 402 they answered.
+  // Snapshot columns are written at acceptance; the access path must not read live terms.
   const callId = randomUUID();
   // fhenix_sealed_calls.call_id references submissions(call_id).
   db.prepare(
@@ -174,8 +166,7 @@ try {
         '2026-08-04T03:00:00Z', 1, '2026-08-04T00:30:00Z')`,
   ).run(legacyId);
 
-  // A call sealed by TODAY's build for an owner with no terms set. Identical
-  // NULL columns to the legacy row above; only the flag tells them apart.
+  // An owner with no terms: same NULL columns as the legacy row; only the flag tells them apart.
   const notSellingId = randomUUID();
   db.prepare(
     `INSERT INTO submissions
@@ -228,9 +219,7 @@ try {
   );
 
   // ── THE QUOTE USES THE OWNER'S PRICE, not the deployment's ──────────────
-  // The whole point of the feature: a buyer is quoted what the provider set
-  // for THAT call. Driven through the real termsFor() the 402 handler uses, so
-  // a regression shows up here and not only in a live run.
+  // A buyer is quoted the provider's price for that call, via the real termsFor().
   const quoteDeps = {
     access: {
       db,
@@ -257,10 +246,7 @@ try {
   assert.equal(legacy.pricingVersion, "deployment-v1", "falls back for legacy calls");
 
   // ── AND THE OPPOSITE CASE: an owner who is not selling ────────────────────
-  // Same NULL columns as the legacy row, but written by a build that DOES
-  // snapshot terms — so the NULL is a decision, not missing information.
-  // Reading it as legacy sold the owner's signal at the operator's price the
-  // moment they pressed "stop selling".
+  // Same NULLs as legacy but snapshotted, so the NULL means "not selling".
   assert.equal(
     termsFor(quoteDeps, "0xnotselling"),
     null,

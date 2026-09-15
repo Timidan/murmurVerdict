@@ -1,16 +1,10 @@
 // ─── Gateway attempt read-back smoke ────────────────────────────────────────
 //
-// The SDK gap this endpoint closes is `onchain_call_id`: an agent that
-// submitted a sealed call had no way to learn the id its call was given. What
-// the tests below actually guard is who may ask, and what the answer may say:
-//
-//   · a runtime key of the OWNING agent gets the row, including a PoP-bound
-//     key on a bodyless GET (empty-body hash)
-//   · another agent's perfectly valid key gets 404, not 403 — no probing
-//   · Privy and account API-key auth are refused; these are human dashboard
-//     credentials, not agent runtime identity
-//   · a terminal row reports next_attempt_at null, never its stale watermark
-//   · error text is redacted, and raw RPC diagnostics never appear at all
+//   · the owning agent's runtime key gets the row, including a PoP-bound key on a bodyless GET
+//   · another agent's valid key gets 404, not 403
+//   · Privy and account API-key auth are refused
+//   · a terminal row reports next_attempt_at null
+//   · error text is redacted; raw RPC diagnostics never appear
 
 import { strict as assert } from "node:assert";
 import { generateKeyPairSync, randomUUID, sign as edSign } from "node:crypto";

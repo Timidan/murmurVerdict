@@ -68,10 +68,7 @@ export async function deliverOperatorAlerts(
   let delivered = 0;
   let failed = 0;
 
-  // An empty HMAC secret still produces a well-formed signature, so a receiver
-  // cannot distinguish genuine alerts from forged ones — anyone can reproduce
-  // a signature over an empty key. A configured webhook without a secret is a
-  // misconfiguration, not a supported mode.
+  // An empty HMAC secret makes signatures forgeable, so a webhook requires one.
   if (webhookUrl && !input.sink?.secret?.trim()) {
     throw new Error(
       "MURMUR_OPERATOR_ALERT_SECRET is required whenever an operator alert " +

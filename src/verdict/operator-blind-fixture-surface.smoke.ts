@@ -46,8 +46,7 @@ try {
       seedOperatorBlindFixtureDb({
         db,
         agentWallet: "0xnot-a-wallet",
-    // Mirrors what the seeder registers on-chain; the acceptance guard
-    // compares the daemon expected reveal instant against it.
+    // Mirrors the on-chain registration the acceptance guard checks.
     revealSchedule: { endDateMs: 1785931200000, embargoSec: 60 },
         now,
         newAccountId: unexpectedId,
@@ -69,8 +68,7 @@ try {
   const created = seedOperatorBlindFixtureDb({
     db,
     agentWallet: wallet,
-    // Mirrors what the seeder registers on-chain; the acceptance guard
-    // compares the daemon expected reveal instant against it.
+    // Mirrors the on-chain registration the acceptance guard checks.
     revealSchedule: { endDateMs: 1785931200000, embargoSec: 60 },
     now,
     newAccountId: () => push(accountIds, firstAccountId),
@@ -145,21 +143,14 @@ try {
     conditionId: OPERATOR_BLIND_FIXTURE_MARKET_ID,
     slug: OPERATOR_BLIND_FIXTURE_SLUG,
     outcomes: ["YES", "NO"],
-    // The fixture now carries the SAME schedule the seeder registers on-chain.
-    // It was `endDate: null`, which made the daemon fall back to
-    // `accepted_at + horizon_seconds` — a reveal instant the six-instant
-    // contract never agrees with, so every seeded call was refused by the
-    // acceptance guard with "reveal_open_at must equal the market reveal
-    // window". endDate + embargoSec must equal the on-chain publicRevealAt.
+    // endDate + embargoSec must equal the on-chain publicRevealAt.
     endDate: new Date(1785931200000).toISOString(),
     embargoSec: 60,
     gamma_url: `https://polymarket.com/event/${OPERATOR_BLIND_FIXTURE_SLUG}`,
     label: OPERATOR_BLIND_FIXTURE_SLUG,
     fixture: true,
   });
-  // The fixture must satisfy the shared external-market guard the gateway
-  // preflight and sealed-call acceptance both run — otherwise the release gate
-  // would 400 at submit.
+  // Must pass the external-market guard that gateway preflight and acceptance both run.
   assert.equal(requireMintableExternalMarket(market!).name, "polymarket-gamma");
 
   const firstRuntimeKey = runtimeKeyRow(db, firstRuntimeKeyId);
@@ -182,8 +173,7 @@ try {
   const repeated = seedOperatorBlindFixtureDb({
     db,
     agentWallet: wallet,
-    // Mirrors what the seeder registers on-chain; the acceptance guard
-    // compares the daemon expected reveal instant against it.
+    // Mirrors the on-chain registration the acceptance guard checks.
     revealSchedule: { endDateMs: 1785931200000, embargoSec: 60 },
     now: () => new Date("2026-06-12T09:31:00Z"),
     newAccountId: unexpectedId,

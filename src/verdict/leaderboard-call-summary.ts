@@ -4,9 +4,7 @@ import {
   type LeaderboardCallFact,
 } from "./leaderboard-call-facts.js";
 
-// The scoring-facts row shape and status vocabulary now live in the
-// leaderboard-call-facts Module; re-exported here so existing consumers of the
-// summary seam keep importing the fact type from one place.
+// Re-exported so summary consumers import the fact type from one place.
 export type { LeaderboardCallFact } from "./leaderboard-call-facts.js";
 
 export interface LeaderboardCallSummary {
@@ -16,13 +14,7 @@ export interface LeaderboardCallSummary {
   pending_calls: number;
   win_rate: number | null;
   last_resolved_at: string | null;
-  /**
-   * Chronological resolved-call score series (input/accepted_at order), with
-   * `null` for void / oracle_unavailable. Powers the per-market trend
-   * sparkline. Already computed for the verdict score; exposed so the market /
-   * agent-grid Records can project it without recomputing. UI consumers filter
-   * the nulls before rendering (CompactSparkline takes number[]).
-   */
+  /** Chronological resolved-call scores, `null` for void / oracle_unavailable; feeds the trend sparklines. */
   call_scores: (number | null)[];
 }
 

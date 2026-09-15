@@ -135,8 +135,8 @@ const nodeWebhookDnsLookup: WebhookDnsLookup = async (hostname) => {
 };
 
 /**
- * True if the address is loopback, link-local, RFC1918, CGNAT, broadcast,
- * multicast, unspecified, IPv6 unique-local, or the cloud-metadata IP.
+ * Blocked ranges: loopback, link-local (incl. cloud metadata), private, CGNAT,
+ * multicast, unspecified, documentation, and IPv6 unique-local/transition.
  */
 const reservedWebhookIpv4 = new BlockList();
 for (const [network, prefix] of [

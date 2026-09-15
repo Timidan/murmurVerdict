@@ -49,14 +49,8 @@ export interface AgentMarketGridOptions {
 type ComputedAgentMarketRow = AgentMarketRow & { _sortKey: number };
 
 /**
- * Per-market leaderboard. Same aggregation as global getLeaderboard but
- * scoped to one market_id. Provisional flag uses the market's own
- * resolved-count threshold -- an agent with 200 ETH-1h calls but 3 BTC-1h
- * calls is provisional on BTC-1h.
- *
- * P3 reframe rationale: "An agent with 200 BTC_24H calls
- * and 3 SOL_5M calls should not appear as a SOL_5M leader." -- this query
- * makes that physical.
+ * Per-market leaderboard: the global aggregation scoped to one market_id.
+ * The tier threshold counts only this market's calls (200 ETH-1h calls + 3 BTC-1h is provisional on BTC-1h).
  */
 export function getLeaderboardForMarket(
   db: Database.Database,
@@ -77,12 +71,7 @@ interface MarketAgentAgg {
   calls: LeaderboardCallFact[];
 }
 
-/**
- * Summarize + score one agent's calls at one market into the per-market row.
- * Per-market boards rank by the lower-bound score (preferLowerBound: true).
- * Shared by the single-market board and the batched markets-grid read so both
- * project the identical market tier / sparkline shape.
- */
+/** Scores one agent's calls at one market. Per-market boards rank by the lower-bound score. */
 function computeMarketAgentRow(
   agg: MarketAgentAgg,
   market_id: string,
@@ -109,7 +98,6 @@ function computeMarketAgentRow(
   };
 }
 
-/** Fold one facts row into its agent's aggregate, creating the group lazily. */
 function foldMarketAgentRow(
   byAgent: Map<string, MarketAgentAgg>,
   row: LeaderboardCallFactRow,
@@ -134,8 +122,6 @@ function computeMarketLeaderboardRows(
 ): ComputedAgentMarketRow[] {
   const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
 
-  // Shared scoring facts scoped to one market_id; per-market projection (market
-  // tier, sparkline series) stays local to this Module.
   const rows = queryLeaderboardCallFacts(db, {
     kind: "market",
     includeKinds,
@@ -169,12 +155,8 @@ export interface MarketGridEntry {
 }
 
 /**
- * Batched per-market leaderboard for the markets grid. ONE facts read across
- * every market (scope `markets_grid`), regrouped by market_id then ranked with
- * the exact per-market policy `getLeaderboardForMarket` uses — so the grid's N
- * per-market round-trips collapse to a single query + response. Only markets
- * with at least one scoring call appear; the grid defaults absent markets to an
- * empty top-3, unchanged from the per-market fetch it replaces.
+ * Markets grid: one facts read across every market, regrouped by market_id and ranked like
+ * getLeaderboardForMarket. Markets with no scoring call are omitted.
  */
 export function getLeaderboardForMarkets(
   db: Database.Database,
@@ -190,8 +172,7 @@ export function getLeaderboardForMarkets(
 
   const byMarket = new Map<string, Map<string, MarketAgentAgg>>();
   for (const row of rows) {
-    // The markets_grid scope filters market_id IS NOT NULL in SQL; this guard
-    // narrows the nullable fact column for the group key.
+    // SQL already filters null market_id; this narrows the type.
     if (row.market_id === null) continue;
     let agents = byMarket.get(row.market_id);
     if (!agents) {
@@ -219,21 +200,8 @@ export function getLeaderboardForMarkets(
 }
 
 /**
- * Human labels for a set of market ids, read from each market's own
- * `config_json`.
- *
- * The grid keys on `market_id`, which for a venue market is a 66-character hex
- * condition id. Rendering forty-seven of those on an agent profile is a list
- * of hashes, not a record of what the agent called, so the row carries the
- * market's question alongside its id.
- *
- * `question` before `series_title`: each grid row IS one five-minute window, so
- * the window-specific question ("XRP Up or Down - August 24, 5:25AM-5:30AM ET")
- * distinguishes the rows, while the series title would repeat once per row.
- * Native price markets carry no config_json and resolve to null.
- *
- * Chunked at 300 ids per statement — SQLite caps bound parameters (999 by
- * default) and an agent that has traded for a while has more markets than that.
+ * Market labels from each market's config_json: `question` (window-specific) before `series_title`.
+ * Chunked at 300 ids per statement to stay under SQLite's bound-parameter cap.
  */
 function marketLabels(
   db: Database.Database,
@@ -278,8 +246,6 @@ export function getAgentMarketGrid(
   agent_id: string,
   opts: AgentMarketGridOptions = {},
 ): AgentMarketRow[] {
-  // Shared scoring facts for one agent across every market it touched; this
-  // Module regroups them by market_id for the heat grid.
   const rows = queryLeaderboardCallFacts(db, {
     kind: "agent_markets",
     agent_id,
@@ -297,8 +263,7 @@ export function getAgentMarketGrid(
   };
   const byMarket = new Map<string, Agg>();
   for (const row of rows) {
-    // The agent_markets scope filters market_id IS NOT NULL in SQL; this guard
-    // narrows the nullable fact column for the group key.
+    // SQL already filters null market_id; this narrows the type.
     if (row.market_id === null) continue;
     let a = byMarket.get(row.market_id);
     if (!a) {

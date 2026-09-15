@@ -32,12 +32,7 @@ export interface MurmurAgentCard {
   privacy: {
     submission_modes: ["sealed_fhenix"];
     threshold_network: "fhenix";
-    /**
-     * NOT a boolean. It was `false`, which claimed more than the system
-     * delivers: a grantor grants to any address without on-chain proof of
-     * payment, and the operator already runs one. The value names the
-     * condition the guarantee actually rests on.
-     */
+    /** Not a boolean: a grantor can grant any address without on-chain payment proof, so this names the condition. */
     operator_can_decrypt_pre_horizon: "requires_owner_or_grantor_key";
     /** Plaintext never reaches Murmur on the canonical client-sealed path. */
     operator_holds_plaintext: "never_on_sealed_fhenix";
@@ -109,19 +104,9 @@ export function publicMurmurAgentCard(
     privacy: {
       submission_modes: ["sealed_fhenix"],
       threshold_network: "fhenix",
-      // Honest, not flattering. A hardcoded `false` overstated the guarantee:
-      // grantDecryptAccess grants to ANY address the caller names, with no
-      // on-chain proof of payment, and the production operator already holds
-      // an authorized grantor key (FHENIX_GRANT_PRIVATE_KEY) — no owner
-      // transaction is needed. The HTTP broker enforces payment; a direct
-      // privileged transaction does not go through it. So "no early decrypt"
-      // holds against the operator's SERVERS and against every unprivileged
-      // party, but rests on grantor key custody for the operator themselves.
-      //
-      // What IS unconditional: the contract cannot make a verdict public
-      // before publicRevealAt (allowPublic is gated on the snapshotted
-      // timestamp), and on the canonical client-sealed path Murmur never holds
-      // plaintext at all.
+      // grantDecryptAccess grants any named address with no on-chain payment proof, and the operator
+      // holds a grantor key (FHENIX_GRANT_PRIVATE_KEY), so "no early decrypt" rests on key custody.
+      // Unconditional: nothing goes public before publicRevealAt, and client-sealed calls never give Murmur plaintext.
       operator_can_decrypt_pre_horizon: "requires_owner_or_grantor_key",
       operator_holds_plaintext: "never_on_sealed_fhenix",
       public_reveal_enforced_onchain: true,

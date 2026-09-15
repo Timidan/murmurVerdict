@@ -1,21 +1,11 @@
 // ─── Provider terms — an agent owner prices their own signal ───────────────
 //
-// Murmur is a referee, not the seller. Price and cohort size used to be single
-// deployment-wide env values, which meant the operator set the terms of every
-// provider's product. These routes hand that back to the owner.
-//
 //   GET    /v1/account/agents/:slug/provider-terms   read current terms
 //   PUT    /v1/account/agents/:slug/provider-terms   set or update them
 //   DELETE /v1/account/agents/:slug/provider-terms   stop selling access
 //
-// Two limits are deliberately kept apart:
-//
-//   max_subscribers_per_call  the OWNER's business ceiling (optional)
-//   deliverable cap           what this deployment can grant inside the
-//                             delivery budget — physics, not policy
-//
-// The response reports both so an owner asking for more than murmur can serve
-// is told plainly rather than silently clamped.
+// max_subscribers_per_call is the owner's ceiling; the deliverable cap is what the deployment
+// can grant inside the delivery budget. Both are reported so a clamp is visible.
 import type Database from "better-sqlite3";
 import { z } from "zod";
 
@@ -31,31 +21,16 @@ import { SCHEMA_VERSION } from "./schema.js";
 
 export const ProviderTermsBodySchema = z
   .object({
-    /**
-     * Atomic units of the settlement asset, as a decimal string. A string, not
-     * a number: prices can exceed the safe integer range in low-decimal
-     * assets, and a float would quietly round somebody's price.
-     */
+    /** Atomic units as a decimal string; a float would round the price. */
     price_atoms: z.string().regex(/^[0-9]+$/, "price_atoms must be decimal digits"),
-    /**
-     * Must be the asset the settlement rail actually charges in.
-     *
-     * Accepting any label let an owner set `currency: "ETH"` with an
-     * 18-decimal price: the buyer was still challenged for that number of USDC
-     * atoms, and the receipt was stamped ETH. A currency nothing enforces is
-     * not a currency, it is a mislabel on real money.
-     */
+    /** Must be the asset the settlement rail actually charges in. */
     currency: z.literal(SETTLEMENT_CURRENCY),
     /**
      * Bump when the price changes. It stamps which terms a subscriber agreed
      * to, so receipts stay attributable across a reprice.
      */
     pricing_version: z.string().min(1).max(32),
-    /**
-     * Optional. Omit (or null) to serve as many subscribers as murmur can
-     * deliver to. This is a business ceiling; it never raises the deliverable
-     * limit.
-     */
+    /** Optional business ceiling; null serves as many as murmur can deliver. Never raises the deliverable limit. */
     max_subscribers_per_call: z.number().int().positive().nullable().optional(),
   })
   .strict()
@@ -73,35 +48,18 @@ export interface ProviderTermsDeps {
   db: Database.Database;
   accountId: string;
   slug: string;
-  /**
-   * The venue series being priced (migration 075). Terms are per-series now —
-   * there is no agent-wide default — so every read/write names one. Empty means
-   * the request did not, and the surface answers 400 rather than guessing.
-   */
+  /** Venue series being priced; terms are per-series. Empty answers 400. */
   venueSeriesId: string;
-  /**
-   * What this deployment can actually grant for one call inside the delivery
-   * budget. Reported alongside the owner's number so a clamp is visible.
-   */
+  /** What this deployment can grant for one call inside the delivery budget. */
   deliverableCap: number | undefined;
-  /**
-   * Murmur's cut, in basis points. `undefined` means "read it from the
-   * environment", which is what the mounted routes do; tests pass it directly.
-   * `null` states outright that none is configured.
-   */
+  /** Murmur's cut in bps. `undefined` reads the environment; `null` means none configured. */
   protocolFeeBps?: number | null;
   now: () => Date;
 }
 
 /**
- * Setting terms is a promise that calls will be sellable. Sealing a call for a
- * selling agent freezes the protocol fee onto it, and refuses when there is no
- * fee to freeze — so without this check an owner would price their signal
- * successfully and only discover the problem when their next submission was
- * rejected, or when a buyer could not be quoted.
- *
- * 503, not 400: nothing is wrong with what the owner sent. The deployment is
- * not ready to sell, and the message names the variable that makes it ready.
+ * Sealing a selling agent's call refuses without a fee, so terms without one are a 503
+ * (deployment not ready), not a 400.
  */
 function configuredFeeBps(deps: ProviderTermsDeps): number | null {
   return deps.protocolFeeBps === undefined
@@ -147,11 +105,7 @@ function view(
   };
 }
 
-/**
- * Terms are per-series (migration 075). A request that names no series is
- * malformed, not a hint to fall back to some agent-wide default — there is
- * none. 400, with the parameter that fixes it.
- */
+/** Terms are per-series with no agent-wide default; naming no series is a 400. */
 function seriesRequired(): ProviderTermsResponse {
   return {
     status: 400,

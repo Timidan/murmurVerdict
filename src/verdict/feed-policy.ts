@@ -13,16 +13,9 @@ export interface FeedSlaPolicy {
 }
 
 /**
- * NOT the reveal authority for feed packets.
- *
- * A packet's on-chain reveal time comes from its market's immutable clock
- * snapshot (see fhenix-gateway-reservations.ts). This helper predates that and
- * survives only for the `after_resolution` bound and its tests — the feed
- * contract schema no longer accepts `fixed_delay`/`after_horizon`/`manual`,
- * because murmur cannot enforce a per-packet delay against a fixed market
- * schedule and advertising one would be a privacy promise that does not hold.
- *
- * Do not reintroduce this into the reservation path.
+ * NOT the reveal authority for feed packets: reveal time comes from the market's clock snapshot
+ * (fhenix-gateway-reservations.ts). Kept for the `after_resolution` bound and its tests.
+ * Do not use it in the reservation path.
  */
 export function deriveFeedRevealAfter(
   feed: Pick<

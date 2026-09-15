@@ -110,13 +110,8 @@ export function expectedRevealOpenMsForMarket(
 }
 
 /**
- * When the MARKET resolves — the venue determines the outcome here.
- *
- * Deliberately separate from {@link expectedRevealOpenMsForMarket}, which is
- * when MURMUR unseals. Reveal is embargoed past resolution, so using the reveal
- * time as a prediction's horizon would assert the market resolves at murmur's
- * disclosure deadline. Adapters that do not distinguish the two fall back to
- * the reveal value, which is only correct when the embargo is zero.
+ * When the market resolves, distinct from {@link expectedRevealOpenMsForMarket} (when murmur unseals).
+ * Falls back to the reveal time, which is only correct with zero embargo.
  */
 export function marketResolutionMsForMarket(
   market: Pick<
@@ -185,10 +180,7 @@ export function binaryCommitmentFromReveal(input: {
   accepted_at: string;
 }): Commitment {
   const acceptedAtMs = parseIsoMs(input.accepted_at, "accepted_at");
-  // A commitment's horizon is when the MARKET resolves, not when murmur
-  // unseals. These were the same value until reveals became embargoed; using
-  // the reveal time here would overstate the horizon by the whole embargo and
-  // claim the venue settles later than it does.
+  // A commitment's horizon is market resolution, not murmur's embargoed reveal.
   const expectedResolveMs = marketResolutionMsForMarket(input.market, acceptedAtMs);
   return {
     marketRef: marketRefForMarket(input.market),

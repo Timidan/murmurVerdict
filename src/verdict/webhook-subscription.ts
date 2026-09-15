@@ -40,13 +40,9 @@ export interface RegisterWebhookSubscriptionInput {
   urlPolicy: WebhookUrlPolicy;
   urlDnsLookup?: WebhookDnsLookup;
   /**
-   * FOLLOW-UP 1 — verified caller identity (account only). The
-   * `/v1/webhooks` router authenticates the ACCOUNT and lets this
-   * surface resolve the agent from `body.agent_slug`, so unknown /
-   * unowned slugs collapse into one uniform 403 instead of leaking
-   * existence via 404/403 split at auth time. Pure-surface unit tests
-   * may omit this; when undefined the ownership check is skipped
-   * (preserves existing smoke coverage of URL/DNS/cap branches).
+   * Verified caller account. When set, unknown and unowned slugs return the
+   * same 403 so slug existence doesn't leak. Unit smokes may omit it, which
+   * skips the ownership check.
    */
   auth?: { account_id: string };
 }
@@ -180,11 +176,8 @@ export async function registerWebhookSubscription(
     return invalidWebhookUrl("url too long");
   }
 
-  // Fix 4 + FOLLOW-UP 3 — bounce cheap-rejection requests (missing
-  // agent_slug, unknown agent, cap reached) BEFORE the validateWebhookUrl
-  // DNS lookup. The cap pre-check is advisory; the authoritative re-check
-  // happens inside db.transaction below so two concurrent writers cannot
-  // both pass the cap and both insert.
+  // Cheap rejections run before the DNS lookup in validateWebhookUrl. The cap
+  // pre-check is advisory; the transaction below re-checks it.
   let agentSlug: string;
   if (typeof body.agent_slug === "string" && body.agent_slug.length > 0) {
     agentSlug = body.agent_slug.slice(0, 64);
@@ -199,27 +192,14 @@ export async function registerWebhookSubscription(
     };
   }
 
-  // FOLLOW-UP 1 — uniform ownership check. When the caller is
-  // authenticated, look up the slug and the owning account in one
-  // place and collapse "unknown slug" + "slug owned by someone else"
-  // into the SAME 403 response so an attacker holding any valid
-  // Privy/api-key cred can't distinguish the two and probe slug
-  // existence. Runs BEFORE the cap pre-check so cap state for other
-  // accounts' slugs also doesn't leak.
+  // Authenticated: unknown and foreign slugs get the same 403, before the cap
+  // check, so neither slug existence nor other accounts' cap state leaks.
+  // Unauthenticated (unit smokes only; routes/webhooks.ts always passes auth)
+  // keeps the 404 shape.
   //
-  // The unauthenticated path (input.auth undefined) preserves the
-  // pre-FOLLOW-UP-1 404/409 shape — used by surface-level unit smokes
-  // that exercise the URL/DNS/cap branches without standing up an
-  // auth dispatcher. Production callers route through
-  // src/verdict/routes/webhooks.ts, which always supplies auth.
-  // `agentsRepo.bySlug` is case-insensitive (`COLLATE NOCASE`) but the
-  // webhooks table comparisons (`countActiveForAgentSlug`, INSERT, fanout
-  // matching) are case-sensitive. Always replace the request-supplied
-  // slug with the canonical `display_slug` from the agent row before any
-  // downstream operation, so cap counting + delivery routing share one
-  // key. Skipping this would let a caller register "alice", "Alice",
-  // "ALICE" against the same agent and exceed the per-agent cap, plus
-  // strand subscriptions that fanout never matches.
+  // bySlug is case-insensitive but webhook matching is case-sensitive, so
+  // always swap in the canonical display_slug; otherwise "alice"/"Alice" could
+  // exceed the cap and strand subscriptions fanout never matches.
   if (input.auth) {
     const agentRow = agentsRepo.bySlug(input.db, agentSlug);
     const owner = agentRow ? getAccountForAgent(input.db, agentRow.agent_id) : null;
@@ -248,11 +228,8 @@ export async function registerWebhookSubscription(
     return capReachedResult();
   }
 
-  // SSRF + URL shape validation runs LAST among the rejection paths
-  // because it involves a DNS lookup. Order: cheap → expensive. Must
-  // run OUTSIDE the db.transaction below — better-sqlite3 transactions
-  // are synchronous and any await inside the callback breaks the
-  // BEGIN/COMMIT window.
+  // SSRF/URL validation runs last because it does DNS. Must stay outside the
+  // transaction: better-sqlite3 transactions are synchronous; an await breaks them.
   const validation = await validateWebhookUrl(body.url, input.urlPolicy, {
     dnsLookup: input.urlDnsLookup,
   });
@@ -268,14 +245,9 @@ export async function registerWebhookSubscription(
     now: input.now,
   });
 
-  // FOLLOW-UP 3 — re-check the cap inside a tx so a concurrent writer
-  // racing through the pre-check + DNS window cannot exceed the cap.
-  // better-sqlite3 BEGINs deferred and escalates to IMMEDIATE on the
-  // first write; competing writers can throw SQLITE_BUSY / SQLITE_BUSY_
-  // SNAPSHOT rather than return false. Catch those and translate to a
-  // post-failure recount: if the cap is now full the loser becomes a
-  // clean 409 (the winner's row landed); otherwise the original error
-  // re-throws so a legitimate DB failure still surfaces as 5xx.
+  // Re-check the cap inside a tx so a writer racing through the DNS window
+  // can't exceed it. A competing writer may throw SQLITE_BUSY instead: recount,
+  // and return 409 if the cap is now full, else re-throw.
   let committed: boolean;
   try {
     committed = input.db.transaction((): boolean => {
@@ -326,11 +298,6 @@ function capReachedResult(): RegisterWebhookSubscriptionResult {
   };
 }
 
-/**
- * Detect SQLite busy / snapshot errors thrown by better-sqlite3 under
- * multi-writer contention. better-sqlite3 surfaces the underlying SQLite
- * error code on the thrown Error's `code` property.
- */
 function isSqliteBusy(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const code = (err as { code?: unknown }).code;
@@ -367,10 +334,8 @@ export function loadWebhookSubscription(
       body: { code: "not_found", message: "webhook not found" },
     };
   }
-  // Same secret DELETE requires. Reading a subscription discloses its
-  // delivery URL and failure counts — private operational data — and this
-  // route was anonymous, bounded only by an unguessable id. Checked AFTER the
-  // existence probe so the refusal is indistinguishable either way.
+  // Same secret DELETE requires: the row discloses its delivery URL and
+  // failure counts.
   if (!input.secretEquals(input.providedSecret, row.secret)) {
     return {
       status: 403,

@@ -81,9 +81,7 @@ try {
     body: {
       conditionId: futureConditionId,
       resolution_class: "event_binary",
-      // Explicit: an admin registration with no series schedule may only
-      // create a DRAFT. A listed market without an embargo stamp disagrees
-      // with its own on-chain schedule and rejects every submission.
+      // Without a series schedule only a draft is allowed.
       status: "draft",
     },
   });
@@ -97,10 +95,7 @@ try {
   assert.equal(registeredBody.market?.horizon_seconds, 3_600);
   assert.equal(registeredBody.market?.status, "draft");
 
-  // Without a series schedule, anything beyond draft must be refused: an
-  // unscheduled market has no embargoSec stamp, so the daemon's expected
-  // reveal time disagrees with the chain and the acceptance guard rejects
-  // every submission to it, permanently and silently.
+  // Without a series schedule, anything beyond draft is refused.
   const unscheduledListed = await registerPolymarketMarketFromAdminBody({
     db,
     gammaLookup: {
@@ -126,15 +121,8 @@ try {
     "schedule_required",
   );
 
-  // ORDERING: a specific data problem must win over the generic config one.
-  // An unusable Gamma end date on a `listed`, unscheduled request must report
-  // 422 market_end_date_unusable, NOT 400 schedule_required — otherwise the
-  // operator is told to supply a schedule when the real problem is that the
-  // market has no usable end time. This has regressed twice.
-  //
-  // `status` is stated explicitly: it must keep BOTH guards live. The default
-  // is `draft`, under which schedule_required cannot fire at all, so relying
-  // on the default here would silently stop testing the ordering.
+  // Ordering: an unusable end date on a listed, unscheduled request is 422, not 400 schedule_required.
+  // `status` is explicit so both guards stay live.
   const unusableEnd = await registerPolymarketMarketFromAdminBody({
     db,
     gammaLookup: {
@@ -190,9 +178,7 @@ try {
   assert.equal(past.status, 422);
   assert.equal((past.body as { code?: string }).code, "market_already_resolved");
 
-  // The default status is `draft` — the only value that is valid without a
-  // schedule. It used to default to `listed`, which made the plain
-  // {conditionId} request a guaranteed 400.
+  // The default status is `draft`, the only one valid without a schedule.
   const defaulted = await registerPolymarketMarketFromAdminBody({
     db,
     gammaLookup: {
@@ -215,9 +201,7 @@ try {
     "draft",
   );
 
-  // A schedule supplied over HTTP must be accepted and persisted atomically.
-  // Without this the manual fallback could only ever create drafts, so it was
-  // unusable for the job it exists for: registering a market discovery missed.
+  // A schedule supplied over HTTP is accepted and persisted atomically.
   const scheduledId = `0x${"78".repeat(32)}`;
   const scheduledEnd = "2026-06-12T10:30:00Z";
   const scheduled = await registerPolymarketMarketFromAdminBody({
@@ -273,9 +257,7 @@ try {
     "public reveal is embargoed past resolution by embargoSec",
   );
 
-  // A bound market must not be retimed, demoted, or stripped of its embargo
-  // stamp by a re-registration. `market_clocks` is insert-only, but the market
-  // row's status and config are upserted, so all three used to be reachable.
+  // Re-registration can't retime, demote or strip the embargo stamp of a bound market.
   const bareRetry = await registerPolymarketMarketFromAdminBody({
     db,
     gammaLookup: {
@@ -424,9 +406,7 @@ try {
     "the cap consumers armed against is unchanged",
   );
 
-  // Status-only changes ARE allowed on a bound market: freezing one is an
-  // emergency lever, and it must not require restating a schedule that may no
-  // longer be derivable from Gamma's (drifted) end date.
+  // Status-only changes are allowed on a bound market, with no Gamma call or schedule.
   const frozen = await registerPolymarketMarketFromAdminBody({
     db,
     gammaLookup: {

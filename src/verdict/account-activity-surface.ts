@@ -1,15 +1,8 @@
 // ─── Account activity history ────────────────────────────────────────────────
 //
-// Account-scoped union of the two gateway attempt tables, joined to
-// runtime-key metadata: what each agent credential DID, when, and with what
-// outcome. This is deliberately named activity history, not audit — attempt
-// rows are mutable lifecycle state (status/tx_hash advance), unlike the
-// append-only agent_security_events stream. Rows carry an immutable
-// account_id stamped at reservation, so historical activity can't be
-// misattributed when agent ownership later changes.
-//
-// Keyset pagination on (created_at, attempt_id) — LIMIT/OFFSET would skip or
-// repeat rows as new attempts land between pages.
+// Account-scoped union of both gateway attempt tables with runtime-key metadata.
+// Activity history, not audit: attempt rows are mutable. account_id is stamped at reservation,
+// so later ownership changes don't misattribute. Keyset pagination on (created_at, attempt_id).
 
 import type Database from "better-sqlite3";
 
@@ -87,9 +80,7 @@ export function listAccountActivityResponse(input: {
     before_id: input.before_id ?? "",
     limit,
   }) as AccountActivityRow[];
-  // Redact on READ as well as at persist time: provider errors can embed RPC
-  // URLs whose path/query carry operator credentials, and rows written before
-  // persist-side redaction existed must never serve them to account holders.
+  // Redact on read too: older rows may carry RPC URLs with operator credentials.
   for (const row of rows) {
     if (row.last_error) row.last_error = redactedErrorText(row.last_error);
   }

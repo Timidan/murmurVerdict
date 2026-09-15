@@ -36,14 +36,7 @@ export interface OperatorAlertSourceOptions {
   servedAt: string;
   liveCanaries?: LiveCanaryProvider | null;
   gatewayStuckAfterMs?: number;
-  /**
-   * The contract this deployment actually runs. Gateway alerts are scoped to
-   * it: attempts against a RETIRED contract are history, not incidents, and
-   * re-raising them forever buries the alerts that matter. Five terminal
-   * failures on a contract replaced weeks ago were sitting at ~20,000
-   * occurrences and climbing, above the one warning that was correctly firing.
-   * Unset = no scoping, which is the old behaviour.
-   */
+  /** Contract this deployment runs; gateway alerts are scoped to it. Unset = no scoping. */
   fhenixContractAddress?: string | null;
   fhenixRevealGraceSec?: number;
   identityDueSoonHours?: number;
@@ -114,9 +107,7 @@ function gatewayAlerts(
 ): OperatorAlertInput[] {
   const staleBefore = isoFromMs(Date.parse(servedAt) - Math.max(60_000, stuckAfterMs));
   const alerts: OperatorAlertInput[] = [];
-  // An attempt against a contract this deployment no longer runs cannot be
-  // acted on — there is nothing to retry it against. Case-insensitive because
-  // addresses are stored lowercased but configured checksummed.
+  // Case-insensitive: addresses are stored lowercase but configured checksummed.
   const wanted = contractAddress?.toLowerCase() ?? null;
   const live = (a: { contract_address?: string | null }): boolean =>
     wanted === null || (a.contract_address ?? "").toLowerCase() === wanted;
@@ -205,11 +196,8 @@ function fhenixLifecycleAlerts(
   servedAt: string,
   revealGraceSec = DEFAULT_REVEAL_GRACE_SEC,
 ): OperatorAlertInput[] {
-  // Graduated worker-health alerting — the old automatic
-  // time-only `missed` terminalization is gone. An overdue-past-grace pending
-  // call warns; still unrevealed REVEAL_ESCALATE_AFTER_SEC later it escalates
-  // to critical. This fires whether or not the fallback worker is enabled, so
-  // accepting sealed submissions without an active funded worker still pages.
+  // Overdue past grace warns; REVEAL_ESCALATE_AFTER_SEC later it's critical.
+  // Fires whether or not the fallback worker is enabled.
   const servedMs = Date.parse(servedAt);
   const warnCutoff = isoFromMs(servedMs - Math.max(0, revealGraceSec) * 1_000);
   const escalateCutoffMs =
@@ -328,12 +316,8 @@ function polymarketDiscoveryAlerts(
       }));
     }
   }
-  // A registration whose tx never confirmed stays `broadcasting` forever: we
-  // deliberately do NOT rebroadcast at a fresh nonce (that could gap the shared
-  // relayer lane and stall every later write), and there is no transaction
-  // manager for same-nonce replacement yet. Without this alert the state was
-  // completely silent — the tick reports success and only terminal `failed`
-  // rows were surfaced.
+  // An unconfirmed registration stays `broadcasting`: no rebroadcast at a fresh nonce (it could
+  // stall the shared relayer lane) and no same-nonce replacement yet, so alert on it.
   for (const row of polymarketDiscoveryRepo.listByStatus(db, "broadcasting", 50)) {
     const startedAt = row.broadcast_started_at ?? row.updated_at;
     const stuckMs = Date.parse(servedAt) - Date.parse(startedAt);

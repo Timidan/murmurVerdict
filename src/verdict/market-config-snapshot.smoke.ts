@@ -18,9 +18,7 @@ const dbPath = join(tmp, "test.db");
 
 try {
   const db = openDb({ path: dbPath });
-  // Seed the fixture rather than leaning on a seeded catalogue: murmur ships
-  // no markets of its own (MIGRATION_062 removed the last native rows), so a
-  // fresh database is intentionally empty until an external one is registered.
+  // Seed a market; murmur ships none of its own, so a fresh database is empty.
   const marketId = `0x${"5c".repeat(32)}`;
   marketsRepo.upsertExternalMarket(db, {
     market_id: marketId,

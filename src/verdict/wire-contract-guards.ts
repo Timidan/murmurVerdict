@@ -1,27 +1,12 @@
-// Compile-time producer guards for the shared REST wire types.
+// Compile-time guards (no runtime code) pinning the shared wire types
+// (src/types/wire-*.ts, used by the dashboard) to the daemon's authoritative
+// types. A daemon rename/removal/retype fails the daemon build instead of
+// shipping `undefined` to the SPA.
 //
-// This module contains NO runtime code. It pins every browser-safe wire type
-// (src/types/wire-*.ts, consumed by the dashboard via the `@shared` alias)
-// against the daemon's AUTHORITATIVE type — the zod-inferred type, the exported
-// presenter/row type, or the surface function's return type. It follows the
-// exact idiom already used for the SSE channel in src/verdict/events.ts:
-//
-//   type _X = Assert<Equals<WireX, DaemonX>>;
-//
-// If the daemon renames / removes / retypes a field the wire contract depends
-// on, one of these assertions stops being `true` and the DAEMON build fails —
-// forcing the shared wire type (and therefore the dashboard) to be updated in
-// lockstep, instead of the rename silently shipping as `undefined` to the SPA.
-//
-// Two relations are used:
-//   • Equals<A, B>   — bidirectional (the strong pin; matches events.ts).
-//   • Conforms<D, W> — one-directional "the daemon's output D is assignable to
-//                      the wire contract W". Used where the wire type is a
-//                      deliberate permissive superset (e.g. MarketRow's index
-//                      signature, the call projections' optional post-reveal
-//                      plaintext keys, snapshots the dashboard reads a subset
-//                      of). It still fails on any rename/removal/retype of a
-//                      field the wire contract REQUIRES.
+//   • Equals<A, B>   — bidirectional; the strong pin.
+//   • Conforms<D, W> — daemon output D is assignable to wire W. For wire types
+//                      that are deliberately permissive supersets; still fails
+//                      on any change to a field the wire contract requires.
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
@@ -238,11 +223,8 @@ type _AgentCallRow = Assert<Conforms<PublicAgentCallProjection, WireAgentCallRow
 type _FullCall = Assert<Conforms<PublicSealedCallView, WireFullCall>>;
 type _MarketCallRow = Assert<Conforms<PublicMarketCallProjection, WireMarketCallRow>>;
 
-// The dashboard's shared call-status union (src/types/wire-call-status.ts,
-// consumed by AgentPage / MarketDetailPage predicates) is pinned to the
-// daemon's authoritative CallStatus enum with the strong bidirectional relation
-// — a daemon-side add/rename/removal of a lifecycle status fails THIS build
-// until the shared union (and the dashboard classifiers) are updated in lockstep.
+// Strong relation: adding, renaming, or removing a status fails this build
+// until the shared union and the dashboard classifiers are updated.
 type _CallStatus = Assert<Equals<WireCallStatus, CallStatus>>;
 
 type _TodayFeed = Assert<Conforms<TodayFeed, WireTodayFeed>>;
@@ -263,20 +245,16 @@ type _MarketOracleRef = Assert<Conforms<PublicMarketOracleRef, WireMarketOracleR
 type _MarketOracleHealth = Assert<Equals<WireMarketOracleHealth, PublicMarketOracleHealth>>;
 type _MarketVenueSnapshot = Assert<Conforms<MarketVenueSnapshot, WireMarketVenueSnapshot>>;
 type _MarketVenuePricePoint = Assert<Conforms<MarketVenuePricePoint, WireMarketVenuePricePoint>>;
-// Strong relation: the matrix's window grouping and phase machine are driven
-// entirely by these instants, so a daemon-side rename must break this build
-// rather than reach the dashboard as `undefined` and silently collapse every
-// market into one untimed group.
+// Strong relation: the matrix's window grouping and phase machine run on
+// these instants; a missing one collapses every market into one untimed group.
 type _MarketClock = Assert<Equals<WireMarketClock, MarketClockSnapshot>>;
 
 // ── Meta ────────────────────────────────────────────────────────────────────
 type _MetaResponse = Assert<Conforms<ReturnType<typeof publicMetaSurface>, WireMetaResponse>>;
 
 // ── Marketplace ─────────────────────────────────────────────────────────────
-// The catalog body is pinned WHOLE, so a rename anywhere inside series /
-// agents / listings / track_record fails this build. `marketplaceListingsResponse`
-// itself types `status` as plain `number`, so OkBody<> cannot narrow its union —
-// the exported body type IS the authoritative shape and is pinned directly.
+// The catalog body is pinned whole. `marketplaceListingsResponse` types
+// `status` as plain `number`, so OkBody<> can't narrow it; the body type is pinned.
 type _MarketplaceSeries = Assert<Conforms<MarketplaceSeriesRow, WireMarketplaceSeries>>;
 type _MarketplaceTrackRecord = Assert<
   Conforms<MarketplaceTrackRecord, WireMarketplaceTrackRecord>
@@ -286,13 +264,10 @@ type _MarketplaceCurrentTerms = Assert<
 >;
 type _MarketplaceListings = Assert<Conforms<MarketplaceListingsBody, WireMarketplaceListings>>;
 
-// The sellable envelope is typed `body: unknown` on the daemon side, so only
-// the ROW is pinnable — and the row is what carries the money. `locked_terms`
-// gets the strong bidirectional relation because a UI that loses it silently
-// falls back to quoting the standing `current_terms` beside a buy affordance,
-// which is the single most expensive bug this pair of surfaces can produce.
-// The row relation stays one-directional: it also carries deprecated top-level
-// price aliases the wire contract deliberately does not mirror.
+// The daemon types the sellable envelope `body: unknown`, so only the row is
+// pinned. `locked_terms` is Equals: a UI that loses it quotes `current_terms`
+// beside a buy button. The row is Conforms; it carries deprecated price
+// aliases the wire omits.
 type _InventoryStatus = Assert<Equals<WireInventoryStatus, InventoryStatus>>;
 type _LockedTerms = Assert<Equals<WireLockedTerms, LockedTerms>>;
 type _SellableCall = Assert<Conforms<SellableCallRow, WireSellableCall>>;
@@ -439,10 +414,8 @@ type _OperatorAlert = Assert<Conforms<PublicOperatorAlert, WireOperatorAlert>>;
 type _OperatorAlertsSnapshot = Assert<
   Conforms<{ schema_version: number } & OperatorAlertsSnapshot, WireOperatorAlertsSnapshot>
 >;
-// The nested `snapshot` inside the tick result is the RAW OperatorAlertsSnapshot
-// (no top-level schema_version — that wrapper is only added on the GET path,
-// pinned by _OperatorAlertsSnapshot above), so it is excluded here and the
-// schema_version + scan + delivery envelope is pinned instead.
+// The nested `snapshot` is the raw OperatorAlertsSnapshot without the GET
+// path's schema_version wrapper, so it is excluded; the envelope is pinned.
 type _OperatorAlertTickResponse = Assert<
   Conforms<
     { schema_version: number } & Omit<OperatorAlertTickResult, "snapshot">,
@@ -454,11 +427,8 @@ type _FeedSlaIncidentStatus = Assert<Equals<WireFeedSlaIncidentStatus, FeedSlaIn
 type _FeedSlaIncident = Assert<
   Conforms<ReturnType<typeof publicFeedSlaIncident>, WireFeedSlaIncident>
 >;
-// refund_recommendations / slash_recommendations are a daemon-private
-// ActionCounts object; the dashboard's long-standing wire type models them as a
-// number-map and reads them as counts. That is a pre-existing dashboard/daemon
-// disagreement, and resolving it would mean editing out-of-scope dashboard
-// files — so those two fields are excluded and every other field is pinned.
+// Known mismatch, excluded: the daemon's refund/slash_recommendations are an
+// ActionCounts object; the wire type models them as a number-map.
 type FeedRecFields = "refund_recommendations" | "slash_recommendations";
 type _FeedAvailabilitySummary = Assert<
   Conforms<Omit<FeedAvailabilitySummary, FeedRecFields>, Omit<WireFeedAvailabilitySummary, FeedRecFields>>

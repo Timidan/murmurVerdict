@@ -8,13 +8,7 @@ import { openDb } from "./db.js";
 import { marketsRepo } from "./repos/market-registry-repo.js";
 import { polymarketDiscoveryRepo } from "./repos/polymarket-discovery-repo.js";
 
-// An operator halt must survive discovery.
-//
-// The first version of this marker lived on `polymarket_discovery_state` and
-// was set with an UPDATE. That silently marked NOTHING for a market discovery
-// had never seen — a manually registered one has no ledger row — so the halt
-// evaporated and the next tick relisted the market. It now lives on `markets`,
-// the row the admin path actually operates on.
+// An operator halt must survive discovery, including for markets discovery never saw.
 process.stdout.write("murmur operator halt smoke\n");
 
 const MARKET = `0x${"ab".repeat(32)}`;
@@ -65,7 +59,7 @@ try {
   assert.equal(marketsRepo.get(db, MARKET)?.status, "frozen");
   assert.equal(marketsRepo.isOperatorHalted(db, MARKET), true);
 
-  // THE REGRESSION: a market discovery has never seen must halt just the same.
+  // A market discovery has never seen must halt just the same.
   marketsRepo.haltByOperator(db, UNSEEN, "retired", "2026-07-26T02:00:00.000Z");
   assert.equal(
     marketsRepo.isOperatorHalted(db, UNSEEN),

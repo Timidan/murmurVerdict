@@ -42,10 +42,8 @@ export interface SealedCallAcceptanceInput {
   verifiedSubmit: VerifiedSealedCallSubmitted;
   newCallId?: SealedCallIdAdapter;
   /**
-   * Murmur's cut, in basis points, frozen onto this call alongside the
-   * provider's price. Resolved from MURMUR_PROTOCOL_FEE_BPS when omitted, and
-   * only for an agent that actually sells — a call with no terms has no split
-   * to record.
+   * Murmur's cut in bps, frozen onto this call with the provider's price.
+   * Defaults to MURMUR_PROTOCOL_FEE_BPS; only used when the agent sells.
    */
   protocolFeeBps?: number;
   now: () => Date;
@@ -84,10 +82,9 @@ export async function acceptSealedCall(
 
   const agentId = requireSealedCallAcceptanceAgent(authResult);
 
-  // Shared by the pre-insert duplicate branch AND unique-race recovery: both
+  // Shared by the pre-insert duplicate branch and unique-race recovery: both
   // must prove the existing call is the SAME sealed Fhenix event before
-  // returning an idempotent 200 (a blind recovery return let two concurrent
-  // DIFFERENT bodies both report success.
+  // returning an idempotent 200.
   const replayFromExisting = (existingCallId: string): AcceptSealedCallResult => {
     const existingCtx = submissionsRepo.loadResolverContext(db, existingCallId);
     if (existingCtx?.privacy_mode !== "sealed_fhenix") {
@@ -170,21 +167,16 @@ export async function acceptSealedCall(
     accepted_at: verifiedSubmit.accepted_at,
     reveal_open_at: verifiedSubmit.reveal_open_at,
   });
-  // Read BEFORE the transaction so the snapshot below is a plain value, not a
-  // query interleaved with writes. Terms are per-series now (migration 075): a
-  // market with no venue_series_id has no series to price against, so it reads
-  // as no-terms / unsellable — identical to today's owner-set-nothing path.
+  // Read before the transaction so the snapshot is a plain value. Terms are
+  // per-series: a market with no venue_series_id reads as no terms (unsellable).
   const providerTerms = market.venue_series_id
     ? agentProviderTermsRepo.get(db, {
         agentId,
         venueSeriesId: market.venue_series_id,
       })
     : null;
-  // The protocol fee is resolved BEFORE the transaction too, and only when this
-  // agent sells. It throws when unconfigured, and that is the point: a priced
-  // call whose fee snapshot is NULL is a sale whose split can never be
-  // reconstructed. Failing the seal costs one rejected submission; snapshotting
-  // NULL silently costs a ledger nobody can audit.
+  // Throws when unconfigured, on purpose: a priced call with a NULL fee
+  // snapshot is a sale whose split can never be reconstructed.
   const providerFeeBps = providerTerms
     ? input.protocolFeeBps ??
       requireProtocolFeeBps(
@@ -228,37 +220,24 @@ export async function acceptSealedCall(
       binary_index_ct_hash: verifiedSubmit.binary_index_ct_hash,
       confidence_ct_hash: verifiedSubmit.confidence_ct_hash,
       reveal_open_at: verifiedSubmit.reveal_open_at,
-      // From the verified on-chain event — never client-supplied. A caller who
-      // could set this would submit late (with more information) and simply
-      // claim the call was sellable.
+      // From the verified on-chain event, never client-supplied; otherwise a
+      // late submitter could claim the call was sellable.
       submission_class: verifiedSubmit.submission_class,
       created_at: nowIso(now()),
-      // SNAPSHOT the provider's terms as they stand right now.
-      //
-      // The owner may reprice at any moment; pricing a purchase from the live
-      // agent_provider_terms row would let that change reach calls already
-      // sold. Freezing them here is the same rule the market clock follows:
-      // terms someone armed against never move.
-      //
-      // Null when the agent sells no access — a perfectly normal call.
+      // Snapshot the provider's terms so a later reprice can't reach calls
+      // already sold. Absent when the agent sells no access.
       ...(providerTerms
         ? {
             provider_price_atoms: providerTerms.price_atoms,
             provider_currency: providerTerms.currency,
             provider_pricing_version: providerTerms.pricing_version,
             provider_max_subscribers: providerTerms.max_subscribers_per_call,
-            // The split rides with the price. An operator repricing the
-            // protocol fee must not re-cut calls already on offer, for the
-            // same reason a provider's reprice must not.
+            // Frozen with the price; a protocol fee change must not re-cut it.
             provider_fee_bps: providerFeeBps,
           }
         : {}),
     });
-    // Externally-resolved markets never anchor a t0 price, so a new sealed
-    // call enters pending_t1 directly — the resolver's single adapter loop is
-    // the only settlement surface. `pending_t0` survives in the persisted
-    // status union purely so pre-existing rows can still drain (see
-    // resolver.ts DRAINING_STATUSES); nothing writes it any more.
+    // External markets never anchor a t0 price, so calls go straight to pending_t1.
     submissionsRepo.setStatus(db, callId, "pending_t1");
     usageRepo.emit(
       db,

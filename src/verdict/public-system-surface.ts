@@ -30,22 +30,10 @@ export interface PublicSystemClock {
 
 export interface PublicSystemReadInstant {
   servedAt: Date;
-  /** Is a reveal worker CONFIGURED on this deployment?
-   *
-   *  Deliberately named for what it can prove. The daemon derives it from
-   *  `adapters.fhenixRevealWorker !== null`, which means constructed — not
-   *  started, funded, or ticking successfully. Do not read it as liveness.
-   *
-   *  REQUIRED for the same reason as the field below: an optional guarantee
-   *  defaults to a promise. */
+  /** Is a reveal worker configured (constructed, not proven live)? Required so it never defaults to a promise. */
   revealWorkerConfigured: boolean;
-  /** Does the gateway accept PLAINTEXT verdicts and seal them server-side
-   *  (MURMUR_OWNED_SEALING_ENABLED)?
-   *
-   *  REQUIRED, deliberately. As an optional field an omission defaulted to
-   *  the privacy-positive answer, so any future call site that forgot it
-   *  would silently re-publish the overclaim this was added to remove. A
-   *  guarantee has to be stated to be made. */
+  /** Does the gateway accept plaintext verdicts and seal them server-side (MURMUR_OWNED_SEALING_ENABLED)?
+   *  Required so an omission can't default to the privacy-positive answer. */
   acceptsPlaintextSubmission: boolean;
 }
 
@@ -182,24 +170,13 @@ export function publicHealthSurface(input: PublicSystemReadInstant) {
     now: nowIso(input.servedAt),
     privacy: {
       mode: "sealed_fhenix",
-      // "private" here means NOT PUBLICLY READABLE before reveal, which the
-      // contract enforces on every path (allowPublic is gated on a snapshotted
-      // timestamp). Owned sealing does not make a pending verdict public, so
-      // this stays true — an earlier pass flipped it and conflated public
-      // visibility with operator blindness, which are different claims.
+      // Not publicly readable before reveal; contract-enforced, so true even with owned sealing.
       pending_verdicts_private: true,
-      // Operator blindness is the OTHER claim, and it is the one owned sealing
-      // trades away. Named the way the agent card already names it rather than
-      // overloading the boolean above.
+      // Operator blindness is the separate claim owned sealing trades away.
       operator_holds_plaintext: input.acceptsPlaintextSubmission
         ? "on_owned_sealing_path"
         : "never_on_sealed_fhenix",
-      // Reveal is NOT structural either: it is a worker, and the worker ships
-      // disabled (FHENIX_REVEAL_WORKER_ENABLED, default false), which
-      // src/daemon/fhenix-runtime.ts warns about at startup. This field was
-      // hardcoded true, so a deploy with the worker off published a
-      // guarantee it was not delivering — on the public endpoint
-      // integrators use to decide whether to trust the seal.
+      // Reveal needs the worker (FHENIX_REVEAL_WORKER_ENABLED, default off), so derive it.
       public_reveal_after_horizon: input.revealWorkerConfigured,
     },
   };
@@ -212,9 +189,7 @@ export async function publicReadinessSurface(
   const canariesRequired = deps.requireLiveCanaries ?? false;
   const canarySnapshot = deps.liveCanaries?.snapshot() ?? null;
   const canariesOk = !canariesRequired || Boolean(canarySnapshot?.ok);
-  // Readiness is DB writeability + the live canaries. There is no price-oracle
-  // leg any more: Murmur never reads a price, so a probe of one could only ever
-  // fail readiness for a dependency no code path uses.
+  // Readiness is DB writeability + the live canaries.
   const ready = dbProbe.ok && canariesOk;
 
   return {
@@ -276,9 +251,7 @@ export function publicMetaSurface(deps: PublicMetaDeps) {
     schema_version: SCHEMA_VERSION,
     scoring_version: SCORING_VERSION,
     strategy_tags: REGISTERED_STRATEGY_TAGS,
-    // Murmur referees EXTERNAL markets; it lists no assets of its own. The
-    // field stays for wire compatibility and now names the venues whose
-    // markets the daemon can seal calls against.
+    // Murmur lists no assets of its own; `assets` stays for wire compatibility.
     assets: [],
     venues: ["polymarket-gamma"],
     verified_volume_24h: get24hVerifiedVolume(deps.db, deps.servedAt),
@@ -301,20 +274,14 @@ export function publicMetaSurface(deps: PublicMetaDeps) {
     privacy: {
       mode: "sealed_fhenix",
       threshold_network: "fhenix",
-      // Not publicly readable before reveal — contract-enforced on every
-      // path, so unconditional. See /v1/health for why this is NOT the field
-      // that tracks owned sealing.
+      // Contract-enforced before reveal, so unconditional; see /v1/health.
       pending_verdicts_private: true,
-      // The two claims owned sealing actually changes, stated separately and
-      // in the agent card's vocabulary.
+      // The two claims owned sealing actually changes, in the agent card's vocabulary.
       plaintext_submission_path: deps.acceptsPlaintextSubmission,
       operator_holds_plaintext: deps.acceptsPlaintextSubmission
         ? "on_owned_sealing_path"
         : "never_on_sealed_fhenix",
-      // Derived, for the same reason as /v1/health. This document is the
-      // machine-readable capability contract an integrator's agent reads to
-      // decide whether the seal can be trusted, so asserting a reveal
-      // guarantee the worker is not delivering does the most damage here.
+      // Derived, as in /v1/health.
       public_reveal_after_horizon: deps.revealWorkerConfigured,
     },
     ...(fhenixChain ? { fhenix: fhenixChain } : {}),

@@ -2,15 +2,8 @@
 //
 //   GET /v1/admin/entitlements/refunds
 //
-// There is no refund worker. `entitlementsRepo.listRefundDue` has always
-// existed and nothing consumed it, so the operator who has to honour these by
-// hand had no way to see them without opening the database. This exposes the
-// same query over the admin token.
-//
-// The response restates the repo's contract in a machine-readable field rather
-// than only in a comment, because the caller acting on it is a script as often
-// as a person, and the hazard is specific: a row can appear here and then
-// legitimately vanish.
+// No refund worker exists; this exposes entitlementsRepo.listRefundDue to the operator over the admin token.
+// The body carries a machine-readable warning because a row can appear and then legitimately vanish.
 import type Database from "better-sqlite3";
 
 import { entitlementsRepo } from "./repos/entitlements-repo.js";
@@ -24,16 +17,7 @@ export interface EntitlementRefundsResponse {
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
 
-/**
- * The refund queue, oldest first.
- *
- * Every row carries its `nanopay_receipt_id`, and the warning below exists
- * because that field — not this list — is the authority on whether money moved.
- * A settle that stayed pending past the unknown-resolution budget is
- * terminalized as refund_due, and a definitive rejection arriving afterwards
- * DELETES the row, because nothing was ever taken. Paying out from a snapshot
- * of this list would refund a payment that never happened.
- */
+/** The refund queue, oldest first. `nanopay_receipt_id`, not this list, is the authority on whether money moved. */
 export function listRefundDueResponse(
   db: Database.Database,
   input: { limit?: number } = {},

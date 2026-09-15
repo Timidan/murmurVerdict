@@ -1,19 +1,9 @@
 // ─── Public marketplace catalog smoke ───────────────────────────────────────
 //
-// The catalog is the surface a buyer browses BEFORE any call is open, so every
-// inclusion rule here is a way to mis-advertise a marketplace:
-//
-//   · a registration WITHOUT terms means "serves this series, not selling it".
-//     Listing it would advertise a price nobody set.
-//   · a retired seller is gone; a benchmark is murmur's own anchor row; an
-//     internal_test agent is QA. None may appear as a seller.
-//   · series metadata is returned ONCE, independently of the cells, so an
-//     empty aisle is still visible and no client keys on a copied title.
-//   · the track record is the SAME all-time record /v1/leaderboard publishes.
-//     A second scoring path here would eventually disagree with the board.
-//   · a seller with no calls yet is UNSCORED, not hidden.
-//   · price filters are BigInt: atoms are TEXT and routinely exceed
-//     Number.MAX_SAFE_INTEGER, where Number() silently rounds.
+//   · registrations without terms, retired sellers, benchmark and internal_test agents are excluded
+//   · series metadata is returned once, independent of the cells
+//   · the track record is the leaderboard's; a seller with no calls is unscored, not hidden
+//   · price filters are BigInt, past Number.MAX_SAFE_INTEGER
 
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";

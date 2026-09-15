@@ -120,11 +120,8 @@ export function listPublicAgentCallProjections(
 }
 
 /**
- * Recent calls on one market, newest first — the per-market twin of
- * {@link listPublicAgentCallProjections}. Same operator-blind projection:
- * pending sealed rows surface existence + timestamps + agent identity
- * only (plaintext direction/confidence/rationale columns are never
- * selected); resolved-side fields ride in from t1_resolutions.
+ * Recent calls on one market, newest first. Pending sealed rows expose only
+ * existence, timestamps, and agent identity; plaintext columns are never selected.
  */
 export function listPublicMarketCallProjections(
   input: ListPublicMarketCallProjectionsInput,
@@ -155,7 +152,6 @@ export function listPublicMarketCallProjections(
   }));
 }
 
-/** Input for {@link projectPublicResolvedCallFields}. */
 export interface ResolvedCallProjectionInput {
   adapter_id?: string | null;
   market_family?: string | null;
@@ -165,7 +161,6 @@ export interface ResolvedCallProjectionInput {
   resolved_at: string;
 }
 
-/** Resolved-side public field set — see {@link projectPublicResolvedCallFields}. */
 export interface PublicResolvedCallFields {
   outcome: string;
   call_score: number | null;
@@ -176,15 +171,9 @@ export interface PublicResolvedCallFields {
 }
 
 /**
- * SINGLE OWNER of the resolved-side public field set: outcome, call_score,
- * resolved_at, and the adapter / market-family identity. The SSE/webhook
- * `call.resolved` event (publicResolvedCallEvent in public-event-fanout.ts)
- * builds its resolved half from THIS function so its wire shape cannot drift
- * from the REST/RSS row projections in this module.
- *
- * `signed_return` is gone from every public projection: it was the scalar
- * return of the removed native-price path, and no venue-settled market has
- * one. `market_id` is omitted when absent.
+ * Single owner of the resolved-side public fields. The `call.resolved`
+ * SSE/webhook event builds from this so its shape can't drift from the
+ * REST/RSS projections. `market_id` is omitted when absent.
  */
 export function projectPublicResolvedCallFields(
   input: ResolvedCallProjectionInput,

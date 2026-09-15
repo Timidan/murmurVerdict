@@ -2,33 +2,11 @@
 //
 //   GET /v2/gateway/attempts/:attempt_id
 //
-// Closes a real gap in the SDK: POST /v2/gateway/calls returns an attempt id
-// and the relay happens asynchronously, so until now an agent had NO way to
-// learn the `onchain_call_id` its own call was assigned. Without it the agent
-// cannot reference its call on-chain, cannot link it, and cannot tell whether
-// the submission landed at all — the id existed only in the daemon's tables.
-//
-// AUTH — runtime key ONLY.
-//
-// dispatchAuth(allowRuntimeKey) alone is not enough: it also accepts a Privy
-// session and an account API key, which are HUMAN dashboard credentials.
-// Attempt state belongs to the agent runtime, so the identity is passed
-// through requireRuntimeKeyIdentity, which rejects everything else.
-//
-// PoP-bound keys sign method + path + body hash. This route is bodyless, and
-// the dispatcher substitutes the sha256 of zero bytes when express records no
-// raw body, which is exactly what a client signs for a GET.
-//
-// SCOPE — agent_id, never runtime_key_id.
-//
-// `fhenix_gateway_tx_attempts.runtime_key_id` is ON DELETE SET NULL, so
-// scoping to the key would hide an agent's own history the moment the key that
-// made it was rotated or revoked — precisely when an operator is most likely
-// to be looking. The agent is the durable owner.
-//
-// A miss is 404 whether the attempt does not exist or belongs to someone else.
-// Separating the two would turn this into an oracle for probing other agents'
-// attempt ids.
+// Lets an agent learn the onchain_call_id of its asynchronously relayed call.
+// Auth: runtime key only; requireRuntimeKeyIdentity rejects Privy sessions and account API keys.
+// PoP: the route is bodyless, so the dispatcher hashes zero bytes, matching what a client signs for a GET.
+// Scoped by agent_id, not runtime_key_id (ON DELETE SET NULL), so key rotation doesn't hide history.
+// A miss is 404 whether absent or another agent's, so attempt ids can't be probed.
 
 import type Database from "better-sqlite3";
 
@@ -42,25 +20,10 @@ import type { PrivyAuthVerifier } from "./auth/privy.js";
 import { redactedErrorText } from "../integrations/fhenix-gateway-runtime.js";
 import { ERROR_CODES, SCHEMA_VERSION, VerdictError } from "./schema.js";
 
-/**
- * Statuses after which no further attempt is scheduled.
- *
- * `next_attempt_at` is NOT NULL in storage and the terminal transitions do not
- * clear it — markAccepted only sets status and call_id — so the stored value
- * is a stale watermark from the last retry schedule. Serving it would tell an
- * agent to wait for work that will never run.
- */
+/** Terminal statuses. Their stored next_attempt_at is stale (never cleared), so it isn't served. */
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["accepted", "failed_terminal"]);
 
-/**
- * Stable, machine-readable failure classes.
- *
- * Deliberately about what the caller should DO, not about which RPC failed.
- * The underlying provider text is free-form and changes with provider
- * versions; classifying it into "insufficient funds" / "nonce gap" style codes
- * would be guesswork that silently starts mislabelling after an upgrade. The
- * human-readable (redacted) message carries the detail.
- */
+/** Failure classes say what the caller should do; provider text is too unstable to classify. */
 export type GatewayAttemptErrorCode = "submit_retrying" | "submit_failed";
 
 const ERROR_CODES_BY_STATUS: Record<string, GatewayAttemptErrorCode> = {
@@ -171,11 +134,7 @@ export async function gatewayAttemptResponse(input: {
       reveal_open_at: row.reveal_open_at,
       next_attempt_at: terminal ? null : row.next_attempt_at,
       error_code: errorCode,
-      // Only on a failure, and only ever redacted. `last_error` can embed a
-      // provider URL whose path or query carries operator RPC credentials, and
-      // `last_rpc_error` is raw transport diagnostics that is never served at
-      // all. A stale error left on a since-succeeded attempt is also withheld:
-      // the status is the answer there.
+      // Failures only, always redacted: last_error can embed an RPC URL carrying credentials.
       error: errorCode ? redactedErrorText(row.last_error ?? "") : null,
     },
   };

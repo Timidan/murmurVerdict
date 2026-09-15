@@ -1,11 +1,7 @@
 // ─── Subscriber purchases surface smoke ─────────────────────────────────────
 //
-// Two tiers and one secret. The tier boundary is the point: `granted` rows
-// mirror public on-chain grants, everything else is the wallet's private
-// operational history and needs a signature from that wallet. The secret is
-// `nanopay_receipt_id`, which must not appear in ANY response — checked
-// against the serialized body rather than field by field, because a leak would
-// most likely arrive as a stray column in a future SELECT.
+// `granted` rows are public; everything else needs the wallet's signature.
+// nanopay_receipt_id must never appear; checked on the serialized body to catch a stray column.
 
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";

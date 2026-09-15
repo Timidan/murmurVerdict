@@ -51,9 +51,7 @@ try {
   assert.equal("config_json" in publicRow, false);
   assert.equal("oracles" in publicRow, false);
 
-  // The registry oracle slot is now purely the EXTERNAL adapter identity —
-  // markets.primary_oracle_id is still NOT NULL/FK-shaped, and Polymarket
-  // registration writes the synthetic polymarket-gamma-oracle row.
+  // The oracle slot is the synthetic polymarket-gamma-oracle row that registration writes.
   const publicRowWithOracles = publicMarketRegistryRow(market, { db });
   assert.equal(publicRowWithOracles.oracles?.health, "ok");
   assert.equal(
@@ -71,9 +69,7 @@ try {
   assert.equal(enriched.market_taxonomy.resolution_class, "event_binary");
   assert.equal(enriched.oracles?.health, "ok");
 
-  // MIGRATION_061 retired every seeded native-price market and MIGRATION_062
-  // deleted the unreferenced ones; none of them may
-  // ever surface on a `listed` public read again.
+  // Retired native-price markets never surface on a `listed` public read.
   assert.equal(marketsRepo.get(db, "eth.1h"), null,
     "MIGRATION_062 deletes the unreferenced native market rows outright");
 

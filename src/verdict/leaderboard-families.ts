@@ -44,8 +44,6 @@ export function getLeaderboardForFamily(
   const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
   const limit = opts.limit ?? 200;
 
-  // Shared scoring facts scoped to one market_family; this Module adds its own
-  // distinct-market count and family-tier projection.
   const rows = queryLeaderboardCallFacts(db, {
     kind: "family",
     includeKinds,
@@ -147,8 +145,6 @@ export function getCrossFamilyLeaderboard(
   const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
   const limit = opts.limit ?? 200;
 
-  // Shared scoring facts across every family; this Module regroups per agent
-  // per family and does the cross-family averaging projection.
   const rows = queryLeaderboardCallFacts(db, {
     kind: "cross_family",
     includeKinds,
@@ -164,8 +160,7 @@ export function getCrossFamilyLeaderboard(
   };
   const byAgent = new Map<string, Agg>();
   for (const row of rows) {
-    // The cross_family scope filters market_family IS NOT NULL in SQL; this
-    // guard narrows the nullable fact column for the family group key.
+    // SQL already filters null market_family; this narrows the type.
     if (row.market_family === null) continue;
     let a = byAgent.get(row.agent_id);
     if (!a) {

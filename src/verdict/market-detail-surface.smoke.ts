@@ -135,8 +135,7 @@ try {
   });
 
   // ── (a) The removed native catalogue is gone entirely ────────────────────
-  // MIGRATION_062 deleted the unreferenced native-price rows, so the legacy
-  // id no longer resolves at all — murmur ships no markets of its own.
+  // A legacy native id doesn't resolve; murmur ships no markets of its own.
   const ethDetail = await marketDetailSurface({
     db,
     marketId: "eth.1h",
@@ -174,8 +173,7 @@ try {
     markets: VenueMarketRow[];
     served_at: string;
   };
-  // The retired legacy market must NOT appear in the public listing: nothing
-  // can be minted against it any more.
+  // The retired legacy market is not listed.
   assert.equal(
     listedBody.markets.find((m) => m.market_id === "eth.1h"),
     undefined,

@@ -77,12 +77,8 @@ export async function resolveRevealedAdapter(input: {
     adapter = getAdapterForMarket(marketRow);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    // A RETIRED market's adapter is gone for good (MIGRATION_061 retires the
-    // native-price/financial-direction rows whose adapter this codebase no
-    // longer registers), so its calls can never be scored — terminalize them
-    // in the null-score bucket instead of re-queueing forever. A missing
-    // adapter on a still-listed market is treated as transient (e.g. adapter
-    // registration lost a boot race) and stays retryable.
+    // A retired market's adapter is gone for good, so terminalize; a missing adapter on a
+    // live market is transient (e.g. a boot race) and stays retryable.
     if (marketRow.status === "retired") {
       input.log({
         kind: "still_pending",
@@ -154,10 +150,7 @@ export async function resolveRevealedAdapter(input: {
     const written = resolutionsRepo.setResolution(input.db, {
       call_id: input.ctx.call_id,
       t1: resolvedAtIso,
-      // Murmur observes no prices: p1 / t1_feed / signed_return are legacy
-      // price-anchor evidence columns and are always NULL (migration 055 made
-      // them nullable). The score lives in its own column; the adapter
-      // identity + observation are carried by outcomeEvidence + usage event.
+      // Legacy price-anchor columns, always NULL; adapter identity and observation go in outcomeEvidence.
       p1: null,
       t1_feed: null,
       signed_return: null,

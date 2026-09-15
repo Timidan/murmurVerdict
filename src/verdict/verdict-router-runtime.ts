@@ -44,10 +44,9 @@ export interface VerdictRouterRuntimeInput {
   fhenixChainId?: number | null;
   fhenixSealedVerdictsAddress?: string | null;
   /**
-   * Deployment-wide sale terms + sales safety margin for the public sellable
-   * listing. Daemon callers pass the values parsed from their INJECTED env;
-   * direct/test construction falls back to the env derivation below, like
-   * every other adapter here.
+   * Deployment-wide sale terms and safety margin for the public sellable
+   * listing. The daemon passes values from its injected env; otherwise read
+   * from env.
    */
   saleTerms?: FhenixSaleTermsEnv;
   fhenixVerifier?: FhenixEventVerifier | null;

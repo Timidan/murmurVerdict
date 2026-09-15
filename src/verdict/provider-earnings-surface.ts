@@ -2,22 +2,8 @@
 //
 //   GET /v1/account/agents/:slug/earnings
 //
-// One row per early-access sale of this agent's calls, plus per-currency
-// totals that now close the loop: accrued (provider_earnings, migration 071)
-// MINUS paid (provider_payouts, migration 073) is a balance.
-//
-// Until 073 there was no payout journal, so this surface could only report
-// `lifetime_accrued_*` — a field called "owed" would have gone stale the first
-// time an operator settled up by hand and would have kept claiming a debt
-// already cleared. That is no longer true: settling up writes a journal entry,
-// so the balance below is derived from records on both sides rather than from
-// anyone's memory.
-//
-// The balance is SIGNED and reported as such. A negative balance means murmur
-// paid out more than accrued — a double-send, a reversal that never landed, a
-// mistyped amount — and it is surfaced as `overpaid_atoms` rather than floored
-// at zero, because silently clamping it would render an operator error
-// invisible in exactly the view meant to catch it.
+// One row per sale, plus per-currency totals: accrued (provider_earnings) minus paid (provider_payouts).
+// The balance is signed; a negative one shows as `overpaid_atoms` rather than being clamped to zero.
 import type Database from "better-sqlite3";
 
 import { requireOwnedAgentBySlug } from "./agent-identity.js";
@@ -100,9 +86,7 @@ export function readProviderEarnings(
       totals: mergeTotals(accrued, paid),
       page: { limit, offset, returned: rows.length },
       payouts: {
-        // Still true, and still worth saying: nothing here moves money. What
-        // changed is that murmur now records the operator's transfer, so the
-        // balance above is checkable instead of assumed.
+        // Nothing here moves money; the operator's transfer is only recorded.
         automated: false,
         note:
           "Every sale settles to murmur's seller address, because the payment " +
@@ -114,18 +98,7 @@ export function readProviderEarnings(
   };
 }
 
-/**
- * Per-currency merge over the UNION of both sides.
- *
- * An intersection (or a left join from accruals) would drop the two cases that
- * matter most: a currency that has been paid out but has no accruals left in
- * range, and a currency an operator paid in that never accrued at all. Both
- * are exactly the rows an owner needs to see.
- *
- * Every sum arrives already computed in BigInt from its repo; this function
- * only subtracts, and does that in BigInt too. No amount ever passes through a
- * JS number.
- */
+/** Per-currency merge over the union of both sides, so paid-only currencies still show. BigInt throughout. */
 export function mergeTotals(
   accrued: ReturnType<typeof providerEarningsRepo.totalsForAgent>,
   paid: ReturnType<typeof providerPayoutsRepo.totalsForAgent>,

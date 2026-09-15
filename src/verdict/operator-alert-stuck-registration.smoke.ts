@@ -11,14 +11,8 @@ import { polymarketDiscoveryRepo } from "./repos/polymarket-discovery-repo.js";
 process.stdout.write("murmur stuck registration alert smoke\n");
 
 /**
- * A registration whose transaction never confirms stays `broadcasting`
- * forever: murmur deliberately does not rebroadcast at a fresh nonce (that can
- * gap the shared relayer lane and stall unrelated writes), and there is no
- * transaction manager for same-nonce replacement yet.
- *
- * That state used to be completely silent — the tick reported success and only
- * terminal `failed` rows raised alerts. This asserts it is surfaced, and that
- * the age is measured from a watermark error-recording does not rewrite.
+ * A never-confirming registration stays `broadcasting`. Asserts it alerts, aged from a
+ * watermark that error-recording doesn't rewrite.
  */
 
 const tmp = mkdtempSync(join(tmpdir(), "stuck-reg-"));
@@ -52,9 +46,7 @@ polymarketDiscoveryRepo.recordBroadcastHash(db, {
   );
 }
 
-// Recording an error must NOT reset the stuck age. This is the actual bug:
-// the age was read from `updated_at`, which every error rewrites, so a row
-// stuck for hours kept reporting seconds and never crossed a threshold.
+// Recording an error (which rewrites `updated_at`) must not reset the stuck age.
 polymarketDiscoveryRepo.recordError(db, {
   condition_id: COND,
   error: "broadcast_unconfirmed_past_grace",
@@ -85,9 +77,7 @@ polymarketDiscoveryRepo.recordError(db, {
   assert.equal(stuck[0]?.severity, "critical", "45 minutes stuck is critical");
 }
 
-// A REPLACEMENT attempt restarts the clock. After a reverted receipt the row
-// stays `broadcasting`, so without the reset a brand-new transaction would
-// inherit the dead attempt's age and alert as critical the moment it was sent.
+// A replacement attempt restarts the clock instead of inheriting the dead attempt's age.
 {
   polymarketDiscoveryRepo.markBroadcasting(db, {
     condition_id: COND,
@@ -103,10 +93,8 @@ polymarketDiscoveryRepo.recordError(db, {
   );
 }
 
-// A row already broadcasting when migration 066 ran must still accumulate a
-// real age. This drives the REAL migration (openDb from a simulated v65)
-// rather than copying its SQL — a test that re-executes the backfill itself
-// would pass even if the migration lost it.
+// A row broadcasting when migration 066 ran still gets a real age. Drives the real migration
+// (openDb from a simulated v65) so the backfill itself is tested.
 {
   const upgradeTmp = mkdtempSync(join(tmpdir(), "stuck-upgrade-"));
   const upgradePath = join(upgradeTmp, "verdict.db");

@@ -26,16 +26,8 @@ export const OPERATOR_BLIND_FIXTURE_CHAIN_CAIP =
   `eip155:${OPERATOR_BLIND_FIXTURE_CHAIN_ID}`;
 export const OPERATOR_BLIND_FIXTURE_SLUG = "operator-blind-test";
 /**
- * Fixture GENERATION. Bump it (env, no code edit) to get a fresh fixture market.
- *
- * Needed because on-chain registration is ONE-SHOT and the fixture market
- * carries a short, expiring schedule: once its submission window passes, that
- * market can never accept another call on that deployment, and the release
- * gate becomes unrunnable. The `:v1` suffix anticipated bumping this, but a
- * constant in source is not something an operator can bump mid-run.
- *
- * The seeder prints the resulting market id; export it as
- * OPERATOR_BLIND_MARKET_ID for the round-trip.
+ * Fixture generation; bump via env for a fresh market, since on-chain registration is one-shot
+ * and the fixture schedule expires. The seeder prints the market id for OPERATOR_BLIND_MARKET_ID.
  */
 export const OPERATOR_BLIND_FIXTURE_GENERATION =
   process.env.OPERATOR_BLIND_FIXTURE_GENERATION?.trim() || "v1";
@@ -45,23 +37,8 @@ export const OPERATOR_BLIND_FIXTURE_MARKET_ID = keccak256(
 export const OPERATOR_BLIND_FIXTURE_MARKET_HORIZON_SECONDS = 90;
 export const OPERATOR_BLIND_FIXTURE_PRIVY_USER_ID =
   "did:fixture:operator-blind-test";
-// The fixture market is an EXTERNAL venue market like every real Murmur
-// market: adapter polymarket-gamma, family prediction-market-binary, kind
-// event_binary, scored by multinomial_brier, anchored on the synthetic
-// `polymarket:event` asset / `polymarket-gamma-oracle` registry rows.
-//
-// It carries the SAME endDate + embargoSec the seeder registers on-chain, so
-// the adapter's expectedRevealOpenAt (endDate + embargoSec) equals the
-// contract's publicRevealAt. It used to carry `endDate: null` on purpose, to
-// get the `accepted_at + horizon_seconds` fallback — but the six-instant
-// contract derives publicRevealAt from the registered schedule, so that
-// fallback matched nothing and every seeded call was refused by the
-// acceptance guard.
-//
-// The gate never calls market resolution or Gamma: it exercises sealing,
-// operator-blind opacity, the Fhenix reveal, and the dashboard plaintext.
-// conditionId is the deterministic fixture market id (a keccak256 digest, so
-// already the 0x+64-hex shape Polymarket's marketConfigSchema requires).
+// An external venue market like every real one (polymarket-gamma, event_binary, multinomial_brier).
+// Its endDate + embargoSec must match the on-chain registration. The gate never calls resolution or Gamma.
 export const OPERATOR_BLIND_FIXTURE_MARKET_REF = {
   protocol: "polymarket-gamma",
   sourceId: OPERATOR_BLIND_FIXTURE_MARKET_ID,
@@ -76,21 +53,7 @@ export type OperatorBlindFixtureRuntimeAuthorizationMessageIdAdapter =
 export interface OperatorBlindFixtureSeedInput extends RuntimeKeyMintAdapters {
   db: Database.Database;
   agentWallet: string;
-  /**
-   * The reveal schedule this market is registered with ON-CHAIN.
-   *
-   * REQUIRED. The acceptance guard compares the daemon's expected reveal
-   * instant against the one the contract recorded, and refuses the call if
-   * they differ. The fixture used to carry `endDate: null` deliberately, so
-   * the daemon fell back to `accepted_at + horizon_seconds` — which matched
-   * nothing once the six-instant contract began deriving publicRevealAt from
-   * the registered schedule. Every seeded call then failed acceptance with
-   * "fhenix.reveal_open_at must equal the market reveal window".
-   *
-   * `endDateMs` is the market's RESOLUTION instant and `embargoSec` the gap to
-   * public reveal, so `endDateMs + embargoSec*1000` must equal the on-chain
-   * publicRevealAt exactly.
-   */
+  /** On-chain reveal schedule. `endDateMs + embargoSec*1000` must equal the contract's publicRevealAt or acceptance refuses. */
   revealSchedule: { endDateMs: number; embargoSec: number };
   now: () => Date;
   newAccountId?: AccountIdAdapter;
@@ -200,21 +163,8 @@ export function seedOperatorBlindFixtureDb(
       );
     }
 
-    // Retire calls left pending by PREVIOUS generations of this fixture.
-    //
-    // A fixture market never resolves — there is no venue behind it — so every
-    // gate run leaves one submission at pending_t1 forever, and each one holds
-    // a slot against the 5-active-calls-per-agent limit. After five runs the
-    // fixture agent is bricked and the gate cannot run again, which defeats
-    // the generation bump that exists to make it repeatable.
-    //
-    // `rejected` because it is the existing terminal status meaning "out of
-    // play" — the submissions CHECK constraint admits no fixture-specific
-    // value, and inventing one would need a migration for test scaffolding.
-    //
-    // Scoped hard: only this fixture agent, and only submissions against
-    // markets that carry the fixture flag. Nothing an operator created is
-    // touched.
+    // Retire pending calls from earlier generations: fixture markets never resolve, so each run
+    // holds a slot against the per-agent active limit. Scoped to this agent and fixture-flagged markets.
     const retired = input.db
       .prepare(
         `UPDATE submissions
@@ -244,8 +194,7 @@ export function seedOperatorBlindFixtureDb(
       adapter_id: OPERATOR_BLIND_FIXTURE_MARKET_REF.protocol,
       market_family: "prediction-market-binary",
       scoring_kind: "multinomial_brier",
-      // Satisfies the polymarket-gamma marketConfigSchema the shared
-      // external-market guard now parses at submit time.
+      // Satisfies the polymarket-gamma marketConfigSchema the external-market guard parses at submit.
       config_json: JSON.stringify({
         conditionId: OPERATOR_BLIND_FIXTURE_MARKET_ID,
         slug: OPERATOR_BLIND_FIXTURE_SLUG,

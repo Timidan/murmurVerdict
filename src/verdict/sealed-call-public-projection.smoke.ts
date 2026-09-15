@@ -60,7 +60,7 @@ try {
   resolutionsRepo.setResolution(db, {
     call_id: nativeCallId,
     t1: "2026-05-16T11:00:00Z",
-    // Legacy price-anchor columns: always NULL now.
+    // Price-anchor columns are always NULL.
     p1: null,
     t1_feed: null,
     signed_return: null,
@@ -139,8 +139,7 @@ try {
   const native = rows.find((row) => row.call_id === nativeCallId);
   assert.ok(native);
   assert.equal(native.adapter_id, "polymarket-gamma");
-  // signed_return is gone from every public projection — no venue-settled
-  // market has a scalar return.
+  // No public projection carries signed_return.
   assert.equal("signed_return" in native, false);
   assert.equal(native.agent_slug, "projection-smoke");
 
@@ -166,8 +165,7 @@ try {
     market_family: null,
   });
   assert.equal("outcome" in acceptedOnly, false);
-  // A row with no stamped adapter identity gets the neutral display-only
-  // sentinel, never a native-price default.
+  // A row with no stamped adapter identity gets the neutral sentinel.
   assert.equal(acceptedOnly.adapter_id, "unknown");
   assert.equal(acceptedOnly.market_family, "unknown");
 

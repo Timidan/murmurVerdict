@@ -17,12 +17,7 @@ import { agentProviderTermsRepo } from "./repos/agent-provider-terms-repo.js";
 import { venueMarketSeriesRepo } from "./repos/venue-market-series-repo.js";
 import { VerdictError } from "./schema.js";
 
-// Agent ↔ market-series registration endpoints (migration 075 P0).
-//
-// Nothing in the runtime wrote agent_market_registrations, so agents could not
-// register and pricing PUT returned 409 forever. These surface functions let
-// an owner register/unregister an owned agent for a venue series, and list the
-// available series with the agent's state on each.
+// Agent ↔ market-series registration: register, unregister, and list series state for an owned agent.
 process.stdout.write("murmur agent market registration surface smoke\n");
 
 const tmp = mkdtempSync(join(tmpdir(), "agent-market-registration-"));

@@ -2,40 +2,12 @@
 //
 //   GET /v2/gateway/entitlements?subscriber=0x…
 //
-// TWO TIERS, because a subscriber's local purchase history is NOT the same
-// public fact as their on-chain access:
-//
-//   unauthenticated — `granted` rows only. Each of those mirrors a
-//                     grantDecryptAccess event anyone can already read from
-//                     the chain, so serving them proves nothing new.
-//   wallet proof    — everything, including in-flight, ambiguous and
-//                     refund-owed rows. That is a private operational record:
-//                     it says when someone tried to buy, what stalled, and
-//                     what money is disputed. It belongs to the wallet, and
-//                     only a signature from that wallet unlocks it.
-//
-// The proof is a stateless EIP-191 personal_sign over
-//
-//     murmur:purchases:<lowercased address>:<unix seconds>
-//
-// presented as `X-Murmur-Subscriber-Auth: <unix_seconds>:<signature>`, with a
-// ±300s freshness bound. No nonce table: a captured signature is replayable
-// for five minutes and grants nothing but a read of the signer's OWN history,
-// which does not justify a write on every request.
-//
-// NEVER on the wire, in either tier:
-//   · nanopay_receipt_id — the settlement rail's identifier. It is a lookup
-//     key into payment infrastructure, not a fact about this purchase; the
-//     derived `payment_confirmed` boolean answers everything a buyer needs.
-//     It is not even SELECTed, so it cannot reach a response by accident.
-//   · fee_bps_at_sale — provider-side economics. What murmur takes from the
-//     producer is not part of what the buyer paid.
-//
-// Adopted on-chain grants have `amount` and `currency` NULL BY DESIGN. They
-// are recorded when the chain says a wallet already holds access and no local
-// row explains it (a restore, a manual grant, a reconciler gap). No payment
-// happened, so there is no amount to state — and inventing one would put
-// phantom revenue in the ledger.
+// Unauthenticated: `granted` rows only, each mirroring a public grantDecryptAccess event.
+// Wallet proof: full history (in-flight, ambiguous, refund-owed), which is private to that wallet.
+// Proof: EIP-191 personal_sign over `murmur:purchases:<lowercased address>:<unix seconds>`, sent as
+// `X-Murmur-Subscriber-Auth: <unix_seconds>:<signature>`, ±300s. No nonce table; a replay only reads the signer's own history.
+// Never served: nanopay_receipt_id (not even SELECTed) and fee_bps_at_sale.
+// Adopted on-chain grants have NULL amount/currency by design: no payment happened.
 
 import type Database from "better-sqlite3";
 
@@ -74,14 +46,7 @@ export interface PurchaseRow {
   refund_status?: string | null;
   /** Full-history tier only. True iff settlement evidence was recorded. */
   payment_confirmed?: boolean;
-  /**
-   * Full-history tier only. 'confirmed' iff a settlement receipt exists.
-   *
-   * 'unknown' is deliberately not 'failed' or 'unpaid'. A refund_due row with
-   * no receipt means the settlement was never resolved — nobody recorded money
-   * moving, and nobody recorded it not moving. Stating either would overstate
-   * what this service knows about a real payment.
-   */
+  /** Full-history tier only. 'confirmed' iff a settlement receipt exists; else 'unknown', never 'failed'. */
   payment_status?: PurchasePaymentStatus;
 }
 
@@ -152,13 +117,7 @@ export type SubscriberAuthResult =
   | { kind: "ok" }
   | { kind: "rejected"; status: number; error: string; message: string };
 
-/**
- * Verify the wallet proof, or explain why it fails.
- *
- * A malformed or stale proof is REJECTED, never quietly downgraded to the
- * public tier: a caller who signed and then received a truncated history would
- * read it as "I have no pending purchases" rather than "my proof was bad".
- */
+/** A malformed or stale proof is rejected, never downgraded to the public tier. */
 export async function verifySubscriberAuth(input: {
   header: string | undefined;
   subscriberAddress: string;

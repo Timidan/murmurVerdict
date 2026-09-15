@@ -99,11 +99,7 @@ export function sendAdminRouteAuthFailure(
   res: AdminRouteAuthResponseTarget,
   failure: AdminRouteAuthFailure,
 ): void {
-  // Route admin auth failures through the SAME shaping as every other error
-  // (the Verdict Error Surface) so the wire envelope stays consistent and any
-  // future envelope field propagates here automatically. The decision already
-  // chose the status + ERROR_CODES code; verdictErrorResponse just renders the
-  // canonical { code, message } body for a VerdictError.
+  // Render through the shared Verdict Error Surface so the envelope matches every other error.
   const result = verdictErrorResponse(
     new VerdictError(failure.body.message, failure.body.code, failure.status),
   );
@@ -153,13 +149,7 @@ function validAdminBearerRequired(): AdminRouteAuthDecision {
   };
 }
 
-/**
- * Constant-time equality for short opaque secrets/tokens.
- *
- * This always runs `timingSafeEqual` on equal-length buffers derived from
- * hashing both sides with a per-process random key, so length-mismatch attempts
- * and value-mismatch attempts take the same amount of work.
- */
+/** Constant-time equality: HMACs both sides with a per-process key, so length and value mismatches cost the same. */
 let safeStrEqKey: Buffer | null = null;
 function safeStrEq(a: string | undefined | null, b: string | undefined | null): boolean {
   if (typeof a !== "string" || typeof b !== "string") return false;

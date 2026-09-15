@@ -1,14 +1,5 @@
-// Server-side renderers for Murmur's shareable verdict badges.
-//
-// Two SVG variants:
-//   - badge   compact (320x80) — drop into READMEs / Discord profiles / X bios
-//   - og      1200x630 social card — Twitter/Discord/Slack link previews
-//
-// Both consume the same agent + recent-resolved input; layout differs by aspect.
-// We hand-write the SVG (no satori dependency) — strict Nothing tokens means
-// the layout is two text blocks + one accent line. Doto isn't bundled, so the
-// score numerals are rendered in a CSS @import that browsers + most renderers
-// (X, Discord, Notion) honour for inline SVG.
+// Server-side SVG renderers for shareable verdict badges: a 320x80 embed badge and a 1200x630 OG card.
+// Brand fonts load via CSS @import, which only browsers honour; the server rasteriser uses the fallbacks.
 
 import type Database from "better-sqlite3";
 import { Resvg } from "@resvg/resvg-js";
@@ -42,18 +33,7 @@ function loadInput(db: Database.Database, slug: string): BadgeInput | null {
   };
 }
 
-/**
- * The share card's palette, taken from the dashboard's own dark theme
- * (dashboard/src/styles.css `@theme`) rather than approximated.
- *
- * Every value here had drifted. The canvas was pure `#000000`, which the app
- * moved off in 2026-05-31 because brand red vibrates on it; `inkDisabled` was
- * `#666666`, which fails AA as real text; and the red was `#D71921` — a THIRD
- * red, belonging neither to the approved logo mark (`#FD3C3C`) nor to the UI
- * event accent (`#C87367`). A share card is the most-forwarded surface the
- * product has, so it is the last place that should be quoting a palette
- * nobody else uses.
- */
+/** Palette taken from the dashboard's dark theme (dashboard/src/styles.css `@theme`). */
 const TOKENS = {
   bg: "#0A0A0A",
   surface: "#161616",
@@ -69,37 +49,18 @@ const TOKENS = {
   brandMark: "#FD3C3C",
 } as const;
 
-// SVG embeds the @import inside <style>, which is parsed as XML — every '&'
-// must be escaped or the document fails strict XML parsers (rsvg, sharp,
-// most server-side renderers). Browsers tolerate it; SVG/XML doesn't.
-/**
- * Font stacks with a REACHABLE fallback at every step.
- *
- * The brand faces are fetched by `@import` and exist only where a browser can
- * load them — never on the server that rasterises the .png variants. The old
- * stacks ended at the bare generics `sans-serif` / `monospace`, which resvg
- * resolves through whatever the host's fontconfig says, and on a box with no
- * generic aliases configured that lands on a serif: the shipped card rendered
- * the agent's name in Liberation Serif, on a page whose whole identity is two
- * grotesques and a dot-matrix face. Naming the fonts that a Linux host
- * actually has, before the generic, keeps the card in the right register even
- * when nothing brand-specific is installed.
- *
- * Full fidelity needs the real faces embedded via resvg's `fontFiles` — a
- * separate call, because it means shipping font binaries in the repo.
- */
+// Name concrete Linux fonts before the generic: the server never has the brand faces, and a bare
+// generic can resolve to a serif on hosts without fontconfig aliases.
 const SANS_STACK =
   "'Space Grotesk', 'DejaVu Sans', 'Liberation Sans', Arial, sans-serif";
 const MONO_STACK =
   "'Space Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Courier New', monospace";
 const DOTO_STACK = `'Doto', ${MONO_STACK}`;
 
+// Lives inside <style>, which is parsed as XML: every '&' must be &amp; or strict parsers (resvg) fail.
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Doto:wght@400;700&amp;family=Space+Grotesk:wght@500;700&amp;family=Space+Mono:wght@400;700&amp;display=swap');`;
 
-/**
- * Compact embed badge — 320x80. SVG output. Always returns a valid badge,
- * even when the slug is unknown (renders an error pill rather than 404).
- */
+/** 320x80 embed badge. Always returns a valid badge; an unknown slug renders a not-found pill. */
 export function renderBadgeSvg(db: Database.Database, slug: string): { svg: string; etag: string } {
   const input = loadInput(db, slug);
   if (!input) {
@@ -107,16 +68,14 @@ export function renderBadgeSvg(db: Database.Database, slug: string): { svg: stri
   }
   const verdict = formatVerdict(input.verdict_score);
   const positive = (input.verdict_score ?? 0) >= 0;
-  // Plain count, never zero-padded: `01` reads as an identifier rather than
-  // as first place (COPY.md §2.5). `resolved` is a retired word for `scored`.
+  // Plain count, never zero-padded; `01` reads as an identifier.
   const rankLabel = input.rank ? `RANK ${input.rank}` : "UNRANKED";
   const winLabel =
     input.win_rate === null
       ? "—"
       : `${Math.round(input.win_rate * 100)}% win · ${input.resolved_calls} scored`;
   const live = input.pending_calls > 0;
-  // Doto is a dot-matrix face with no em-dash glyph, so a null score rendered
-  // as a tofu box at display size. The placeholder takes the mono class.
+  // Doto has no em-dash glyph, so the null placeholder uses mono.
   const scoreClass = input.verdict_score === null ? "mono" : "doto";
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80" viewBox="0 0 320 80" role="img" aria-label="Murmur Verdict badge for ${escape(input.agent.display_name)}">
@@ -155,10 +114,7 @@ export function renderBadgeSvg(db: Database.Database, slug: string): { svg: stri
   return wrap(svg);
 }
 
-/**
- * 1200x630 OG / social card. Same vocabulary as the badge, scaled for
- * Twitter / Discord / Slack link unfurls. Static — no animation.
- */
+/** 1200x630 OG card for link unfurls. Static, no animation. */
 export function renderOgSvg(db: Database.Database, slug: string): { svg: string; etag: string } {
   const input = loadInput(db, slug);
   if (!input) {
@@ -171,8 +127,7 @@ export function renderOgSvg(db: Database.Database, slug: string): { svg: string;
     input.win_rate === null
       ? "—"
       : `${Math.round(input.win_rate * 100)}% WIN`;
-  // Doto is a dot-matrix face with no em-dash glyph, so a null score rendered
-  // as a tofu box at display size. The placeholder takes the mono class.
+  // Doto has no em-dash glyph, so the null placeholder uses mono.
   const scoreClass = input.verdict_score === null ? "mono" : "doto";
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Murmur Verdict score card for ${escape(input.agent.display_name)}">
@@ -220,17 +175,8 @@ export function renderOgSvg(db: Database.Database, slug: string): { svg: string;
 }
 
 /**
- * Server-side rasterisation of either SVG. Used by the .png variants of
- * the badge / OG endpoints so X / Discord / Slack can render the social
- * card inline (those clients don't accept SVG OG).
- *
- * resvg is pure WASM — no system dep. The brand faces are never installed on
- * the server, so the card falls back through the stacks at the top of this
- * file. `defaultFontFamily` is the last resort for text whose whole stack
- * misses, and it used to be "monospace" — which on a host with no generic
- * aliases resolved to a serif, so the agent's name shipped in Liberation Serif.
- * Naming a concrete family that Linux hosts carry keeps the fallback honest.
- * Embedding the real faces via `fontFiles` is what would make it exact.
+ * Rasterises either SVG for the .png endpoints (X/Discord/Slack don't unfurl SVG).
+ * defaultFontFamily names a concrete family so the last-resort fallback is never a serif.
  */
 export function rasterize(svg: string, width?: number): { png: Buffer; etag: string } {
   const resvg = new Resvg(svg, {
@@ -271,17 +217,8 @@ function missingOg(slug: string): string {
 }
 
 /**
- * The score, spelled the way every murmur surface spells it: an explicit sign
- * and three decimals.
- *
- * This card used to publish `Math.round(score * 1000)` — the same number as
- * "+502" where the leaderboard, the agent page and the call page all say
- * "+0.502". A reader who shares their card and then opens their profile saw
- * two different numbers for one score. Zero takes no sign, for the same reason
- * it takes none in the app: it is neither.
- *
- * Kept in step with dashboard/src/verdict/lib/score-format.ts by hand — the
- * daemon cannot import from the dashboard bundle. Change one, change both.
+ * Explicit sign and three decimals ("+0.502"); zero takes no sign.
+ * Must match dashboard/src/verdict/lib/score-format.ts by hand; the daemon can't import it.
  */
 function formatVerdict(s: number | null): string {
   if (s === null) return "—";
@@ -304,7 +241,7 @@ function escape(s: string): string {
 }
 
 function hashOf(s: string): string {
-  // Cheap, stable enough for ETag — FNV-1a 32-bit.
+  // FNV-1a 32-bit; stable enough for an ETag.
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);

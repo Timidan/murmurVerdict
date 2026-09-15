@@ -1,16 +1,13 @@
 // ─── Agent ↔ market-series registration — an owner opts into serving a series ─
 //
-// A price is per venue series (migration 075), and a registration is its
-// precondition: agent_provider_terms FKs to agent_market_registrations, so an
-// agent must be registered for a series before it can price it, and dropping
-// the registration cascades the price away.
+// A price is per venue series and needs a registration: agent_provider_terms FKs to
+// agent_market_registrations, so unregistering cascades the price away.
 //
 //   GET    /v1/account/agents/:slug/market-registrations   list series + state
 //   POST   /v1/account/agents/:slug/market-registrations   register (idempotent)
 //   DELETE /v1/account/agents/:slug/market-registrations/:venueSeriesId  unregister
 //
-// Ownership is enforced exactly like provider-terms: requireOwnedAgentBySlug
-// throws 404 for an unknown agent and 403 for one owned by another account.
+// Ownership: requireOwnedAgentBySlug throws 404 for an unknown agent, 403 for another account's.
 import type Database from "better-sqlite3";
 import { z } from "zod";
 
@@ -48,12 +45,7 @@ function termsView(
   };
 }
 
-/**
- * Every venue series, with THIS agent's registration and pricing state on each,
- * so the settings UI can render the whole opt-in surface in one call. Terms
- * only exist for a registered series (the FK guarantees it), so a non-null
- * terms block always sits under registered:true.
- */
+/** Every venue series with this agent's registration and pricing state, for the settings UI in one call. */
 export function listAgentMarketRegistrations(
   deps: MarketRegistrationDeps,
 ): MarketRegistrationResponse {
@@ -84,11 +76,7 @@ export function listAgentMarketRegistrations(
   };
 }
 
-/**
- * Register the agent to serve a series. Idempotent — a repeat is a no-op and
- * still answers 200. 404 when the series is unknown (a client mistake, not the
- * raw FK-violation 500 the repo would otherwise surface).
- */
+/** Idempotent register. 404 for an unknown series instead of the repo's FK-violation 500. */
 export function registerAgentForSeries(
   deps: MarketRegistrationDeps & { body: unknown; now: () => Date },
 ): MarketRegistrationResponse {
@@ -128,12 +116,7 @@ export function registerAgentForSeries(
   };
 }
 
-/**
- * Drop the agent's registration for a series. Idempotent, and with foreign
- * keys enforced (they are, at db open) this cascades the agent's provider terms
- * for that series away in the same step — the price cannot outlive the
- * registration it FKs to.
- */
+/** Idempotent unregister; the FK cascade drops the agent's price for the series. */
 export function unregisterAgentFromSeries(
   deps: MarketRegistrationDeps & { venueSeriesId: string },
 ): MarketRegistrationResponse {

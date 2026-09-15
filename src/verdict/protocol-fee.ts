@@ -1,18 +1,8 @@
 // ─── The protocol fee — murmur's cut of an early-access sale ────────────────
 //
-// One number, in basis points, applied to every paid decrypt-grant: murmur
-// keeps `MURMUR_PROTOCOL_FEE_BPS` and the remainder accrues to the agent owner
-// whose signal was sold (src/verdict/provider-earnings.ts).
-//
-// Deliberately standalone. The seal path needs the fee to snapshot it onto a
-// call, and calls are sealed under the GATEWAY — a runtime that can be on
-// while paid grants are off. Hanging this off the grant config would mean a
-// call sealed in that window carried no fee snapshot, and its later sale would
-// have to invent one.
-//
-// NO DEFAULT, anywhere. A fee is a business decision: a hidden 0 quietly gives
-// the whole sale away, and a hidden 10% quietly takes it. Both read as
-// deliberate in every ledger row they produce.
+// Murmur keeps `MURMUR_PROTOCOL_FEE_BPS` of every paid decrypt-grant; the rest accrues to the agent owner.
+// Standalone from grant config: calls are sealed (and fee-snapshotted) even while paid grants are off.
+// No default anywhere; a fee is a business decision.
 
 export const PROTOCOL_FEE_BPS_ENV = "MURMUR_PROTOCOL_FEE_BPS";
 
@@ -28,22 +18,13 @@ export class ProtocolFeeConfigError extends Error {
   }
 }
 
-/**
- * Parse the configured fee. Returns null when the variable is unset or blank —
- * "not configured" is a distinct answer from "configured as 0%", and callers
- * that require the fee say so themselves via `requireProtocolFeeBps`.
- *
- * Throws on a value that is present but not an integer 0..10000. A typo must
- * never be read as a fee.
- */
+/** Null when unset or blank (distinct from 0%). Throws on anything but an integer 0..10000. */
 export function parseProtocolFeeBps(
   env: NodeJS.ProcessEnv = process.env,
 ): number | null {
   const raw = env[PROTOCOL_FEE_BPS_ENV]?.trim() ?? "";
   if (!raw) return null;
-  // Digits only, checked before Number(): "1e3", "0x64", " 10 %" and "1000.0"
-  // all survive Number() in one form or another, and a fee that parsed from a
-  // shape nobody intended is a silent mis-split on real money.
+  // Digits only before Number(): "1e3", "0x64" and "1000.0" all survive Number().
   if (!/^[0-9]+$/.test(raw)) {
     throw new ProtocolFeeConfigError(
       `must be a whole number of basis points, 0..10000 (got "${raw}")`,
@@ -87,15 +68,8 @@ export interface FeeSplit {
 }
 
 /**
- * Split a gross amount at `feeBps`.
- *
- * BigInt throughout — atomic amounts routinely exceed Number.MAX_SAFE_INTEGER,
- * and a float split loses atoms that then have to come from somebody.
- *
- * The fee FLOORS and the provider takes the remainder, so the two always sum
- * back to the gross. Rounding the fee up (or computing net independently)
- * would let a 1-atom sale produce fee + net ≠ gross, which is money appearing
- * or vanishing in the ledger.
+ * Split a gross amount at `feeBps`, in BigInt. The fee floors and the provider takes the
+ * remainder, so fee + net always equals gross.
  */
 export function splitFeeAtoms(grossAtoms: string, feeBps: number): FeeSplit {
   if (!/^[0-9]+$/.test(grossAtoms)) {

@@ -18,20 +18,9 @@ export interface AccountRouteLimiters {
   rotateKeyLimiter: RequestHandler;
   destAddrLimiter: RequestHandler;
   funnelEventLimiter: RequestHandler;
-  /**
-   * FOLLOW-UP 1 — outer webhook subscription limiter. IP-only, mounted
-   * BEFORE the dispatcher-auth middleware so the auth path itself is
-   * bounded by anonymous spam (30/hr per IP, generous because the inner
-   * limiter tightens). Pairs with subscriptionAccountLimiter below.
-   */
+  /** Outer webhook subscription limiter: 30/hr per IP, mounted before auth so the auth path is bounded. */
   webhookSubscriptionIpLimiter: RequestHandler;
-  /**
-   * FOLLOW-UP 1 — inner webhook subscription limiter. Keyed by verified
-   * account_id (req.verdictAuth.account_id set by requireWebhookAuth in
-   * routes/webhooks.ts), mounted AFTER auth. Tight (10/hr per account).
-   * Replaces the Fix-4 single token-aware limiter that was vulnerable
-   * to bearer-rotation bypass.
-   */
+  /** Inner limiter: 10/hr per verified account_id, mounted after auth, so rotating bearers can't bypass it. */
   webhookSubscriptionAccountLimiter: RequestHandler;
 }
 
@@ -64,12 +53,7 @@ function ipOnlyRateLimitKey(req: AccountRateLimitRequest): string {
   return ipKeyGenerator(req.ip ?? "unknown");
 }
 
-/**
- * FOLLOW-UP 1 — webhook subscription limiter key generator. Reads the
- * verified account_id that requireWebhookAuth stashed on req; falls
- * back to IP only if auth somehow didn't populate it (safety net —
- * the auth middleware should have rejected the request first).
- */
+/** Keys by the verified account_id from requireWebhookAuth; falls back to IP if auth didn't set it. */
 function webhookAccountRateLimitKey(
   req: AccountRateLimitRequest & {
     verdictAuth?: { account_id?: string };
@@ -105,12 +89,7 @@ export function accountRouteLimiters(): AccountRouteLimiters {
     rotateKeyLimiter: makeAccountLimiter(20, ONE_MINUTE_MS, true, "rotate_api_key"),
     destAddrLimiter: makeAccountLimiter(5, ONE_MINUTE_MS, true, "destination_address"),
     funnelEventLimiter: makeAccountLimiter(60, ONE_MINUTE_MS, true, "funnel_event"),
-    // FOLLOW-UP 1 — two-stage webhook subscription limiter.
-    //  • Outer: 30 reqs/hr per IP, mounted BEFORE auth. Bounds the auth
-    //    path itself against anonymous spam.
-    //  • Inner: 10 reqs/hr keyed by verified account_id, mounted AFTER
-    //    auth. The verified key closes the bearer-rotation bypass that
-    //    the old Fix-4 token-aware limiter had.
+    // Two-stage webhook subscription limiter; see AccountRouteLimiters.
     webhookSubscriptionIpLimiter: makeAccountLimiter(
       30,
       60 * ONE_MINUTE_MS,

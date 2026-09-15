@@ -112,10 +112,7 @@ export function enrichedMarketRegistryRow(
   const identity = adapterIdentityForMarket(market);
   return {
     ...market,
-    // Spreading the raw row put `config_json` on the wire VERBATIM, which walks
-    // straight past `publicMarketConfigSummary`'s validated icon gate — the
-    // dashboard parses this blob itself and puts `icon_url` into an <img src>.
-    // Sanitized here so both read shapes answer to the same rule.
+    // The dashboard reads `icon_url` from this blob into an <img src>, so it gets the same icon gate.
     config_json: sanitizedConfigJson(market.config_json),
     ...identity,
     market_taxonomy: marketTaxonomyForMarket(market),
@@ -124,17 +121,8 @@ export function enrichedMarketRegistryRow(
 }
 
 /**
- * The stored config blob with `icon_url` re-validated on the way out.
- *
- * `markets.config_json` is stored passthrough, so the value in the database is
- * whatever the venue supplied on the day the market was registered — including
- * rows written before the ingestion guard existed, and anything a hand edit put
- * there. Only the icon is touched: every other key is the market's own
- * definition and is not this function's business.
- *
- * A blob that does not parse is returned unchanged. It carries no usable
- * `icon_url` by definition (the consumer's own JSON.parse fails too), and
- * rewriting it would be inventing content for a row we cannot read.
+ * Stored config blob with `icon_url` re-validated on the way out; other keys untouched.
+ * An unparseable blob is returned unchanged.
  */
 function sanitizedConfigJson(configJson: string): string {
   let parsed: unknown;
@@ -149,10 +137,7 @@ function sanitizedConfigJson(configJson: string): string {
   const record = parsed as Record<string, unknown>;
   if (!("icon_url" in record)) return configJson;
   const safe = httpsUrlOrNull(record.icon_url);
-  // Only skip the rewrite when the stored value is ALREADY the canonical
-  // string. `safe === record.icon_url` alone was not that test: a stored
-  // `icon_url: null` satisfies it and survived untouched, so the key reached
-  // the wire as an explicit null rather than being absent.
+  // Skip the rewrite only when the stored value is already the canonical string; a stored null must go.
   if (safe !== null && safe === record.icon_url) return configJson;
   const next = { ...record };
   // Dropped, not nulled: `icon_url === undefined` is what every renderer's

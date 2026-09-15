@@ -31,12 +31,7 @@ export interface AccountRouteAuthAdapters {
   newAccountId?: AccountIdAdapter;
 }
 
-/**
- * Resolve the Privy Bearer token from a request into a Murmur account row.
- * Returns null if no Bearer is present or verification fails. Prefer
- * requireAccount for account route Modules that should share the standard
- * owner-facing auth failure.
- */
+/** Resolves the Privy Bearer to an account row, or null. Prefer requireAccount for the standard auth failure. */
 export async function resolveAccount(
   req: Request,
   db: Database.Database,
@@ -50,10 +45,8 @@ export async function resolveAccount(
     resolvedAt: opts.now(),
     newAccountId: opts.newAccountId,
   });
-  // Populate email + primary_login_method exactly once, on account CREATION.
-  // Gating on `created` (not "email is null") ensures wallet-only users — who
-  // legitimately have no email — don't re-trigger a Privy lookup on every
-  // request. hydrateProfile never throws, so this stays a pure enrichment.
+  // Backfill profile only on creation, so wallet-only users (no email) don't trigger a Privy lookup per request.
+  // hydrateProfile never throws.
   if (created && accountAuth?.isEnabled()) {
     const profile = await accountAuth.hydrateProfile(claims.privy_user_id);
     if (profile.email || profile.primary_login_method) {
@@ -78,23 +71,13 @@ export async function requireAccount(
   throw accountAuthRequiredError(opts.message);
 }
 
-/**
- * Request-only owner-facing auth, with the db handle, Privy verifier, Account
- * ID Adapter, and account-resolution clock already bound at router
- * construction. Account sub-router handlers call this with just the request
- * (plus an optional failure message) instead of rethreading the auth quad.
- */
+/** Owner-facing auth with db, verifier, id adapter and clock bound at router construction. */
 export type RequireAccount = (
   req: Request,
   opts?: { message?: string },
 ) => Promise<ResolvedAccount>;
 
-/**
- * Bind Account Route Auth once for a router: capture db + verifier + Account
- * ID Adapter + clock so downstream handlers depend only on the request. See
- * createAccountRouter — the returned closure replaces the 4-arg requireAccount
- * call at every account sub-router handler.
- */
+/** Binds requireAccount once per router so handlers pass only the request. */
 export function bindRequireAccount(
   db: Database.Database,
   accountAuth: PrivyAuthVerifier | undefined,

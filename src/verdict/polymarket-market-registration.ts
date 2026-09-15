@@ -31,18 +31,8 @@ export interface PolymarketMarketRegistrationInput {
   gammaLookup?: PolymarketMarketRegistrationGammaAdapter;
   newAgentSecurityEventId?: AgentSecurityEventIdAdapter;
   /**
-   * Series schedule for this market. When present the market's embargo stamp,
-   * series row and immutable clock snapshot are written in the SAME
-   * transaction as the market itself.
-   *
-   * That atomicity is the point. Stamping afterwards left two ways to produce
-   * a permanently broken market: a crash between the two writes, and a retry
-   * that skips both because the market row already exists. An unstamped market
-   * silently disagrees with its own on-chain schedule, so the acceptance guard
-   * rejects every submission to it, forever.
-   *
-   * Omitting it is only valid for `draft` markets — see the guard below. A
-   * scheduled market must never be created without its schedule.
+   * Series schedule. Embargo stamp, series row and clock snapshot are written in the market's own
+   * transaction; an unstamped market rejects every submission. Only `draft` markets may omit it.
    */
   schedule?: {
     seriesId: string;
@@ -81,10 +71,7 @@ export function sendPolymarketMarketRegistrationJsonResponse(
   res.status(result.status).json(result.body);
 }
 
-// Mirrors the `schedule` field of PolymarketMarketRegistrationOperationInput.
-// Without it this route could only ever create `draft` markets: anything else
-// is rejected by the schedule guard, so the manual fallback was unusable for
-// the one job it exists for — registering a market the discovery loop missed.
+// Mirrors the `schedule` field of PolymarketMarketRegistrationOperationInput; without it only `draft` is possible.
 const PolymarketMarketRegistrationScheduleSchema = z
   .object({
     seriesId: z.string().min(1),
@@ -105,14 +92,8 @@ const PolymarketMarketRegistrationScheduleSchema = z
 const PolymarketMarketRegistrationBodySchema = z
   .object({
     conditionId: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
-    // OPTIONAL, not defaulted. An omitted status means "leave it as it is" for
-    // an existing market and `draft` for a new one.
-    //
-    // It used to default to `listed` on the theory that operators "almost
-    // always want submissions immediately", but a listed market without a
-    // schedule is rejected outright, so the default guaranteed a 400. A plain
-    // `draft` default is no better: this route upserts, so a bare
-    // {conditionId} retry against a live market would silently demote it.
+    // Not defaulted: omitted keeps an existing market's status, or `draft` for a new one.
+    // A default would demote a live market on a bare {conditionId} retry.
     status: z.enum(["draft", "listed", "frozen", "retired"]).optional(),
     schedule: PolymarketMarketRegistrationScheduleSchema.optional(),
     // Optional override; otherwise derived from the Gamma row's endDate.
@@ -136,18 +117,8 @@ export interface PolymarketMarketRegistrationOperationInput {
   gammaLookup?: PolymarketMarketRegistrationGammaAdapter;
   newAgentSecurityEventId?: AgentSecurityEventIdAdapter;
   /**
-   * Series schedule for this market. When present the market's embargo stamp,
-   * series row and immutable clock snapshot are written in the SAME
-   * transaction as the market itself.
-   *
-   * That atomicity is the point. Stamping afterwards left two ways to produce
-   * a permanently broken market: a crash between the two writes, and a retry
-   * that skips both because the market row already exists. An unstamped market
-   * silently disagrees with its own on-chain schedule, so the acceptance guard
-   * rejects every submission to it, forever.
-   *
-   * Omitting it is only valid for `draft` markets — see the guard below. A
-   * scheduled market must never be created without its schedule.
+   * Series schedule. Embargo stamp, series row and clock snapshot are written in the market's own
+   * transaction; an unstamped market rejects every submission. Only `draft` markets may omit it.
    */
   schedule?: {
     seriesId: string;
@@ -178,9 +149,7 @@ export async function registerPolymarketMarketFromAdminBody(
     status: parsed.data.status,
     horizon_seconds: parsed.data.horizon_seconds,
     resolution_class: parsed.data.resolution_class,
-    // Body wins over the caller-supplied default: the manual fallback exists
-    // for markets the discovery loop missed, which may not belong to whatever
-    // series the daemon happens to run.
+    // Body wins: a market discovery missed may not belong to the daemon's series.
     schedule: parsed.data.schedule ?? input.schedule,
     actor: "admin_token",
     gammaLookup: input.gammaLookup,
@@ -197,10 +166,8 @@ export async function registerPolymarketMarketFromAdminBody(
 export const DISCOVERY_ACTOR = "polymarket_discovery";
 
 /**
- * Shared registration operation behind both the admin route and the
- * discovery ticker. The canonical market_id is the LOWERCASE conditionId —
- * the market registry schema only admits lowercase hex, so an uppercase
- * admin input must not create a shadow row that dedupe then misses.
+ * Shared by the admin route and the discovery ticker. market_id is the lowercase
+ * conditionId; the registry only admits lowercase hex.
  */
 export async function runPolymarketMarketRegistration(
   input: PolymarketMarketRegistrationOperationInput,
@@ -209,10 +176,7 @@ export async function runPolymarketMarketRegistration(
   const { horizon_seconds, resolution_class } = input;
   const existing = marketsRepo.get(input.db, conditionId);
 
-  // A halted market is off limits to the ticker entirely — not just its
-  // status, but its config and schedule too. Registration is a full upsert, so
-  // letting discovery through here would rewrite a market an operator
-  // deliberately pulled.
+  // Discovery must not touch a halted market at all; registration is a full upsert.
   if (input.actor === DISCOVERY_ACTOR && marketsRepo.isOperatorHalted(input.db, conditionId)) {
     return {
       status: 409,
@@ -224,19 +188,13 @@ export async function runPolymarketMarketRegistration(
       },
     };
   }
-  // An omitted status must not change one. Registration upserts, and
-  // `upsertExternalMarket` overwrites status on conflict, so applying a
-  // default here made a bare {conditionId} retry demote a live market.
+  // An omitted status keeps the existing one; `upsertExternalMarket` overwrites status on conflict.
   const status = input.status ?? existing?.status ?? "draft";
 
   const operationNow = input.now();
 
-  // A STATUS-ONLY change on a market that is already bound to a clock is the
-  // one legitimate scheduleless operation here — freezing or retiring one is
-  // an emergency lever. It runs BEFORE the Gamma fetch on purpose: the usual
-  // reason to pull a market is that its Gamma data went bad, so a path that
-  // depends on Gamma answering is exactly the path that will not work when it
-  // is needed. Touches the status column and nothing else.
+  // Status-only change on a bound market (emergency freeze/retire). Runs before the Gamma
+  // fetch, since bad Gamma data is the usual reason to pull a market.
   const boundClockForStatus = marketClocksRepo.get(input.db, conditionId);
   if (boundClockForStatus && input.status && !input.schedule) {
     return statusOnlyUpdate({
@@ -277,10 +235,8 @@ export async function runPolymarketMarketRegistration(
     };
   }
 
-  // The sealed-call acceptance guard pins reveal_open_at to the persisted
-  // endDate at millisecond precision, while the on-chain fixed reveal is
-  // whole seconds. Floor the persisted date to the second so both layers
-  // always agree.
+  // The acceptance guard pins reveal_open_at to endDate in ms; the on-chain reveal is whole
+  // seconds, so floor to the second.
   const snapshot = normalizeSnapshotEndDate(fetched.snapshot);
   const endDateMs = snapshot.endDate ? Date.parse(snapshot.endDate) : Number.NaN;
   // Refuse to mark a past-ended Polymarket market `listed`; otherwise it
@@ -301,10 +257,7 @@ export async function runPolymarketMarketRegistration(
     };
   }
 
-  // An unparseable/missing Gamma end date used to become an invented 7-day
-  // horizon. That is a fabricated value presented as real: the market's
-  // schedule, scoring horizon and reveal all derive from it. Refuse instead —
-  // the caller can supply an explicit horizon_seconds if they know better.
+  // No usable endDate and no explicit horizon_seconds: refuse rather than invent one.
   if (!Number.isFinite(remainingSec) && horizon_seconds === undefined) {
     return {
       status: 422,
@@ -322,16 +275,8 @@ export async function runPolymarketMarketRegistration(
   const horizonSec =
     horizon_seconds ?? Math.max(60, remainingSec);
 
-  // A market already bound to a clock may not be re-registered onto a
-  // different one. `market_clocks` is insert-only, so the frozen snapshot
-  // survives — but the config's embargo stamp and the market's status do NOT:
-  // the upsert below rewrites both. Re-registering a bound market under new
-  // constants therefore returned 201 while leaving the DB clock and the
-  // on-chain schedule at the old reveal time, and every subsequent submission
-  // failed the exact-reveal check with nothing in the response to explain why.
-  //
-  // The schedule someone armed against must never move. A re-registration must
-  // either restate the same schedule (idempotent, allowed) or be refused.
+  // A bound market's schedule must never move: restate the same schedule or be refused.
+  // `market_clocks` is insert-only, but the upsert below rewrites the embargo stamp and status.
   const boundClock = marketClocksRepo.get(input.db, conditionId);
   if (boundClock) {
     if (!input.schedule) {
@@ -353,11 +298,8 @@ export async function runPolymarketMarketRegistration(
       windowSec: input.schedule.windowSeconds,
       config: input.schedule.clockConfig,
     });
-    // The cohort cap is compared too. `market_series` upserts it, and
-    // eligibility reads the CURRENT series value, so restating an otherwise
-    // identical schedule with a different cap retroactively resized every
-    // existing cohort in that series — including calls already sold against
-    // the old one.
+    // Compare the cohort cap too: eligibility reads the current series value, so a new cap
+    // would resize existing cohorts.
     const boundSeries = marketSeriesRepo.get(input.db, boundClock.series_id);
     const drift =
       input.schedule.seriesId !== boundClock.series_id ||
@@ -389,11 +331,8 @@ export async function runPolymarketMarketRegistration(
     }
   }
 
-  // A market without a schedule is unusable once it leaves draft: no embargo
-  // stamp means the daemon's expected reveal time disagrees with the chain, so
-  // the acceptance guard rejects every submission to it, permanently and
-  // silently. Checked AFTER snapshot validation so a more specific rejection
-  // (e.g. an already-resolved market) is not masked by this one.
+  // Past draft, a market needs a schedule or the acceptance guard rejects every submission.
+  // Checked after snapshot validation so more specific rejections win.
   if (!input.schedule && status !== "draft") {
     return {
       status: 400,
@@ -411,9 +350,7 @@ export async function runPolymarketMarketRegistration(
 
 
   const slugCandidate = typeof snapshot.slug === "string" ? snapshot.slug : null;
-  // Gamma's payload can be missing the slug or the outcome labels. Both are
-  // stored and published as real market facts, so the projection refuses to
-  // invent them — surface that as a data problem, not a 500.
+  // The projection refuses to invent a missing slug or outcome labels; surface that as a 422, not a 500.
   let config: ReturnType<typeof polymarketGammaMarketConfig>;
   try {
     config = polymarketGammaMarketConfig({
@@ -435,13 +372,8 @@ export async function runPolymarketMarketRegistration(
   const createdAt = operationNow;
   const created_at = nowIso(createdAt);
 
-  // The market's durable venue series, derived from the SAME validated
-  // projection that becomes config_json — series_slug/series_title/venue_category
-  // were already extracted from the parent event, so nothing here re-parses the
-  // question text. A config that names a valid series (non-empty slug AND title)
-  // links the market to a venue_market_series row so its calls can be priced
-  // per-series; one that names none stays null, which reads downstream as "no
-  // series" (unsellable) and is never fabricated.
+  // Venue series from the validated config; needs a non-empty slug and title.
+  // Null reads downstream as "no series" (unsellable) and is never fabricated.
   const seriesInput =
     typeof config.series_slug === "string" &&
     config.series_slug.length > 0 &&
@@ -464,19 +396,11 @@ export async function runPolymarketMarketRegistration(
   // Upsert + audit event stay in one transaction so a crash cannot land a
   // market mutation without the corresponding operator evidence.
   const row = input.db.transaction(() => {
-    // A full re-registration restates the schedule, which is the explicit act
-    // that lifts an operator halt.
-    // Only an OPERATOR lifts an operator halt. Discovery calls this same
-    // function to register markets it finds, so an unconditional clear here
-    // let the ticker undo an emergency freeze and relist the market on the
-    // very next pass — exactly the failure the halt exists to prevent.
+    // Only an operator re-registration lifts an operator halt; discovery never does.
     if (input.actor !== DISCOVERY_ACTOR) {
       marketsRepo.clearOperatorHalt(input.db, conditionId);
     }
-    // The series row must exist before the market can FK to it (foreign keys
-    // are enforced at db open). Upserting inside the market's own transaction
-    // keeps the two atomic: a linked market and its series land together or not
-    // at all. Idempotent — a re-registration restates the same series.
+    // The series row must exist before the market FKs to it; same transaction keeps both atomic.
     const venueSeriesId = seriesInput
       ? venueMarketSeriesRepo.upsert(input.db, seriesInput).venue_series_id
       : null;
@@ -495,10 +419,7 @@ export async function runPolymarketMarketRegistration(
       created_at,
       venue_series_id: venueSeriesId,
     });
-    // Schedule writes share this transaction with the market upsert. Doing
-    // them afterwards left a market that could exist without its embargo
-    // stamp — which silently disagrees with its own on-chain schedule and
-    // makes the acceptance guard reject every submission to it.
+    // Schedule writes share the upsert's transaction so a market never exists without its embargo stamp.
     if (input.schedule) {
       const sched = input.schedule;
       marketSeriesRepo.upsert(input.db, {
@@ -516,9 +437,7 @@ export async function runPolymarketMarketRegistration(
         cfg.embargoSec = sched.clockConfig.embargoSec;
         marketsRepo.setConfigJson(input.db, conditionId, JSON.stringify(cfg));
       }
-      // Insert-only: a second write would be a retime. Re-registering an
-      // existing market must not move a schedule someone already armed
-      // against, so an existing snapshot is left exactly as it is.
+      // Insert-only: never retime a schedule someone already armed against.
       if (!marketClocksRepo.get(input.db, conditionId)) {
         marketClocksRepo.insert(input.db, {
           market_id: conditionId,
@@ -563,17 +482,8 @@ export async function runPolymarketMarketRegistration(
 }
 
 /**
- * Change ONLY a bound market's status.
- *
- * Registration is a full upsert: it rewrites config_json from a fresh Gamma
- * projection and re-derives the schedule. For a market that is already bound,
- * that is exactly what must not happen — so an operator freezing a live market
- * cannot go through it, and before this path existed they had no route at all
- * (a scheduleless request 409s, and restating the schedule is impossible once
- * Gamma's endDate has drifted, which is often *why* the market needs pulling).
- *
- * Touches the status column and nothing else. No Gamma call, no config
- * rewrite, no clock or series write.
+ * Change only a bound market's status: no Gamma call, no config, clock or series write.
+ * Full registration can't do this once Gamma's endDate has drifted.
  */
 function statusOnlyUpdate(input: {
   db: Database.Database;
@@ -599,10 +509,8 @@ function statusOnlyUpdate(input: {
     };
   }
   const row = input.db.transaction(() => {
-    // Status and halt in ONE write. Terminal against discovery: a registration
-    // broadcast may be in flight right now and its receipt path relists on
-    // success, which would silently undo this. Lifted only by a full
-    // re-registration, which restates the schedule.
+    // Status and halt in one write, so an in-flight discovery receipt can't relist.
+    // Lifted only by a full re-registration.
     marketsRepo.haltByOperator(
       input.db,
       input.conditionId,
@@ -656,9 +564,7 @@ async function livePolymarketMarketRegistrationGammaAdapter(
   const { PolymarketGammaClient } = await import(
     "../markets/polymarket-gamma/client.js"
   );
-  // Registration is the one caller that reads the parent event's tags: they
-  // are where the venue's category comes from, and `/markets` does not embed
-  // them. Everywhere else shares this class on hotter loops and opts out.
+  // Only registration reads parent-event tags (the venue category source); hotter loops opt out.
   return new PolymarketGammaClient({
     nowMs: () => operationNowMs,
     enrichEventTags: true,

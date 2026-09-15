@@ -18,11 +18,7 @@ import {
 } from "./entitlement-access.js";
 import { entitlementsRepo } from "./repos/entitlements-repo.js";
 
-/**
- * Eligibility now fails closed on an unknown submission class, so a sale test
- * must seed the canonical accepted-call row that records it. An unseeded call
- * is correctly unsellable — that is the point of the check.
- */
+/** Eligibility fails closed on an unknown submission class, so each sale test seeds the accepted-call row. */
 function seedEarlyAccessCall(
   db: ReturnType<typeof openDb>,
   chainId: number,
@@ -30,9 +26,7 @@ function seedEarlyAccessCall(
   onchainCallId: string,
 ): void {
   const callId = `seed-${onchainCallId.slice(2, 12)}`;
-  // These rows exist only to give eligibility a submission_class to read.
-  // Building the full agent → submission → sealed-call FK chain would be a lot
-  // of scaffolding for one column, so FKs are relaxed for the seed itself.
+  // FKs off for the seed: these rows only give eligibility a submission_class to read.
   db.pragma("foreign_keys = OFF");
   db.prepare(
     `INSERT OR IGNORE INTO submissions
@@ -98,10 +92,7 @@ function fakeChain(opts: FakeChainOpts): GrantChainAdapter & { grants: string[] 
       return opts.receipt ?? null;
     },
     async readDecryptAccess() {
-      // `viewAfterGrant` models the crash-restart shape: the pre-purchase read
-      // says not-granted, and only once a grant has been attempted does the
-      // chain report access. Without it, the pre-charge already-granted check
-      // short-circuits and the grant path under test never runs.
+      // Crash-restart shape: not granted before purchase, granted once a grant was attempted.
       if (opts.viewAfterGrant && grants.length > 0) return opts.viewAfterGrant;
       return opts.view;
     },
@@ -119,15 +110,11 @@ function deps(chain: GrantChainAdapter, db: ReturnType<typeof openDb>): Entitlem
     db,
     grantChain: chain,
     salesSafetySeconds: 180,
-    // A sale freezes murmur's cut; injected so this smoke never reads the
-    // operator's .env. The seeded calls carry no fee snapshot, so this is what
-    // every reservation here stamps.
+    // Injected so the smoke never reads .env; seeded calls have no fee snapshot, so reservations stamp this.
     protocolFeeBps: 1_000,
     now: () => NOW,
     resolveProducerAgentId: () => "agent-xyz",
-    // Accrual reports unattributed sales loudly, and "agent-xyz" is not a real
-    // agent row here. Swallow those warnings so the smoke's own output stays
-    // readable; provider-earnings.smoke.ts is where attribution is asserted.
+    // "agent-xyz" isn't a real agent, so swallow attribution warnings; provider-earnings.smoke.ts covers that.
     logger: { warn: () => undefined },
   };
 }
@@ -314,10 +301,7 @@ const openView: GrantDecryptAccessView = {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-// 5b. The payer ALREADY holds on-chain access and has no local row (restored
-//     DB, manual grant, reconciler gap). The contract treats a duplicate grant
-//     as a successful no-op, so charging again would take money for access the
-//     subscriber already owns. The chain is authoritative here, not our table.
+// 5b. Payer already holds on-chain access with no local row → already_owned, no charge, no grant.
 {
   const { db, tmp } = newDb();
   seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALLA");
@@ -373,10 +357,6 @@ const openView: GrantDecryptAccessView = {
 process.stdout.write("OK entitlement access orchestrator smoke\n");
 
 // ── Cohort cap is enforced BEFORE any charge ───────────────────────────────
-// Each grant is its own transaction, so an
-// unbounded cohort can exceed what one transaction can spend — and the grant
-// then fails for EVERYONE on that call, after they have all paid. The cap was
-// previously persisted at registration with no runtime consumer at all.
 {
   const { db, tmp } = newDb();
   seedEarlyAccessCall(db, CHAIN_ID, CONTRACT, "0xCALL1");

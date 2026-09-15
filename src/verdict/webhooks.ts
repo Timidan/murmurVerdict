@@ -1,11 +1,6 @@
-// Webhook dispatch — subscribes to the in-process VerdictEventBus and
-// fires HTTP POST to every matching subscription on call.accepted /
-// call.resolved. Each delivery is signed HMAC-SHA256(secret, body) and
-// carries an X-Murmur-Signature header subscribers can verify.
-//
-// No retries in v0.1. Failures bump failure_count so the operator can
-// see them via GET /v1/webhooks/:id; sustained failures should be
-// handled out-of-band (disable the row, talk to the subscriber).
+// Webhook dispatch: POSTs call.accepted / call.resolved to every matching
+// subscription, signed HMAC-SHA256(secret, body) in X-Murmur-Signature.
+// No retries; failures bump failure_count (visible via GET /v1/webhooks/:id).
 
 import type Database from "better-sqlite3";
 import type { WebhookRow } from "./repos/webhooks-repo.js";
@@ -59,10 +54,8 @@ export function startWebhookDispatcher(
 
     for (const target of targets) {
       total++;
-      // Keep delivery invocation synchronous while containing both immediate
-      // throws and rejected promises. An uncaught rejection here otherwise
-      // reaches Node's unhandled-rejection policy and can take down the daemon
-      // for a non-critical subscriber failure.
+      // Contain sync throws and rejections; an unhandled rejection can take
+      // down the daemon.
       let delivery: Promise<void> | void;
       try {
         delivery = deliver({

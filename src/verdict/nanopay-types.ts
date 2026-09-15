@@ -7,20 +7,13 @@ import type {
 
 export interface NanopayRouterDeps {
   readonly db: Database.Database;
-  /**
-   * Resolves a pipeline by id → price + recipient from the daemon's
-   * env-backed Nanopay catalog. Route returns 404 when this returns null.
-   */
+  /** Pipeline id → price + recipient from the env catalog; null is a 404. */
   readonly resolvePipeline: (pipelineId: string) => PipelineInfo | null;
-  /**
-   * Resolves the latest sealed-Fhenix call for a pipeline → full
-   * anchor tuple + reveal artifact (or null if pre-reveal). Route
-   * returns 503 when this returns null.
-   */
+  /** Latest sealed call for a pipeline (reveal artifact null pre-reveal); null is a 503. */
   readonly resolveLatestSealedCall: (
     pipelineId: string,
   ) => { anchor: FhenixAnchorTuple; revealArtifact: unknown | null } | null;
-  /** Network — defaults to testnet for Phase 1. */
+  /** Defaults to testnet. */
   readonly network?: "testnet" | "mainnet";
   /** EIP-712 domain for `requestSignalId` hashing. */
   readonly bindingDomain: DomainParams;
@@ -28,22 +21,11 @@ export interface NanopayRouterDeps {
   readonly sellerAddress: `0x${string}`;
   /** Clock supplied by Nanopay Runtime for paid-settlement persistence. */
   readonly now: () => Date;
-  /**
-   * Optional CAIP-2 network restrictions for the SDK middleware.
-   * If omitted, the SDK accepts payments on ALL Gateway-supported
-   * networks (recommended). Example: `["eip155:84532"]` for
-   * Base-Sepolia-only.
-   */
+  /** Optional CAIP-2 allowlist, e.g. `["eip155:84532"]`; omitted accepts every Gateway network. */
   readonly acceptNetworks?: string[];
   /**
-   * Default per-call price in dollar string form (e.g. "$0.001"),
-   * used as the `gateway.require(price)` argument. The SDK
-   * converts this to USDC atomic units via its money-parser
-   * registry. Pipelines all share the same default today; per-pipeline
-   * will switch to per-pipeline pricing.
-   *
-   * Note: pipeline-specific pricing requires generating one middleware
-   * per pipeline OR passing dynamic price through the SDK; defer.
+   * Per-call dollar price (e.g. "$0.001") for `gateway.require(price)`, shared by all pipelines.
+   * Per-pipeline pricing would need one middleware per pipeline or dynamic SDK pricing.
    */
   readonly defaultPrice?: string;
 }

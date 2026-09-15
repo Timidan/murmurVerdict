@@ -39,16 +39,7 @@ import { SCHEMA_VERSION } from "./schema.js";
 
 // ─── The provider revenue split ────────────────────────────────────────────
 //
-// Murmur keeps MURMUR_PROTOCOL_FEE_BPS of every early-access sale; the rest is
-// recorded as the producing agent owner's. The money still lands in one place
-// (Circle pays one recipient) — what this suite defends is the LEDGER, and one
-// predicate in particular:
-//
-//     a PAID, GRANTED entitlement has exactly one provider_earnings row.
-//
-// Exactly one: never two (double-fire), never zero (a crash between granting
-// and accruing, which would lose the earnings forever because `granted` is
-// terminal and nothing revisits it).
+// Invariant: a paid, granted entitlement has exactly one provider_earnings row (never two, never zero).
 process.stdout.write("murmur provider earnings smoke\n");
 
 const CHAIN_ID = 84532;
@@ -102,12 +93,7 @@ function close(h: Harness): void {
   rmSync(h.tmp, { recursive: true, force: true });
 }
 
-/**
- * A sellable sealed call owned by the harness agent.
- *
- * `feeBps` null models a call sealed before fees were snapshotted — the legacy
- * shape the accrual path has to keep working for.
- */
+/** A sellable sealed call owned by the harness agent; `feeBps` null models a call with no fee snapshot. */
 function seedCall(
   h: Harness,
   onchainCallId: string,
@@ -273,9 +259,7 @@ async function buy(
     "gross = fee + net, always",
   );
 
-  // A repricing of the PROTOCOL fee cannot re-cut a sale already made: the
-  // split lives on the row, and re-running accrual under a different current
-  // fee changes nothing.
+  // A later protocol fee change can't re-cut a sale already made.
   accrueIfEligible(earningsDeps(h, 5_000), id);
   assert.equal(providerEarningsRepo.byEntitlement(h.db, id)!.fee_bps, 1_000);
   assert.equal(countEarnings(h), 1, "still exactly one row");
@@ -469,7 +453,7 @@ async function buy(
     feeBpsAtSale: 1_000,
     now: NOW_ISO,
   });
-  // Exactly what an older build did: the granted CAS, and nothing else.
+  // The granted CAS alone, with no accrual.
   entitlementsRepo.transition(h.db, id, ["payment_settling"], {
     status: "granted",
     nanopayReceiptId: "circle-crash",
@@ -514,7 +498,7 @@ async function buy(
     producerAgentId: h.agentId,
     amount: null,
     currency: null,
-    // Deliberately absent: a row written before migration 071.
+    // No feeBpsAtSale: a legacy row.
     now: NOW_ISO,
   });
   assert.equal(entitlementsRepo.byId(h.db, id)!.fee_bps_at_sale, null);
@@ -659,16 +643,7 @@ async function buy(
     false,
     "nothing here has been paid, and the payload says so",
   );
-  // Migration 073 added the payout journal, so "owed" became a claim murmur
-  // can actually make: accrued minus paid. This assertion used to be the
-  // opposite — it forbade the word entirely — and it was right to, because
-  // until there was a journal an "owed" figure would have kept asserting a
-  // debt an operator had already settled by hand.
-  //
-  // With no payout rows recorded, the whole accrual is still outstanding, and
-  // `overpaid_atoms` is "0" rather than absent: the two fields are the halves
-  // of one signed balance, and both are always present so a reader cannot mistake
-  // a missing key for a zero.
+  // No payouts yet: the whole accrual is owed, and overpaid_atoms is "0", not absent.
   {
     const usdcTotal = view.body.totals[0] as unknown as {
       owed_atoms: string;
@@ -741,8 +716,7 @@ async function buy(
     onchainCallId: "0xNOPRODUCER",
     subscriberAddress: PAYER,
     callId: null,
-    // NULL, exactly as every production row written before the runtime wired
-    // resolveProducerAgentId.
+    // NULL producer column; accrual must re-derive it.
     producerAgentId: null,
     amount: null,
     currency: null,
@@ -793,8 +767,7 @@ async function buy(
 // ── 12. Pricing a signal is refused while the split cannot be recorded ─────
 {
   const h = newHarness();
-  // Terms are per-series (migration 075): the owner must serve a series before
-  // pricing it, so stand one up and register the harness agent for it.
+  // Terms are per-series: register the agent for a series before pricing it.
   const series = venueMarketSeriesRepo.upsert(h.db, {
     venue: "polymarket",
     series_slug: "eth-up-or-down-5m",

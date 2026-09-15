@@ -166,11 +166,7 @@ export function findOperatorBlindNumericLeaf(
   return null;
 }
 
-// The CoFHE hex-normalization primitives live in the gateway family
-// (fhenix-gateway-cofhe-normalize). These thin wrappers preserve this release
-// gate's typed error surface (OperatorBlindRoundtripError, phase "encrypt")
-// by retagging CofheNormalizeError, so the A1/A2/A3 assertions keep their
-// contract while production no longer depends on this test surface.
+// Wrappers over fhenix-gateway-cofhe-normalize that retag CofheNormalizeError as this gate's "encrypt" phase error.
 export function normalizeOperatorBlindCtHashToHex32(
   value: unknown,
   label: string,

@@ -96,9 +96,7 @@ try {
   assert.ok(grid.length >= 2);
   const ethGridRow = grid.find((row) => row.market_id === "eth.1h");
   assert.ok(ethGridRow);
-  // Per-market trend series is now projected (chronological resolved scores).
-  // mainAgent on eth.1h resolved MIN_RESOLVED_CALLS_FOR_MAIN_TIER losses
-  // (score 0), so the series is that many zeros — and it feeds the sparkline.
+  // call_scores: mainAgent's eth.1h losses, so all zeros.
   assert.ok(Array.isArray(ethGridRow.call_scores));
   assert.equal(ethGridRow.call_scores.length, MIN_RESOLVED_CALLS_FOR_MAIN_TIER);
   assert.ok(ethGridRow.call_scores.every((s) => s === 0));
@@ -109,9 +107,7 @@ try {
     false,
   );
 
-  // Call-site policy pin: per-market boards sort by the LOWER-BOUND score
-  // (preferLowerBound:true). Mirror of leaderboard.smoke's global pin with the
-  // OPPOSITE expected winner — a swap to raw-sorting would flip this:
+  // Per-market boards sort by the lower bound; leaderboard.smoke's fixture with the opposite winner:
   //   rawWinner [1.0,0.6] → verdict_score 0.6,  verdict_score_lb ≈ 0.471
   //   lbWinner  [0.55,0.55]→ verdict_score 0.55, verdict_score_lb 0.55
   // Market (lb): lbWinner(0.55) > rawWinner(0.471) → lbWinner ranks first.
@@ -160,9 +156,7 @@ try {
     "market board sorts by verdict_score_lb → lbWinner outranks rawWinner",
   );
 
-  // Batched markets-grid read: ONE query per every market, and each market's
-  // ranked rows must match its single-market board exactly (same aggregation,
-  // same lower-bound ranking policy) — the whole point of the collapse.
+  // Batched grid: each market's rows must match its single-market board.
   const gridBatched = getLeaderboardForMarkets(db);
   const gridByMarket = new Map(gridBatched.map((e) => [e.market_id, e.agents]));
   assert.ok(

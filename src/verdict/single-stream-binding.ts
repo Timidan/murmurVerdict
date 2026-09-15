@@ -3,35 +3,16 @@ import { keccak256, toHex, encodeAbiParameters, parseAbiParameters } from "viem"
 import type { NanopayReceiptRow } from "./repos/nanopay-receipts-repo.js";
 
 /**
- * Wave L.A — Single-stream invariant binding helpers.
- *
- * Provides:
- *   1. `computeRequestSignalId`: EIP-712 typed-data hash that
- *      deterministically identifies a per-call signal across the
- *      Nanopayments rail. Domain-separated by chainId +
- *      verifyingContract (sealed-Fhenix anchor), so cross-rail and
- *      cross-chain replay are not possible.
- *
- *   2. `FhenixAnchorTuple`: the full anchor data structure embedded
- *      in the response payload, letting callers independently verify
- *      the served signal == sealed-Fhenix-anchored signal.
- *
- *   3. `serializeBinding` / `parseBinding`: persistence helpers used
- *      by `nanopay_receipts.binding_json`.
- *
- * Design note: docs/superpowers/specs/2026-05-23-wave-l-a-nanopayments-design.md
- *
- * EIP-712 reference: https://eips.ethereum.org/EIPS/eip-712
+ * Nanopayments binding helpers: the EIP-712 request signal id, the Fhenix
+ * anchor tuple, and (de)serialization for `nanopay_receipts.binding_json`.
  */
 
 /**
- * Domain separator parameters. Stable across deploy environments — the
- * `chainId` + `verifyingContract` fields scope the digest to a specific
- * sealed-verdicts deployment, so a sig generated for Base Sepolia can
- * not be replayed against Base mainnet (or vice-versa).
+ * `chainId` + `verifyingContract` scope the digest to one sealed-verdicts
+ * deployment, so a sig can't be replayed across chains.
  */
 export interface DomainParams {
-  /** Sealed-Fhenix anchor chain. For Phase 1: 84532 (Base Sepolia). */
+  /** Sealed-Fhenix anchor chain, e.g. 84532 (Base Sepolia). */
   readonly chainId: number;
   /** Sealed-verdicts contract address on `chainId`. */
   readonly verifyingContract: `0x${string}`;
@@ -44,14 +25,6 @@ export interface DomainParams {
 const EIP712_DOMAIN_TYPEHASH =
   "0x8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f";
 
-/**
- * RequestSignalId typehash:
- *   keccak256("RequestSignalId(bytes32 pipelineId,address buyer,bytes32 eip3009Nonce)")
- *
- * Computed once at module load; reviewers can recompute via
- *   `cast keccak "RequestSignalId(bytes32 pipelineId,address buyer,bytes32 eip3009Nonce)"`
- * to confirm.
- */
 const REQUEST_SIGNAL_ID_TYPEHASH = keccak256(
   toHex("RequestSignalId(bytes32 pipelineId,address buyer,bytes32 eip3009Nonce)"),
 );
@@ -78,19 +51,9 @@ export function computeDomainSeparator(domain: DomainParams): `0x${string}` {
 }
 
 /**
- * Compute the EIP-712 typed-data hash for a per-call request signal id.
- *
- * Inputs:
- *   - pipelineId: 32-byte hex identifying the pipeline being consumed.
- *   - buyer: payer address (recovered from the EIP-3009 signature).
- *   - eip3009Nonce: 32-byte hex nonce from the EIP-3009 authorization.
- *   - domain: chainId + verifyingContract (sealed-Fhenix anchor).
- *
- * Output: 32-byte hex digest. Deterministic — same inputs always
- * produce the same digest. Used as the `request_signal_id` column in
- * `nanopay_receipts` and as the `requestSignalId` binding field.
- *
- * Implementation follows the EIP-712 spec:
+ * EIP-712 digest for a per-call request signal id; stored as
+ * `nanopay_receipts.request_signal_id`. `buyer` is recovered from the
+ * EIP-3009 signature.
  *   structHash = keccak256(abi.encode(REQUEST_SIGNAL_ID_TYPEHASH, pipelineId, buyer, eip3009Nonce))
  *   digest = keccak256(0x1901 || domainSeparator || structHash)
  */
@@ -112,7 +75,6 @@ export function computeRequestSignalId(input: {
     ),
   );
   const domainSeparator = computeDomainSeparator(input.domain);
-  // 0x1901 || domainSeparator || structHash, then keccak256.
   const digest = keccak256(
     `0x1901${domainSeparator.slice(2)}${structHash.slice(2)}` as `0x${string}`,
   );
@@ -120,16 +82,9 @@ export function computeRequestSignalId(input: {
 }
 
 /**
- * Full Fhenix anchor tuple as embedded in the Nanopayments response
- * binding. Lets the caller independently verify:
- *   1. The served signal corresponds to a real sealed-Fhenix call.
- *   2. The commit hash matches what `MurmurSealedVerdicts` has stored
- *      at the same submit-tx + log.
- *   3. If `revealOpenAt` <= now, the `reveal_artifact` (carried
- *      separately in the response) is the canonical reveal.
- *
- * Schema version `1` so future evolutions (adding fields, switching
- * commit schemes) can be detected by clients.
+ * Fhenix anchor embedded in the Nanopayments binding, so callers can verify
+ * the served signal is a real sealed call whose commit hash matches
+ * `MurmurSealedVerdicts` at the same submit tx + log.
  */
 export interface FhenixAnchorTuple {
   readonly bindingVersion: 1;
@@ -147,7 +102,7 @@ export interface FhenixAnchorTuple {
   readonly confidenceCiphertextHash: `0x${string}`;
   /** ISO-8601 timestamp when the sealed-Fhenix horizon opens. */
   readonly revealOpenAt: string;
-  /** e.g. "fhenix-sealed-v1" — see sealed-call-acceptance.ts. */
+  /** e.g. "fhenix-sealed-v1". */
   readonly commitScheme: string;
   /** keccak/sha256 commit-hash for cross-check with on-chain emit. */
   readonly commitHash: string;
@@ -175,24 +130,13 @@ export function parseBinding(json: string): NanopayBinding {
   return JSON.parse(json) as NanopayBinding;
 }
 
-/**
- * Re-export of the persisted-row's binding accessor. Convenience for
- * callers who hold a `NanopayReceiptRow` and want the parsed binding
- * without re-resolving from a column name.
- */
 export function bindingFromReceipt(row: NanopayReceiptRow): NanopayBinding {
   return parseBinding(row.binding_json);
 }
 
 /**
- * The reveal artifact, present once `revealOpenAt <= now`. Pre-reveal
- * responses carry `revealArtifact: null` and clients can poll until
- * the horizon opens.
- *
- * The artifact shape mirrors what the existing daemon's
- * sealed-call reveal pipeline produces. We keep it as `unknown` here
- * so this helper module stays free of the wider reveal-decoding
- * dependency surface; the route handler does the structured assembly.
+ * Present once `revealOpenAt <= now`, null before. Kept `unknown` so this
+ * module avoids reveal-decoding deps; the route handler builds it.
  */
 export type RevealArtifact = unknown;
 

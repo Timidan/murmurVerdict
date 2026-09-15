@@ -3,18 +3,9 @@
 //   POST /v1/admin/payouts                        (operator, admin token)
 //   GET  /v1/account/agents/:slug/payouts         (owner, Privy)
 //
-// Paying a provider is a MANUAL operator step: the payment rail settles every
-// sale to murmur's single seller address, so moving a provider's share to them
-// happens outside this process. What murmur can do — and until migration 073
-// could not — is write down that it happened, so "what am I owed?" has an
-// answer both sides can check.
-//
-// The write surface is idempotent on (agent, currency, tx_ref) because the
-// operator's client can time out after the row landed. A retry that carries
-// the SAME content replays the existing row; a retry that carries DIFFERENT
-// content is a conflict, not an update, because this journal is append-only.
-// Correcting a mistake means posting a 'reversal', never re-posting the
-// 'payout'.
+// Payouts are manual (the rail settles to one seller address); this journal records them.
+// Idempotent on (agent, currency, tx_ref): same content replays, different content is a 409.
+// Append-only; correct a mistake with a 'reversal'.
 
 import type Database from "better-sqlite3";
 
@@ -73,9 +64,7 @@ export function recordProviderPayout(
   }
   const amountAtoms = requiredString(body.amount_atoms, "amount_atoms", 80);
   if (!AMOUNT_ATOMS_RE.test(amountAtoms)) {
-    // Deliberately strict, and the same rule the column CHECK enforces: no
-    // leading zero, no sign, no decimal point, no trailing characters. A
-    // signed amount would contradict entry_type, and "0" is not a payment.
+    // Same rule as the column CHECK: positive integer, no leading zero.
     throw new VerdictError(
       "amount_atoms must be a positive whole number of atomic units, with no leading zero",
       ERROR_CODES.schema_invalid,
@@ -111,9 +100,7 @@ export function recordProviderPayout(
     created_at: createdAt,
   };
 
-  // One transaction, and the existence check lives INSIDE it: two operators
-  // retrying the same transfer concurrently must not both pass a pre-check and
-  // then have one of them fail on the UNIQUE index with a bare 500.
+  // Existence check inside the transaction so concurrent retries don't hit the UNIQUE index as a 500.
   let outcome: { status: 200 | 201; row: ProviderPayoutRow } | null = null;
   let conflict: ProviderPayoutRow | null = null;
   let overReversalMax: string | null = null;
@@ -131,11 +118,8 @@ export function recordProviderPayout(
       conflict = existing;
       return;
     }
-    // A reversal can only take back money the journal says was paid. Without
-    // this bound (security review R4), a typo'd reversal under a fresh
-    // reference drives net-paid negative and REPORTS the difference as owed —
-    // fictitious debt manufactured by an admin mistake. Checked inside the
-    // insert transaction so two concurrent reversals cannot both pass.
+    // A reversal can't exceed net paid, or a typo would report fictitious debt. In-transaction so
+    // two concurrent reversals can't both pass.
     if (entryType === "reversal") {
       const netPaid = providerPayoutsRepo.netPaidAtoms(deps.db, {
         producerAgentId: agent.agent_id,
@@ -231,11 +215,7 @@ export function publicPayoutRow(row: ProviderPayoutRow, agentSlug: string) {
   };
 }
 
-/**
- * Content equality for the idempotent replay. created_at is excluded on
- * purpose — it is when the row was WRITTEN, and a retry arrives later by
- * definition. Everything the operator supplied must match exactly.
- */
+/** Content equality for replay; created_at is excluded because a retry arrives later. */
 function sameEntry(existing: ProviderPayoutRow, incoming: ProviderPayoutInsert): boolean {
   return (
     existing.producer_agent_id === incoming.producer_agent_id &&
@@ -298,11 +278,7 @@ function parseEntryType(raw: unknown): ProviderPayoutEntryType {
   );
 }
 
-/**
- * Normalize to the repo's canonical second-precision ISO form. Stored strings
- * are compared with `<=` against created_at both here and in the column CHECK,
- * and a lexical comparison is only sound when both sides share one shape.
- */
+/** Canonical second-precision ISO; stored strings are compared lexically against created_at. */
 function canonicalIso(raw: unknown, field: string): string {
   if (typeof raw !== "string" || raw.trim() === "") {
     throw new VerdictError(`${field} is required`, ERROR_CODES.schema_invalid, 400);

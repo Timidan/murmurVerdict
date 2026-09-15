@@ -244,9 +244,7 @@ try {
       confidence_ct_hash: "0x" + "66".repeat(32),
       accepted_at: acceptedAt,
       reveal_open_at: revealOpenAt,
-      // NOTE: no submission_class here. It is decoded from the on-chain submit
-      // event during verification, never supplied by the client — a caller
-      // must not be able to claim its own call was sellable.
+      // No submission_class: it's decoded from the on-chain event, never client-supplied.
     },
     strategy_tag: "momentum",
   };
@@ -555,8 +553,7 @@ try {
       assert.equal(full?.submission.status, "resolved");
       assert.equal(full?.resolution?.outcome, "win");
       assert.equal(full?.resolution?.call_score, 1);
-      // Murmur observes no prices: t1_feed / p1 / signed_return are legacy
-      // columns and are always NULL (migration 055).
+      // Murmur observes no prices: t1_feed / p1 / signed_return are always NULL.
       assert.equal(full?.resolution?.t1_feed, null);
       assert.equal(full?.resolution?.p1, null);
       assert.equal(full?.resolution?.signed_return, null);

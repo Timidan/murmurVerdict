@@ -3,17 +3,8 @@
 //   GET    /v1/account/webhooks
 //   DELETE /v1/account/webhooks/:id
 //
-// POST /v1/webhooks already exists and already authenticates the account. What
-// was missing is everything after creation: the only read was GET
-// /v1/webhooks/:id (you must already know the id) and the only delete required
-// the HMAC secret in a header — and that secret is shown exactly once, at
-// creation, by design. An owner who closed that dialog could never list or
-// remove their own subscriptions again.
-//
-// These two routes close that gap through OWNERSHIP instead of the secret: a
-// webhook belongs to the account that owns the agent its `agent_slug` names.
-// The secret stays a delivery-verification credential and never becomes a
-// management credential.
+// Authorized by ownership: a webhook belongs to the account owning the agent its `agent_slug` names.
+// The HMAC secret (shown once at creation) stays a delivery credential, never a management one.
 
 import type Database from "better-sqlite3";
 
@@ -39,13 +30,7 @@ export interface AccountWebhookRow {
 
 /**
  * Every subscription on every agent this account owns, newest first.
- *
- * The join is through `display_slug` because that is what the webhooks table
- * stores (the fanout matches on it), and the register surface canonicalizes
- * the caller's slug to `display_slug` before insert — so this join sees every
- * row that route can create.
- *
- * `secret` is never selected. It is shown once at creation and never again.
+ * Joins on display_slug, which the register route canonicalizes to. `secret` is never selected.
  */
 export function listAccountWebhooks(deps: {
   db: Database.Database;
@@ -73,15 +58,8 @@ export function listAccountWebhooks(deps: {
 }
 
 /**
- * Delete one subscription this account owns.
- *
- * 200 { deleted: true } on success — a JSON body rather than a bare 204 so the
- * dashboard's shared DELETE client, which always parses a body, can call it
- * like every other account route.
- *
- * 404 when the id is unknown OR belongs to someone else — one response for
- * both, so holding a valid session cannot be used to probe which webhook ids
- * exist. Same uniform-miss posture the register route chose.
+ * Deletes one owned subscription. Returns a JSON body, not 204, for the dashboard's DELETE client.
+ * 404 for an unknown or someone else's id, so ids can't be probed.
  */
 export function deleteAccountWebhook(deps: {
   db: Database.Database;

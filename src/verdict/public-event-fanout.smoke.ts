@@ -133,11 +133,7 @@ try {
     full: nativeFull,
     agent,
   });
-  // A LEGACY row (native-price adapter, stored signed_return) still projects
-  // its payout vector and adapter identity, but price evidence is no longer
-  // part of any public event — murmur publishes venue outcomes, not price
-  // anchors, so signed_return must be absent here exactly as it is for a
-  // current external-venue call.
+  // A legacy native-price row still projects payout vector and adapter id, but never signed_return.
   assert.equal("signed_return" in (nativeEvent ?? {}), false);
   assert.deepEqual(nativeEvent?.payout_vector, ["1", "0"]);
   assert.equal(nativeEvent?.adapter_id, "native-price");

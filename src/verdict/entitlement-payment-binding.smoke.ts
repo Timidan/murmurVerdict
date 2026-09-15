@@ -8,14 +8,7 @@ import type { GatewayMiddleware, GatewayPaymentRequirements } from "../integrati
 import { openDb } from "./db.js";
 import { createGatewayEntitlementBroker } from "./entitlement-access-surface.js";
 
-// A signed x402 payment buys ONE resource.
-//
-// The broker used to compute a payload hash and a requirements hash and throw
-// both away, under a comment claiming the entitlement reservation was the real
-// guard. It is not: the reservation is unique per (call, subscriber), so the
-// same header replayed against a DIFFERENT call at the same price satisfied
-// every local check, and whether it settled twice came down to the
-// facilitator's nonce handling — someone else's guarantee.
+// A signed x402 payment buys ONE resource; replaying it against a different call is refused.
 process.stdout.write("murmur entitlement payment binding smoke\n");
 
 const SELLER = `0x${"11".repeat(20)}`;
@@ -101,11 +94,7 @@ try {
     );
   }
 
-  // THE REAL ATTACK: re-encode the SAME signed authorization with different
-  // envelope fields. `accepted` and `resource` sit outside the EIP-712
-  // signature, so an attacker can change them freely; only from/to/value/
-  // validity/nonce are signed. Hashing the decoded envelope made this a
-  // different key, which let one signature buy a second call.
+  // Same signed authorization, re-encoded with different unsigned envelope fields (`accepted`, `resource`).
   const reEncoded = Buffer.from(
     JSON.stringify({
       resource: "https://example.invalid/some/other/resource",
@@ -127,8 +116,7 @@ try {
   const second = await broker.authorize(header("nonce-b"), binding("0xCALL_B"));
   assert.equal(second.ok, true, "a distinct payment buys a distinct call");
 
-  // An authorization with no nonce is refused: without one there is nothing
-  // stable to key the binding on.
+  // A nonceless authorization is refused: nothing stable to key the binding on.
   const noNonce = Buffer.from(
     JSON.stringify({
       accepted: requirements(),
@@ -139,11 +127,7 @@ try {
   const rejected = await broker.authorize(noNonce, binding("0xCALL_D"));
   assert.equal(rejected.ok, false, "a nonceless authorization is refused");
 
-  // An UNVERIFIED payment must leave no trace. The bind used to run before
-  // verification, so anyone holding the public 402 challenge could write a
-  // permanent row per request with an invalid signature — the local parser
-  // accepts any address-shaped `from` and any nonempty nonce, and nothing
-  // cleans this table up.
+  // An unverified payment writes no binding row; the 402 challenge is public and nothing cleans this table.
   const before = (
     db
       .prepare("SELECT count(*) c FROM entitlement_payment_bindings")

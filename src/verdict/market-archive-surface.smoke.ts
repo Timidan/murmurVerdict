@@ -22,11 +22,8 @@ const db = openDb({ path: join(tmp, "verdict.db") });
 
 // ─── Fixture ────────────────────────────────────────────────────────────────
 //
-// Eleven frozen markets across three end instants, plus the states the query
-// must EXCLUDE (a listed row, and a row whose two tables disagree). Two rows
-// share one end instant so the keyset tie-break is actually exercised — a
-// cursor that only carries the timestamp would either repeat or skip one of
-// them, and a single-row-per-instant fixture would never catch it.
+// Six frozen markets across three end instants, plus excluded states (a listed row, and a
+// half-frozen row). Two rows share an end instant to exercise the keyset tie-break.
 
 const T0 = 1_786_300_000; // oldest
 const T1 = 1_786_300_300;
@@ -152,8 +149,7 @@ seedMarket({
   question: "Will inflation exceed 100% this year?",
   slug: "inflation-100-percent",
 });
-// A row with a NON-https icon in storage — the read path must drop it even
-// though ingestion should never have written it.
+// A non-https icon in storage; the read path must drop it.
 seedMarket({
   endEpochS: T0,
   question: "Legacy row with an http icon",
@@ -301,9 +297,7 @@ assert.equal(ok({ q: "DOGE-UPDOWN" }).results.length, 1, "slug match, any case")
   assert.equal(tied.length, 2, "both tied rows present");
   assert.ok(tied[0]!.market_id > tied[1]!.market_id, "tie-break is id DESC");
 
-  // Walk the whole archive one row at a time. Every row must appear exactly
-  // once, in the same order as the unpaged read — the property a keyset page
-  // exists to guarantee and an OFFSET page silently loses.
+  // One row at a time: every row appears exactly once, in unpaged order.
   const walked: string[] = [];
   let cursor: string | null = null;
   let pages = 0;
@@ -383,11 +377,7 @@ assert.equal(
     "sealed_window",
     "slug",
   ]);
-  // Grouping normalization: this fixture's config predates venue_category, so
-  // it has no category at all. Uncategorised is the honest answer — murmur's
-  // taxonomy class describes settlement ("Binary event"), which every market
-  // here is, so borrowing it as a category would group nothing and would read
-  // as the venue's word for the market when it is not.
+  // No venue_category in this fixture, so null; murmur's taxonomy class is never borrowed.
   assert.equal(row.provider, "polymarket-gamma");
   assert.equal(row.category_label, null, "no venue category, no borrowed one");
 }
@@ -424,11 +414,7 @@ assert.equal(
 
 // ─── 8. The cursor is CANONICAL ─────────────────────────────────────────────
 //
-// Node's base64 decoder is lenient: it skips characters it does not recognize
-// and tolerates a truncated final group, so an unbounded number of distinct
-// strings used to decode to the same page. "Opaque page token" has to mean one
-// page has exactly one token, or the token is not a token — it is a format with
-// undocumented slack that clients will eventually depend on.
+// Node's base64 decoder is lenient; one page must have exactly one token.
 
 {
   const canonical = encodeArchiveCursor({ endEpochS: T2, conditionId: t2a });
@@ -455,11 +441,7 @@ assert.equal(
 
 // ─── 9. Dates are parsed STRICTLY, not by Date.parse ───────────────────────
 //
-// `Date.parse` is a dialect parser, not a validator. It rolls February 30
-// forward to March 2 (a filter answering a question nobody asked), accepts
-// locale forms whose meaning differs by engine, and happily returns a negative
-// instant for a pre-epoch date — slipping past the `>= 0` check the numeric
-// branch applies.
+// Rejects rolled-over dates, locale forms, offsets, pre-epoch instants and non-zero fractions.
 
 for (const [label, value] of [
   ["February 30 (rolls over silently)", "2026-02-30"],
@@ -476,10 +458,7 @@ for (const [label, value] of [
   ["pre-epoch ISO", "1960-01-01T00:00:00Z"],
   ["year zero", "0000-01-01T00:00:00Z"],
   ["unpadded month", "2026-8-10"],
-  // Sub-second precision has nowhere to land: `end_date_epoch_s` is stored in
-  // SECONDS, so the fraction was floored away and `…:59.999Z` silently behaved
-  // as `…:59.000Z` — quietly widening the range by most of a second and
-  // including a row the caller asked to exclude.
+  // The column is whole seconds; a non-zero fraction would widen the bound.
   ["non-zero milliseconds", "2026-08-10T00:00:59.999Z"],
   ["a single non-zero digit", "2026-08-10T00:00:00.1Z"],
   ["microsecond precision", "2026-08-10T00:00:00.000001Z"],
@@ -515,9 +494,7 @@ for (const [label, value] of [
     "a ZERO fraction is accepted — it is what toISOString() emits — and means " +
       "exactly the same instant",
   );
-  // The bound a rejected fraction would have silently become. Proving these two
-  // select DIFFERENT rows is what makes the rejection worth having: accepting
-  // `.999` as `.000` is not a rounding detail, it changes the answer.
+  // Proves reading `.999` as `.000` would change the answer.
   const T1_ISO = new Date(T1 * 1000).toISOString();
   assert.equal(run({ from: 0, to: T1_ISO }).status, 200);
   assert.equal(

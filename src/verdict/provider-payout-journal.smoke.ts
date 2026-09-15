@@ -16,18 +16,8 @@ import { VerdictError } from "./schema.js";
 
 // ─── The payout journal ─────────────────────────────────────────────────────
 //
-// provider_earnings says what a sale ACCRUED. provider_payouts says what
-// murmur PAID. This suite defends the four properties that make the balance
-// between them trustworthy:
-//
-//   1. RETRY-SAFE. An operator whose client timed out re-POSTs the same
-//      transfer. That must replay the existing row, not pay twice.
-//   2. CONFLICT-LOUD. The same reference with different details is a mistake,
-//      and it 409s rather than silently updating — because
-//   3. APPEND-ONLY. The database itself refuses UPDATE and DELETE. Corrections
-//      are 'reversal' rows.
-//   4. SIGNED. Overpayment is reported as overpayment, never floored to zero,
-//      and a currency present on only ONE side still appears in the totals.
+// Retry-safe replay, 409 on a reused reference with new details, DB-enforced append-only,
+// and a signed balance over the union of currencies.
 process.stdout.write("murmur provider payout journal smoke\n");
 
 const NOW = new Date("2026-08-11T09:00:00.000Z");
@@ -223,9 +213,7 @@ function expectVerdictError(fn: () => unknown, code: string, status: number): Ve
 
   post(h, { amount_atoms: "6000000", tx_ref: "0xpaid-a" });
 
-  // The reversal BOUND (security review R4): a reversal larger than net paid
-  // is refused with the maximum named — an admin typo must never manufacture
-  // fictitious debt by driving net-paid negative.
+  // A reversal larger than net paid is refused with the maximum named.
   expectVerdictError(
     () => post(h, { entry_type: "reversal", amount_atoms: "6000001", tx_ref: "0xtypo" }),
     "schema_invalid",
@@ -273,8 +261,7 @@ function expectVerdictError(fn: () => unknown, code: string, status: number): Ve
   const usdc = earnings.totals.find((t) => t.currency === "USDC")!;
   assert.equal(usdc.balance_atoms, "-3000000");
   assert.equal(usdc.owed_atoms, "0");
-  // The whole point: an operator error stays visible in the view meant to
-  // catch it. A Math.max(0, …) here would report "settled".
+  // An operator error stays visible; a Math.max(0, …) would report "settled".
   assert.equal(usdc.overpaid_atoms, "3000000");
   close(h);
 }

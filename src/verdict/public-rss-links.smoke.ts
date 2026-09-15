@@ -4,11 +4,7 @@ import { publicRssDashboardLinks } from "./public-rss-links.js";
 
 process.stdout.write("murmur public rss links smoke\n");
 
-// RSS 2.0 requires <link> to begin with a registered URI scheme, and the
-// channel <link> is mandatory — so these are always absolute. A relative href
-// would be invalid RSS, which is why the caller must supply a real origin
-// rather than this module inventing one (it used to default to the
-// unresolvable "https://murmur.verdict").
+// RSS 2.0 links must be absolute; the caller supplies the origin.
 const links = publicRssDashboardLinks("https://murmur.example/");
 assert.equal(links.agent("agent/slash"), "https://murmur.example/#/agents/agent%2Fslash");
 assert.equal(links.call("call id"), "https://murmur.example/#/calls/call%20id");

@@ -46,8 +46,7 @@ const ok: SeriesClockConfig = {
     assert.ok(order[i] > order[i - 1], `instant ${i} must be strictly after ${i - 1}`);
   }
 
-  // marketResolutionAt is the venue's end, NOT the reveal deadline. Conflating
-  // them would assert the market resolves when murmur unseals.
+  // marketResolutionAt is the venue's end, NOT the reveal deadline.
   assert.equal(clock.marketResolutionAtMs, endDateMs);
   assert.ok(clock.publicRevealAtMs > clock.marketResolutionAtMs);
 }
@@ -92,9 +91,8 @@ assert.throws(
 );
 
 // ── Registrability ─────────────────────────────────────────────────────────
-// A window long relative to the venue's listing lead pushes armCloseAt before
-// the instance existed. Polymarket lists these ~24h ahead, so a 24h window on
-// a 5-minute-style schedule is unregistrable rather than silently unusable.
+// Polymarket lists ~24h ahead, so a 24h window puts armCloseAt before the
+// instance existed: unregistrable.
 {
   const endDateMs = Date.parse("2026-07-26T02:45:00.000Z");
   const listedAtMs = Date.parse("2026-07-25T02:49:00.000Z"); // ~23h51m ahead

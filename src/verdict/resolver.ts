@@ -24,32 +24,19 @@ export type ResolverLogEvent =
   | { kind: "tick_summary"; drained: number; resolved: number; oracle_unavailable: number };
 
 export interface ResolverTickResult {
-  /**
-   * Legacy `accepted` / `pending_t0` rows moved into `pending_t1` this tick.
-   * New sealed calls are accepted straight into `pending_t1`, so on a healthy
-   * daemon this is permanently 0 — it only counts rows written before the
-   * native-price t0 anchoring phase was removed.
-   */
+  /** Legacy `accepted` / `pending_t0` rows moved into `pending_t1` this tick; normally 0. */
   drained: number;
   resolved: number;
   oracle_unavailable: number;
 }
 
-/**
- * Pre-cutover statuses that still have to reach the adapter loop. Sealed-call
- * acceptance no longer writes either of them (it stamps `pending_t1`), but old
- * rows persisted before the cutover must still drain rather than strand.
- */
+/** Legacy statuses that must still drain to the adapter loop; new calls start at `pending_t1`. */
 const DRAINING_STATUSES = ["accepted", "pending_t0"] as const;
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
 //
-// Murmur is a pure referee: it never observes a price and never decides an
-// outcome. Every settlement is `adapter.observeResolution(...)` against the
-// EXTERNAL venue that authored the market (Polymarket Gamma today, via its
-// Gamma read with a CLOB fallback), scored by the universal payout-vector
-// scorer. There is therefore exactly one phase and zero oracle dependencies —
-// the Resolver constructs and ticks with nothing but a database and a clock.
+// Every settlement is `adapter.observeResolution(...)` against the market's venue, scored by the
+// payout-vector scorer. No oracle dependencies: just a database and a clock.
 
 export class Resolver {
   private readonly db: Database.Database;
@@ -75,12 +62,7 @@ export class Resolver {
     return summary;
   }
 
-  /**
-   * Move any pre-cutover `accepted` / `pending_t0` row into `pending_t1` so the
-   * single adapter loop below picks it up in the SAME tick. The transition is a
-   * compare-and-swap on the old statuses, so a concurrent invalid/missed reveal
-   * that terminalized the call is never resurrected.
-   */
+  /** Move legacy rows into `pending_t1` for this tick. CAS on the old statuses so a terminalized call is never resurrected. */
   private drainLegacyPending(): number {
     let drained = 0;
     for (const status of DRAINING_STATUSES) {

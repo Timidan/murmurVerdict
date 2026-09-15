@@ -11,16 +11,8 @@ import { makeResolutionUsage } from "./resolution-usage.js";
 import { nowIso } from "./time.js";
 
 /**
- * Terminalize a call Murmur cannot score — the venue adapter is missing,
- * misconfigured, or returned an unscoreable outcome.
- *
- * The persisted outcome string stays `"oracle_unavailable"`. That is a LEGACY
- * PERSISTED VALUE, not a statement about a price oracle: it is the terminal
- * null-score bucket the leaderboard already knows to exclude, and historical
- * rows carry it. Renaming it would require rewriting stored rows, which this
- * removal explicitly does not do.
- *
- * There is only a `t1` phase now — the t0 price-anchoring phase is gone.
+ * Terminalize a call Murmur can't score (adapter missing, misconfigured, or unscoreable outcome).
+ * `oracle_unavailable` is a persisted legacy value for the null-score bucket, not a price-oracle claim.
  */
 export async function markOracleUnavailable(input: {
   db: Database.Database;
@@ -31,15 +23,11 @@ export async function markOracleUnavailable(input: {
 }): Promise<boolean> {
   const resolvedAt = nowIso(input.now());
   const tx = input.db.transaction(() => {
-    // setResolution returns false when the submission is already in a terminal
-    // status (resolved/disputed/etc.) — a concurrent writer beat us to it.
-    // Skip the rest of the tx so we don't double-stamp status/usage events.
+    // False when a concurrent writer already terminalized; skip so status/usage aren't double-stamped.
     const written = resolutionsRepo.setResolution(input.db, {
       call_id: input.ctx.call_id,
       t1: resolvedAt,
-      // p1 / t1_feed / signed_return are legacy price-anchor evidence columns
-      // (migration 055 made them nullable). Murmur observes no prices, so they
-      // are always NULL on any row written from here.
+      // Legacy price-anchor columns; always NULL here.
       p1: null,
       t1_feed: null,
       signed_return: null,

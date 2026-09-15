@@ -42,11 +42,7 @@ assert.equal(card.x402?.protocol, "x402");
 assert.equal(card.x402?.gateway, "circle");
 assert.equal(card.x402?.endpoint, "https://api.murmur.example/v2/nanopay/infer/{pipelineId}");
 assert.equal(card.x402?.mounted, true);
-// NOT `false`. That claimed more than the system delivers: a grantor grants to
-// any address with no on-chain proof of payment, and the operator already holds
-// an authorized grantor key — so early operator decrypt is prevented by key
-// custody, not by the protocol. The card states the condition instead of
-// asserting a guarantee it cannot make.
+// Not `false`: early operator decrypt is prevented by grantor key custody, not the protocol.
 assert.equal(
   card.privacy.operator_can_decrypt_pre_horizon,
   "requires_owner_or_grantor_key",

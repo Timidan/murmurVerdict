@@ -147,10 +147,7 @@ export function listAccountAgentsResponse(
     }>;
   };
 } {
-  // One joined read in Account Ownership Records replaces the former
-  // per-agent fan-out (agent row + controller wallet + raw payout SQL). The
-  // Surface keeps only response shaping: derive the public controller-wallet
-  // projection against the served-at instant.
+  // One joined read; this only shapes the response against the served-at instant.
   const rows = listAccountAgentsWithSetup(input.db, input.accountId);
   const readClock = () => input.servedAt;
   const agents = rows.map((row) => ({

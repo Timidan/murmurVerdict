@@ -42,11 +42,7 @@ export type {
   FamilyLeaderboardOptions,
 } from "./leaderboard-families.js";
 
-/**
- * Compute the global public leaderboard from current DB state. The query joins
- * resolutions to submissions to agents and aggregates per agent. Win-rate is
- * computed only over win/loss outcomes.
- */
+/** Global public leaderboard. Win rate counts only win/loss outcomes. */
 export function getLeaderboard(
   db: Database.Database,
   opts: LeaderboardOptions = {},
@@ -66,18 +62,8 @@ export function getLeaderboardRowForAgent(
 }
 
 /**
- * The all-time leaderboard record for many agents, in ONE pass.
- *
- * The scoring facts read is a single global query and the ranking is global,
- * so asking per agent recomputed the whole board once per agent. Surfaces that
- * decorate a list of agents with their track record (the marketplace catalog)
- * call this instead.
- *
- * Ranks are the GLOBAL ranks, not ranks within `agentIds` — the record an
- * agent carries is the same one `getLeaderboard` publishes, and re-ranking a
- * subset would invent a second, disagreeing number. An agent with no scoring
- * facts at all (never submitted, or a kind outside `includeKinds`) is simply
- * absent from the map; callers surface that as "unscored", never as excluded.
+ * Leaderboard rows for many agents in one pass. Ranks are global, not within `agentIds`.
+ * Agents with no scoring facts are absent from the map; callers show them as unscored.
  */
 export function getLeaderboardRowsForAgentIds(
   db: Database.Database,
@@ -101,10 +87,6 @@ function computeLeaderboardRows(
 ): ComputedLeaderboardRow[] {
   const includeKinds = opts.includeKinds ?? DEFAULT_KINDS;
 
-  // Read shared scoring facts from the leaderboard-call-facts seam; this Module
-  // keeps its own global projection (RAW verdict_score sort, marketplace
-  // tier). Market and family boards use the lower bound; global does not —
-  // see the sort-key comment below.
   const rows = queryLeaderboardCallFacts(db, { kind: "global", includeKinds });
 
   type Agg = {
@@ -141,13 +123,7 @@ function computeLeaderboardRows(
     };
     const revealDenominator =
       reveal.nonDaemon + reveal.daemonFallback + reveal.genuineMisses;
-    // Global board sorts by RAW verdict_score. Market/family boards use the
-    // lower bound; global deliberately does not.
-    //
-    // This flag had been flipped to `true`, which silently reordered the global
-    // board — exactly the regression the tier-resolver design called out ("a
-    // swap would silently change global ordering, so the smoke must pin both").
-    // The leaderboard smoke caught it and had been failing on HEAD ever since.
+    // Global sorts by raw verdict_score; market/family boards use the lower bound. The smoke pins both.
     const { mainTier, sortKey } = resolveTierAndSort(summary, {
       preferLowerBound: false,
     });
@@ -169,9 +145,7 @@ function computeLeaderboardRows(
       win_rate: summary.win_rate,
       pending_calls: summary.pending_calls,
       last_resolved_at: summary.last_resolved_at,
-      // Redefined: fraction of reveals that did NOT need the
-      // murmur fallback. An invalid decrypted value was still publicly
-      // REVEALED, so it counts as non-withholding, not a miss.
+      // Fraction of reveals that didn't need the murmur fallback; an invalid decrypted value still counts as revealed.
       reveal_reliability:
         revealDenominator > 0 ? reveal.nonDaemon / revealDenominator : null,
       agent_reveals: reveal.nonDaemon,
@@ -192,12 +166,8 @@ function computeLeaderboardRows(
   });
 }
 
-// Reveal attribution buckets per agent, from the normalized reveal_source
-// column (migration 057). A reveal published by anyone other than the murmur
-// fallback EOA (the agent itself, or an unattributed external sender) is
-// "non-daemon". Rows revealed before migration 057 have NULL reveal_source and
-// are counted as non-daemon (they predate the fallback worker). `missed` is now
-// only ever a manually-established irrecoverable condition.
+// Reveal buckets per agent from reveal_source. Anyone but the daemon fallback counts as non-daemon,
+// including NULL reveal_source (pre-migration 057). `missed` is only set manually for irrecoverable calls.
 function getRevealReliability(
   db: Database.Database,
 ): Map<
@@ -236,11 +206,7 @@ function getRevealReliability(
   );
 }
 
-/**
- * 24h Verdict Volume: count of `submission_accepted` events in the last
- * 24 hours from kinds that surface on the public leaderboard. v0.1 has no
- * fees yet, so this number is a count proxy until billing/meter wiring lands.
- */
+/** Count of `submission_accepted` events in the last 24h from public-leaderboard kinds. A count, not fees. */
 export function get24hVerifiedVolume(db: Database.Database, now: Date): {
   count: number;
   since_iso: string;

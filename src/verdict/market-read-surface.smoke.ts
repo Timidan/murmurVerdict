@@ -79,7 +79,7 @@ try {
     markets: Array<{ market_id: string }>;
   }).markets.map((market) => market.market_id);
   assert.equal(listedIds.includes(marketId), true);
-  // MIGRATION_061 retired every seeded native-price market.
+  // The retired native-price market is not listed.
   assert.equal(listedIds.includes("eth.1h"), false);
   const listedRow = (listedMarkets.body as {
     markets: Array<{

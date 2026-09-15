@@ -106,6 +106,3 @@ export type {
   WebhookInsertRow,
   WebhookRow,
 } from "./repos/webhooks-repo.js";
-
-// DisputeGrounds re-export removed alongside the disputes
-// runtime (table dropped by MIGRATION_031).

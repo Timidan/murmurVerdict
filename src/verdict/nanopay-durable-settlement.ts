@@ -44,11 +44,8 @@ interface ParsedPayment {
 }
 
 /**
- * Verify → persist intent → settle → conditionally finalize.
- *
- * A transport/schema error after the intent insert deliberately leaves the
- * row in `settling`: Circle may have accepted the irreversible operation, so
- * only a future authoritative reconciler may decide its terminal state.
+ * Verify → persist intent → settle → conditionally finalize. An error after the intent insert
+ * leaves the row `settling`: Circle may have settled, so only a reconciler decides its terminal state.
  */
 export async function processDurableNanopay(
   input: DurableNanopayInput,

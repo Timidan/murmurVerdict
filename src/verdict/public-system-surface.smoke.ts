@@ -83,14 +83,8 @@ try {
   assert.equal(health.schema_version, 1);
   assert.equal(health.scoring_version, 1);
   assert.equal(health.now, "2026-06-12T09:30:00Z");
-  // Privacy is NOT a constant: MURMUR_OWNED_SEALING_ENABLED makes the gateway
-  // accept plaintext and seal server-side, at which point the operator can read
-  // every pending prediction. Asserting true unconditionally advertised a
-  // guarantee an owned-sealing deployment had explicitly traded away.
   assert.equal(health.privacy.pending_verdicts_private, true);
-  // pending_verdicts_private means NOT PUBLICLY READABLE, which the contract
-  // enforces on every path — so it holds even with owned sealing on. The claim
-  // owned sealing actually changes is operator blindness, tracked separately.
+  // Not publicly readable holds even with owned sealing; operator blindness is what changes.
   {
     const owned = publicHealthSurface({
       servedAt,
@@ -105,9 +99,7 @@ try {
     );
   }
   assert.equal(health.privacy.operator_holds_plaintext, "never_on_sealed_fhenix");
-  // The reveal guarantee tracks the WORKER, and this field was hardcoded true
-  // with no assertion on it, so a deploy with the worker off published a
-  // promise it was not keeping. Both directions are pinned here now.
+  // The reveal guarantee tracks the worker; both directions pinned.
   assert.equal(
     health.privacy.public_reveal_after_horizon,
     false,
@@ -199,8 +191,7 @@ try {
   assert.equal(readyRes.statusCode, 200);
   assert.equal((readyRes.body as typeof ready.body).ready, true);
 
-  // /readyz has no price-oracle leg any more: readiness is DB writeability
-  // plus the live canaries. Nothing in the readiness body may name an oracle.
+  // Readiness is DB writeability plus live canaries; the body names no oracle.
   assert.equal(Object.prototype.hasOwnProperty.call(ready.body, "oracle"), false);
 
   const canaryFailure = await publicReadinessSurface({
@@ -297,10 +288,7 @@ try {
       "owned sealing on: /v1/meta must say so, not repeat the manifest's false",
     );
   }
-  // /v1/meta is the machine-readable capability document an integrator reads
-  // to decide whether the seal can be trusted, so the reveal guarantee has to
-  // track the worker here too. It was hardcoded true with no assertion — the
-  // same gap that let the /v1/health copy drift. Both directions pinned.
+  // /v1/meta's reveal guarantee tracks the worker too; both directions pinned.
   assert.equal(
     meta.privacy.public_reveal_after_horizon,
     false,

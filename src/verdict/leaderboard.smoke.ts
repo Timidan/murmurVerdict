@@ -52,15 +52,10 @@ try {
   const missingRow = getLeaderboardRowForAgent(db, randomUUID());
   assert.equal(missingRow, null);
 
-  // Call-site policy pin: the GLOBAL board sorts by RAW verdict_score
-  // (preferLowerBound:false). Construct two agents whose raw-score order is
-  // the OPPOSITE of their lower-bound order, so a swap to lb-sorting would
-  // flip the ranking and fail here:
+  // Global board sorts by raw verdict_score; these two agents' raw and lower-bound orders diverge:
   //   rawWinner  [1.0, 0.6] → verdict_score 0.6,  verdict_score_lb ≈ 0.471
   //   lbWinner   [0.55,0.55] → verdict_score 0.55, verdict_score_lb 0.55
-  // Global (raw): rawWinner(0.60) > lbWinner(0.55) → rawWinner ranks first.
-  // (Market/family boards prefer lb and rank lbWinner first — see
-  //  leaderboard-markets.smoke.ts.)
+  // Market/family boards prefer lb (see leaderboard-markets.smoke.ts).
   const rawWinnerId = randomUUID();
   const lbWinnerId = randomUUID();
   insertAgentWithResolvedCalls(db, {
@@ -81,10 +76,6 @@ try {
   const rawIdx = globalBoard.findIndex((r) => r.agent_id === rawWinnerId);
   const lbIdx = globalBoard.findIndex((r) => r.agent_id === lbWinnerId);
   assert.ok(rawIdx >= 0 && lbIdx >= 0, "both divergent agents present");
-  // Global board sorts by RAW verdict_score, so rawWinner ([1.0, 0.6]) outranks
-  // lbWinner ([0.55, 0.55]) despite the wider interval. Market/family boards
-  // use the lower bound; this pins that global does NOT — a swap here silently
-  // reorders every public ranking.
   assert.ok(
     rawIdx < lbIdx,
     "global board sorts by raw verdict_score → rawWinner outranks lbWinner",
@@ -148,13 +139,7 @@ function insertResolvedCall(
   submissionsRepo.setStatus(db, callId, "resolved");
 }
 
-/**
- * Insert one agent with N resolved calls at the given call_scores. Used to
- * build agents whose raw verdict_score and lower-bound ordering diverge
- * (verdict_score_lb penalizes variance harder), pinning the per-board sort
- * policy. outcome is derived from the score sign and only drives win_rate;
- * verdict_score / verdict_score_lb depend solely on the call_scores.
- */
+/** One agent with N resolved calls at the given call_scores; outcome only drives win_rate. */
 function insertAgentWithResolvedCalls(
   db: ReturnType<typeof openDb>,
   input: {

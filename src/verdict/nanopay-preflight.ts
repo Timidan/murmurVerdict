@@ -60,22 +60,13 @@ export function nanopayPreflightResponse(input: {
 }
 
 /**
- * Pre-middleware servable check. Rejects the request BEFORE the SDK
- * middleware settles payment if:
- *   - pipelineId path param is malformed.
- *   - resolvePipeline returns null (unknown pipeline).
- *   - resolveLatestSealedCall returns null (no signal anchored yet).
- *
- * Buyers don't get charged in any of these cases. Operator visibility
- * is via standard 4xx/5xx responses + access logs.
+ * Rejects before the SDK settles payment on a malformed pipelineId, unknown pipeline, or no
+ * anchored signal, so buyers aren't charged.
  */
 export function preflightServable(deps: NanopayRouterDeps) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    // Signed requests need the durable payment gate's receipt lookup before
-    // mutable catalog checks. That lets an already-settled authorization
-    // replay its stored response after a pipeline is retired, while new
-    // signed payments are still preflighted inside processDurableNanopay
-    // before Circle settlement.
+    // Signed requests go to the durable gate first so a settled authorization can replay after a
+    // pipeline is retired; new signed payments are preflighted there before settlement.
     if (req.headers?.["payment-signature"] !== undefined) {
       next();
       return;

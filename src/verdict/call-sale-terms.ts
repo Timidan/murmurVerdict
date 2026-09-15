@@ -1,15 +1,7 @@
 // ─── The terms one sealed call is sold under ────────────────────────────────
 //
-// PURE. No database, no environment, no clock — a snapshot in, terms or null
-// out. It exists as its own module because two call sites must answer the
-// question identically:
-//
-//   · entitlement-access-surface.termsFor()  — what a buyer is charged.
-//   · gateway-sellable-surface               — what the storefront advertises.
-//
-// A storefront that priced calls with its own copy of these rules would drift
-// from the payment path, and the drift is the worst kind: it shows a price the
-// checkout does not honour, or lists a call the checkout refuses to sell.
+// Pure: snapshot in, terms or null out. Shared by entitlement-access-surface.termsFor() (what a buyer
+// is charged) and gateway-sellable-surface (what the storefront advertises) so the two can't drift.
 
 export interface CallTerms {
   priceAtoms: string;
@@ -17,11 +9,7 @@ export interface CallTerms {
   pricingVersion: string;
 }
 
-/**
- * The provider-terms columns this resolver reads. Structurally satisfied by
- * FhenixSealedCallRow, and narrow enough that a listing query can select just
- * these four columns instead of the whole row.
- */
+/** The provider-terms columns this reads; FhenixSealedCallRow satisfies it. */
 export interface CallTermsSnapshot {
   provider_price_atoms?: string | null;
   provider_currency?: string | null;
@@ -34,31 +22,11 @@ export interface CallTermsSnapshot {
 }
 
 /**
- * The terms THIS call is sold under, or null when it is not for sale.
- *
- * From the call's own snapshot when it has one — the provider's price as it
- * stood when the call was sealed. An owner repricing afterwards must not
- * change what a buyer is charged for a call already on offer, and must not
- * make a purchase in flight disagree with the challenge it answered.
- *
- * A missing snapshot means one of two opposite things, and
- * `provider_terms_snapshotted` is what separates them:
- *
- *   flag 0 — sealed before providers could price themselves. It really was
- *            sold under the deployment-wide terms, so fall back to them.
- *   flag 1 — the owner set no terms, or cleared them. NOT FOR SALE. Falling
- *            back here would sell an owner's signal at the operator's price
- *            straight after they pressed "stop selling".
- *
- * `legacyTerms` is the deployment-wide fallback, and it is nullable on
- * purpose: a daemon that only seals may have no price configured at all.
- * Passing null there means legacy rows resolve to "no terms available", never
- * to an invented price. Callers surface that as an exclusion rather than
- * quoting a number nobody set.
- *
- * A null `call` (the id is unknown to this deployment) also falls back, which
- * is what the paid access path has always done: eligibility answers
- * CallNotFound a moment later, and it is the authority on that.
+ * The terms this call is sold under, or null when it is not for sale.
+ * Uses the call's own snapshot (price at seal time), so later repricing can't change an offered call.
+ * No snapshot: flag 0 (sealed before provider pricing) falls back to `legacyTerms`; flag 1 (owner set
+ * or cleared no terms) is not for sale. Null `legacyTerms` means no terms, never an invented price.
+ * A null `call` (unknown id) also falls back; eligibility answers CallNotFound.
  */
 export function termsFromSnapshot(
   call: CallTermsSnapshot | null | undefined,

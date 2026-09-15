@@ -1,10 +1,7 @@
 /**
- * Series clock — the single source of truth for a market instance's schedule.
- *
- * Replaces the old single `revealOpenAt`, which conflated three unrelated
- * moments: when providers must submit, when the value stops being sellable, and
- * when it becomes public. Every instant below derives from the venue's own end
- * time plus four per-series constants fixed at registration.
+ * Series clock: the single source of truth for a market instance's schedule.
+ * Every instant derives from the venue's end time plus four per-series
+ * constants fixed at registration.
  *
  *   armCloseAt      consumers stop arming; the cohort is frozen
  *        │          murmur commits the cohort in this gap
@@ -18,24 +15,15 @@
  *        │
  *   publicRevealAt      the value becomes public
  *
- * ── Why the gap between armCloseAt and submissionOpenAt ─────────────────────
- * The cohort commitment is a transaction. Committing at the exact instant
- * submissions open leaves no ordering margin — a provider's submit could be
- * mined before the commit that is supposed to bind it. `commitMarginSec` is
- * that margin, and it must be positive.
+ * `commitMarginSec` must be positive: the cohort commit is a transaction, and
+ * without a margin a provider's submit could be mined before it.
  *
- * ── Half-open intervals ────────────────────────────────────────────────────
- * All windows are half-open: `[open, close)`. A submission at exactly
- * `submissionCloseAt` is REJECTED, because that instant is when the prediction
- * window begins and the opening reference price may already be observable — a
- * submission there is not a prediction.
+ * Windows are half-open `[open, close)`. A submission at exactly
+ * `submissionCloseAt` is REJECTED: the window has begun and the opening price
+ * may already be observable.
  *
- * ── marketResolutionAt vs publicRevealAt ───────────────────────────────────
- * These are deliberately separate. `marketResolutionAt` is when the underlying
- * market decides the outcome; `publicRevealAt` is when murmur unseals. Reveal
- * is embargoed past resolution, so conflating them would assert the market
- * resolves at murmur's reveal deadline — false, and it would corrupt the
- * resolution horizon the resolver keys off.
+ * Keep `marketResolutionAt` and `publicRevealAt` separate; reveal is embargoed
+ * past resolution, and the resolver keys its horizon off marketResolutionAt.
  */
 
 export interface SeriesClockConfig {
@@ -160,11 +148,8 @@ export function deriveSeriesClock(input: {
 }
 
 /**
- * Whether an instance can still be registered. Registration must complete
- * before arming opens, not merely before the market ends: a window length that
- * is large relative to the venue's listing lead time can place `armCloseAt`
- * before the instance was even created, which yields a market nobody can arm
- * or submit to. Reject those instead of registering something unusable.
+ * Registration must finish before arming closes, not just before the market
+ * ends; a long window can put `armCloseAt` before the instance even exists.
  */
 export function isRegistrable(clock: SeriesClock, nowMs: number): boolean {
   return nowMs < clock.armCloseAtMs;

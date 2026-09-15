@@ -2,17 +2,9 @@ import { z } from "zod";
 
 // ─── Asset registry ──────────────────────────────────────────────────────────
 //
-// Live asset_ids are external-adapter synthetics: "<protocol>:<kind>" (e.g.
-// "polymarket:event"). MIGRATION_029 seeded "polymarket:event" as the
-// synthetic anchor for every Polymarket conditionId market; future venue
-// families (Kalshi, Drift, …) follow the same pattern.
-//
-// The regex still admits the legacy three-segment "<chain>:<asset>:<quote>"
-// form (e.g. "base:ETH:USD") purely so historical rows stay READABLE — those
-// assets are retired by MIGRATION_061 and nothing can mint against them.
-//
-// The registry (assets table + adapter dispatch) is the source of truth for
-// whether an asset_id is listable; this regex is only the wire-shape gate.
+// Live asset_ids are "<protocol>:<kind>" synthetics (e.g. "polymarket:event").
+// The retired "<chain>:<asset>:<quote>" form is admitted only so old rows stay readable.
+// This regex is only the wire-shape gate; the registry decides listability.
 export const AssetIdSchema = z
   .string()
   .min(3)
@@ -42,15 +34,7 @@ export type StrategyTag = z.infer<typeof StrategyTagSchema>;
 
 // ─── Market registry (multi-asset / multi-horizon / multi-kind) ─────────────
 //
-// Migration 008 introduced data-driven assets/oracles/markets tables. These
-// schemas validate that the rows on the wire (admin upserts and public
-// registry endpoints) match the table shapes. Runtime hot path still
-// uses the `db.ts` repo types directly to avoid a parse on every read.
-//
-// `market_kind` is a string, not an enum at the wire layer, so future kinds
-// (e.g. "depeg_event_v2") can land without a schema bump on the client. The
-// runtime registry is the source of truth — clients reject unknown kinds,
-// the daemon emits known ones.
+// Wire validation for registry rows (admin upserts, public endpoints); hot reads use repo types directly.
 
 export const REGISTRY_STATUSES = [
   "draft",
@@ -61,15 +45,8 @@ export const REGISTRY_STATUSES = [
 export const RegistryStatusSchema = z.enum(REGISTRY_STATUSES);
 export type RegistryStatus = z.infer<typeof RegistryStatusSchema>;
 
-// `event_binary` is the ONE market kind Murmur mints against: a YES/NO market
-// whose outcome an external venue publishes. `multinomial_brier` is the ONE
-// scoring kind: the universal payout-vector scorer in markets-core::callScore.
-//
-// LEGACY READ UNIONS. `direction_binary` / `brier_direction` remain listed so
-// the frozen native-price market row (retired by MIGRATION_061) still parses
-// on a registry read. They are NOT writable: the shared external-market guard
-// (external-market-guard.ts) accepts only event_binary + multinomial_brier,
-// and MarketRecordSchema below rejects the pairing on any new write.
+// `event_binary` + `multinomial_brier` are the only mintable kinds.
+// The legacy members exist only so retired rows parse; external-market-guard.ts refuses them on mint.
 export const ACTIVE_MARKET_KINDS = ["event_binary"] as const;
 export const LEGACY_READ_MARKET_KINDS = ["direction_binary"] as const;
 export const MARKET_KINDS = [
@@ -88,12 +65,7 @@ export const SCORING_KINDS = [
 export const ScoringKindSchema = z.enum(SCORING_KINDS);
 export type ScoringKind = z.infer<typeof ScoringKindSchema>;
 
-// MIGRATION_029 widened the SQL CHECK on `oracles.kind` to
-// include 'external_adapter' for adapter-resolved markets (Polymarket
-// Gamma is the first such adapter; future Kalshi / Drift / event-feed
-// adapters reuse the same value with their own oracle_id). The Zod enum
-// here mirrors the SQL CHECK so registry admin writes are bounded the
-// same way at the API edge.
+// Mirrors the SQL CHECK on `oracles.kind`; `external_adapter` covers adapter-resolved markets.
 export const ORACLE_KINDS = [
   "chainlink_evm",
   "pyth_pull",
@@ -103,17 +75,8 @@ export const ORACLE_KINDS = [
 export const OracleKindSchema = z.enum(ORACLE_KINDS);
 export type OracleKind = z.infer<typeof OracleKindSchema>;
 
-// market_id shapes:
-//
-//   External-adapter (live): "0x[0-9a-f]{64}" — a Polymarket conditionId, or
-//     any future venue row whose canonical handle is a 32-byte hex hash.
-//   Legacy read-compat: "<asset-short>.<horizon-label>" — lowercase ASCII
-//     dot-separated, e.g. 'eth.1h'. Retained ONLY so the frozen native-price
-//     row stays queryable; nothing mints against it.
-//
-// The regex tolerates either shape at the wire-validation layer; the market
-// registry row lookup plus requireMintableExternalMarket are the authoritative
-// "is this market mintable today?" gate.
+// market_id: "0x" + 64 hex (venue conditionId), or the retired "<asset>.<horizon>" form (e.g. 'eth.1h')
+// kept only so old rows parse. Mintability is decided by the registry and requireMintableExternalMarket.
 export const MarketIdSchema = z
   .string()
   .min(3)
@@ -168,17 +131,8 @@ export const OracleRecordSchema = z
 export type OracleRecord = z.infer<typeof OracleRecordSchema>;
 
 /**
- * A row of the `markets` registry.
- *
- * Every market is resolved by an EXTERNAL venue adapter, so the venue-facing
- * identity fields (`adapter_id`, `market_family`, `config_json`) are part of
- * the record — a new adapter's rows must validate here, and `.strict()` would
- * otherwise reject them as unknown keys.
- *
- * The `*_staleness_sec` / `t0_*_grace_seconds` columns are VESTIGIAL: they
- * configured the deleted native-price t0/t1 price-anchoring walk. Nothing
- * reads them now and every external row persists 0, so they validate as
- * non-negative and are not cross-checked.
+ * A `markets` registry row. The `*_staleness_sec` / `t0_*_grace_seconds` columns are
+ * vestigial (external rows persist 0) and are not cross-checked.
  */
 export const MarketRecordSchema = z
   .object({
@@ -207,10 +161,7 @@ export const MarketRecordSchema = z
   })
   .strict()
   .superRefine((v, ctx) => {
-    // Externally-resolved markets are scored by the universal payout-vector
-    // scorer, and that is the only pairing this schema will VALIDATE. The
-    // legacy direction_binary / brier_direction members exist purely so a
-    // historical row parses on a read; writing that pairing is refused here.
+    // event_binary must be scored by multinomial_brier.
     if (v.market_kind === "event_binary" && v.scoring_kind !== "multinomial_brier") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

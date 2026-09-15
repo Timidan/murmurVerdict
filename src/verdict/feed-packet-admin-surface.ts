@@ -98,10 +98,7 @@ export function feedPacketBackfillResponse(input: {
   /** MURMUR_ACK_FEED_REVEAL_MANUAL; see the gate below. */
   feedRevealAcknowledged: boolean;
 } & FeedPacketAdminClock & FeedPacketAdminAdapters): FeedPacketBackfillResponse {
-  // Same fence as live submission. This route also lands packets in SLA and
-  // public feed state, so leaving it open would make the acknowledgement a
-  // formality: an operator could turn feeds off and still publish delivery
-  // evidence for a lane with no reveal path.
+  // Same gate as live submission: this route also lands packets in SLA and public feed state.
   if (!input.feedRevealAcknowledged) {
     return {
       status: 503,
@@ -139,11 +136,8 @@ export function feedPacketBackfillResponse(input: {
     );
   }
   const body = parsed.data;
-  // Fix 3 — emit `admin_fhenix_feed_packet_backfill` audit alongside the
-  // ingest insert in ONE transaction. Idempotent hits skip the emit so
-  // the forensic log stays free of replay noise. Atomicity matters: if
-  // the audit emit fails the ingest must roll back; otherwise we ship
-  // an unaudited operator backfill.
+  // Audit event and ingest in one transaction, so a failed emit rolls back the ingest.
+  // Idempotent hits skip the emit.
   const result = input.db.transaction(() => {
     const ingest = ingestFeedPacket({
       db: input.db,

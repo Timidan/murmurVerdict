@@ -174,18 +174,14 @@ try {
   assert.equal(webhooksRepo.byId(db, success.body.id)?.secret, success.body.secret);
   assert.deepEqual(mintedIds, ["webhook-registration-id-1"]);
   assert.deepEqual(mintedSecrets, ["webhook-registration-secret-1"]);
-  // Fix 4 — cheap rejections (missing slug / unknown agent / cap reached)
-  // now short-circuit BEFORE validateWebhookUrl, so the earlier
-  // unknown_agent attempt skips the DNS lookup. Only the success path
-  // above performs validation, hence a single recorded host.
+  // Cheap rejections skip DNS, so only the success path looked up a host.
   assert.deepEqual(dnsLookups, ["hooks.example"]);
   const registerTarget = makeStatusJsonTarget();
   sendWebhookSubscriptionJsonResponse(registerTarget, success);
   assert.equal(registerTarget.statusCode, 201);
   assert.equal(registerTarget.body, success.body);
 
-  // Reading now requires the same secret DELETE does — the route was
-  // anonymous, and it discloses the delivery URL and failure counts.
+  // Reading requires the same secret DELETE does.
   const loaded = loadWebhookSubscription({
     db,
     id: success.body.id,
@@ -196,9 +192,7 @@ try {
   if (loaded.status !== 200) throw new Error("expected webhook load success");
   assert.equal(loaded.body.schema_version, 1);
 
-  // The read route was ANONYMOUS until a security sweep found it: it discloses
-  // the delivery URL and failure counts, and sits outside /v1/account/ so no
-  // auth matrix covered it. An unguessable id is not a gate.
+  // A missing or wrong secret is refused; an unguessable id is not a gate.
   {
     const eq = (a: string | undefined, b: string) => a === b;
     const id = success.body.id;
@@ -273,8 +267,7 @@ try {
 
   const invalid = await registerWebhookSubscription({
     db,
-    // Fix 4 — slug must be present BEFORE the URL parser runs; supply
-    // a real slug so this case exercises the actual invalid_url branch.
+    // Real slug, since slug checks run first; this hits the invalid_url branch.
     body: { url: "not-a-url", agent_slug: "webhook-smoke" },
     now: () => new Date("2026-05-27T12:02:00Z"),
     urlPolicy: { allowHttp: false },

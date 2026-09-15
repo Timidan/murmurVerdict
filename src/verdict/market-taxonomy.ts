@@ -15,11 +15,7 @@ export type MarketPayoffModel =
   | "scalar"
   | "range"
   | "ranking";
-// Murmur never settles a market itself, so there is no `price_oracle` model:
-// an outcome is published either by an external VENUE or by a signed agent
-// FEED (or a mix). `price_direction` survives below as a semantic question
-// class — "will ETH be above X?" is a perfectly good Polymarket question —
-// but it is venue-settled like everything else.
+// No `price_oracle` model: outcomes come from a venue, a signed agent feed, or both.
 export type MarketSettlementModel =
   | "venue_adapter"
   | "agent_feed"
@@ -31,12 +27,7 @@ export interface MarketTaxonomyClass {
   support_status: MarketSupportStatus;
   payoff_model: MarketPayoffModel;
   settlement_model: MarketSettlementModel;
-  /**
-   * Scorer a class would use. Live classes name a scoring kind the daemon
-   * actually implements; `reserved` classes name the scorer their future
-   * support would need, which is why this is a plain string and not the
-   * (deliberately narrow) live {@link ScoringKind} union.
-   */
+  /** A plain string, not {@link ScoringKind}, because reserved classes name scorers not yet implemented. */
   default_scoring_kind: string;
   compatible_market_kinds: string[];
   compatible_market_families: string[];
@@ -49,9 +40,7 @@ export interface MarketTaxonomyAssignment extends MarketTaxonomyClass {
 
 export const MARKET_TAXONOMY_CLASSES: MarketTaxonomyClass[] = [
   {
-    // Semantic question class only: "will <asset> be above <level> by <time>?"
-    // These are ordinary venue markets — settled by the venue, scored by the
-    // universal payout-vector scorer. Nothing here reads a price feed.
+    // Question class only ("will <asset> be above <level> by <time>?"); venue-settled, no price feed.
     resolution_class: "price_direction",
     label: "Price direction",
     support_status: "live",
@@ -166,9 +155,7 @@ export function marketTaxonomyForMarket(
   const explicit = configuredResolutionClass(config);
   if (explicit) return assign(explicit, "config");
 
-  // Everything Murmur can settle is an externally-resolved binary event. The
-  // explicit `config.resolution_class` above is how a venue market declares a
-  // finer class (e.g. price_direction, sports_match).
+  // Default is event_binary; `config.resolution_class` above declares a finer class.
   if (
     market.market_kind === "event_binary" ||
     market.market_family === "prediction-market-binary"

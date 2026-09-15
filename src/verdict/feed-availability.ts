@@ -65,15 +65,8 @@ export function validateFeedCoveredMarkets(
 }
 
 /**
- * Refuse packets from a feed whose persisted reveal policy murmur can no
- * longer honour.
- *
- * Feeds created before the schedule migration may carry `fixed_delay`,
- * `after_horizon` or `manual`. A packet's reveal time now comes from its
- * market's immutable schedule, so those promises cannot be kept. Silently
- * ignoring them and revealing on the market's clock would break a commercial
- * contract the feed still publicly advertises, so the feed is quarantined
- * until its owner converts it to `after_resolution`.
+ * Refuses packets unless the feed's reveal policy is `after_resolution`. Reveal time comes from the
+ * market's schedule, so other policies can't be honoured; the feed stays quarantined until converted.
  */
 export function assertFeedRevealPolicySupported(feed: FeedContractRow): void {
   let kind: unknown;
@@ -108,10 +101,7 @@ export function validateFeedPacketMarket(
 ): void {
   if (marketId === null) return;
   const market = marketsRepo.get(db, marketId);
-  // A packet's on-chain reveal time comes from the market's schedule, so the
-  // market must actually be live and carry a frozen clock. A draft or
-  // unscheduled row would fall back to a derived timestamp the contract has
-  // no matching market for.
+  // Reveal time comes from the market's schedule, so the market must be listed with a frozen clock.
   if (market && market.status !== "listed") {
     throw new VerdictError(
       `packet market is not listed: ${marketId} (status=${market.status})`,

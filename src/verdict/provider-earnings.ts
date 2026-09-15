@@ -12,40 +12,16 @@ import { providerEarningsRepo } from "./repos/provider-earnings-repo.js";
 
 // ─── Accrual — turning a settled sale into a ledger row ─────────────────────
 //
-// The invariant, stated as a predicate rather than as a sequence of steps:
-//
-//     a PAID, GRANTED entitlement has exactly one provider_earnings row.
-//
-// Three writers converge on it, and none of them is trusted to be the only one
-// that runs:
-//
-//   1. grantAndAccrue — the granted CAS and the earnings insert in ONE
-//      transaction. `granted` is terminal and excluded from the reconciler's
-//      due query, so a crash between a separate CAS and a separate insert
-//      would lose that sale's earnings FOREVER. They commit together or not
-//      at all.
-//   2. accrueIfEligible — after a receipt is attached to a row another writer
-//      already granted. attachReceipt makes a row eligible retroactively; the
-//      grant that preceded it had nothing to accrue at the time.
-//   3. sweepUnaccruedGrants — the reconciler's audit pass, which repairs
-//      anything the first two missed (an older build, a crash in an unlucky
-//      place) and says so in the log.
-//
-// Accrual never moves money. Circle settles every sale to one recipient, so the
-// funds land at MURMUR_NANOPAY_SELLER_ADDRESS regardless; this records WHOSE
-// they are. Paying providers out is manual, like refunds.
+// Invariant: a paid, granted entitlement has exactly one provider_earnings row.
+// Writers: grantAndAccrue (CAS + insert in one transaction), accrueIfEligible (after a
+// late receipt attach), sweepUnaccruedGrants (reconciler repair pass).
+// Accrual never moves money; it records whose the funds at MURMUR_NANOPAY_SELLER_ADDRESS are.
 
 export interface ProviderEarningsDeps {
   readonly db: Database.Database;
   /**
-   * The CURRENT protocol fee. Used ONLY for rows predating migration 071,
-   * which froze no split of their own. Never for a row that carries
-   * fee_bps_at_sale — the sale is where the split freezes, and re-reading the
-   * live fee at grant time would let a mid-flight change re-cut a purchase the
-   * subscriber already answered a 402 for.
-   *
-   * Resolved from MURMUR_PROTOCOL_FEE_BPS when omitted, and only at the moment
-   * a legacy row actually needs it.
+   * Current fee, used only for rows with a NULL fee_bps_at_sale; never re-cuts a frozen split.
+   * Read lazily from MURMUR_PROTOCOL_FEE_BPS when omitted.
    */
   readonly protocolFeeBps?: number;
   readonly now: () => Date;
@@ -63,17 +39,8 @@ export type AccrualOutcome =
   | { kind: "unattributed"; entitlementId: number; reason: string };
 
 /**
- * Advance an entitlement to `granted` and accrue its earnings in ONE
- * transaction.
- *
- * Replaces a bare `entitlementsRepo.transition(..., { status: "granted" })` at
- * every site that grants. The accrual is attempted from the row as re-read
- * INSIDE the transaction, so it also covers the case where the CAS matched
- * nothing because a concurrent writer had already granted the row: the sale
- * still ends the transaction with exactly one earnings row.
- *
- * Returns whether the CAS itself changed the row, so callers keep the same
- * signal `transition` gave them.
+ * Grant and accrue in one transaction. Accrual re-reads the row inside it, so a CAS that lost
+ * to a concurrent grant still ends with one earnings row. Returns whether the CAS changed the row.
  */
 export function grantAndAccrue(
   deps: ProviderEarningsDeps,
@@ -86,9 +53,7 @@ export function grantAndAccrue(
     accrueWithinTransaction(deps, id);
     return changed;
   });
-  // IMMEDIATE: the transaction writes from its first statement, and taking the
-  // write lock up front is what keeps two grantors from both reading "no
-  // earnings row yet" before either inserts.
+  // IMMEDIATE: take the write lock up front so two grantors can't both see no earnings row.
   return run.immediate();
 }
 
@@ -112,12 +77,8 @@ export interface AccrualSweepResult {
 }
 
 /**
- * Audit pass: find paid, granted entitlements with no earnings row and repair
- * them. Runs on the grant reconciler's tick.
- *
- * Every repair is logged by name. A silent self-heal would hide the thing worth
- * knowing — that some writer upstream is dropping accruals — behind a ledger
- * that always looks right.
+ * Repair paid, granted entitlements with no earnings row; runs on the grant reconciler tick.
+ * Every repair is logged so a writer dropping accruals stays visible.
  */
 export function sweepUnaccruedGrants(
   deps: ProviderEarningsDeps,
@@ -159,11 +120,7 @@ export function sweepUnaccruedGrants(
   return result;
 }
 
-/**
- * The accrual decision itself. MUST run inside a transaction — it reads the row,
- * decides, and writes, and those three must not be interleaved with another
- * grantor doing the same.
- */
+/** Must run inside a transaction: read, decide and write can't interleave with another grantor. */
 function accrueWithinTransaction(
   deps: ProviderEarningsDeps,
   id: number,
@@ -172,9 +129,7 @@ function accrueWithinTransaction(
   const row = entitlementsRepo.byId(deps.db, id);
   if (!row) return { kind: "not_eligible", entitlementId: id, reason: "no such entitlement" };
 
-  // Only a granted sale accrues. `grant_failed_refund_due` and `refunded` are
-  // money owed BACK; recording revenue on them would book income murmur is in
-  // the middle of returning.
+  // Only a granted sale accrues; refund states are money owed back.
   if (row.status !== "granted") {
     return { kind: "not_eligible", entitlementId: id, reason: `status=${row.status}` };
   }
@@ -185,9 +140,7 @@ function accrueWithinTransaction(
       reason: `refund_status=${row.refund_status}`,
     };
   }
-  // No payment, no revenue. This is what excludes adoptOnchainGrant rows: the
-  // chain already granted that subscriber, murmur charged nothing, and inventing
-  // a receipt for them would put phantom revenue in the ledger.
+  // No payment, no revenue; this excludes adoptOnchainGrant rows.
   if (!row.nanopay_receipt_id || row.amount === null) {
     return { kind: "not_eligible", entitlementId: id, reason: "no settled payment" };
   }
@@ -197,9 +150,7 @@ function accrueWithinTransaction(
 
   const producerAgentId = resolveProducer(deps.db, row);
   if (!producerAgentId) {
-    // NOT an insert with a placeholder owner. An earnings row naming nobody
-    // counts toward every total while being unpayable — strictly worse than a
-    // gap that keeps showing up in the sweep until somebody looks at it.
+    // No placeholder owner: an unpayable row would count in totals; the gap stays in the sweep.
     logger.warn(
       `[provider-earnings] UNATTRIBUTED SALE: entitlement=${row.id} ` +
         `call=${row.onchain_call_id} chain=${row.chain_id} ` +
@@ -215,8 +166,7 @@ function accrueWithinTransaction(
     };
   }
 
-  // The split as of the SALE. NULL means the row predates migration 071 and
-  // froze no split at all — those accrue at the current fee, and say so.
+  // The split frozen at sale; NULL falls back to the current fee, labelled legacy_fallback.
   const sale = row.fee_bps_at_sale;
   const feeBps = sale ?? deps.protocolFeeBps ?? requireProtocolFeeBps();
   const accrualSource = sale === null ? "legacy_fallback" : "sale_snapshot";
@@ -233,9 +183,7 @@ function accrueWithinTransaction(
     fee_bps: feeBps,
     fee_atoms: split.fee.toString(),
     net_atoms: split.net.toString(),
-    // A settled payment always carries the currency it settled in; the fallback
-    // is unreachable in practice and exists so a malformed row fails the
-    // currency CHECK rather than throwing on a null bind.
+    // Fallback makes a malformed row fail the currency CHECK instead of a null bind.
     currency: row.currency ?? "",
     accrual_source: accrualSource,
     accrued_at: accruedAt,
@@ -251,18 +199,8 @@ function accrueWithinTransaction(
 }
 
 /**
- * Who produced this sale.
- *
- * The entitlement's own column first — resolved at reservation, so it reflects
- * the deployment that actually sold the call. The sealed-call join is the
- * fallback for rows reserved before that wiring existed (it was declared as an
- * optional dependency and never supplied in production, so the column is NULL
- * on every row written by those builds).
- *
- * An agent id that names no agent is NOT attribution. provider_earnings has a
- * NOT NULL foreign key to agents, and checking here means the caller gets the
- * loud "unattributed" path instead of a constraint error thrown from inside a
- * grant transaction.
+ * Producer of this sale: the entitlement's column first, then the sealed-call join when it's NULL.
+ * The agent must exist (FK), so a dangling id takes the unattributed path instead of throwing mid-grant.
  */
 function resolveProducer(
   db: Database.Database,

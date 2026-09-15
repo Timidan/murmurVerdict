@@ -9,13 +9,7 @@ import { runPolymarketMarketRegistration } from "./polymarket-market-registratio
 import { marketsRepo } from "./repos/market-registry-repo.js";
 import { venueMarketSeriesRepo } from "./repos/venue-market-series-repo.js";
 
-// Going-forward market → series linking (migration 075 P0).
-//
-// Before this, every market created after 075 got venue_series_id = NULL
-// because the upsert path never set it — so its calls sealed unsellable and
-// per-market pricing could not function. Registration now derives the series
-// from the SAME validated projection that becomes config_json and stamps
-// venue_series_id on the market, on BOTH the insert and the conflict-update.
+// Registration stamps venue_series_id from the validated config, on both insert and conflict-update.
 process.stdout.write("murmur market series linking smoke\n");
 
 const tmp = mkdtempSync(join(tmpdir(), "market-series-linking-"));
@@ -146,8 +140,7 @@ try {
     "CONFLICT UPDATE overwrites venue_series_id with excluded.venue_series_id",
   );
 
-  // Omitting the field entirely still binds null (better-sqlite3 rejects an
-  // undefined named parameter — the repo coalesces to null so old callers work).
+  // Omitting the field binds null; the repo coalesces undefined, which better-sqlite3 rejects.
   const omittedMarket = `0x${"12".repeat(32)}`;
   marketsRepo.upsertExternalMarket(db, repoRow(omittedMarket));
   assert.equal(

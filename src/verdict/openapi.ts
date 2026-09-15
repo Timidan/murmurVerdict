@@ -1,9 +1,5 @@
-// OpenAPI 3.0 spec for Murmur Verdict v0.1. Hand-curated rather than
-// generated so the descriptions stay short and product-led -- this is the
-// document an OpenServ catalog crawler reads, so every line is marketing.
-//
-// When endpoints change, hand-edit. The verifier (tools/verify/verify-deploy.ts)
-// is the structural assertion; this file is the human-facing contract.
+// Hand-curated OpenAPI 3.0 spec (an OpenServ catalog crawler reads it). Hand-edit when endpoints
+// change; tools/verify/verify-deploy.ts is the structural check.
 
 import { accountOpenApiPaths } from "./openapi/account-paths.js";
 import { adminOpenApiPaths } from "./openapi/admin-paths.js";

@@ -13,11 +13,9 @@ import { venueMarketSeriesRepo } from "./repos/venue-market-series-repo.js";
 
 // ─── Migration 075: the venue's durable series identity ────────────────────
 //
-// A market instance is ephemeral — a new one every few minutes — so nothing
-// durable can key to market_id. 075 promotes the recurring SERIES out of
-// markets.config_json into venue_market_series, links each instance to it,
-// backfills registrations from submission history, and rekeys provider terms
-// from (agent) to (agent, series). This suite drives that end to end.
+// Instances are ephemeral, so 075 moves the recurring series into
+// venue_market_series, links instances, backfills registrations from
+// submissions, and rekeys provider terms to (agent, series).
 process.stdout.write("murmur venue market series smoke\n");
 
 type Db = Database.Database;
@@ -180,8 +178,7 @@ const scalar = <T>(db: Db, sql: string, ...args: unknown[]): T =>
     String(LATEST_DB_MIGRATION_VERSION),
     "the upgrade reaches the latest schema version",
   );
-  // 075 is no longer the tip, but it must still lie on the path to it: this
-  // whole suite rewinds to 74 and asserts what a REPLAY of 075 produces.
+  // The suite rewinds to 74 and replays 075, so 075 must lie on the path.
   assert.ok(
     LATEST_DB_MIGRATION_VERSION >= 75,
     "075 must still be replayed on the way to the latest version",
