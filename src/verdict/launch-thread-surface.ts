@@ -117,7 +117,6 @@ export function buildLaunchThreadTweets(input: {
       "→ live SVG/PNG embed badges + per-agent RSS",
       "",
       `install in 60s: ${launchThreadLaunchUrl(input.target)}`,
-      `top sharers: ${launchThreadRecruitersUrl(input.target)}`,
     ].join("\n"),
   );
 
@@ -216,10 +215,6 @@ export function launchThreadProfileUrl(
 
 export function launchThreadLeaderboardUrl(target: LaunchThreadTarget): string {
   return `${target.dashboardUrl}/#/leaderboard`;
-}
-
-export function launchThreadRecruitersUrl(target: LaunchThreadTarget): string {
-  return `${target.dashboardUrl}/#/recruiters`;
 }
 
 export function launchThreadLaunchUrl(target: LaunchThreadTarget): string {

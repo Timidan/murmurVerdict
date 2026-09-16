@@ -19,7 +19,7 @@ const unexpectedEventId = () => {
 };
 
 const defaulted = makeAgentSecurityEvent({
-  kind: "admin_ref_delete",
+  kind: "admin_claim",
   actor: "admin_token",
   createdAt: now(),
 });
@@ -29,14 +29,14 @@ assert.match(
 );
 assert.equal(defaulted.agent_id, null);
 assert.equal(defaulted.account_id, null);
-assert.equal(defaulted.kind, "admin_ref_delete");
+assert.equal(defaulted.kind, "admin_claim");
 assert.equal(defaulted.actor, "admin_token");
 assert.equal(defaulted.created_at, "2026-01-02T03:04:05Z");
 assert.deepEqual(defaulted.payload, {});
 AgentSecurityEventSchema.parse(defaulted);
 
 const generated = makeAgentSecurityEvent({
-  kind: "admin_ref_delete",
+  kind: "admin_claim",
   actor: "admin_token",
   newEventId,
   createdAt: now(),
@@ -67,8 +67,8 @@ assert.equal(
   JSON.stringify({ slug: "maya", created_agent: true }),
 );
 assert.deepEqual(
-  parseAgentSecurityEventPayload(JSON.stringify({ ref: "bob", deleted_rows: 1 })),
-  { ref: "bob", deleted_rows: 1 },
+  parseAgentSecurityEventPayload(JSON.stringify({ slug: "bob", deleted_rows: 1 })),
+  { slug: "bob", deleted_rows: 1 },
 );
 assert.deepEqual(parseAgentSecurityEventPayload("{broken"), {});
 assert.deepEqual(parseAgentSecurityEventPayload("[]"), {});

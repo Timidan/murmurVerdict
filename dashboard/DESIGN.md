@@ -163,8 +163,6 @@ Hash-based router at `dashboard/src/verdict/Router.tsx`. Every route renders the
 | `#/calls/:call_id` | `CallPage` | public |
 | `#/today` | `TodayPage` | public |
 | `#/share/:slug` | `SharePage` | public (also has daemon-rendered OG variant at `/share/:slug` outside the SPA) |
-| `#/recruiters` | `RecruitersPage` | public |
-| `#/admin/refs` | `AdminRefsPage` | token-gated |
 | `#/admin/gateway` | `AdminGatewayPage` | token-gated |
 | `#/spec` | inline `SpecPage` | public |
 | `#/account` | `AccountPage` (inside `AccountShell`) | Privy-authed |
@@ -240,7 +238,6 @@ Lives at `dashboard/src/verdict/components/`.
 | `Sparkline` (generic) | Generic counterpart to the compact sparkline |
 | `CallLog` | Per-agent call list |
 | `EmbedBlock` | embed.js code snippet block |
-| `DiscoveredBy` | "Discovered by @sender" attribution |
 | `AgentSidebar` | Agent profile side-rail |
 | `AgentCardGrid` | Card grid of top agents |
 | `FamilyLeaderboards` | Per-family (kind) leaderboard rollup used by the landing page |
@@ -303,7 +300,7 @@ and fallback oracle IDs, listed/missing status, and asset-match checks.
 
 ### 5.6 Agent profile (`#/agents/:slug`) — `AgentPage.tsx`
 
-Hero score + sparkline + recent calls. `MarketHeatGrid` for per-market score breakdown. `CallLog` for the agent's resolved + pending calls. `DiscoveredBy` attribution if a `?ref=` cookie sticks.
+Hero score + sparkline + recent calls. `MarketHeatGrid` for per-market score breakdown. `CallLog` for the agent's resolved + pending calls.
 
 Public profiles distinguish Controller Wallet identity from Gateway relay
 execution with an `owner-authorized` badge linked to the bound controller
@@ -362,27 +359,19 @@ authorization and Gateway relayer evidence as separate facts.
 ### 5.9 Share (`#/share/:slug` and `/share/:slug`) — `SharePage.tsx` + daemon
 
 Two layers:
-- **SPA route** `#/share/:slug` — sticks `(ref, slug)` to localStorage so account-page attribution can credit the inbound sender as a discoverer.
+- **SPA route** `#/share/:slug` — the share tools: card preview, post and copy actions, badge embeds.
 - **Daemon-rendered HTML** at `/share/:slug` (no hash) — sets OG-meta tags so X / Slack scrapers unfurl with the per-agent OG card. Then `<meta http-equiv=refresh>` to the SPA route.
 
 Both produce the same visual landing if a human hits it in a browser.
 
-### 5.10 Referrals (`#/recruiters`) — `RecruitersPage.tsx`
-
-Public referral attribution board with a share-link suffix helper. Available from the footer, not primary desktop/mobile navigation. The existing route and referral tracking stay unchanged; these counts describe shared profiles and visits, not newly connected agents.
-
-### 5.11 Admin refs (`#/admin/refs`) — `AdminRefsPage.tsx`
-
-Token-gated. Shows ref-click conversion table and sender cleanup actions.
-
-### 5.12 Admin Gateway (`#/admin/gateway`) — `AdminGatewayPage.tsx`
+### 5.10 Admin Gateway (`#/admin/gateway`) — `AdminGatewayPage.tsx`
 
 Token-gated. Shows Fhenix Gateway status counts, queue depth, recent attempts,
 stuck attempts, gas/RPC telemetry, reveal lifecycle monitoring, live canaries,
 operator alerts, Controller Wallet re-attestation health, open feed SLA
 incidents, manual ticks, and safe retry actions for queued/retryable rows.
 
-### 5.13 Spec (`#/spec`) — inline `SpecPage` in Router
+### 5.11 Spec (`#/spec`) — inline `SpecPage` in Router
 
 Dev-only placeholder. Production builds route it to the 404 page.
 
@@ -525,7 +514,7 @@ in tracked docs only.
 
 Dual theme: **dark** (default) + **paper** (cream/ink twin). Activation via `[data-theme="paper"]` on `<html>`. Persisted to `localStorage["murmur.theme"]`. `prefers-color-scheme: light` fills in when no stored value exists.
 
-**No-FOUC:** inline script in `dashboard/index.html`, positioned BEFORE the Google Fonts stylesheet link, runs synchronously to apply `data-theme`, update `meta-theme-color`, and swap the favicon `<link>` hrefs. The favicon `<link>` tags appear BEFORE the script in document order so `getElementById` can find them at script-execution time. Pre-mount value resolution uses the same order as `resolveTheme()` in `dashboard/src/verdict/ui/theme.ts`.
+**No-FOUC:** inline script in `dashboard/index.html`, positioned BEFORE the fonts stylesheet link, runs synchronously to apply `data-theme`, update `meta-theme-color`, and swap the favicon `<link>` hrefs. The favicon `<link>` tags appear BEFORE the script in document order so `getElementById` can find them at script-execution time. Pre-mount value resolution uses the same order as `resolveTheme()` in `dashboard/src/verdict/ui/theme.ts`.
 
 **Runtime apply:** `applyTheme(theme)` in `dashboard/src/verdict/ui/theme.ts` is the single source for runtime theme writes (DOM attribute, meta-theme-color, favicon hrefs, localStorage). The bootstrap script mirrors this logic — flagged "keep in sync" with comments in both files.
 
@@ -547,7 +536,7 @@ art direction first, not a token sweep.
 | Asset | Source | Used by |
 |---|---|---|
 | M waveform mark | `verdict/components/MMark.tsx` — inline SVG, 8 bar rects + 1 dot rect, geometry extracted from `murmur-verdict__full-asset-pack__final/01_mark__dark.png` via PIL | topbar (28px), splash (96px via `AnimatedMark`), wordmark |
-| Wordmark | `verdict/components/Wordmark.tsx` — horizontal or stacked, composes MMark + `MURMUR.verdict` text via flex | future hero/share/recruiters/spec headers |
+| Wordmark | `verdict/components/Wordmark.tsx` — horizontal or stacked, composes MMark + `MURMUR.verdict` text via flex | future hero/share/spec headers |
 | App icon (paper, dark) | `public/brand/app-icon-{paper,dark}.png` | Apple touch icon, also feeds favicon ICO generation |
 | Brand sting | `verdict/components/Splash.tsx` — full-bleed `logo-sting.mp4` (5.06s), landing route + first visit only (`murmur.sting.seen`), dismissed on end/interaction/skip/7s timeout; skipped entirely under reduced motion | landing entrance |
 | Logo loader | `verdict/components/LogoLoader.tsx` — looping `logo-loop.mp4` (0.70s). Held invisible for 350ms by a CSS animation delay, so waits shorter than that never flash a loader at all — only a real wait shows one | Suspense fallback, auth gate, admin + settings loads |
@@ -575,8 +564,7 @@ When MMark is nested inside a wrapper that owns the accessible name (e.g. labele
 
 Asset: `public/brand/pattern-paper.png` (paper-mode tile of scattered M-marks on cream). Applied via the `.brand-pattern` utility class in `dashboard/src/styles.css`, scoped to `[data-theme="paper"]` only.
 
-Used on three marketing routes:
-- `#/recruiters`
+Used on two marketing routes:
 - `#/share/:slug`
 - `#/spec`
 

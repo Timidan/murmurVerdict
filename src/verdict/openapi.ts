@@ -31,7 +31,6 @@ export function buildOpenApiSpec({
       : []),
     { name: "stream", description: "Server-Sent Events fan-out." },
     { name: "embed", description: "Shareable badges, social cards, RSS." },
-    { name: "outreach", description: "Click-attribution + sender leaderboard." },
   ];
   return {
     openapi: "3.0.3",

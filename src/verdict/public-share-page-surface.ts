@@ -37,7 +37,6 @@ export function sendPublicSharePageResponse(
 export function publicSharePageResponse(input: {
   db: Database.Database;
   slug: string;
-  ref: unknown;
   publicOrigin: MurmurPublicOrigin;
   apiOrigin: string;
 }): PublicSharePageResponse {

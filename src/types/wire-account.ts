@@ -227,7 +227,6 @@ export interface WireDestinationCooldownError {
  */
 export type WireFunnelEventKind =
   | "landing.viewed"
-  | "compete.clicked"
   | "privy.modal_opened"
   | "privy.signed_in"
   | "agent.created"
@@ -237,11 +236,3 @@ export type WireFunnelEventKind =
   | "call.first_resolved"
   | "call.tenth_submitted";
 
-/** One row from the admin sender board (GET /v1/refs) / public /v1/refs/top. */
-export interface WireAdminRefSender {
-  ref: string;
-  total: number;
-  agents_touched: number;
-  converted: number;
-  last_at: string;
-}

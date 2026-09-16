@@ -10,6 +10,5 @@ export const NAV_CHORDS = {
   "/leaderboard": "l",
   "/today": "f",
   "/install": "i",
-  "/recruiters": "r",
   "/account": "a",
 } as const;

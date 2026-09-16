@@ -14,10 +14,7 @@ export function SharePage({ slug }: { slug: string }) {
   const badgeUrl = `${base}/v1/badge/${slug}.svg`;
   // Share the daemon's `/share/:slug` externally: scrapers ignore the hash, and
   // it serves per-agent OG tags then redirects browsers to `#/share/<slug>`.
-  const ref = parseRef();
-  const shareUrl = ref
-    ? `${base}/share/${slug}?ref=${encodeURIComponent(ref)}`
-    : `${base}/share/${slug}`;
+  const shareUrl = `${base}/share/${slug}`;
 
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,27 +38,6 @@ export function SharePage({ slug }: { slug: string }) {
       cancel = true;
     };
   }, [slug]);
-
-  // Outreach attribution: when a visitor lands here from an outreach DM
-  // (?ref=<sender>) fire a single click ping and sticky the (ref, slug)
-  // pair for account-page attribution.
-  useEffect(() => {
-    if (!ref) return;
-    fetch(`${API_BASE}/v1/refs/${encodeURIComponent(ref)}/click`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agent_slug: slug }),
-      keepalive: true,
-    }).catch(() => {});
-    try {
-      window.localStorage.setItem(
-        "murmur-verdict.ref-attribution.v1",
-        JSON.stringify({ ref, agent_slug: slug, at: Date.now() }),
-      );
-    } catch {
-      // storage disabled / quota — silent fail
-    }
-  }, [ref, slug]);
 
   const tweetBody =
     agent === null
@@ -103,18 +79,12 @@ export function SharePage({ slug }: { slug: string }) {
       {/* HERO STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-3 flex flex-col gap-1">
         <span className="ck-label ck-dim">
-          {ref ? `share / referred by @${ref}` : "share"}
+          share
         </span>
         <span className="ck-mono">
           {agent ? agent.display_name : slug}{" "}
           <span className="ck-pos">on Murmur Verdict</span>.
         </span>
-        {ref && (
-          <span className="ck-mono ck-dim max-w-[70ch]">
-            <span className="ck-pos">@{ref}</span> shared this record with you.
-            The score updates live, and anyone can check the evidence.
-          </span>
-        )}
       </section>
 
       <main className="flex-1 min-h-0 overflow-y-auto ck-scroll flex flex-col gap-3 p-3">
@@ -209,27 +179,6 @@ export function SharePage({ slug }: { slug: string }) {
       </main>
     </div>
   );
-}
-
-/**
- * Extract `?ref=<handle>` from either the hash-route's own query string
- * (e.g. `#/share/cred?ref=timidan`) or the page-level query (`?ref=…`).
- * Sanitised to alphanumerics + dash/underscore so injected refs can't carry
- * markup into the page.
- */
-function parseRef(): string | null {
-  if (typeof window === "undefined") return null;
-  const fromHash = (() => {
-    const hash = window.location.hash || "";
-    const idx = hash.indexOf("?");
-    if (idx < 0) return null;
-    return new URLSearchParams(hash.slice(idx + 1)).get("ref");
-  })();
-  const fromPage = new URLSearchParams(window.location.search).get("ref");
-  const raw = fromHash ?? fromPage;
-  if (!raw) return null;
-  const safe = raw.replace(/[^a-zA-Z0-9_\-.]/g, "").slice(0, 32);
-  return safe.length === 0 ? null : safe;
 }
 
 /** Display names are arbitrary text: escape them for markdown and HTML alt text. */

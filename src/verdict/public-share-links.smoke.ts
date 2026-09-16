@@ -9,7 +9,6 @@ process.stdout.write("murmur public share links smoke\n");
 assert.deepEqual(
   publicShareLinks({
     slug: "share/slash",
-    ref: " ally! ",
     publicOrigin: {
       publicApiUrl: "https://api.example",
       dashboardUrl: "https://dashboard.example/app/",
@@ -20,14 +19,13 @@ assert.deepEqual(
     slug: "share/slash",
     ogPng: "https://request.example/v1/og/share%2Fslash.png",
     dashboardOrigin: "https://dashboard.example",
-    dashHash: "https://dashboard.example/#/share/share%2Fslash?ref=ally",
+    dashHash: "https://dashboard.example/#/share/share%2Fslash",
   },
 );
 
 assert.deepEqual(
   publicShareLinks({
     slug: "missing<script>",
-    ref: "!!!",
     publicOrigin: {
       publicApiUrl: null,
       dashboardUrl: null,

@@ -20,7 +20,7 @@ const target = {
   slug: "murmur-momentum",
 };
 const checks = deployVerificationChecks(target);
-assert.equal(checks.length, 26);
+assert.equal(checks.length, 24);
 assert.equal(checks[0]?.url, "https://api.murmur.example/v1/health");
 assert.ok(
   checks.some(

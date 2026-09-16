@@ -2,23 +2,6 @@ import type { OpenApiPathMap } from "./types.js";
 
 export function syndicationOpenApiPaths(): OpenApiPathMap {
   return {
-    "/v1/refs/{ref}/click": {
-      post: {
-        tags: ["outreach"],
-        summary: "Bump the click counter for a sender (called by the share page).",
-        parameters: [{ name: "ref", in: "path", required: true, schema: { type: "string", maxLength: 32 } }],
-        requestBody: { content: { "application/json": { schema: { type: "object", properties: { agent_slug: { type: "string" } } } } } },
-        responses: { "204": { description: "Counted" } },
-      },
-    },
-    "/v1/refs/top": {
-      get: {
-        tags: ["outreach"],
-        summary: "Top senders across all agents.",
-        parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 50, default: 20 } }],
-        responses: { "200": { description: "Senders ranked by clicks × agents touched" } },
-      },
-    },
     "/v1/webhooks": {
       post: {
         tags: ["stream"],

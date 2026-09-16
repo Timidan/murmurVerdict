@@ -12,7 +12,6 @@ import { makeUsageEvent, type UsageEventIdAdapter } from "./usage-event.js";
 // resolver-side events that account callers must not be able to forge.
 const FunnelEventKindSchema = z.enum([
   "landing.viewed",
-  "compete.clicked",
   "privy.modal_opened",
   "privy.signed_in",
   "agent.created",

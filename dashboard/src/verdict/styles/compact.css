@@ -338,7 +338,7 @@
        not the arithmetic 7.2 (measured, headless, dsf=1). The row is then
          dashboard   (9ch):  12 + 11×7 + 7 =  96px
          leaderboard (11ch): 12 + 13×7 + 7 = 110px
-         recruiters  (10ch): 103 · install/account (7ch): 82 · feed (4ch): 61
+         install/account (7ch): 82 · feed (4ch): 61
        and the widest adjacent pair (dashboard|leaderboard) needs (96+110)/2 =
        103px between link centres. A 44px link box + the 68px gap above gives
        112 → 9.0px of gutter. Measured at 1024: gaps 9.0 / 26.5 / 40.5 / 19.5 /

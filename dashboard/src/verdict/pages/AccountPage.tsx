@@ -18,25 +18,10 @@ import {
   DeactivateAccountPanel,
 } from "../components/account/DeactivateAccountPanel.js";
 import { useAccount } from "../hooks/useAccount.js";
-import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import type { AccountAgent, AgentKind } from "../api.js";
-
-/** `?ref=<source>` from the hash query, for funnel attribution. */
-function readHashRef(): string | null {
-  if (typeof window === "undefined") return null;
-  const raw = window.location.hash.replace(/^#/, "");
-  const qIdx = raw.indexOf("?");
-  if (qIdx < 0) return null;
-  try {
-    return new URLSearchParams(raw.slice(qIdx + 1)).get("ref");
-  } catch {
-    return null;
-  }
-}
 
 export function AccountPage() {
   const account = useAccount();
-  const emitFunnel = useFunnelEmit();
 
   // Redirect to login when Privy reports a stable "not signed in" state.
   // Wait for `ready` so we don't bounce the user mid-bootstrap.
@@ -52,34 +37,6 @@ export function AccountPage() {
     if (account.isAuthenticated) void account.refreshAgents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account.isAuthenticated]);
-
-  // Emit compete.clicked only for landing-CTA arrivals: `?ref=landing-cta`
-  // directly, or the localStorage latch the CTA sets (login strips `?ref=`).
-  useEffect(() => {
-    if (!account.isAuthenticated) return;
-    let ref: string | null = readHashRef();
-    if (ref !== "landing-cta") {
-      try {
-        const raw = window.localStorage.getItem("murmur_funnel_compete_pending");
-        if (raw) {
-          window.localStorage.removeItem("murmur_funnel_compete_pending");
-          const parsed = JSON.parse(raw) as { ref?: string; ts?: number };
-          // Drop latches older than 30 min.
-          if (
-            typeof parsed?.ref === "string" &&
-            typeof parsed?.ts === "number" &&
-            Date.now() - parsed.ts < 30 * 60 * 1000
-          ) {
-            ref = parsed.ref;
-          }
-        }
-      } catch {
-        // localStorage unavailable; fall through with ref still null.
-      }
-    }
-    if (ref !== "landing-cta") return;
-    void emitFunnel("compete.clicked", { ref });
-  }, [account.isAuthenticated, emitFunnel]);
 
   if (!account.configured) {
     return <ConfigErrorShell />;

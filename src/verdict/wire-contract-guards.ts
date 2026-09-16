@@ -71,7 +71,6 @@ import type {
   WireRotateApiKeyResponse,
   WirePatchDestinationResponse,
   WireDestinationCooldownError,
-  WireAdminRefSender,
 } from "../types/wire-account.js";
 import type {
   WireGatewayAttemptStatus,
@@ -199,7 +198,6 @@ import type {
 } from "./feed-availability-proof.js";
 import type { FeedSlaIncidentStatus } from "./repos/feed-availability-repo.js";
 import type { publicFeedSlaIncident } from "./feed-presenters.js";
-import type { RefTopSenderRow } from "./repos/ref-attribution-repo.js";
 
 // ── Public read surface ─────────────────────────────────────────────────────
 type _AgentKind = Assert<Equals<WireAgentKind, AgentKind>>;
@@ -436,5 +434,3 @@ type _FeedAvailabilitySummary = Assert<
 type _FeedAvailabilityProof = Assert<
   Conforms<Omit<FeedAvailabilityProof, FeedRecFields>, Omit<WireFeedAvailabilityProof, FeedRecFields>>
 >;
-
-type _AdminRefSender = Assert<Conforms<RefTopSenderRow, WireAdminRefSender>>;

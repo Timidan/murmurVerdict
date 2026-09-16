@@ -85,11 +85,6 @@ export type {
   OperatorAlertSeverity,
   OperatorAlertStatus,
 } from "./repos/operator-alerts-repo.js";
-export { refsRepo } from "./repos/ref-attribution-repo.js";
-export type {
-  RefClickRow,
-  RefTopSenderRow,
-} from "./repos/ref-attribution-repo.js";
 export { resolutionsRepo } from "./repos/resolution-repo.js";
 export type {
   FullCallResolutionView,

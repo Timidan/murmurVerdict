@@ -119,7 +119,6 @@ export type {
   WirePatchDestinationResponse as PatchDestinationResponse,
   WireDestinationCooldownError as DestinationCooldownError,
   WireFunnelEventKind as FunnelEventKind,
-  WireAdminRefSender as AdminRefSender,
 } from "@shared/wire-account";
 
 export type RuntimeKeysResponse = import("@shared/wire-account").WireRuntimeKeysResponse;
@@ -201,7 +200,6 @@ import type {
   WireRotateApiKeyResponse as RotateApiKeyResponse,
   WirePatchDestinationResponse as PatchDestinationResponse,
   WireFunnelEventKind as FunnelEventKind,
-  WireAdminRefSender as AdminRefSender,
 } from "@shared/wire-account";
 import type {
   WireGatewayAttemptStatus as GatewayAttemptStatus,
@@ -934,50 +932,6 @@ export const verdictApi = {
       served_at: string;
       proof: FeedAvailabilityProof;
     }>(`/v1/feeds/${encodeURIComponent(feed_id)}/availability`),
-  discoverers: (slug: string, limit = 5) =>
-    get<{
-      schema_version: number;
-      slug: string;
-      discoverers: Array<{
-        ref: string;
-        agent_slug: string | null;
-        total: number;
-        first_at: string;
-        last_at: string;
-      }>;
-    }>(`/v1/agents/${encodeURIComponent(slug)}/discoverers?limit=${limit}`),
-  topRefs: (limit = 20) =>
-    get<{
-      schema_version: number;
-      served_at: string;
-      senders: Array<{
-        ref: string;
-        total: number;
-        agents_touched: number;
-        converted: number;
-        last_at: string;
-      }>;
-    }>(`/v1/refs/top?limit=${limit}`),
-  /**
-   * Admin sender board — full unfiltered list, token-gated. Sent through the
-   * shared client so a rejected token surfaces as ApiError(403) like every
-   * other admin read, rather than a hand-rolled fetch outside ApiError.
-   */
-  adminRefs: (token: string, opts: { limit?: number } = {}) => {
-    const params = new URLSearchParams();
-    if (opts.limit) params.set("limit", String(opts.limit));
-    const q = params.toString();
-    return get<{ senders: AdminRefSender[] }>(
-      `/v1/refs${q ? `?${q}` : ""}`,
-      { "X-Admin-Token": token },
-    );
-  },
-  /** Delete one sender's ref bucket (admin-only). Returns the deleted row count. */
-  adminDeleteRef: (token: string, ref: string) =>
-    del<{ deleted: number }>(
-      `/v1/refs/${encodeURIComponent(ref)}`,
-      { "X-Admin-Token": token },
-    ),
   adminGateway: (
     token: string,
     opts: { status?: GatewayAttemptStatus; limit?: number; stuck_after_sec?: number } = {},

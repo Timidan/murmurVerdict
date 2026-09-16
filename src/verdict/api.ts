@@ -25,7 +25,6 @@ import { operatorControlRouter } from "./routes/operator-control.js";
 import { feedRouter } from "./routes/feeds.js";
 import { syndicationRouter } from "./routes/syndication.js";
 import { webhookRouter } from "./routes/webhooks.js";
-import { refManagementRouter } from "./routes/ref-management.js";
 import { publicAgentRouter } from "./routes/public-agents.js";
 import { publicCallRouter } from "./routes/public-calls.js";
 import { marketReadRouter } from "./routes/market-reads.js";
@@ -274,14 +273,6 @@ export function createVerdictRouter(deps: ApiDeps): Router {
     events: deps.events,
     now,
     publicOrigin: runtime.publicOrigin,
-  }));
-
-  router.use(refManagementRouter({
-    db: deps.db,
-    adminEnabled: adminAuth.adminEnabled,
-    newAgentSecurityEventId: deps.newAgentSecurityEventId,
-    now,
-    requireAdminHeader: adminAuth.requireAdminHeader,
   }));
 
   router.use(marketAdminRouter({

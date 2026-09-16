@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 80 as const;
+export const LATEST_DB_MIGRATION_VERSION = 81 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1564,6 +1564,40 @@ export function applyMigrations(db: Database.Database): void {
       set.run("schema_version", "80");
     }).immediate();
     v = 80;
+  }
+
+  if (v < 81) {
+    // The referral feature is retired: ref_clicks goes, and the security-event
+    // CHECK closes over the surviving kinds. A rebuild, because SQLite CHECKs
+    // cannot be altered; rows of the retired kind go with it. Mirrors
+    // AgentSecurityEventKindSchema in schema.ts; both move together.
+    //
+    // A database that never had agent_security_events (a partial fixture, or an
+    // install stamped forward) has nothing to rebuild, so it only drops the
+    // table. The temp name counts as present: a crashed rebuild is recoverable
+    // and must still go through the helper.
+    const securityEventsPresent = !!db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type='table'
+           AND name IN ('agent_security_events','agent_security_events_v081')`,
+      )
+      .get();
+    if (securityEventsPresent) {
+      applyTableRebuildMigration(
+        db,
+        MIGRATION_081_RETIRE_REFERRALS,
+        () => {
+          set.run("schema_version", "81");
+        },
+        ["agent_security_events", "agent_security_events_v081"],
+      );
+    } else {
+      db.transaction(() => {
+        db.exec("DROP TABLE IF EXISTS ref_clicks;");
+        set.run("schema_version", "81");
+      }).immediate();
+    }
+    v = 81;
   }
 }
 
@@ -4724,6 +4758,75 @@ const MIGRATION_080_DELIVERY_AND_WITHDRAWALS = `
   CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_withdrawals_nonce
     ON provider_withdrawals(chain_id, sender_address, nonce)
     WHERE nonce IS NOT NULL;
+`;
+
+// ─── Migration 081 — retire the referral feature ────────────────────────────
+//
+// Rebuild copied from MIGRATION_060_SECURITY_EVENT_KINDS (same indexes and
+// triggers) with 'admin_ref_delete' removed from the closed CHECK, so its rows
+// are left behind by the copy. ref_clicks is dropped in the same transaction:
+// nothing reads it once /v1/refs and the recruiters board are gone.
+const MIGRATION_081_RETIRE_REFERRALS = `
+  DROP TRIGGER IF EXISTS trg_agent_security_events_no_update;
+  DROP TRIGGER IF EXISTS trg_agent_security_events_no_delete;
+
+  DROP TABLE IF EXISTS agent_security_events_v081;
+  CREATE TABLE agent_security_events_v081 (
+    event_id     TEXT PRIMARY KEY,
+    agent_id     TEXT,
+    account_id   TEXT,
+    kind         TEXT NOT NULL CHECK (kind IN (
+      'admin_claim',
+      'admin_polymarket_upsert',
+      'admin_market_status_change',
+      'admin_account_unlink',
+      'admin_fhenix_gateway_retry',
+      'admin_fhenix_feed_packet_backfill',
+      'account_kill_switch_engaged',
+      'account_kill_switch_released'
+    )),
+    actor        TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL
+  );
+
+  INSERT INTO agent_security_events_v081 (
+    event_id, agent_id, account_id, kind, actor, payload_json, created_at
+  )
+  SELECT
+    event_id, agent_id, account_id, kind, actor, payload_json, created_at
+  FROM agent_security_events
+  WHERE kind <> 'admin_ref_delete';
+
+  DROP TABLE agent_security_events;
+  ALTER TABLE agent_security_events_v081 RENAME TO agent_security_events;
+
+  CREATE INDEX idx_agent_security_events_agent
+    ON agent_security_events(agent_id)
+    WHERE agent_id IS NOT NULL;
+  CREATE INDEX idx_agent_security_events_account
+    ON agent_security_events(account_id)
+    WHERE account_id IS NOT NULL;
+  CREATE INDEX idx_agent_security_events_kind
+    ON agent_security_events(kind);
+  CREATE INDEX idx_agent_security_events_created
+    ON agent_security_events(created_at DESC);
+  CREATE INDEX idx_agent_security_events_polymarket_condition
+    ON agent_security_events(json_extract(payload_json, '$.conditionId'))
+    WHERE kind = 'admin_polymarket_upsert';
+
+  CREATE TRIGGER trg_agent_security_events_no_update
+  BEFORE UPDATE ON agent_security_events
+  BEGIN
+    SELECT RAISE(ABORT, 'agent_security_events rows are append-only');
+  END;
+  CREATE TRIGGER trg_agent_security_events_no_delete
+  BEFORE DELETE ON agent_security_events
+  BEGIN
+    SELECT RAISE(ABORT, 'agent_security_events rows are append-only');
+  END;
+
+  DROP TABLE IF EXISTS ref_clicks;
 `;
 
 // ─── Re-export ground type for migration knowledge ───────────────────────────

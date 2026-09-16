@@ -163,7 +163,6 @@ export const UsageEventKindSchema = z.enum([
   // Onboarding funnel, emitted by the dashboard via POST /v1/account/events.
   // The route handler enforces the same allowlist — keep both in sync.
   "landing.viewed",
-  "compete.clicked",
   "privy.modal_opened",
   "privy.signed_in",
   "agent.created",
@@ -204,8 +203,6 @@ export const AgentSecurityEventKindSchema = z.enum([
   "admin_polymarket_upsert",
   // Operator moved a registry market between draft/listed/frozen/retired.
   "admin_market_status_change",
-  // Operator deleted a ref_clicks bucket via DELETE /v1/refs/:ref.
-  "admin_ref_delete",
   // Operator detached an agent from an account. Reserved; nothing emits it yet.
   "admin_account_unlink",
   // Operator forced a Fhenix gateway broadcast retry via the admin route.

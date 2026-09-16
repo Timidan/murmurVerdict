@@ -147,7 +147,7 @@ export function publicOpenApiPaths(): OpenApiPathMap {
     "/v1/stats": {
       get: {
         tags: ["leaderboard"],
-        summary: "Public aggregates: total agents, calls, resolutions, mean call score, active webhooks, refs.",
+        summary: "Public aggregates: total agents, calls, resolutions, mean call score, active webhooks.",
         responses: { "200": { description: "Counts payload" } },
       },
     },
@@ -197,17 +197,6 @@ export function publicOpenApiPaths(): OpenApiPathMap {
         responses: {
           "200": { description: "RSS 2.0 XML", content: { "application/rss+xml": {} } },
         },
-      },
-    },
-    "/v1/agents/{slug}/discoverers": {
-      get: {
-        tags: ["outreach"],
-        summary: "Top referrers (senders) for one agent.",
-        parameters: [
-          { name: "slug", in: "path", required: true, schema: { type: "string" } },
-          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 20, default: 5 } },
-        ],
-        responses: { "200": { description: "Top referrers payload" } },
       },
     },
     "/v1/feeds": {

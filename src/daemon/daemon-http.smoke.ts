@@ -243,21 +243,6 @@ try {
   assert.equal(createdFeedBody.feed?.delivery_cadence_seconds, 300);
   assert.deepEqual(feedIds, ["daemon-http-feed-id-1"]);
 
-  const refClick = await fetch(`${baseUrl}/v1/refs/daemon-ref/click`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ agent_slug: "daemon-http-agent" }),
-  });
-  assert.equal(refClick.status, 204);
-
-  const deletedRef = await fetch(`${baseUrl}/v1/refs/daemon-ref`, {
-    method: "DELETE",
-    headers: { "X-Admin-Token": "configured-admin-token" },
-  });
-  assert.equal(deletedRef.status, 200);
-  const deletedRefBody = await deletedRef.json() as { deleted?: number };
-  assert.equal(deletedRefBody.deleted, 1);
-
   const registeredMarket = await fetch(`${baseUrl}/v1/admin/markets/polymarket`, {
     method: "POST",
     headers: {
@@ -288,18 +273,12 @@ try {
   assert.deepEqual(securityRows, [
     {
       event_id: "00000000-0000-4000-8000-000000000001",
-      kind: "admin_ref_delete",
-      actor: "admin_token",
-    },
-    {
-      event_id: "00000000-0000-4000-8000-000000000002",
       kind: "admin_polymarket_upsert",
       actor: "admin_token",
     },
   ]);
   assert.deepEqual(agentSecurityEventIds, [
     "00000000-0000-4000-8000-000000000001",
-    "00000000-0000-4000-8000-000000000002",
   ]);
 
   const funnelEvent = await fetch(`${baseUrl}/v1/account/events`, {

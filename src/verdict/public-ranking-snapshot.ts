@@ -48,8 +48,6 @@ export interface PublicStatsSnapshot {
   void_total: number;
   mean_call_score: number;
   webhooks_active: number;
-  refs_buckets: number;
-  refs_clicks_total: number;
 }
 
 export interface PublicLeaderboardCsv {
@@ -97,9 +95,7 @@ export function publicStatsSnapshot(input: {
          (SELECT COUNT(*) FROM t1_resolutions WHERE outcome = 'loss')    AS losses_total,
          (SELECT COUNT(*) FROM t1_resolutions WHERE outcome IN ('void','oracle_unavailable')) AS void_total,
          (SELECT AVG(call_score) FROM t1_resolutions WHERE call_score IS NOT NULL)             AS mean_call_score,
-         (SELECT COUNT(*) FROM webhooks WHERE disabled = 0)              AS webhooks_active,
-         (SELECT COUNT(*) FROM ref_clicks)                               AS refs_buckets,
-         (SELECT SUM(total) FROM ref_clicks)                             AS refs_clicks_total`,
+         (SELECT COUNT(*) FROM webhooks WHERE disabled = 0)              AS webhooks_active`,
     )
     .get() as Record<string, number | null>;
 
@@ -120,8 +116,6 @@ export function publicStatsSnapshot(input: {
     void_total: totals.void_total ?? 0,
     mean_call_score: totals.mean_call_score ?? 0,
     webhooks_active: totals.webhooks_active ?? 0,
-    refs_buckets: totals.refs_buckets ?? 0,
-    refs_clicks_total: totals.refs_clicks_total ?? 0,
   };
 }
 

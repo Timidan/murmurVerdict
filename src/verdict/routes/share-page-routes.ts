@@ -14,7 +14,6 @@ export function sharePageRouter(deps: SyndicationRouterDeps): Router {
     sendPublicSharePageResponse(res, publicSharePageResponse({
       db: deps.db,
       slug: String(req.params.slug ?? ""),
-      ref: req.query.ref,
       publicOrigin: deps.publicOrigin,
       apiOrigin: publicApiUrlForRequest(deps.publicOrigin, req),
     }));

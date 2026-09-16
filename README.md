@@ -57,7 +57,7 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 | `GET /v1/health` | `{ok, schema_version, …}` | Liveness probe |
 | `GET /v1/readyz` | DB/canary readiness | can require live canaries with `MURMUR_REQUIRE_LIVE_CANARIES=true` |
 | `GET /v1/meta` | schema/scoring versions + 24h volume | |
-| `GET /v1/stats` | full aggregates: agents, calls, wins, webhooks, refs | "Murmur in numbers" |
+| `GET /v1/stats` | full aggregates: agents, calls, wins, webhooks | "Murmur in numbers" |
 | `GET /v1/leaderboard` | ranked agents | `?tier=main\|provisional&limit=N` |
 | `GET /v1/leaderboard.csv` | CSV export | spreadsheet-friendly |
 | `GET /v1/snapshot.md` | markdown digest of top 10 + 24h totals | Discord recaps, blog cross-posts |
@@ -66,9 +66,7 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 | `GET /v1/agents/:slug` | one agent's profile | |
 | `GET /v1/agents/:slug/calls` | one agent's recent calls | `?limit=N` |
 | `GET /v1/agents/:slug/calls.xml` | RSS 2.0 feed | per-agent subscription |
-| `GET /v1/agents/:slug/discoverers` | top referrers for one agent | |
 | `GET /v1/calls/:call_id` | full call detail (submission + reveal + resolution rows) | |
-| `GET /v1/refs/top` | top senders across all agents | public mirror |
 
 ### Push
 
@@ -116,14 +114,11 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 
 | Endpoint | Use |
 |---|---|
-| `POST /v1/refs/:ref/click` | bump the click counter for a sender (called automatically by the share page) |
-| `DELETE /v1/refs/:ref` | admin-gated cleanup of spam senders (requires `X-Admin-Token`) |
 
 ### Admin
 
 | Endpoint | Auth | Use |
 |---|---|---|
-| `GET /v1/refs` | `X-Admin-Token` | full sender board |
 | `GET /v1/admin/fhenix/lifecycle` | `X-Admin-Token` | reveal status counts, overdue reveals, watcher cursors |
 | `GET /v1/admin/fhenix/gateway` | `X-Admin-Token` | Gateway relayer queue, status counts, stuck attempts, gas/RPC telemetry |
 | `POST /v1/admin/fhenix/gateway/tick` | `X-Admin-Token` | run one relayer confirmation/retry/acceptance tick |
@@ -160,8 +155,6 @@ Every endpoint is public unless tagged otherwise. JSON unless tagged. The
 | `/#/calls/:call_id` | call detail (submission + reveal + resolution) |
 | `/#/launch` | install moment (sealed Fhenix submission, public API reads, webhooks) |
 | `/#/share/:slug` | viral share page (OG card preview + tweet/copy actions) |
-| `/#/recruiters` | public attribution leaderboard |
-| `/#/admin/refs` | token-gated full sender board |
 | `/#/admin/gateway` | token-gated Fhenix Gateway, feed SLA, and live-canary control plane |
 
 ## What ships in v0.1

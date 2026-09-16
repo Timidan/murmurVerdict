@@ -97,18 +97,6 @@ export function deployVerificationChecks(
       expectBodyContains: /<rss/,
     },
     {
-      name: "daemon /v1/agents/:slug/discoverers",
-      url: `${target.api}/v1/agents/${target.slug}/discoverers`,
-      expectContentType: /json/,
-      expectBodyContains: /discoverers/,
-    },
-    {
-      name: "daemon /v1/refs/top",
-      url: `${target.api}/v1/refs/top`,
-      expectContentType: /json/,
-      expectBodyContains: /senders/,
-    },
-    {
       name: "daemon /v1/badge/:slug.svg",
       url: `${target.api}/v1/badge/${target.slug}.svg`,
       expectContentType: /svg/,

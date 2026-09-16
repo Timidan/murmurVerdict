@@ -49,7 +49,6 @@ try {
   const known = publicSharePageResponse({
     db,
     slug: "share-smoke",
-    ref: " ally! ",
     publicOrigin: {
       publicApiUrl: "https://api.murmur.example",
       dashboardUrl: "https://dashboard.murmur.example/app",
@@ -73,7 +72,7 @@ try {
   );
   assert.match(
     known.body,
-    /https:\/\/dashboard\.murmur\.example\/#\/share\/share-smoke\?ref=ally/,
+    /https:\/\/dashboard\.murmur\.example\/#\/share\/share-smoke"/,
   );
   assert.match(known.body, /murmur\.verdict &middot; agent/);
   const knownRes = new FakePublicSharePageResponse();
@@ -89,7 +88,6 @@ try {
   const missing = publicSharePageResponse({
     db,
     slug: "missing<script>",
-    ref: "!!!",
     publicOrigin: {
       publicApiUrl: null,
       dashboardUrl: null,

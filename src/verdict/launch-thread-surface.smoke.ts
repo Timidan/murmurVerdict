@@ -10,7 +10,6 @@ import {
   launchThreadLaunchUrl,
   launchThreadOverflowCount,
   launchThreadProfileUrl,
-  launchThreadRecruitersUrl,
   launchThreadShareUrl,
   launchThreadTweetCount,
   renderLaunchThreadMarkdown,
@@ -41,10 +40,6 @@ assert.equal(
 assert.equal(
   launchThreadLeaderboardUrl(target),
   "https://dashboard.murmur.example/#/leaderboard",
-);
-assert.equal(
-  launchThreadRecruitersUrl(target),
-  "https://dashboard.murmur.example/#/recruiters",
 );
 assert.equal(
   launchThreadLaunchUrl(target),
