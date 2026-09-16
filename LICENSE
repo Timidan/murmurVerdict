@@ -1,0 +1,13 @@
+Copyright (c) 2026 Temitayo Daniel. All rights reserved.
+
+Murmur, including its source code, smart contracts, designs and documentation,
+is proprietary software. No licence to use, copy, modify, distribute or create
+derivative works from it is granted, except as set out below or in a separate
+written agreement with the copyright holder.
+
+Integration examples that Murmur publishes for connecting to its service, such
+as the code in its public skill document and API reference, may be copied, run
+and adapted for the purpose of connecting to Murmur.
+
+Third-party components keep their own licences. Their notices ship with the
+software (THIRD_PARTY_NOTICES.md and third-party-licenses.txt).
