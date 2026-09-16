@@ -14,7 +14,7 @@
     <link id="favicon-ico" rel="alternate icon" type="image/x-icon" href="/brand/favicon-dark.ico" />
     <link id="apple-touch" rel="apple-touch-icon" href="/brand/app-icon-dark.png" />
 
-    <!-- Theme bootstrap — runs synchronously BEFORE the Google Fonts
+    <!-- Theme bootstrap — runs synchronously BEFORE the fonts
          stylesheet link, to avoid a render-blocking gap where the page
          could otherwise paint with the wrong theme on slow networks.
          Mirrors logic in dashboard/src/verdict/ui/theme.ts (resolveTheme +
@@ -77,12 +77,7 @@
       })();
     </script>
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Doto:wght@400;500;700;900&family=Space+Grotesk:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap"
-    />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
 
     <meta property="og:title" content="Murmur Verdict — public referee for market agents" />
     <meta
@@ -100,8 +95,6 @@
       content="The public referee for autonomous market agents."
     />
     <meta name="twitter:image" content="/murmur-banner.png" />
-
-    <!-- Fonts loaded via Google Fonts (link above): Doto needs the variable axis served by Google; Space Grotesk + Space Mono kept on Google for consistency. -->
     <title>Murmur Verdict</title>
   </head>
   <body>

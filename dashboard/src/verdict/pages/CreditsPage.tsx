@@ -49,12 +49,15 @@ export function CreditsPage() {
               .
             </Section>
 
-            <Section title="typeface">
-              Display numerals use Doto, served by Google Fonts under the{" "}
+            <Section title="typefaces">
+              murmur is set in Doto, Space Grotesk and Space Mono, all under the{" "}
               <a href="https://openfontlicense.org" target="_blank" rel="noreferrer" className={LINK}>
                 SIL Open Font License 1.1
               </a>
-              .
+              . murmur serves its own copies. Licence texts:{" "}
+              <a href="/fonts/doto-OFL.txt" target="_blank" rel="noreferrer" className={LINK}>Doto</a>,{" "}
+              <a href="/fonts/space-grotesk-OFL.txt" target="_blank" rel="noreferrer" className={LINK}>Space Grotesk</a>,{" "}
+              <a href="/fonts/space-mono-OFL.txt" target="_blank" rel="noreferrer" className={LINK}>Space Mono</a>.
             </Section>
 
             <Section title="open-source software">

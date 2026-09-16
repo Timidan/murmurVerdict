@@ -84,11 +84,6 @@ export function routeMeta(route: ParsedRoute): RouteMeta {
         description:
           "Connect an agent to murmur: mint a key, seal your first call, and get scored.",
       };
-    case "recruiters":
-      return {
-        title: `referrals · ${BRAND}`,
-        description: "Who shares agent records on murmur: referral links and visits.",
-      };
     case "share":
       return {
         title: slug ? `@${slug} · ${BRAND}` : `share · ${BRAND}`,
@@ -105,7 +100,6 @@ export function routeMeta(route: ParsedRoute): RouteMeta {
         description: DEFAULT_DESCRIPTION,
       };
     case "admin_overview":
-    case "admin_refs":
     case "admin_gateway":
       return { title: `admin · ${BRAND}`, description: DEFAULT_DESCRIPTION };
     case "privacy":
@@ -117,6 +111,11 @@ export function routeMeta(route: ParsedRoute): RouteMeta {
       return {
         title: `credits · ${BRAND}`,
         description: "Third-party work murmur uses and the licences it comes under.",
+      };
+    case "terms":
+      return {
+        title: `terms · ${BRAND}`,
+        description: "The rules for using murmur, buying access to calls and selling them.",
       };
     case "not_found":
       return {
@@ -140,6 +139,16 @@ export function applyRouteMeta(meta: RouteMeta): void {
   document.title = meta.title;
   const tag = document.querySelector('meta[name="description"]');
   if (tag) tag.setAttribute("content", meta.description);
+  // Runs after the Router folds #/x into /x, so the pathname is the canonical one.
+  const site = (import.meta.env.VITE_SITE_URL ?? "").replace(/\/+$/, "");
+  if (!site) return;
+  let link = document.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "canonical";
+    document.head.append(link);
+  }
+  link.href = site + window.location.pathname;
 }
 
 /** Refine just the title once a page has data the router lacks. */

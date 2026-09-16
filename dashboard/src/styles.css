@@ -25,10 +25,8 @@
 @source "./";
 @source "../index.html";
 
-/* Fonts loaded via Google Fonts in dashboard/index.html.
-   Doto requires the variable axis served by Google Fonts; no fontsource
-   package ships it yet. Space Grotesk + Space Mono are available on
-   fontsource but we keep them on Google Fonts for consistency with Doto. */
+/* Fonts are self-hosted: public/fonts/fonts.css, copied from Google Fonts with
+   its unicode-range subsets, so no visitor request goes to Google. */
 
 /* ────────────────────────────────────────────────────────────────────────────
    Murmur Verdict — Nothing-canonical token system
@@ -441,7 +439,7 @@ details[open] > .details-fade {
 
 /* ────────────────────────────────────────────────────────────────────────────
    Brand pattern — paper-mode only. Applied to marketing surfaces
-   (recruiters, share, spec). Asset: public/brand/pattern-paper.webp
+   (share, spec). Asset: public/brand/pattern-paper.webp
    (160x160 tile). Subtle: ~50% opacity layer on top of bg.
    ──────────────────────────────────────────────────────────────────────── */
 

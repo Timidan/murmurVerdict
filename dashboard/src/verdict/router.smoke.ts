@@ -8,7 +8,6 @@ assert.equal(parseLocation({ pathname: "/leaderboard", hash: "" }).name, "leader
 assert.equal(parseLocation({ pathname: "/today", hash: "" }).name, "today");
 assert.equal(parseLocation({ pathname: "/launch", hash: "" }).name, "launch");
 assert.equal(parseLocation({ pathname: "/install", hash: "" }).name, "launch");
-assert.equal(parseLocation({ pathname: "/recruiters", hash: "" }).name, "recruiters");
 assert.equal(parseLocation({ pathname: "/#/leaderboard", hash: "#/leaderboard" }).name, "leaderboard");
 
 // Query params resolve from whichever routing mode is live, and route

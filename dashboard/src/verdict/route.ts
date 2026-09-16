@@ -9,10 +9,9 @@ export interface ParsedRoute {
     | "call"
     | "launch"
     | "share"
-    | "recruiters"
     | "privacy"
     | "credits"
-    | "admin_refs"
+    | "terms"
     | "admin_gateway"
     | "admin_overview"
     | "market"
@@ -98,10 +97,9 @@ export function parseLocation(location: LocationLike): ParsedRoute {
   // /install is the canonical path (matches the "install" label everywhere
   // in the UI); /launch survives as an alias so old links keep working.
   if (path === "/install" || path === "/launch") return { name: "launch" };
-  if (path === "/recruiters") return { name: "recruiters" };
   if (path === "/privacy") return { name: "privacy" };
   if (path === "/credits") return { name: "credits" };
-  if (path === "/admin/refs") return { name: "admin_refs" };
+  if (path === "/terms") return { name: "terms" };
   if (path === "/admin/gateway") return { name: "admin_gateway" };
   if (path === "/admin/overview") return { name: "admin_overview" };
   // /spec and /logo are dev-only scaffolding pages — production builds

@@ -6,12 +6,12 @@ export function CompactFooter() {
       <span aria-hidden="true">·</span>
       <span>base</span>
       <span aria-hidden="true">·</span>
-      <a href="#/recruiters" className="ck-mono ck-dim hover:ck-pos no-underline max-lg:py-3">
-        referrals
-      </a>
-      <span aria-hidden="true">·</span>
       <a href="#/privacy" className="ck-mono ck-dim hover:ck-pos no-underline max-lg:py-3">
         privacy
+      </a>
+      <span aria-hidden="true">·</span>
+      <a href="#/terms" className="ck-mono ck-dim hover:ck-pos no-underline max-lg:py-3">
+        terms
       </a>
       <span aria-hidden="true">·</span>
       <a href="#/credits" className="ck-mono ck-dim hover:ck-pos no-underline max-lg:py-3">

@@ -87,9 +87,11 @@ export function LoginPage({ next }: LoginPageProps) {
               sign in
             </button>
 
-            {/* No terms of service exist yet; add a linked line once they ship. */}
             <p className="ck-dim text-[12px]">
-              Privy handles sign-in. Nothing goes on chain here.
+              Privy handles sign-in. Nothing goes on chain here. Signing in
+              means you accept the{" "}
+              <a href="#/terms" className="ck-pos no-underline hover:underline">terms</a> and the{" "}
+              <a href="#/privacy" className="ck-pos no-underline hover:underline">privacy notice</a>.
             </p>
           </div>
         </section>

@@ -11,8 +11,6 @@ import { CrumbSlotContext } from "./components/compact/TopbarCrumb.js";
 const TodayPage = lazy(() => import("./pages/TodayPage.js").then((m) => ({ default: m.TodayPage })));
 const CallPage = lazy(() => import("./pages/CallPage.js").then((m) => ({ default: m.CallPage })));
 const SharePage = lazy(() => import("./pages/SharePage.js").then((m) => ({ default: m.SharePage })));
-const RecruitersPage = lazy(() => import("./pages/RecruitersPage.js").then((m) => ({ default: m.RecruitersPage })));
-const AdminRefsPage = lazy(() => import("./pages/AdminRefsPage.js").then((m) => ({ default: m.AdminRefsPage })));
 const AdminGatewayPage = lazy(() => import("./pages/AdminGatewayPage.js").then((m) => ({ default: m.AdminGatewayPage })));
 const AdminOverviewPage = lazy(() => import("./pages/AdminOverviewPage.js").then((m) => ({ default: m.AdminOverviewPage })));
 
@@ -65,6 +63,9 @@ const PrivacyPage = lazy(() =>
 );
 const CreditsPage = lazy(() =>
   import("./pages/CreditsPage.js").then((m) => ({ default: m.CreditsPage })),
+);
+const TermsPage = lazy(() =>
+  import("./pages/TermsPage.js").then((m) => ({ default: m.TermsPage })),
 );
 // Real 404 — parseLocation's fallback for unknown URLs (route: not_found).
 const NotFoundPage = lazy(() =>
@@ -211,10 +212,9 @@ export function VerdictRouter() {
       {route.name === "call" && <CallPage callId={route.params!.call_id} />}
       {route.name === "launch" && <LaunchPage />}
       {route.name === "share" && <SharePage slug={route.params!.slug} />}
-      {route.name === "recruiters" && <RecruitersPage />}
       {route.name === "privacy" && <PrivacyPage />}
       {route.name === "credits" && <CreditsPage />}
-      {route.name === "admin_refs" && <AdminRefsPage />}
+      {route.name === "terms" && <TermsPage />}
       {route.name === "admin_gateway" && <AdminGatewayPage />}
       {route.name === "admin_overview" && <AdminOverviewPage />}
       {route.name === "market" && <MarketDetailPage marketId={route.params!.market_id} />}
