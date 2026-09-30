@@ -526,12 +526,26 @@ contract MurmurEscrowTest is Test {
         assertEq(uint8(r.state), uint8(MurmurEscrow.RequestState.Refunded));
     }
 
-    function test_forceRefundCommitted_rejectsNonOwner() public {
+    /// Audit F-4: the gate is owner-or-buyer. A third party still cannot
+    /// race a slow finalize into a refund.
+    function test_forceRefundCommitted_rejectsNonParty() public {
         (bytes32 requestId, uint64 committedAt) = _setupCommittedRequest();
         vm.warp(uint256(committedAt) + 4 hours + 168 hours + 1);
         vm.prank(randomCaller);
-        vm.expectRevert(MurmurEscrow.NotOwner.selector);
+        vm.expectRevert(MurmurEscrow.UnauthorizedCaller.selector);
         escrow.forceRefundCommitted(requestId);
+    }
+
+    /// Audit F-4: after the grace the buyer can recover their own principal
+    /// without depending on the owner showing up.
+    function test_forceRefundCommitted_buyerCanRefund() public {
+        (bytes32 requestId, uint64 committedAt) = _setupCommittedRequest();
+        vm.warp(uint256(committedAt) + 4 hours + 168 hours + 1);
+        vm.prank(buyer);
+        escrow.forceRefundCommitted(requestId);
+        assertEq(usdc.balanceOf(buyer), 1_000 * 1e6);
+        MurmurEscrow.InferenceRequest memory r = escrow.getRequest(requestId);
+        assertEq(uint8(r.state), uint8(MurmurEscrow.RequestState.Refunded));
     }
 
     function test_forceRefundCommitted_rejectsPending() public {
@@ -559,6 +573,47 @@ contract MurmurEscrowTest is Test {
         vm.prank(owner);
         vm.expectRevert(MurmurEscrow.ZeroAddress.selector);
         escrow.transferOwnership(address(escrow));
+    }
+
+    /// Audit F-8: two-step transfer. The owner stays in power until the
+    /// nominee accepts; a stranger cannot accept.
+    function test_transferOwnership_twoStep() public {
+        vm.prank(owner);
+        escrow.transferOwnership(randomCaller);
+        assertEq(escrow.owner(), owner);
+        assertEq(escrow.pendingOwner(), randomCaller);
+
+        vm.prank(buyer);
+        vm.expectRevert(MurmurEscrow.NotPendingOwner.selector);
+        escrow.acceptOwnership();
+
+        vm.prank(randomCaller);
+        escrow.acceptOwnership();
+        assertEq(escrow.owner(), randomCaller);
+        assertEq(escrow.pendingOwner(), address(0));
+    }
+
+    /// Audit F-8: the fee sink is snapshotted at request time; retargeting it
+    /// afterwards must not redirect an already-funded request's fee.
+    function test_setProtocolFeeSink_snapshotAppliesToFinalize() public {
+        _createPipeline(10 * 1e6, 120, 4);
+        vm.prank(buyer);
+        bytes32 requestId = escrow.requestInference(PIPELINE_ID, bytes32(uint256(77)));
+        bytes32 nonce = bytes32(uint256(78));
+        bytes memory signal = bytes("snapshot-sink");
+        vm.prank(agent);
+        escrow.commitSignal(requestId, keccak256(abi.encodePacked(signal, nonce)), bytes32(0));
+
+        address newSink = address(0xFEE2);
+        vm.prank(owner);
+        escrow.setProtocolFeeSink(newSink);
+
+        vm.warp(block.timestamp + 4 hours);
+        uint256 sinkBefore = usdc.balanceOf(feeSink);
+        escrow.finalize(requestId, signal, nonce);
+        // 5% default fee on 10 USDC lands at the ORIGINAL sink; the new one gets nothing.
+        assertEq(usdc.balanceOf(feeSink), sinkBefore + 5 * 1e5);
+        assertEq(usdc.balanceOf(newSink), 0);
     }
 
     // ─── Re-audit Low — constructor guards ────────────────────────────────

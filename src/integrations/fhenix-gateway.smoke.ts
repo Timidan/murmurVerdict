@@ -412,15 +412,20 @@ try {
     calls: [],
     async sealVerdict(input) {
       this.calls.push(input);
+      // Fresh handles per seal, like real CoFHE: every encryption carries new
+      // randomness, so two seals NEVER share a ct_hash. Reusing the client
+      // submission's constants here trips the encrypted-input reuse guard
+      // (audit F-1) — as it would a real copied ciphertext.
+      const seq = this.calls.length.toString(16).padStart(2, "0");
       return {
         binary_index_input: {
-          ct_hash: binaryIndexCtHash,
+          ct_hash: `0x${"a1".repeat(31)}${seq}`,
           security_zone: 0,
           utype: 2,
           signature: SEALED_BATCH_PROOF,
         },
         confidence_input: {
-          ct_hash: confidenceCtHash,
+          ct_hash: `0x${"a2".repeat(31)}${seq}`,
           security_zone: 0,
           utype: 3,
           signature: SEALED_BATCH_PROOF,
@@ -902,6 +907,8 @@ try {
       strategy_tag: "momentum",
       binary_index_input_json: JSON.stringify(body.binary_index_input),
       confidence_input_json: JSON.stringify(body.confidence_input),
+      binary_index_ct_hash: null,
+      confidence_ct_hash: null,
       next_attempt_at: "2026-05-14T13:05:00Z",
       created_at: acceptedAt,
       updated_at: acceptedAt,
@@ -970,6 +977,8 @@ try {
       reveal_after: revealOpenAt,
       action_input_json: JSON.stringify(feedBody.action_input),
       signal_input_json: JSON.stringify(feedBody.signal_input),
+      action_ct_hash: null,
+      signal_ct_hash: null,
       next_attempt_at: "2026-05-14T13:05:00Z",
       created_at: acceptedAt,
       updated_at: acceptedAt,

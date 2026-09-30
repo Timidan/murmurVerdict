@@ -242,4 +242,18 @@ for (const bad of ["300,300", "300,", "300,,600", "300,abc", "300,59", "300,8640
   );
 }
 
+// Audit F-6: a short admin token gates every admin/operator route with a
+// guessable secret, so boot refuses it. Unset still means "admin disabled".
+assert.throws(
+  () => loadDaemonRuntimeConfig({ VERDICT_ADMIN_TOKEN: "short-token" }),
+  (err) =>
+    err instanceof DaemonConfigError && err.key === "VERDICT_ADMIN_TOKEN",
+  "a sub-32-char admin token must refuse boot",
+);
+assert.equal(
+  loadDaemonRuntimeConfig({ VERDICT_ADMIN_TOKEN: "a".repeat(32) }).adminToken,
+  "a".repeat(32),
+);
+assert.equal(loadDaemonRuntimeConfig({}).adminToken, "");
+
 console.log("daemon-config smoke ok");

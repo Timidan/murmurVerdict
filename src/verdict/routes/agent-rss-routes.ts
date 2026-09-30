@@ -22,7 +22,7 @@ export function agentRssRouter(deps: SyndicationRouterDeps): Router {
       // without Vary, so a caller-controlled origin would poison it.
       dashboardLinks: publicRssDashboardLinks(
         deps.publicOrigin.dashboardUrl ??
-          publicApiUrlForRequest(deps.publicOrigin, req),
+          publicApiUrlForRequest(deps.publicOrigin),
       ),
     }));
   });

@@ -79,6 +79,8 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
   const [drafts, setDrafts] = useState<Record<string, TermsDraft>>({});
   /** Deployment-wide, so one series' read carries it for every row. */
   const [deliverable, setDeliverable] = useState<number | null>(null);
+  /** Audit F-2: what selling technically hands the operator; shown BEFORE listing. */
+  const [disclosure, setDisclosure] = useState<string | null>(null);
   /** The series currently being written, or null when idle. */
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<Note | null>(null);
@@ -102,6 +104,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
       if (probe) {
         const terms = await verdictApi.getProviderTerms(token, slug, probe);
         setDeliverable(terms.deliverable_max_subscribers_per_call);
+        setDisclosure(terms.early_access_disclosure ?? null);
       }
     } catch (e) {
       setNote({ series: null, text: (e as Error)?.message ?? "unknown error", bad: true });
@@ -259,6 +262,12 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
           {rows ? `${listed} of ${rows.length} listed` : "…"}
         </span>
       </div>
+
+      {disclosure ? (
+        <p className="ck-mono ck-dim px-4 pt-3 pb-1 text-[12px] leading-snug border-b border-[var(--color-border)]">
+          {disclosure}
+        </p>
+      ) : null}
 
       {rows === null ? (
         loadFailed ? null : <p className="ck-mono ck-dim px-4 py-4">loading…</p>

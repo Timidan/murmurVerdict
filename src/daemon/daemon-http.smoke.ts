@@ -19,7 +19,7 @@ const priorOperatorAlertSecret = process.env.MURMUR_OPERATOR_ALERT_SECRET;
 const priorPrivyAppId = process.env.PRIVY_APP_ID;
 const priorPrivyAppSecret = process.env.PRIVY_APP_SECRET;
 const priorPrivyVerificationKey = process.env.PRIVY_VERIFICATION_KEY;
-process.env.VERDICT_ADMIN_TOKEN = "ambient-admin-token";
+process.env.VERDICT_ADMIN_TOKEN = "ambient-admin-token-0123456789abcdef";
 process.env.MURMUR_PUBLIC_URL = "https://ambient-public.invalid";
 process.env.FHENIX_REVEAL_GRACE_SEC = "999";
 process.env.MURMUR_OPERATOR_ALERT_WEBHOOK_URL = "https://ambient-alert.invalid";
@@ -118,7 +118,7 @@ const marketRegistrationGammaLookup = {
 
 try {
   const config = loadDaemonRuntimeConfig({
-    VERDICT_ADMIN_TOKEN: "configured-admin-token",
+    VERDICT_ADMIN_TOKEN: "configured-admin-token-0123456789abcdef",
     OPENSERV_API_KEY: "configured-openserv-api-key",
     MURMUR_PUBLIC_URL: "https://configured-public.example",
     MURMUR_OPERATOR_ALERT_WEBHOOK_URL: "https://configured-alert.example",
@@ -153,12 +153,12 @@ try {
   const baseUrl = `http://127.0.0.1:${started.port}`;
 
   const ambientDenied = await fetch(`${baseUrl}/v1/admin/canaries`, {
-    headers: { "X-Admin-Token": "ambient-admin-token" },
+    headers: { "X-Admin-Token": "ambient-admin-token-0123456789abcdef" },
   });
   assert.equal(ambientDenied.status, 403);
 
   const configuredAllowed = await fetch(`${baseUrl}/v1/admin/canaries`, {
-    headers: { "X-Admin-Token": "configured-admin-token" },
+    headers: { "X-Admin-Token": "configured-admin-token-0123456789abcdef" },
   });
   assert.equal(configuredAllowed.status, 200);
 
@@ -169,7 +169,7 @@ try {
   assert.doesNotMatch(embedJs, /ambient-public\.invalid/);
 
   const lifecycle = await fetch(`${baseUrl}/v1/admin/fhenix/lifecycle`, {
-    headers: { "X-Admin-Token": "configured-admin-token" },
+    headers: { "X-Admin-Token": "configured-admin-token-0123456789abcdef" },
   });
   assert.equal(lifecycle.status, 200);
   const lifecycleBody = await lifecycle.json() as {
@@ -178,7 +178,7 @@ try {
   assert.equal(lifecycleBody.configured?.reveal_grace_seconds, 123);
 
   const alerts = await fetch(`${baseUrl}/v1/admin/alerts`, {
-    headers: { "X-Admin-Token": "configured-admin-token" },
+    headers: { "X-Admin-Token": "configured-admin-token-0123456789abcdef" },
   });
   assert.equal(alerts.status, 200);
   const alertsBody = await alerts.json() as { sink_configured?: boolean };
@@ -247,7 +247,7 @@ try {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Admin-Token": "configured-admin-token",
+      "X-Admin-Token": "configured-admin-token-0123456789abcdef",
     },
     body: JSON.stringify({
       conditionId: marketRegistrationConditionId,

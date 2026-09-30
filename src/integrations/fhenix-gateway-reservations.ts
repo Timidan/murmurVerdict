@@ -7,6 +7,8 @@ import { preflightMarketAndRateLimits } from "./fhenix-gateway-sealed-call-prefl
 import { ZERO_BYTES32, type GatewayFeedPacketBody, type GatewaySealedCallBody } from "./fhenix-gateway-schemas.js";
 import { normalizeAddress } from "./fhenix-gateway-runtime.js";
 import { gatewayCofheInputJson } from "./fhenix-gateway-cofhe-input.js";
+import { normalizeCofheCtHashToHex32 } from "./fhenix-gateway-cofhe-normalize.js";
+import { findEncryptedInputReuse } from "../verdict/repos/encrypted-input-reuse-repo.js";
 import { assertFeedRevealPolicySupported } from "../verdict/feed-availability.js";
 import { marketClocksRepo } from "../verdict/repos/market-clocks-repo.js";
 import { isoFromMs } from "../verdict/time.js";
@@ -40,6 +42,31 @@ import {
 type GatewayMarket = NonNullable<ReturnType<typeof marketsRepo.get>>;
 
 import { assertGatewayFingerprintMatch } from "./gateway-request-fingerprint.js";
+
+/**
+ * Audit F-1: refuse encrypted inputs murmur has seen before. A CoFHE proof
+ * authenticates the ciphertexts against relayer + contract only, so a pair
+ * copied from another agent's public submit calldata would relay and verify —
+ * a parasitic clone of someone else's sealed prediction. Runs inside the
+ * reservation transaction so two concurrent copies cannot both pass.
+ */
+function assertEncryptedInputsUnseen(
+  db: Database.Database,
+  input: { agentId: string; ctHashes: readonly string[] },
+): void {
+  const reuse = findEncryptedInputReuse(db, {
+    ctHashes: input.ctHashes,
+    exceptAgentId: input.agentId,
+  });
+  if (reuse) {
+    throw new VerdictError(
+      "encrypted input was already submitted; create fresh CoFHE inputs for every submission",
+      ERROR_CODES.duplicate,
+      409,
+      { pool: reuse.pool },
+    );
+  }
+}
 
 export type ReserveSealedCallAttemptResult =
   | {
@@ -168,6 +195,20 @@ export function reserveSealedCallAttempt(params: {
       { now: params.now },
     );
     preflightMarketAndRateLimits(params.db, agentId, params.market, params.now);
+    // Normalized here, after the auth/lifecycle/limit gates, so partial
+    // callers fail on the gate they actually violated, not on input shape.
+    const binaryIndexCtHash = normalizeCofheCtHashToHex32(
+      params.body.binary_index_input.ct_hash,
+      "binary_index_input",
+    );
+    const confidenceCtHash = normalizeCofheCtHashToHex32(
+      params.body.confidence_input.ct_hash,
+      "confidence_input",
+    );
+    assertEncryptedInputsUnseen(params.db, {
+      agentId,
+      ctHashes: [binaryIndexCtHash, confidenceCtHash],
+    });
     const attempt = {
       attempt_id: (params.newAttemptId ?? randomUUID)(),
       status: "queued" as const,
@@ -191,6 +232,8 @@ export function reserveSealedCallAttempt(params: {
       strategy_tag: params.body.strategy_tag ?? null,
       binary_index_input_json: gatewayCofheInputJson(params.body.binary_index_input),
       confidence_input_json: gatewayCofheInputJson(params.body.confidence_input),
+      binary_index_ct_hash: binaryIndexCtHash,
+      confidence_ct_hash: confidenceCtHash,
       request_fingerprint: params.requestFingerprint,
       auth_proof: params.authProof,
       next_attempt_at: ts,
@@ -389,6 +432,20 @@ export function reserveFeedPacketAttempt(params: {
       }
       // Same retirement gate and placement as sealed calls.
       assertAgentAcceptingCalls(params.db, agentId);
+      // Normalized after the retirement gate — same ordering rationale as the
+      // sealed-call path.
+      const actionCtHash = normalizeCofheCtHashToHex32(
+        params.body.action_input.ct_hash,
+        "action_input",
+      );
+      const signalCtHash = normalizeCofheCtHashToHex32(
+        params.body.signal_input.ct_hash,
+        "signal_input",
+      );
+      assertEncryptedInputsUnseen(params.db, {
+        agentId,
+        ctHashes: [actionCtHash, signalCtHash],
+      });
       const sequence = params.body.sequence ?? Math.max(
         feedPacketsRepo.nextSequence(params.db, params.feed.feed_id),
         fhenixGatewayFeedPacketTxRepo.nextSequence(params.db, params.feed.feed_id),
@@ -436,6 +493,8 @@ export function reserveFeedPacketAttempt(params: {
         reveal_after: revealAfter,
         action_input_json: gatewayCofheInputJson(params.body.action_input),
         signal_input_json: gatewayCofheInputJson(params.body.signal_input),
+        action_ct_hash: actionCtHash,
+        signal_ct_hash: signalCtHash,
         request_fingerprint: params.requestFingerprint,
         auth_proof: params.authProof,
         next_attempt_at: ts,

@@ -22,7 +22,7 @@ export function marketAdminRouter(deps: MarketAdminRouterDeps): Router {
 
   router.post(
     "/v1/admin/markets/polymarket",
-    express.json(),
+    express.json({ limit: "32kb" }),
     asyncHandler(async (req, res) => {
       if (!deps.requireAdminHeader(req, res)) return;
       const result = await registerPolymarketMarketFromAdminBody({

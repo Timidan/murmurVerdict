@@ -67,6 +67,19 @@ function configuredFeeBps(deps: ProviderTermsDeps): number | null {
     : deps.protocolFeeBps;
 }
 
+// Audit F-2 / fix-review issue 5: the on-chain grantor role can extend
+// permanent pre-reveal decrypt access to ANY address for a sellable call
+// during the sale window — including itself — and the contract never checks a
+// payment. Selling means trusting the operator with that power, so the terms
+// say it plainly, and BEFORE selling is enabled, not only after.
+const EARLY_ACCESS_DISCLOSURE =
+  "Selling early access authorizes this deployment's grantor wallet to " +
+  "extend pre-reveal decryption of your sealed call to addresses of the " +
+  "operator's choosing during the sale window — including the operator " +
+  "itself. Grants are enforced on-chain per call, are permanent once given, " +
+  "and are not bound on-chain to any payment: you are trusting the operator " +
+  "to grant only paying subscribers.";
+
 function view(
   deps: ProviderTermsDeps,
   terms: ReturnType<typeof agentProviderTermsRepo.get>,
@@ -75,6 +88,7 @@ function view(
     return {
       schema_version: SCHEMA_VERSION,
       selling: false,
+      early_access_disclosure: EARLY_ACCESS_DISCLOSURE,
       deliverable_max_subscribers_per_call: deps.deliverableCap ?? null,
     };
   }
@@ -85,6 +99,7 @@ function view(
   return {
     schema_version: SCHEMA_VERSION,
     selling: true,
+    early_access_disclosure: EARLY_ACCESS_DISCLOSURE,
     price_atoms: terms.price_atoms,
     currency: terms.currency,
     pricing_version: terms.pricing_version,

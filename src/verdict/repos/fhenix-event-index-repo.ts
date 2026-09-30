@@ -119,17 +119,47 @@ export const fhenixEventsRepo = {
       event_name: string;
       last_block_number: number;
       updated_at: string;
+      /** Set ONLY when this write leaves the scan at the safe head. Mid-catch-up
+       *  batches pass null, which CLEARS any previous watermark: a partial scan
+       *  means coverage is no longer proven, and a preserved-but-fresh old
+       *  watermark let a reveal in the unscanned range be refunded (fix-review
+       *  issue 2 on audit F-3). */
+      head_synced_at: string | null;
     },
   ): void {
     prep(
       db,
       `INSERT INTO fhenix_event_cursors
-       (chain_id, contract_address, event_name, last_block_number, updated_at)
+       (chain_id, contract_address, event_name, last_block_number, updated_at, head_synced_at)
        VALUES
-       (@chain_id, @contract_address, @event_name, @last_block_number, @updated_at)
+       (@chain_id, @contract_address, @event_name, @last_block_number, @updated_at, @head_synced_at)
        ON CONFLICT(chain_id, contract_address, event_name) DO UPDATE SET
         last_block_number = excluded.last_block_number,
-        updated_at = excluded.updated_at`,
+        updated_at = excluded.updated_at,
+        head_synced_at = excluded.head_synced_at`,
+    ).run(input);
+  },
+
+  /** Refresh head_synced_at on a tick where the cursor is already at the safe
+   *  head and no batch is written (`from > safeHead`). Without this, a quiet
+   *  chain would let head_synced_at go stale and pending reveals would read as
+   *  unknown instead of "watcher looked, nothing published". */
+  touchHeadSynced(
+    db: Database.Database,
+    input: {
+      chain_id: number;
+      contract_address: string;
+      event_name: string;
+      head_synced_at: string;
+    },
+  ): void {
+    prep(
+      db,
+      `UPDATE fhenix_event_cursors
+       SET head_synced_at = @head_synced_at, updated_at = @head_synced_at
+       WHERE chain_id = @chain_id
+         AND contract_address = @contract_address
+         AND event_name = @event_name`,
     ).run(input);
   },
 };

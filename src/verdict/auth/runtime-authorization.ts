@@ -176,18 +176,31 @@ function parseRuntimeKeyPolicy(
   }
 }
 
+/**
+ * Server ceilings when a key's policy names no quota (audit F-10). Sized to
+ * bound relayer gas and queue abuse, not to meter honest agents: 600/hour
+ * sustains 50 markets' full per-market daily cap (12) inside one hour, far
+ * beyond any legitimate portfolio. These apply ONLY when the policy is
+ * silent; an explicit policy may go up to the schema caps (1000/hour,
+ * 10000/day) or down to 1.
+ */
+export const RUNTIME_KEY_DEFAULT_MAX_CALLS_PER_HOUR = 600;
+export const RUNTIME_KEY_DEFAULT_MAX_CALLS_PER_DAY = 5000;
+
 function enforceSealedCallRateLimits(
   db: Database.Database,
   runtimeKey: RuntimeKeyVerification,
   policy: RuntimeKeyGatewayPolicy,
   now: () => Date,
 ): void {
-  if (policy.max_calls_per_hour !== undefined) {
+  const hourlyLimit =
+    policy.max_calls_per_hour ?? RUNTIME_KEY_DEFAULT_MAX_CALLS_PER_HOUR;
+  {
     const since = isoFromMs(now().getTime() - 60 * 60 * 1000);
     const count =
       submissionsRepo.countCallsForRuntimeKeyWindow(db, runtimeKey.runtime_key_id, since) +
       fhenixGatewayTxRepo.countInflightByRuntimeKeyWindow(db, runtimeKey.runtime_key_id, since);
-    if (count >= policy.max_calls_per_hour) {
+    if (count >= hourlyLimit) {
       throw new VerdictError(
         "Runtime Key hourly call limit exceeded",
         ERROR_CODES.rate_limited,
@@ -195,18 +208,20 @@ function enforceSealedCallRateLimits(
         {
           runtime_key_id: runtimeKey.runtime_key_id,
           policy_hash: runtimeKey.policy_hash,
-          limit: policy.max_calls_per_hour,
+          limit: hourlyLimit,
         },
       );
     }
   }
 
-  if (policy.max_calls_per_day !== undefined) {
+  const dailyLimit =
+    policy.max_calls_per_day ?? RUNTIME_KEY_DEFAULT_MAX_CALLS_PER_DAY;
+  {
     const since = isoFromMs(now().getTime() - 24 * 60 * 60 * 1000);
     const count =
       submissionsRepo.countCallsForRuntimeKeyWindow(db, runtimeKey.runtime_key_id, since) +
       fhenixGatewayTxRepo.countInflightByRuntimeKeyWindow(db, runtimeKey.runtime_key_id, since);
-    if (count >= policy.max_calls_per_day) {
+    if (count >= dailyLimit) {
       throw new VerdictError(
         "Runtime Key daily call limit exceeded",
         ERROR_CODES.rate_limited,
@@ -214,7 +229,7 @@ function enforceSealedCallRateLimits(
         {
           runtime_key_id: runtimeKey.runtime_key_id,
           policy_hash: runtimeKey.policy_hash,
-          limit: policy.max_calls_per_day,
+          limit: dailyLimit,
         },
       );
     }

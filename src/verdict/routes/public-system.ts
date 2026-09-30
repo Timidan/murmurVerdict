@@ -41,7 +41,7 @@ export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
   const router = Router();
 
   router.get("/v1/openapi.json", (req, res) => {
-    const publicUrl = publicApiUrlForRequest(deps.publicOrigin, req);
+    const publicUrl = publicApiUrlForRequest(deps.publicOrigin);
     sendPublicSystemResource(req, res, publicOpenApiResource({
       publicUrl,
       nanopayX402Mounted: deps.nanopayX402Mounted,
@@ -49,12 +49,12 @@ export function publicSystemRouter(deps: PublicSystemRouterDeps): Router {
   });
 
   router.get("/v1/skill.md", (req, res) => {
-    const apiBase = publicApiUrlForRequest(deps.publicOrigin, req);
+    const apiBase = publicApiUrlForRequest(deps.publicOrigin);
     sendPublicSystemResource(req, res, publicSkillResource(apiBase, deps.popAudience));
   });
 
   router.get("/embed.js", (req, res) => {
-    const publicUrl = publicApiUrlForRequest(deps.publicOrigin, req);
+    const publicUrl = publicApiUrlForRequest(deps.publicOrigin);
     sendPublicSystemResource(req, res, publicEmbedResource(publicUrl));
   });
 

@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
 
 import { SCHEMA_VERSION, SCORING_VERSION } from "./schema.js";
+import { normalizeCofheCtHashToHex32 } from "../integrations/fhenix-gateway-cofhe-normalize.js";
 
-export const LATEST_DB_MIGRATION_VERSION = 81 as const;
+export const LATEST_DB_MIGRATION_VERSION = 82 as const;
 
 export function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -1598,6 +1599,85 @@ export function applyMigrations(db: Database.Database): void {
       }).immediate();
     }
     v = 81;
+  }
+
+  if (v < 82) {
+    // Partial fixtures (and installs stamped forward) may lack some of these
+    // tables entirely, so every piece guards on presence — the same rule the
+    // 081 rebuild follows. A full bootstrap has all of them by now.
+    const hasTable = (name: string): boolean =>
+      !!db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+        .get(name);
+    // Fixtures also build STRIPPED versions of these tables (fingerprint smoke
+    // creates fhenix_gateway_tx_attempts without the hash columns), so the
+    // index requires the exact columns, not just the table name.
+    const hasColumns = (table: string, columns: readonly string[]): boolean => {
+      if (!hasTable(table)) return false;
+      const present = new Set(
+        (db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as
+          Array<{ name: string }>).map((c) => c.name),
+      );
+      return columns.every((c) => present.has(c));
+    };
+    // Legacy attempt rows carry their handles only inside the input JSON —
+    // the hash columns were broadcast-time before this migration. Left NULL,
+    // a pre-upgrade queued attempt would be invisible to the reuse guard and
+    // its calldata copyable once broadcast. Normalized in TS because old rows
+    // may hold decimal/bigint ct_hash forms SQL cannot canonicalize; a row
+    // whose JSON does not parse stays NULL — it cannot broadcast either, since
+    // the broadcaster runs the same normalization.
+    const backfillCtHash = (
+      table: string,
+      idColumn: string,
+      pairs: ReadonlyArray<[jsonColumn: string, hashColumn: string]>,
+    ): void => {
+      for (const [jsonColumn, hashColumn] of pairs) {
+        if (!hasColumns(table, [idColumn, jsonColumn, hashColumn])) continue;
+        const rows = db
+          .prepare(
+            `SELECT ${idColumn} AS id, ${jsonColumn} AS input_json
+             FROM ${table} WHERE ${hashColumn} IS NULL`,
+          )
+          .all() as Array<{ id: string; input_json: string }>;
+        const write = db.prepare(
+          `UPDATE ${table} SET ${hashColumn} = ? WHERE ${idColumn} = ?`,
+        );
+        for (const row of rows) {
+          try {
+            const parsed = JSON.parse(row.input_json) as { ct_hash?: unknown };
+            write.run(
+              normalizeCofheCtHashToHex32(parsed.ct_hash, hashColumn),
+              row.id,
+            );
+          } catch {
+            // Unnormalizable legacy row: leave NULL, it can never broadcast.
+          }
+        }
+      }
+    };
+    db.transaction(() => {
+      // Reveal-verifier fix: `updated_at` refreshes on every catch-up batch, so
+      // it cannot prove the scan covered the reveal horizon. `head_synced_at`
+      // is written only when a scan reaches the safe head.
+      if (hasTable("fhenix_event_cursors")) {
+        applyAlterTableAddColumn(db, "fhenix_event_cursors", "head_synced_at",
+          "ALTER TABLE fhenix_event_cursors ADD COLUMN head_synced_at TEXT;");
+      }
+      backfillCtHash("fhenix_gateway_tx_attempts", "attempt_id", [
+        ["binary_index_input_json", "binary_index_ct_hash"],
+        ["confidence_input_json", "confidence_ct_hash"],
+      ]);
+      backfillCtHash("fhenix_gateway_feed_packet_tx_attempts", "attempt_id", [
+        ["action_input_json", "action_ct_hash"],
+        ["signal_input_json", "signal_ct_hash"],
+      ]);
+      for (const [table, columns, sql] of MIGRATION_082_CT_HASH_REUSE_INDEXES) {
+        if (hasColumns(table, columns)) db.exec(sql);
+      }
+      set.run("schema_version", "82");
+    }).immediate();
+    v = 82;
   }
 }
 
@@ -4830,5 +4910,50 @@ const MIGRATION_081_RETIRE_REFERRALS = `
 `;
 
 // ─── Re-export ground type for migration knowledge ───────────────────────────
+
+// ─── Migration 082 — encrypted-input reuse lookups ──────────────────────────
+//
+// CoFHE input proofs bind to the relayer, not the agent, so a copied
+// ciphertext pair verifies on-chain under any agent. The gateway now rejects
+// handles it has seen before; these indexes back that lookup across every
+// pool a handle can appear in (in-flight attempts and chain-ingested rows).
+// Grouped per table (with the columns each group indexes) so the 082 block
+// can skip tables — or stripped fixture variants — that lack them.
+const MIGRATION_082_CT_HASH_REUSE_INDEXES: ReadonlyArray<
+  [string, readonly string[], string]
+> = [
+  ["fhenix_gateway_tx_attempts", ["binary_index_ct_hash", "confidence_ct_hash"], `
+    CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_tx_attempts_binary_ct
+      ON fhenix_gateway_tx_attempts(binary_index_ct_hash)
+      WHERE binary_index_ct_hash IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_tx_attempts_confidence_ct
+      ON fhenix_gateway_tx_attempts(confidence_ct_hash)
+      WHERE confidence_ct_hash IS NOT NULL;
+  `],
+  ["fhenix_gateway_feed_packet_tx_attempts", ["action_ct_hash", "signal_ct_hash"], `
+    CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_feed_packet_tx_attempts_action_ct
+      ON fhenix_gateway_feed_packet_tx_attempts(action_ct_hash)
+      WHERE action_ct_hash IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_fhenix_gateway_feed_packet_tx_attempts_signal_ct
+      ON fhenix_gateway_feed_packet_tx_attempts(signal_ct_hash)
+      WHERE signal_ct_hash IS NOT NULL;
+  `],
+  ["fhenix_sealed_calls", ["binary_index_ct_hash", "confidence_ct_hash"], `
+    CREATE INDEX IF NOT EXISTS idx_fhenix_sealed_calls_binary_ct
+      ON fhenix_sealed_calls(binary_index_ct_hash);
+    CREATE INDEX IF NOT EXISTS idx_fhenix_sealed_calls_confidence_ct
+      ON fhenix_sealed_calls(confidence_ct_hash);
+  `],
+  ["feed_packets", ["packet_ct_hash", "binary_index_ct_hash", "confidence_ct_hash"], `
+    CREATE INDEX IF NOT EXISTS idx_feed_packets_packet_ct
+      ON feed_packets(packet_ct_hash);
+    CREATE INDEX IF NOT EXISTS idx_feed_packets_binary_ct
+      ON feed_packets(binary_index_ct_hash)
+      WHERE binary_index_ct_hash IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_feed_packets_confidence_ct
+      ON feed_packets(confidence_ct_hash)
+      WHERE confidence_ct_hash IS NOT NULL;
+  `],
+];
 
 export const VERDICT_DB_SCHEMA_VERSION = 1 as const;

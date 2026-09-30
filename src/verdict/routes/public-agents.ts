@@ -52,7 +52,7 @@ export function publicAgentRouter(deps: PublicAgentRouterDeps): Router {
     sendPublicAgentJsonResponse(res, publicAgentCardResponse({
       db: deps.db,
       slug: String(req.params.slug ?? ""),
-      apiBase: publicApiUrlForRequest(deps.publicOrigin, req),
+      apiBase: publicApiUrlForRequest(deps.publicOrigin),
       nanopayX402Mounted: deps.nanopayX402Mounted,
       servedAt: deps.now(),
     }));
@@ -73,7 +73,7 @@ export function publicAgentRouter(deps: PublicAgentRouterDeps): Router {
       res.status(404).json({ error: "agent_not_found", slug });
       return;
     }
-    const apiBase = publicApiUrlForRequest(deps.publicOrigin, req);
+    const apiBase = publicApiUrlForRequest(deps.publicOrigin);
     sendPublicSystemResource(
       req,
       res,

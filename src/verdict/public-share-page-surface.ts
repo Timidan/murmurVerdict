@@ -9,12 +9,18 @@ import { agentsRepo, type AgentRow } from "./repos/agents-repo.js";
 
 const PUBLIC_SHARE_PAGE_CONTENT_TYPE = "text/html; charset=utf-8";
 const PUBLIC_SHARE_PAGE_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=300";
+// The page is self-contained: no scripts, one inline <style>, one OG image.
+// The meta-refresh redirect is unaffected by CSP. frame-ancestors 'none'
+// keeps the card out of clickjacking frames (audit F-5).
+const PUBLIC_SHARE_PAGE_CSP =
+  "default-src 'none'; img-src 'self' https: data:; style-src 'unsafe-inline'; frame-ancestors 'none'";
 
 export interface PublicSharePageResponse {
   status: 200;
   headers: {
     "Content-Type": typeof PUBLIC_SHARE_PAGE_CONTENT_TYPE;
     "Cache-Control": typeof PUBLIC_SHARE_PAGE_CACHE_CONTROL;
+    "Content-Security-Policy": typeof PUBLIC_SHARE_PAGE_CSP;
   };
   body: string;
 }
@@ -48,6 +54,7 @@ export function publicSharePageResponse(input: {
     headers: {
       "Content-Type": PUBLIC_SHARE_PAGE_CONTENT_TYPE,
       "Cache-Control": PUBLIC_SHARE_PAGE_CACHE_CONTROL,
+      "Content-Security-Policy": PUBLIC_SHARE_PAGE_CSP,
     },
     body: renderPublicSharePage({
       agent,

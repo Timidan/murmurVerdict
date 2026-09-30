@@ -627,6 +627,7 @@ try {
       event_name: "VerdictRevealed",
       last_block_number: 10,
       updated_at: acceptedAt,
+      head_synced_at: null,
     });
     const watcher = new FhenixEventIngestor({
       db: db3,
@@ -775,6 +776,7 @@ try {
       event_name: "VerdictRevealed",
       last_block_number: 123,
       updated_at: acceptedAt,
+      head_synced_at: null,
     });
     const watcher = new FhenixEventIngestor({
       db: db7,
@@ -820,6 +822,7 @@ try {
         event_name: eventName,
         last_block_number: 5000,
         updated_at: acceptedAt,
+        head_synced_at: null,
       });
     }
     const watcher = new FhenixEventIngestor({

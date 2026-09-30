@@ -133,11 +133,24 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
     }),
   );
 
+  // Submission routes do per-request Ed25519 + sha256 work and DB nonce writes
+  // BEFORE authentication can reject, so an IP-level ceiling bounds that
+  // pre-auth compute (audit F-10). Per-key policy quotas and the per-market
+  // caps still meter authenticated throughput; this only stops firehoses.
+  const submissionIpLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 120,
+    standardHeaders: false,
+    legacyHeaders: false,
+    message: { error: "rate_limited", code: "rate_limited", route: "gateway_submission" },
+  });
+
   // Canonical Gateway paths. The daemon never receives verdict/feed plaintext
   // while pending; it accepts CoFHE encrypted inputs, enforces Gateway policy,
   // and relays the Fhenix submit tx itself.
   router.post(
     "/v2/gateway/calls/seal",
+    submissionIpLimiter,
     json,
     asyncHandler(async (req, res) => {
       const result = await gatewayMurmurSealedCallSubmissionResponse({
@@ -151,6 +164,7 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
 
   router.post(
     "/v2/gateway/calls",
+    submissionIpLimiter,
     json,
     asyncHandler(async (req, res) => {
       const result = await gatewaySealedCallSubmissionResponse({
@@ -228,6 +242,7 @@ export function gatewayRouter(deps: GatewayRouterDeps): Router {
 
   router.post(
     "/v2/gateway/feeds/:feed_id/packets",
+    submissionIpLimiter,
     json,
     asyncHandler(async (req, res) => {
       const result = await gatewayFeedPacketSubmissionResponse({

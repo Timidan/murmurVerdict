@@ -42,6 +42,7 @@ import {
 import type { DaemonTickerIntervals } from "./tickers.js";
 
 export type DashboardCorsConfig =
+  | { kind: "none" }
   | { kind: "any" }
   | { kind: "allowlist"; origins: string[] };
 
@@ -204,7 +205,7 @@ export function loadDaemonRuntimeConfig(
       10,
     ),
     dbPath: resolveVerdictDbPath(env, overrides.dbPath),
-    adminToken: env.VERDICT_ADMIN_TOKEN ?? "",
+    adminToken: parseAdminToken(env.VERDICT_ADMIN_TOKEN),
     publicOrigin,
     popAudience,
     resolverTickSec,
@@ -523,8 +524,29 @@ function loadPrivyWebhookSigningSecret(
   return secret;
 }
 
+/**
+ * Unset = admin surface disabled, which is fine. Set = it gates every
+ * /v1/admin and /v1/operator route, so a guessable value is a takeover
+ * (audit F-6). 32 chars floors it at `openssl rand -hex 16`.
+ */
+function parseAdminToken(raw: string | undefined): string {
+  const token = raw ?? "";
+  if (token && token.length < 32) {
+    throw new DaemonConfigError(
+      "VERDICT_ADMIN_TOKEN",
+      "must be at least 32 characters when set — generate one with: openssl rand -hex 32",
+    );
+  }
+  return token;
+}
+
 function parseDashboardCors(raw: string | undefined): DashboardCorsConfig {
-  const dashboardOrigin = (raw ?? "*").trim();
+  // Unset fails CLOSED: no CORS middleware at all, so browsers on other
+  // origins get nothing (audit F-11 — this used to default to wildcard).
+  // Non-browser clients are unaffected; the dashboard needs its origin
+  // listed, which .env.example and docker-compose both do explicitly.
+  if (raw === undefined) return { kind: "none" };
+  const dashboardOrigin = raw.trim();
   if (dashboardOrigin === "*") return { kind: "any" };
   if (!dashboardOrigin) {
     throw new DaemonConfigError(

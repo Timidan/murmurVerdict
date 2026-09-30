@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type { Request } from "express";
 
 import {
   DEFAULT_LOCAL_PUBLIC_ORIGIN,
@@ -31,16 +30,13 @@ assert.equal(configured.dashboardUrl, "https://dashboard.murmur.example/app");
 assert.equal(configured.publicApiUrl, "http://api.murmur.example");
 assert.equal(dashboardWebOrigin(configured), "https://dashboard.murmur.example");
 
-const req = {
-  protocol: "https",
-  get(name: string) {
-    assert.equal(name, "host");
-    return "request-origin.example";
-  },
-} as Request;
+// Audit F-12: unset config must NEVER reflect the request's Host header —
+// that let attacker-controlled hosts poison cached /embed.js and OG URLs.
+// It now falls back to the documented localhost default instead.
+assert.equal(publicApiUrlForRequest(empty), DEFAULT_LOCAL_PUBLIC_ORIGIN);
 assert.equal(
-  publicApiUrlForRequest(empty, req),
-  "https://request-origin.example",
+  publicApiUrlForRequest(publicOnly),
+  "https://api.murmur.example/v1",
 );
 
 assert.throws(

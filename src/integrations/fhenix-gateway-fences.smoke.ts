@@ -81,6 +81,8 @@ function seedAttempt(
       utype: 3,
       signature: "0x00",
     }),
+    binary_index_ct_hash: null,
+    confidence_ct_hash: null,
     next_attempt_at: ts,
     created_at: ts,
     updated_at: ts,

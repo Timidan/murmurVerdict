@@ -37,6 +37,10 @@ export interface FhenixGatewayFeedPacketTxAttemptInsert {
   reveal_after: string;
   action_input_json: string;
   signal_input_json: string;
+  /** Normalized at reservation so the encrypted-input reuse guard can see
+   *  queued attempts, not only broadcast ones. Null only on legacy rows. */
+  action_ct_hash: string | null;
+  signal_ct_hash: string | null;
   /** murmur-idem-v1 hash of the reserving request's body, checked on every client_order_id
    *  duplicate. NULL on legacy rows. */
   request_fingerprint: string | null;
@@ -52,8 +56,6 @@ export interface FhenixGatewayFeedPacketTxAttemptRow extends FhenixGatewayFeedPa
   submit_log_index: number | null;
   submit_block_number: number | null;
   onchain_packet_id: string | null;
-  action_ct_hash: string | null;
-  signal_ct_hash: string | null;
   accepted_at: string | null;
   packet_id: string | null;
   attempt_count: number;
@@ -91,7 +93,8 @@ export const fhenixGatewayFeedPacketTxRepo = {
         feed_id_hash, market_id, market_id_hash, packet_kind, sequence,
         payload_schema, client_order_id, client_nonce, submitted_at,
         delivery_deadline_at, reveal_after, action_input_json,
-        signal_input_json, request_fingerprint, auth_proof,
+        signal_input_json, action_ct_hash, signal_ct_hash,
+        request_fingerprint, auth_proof,
         next_attempt_at, created_at, updated_at)
        VALUES
        (@attempt_id, @status, @runtime_key_id, @runtime_key_policy_hash,
@@ -100,7 +103,8 @@ export const fhenixGatewayFeedPacketTxRepo = {
         @feed_id_hash, @market_id, @market_id_hash, @packet_kind, @sequence,
         @payload_schema, @client_order_id, @client_nonce, @submitted_at,
         @delivery_deadline_at, @reveal_after, @action_input_json,
-        @signal_input_json, @request_fingerprint, @auth_proof,
+        @signal_input_json, @action_ct_hash, @signal_ct_hash,
+        @request_fingerprint, @auth_proof,
         @next_attempt_at, @created_at, @updated_at)`,
     ).run(input);
   },

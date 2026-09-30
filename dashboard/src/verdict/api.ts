@@ -467,6 +467,8 @@ export interface ProviderTermsView {
   schema_version: number;
   /** False when the owner has not set terms — no access is sold. */
   selling: boolean;
+  /** What selling early access technically hands the operator (grant power). */
+  early_access_disclosure?: string;
   price_atoms?: string;
   currency?: string;
   pricing_version?: string;

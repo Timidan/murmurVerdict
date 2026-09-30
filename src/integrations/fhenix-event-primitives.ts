@@ -51,7 +51,9 @@ export type ReceiptClient = {
   getChainId: () => Promise<number>;
   getTransactionReceipt: (
     args: { hash: Hex },
-  ) => Promise<{ logs: readonly ReceiptLog[]; from?: Address }>;
+  ) => Promise<{ logs: readonly ReceiptLog[]; from?: Address; blockNumber?: bigint }>;
+  /** Required for confirmation-depth checks; viem's PublicClient provides it. */
+  getBlockNumber: () => Promise<bigint>;
 };
 
 export type FhenixVerificationErrorKind =

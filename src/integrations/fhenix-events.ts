@@ -75,6 +75,10 @@ export interface ViemFhenixEventVerifierConfig {
   contractAddress?: string;
   contractAddresses?: string[];
   client?: ReceiptClient;
+  /** Blocks a receipt must be buried under before it verifies (audit F-7:
+   *  the admin ingest path verified at head, so an operator could attach a
+   *  reveal that later reorged out). 0 disables the depth check. */
+  confirmations?: number;
 }
 
 export interface FhenixEventVerifierConfigOptions {
@@ -85,6 +89,7 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
   private readonly client: ReceiptClient;
   private readonly chainId: number | null;
   private readonly allowedContracts: Set<string>;
+  private readonly confirmations: number;
 
   constructor(config: ViemFhenixEventVerifierConfig) {
     if (!config.client && config.rpcUrl.trim().length === 0) {
@@ -106,6 +111,7 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
       (createPublicClient({
         transport: http(config.rpcUrl),
       }) as unknown as ReceiptClient);
+    this.confirmations = config.confirmations ?? 0;
   }
 
   async verifySealedCallSubmitted(
@@ -287,7 +293,7 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
     log_index: number;
     contract_address: string;
   }): Promise<{ log: ReceiptLog; sender: string | null }> {
-    let receipt: { logs: readonly ReceiptLog[]; from?: Address };
+    let receipt: { logs: readonly ReceiptLog[]; from?: Address; blockNumber?: bigint };
     try {
       receipt = await this.client.getTransactionReceipt({ hash: input.tx_hash as Hex });
     } catch (err) {
@@ -296,6 +302,35 @@ export class ViemFhenixEventVerifier implements FhenixEventVerifier {
         "rpc_failure",
         { tx_hash: input.tx_hash, error: errorMessage(err) },
       );
+    }
+    // The watcher only ingests `latest - confirmations`; this path (admin
+    // ingest included) must not verify shallower, or a reveal attached here
+    // can reorg out from under the record it settled.
+    if (this.confirmations > 0 && receipt.blockNumber !== undefined) {
+      let head: bigint;
+      try {
+        head = await this.client.getBlockNumber();
+      } catch (err) {
+        throw new FhenixEventVerificationError(
+          "failed to read Fhenix chain head for confirmation depth",
+          "rpc_failure",
+          { tx_hash: input.tx_hash, error: errorMessage(err) },
+        );
+      }
+      // Same boundary as the watcher's safeHead = latest - confirmations:
+      // a block the watcher would not scan yet must not verify here either.
+      if (head - receipt.blockNumber < BigInt(this.confirmations)) {
+        throw new FhenixEventVerificationError(
+          "Fhenix transaction is not yet buried under the required confirmations",
+          "rpc_failure",
+          {
+            tx_hash: input.tx_hash,
+            block_number: receipt.blockNumber.toString(),
+            head: head.toString(),
+            required_confirmations: this.confirmations,
+          },
+        );
+      }
     }
     const log = receipt.logs.find((candidate) => candidate.logIndex === input.log_index);
     if (!log) {
@@ -353,7 +388,27 @@ export function loadFhenixEventVerifierConfig(
       { FHENIX_CHAIN_ID: String(chainId) },
     );
   }
-  return { rpcUrl, chainId, contractAddress };
+  return {
+    rpcUrl,
+    chainId,
+    contractAddress,
+    confirmations: parseVerifierConfirmations(env.FHENIX_EVENT_CONFIRMATIONS),
+  };
+}
+
+/** Same knob the watcher scans behind; the verifier must not be shallower. */
+function parseVerifierConfirmations(raw: string | undefined): number {
+  const trimmed = raw?.trim();
+  if (!trimmed) return 2;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new FhenixEventVerificationError(
+      "FHENIX_EVENT_CONFIRMATIONS must be a non-negative integer",
+      "not_configured",
+      { FHENIX_EVENT_CONFIRMATIONS: trimmed },
+    );
+  }
+  return parsed;
 }
 
 export function createFhenixEventVerifierFromEnv(

@@ -280,6 +280,21 @@ export class FhenixEventIngestor {
         const from = Math.max(this.startBlock, (cursor ?? this.startBlock - 1) + 1);
         if (from > safeHead) {
           reachedHead = true;
+          // Nothing new to scan, but the watcher DID look: refresh the
+          // head-sync watermark so pending reveals keep reading as "checked"
+          // on a quiet chain instead of going stale-unknown. ONLY when the
+          // cursor sits exactly at the safe head — a cursor AHEAD of it means
+          // this RPC's view is behind (stale endpoint, failover), and stamping
+          // "covered" off a lagging head would fabricate coverage the chain's
+          // real tip may contradict (fix-review issue 3 on audit F-3).
+          if (cursor !== null && cursor === safeHead) {
+            fhenixEventsRepo.touchHeadSynced(this.db, {
+              chain_id: this.chainId,
+              contract_address: this.contractAddress,
+              event_name: eventName,
+              head_synced_at: nowIso(this.now()),
+            });
+          }
           if (cursor !== null && cursor > safeHead) {
             this.log(
               `[fhenix-watcher] ${eventName} cursor ${cursor} is ahead of safe head ${safeHead}; no-op this tick`,
@@ -319,12 +334,16 @@ export class FhenixEventIngestor {
           }
         }
 
+        const cursorWrittenAt = nowIso(this.now());
         fhenixEventsRepo.setCursor(this.db, {
           chain_id: this.chainId,
           contract_address: this.contractAddress,
           event_name: eventName,
           last_block_number: to,
-          updated_at: nowIso(this.now()),
+          updated_at: cursorWrittenAt,
+          // Only a batch that reaches the safe head proves the scan covered
+          // everything up to now; mid-catch-up batches must not claim it.
+          head_synced_at: to >= safeHead ? cursorWrittenAt : null,
         });
         indexed += logs.length;
         batches += 1;

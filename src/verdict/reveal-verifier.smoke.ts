@@ -1,10 +1,16 @@
 import { strict as assert } from "node:assert";
 
-import { decideReveal, WATCHER_STALE_MS } from "./reveal-verifier.js";
+import {
+  decideReveal,
+  HEAD_SYNC_HORIZON_MARGIN_MS,
+  WATCHER_STALE_MS,
+} from "./reveal-verifier.js";
 
-// A stalled watcher must never turn a delivered call into a refund. "Pending"
-// is an answer only once the reveal ingestor has looked past the horizon and
-// is still alive; otherwise it is "unobserved", which settles nothing.
+// A stalled OR catching-up watcher must never turn a delivered call into a
+// refund. "Pending" is an answer only once the reveal ingestor has completed
+// a scan to the safe head after the horizon (head_synced_at) and is still
+// alive; a fresh-but-mid-catch-up cursor is "unobserved" and settles nothing
+// (audit F-3).
 process.stdout.write("murmur reveal verifier smoke\n");
 
 const HORIZON = "2026-09-13T12:00:00.000Z";
@@ -21,12 +27,17 @@ assert.equal(
 assert.equal(decideReveal({ ...pending, reveal_status: "invalid" }, iso(NOW), NOW), false);
 assert.equal(decideReveal({ ...pending, reveal_status: "missed" }, iso(NOW), NOW), false);
 
-// The four pending cases.
-assert.equal(decideReveal(pending, null, NOW), null, "watcher never ran");
+// The pending cases.
+assert.equal(decideReveal(pending, null, NOW), null, "watcher never completed a head scan");
 assert.equal(
   decideReveal(pending, iso(Date.parse(HORIZON) - 1), NOW),
   null,
-  "watcher has not looked since the horizon opened",
+  "last head-complete scan predates the horizon",
+);
+assert.equal(
+  decideReveal(pending, iso(Date.parse(HORIZON) + HEAD_SYNC_HORIZON_MARGIN_MS - 1), NOW),
+  null,
+  "a head scan inside the confirmation margin cannot prove the horizon block was covered",
 );
 assert.equal(
   decideReveal(pending, iso(NOW - WATCHER_STALE_MS - 1), NOW),
@@ -36,7 +47,7 @@ assert.equal(
 assert.equal(
   decideReveal(pending, iso(NOW - 60_000), NOW),
   false,
-  "watcher scanned past the horizon a minute ago and found nothing: genuinely unrevealed",
+  "watcher finished a head scan past the horizon a minute ago and found nothing: genuinely unrevealed",
 );
 
 process.stdout.write("OK reveal verifier smoke\n");

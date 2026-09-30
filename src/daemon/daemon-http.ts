@@ -101,9 +101,18 @@ export function createDaemonHttpSurface(
   // this explicit prevents callers from rotating forged IPs around rate limits.
   app.set("trust proxy", deps.config.trustProxyHops || false);
 
+  // Baseline response hardening for every surface this daemon serves,
+  // JSON and HTML alike (audit F-5). Content-specific CSP is set where
+  // HTML is rendered (share pages).
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    next();
+  });
+
   if (deps.config.dashboardCors.kind === "any") {
     app.use(cors());
-  } else {
+  } else if (deps.config.dashboardCors.kind === "allowlist") {
     app.use(
       cors({
         origin: deps.config.dashboardCors.origins,
@@ -111,6 +120,8 @@ export function createDaemonHttpSurface(
       }),
     );
   }
+  // kind === "none": no CORS middleware at all — browsers on foreign origins
+  // get no Access-Control-Allow-Origin and can read nothing (audit F-11).
 
   // Mount the inbound Privy transfer receiver FIRST: it installs a route-scoped
   // raw-body parser on POST /v1/privy/webhooks so the svix signature verifies

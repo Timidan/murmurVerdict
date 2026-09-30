@@ -56,6 +56,7 @@ contract MurmurEscrow {
     error WrongProposalKind();
     error HookNotPaused();
     error HookHasNoCode();
+    error NotPendingOwner();
 
     // ─── Constants ─────────────────────────────────────────────────────────
 
@@ -106,6 +107,7 @@ contract MurmurEscrow {
 
     IERC20 public immutable USDC;
     address public owner;
+    address public pendingOwner;
     address public protocolFeeSink;
     uint16 public protocolFeeBps;
     bool public paused;
@@ -132,6 +134,9 @@ contract MurmurEscrow {
         // Audit M-2: snapshotted at request time; finalize uses this value
         // so owner cannot change fee bps mid-flight.
         uint16 protocolFeeBps;
+        // Audit F-8: sink snapshotted like the fee, so a compromised owner
+        // cannot redirect already-funded requests' fees to a new address.
+        address protocolFeeSink;
     }
 
     /// pipelineId => Pipeline
@@ -183,6 +188,7 @@ contract MurmurEscrow {
     // ─── Events ────────────────────────────────────────────────────────────
 
     event OwnerTransferred(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event PipelineCreated(
         bytes32 indexed pipelineId,
         address indexed agentOwner,
@@ -368,7 +374,8 @@ contract MurmurEscrow {
             state: RequestState.Pending,
             // Audit M-2: snapshot fee bps; subsequent setProtocolFeeBps
             // calls do not affect this request.
-            protocolFeeBps: protocolFeeBps
+            protocolFeeBps: protocolFeeBps,
+            protocolFeeSink: protocolFeeSink
         });
 
         emit InferenceRequested(
@@ -419,13 +426,13 @@ contract MurmurEscrow {
             revert CommitMismatch();
         }
 
-        // Audit M-2: use the snapshotted fee, NOT live storage.
+        // Audit M-2 / F-8: use the snapshotted fee AND sink, NOT live storage.
         uint96 fee = uint96((uint256(r.paidAmount) * r.protocolFeeBps) / 10_000);
         uint96 agentPayout = r.paidAmount - fee;
         r.state = RequestState.Finalized;
 
         if (fee > 0) {
-            if (!USDC.transfer(protocolFeeSink, fee)) revert UsdcReturnFailed();
+            if (!USDC.transfer(r.protocolFeeSink, fee)) revert UsdcReturnFailed();
         }
         if (!USDC.transfer(p.agentOwner, agentPayout)) revert UsdcReturnFailed();
 
@@ -442,18 +449,23 @@ contract MurmurEscrow {
         emit InferenceRefunded(requestId, r.buyer, r.paidAmount);
     }
 
-    /// @notice Owner-gated recovery for Committed requests whose agent never
-    ///         produced a valid reveal. Pre-fix, buyer funds for such
-    ///         requests were stuck forever — refund/cancel require Pending,
-    ///         finalize requires a matching reveal. After
+    /// @notice Recovery for Committed requests whose agent never produced a
+    ///         valid reveal. Pre-fix, buyer funds for such requests were
+    ///         stuck forever — refund/cancel require Pending, finalize
+    ///         requires a matching reveal. After
     ///         COMMITTED_REFUND_GRACE_HOURS beyond the finalize-open time,
-    ///         the owner can refund the buyer; the agent's commit is dropped.
-    /// @dev    Audit M-1. Owner-gated (not permissionless) so a third party
-    ///         cannot race a slow but legitimate finalize. Grace = horizon +
-    ///         7 days; comfortably outside any reasonable reveal tail.
-    function forceRefundCommitted(bytes32 requestId) external onlyOwner nonReentrant {
+    ///         the BUYER or the owner can refund; the agent's commit drops.
+    /// @dev    Audit M-1 introduced the owner path; audit F-4 opened it to
+    ///         the buyer, because "recoverable only if the owner shows up"
+    ///         is a trust dependency on the operator that the buyer never
+    ///         priced in. Still not permissionless: a third party racing a
+    ///         slow but legitimate finalize gains nothing, and the buyer
+    ///         racing it only recovers their own principal instead of the
+    ///         signal they paid for.
+    function forceRefundCommitted(bytes32 requestId) external nonReentrant {
         InferenceRequest storage r = requests[requestId];
         if (r.state != RequestState.Committed) revert WrongState();
+        if (msg.sender != owner && msg.sender != r.buyer) revert UnauthorizedCaller();
         Pipeline storage p = pipelines[r.pipelineId];
         uint64 graceOpenAt = r.committedAt
             + uint64(p.horizonHours) * 3600
@@ -553,7 +565,8 @@ contract MurmurEscrow {
             marketDataCutoff: bytes32(0),
             committedAt: 0,
             state: RequestState.Pending,
-            protocolFeeBps: protocolFeeBps
+            protocolFeeBps: protocolFeeBps,
+            protocolFeeSink: protocolFeeSink
         });
 
         emit InferenceRequested(requestId, pipelineId, buyer, p.priceUsdc, nowTs + p.slaSeconds);
@@ -808,12 +821,22 @@ contract MurmurEscrow {
     /// @dev Audit L-5: zero-address checked. Re-audit Low: also reject
     ///      `address(this)` because the contract has no self-call admin
     ///      surface, so transferring to itself would brick every onlyOwner
-    ///      path permanently.
+    ///      path permanently. Audit F-8: two-step, matching
+    ///      MurmurSealedVerdicts — a typoed transfer on the money contract
+    ///      must be recoverable, not final.
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
         if (newOwner == address(this)) revert ZeroAddress();
-        emit OwnerTransferred(owner, newOwner);
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address previousOwner = owner;
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnerTransferred(previousOwner, msg.sender);
     }
 
     function setProtocolFeeBps(uint16 newBps) external onlyOwner {

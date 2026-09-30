@@ -1,5 +1,3 @@
-import type { Request } from "express";
-
 export const DEFAULT_LOCAL_PUBLIC_ORIGIN = "http://localhost:8080";
 
 export interface MurmurPublicOrigin {
@@ -32,11 +30,16 @@ export function loadMurmurPublicOrigin(
   };
 }
 
+/**
+ * Never derives from the request: a Host-header fallback let an attacker
+ * poison cached /embed.js and OG URLs (audit F-12). Unset config now yields
+ * the documented localhost default — wrong-but-honest links that tell the
+ * operator to set MURMUR_PUBLIC_URL, instead of reflecting attacker input.
+ */
 export function publicApiUrlForRequest(
   origin: MurmurPublicOrigin,
-  req: Request,
 ): string {
-  return origin.publicApiUrl ?? requestOrigin(req);
+  return publicApiBaseUrl(origin);
 }
 
 export function publicApiBaseUrl(
@@ -63,10 +66,6 @@ export function dashboardWebOrigin(
   } catch {
     return "";
   }
-}
-
-function requestOrigin(req: Request): string {
-  return `${req.protocol}://${req.get("host")}`.replace(/\/$/, "");
 }
 
 function normalizeConfiguredUrl(

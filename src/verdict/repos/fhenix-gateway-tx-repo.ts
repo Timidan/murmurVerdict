@@ -31,6 +31,10 @@ export interface FhenixGatewayTxAttemptInsert {
   strategy_tag: string | null;
   binary_index_input_json: string;
   confidence_input_json: string;
+  /** Normalized at reservation so the encrypted-input reuse guard can see
+   *  queued attempts, not only broadcast ones. Null only on legacy rows. */
+  binary_index_ct_hash: string | null;
+  confidence_ct_hash: string | null;
   /** murmur-idem-v1 hash of the reserving request's body, checked on every client_order_id
    *  duplicate. NULL on legacy rows. */
   request_fingerprint: string | null;
@@ -46,8 +50,6 @@ export interface FhenixGatewayTxAttemptRow extends FhenixGatewayTxAttemptInsert 
   submit_log_index: number | null;
   submit_block_number: number | null;
   onchain_call_id: string | null;
-  binary_index_ct_hash: string | null;
-  confidence_ct_hash: string | null;
   accepted_at: string | null;
   reveal_open_at: string | null;
   submission_class: number | null;
@@ -87,6 +89,7 @@ export const fhenixGatewayTxRepo = {
         market_id, market_id_hash, market_ref_protocol, market_config_version,
         client_order_id, client_nonce, submitted_at, rationale, strategy_tag,
         binary_index_input_json, confidence_input_json,
+        binary_index_ct_hash, confidence_ct_hash,
         request_fingerprint, auth_proof,
         next_attempt_at, created_at, updated_at)
        VALUES
@@ -96,6 +99,7 @@ export const fhenixGatewayTxRepo = {
         @market_id, @market_id_hash, @market_ref_protocol, @market_config_version,
         @client_order_id, @client_nonce, @submitted_at, @rationale, @strategy_tag,
         @binary_index_input_json, @confidence_input_json,
+        @binary_index_ct_hash, @confidence_ct_hash,
         @request_fingerprint, @auth_proof,
         @next_attempt_at, @created_at, @updated_at)`,
     ).run(input);
