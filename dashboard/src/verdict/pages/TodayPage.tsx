@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { verdictApi, type TodayFeed, type TodayFeedRow } from "../api.js";
 import { Ik, IkNav } from "../icons.js";
+import { MMark } from "../components/MMark.js";
 import { useDetailDrawer, isPlainLeftClick } from "../components/compact/DetailDrawer.js";
 import { useStream } from "../hooks/useStream.js";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
@@ -25,7 +26,7 @@ import { formatScore } from "../lib/score-format.js";
  */
 const titlePending = (live: boolean) => (
   <>
-    <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> recent open calls
+    <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> Recent open calls
   </>
 );
 /* Every panel is the last 24h now: the feed builder bounds all three lists by
@@ -35,7 +36,7 @@ const titlePending = (live: boolean) => (
    which settle without earning a score. */
 const TITLE_RESOLVED = (
   <>
-    <Ik name="resolve" /> recent outcomes
+    <Ik name="resolve" /> Recent outcomes
   </>
 );
 /** The rows on screen, against the window they came from. `total` is the 24h
@@ -48,7 +49,7 @@ const shownMeta = (shown: number, total?: number) => (
 );
 const TITLE_ACCEPTED = (
   <>
-    <IkNav name="confirm-live" /> sealed · recent
+    <IkNav name="confirm-live" /> Sealed · recent
   </>
 );
 
@@ -99,8 +100,16 @@ export function TodayPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamKey, live]);
 
+  // A feed with nothing in any of its three lists gets the mark instead of
+  // three empty panels in a row.
+  const allEmpty =
+    feed !== null &&
+    feed.pending_resolution.length === 0 &&
+    feed.resolved_recent.length === 0 &&
+    feed.accepted_recent.length === 0;
+
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="flex-1 flex flex-col">
       <TopbarCrumb><span className="inline-flex items-center gap-1.5">
             <Ik name="feed" /> <span className="sr-only">feed </span>recent
           </span></TopbarCrumb>
@@ -111,54 +120,60 @@ export function TodayPage() {
         </div>
       )}
 
-      {!error && !feed && (
-        <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 min-h-0">
-          <Panel title={titlePending(live)} className="lg:border-r-0">
-            <PanelSkeleton rows={6} />
-          </Panel>
-          <Panel title={TITLE_RESOLVED} className="lg:border-r-0">
-            <PanelSkeleton rows={6} />
-          </Panel>
-          <Panel title={TITLE_ACCEPTED}>
-            <PanelSkeleton rows={6} />
-          </Panel>
-        </main>
-      )}
+      <div className="ck-page flex-1 flex flex-col pt-2">
+        {!error && !feed && (
+          <main className="grid grid-cols-1 gap-y-6">
+            <Panel title={titlePending(live)}>
+              <PanelSkeleton rows={6} />
+            </Panel>
+            <Panel title={TITLE_RESOLVED}>
+              <PanelSkeleton rows={6} />
+            </Panel>
+            <Panel title={TITLE_ACCEPTED}>
+              <PanelSkeleton rows={6} />
+            </Panel>
+          </main>
+        )}
 
-      {feed && (
-        <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 min-h-0">
-          <Panel
-            title={titlePending(live)}
-            meta={shownMeta(feed.pending_resolution.length)}
-            className="lg:border-r-0"
-          >
-            <FeedRows
-              rows={feed.pending_resolution}
-              variant="open"
-              emptyLabel="[no open calls — sealed calls waiting to resolve appear here]"
-            />
-          </Panel>
-          <Panel
-            title={TITLE_RESOLVED}
-            meta={shownMeta(feed.resolved_recent.length, feed.totals.resolved_24h)}
-            className="lg:border-r-0"
-          >
-            <FeedRows
-              rows={feed.resolved_recent}
-              variant="scored"
-              emptyLabel="[no outcomes yet — resolved calls appear here]"
-            />
-          </Panel>
-          <Panel title={TITLE_ACCEPTED} meta={shownMeta(feed.accepted_recent.length, feed.totals.accepted_24h)}>
-            <FeedRows
-              rows={feed.accepted_recent}
-              variant="sealed"
-              emptyLabel="[no sealed calls yet — new calls appear here]"
-            />
-          </Panel>
-        </main>
-      )}
-
+        {feed && (
+          <>
+            {allEmpty && (
+              <div className="flex justify-center py-8">
+                <MMark size={96} decorative className="ck-dim" />
+              </div>
+            )}
+            <main className="grid grid-cols-1 gap-y-6">
+              <Panel
+                title={titlePending(live)}
+                meta={shownMeta(feed.pending_resolution.length)}
+              >
+                <FeedRows
+                  rows={feed.pending_resolution}
+                  variant="open"
+                  emptyLabel="No open calls — sealed calls waiting to resolve appear here"
+                />
+              </Panel>
+              <Panel
+                title={TITLE_RESOLVED}
+                meta={shownMeta(feed.resolved_recent.length, feed.totals.resolved_24h)}
+              >
+                <FeedRows
+                  rows={feed.resolved_recent}
+                  variant="scored"
+                  emptyLabel="No outcomes yet — resolved calls appear here"
+                />
+              </Panel>
+              <Panel title={TITLE_ACCEPTED} meta={shownMeta(feed.accepted_recent.length, feed.totals.accepted_24h)}>
+                <FeedRows
+                  rows={feed.accepted_recent}
+                  variant="sealed"
+                  emptyLabel="No sealed calls yet — new calls appear here"
+                />
+              </Panel>
+            </main>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -190,7 +205,7 @@ function FeedRows({
   const scored = variant === "scored";
   const { open } = useDetailDrawer();
   if (rows.length === 0) {
-    return <div className="px-2 py-3 ck-mono ck-dim leading-tight">{emptyLabel}</div>;
+    return <div className="px-2 py-3 ck-mono ck-empty leading-tight">{emptyLabel}</div>;
   }
   return (
     <ul className="m-0 p-0 list-none">

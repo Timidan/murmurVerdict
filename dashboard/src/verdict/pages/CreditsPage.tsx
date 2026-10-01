@@ -18,9 +18,9 @@ export function CreditsPage() {
       <h1 className="sr-only">murmur credits</h1>
 
       <main className="flex-1 min-h-0 overflow-auto">
-        <Panel title="credits">
+        <Panel title="Credits">
           <div className="px-3 py-3 flex flex-col gap-4 max-w-[72ch] ck-mono leading-relaxed">
-            <Section title="icons">
+            <Section title="Icons">
               Some interface icons come from the Sharp Line and Sharp Solid sets by{" "}
               <a href="https://streamlinehq.com" target="_blank" rel="noreferrer" className={LINK}>
                 Streamline
@@ -37,7 +37,7 @@ export function CreditsPage() {
               .
             </Section>
 
-            <Section title="photograph">
+            <Section title="Photograph">
               The landing background is{" "}
               <a href="https://www.rawpixel.com/image/3302653/free-photo-image-asphalt-bridge-building" target="_blank" rel="noreferrer" className={LINK}>
                 Red white car light trails
@@ -49,7 +49,7 @@ export function CreditsPage() {
               .
             </Section>
 
-            <Section title="typefaces">
+            <Section title="Typefaces">
               murmur is set in Doto, Space Grotesk and Space Mono, all under the{" "}
               <a href="https://openfontlicense.org" target="_blank" rel="noreferrer" className={LINK}>
                 SIL Open Font License 1.1
@@ -60,7 +60,7 @@ export function CreditsPage() {
               <a href="/fonts/space-mono-OFL.txt" target="_blank" rel="noreferrer" className={LINK}>Space Mono</a>.
             </Section>
 
-            <Section title="open-source software">
+            <Section title="Open-source software">
               This site includes open-source packages. Their licence texts are in{" "}
               <a href="/third-party-licenses.txt" target="_blank" rel="noreferrer" className={LINK}>
                 third-party-licenses.txt

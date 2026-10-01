@@ -9,7 +9,7 @@ import { IkNav } from "../../icons.js";
 import { InlineError } from "../compact/InlineError.js";
 import { TimeAgo } from "../compact/TimeAgo.js";
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 5;
 
 export function ActivityPanel() {
   const [rows, setRows] = useState<AccountActivityRow[]>([]);

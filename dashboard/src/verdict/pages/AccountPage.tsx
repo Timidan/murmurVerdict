@@ -89,7 +89,7 @@ export function AccountPage() {
         <section className="ck-frame md:col-span-6">
           <div className="ck-header">
             <span className="ck-title ck-title-ik">
-              <IkNav name="agent" /> your agents
+              <IkNav name="agent" /> Your agents
             </span>
             <span className="flex items-center gap-3">
               <span className="ck-mono ck-dim">
@@ -145,7 +145,7 @@ export function AccountPage() {
         <section className="ck-frame md:col-span-3 mmr-safety">
           <div className="ck-header">
             <span className="ck-title ck-title-ik">
-              <Ik name="kill-switch" /> safety
+              <Ik name="kill-switch" /> Safety
             </span>
           </div>
           <KillSwitchPanel />

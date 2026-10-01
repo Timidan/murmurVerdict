@@ -17,6 +17,7 @@ import {
   type MarketWindowGroup as WindowGroup,
   type MarketWindowPhase,
 } from "../../lib/market-windows.js";
+import { sentenceCase } from "../../lib/display-format.js";
 import { MarketAssetIcon } from "./MarketAssetIcon.js";
 
 /**
@@ -68,8 +69,8 @@ export function MarketWindowGroupPanel({
       aria-label={`${rangeLabel ?? "window"} — ${phaseText}`}
       className="border-b border-[var(--color-border-vis)]"
     >
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 bg-[var(--color-surface)]">
-        <h3 className="ck-mono ck-pos font-bold m-0">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1">
+        <h3 className="ck-colhead m-0">
           {/* A range needs two <time> stamps. */}
           <time
             dateTime={new Date(group.submissionCloseAtMs).toISOString()}
@@ -85,11 +86,12 @@ export function MarketWindowGroupPanel({
             {formatLocalTimeLabel(group.resolutionAtMs) ?? "—"}
           </time>
         </h3>
+        {/* No box: the phase is a label. Taking-calls keeps the LED, which the
+            ck-badge-live rule draws on its own. */}
         <span
           className={
-            "ck-badge " +
-            PHASE_TONE[phase] +
-            (phase === "open" ? " ck-badge-live" : "")
+            "ck-colhead inline-flex items-center " +
+            (phase === "open" ? "ck-badge-live" : "")
           }
         >
           {phaseText}
@@ -97,7 +99,7 @@ export function MarketWindowGroupPanel({
         <span className="ml-auto flex items-center gap-3">
           {showCountdown && target !== null && countdownLabel !== null && (
             <span className="flex items-center gap-1.5">
-              <span className="ck-label">{countdownLabel}</span>
+              <span className="ck-label">{sentenceCase(countdownLabel)}</span>
               {/* No aria-live: it ticks every second. MarketsGrid's status region speaks. */}
               <span className="ck-mono tabular-nums ck-pos">
                 {formatCountdown(target - nowMs)}
@@ -155,7 +157,13 @@ function MarketWindowRow({
   const displayName = marketDisplayName(market);
 
   return (
-    <li className="border-b border-[var(--color-border)] last:border-b-0">
+    <li
+      className={
+        "border-b border-[var(--color-border)] last:border-b-0 " +
+        // A window that has not opened is inert; one ink says so.
+        (phase === "upcoming" ? "ck-row-off" : "")
+      }
+    >
       <a
         href={`#/markets/${encodeURIComponent(market.market_id)}`}
         onClick={(e) => {
@@ -175,11 +183,7 @@ function MarketWindowRow({
       >
         <MarketAssetIcon iconUrl={cfg?.icon_url} symbol={symbol} />
         {/* Symbol, else the question; the id only as a last resort. */}
-        <span
-          className={
-            "ck-mono font-bold " + (symbol ? "flex-none" : "truncate min-w-0")
-          }
-        >
+        <span className={"ck-mono " + (symbol ? "flex-none" : "truncate min-w-0")}>
           {symbol ??
             (displayName === market.market_id
               ? shortMarketId(market.market_id)
@@ -246,7 +250,7 @@ function LiveQuotes({
   return (
     <span className="flex items-center gap-2 min-w-0">
       {venue.freshness === "stale" && (
-        <span className="ck-badge ck-dim" title="these prices have stopped updating">stale</span>
+        <span className="ck-badge ck-dim" title="these prices have stopped updating">Stale</span>
       )}
       {venue.outcomes.map((outcome) => (
         <span
@@ -317,20 +321,13 @@ export function windowPhaseText(
   phase: MarketWindowPhase,
   venueConfirmed: boolean,
 ): string {
-  if (phase === "resolved" && !venueConfirmed) return "waiting for the venue";
+  if (phase === "resolved" && !venueConfirmed) return "Waiting for the venue";
   return PHASE_TEXT[phase];
 }
 
 export const PHASE_TEXT: Record<MarketWindowPhase, string> = {
-  upcoming: "upcoming",
-  open: "taking calls",
-  sealed: "sealed",
-  resolved: "resolved",
-};
-
-const PHASE_TONE: Record<MarketWindowPhase, string> = {
-  upcoming: "ck-dim",
-  open: "ck-pos",
-  sealed: "",
-  resolved: "ck-dim",
+  upcoming: "Upcoming",
+  open: "Taking calls",
+  sealed: "Sealed",
+  resolved: "Resolved",
 };

@@ -81,7 +81,7 @@ export function AgentDangerZone({
     <details className="ck-frame mmr-danger w-full" open={retired}>
       <summary className="ck-header mmr-danger-summary">
         <span className="ck-title ck-title-ik">
-          <Ik name="revoke" /> retire this agent
+          <Ik name="revoke" /> Retire this agent
         </span>
         <span className="flex items-center gap-2">
           <span className={"ck-mono " + (retired ? "ck-neg" : "ck-dim")}>
@@ -164,7 +164,7 @@ export function AgentDangerZone({
     </details>
     <details className="ck-frame mmr-danger w-full">
       <summary className="ck-header mmr-danger-summary">
-        <span className="ck-title ck-title-ik"><Ik name="revoke" /> permanently delete agent</span>
+        <span className="ck-title ck-title-ik"><Ik name="revoke" /> Permanently delete agent</span>
         <span className="ck-mono ck-dim">no undo <span className="mmr-disclosure-marker" aria-hidden="true" /></span>
       </summary>
       <form className="px-3 py-3 flex flex-col items-start gap-3" onSubmit={(e) => {
@@ -176,7 +176,7 @@ export function AgentDangerZone({
           Existing calls, public history, purchases, and earnings records remain.
           Other agents are unaffected. This cannot be undone, and this handle cannot be reused.
         </p>
-        <label htmlFor={`delete-agent-${slug}`} className="ck-label">type {slug} to confirm</label>
+        <label htmlFor={`delete-agent-${slug}`} className="ck-label">Type {slug} to confirm</label>
         <input id={`delete-agent-${slug}`} value={deleteInput}
           onChange={(e) => setDeleteInput(e.currentTarget.value)} disabled={busy}
           autoComplete="off" autoCapitalize="off" spellCheck={false}

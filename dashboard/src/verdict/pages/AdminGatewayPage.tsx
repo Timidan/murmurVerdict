@@ -24,6 +24,7 @@ import { InlineError } from "../components/compact/InlineError.js";
 import { formatScore } from "../lib/score-format.js";
 import { formatLocalDateTimeShort } from "../lib/date-time-format.js";
 import { LogoLoader } from "../components/LogoLoader.js";
+import { sentenceCase } from "../lib/display-format.js";
 
 const STATUSES: GatewayAttemptStatus[] = [
   "queued",
@@ -192,7 +193,7 @@ export function AdminGatewayPage() {
 
       {/* CONTROL STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-2 flex items-center justify-between gap-3 flex-wrap">
-        <span className="ck-title">relayer control plane</span>
+        <span className="ck-title">Relayer control plane</span>
         <div className="flex items-center gap-3 flex-wrap">
           <a href="#/admin/overview" className="ck-btn ck-btn-bracket no-underline">← overview</a>
           <button
@@ -240,7 +241,7 @@ export function AdminGatewayPage() {
             <FeedSlaPanel response={feedSla} busy={busy} onRunTick={runSlaTick} />
 
             <Panel
-              title="attempts"
+              title="Attempts"
               meta={`${snapshot.recent_attempts.length}`}
               actions={
                 <select
@@ -260,7 +261,7 @@ export function AdminGatewayPage() {
               />
             </Panel>
 
-            <Panel title="feed attempts" meta={`${snapshot.feed_recent_attempts.length}`}>
+            <Panel title="Feed attempts" meta={`${snapshot.feed_recent_attempts.length}`}>
               <FeedAttemptTable
                 rows={snapshot.feed_recent_attempts}
                 busy={busy}
@@ -268,21 +269,21 @@ export function AdminGatewayPage() {
               />
             </Panel>
 
-            <Panel title="stuck" meta={`${snapshot.stuck_attempts.length}`}>
+            <Panel title="Stuck" meta={`${snapshot.stuck_attempts.length}`}>
               <AttemptTable
                 rows={snapshot.stuck_attempts}
                 busy={busy}
                 onRetry={retry}
-                empty="no stuck submitted or confirmed attempts"
+                empty="No stuck submitted or confirmed attempts"
               />
             </Panel>
 
-            <Panel title="stuck feeds" meta={`${snapshot.feed_stuck_attempts.length}`}>
+            <Panel title="Stuck feeds" meta={`${snapshot.feed_stuck_attempts.length}`}>
               <FeedAttemptTable
                 rows={snapshot.feed_stuck_attempts}
                 busy={busy}
                 onRetry={retry}
-                empty="no stuck submitted or confirmed feed attempts"
+                empty="No stuck submitted or confirmed feed attempts"
               />
             </Panel>
           </div>
@@ -305,7 +306,7 @@ function OperatorAlertsPanel({
   const counts = snapshot?.counts.open;
   return (
     <Panel
-      title="operator alerts"
+      title="Operator alerts"
       meta={`sink ${snapshot?.sink_configured ? "configured" : "local only"}`}
       actions={
         <button className="ck-btn ck-btn-bracket" onClick={onRunTick} disabled={busy !== null}>
@@ -328,7 +329,7 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
   if (rows.length === 0) {
     return (
       <div className="px-3 py-8 ck-mono ck-dim">
-        no open operator alerts
+        No open operator alerts
       </div>
     );
   }
@@ -336,12 +337,12 @@ function OperatorAlertTable({ rows }: { rows: OperatorAlert[] }) {
     <div className="overflow-x-auto">
       <div className="min-w-[1199px]">
         <div className="grid grid-cols-[110px_209px_170px_1fr_150px_200px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
-          <span>severity</span>
-          <span>source</span>
-          <span>kind</span>
-          <span>alert</span>
-          <span>delivery</span>
-          <span className="text-right">seen</span>
+          <span>Severity</span>
+          <span>Source</span>
+          <span>Kind</span>
+          <span>Alert</span>
+          <span>Delivery</span>
+          <span className="text-right">Seen</span>
         </div>
         <ul className="m-0 p-0 list-none">
           {rows.map((row, i) => (
@@ -388,7 +389,7 @@ function FeedSlaPanel({
   const health = response?.feed_health ?? [];
   return (
     <Panel
-      title="feed SLA incidents"
+      title="Feed SLA incidents"
       actions={
         <button className="ck-btn ck-btn-bracket" onClick={onRunTick} disabled={busy !== null}>
           {busy === "sla" ? "running" : "run sla tick"}
@@ -411,7 +412,7 @@ function FeedHealthTable({ rows }: { rows: FeedAvailabilitySummary[] }) {
   if (rows.length === 0) {
     return (
       <div className="px-3 py-6 ck-mono ck-dim border-b border-[var(--color-border)]">
-        no listed cadence feeds
+        No listed cadence feeds
       </div>
     );
   }
@@ -419,13 +420,13 @@ function FeedHealthTable({ rows }: { rows: FeedAvailabilitySummary[] }) {
     <div className="overflow-x-auto border-b border-[var(--color-border)]">
       <div className="min-w-[1100px]">
         <div className="grid grid-cols-[1fr_120px_110px_120px_130px_200px_130px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
-          <span>feed</span>
-          <span>health</span>
-          <span className="text-right">rel</span>
-          <span className="text-right">missed</span>
-          <span className="text-right">next seq</span>
-          <span>next deadline</span>
-          <span className="text-right">proof</span>
+          <span>Feed</span>
+          <span>Health</span>
+          <span className="text-right">Rel</span>
+          <span className="text-right">Missed</span>
+          <span className="text-right">Next seq</span>
+          <span>Next deadline</span>
+          <span className="text-right">Proof</span>
         </div>
         <ul className="m-0 p-0 list-none">
           {rows.map((row, i) => (
@@ -455,7 +456,7 @@ function IdentityPanel({ snapshot }: { snapshot: ControllerIdentitySnapshot | nu
   const rows = snapshot?.needs_attention ?? [];
   return (
     <Panel
-      title="controller wallets"
+      title="Controller wallets"
       meta={`due by ${snapshot ? shortDate(snapshot.due_soon_at) : "—"}`}
     >
       <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -474,7 +475,7 @@ function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
   if (rows.length === 0) {
     return (
       <div className="px-3 py-8 ck-mono ck-dim">
-        no controller wallets need re-attestation
+        No controller wallets need re-attestation
       </div>
     );
   }
@@ -482,13 +483,13 @@ function IdentityTable({ rows }: { rows: ControllerIdentityRow[] }) {
     <div className="overflow-x-auto">
       <div className="min-w-[1154px]">
         <div className="grid grid-cols-[147px_130px_1fr_147px_200px_90px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
-          <span>status</span>
-          <span>agent</span>
-          <span>wallet</span>
-          <span>kind</span>
-          <span className="text-right">due</span>
-          <span className="text-right">keys</span>
-          <span className="text-right">revoked</span>
+          <span>Status</span>
+          <span>Agent</span>
+          <span>Wallet</span>
+          <span>Kind</span>
+          <span className="text-right">Due</span>
+          <span className="text-right">Keys</span>
+          <span className="text-right">Revoked</span>
         </div>
         <ul className="m-0 p-0 list-none">
           {rows.map((row, i) => (
@@ -534,7 +535,7 @@ function CanaryPanel({
   const disabled = rows.filter((row) => row.status === "disabled").length;
   return (
     <Panel
-      title="live canaries"
+      title="Live canaries"
       actions={
         <button className="ck-btn ck-btn-bracket" onClick={onRunTick} disabled={busy !== null}>
           {busy === "canaries" ? "running" : "run canaries"}
@@ -558,7 +559,7 @@ function RevealLifecyclePanel({ snapshot }: { snapshot: FhenixLifecycleSnapshot 
   const cursors = snapshot?.cursors ?? [];
   return (
     <Panel
-      title="reveal lifecycle"
+      title="Reveal lifecycle"
       meta={`grace ${snapshot?.configured.reveal_grace_seconds ?? "—"}s`}
     >
       <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -583,7 +584,7 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
   if (rows.length === 0) {
     return (
       <div className="px-3 py-8 ck-mono ck-dim">
-        no reveal lifecycle rows need attention
+        No reveal lifecycle rows need attention
       </div>
     );
   }
@@ -591,14 +592,14 @@ function RevealLifecycleTable({ rows }: { rows: FhenixLifecycleRow[] }) {
     <div className="overflow-x-auto">
       <div className="min-w-[1346px]">
         <div className="grid grid-cols-[110px_120px_1fr_200px_110px_188px_1fr_178px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
-          <span>status</span>
-          <span>agent</span>
-          <span>market</span>
-          <span>reveal open</span>
-          <span className="text-right">block</span>
-          <span>resolution</span>
-          <span>reason</span>
-          <span className="text-right">call</span>
+          <span>Status</span>
+          <span>Agent</span>
+          <span>Market</span>
+          <span>Reveal open</span>
+          <span className="text-right">Block</span>
+          <span>Resolution</span>
+          <span>Reason</span>
+          <span className="text-right">Call</span>
         </div>
         <ul className="m-0 p-0 list-none">
           {rows.map((row, i) => (
@@ -639,7 +640,7 @@ function CanaryTable({ rows }: { rows: LiveCanaryCheck[] }) {
   if (rows.length === 0) {
     return (
       <div className="px-3 py-8 ck-mono ck-dim">
-        no canary snapshot
+        No canary snapshot
       </div>
     );
   }
@@ -647,12 +648,12 @@ function CanaryTable({ rows }: { rows: LiveCanaryCheck[] }) {
     <div className="overflow-x-auto">
       <div className="min-w-[1050px]">
         <div className="grid grid-cols-[170px_110px_110px_200px_1fr_190px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
-          <span>check</span>
-          <span>status</span>
-          <span className="text-right">lat</span>
-          <span className="text-right">checked</span>
-          <span>details</span>
-          <span>error</span>
+          <span>Check</span>
+          <span>Status</span>
+          <span className="text-right">Lat</span>
+          <span className="text-right">Checked</span>
+          <span>Details</span>
+          <span>Error</span>
         </div>
         <ul className="m-0 p-0 list-none">
           {rows.map((row, i) => (
@@ -681,7 +682,7 @@ function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
   if (rows.length === 0) {
     return (
       <div className="px-3 py-8 ck-mono ck-dim">
-        no open missed-packet incidents
+        No open missed-packet incidents
       </div>
     );
   }
@@ -689,13 +690,13 @@ function FeedSlaTable({ rows }: { rows: FeedSlaIncident[] }) {
     <div className="overflow-x-auto">
       <div className="min-w-[1207px]">
         <div className="grid grid-cols-[1fr_120px_147px_200px_120px_120px_200px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
-          <span>feed</span>
-          <span className="text-right">seq</span>
-          <span>status</span>
-          <span>deadline</span>
-          <span>refund</span>
-          <span>slash</span>
-          <span className="text-right">detected</span>
+          <span>Feed</span>
+          <span className="text-right">Seq</span>
+          <span>Status</span>
+          <span>Deadline</span>
+          <span>Refund</span>
+          <span>Slash</span>
+          <span className="text-right">Detected</span>
         </div>
         <ul className="m-0 p-0 list-none">
           {rows.map((row, i) => (
@@ -739,7 +740,7 @@ function GatewaySummary({ snapshot }: { snapshot: GatewayOperatorSnapshot }) {
     ["feed stuck", snapshot.feed_queues.stuck],
   ];
   return (
-    <Panel title="gateway summary" meta={snapshot.configured ? "configured" : "unconfigured"}>
+    <Panel title="Gateway summary" meta={snapshot.configured ? "configured" : "unconfigured"}>
       <div className="flex flex-col">
         <div className="px-3 py-3 border-b border-[var(--color-border)] grid grid-cols-2 md:grid-cols-6 gap-3">
           {STATUSES.map((s) => (
@@ -772,8 +773,8 @@ function GatewaySummary({ snapshot }: { snapshot: GatewayOperatorSnapshot }) {
           <Fact label="avg receipt" value={formatLatency(snapshot.telemetry.avg_receipt_latency_ms)} />
           <Fact label="avg block" value={formatLatency(snapshot.telemetry.avg_latest_block_latency_ms)} />
           <Fact label="max conf" value={snapshot.telemetry.max_confirmations_observed ?? "—"} />
-          <Fact label="rpc errs" value={snapshot.telemetry.rpc_errors} />
-          <Fact label="feed rpc errs" value={snapshot.feed_telemetry.rpc_errors} />
+          <Fact label="RPC errs" value={snapshot.telemetry.rpc_errors} />
+          <Fact label="feed RPC errs" value={snapshot.feed_telemetry.rpc_errors} />
         </div>
       </div>
     </Panel>
@@ -784,7 +785,7 @@ function FeedAttemptTable({
   rows,
   busy,
   onRetry,
-  empty = "no feed attempts",
+  empty = "No feed attempts",
 }: {
   rows: GatewayOperatorFeedAttempt[];
   busy: string | null;
@@ -802,18 +803,18 @@ function FeedAttemptTable({
     <div className="overflow-x-auto">
       <div className="min-w-[1578px]">
         <div className="grid grid-cols-[168px_120px_1fr_1fr_80px_90px_90px_1fr_100px_200px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
-          <span>status</span>
-          <span>agent</span>
-          <span>feed</span>
-          <span>market</span>
-          <span className="text-right">seq</span>
-          <span className="text-right">lat</span>
-          <span className="text-right">gas</span>
-          <span>tx</span>
-          <span className="text-right">attempts</span>
-          <span className="text-right">updated</span>
-          <span>error</span>
-          <span className="text-right">action</span>
+          <span>Status</span>
+          <span>Agent</span>
+          <span>Feed</span>
+          <span>Market</span>
+          <span className="text-right">Seq</span>
+          <span className="text-right">Lat</span>
+          <span className="text-right">Gas</span>
+          <span>Tx</span>
+          <span className="text-right">Attempts</span>
+          <span className="text-right">Updated</span>
+          <span>Error</span>
+          <span className="text-right">Action</span>
         </div>
         <ul className="m-0 p-0 list-none">
           {rows.map((row, i) => (
@@ -862,7 +863,7 @@ function AttemptTable({
   rows,
   busy,
   onRetry,
-  empty = "no attempts",
+  empty = "No attempts",
 }: {
   rows: GatewayOperatorAttempt[];
   busy: string | null;
@@ -880,16 +881,16 @@ function AttemptTable({
     <div className="overflow-x-auto">
       <div className="min-w-[1398px]">
         <div className="grid grid-cols-[168px_130px_1fr_90px_90px_1fr_120px_200px_130px_90px] gap-3 px-3 py-1.5 ck-colhead border-b border-[var(--color-border)]">
-          <span>status</span>
-          <span>agent</span>
-          <span>market</span>
-          <span className="text-right">lat</span>
-          <span className="text-right">gas</span>
-          <span>tx</span>
-          <span className="text-right">attempts</span>
-          <span className="text-right">updated</span>
-          <span>error</span>
-          <span className="text-right">action</span>
+          <span>Status</span>
+          <span>Agent</span>
+          <span>Market</span>
+          <span className="text-right">Lat</span>
+          <span className="text-right">Gas</span>
+          <span>Tx</span>
+          <span className="text-right">Attempts</span>
+          <span className="text-right">Updated</span>
+          <span>Error</span>
+          <span className="text-right">Action</span>
         </div>
         <ul className="m-0 p-0 list-none">
           {rows.map((row, i) => (
@@ -959,7 +960,7 @@ function TokenPrompt({
             <span className="ck-pos">gateway</span>
           </span></TopbarCrumb>
       <main className="flex-1 min-h-0 flex flex-col p-3">
-        <Panel title="admin token" meta="locked" className="max-w-[560px]">
+        <Panel title="Admin token" meta="locked" className="max-w-[560px]">
           <div className="p-3 flex flex-col gap-3">
             {error && <InlineError error={error} className="ck-mono" />}
             <form
@@ -969,7 +970,7 @@ function TokenPrompt({
               }}
               className="flex flex-col gap-3"
             >
-              <label htmlFor="admin-gateway-token" className="ck-label">admin token</label>
+              <label htmlFor="admin-gateway-token" className="ck-label">Admin token</label>
               <input
                 id="admin-gateway-token"
                 type="password"
@@ -1006,7 +1007,7 @@ function Stat({
       : "ck-pos";
   return (
     <div className="flex flex-col gap-1">
-      <span className="ck-label">{label}</span>
+      <span className="ck-label">{sentenceCase(label)}</span>
       <span className={`ck-mono text-2xl tabular-nums ${cls}`}>{value}</span>
     </div>
   );
@@ -1015,7 +1016,7 @@ function Stat({
 function Fact({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="ck-label">{label}</span>
+      <span className="ck-label">{sentenceCase(label)}</span>
       <span className="ck-mono ck-pos truncate">{String(value)}</span>
     </div>
   );

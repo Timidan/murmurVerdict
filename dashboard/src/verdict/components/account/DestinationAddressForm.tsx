@@ -197,14 +197,14 @@ export function DestinationAddressForm({
       noValidate
     >
       <div className="ck-header">
-        <span className="ck-title">where your payouts go</span>
+        <span className="ck-title">Where your payouts go</span>
         <span className="ck-mono ck-dim">{slug}</span>
       </div>
 
       <div className="px-4 py-4 flex flex-col gap-4">
         {/* ── Current address readout ───────────────────────────────── */}
         <div className="flex flex-col gap-1">
-          <span className="ck-label ck-pos">current</span>
+          <span className="ck-label ck-pos">Current</span>
           {shownAddress ? (
             <code
               className="ck-mono self-start w-[46ch] max-w-full break-all px-2 py-1 border border-[var(--color-border)]"
@@ -219,7 +219,7 @@ export function DestinationAddressForm({
 
         {/* ── Editor ─────────────────────────────────────────────── */}
         <label className="flex flex-col gap-1">
-          <span className="ck-label ck-pos">new address</span>
+          <span className="ck-label ck-pos">New address</span>
           <input
             type="text"
             value={input}

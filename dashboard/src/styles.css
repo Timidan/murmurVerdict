@@ -35,8 +35,8 @@
    Spec: docs/launchpad/V14_HANDOFF.md
 
    Three font families (Nothing discipline cap):
-     - Doto: variable dot-matrix display (Ndot 57 stand-in), 36px+ except the
-       sanctioned /install exception (see the t-display tier comment)
+     - Doto: variable dot-matrix display (Ndot 57 stand-in), used for every
+       display tier (see the t-display tier comment for the sanctioned sizes)
      - Space Grotesk: UI / body
      - Space Mono: labels, data, ALL CAPS chrome
 
@@ -91,9 +91,11 @@
   /* Text scale (4 levels per Nothing discipline).
      --color-disabled is AA-safe as real text (5.73:1 on bg, 4.77:1 on
      raised) — the tier carries empty states, hints, timestamps, i.e.
-     actual copy, not just disabled chrome. */
+     actual copy, not just disabled chrome.
+     Secondary and disabled were merged onto that AA-safe value on 2026-09-18:
+     two quiet greys one step apart read as one, so the ladder keeps three inks. */
   --color-disabled: #8A8A8A;
-  --color-secondary: #999999;
+  --color-secondary: #8A8A8A;
   --color-primary: #E8E8E8;
   --color-display: #FFFFFF;
 
@@ -146,11 +148,13 @@
      line in a tooltip failed AA on the light theme. Re-picked against the
      darkest paper surface: disabled 4.66 / secondary 5.38 on raised, 5.66 /
      6.54 on bg. The tier order is preserved (disabled stays the quieter of
-     the two); darkening only `disabled` would have inverted the ladder. */
+     the two); darkening only `disabled` would have inverted the ladder.
+     Merged onto the disabled value on 2026-09-18 (it is the AA-safe one on
+     every paper surface); display collapsed into primary the same day. */
   --color-disabled: #6B6350;
-  --color-secondary: #605A49;
+  --color-secondary: #6B6350;
   --color-primary: #1F1B14;
-  --color-display: #0A0A0A;
+  --color-display: #1F1B14;
 
   /* The fill/graphic accent stays shared; paper text and thin borders use
      the darker ink token for AA across every paper surface. */
@@ -322,9 +326,9 @@ option:hover {
    ──────────────────────────────────────────────────────────────────────── */
 
 @layer components {
-  /* DISPLAY — Doto. Hero numerals never below 36px; t-display-sm is the /install
-     H1 tier. The rail numerals are a separate cockpit-scoped Doto tier defined
-     in compact.css (ck-steprail-num — owner-approved 2026-08-06 down to 22px). */
+  /* DISPLAY — Doto. t-display-sm is the page H1 tier. The cockpit-scoped Doto
+     tiers live in compact.css: ck-title 20px, ck-num-key 18px, ck-stat-value,
+     ck-stat-hero, ck-steprail-num. */
   .t-display    { font-family: var(--font-display); font-weight: 700; line-height: 0.85; letter-spacing: -0.04em; font-size: clamp(96px, 14vw, 200px); color: var(--color-display); }
   .t-display-md { font-family: var(--font-display); font-weight: 700; line-height: 0.9;  letter-spacing: -0.03em; font-size: clamp(64px, 9vw,  128px); color: var(--color-display); }
   .t-display-sm { font-family: var(--font-display); font-weight: 700; line-height: 0.95; letter-spacing: -0.02em; font-size: clamp(24px, 4vw, 30px);   color: var(--color-display); }

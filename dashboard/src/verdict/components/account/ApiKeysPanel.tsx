@@ -157,7 +157,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
     <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="api" /> api keys · {slug}
+          <Ik name="api" /> API keys · {slug}
         </span>
         <span className="ck-mono ck-dim">{active.length} active</span>
       </div>
@@ -239,7 +239,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
       {rotated.length > 0 && (
         <details className="border-t border-[var(--color-border)]">
           <summary className="px-3 py-2 ck-label ck-dim cursor-pointer select-none">
-            revoked keys · {rotated.length}
+            Revoked keys · {rotated.length}
           </summary>
           <ul className="details-fade divide-y divide-[var(--color-border)]">
             {rotated.map((k) => (

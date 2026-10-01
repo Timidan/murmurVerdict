@@ -215,7 +215,7 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
     <section className="ck-frame w-full px-4 py-4 flex flex-col gap-3">
       <header className="flex items-center justify-between">
         <h3 className="ck-title ck-title-ik">
-          <Ik name="controller-wallet" /> controller wallet
+          <Ik name="controller-wallet" /> Controller wallet
         </h3>
         <StateBadge state={state} />
       </header>
@@ -241,21 +241,21 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
 
       {(state === "bound" || state === "overdue") && cw && (
         <>
-          <KV k="address" v={shortAddr(cw.wallet_address)} title={cw.wallet_address} />
-          <KV k="kind" v={cw.wallet_kind} />
-          <KV k="provider" v={cw.provider ?? "—"} />
+          <KV k="Address" v={shortAddr(cw.wallet_address)} title={cw.wallet_address} />
+          <KV k="Kind" v={cw.wallet_kind} />
+          <KV k="Provider" v={cw.provider ?? "—"} />
           <KV
-            k="chain"
+            k="Chain"
             v={cw.chain_id}
             tone={daemonChainId && cw.chain_id !== daemonChainId ? "neg" : undefined}
           />
-          <KV k="bound" v={<TimeAgo iso={cw.created_at} />} />
+          <KV k="Bound" v={<TimeAgo iso={cw.created_at} />} />
           <KV
-            k="last signed"
+            k="Last signed"
             v={<TimeAgo iso={cw.last_attested_at} />}
           />
           <KV
-            k="sign again by"
+            k="Sign again by"
             v={<TimeAgo iso={cw.reattestation_due_at} />}
             tone={state === "overdue" ? "neg" : "dim"}
           />
@@ -339,12 +339,12 @@ function sameAddress(a: string | null | undefined, b: string | null | undefined)
 
 function StateBadge({ state }: { state: "unbound" | "bound" | "overdue" }) {
   const map: Record<typeof state, { label: string; tone: string }> = {
-    unbound: { label: "not bound", tone: "ck-dim" },
-    bound: { label: "bound", tone: "ck-pos" },
-    overdue: { label: "needs a signature", tone: "ck-neg" },
+    unbound: { label: "Not bound", tone: "ck-dim" },
+    bound: { label: "Bound", tone: "ck-pos" },
+    overdue: { label: "Needs a signature", tone: "ck-neg" },
   };
   const { label, tone } = map[state];
-  return <span className={`text-[12px] uppercase ${tone}`}>{label}</span>;
+  return <span className={`text-[12px] ${tone}`}>{label}</span>;
 }
 
 function KV({ k, v, tone, title }: { k: string; v: ReactNode; tone?: "dim" | "neg"; title?: string }) {

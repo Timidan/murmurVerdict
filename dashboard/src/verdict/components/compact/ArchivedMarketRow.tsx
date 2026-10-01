@@ -34,7 +34,7 @@ export function ArchivedMarketLinkRow({
         className="flex items-center gap-2 min-h-[40px] px-2 py-1 no-underline text-[var(--color-primary)] ck-hoverable"
       >
         <MarketAssetIcon iconUrl={row.icon_url} symbol={symbol} />
-        <span className="ck-mono font-bold flex-none">
+        <span className="ck-mono flex-none">
           {symbol ?? "—"}
         </span>
         <span className="ck-mono ck-dim truncate min-w-0 flex-1">{label}</span>

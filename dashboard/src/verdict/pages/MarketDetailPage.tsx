@@ -11,6 +11,7 @@ import {
 } from "../api.js";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
+import { StatStrip, Stat } from "../components/compact/StatStrip.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { FormulaTip } from "../components/compact/FormulaTip.js";
@@ -24,11 +25,14 @@ import { useStream } from "../hooks/useStream.js";
 import { marketDisplayName, parseMarketConfig } from "../lib/market-meta.js";
 import { formatLocalTimeLabel } from "../lib/date-time-format.js";
 import { marketWindowPhase } from "../lib/market-windows.js";
-import { shortId } from "../lib/display-format.js";
+import { shortId, splitMarketLabel } from "../lib/display-format.js";
 import { setDocumentTitle } from "../lib/route-meta.js";
 import { formatScore } from "../lib/score-format.js";
 import { isTerminalFailureStatus } from "@shared/wire-call-status";
 import type { WireMarketClock } from "@shared/wire-market";
+
+/** Separator on the fact lines — decoration, kept out of the reading. */
+const SEP = <span aria-hidden="true">·</span>;
 
 /**
  * Per-market detail: metrics ribbon, agent ladder, latest-verdicts feed, live
@@ -207,9 +211,12 @@ export function MarketDetailPage({
     const name = marketDisplayName(market);
     heading = name === market.market_id ? midTruncateId(name) : name;
   }
+  // The series names the market; its window rides the line underneath.
+  const split = heading === null ? null : splitMarketLabel(heading);
+  const venueUrl = cfg?.gamma_url;
 
   return (
-    <div className={isDrawer ? "flex flex-col min-h-0" : "flex-1 flex flex-col min-h-0"}>
+    <div className={isDrawer ? "flex flex-col px-3 pt-2" : "ck-page flex-1 flex flex-col pt-2"}>
       {!isDrawer && (
         <TopbarCrumb><span>
               markets <span className="ck-dim mx-1">/</span>
@@ -226,107 +233,117 @@ export function MarketDetailPage({
 
       {!error && !notFound && (
         <>
-          {/* HEADING — venue markets lead with the human question ───────── */}
-          {heading !== null && (
-            <section className="px-2 py-2 border-b border-[var(--color-border)]">
-              {/* 16px `market` glyph as the marker; baseline flex so a two-line question wraps normally. */}
+          {/* HEADING — the series at display size, its facts on one line ─── */}
+          {market && (
+            <section>
               <h1
-                className="ck-mono m-0 flex items-baseline gap-2"
-                style={{
-                  fontSize: 21,
-                  fontWeight: 700,
-                  lineHeight: 1.3,
-                  color: "var(--color-display)",
-                  textWrap: "balance",
-                }}
-                title={marketId}
+                className="t-display-sm m-0 flex items-baseline gap-2"
+                style={{ textWrap: "balance" }}
+                title={heading ?? marketId}
               >
                 <Ik name="market" />
-                {heading}
+                {split ? split.head : assetSlug.toUpperCase()}
               </h1>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 ck-mono ck-dim">
+                {split?.tail && (
+                  <>
+                    <span title={endsTitle}>{split.tail}</span>
+                    {SEP}
+                  </>
+                )}
+                {!isVenue && (
+                  <>
+                    <span>horizon {horizon}</span>
+                    {SEP}
+                  </>
+                )}
+                <span title={marketId}>market id {midTruncateId(marketId)}</span>
+                {isVenue && (
+                  <>
+                    {SEP}
+                    {venueUrl ? (
+                      <a
+                        href={venueUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ck-pos no-underline inline-flex items-center gap-1"
+                        title={`${venueName(market)} — open event`}
+                      >
+                        <VenueGlyph venue={venueName(market)} size={16} />
+                        <span aria-hidden="true" className="ck-dim text-[12px]">↗</span>
+                      </a>
+                    ) : (
+                      <VenueGlyph venue={venueName(market)} size={16} />
+                    )}
+                  </>
+                )}
+              </div>
             </section>
           )}
 
-          {/* RIBBON — venue markets get one extra cell (vol) ─────────────── */}
-          <section
-            className={
-              "grid grid-cols-2 border-b border-[var(--color-border)] " +
-              (isDrawer ? "" : isVenue ? "md:grid-cols-9" : "md:grid-cols-8")
-            }
-          >
-            <RCell label="market id" value={midTruncateId(marketId)} title={marketId} />
-            {isVenue ? (
-              <VenueCell url={cfg?.gamma_url} venue={venueName(market)} />
-            ) : (
-              <RCell label="asset" value={assetSlug.toUpperCase()} />
-            )}
-            {isVenue ? (
+          {/* STATS — venue markets get two extra cells (ends, traded) ────── */}
+          <StatStrip className="mt-4">
+            {isVenue && (
               /* Countdown while running ("in 4m"), closing time once over. */
-              <RCell
-                label="ends"
-                value={endsLabel ?? "—"}
+              <Stat
+                label="Ends"
+                kind="text"
+                value={endsLabel}
                 title={endsTitle}
                 tone={endsIsPast ? "dim" : "default"}
               />
-            ) : (
-              <RCell label="horizon" value={horizon} />
             )}
             {/* Venue traded volume — the cell renders even while the snapshot
-                is null so the ribbon doesn't jump when data arrives. */}
+                is null so the strip doesn't jump when data arrives. */}
             {isVenue && (
-              <RCell
-                label="traded"
-                value={venue?.volume != null ? formatCompactUsd(venue.volume) : "—"}
-                tone={venue?.volume != null ? "default" : "dim"}
+              <Stat
+                label="Traded"
+                value={venue?.volume != null ? formatCompactUsd(venue.volume) : null}
                 title={venueVolTitle(venue) ?? "money traded on the venue for this market"}
               />
             )}
-            <RCell
-              label="status"
-              value={status.label}
-              tone="dim"
-              title={status.title}
-            />
-            <RCell label="agents" value={agents?.length ?? "—"} />
-            <RCell
-              label="ranked"
-              value={mainCount ?? "—"}
+            <Stat label="Status" kind="text" value={status.label} title={status.title} />
+            <Stat label="Agents" value={agents?.length ?? null} />
+            <Stat
+              label="Ranked"
+              value={mainCount}
               title="agents with 20 or more scored calls on this market"
             />
-            <RCell
-              label="calls"
-              value={totalCalls ?? "—"}
-              tone="dim"
+            <Stat
+              label="Calls"
+              value={totalCalls}
               title="open plus scored calls, across the agents shown here"
             />
-            <RCell
-              label="top score"
-              value={topScore === null ? "—" : formatScore(topScore)}
-              tone={topScore === null ? "dim" : topScore >= 0 ? "pos" : "neg"}
+            <Stat
+              label="Top score"
+              value={topScore === null ? null : formatScore(topScore)}
+              tone={topScore !== null && topScore < 0 ? "neg" : "default"}
               title="the best agent score on this market"
             />
-          </section>
+          </StatStrip>
 
           {/* OUTCOMES — venue names + live odds when the snapshot has prices;
-              Gamma-down (null prices) leaves the chips name-only. ─────────── */}
+              Gamma-down (null prices) leaves them name-only. ─────────────── */}
           {isVenue && cfg?.outcomes && cfg.outcomes.length > 0 && (
-            <section className="flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-[var(--color-border)]">
+            <section className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
               <span
-                className="ck-label mr-1"
+                className="ck-colhead mr-1"
                 title="what the market can settle as, with the venue's live odds"
               >
-                outcomes
+                Outcomes
               </span>
               {cfg.outcomes.map((o, i) => {
                 const odds = venueOddsFor(venue, o);
                 return (
-                  <span
-                    key={`${i}-${o}`}
-                    className="ck-mono ck-value border border-[var(--color-border-vis)] px-2 py-[1px]"
-                    title={odds?.title ?? `${o.toLowerCase()} — the venue has no price yet`}
-                  >
-                    {o.toLowerCase()}
-                    {odds !== null && <span className="ck-dim"> {odds.pct}%</span>}
+                  <span key={`${i}-${o}`} className="flex items-center gap-x-2">
+                    {i > 0 && SEP}
+                    <span
+                      className="ck-mono"
+                      title={odds?.title ?? `${o.toLowerCase()} — the venue has no price yet`}
+                    >
+                      {o.toLowerCase()}
+                      {odds !== null && <span className="ck-dim"> {odds.pct}%</span>}
+                    </span>
                   </span>
                 );
               })}
@@ -334,50 +351,45 @@ export function MarketDetailPage({
           )}
 
           {/* META FACTS ─────────────────────────────────── */}
-          <details className="border-b border-[var(--color-border)]">
-            <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
-              more about this market
+          <details className="mt-3">
+            <summary className="ck-empty ck-mono list-none cursor-pointer py-1.5 select-none">
+              More about this market
             </summary>
-            <div className={"details-fade grid grid-cols-2 border-t border-[var(--color-border)] " + (isDrawer ? "" : "md:grid-cols-8")}>
-              <RCell
-                label="type"
+            <dl className="details-fade m-0 grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3">
+              <Fact
+                label="Type"
                 value={taxonomy?.label ?? market?.market_kind ?? "—"}
-                tone={taxonomy?.support_status === "reserved" ? "dim" : "pos"}
                 title="the family of market this belongs to"
               />
-              <RCell
-                label="scored"
+              <Fact
+                label="Scored"
                 value={supportLabel(taxonomy?.support_status)}
-                tone={taxonomy?.support_status === "reserved" ? "dim" : "pos"}
                 title="whether murmur scores calls on this kind of market today"
               />
-              <RCell
-                label="outcome shape"
+              <Fact
+                label="Outcome shape"
                 value={payoffLabel(taxonomy?.payoff_model)}
-                tone="dim"
                 title="how many ways this market can settle"
               />
-              <RCell
-                label="settled by"
+              <Fact
+                label="Settled by"
                 value={settlementLabel(taxonomy?.settlement_model)}
-                tone="dim"
                 title="who publishes the outcome. murmur never settles a market itself."
               />
-            </div>
+            </dl>
           </details>
 
           {/* MAIN ────────────────────────────────────────── */}
           <main
             className={
-              isDrawer
-                ? "grid grid-cols-1"
-                : "flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)] min-h-0"
+              "mt-2 grid grid-cols-1 gap-x-8 gap-y-6 items-start " +
+              (isDrawer ? "" : "lg:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)]")
             }
           >
             <Panel
               title={
                 <>
-                  <IkNav name="leaderboard" /> agent ladder
+                  <IkNav name="leaderboard" /> Agent ladder
                 </>
               }
               meta={agents ? `${agents.length}` : ""}
@@ -386,20 +398,19 @@ export function MarketDetailPage({
                   all markets
                 </a>
               }
-              className={isDrawer ? undefined : "lg:border-r-0"}
             >
               {agents === null && <PanelSkeleton rows={6} />}
               {agents !== null && agents.length === 0 && (
-                <div className="px-2 py-2 ck-mono ck-dim">[no agent has a scored call here yet]</div>
+                <div className="px-2 py-2 ck-mono ck-empty">No agent has a scored call here yet</div>
               )}
               {agents !== null && agents.length > 0 && <Ladder rows={agents} />}
             </Panel>
             {/* RIGHT COLUMN — sealed-verdicts feed above the live tape. */}
-            <div className="flex flex-col min-h-0">
+            <div className="min-w-0 flex flex-col gap-6">
               <Panel
                 title={
                   <>
-                    <Ik name="verdict" /> latest verdicts
+                    <Ik name="verdict" /> Latest verdicts
                   </>
                 }
                 meta={calls ? `${calls.length}` : ""}
@@ -409,7 +420,7 @@ export function MarketDetailPage({
                 )}
                 {calls === null && callsError === null && <PanelSkeleton rows={5} />}
                 {calls !== null && calls.length === 0 && (
-                  <div className="px-2 py-2 ck-mono ck-dim">[no calls on this market yet]</div>
+                  <div className="px-2 py-2 ck-mono ck-empty">No calls on this market yet</div>
                 )}
                 {calls !== null && calls.length > 0 && <VerdictsFeed rows={calls} />}
               </Panel>
@@ -422,10 +433,9 @@ export function MarketDetailPage({
                       name="live-dot"
                       className={stream.status === "open" ? "ck-live-tx" : undefined}
                     />{" "}
-                    live tape
+                    Live tape
                   </>
                 }
-                className="flex-1"
               >
                 <CompactLiveFeed limit={60} marketId={marketId} />
               </Panel>
@@ -446,19 +456,19 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
     <ul className="m-0 p-0 list-none">
       <li className="ck-ladder ck-ladder--market px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
-        <span>agent</span>
+        <span>Agent</span>
         {/* Formulas match LeaderboardPage. `scored` and `open` are plain counts,
             so they get a title, not a formula. */}
         <span className="flex justify-end">
           <FormulaTip
-            label="score"
+            label="Score"
             plain="the agent's average call score here, less a penalty for uneven results. Higher is better."
             formula="score = mean(call score) − stdev(call score) / √n"
           />
         </span>
         <span className="flex justify-end">
           <FormulaTip
-            label="floor"
+            label="Floor"
             plain="the lowest score this record supports. The board ranks agents on it."
             formula="floor = mean(call score) − 1.6449 × standard error"
           />
@@ -467,18 +477,18 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
           className="ck-ladder-drop text-right"
           title="scored — calls that finished and earned a score"
         >
-          scored
+          Scored
         </span>
         <span className="ck-ladder-drop flex justify-end">
           <FormulaTip
-            label="win%"
+            label="Win%"
             plain="wins as a share of wins plus losses. Void calls are left out."
             formula="win % = wins / (wins + losses)"
           />
         </span>
         <span className="ck-ladder-drop flex justify-end">
           <FormulaTip
-            label="trend"
+            label="Trend"
             plain="the agent's last few call scores, oldest first."
             formula="trend = recent call scores, in order"
           />
@@ -487,7 +497,7 @@ function Ladder({ rows }: { rows: AgentMarketRow[] }) {
           className="ck-ladder-drop text-right"
           title="open — calls that are sealed and have not resolved yet"
         >
-          open
+          Open
         </span>
       </li>
       {rows.map((r) => (
@@ -634,53 +644,12 @@ function verdictStatusTag(
   return { label: SETTLED_TERMINAL_LABELS[status] ?? "·resolved", sealed: false };
 }
 
-function RCell({
-  label,
-  value,
-  tone = "default",
-  title,
-}: {
-  label: string;
-  value: number | string;
-  tone?: "pos" | "neg" | "dim" | "default";
-  /** Hover text override — defaults to the rendered value (e.g. full id behind a truncated one). */
-  title?: string;
-}) {
-  const toneClass =
-    tone === "pos" ? "ck-pos" : tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
+/** One fact in the disclosure: its column head over the value. */
+function Fact({ label, value, title }: { label: string; value: string; title: string }) {
   return (
-    <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5 min-w-0">
-      <span className="ck-label">{label}</span>
-      <span
-        className={"ck-mono ck-value truncate " + toneClass}
-        title={title ?? String(value)}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-/** Ribbon cell for the venue-adapter source — external link out to the venue's
- *  own event page when the config carries one. */
-function VenueCell({ url, venue }: { url: string | undefined; venue: string }) {
-  return (
-    <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5 min-w-0">
-      <span className="ck-label">venue</span>
-      {url ? (
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="ck-pos no-underline hover:opacity-80 inline-flex items-center gap-1"
-          title={`${venue} — open event`}
-        >
-          <VenueGlyph venue={venue} size={16} />
-          <span aria-hidden="true" className="ck-dim text-[12px]">↗</span>
-        </a>
-      ) : (
-        <VenueGlyph venue={venue} size={16} />
-      )}
+    <div className="min-w-0" title={title}>
+      <dt className="ck-colhead">{label}</dt>
+      <dd className="ck-mono m-0">{value}</dd>
     </div>
   );
 }

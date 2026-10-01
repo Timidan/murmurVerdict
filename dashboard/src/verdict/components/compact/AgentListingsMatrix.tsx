@@ -169,7 +169,7 @@ export function AgentListingsMatrix() {
       <Panel
         title={
           <>
-            <Ik name="market" /> listings
+            <Ik name="market" /> Listings
           </>
         }
         /* The panel's own annotation says which of the two prices the cells
@@ -200,7 +200,7 @@ export function AgentListingsMatrix() {
           <div className="ck-matrix" style={gridStyle} role="table" aria-label="agent listings by series">
             <div className="ck-matrix-row" role="row">
               <div className="ck-matrix-corner ck-colhead" role="columnheader">
-                agent · all-time record
+                Agent · all-time record
               </div>
               {shown.columns.map((column) => (
                 <ColumnHead key={column.venueSeriesId} column={column} />
@@ -316,7 +316,7 @@ function FilterBar({
     <div className="flex flex-wrap items-end gap-x-4 gap-y-2 px-2 py-2 border-b border-[var(--color-border)]">
       <span className="flex flex-col gap-1 w-[22ch] max-w-full min-w-0">
         <label htmlFor={agentFieldId} className="ck-label">
-          agent
+          Agent
         </label>
         <input
           id={agentFieldId}
@@ -329,7 +329,7 @@ function FilterBar({
       </span>
       <span className="flex flex-col gap-1 max-w-full min-w-0">
         <label htmlFor={marketFieldId} className="ck-label">
-          market
+          Market
         </label>
         {/* A native select: the list is a set of values, it is already this
             page's only long enumeration, and it comes with keyboard and mobile
@@ -349,7 +349,7 @@ function FilterBar({
         </select>
       </span>
       <span className="flex flex-col gap-1">
-        <span className="ck-label">sort by</span>
+        <span className="ck-label">Sort by</span>
         <span className="flex flex-wrap items-center gap-1">
           {LISTINGS_SORTS.map((sort) => {
             const active = filters.sort === sort;
@@ -392,7 +392,7 @@ function FilterBar({
           there are no empty columns to reveal. */}
       {filters.venueSeriesId === null && emptyCount > 0 && (
         <span className="flex flex-col gap-1">
-          <span className="ck-label">columns</span>
+          <span className="ck-label">Columns</span>
           <button
             type="button"
             onClick={() => onChange({ ...filters, hideEmptySeries: !filters.hideEmptySeries })}
@@ -460,7 +460,7 @@ function RowHead({ row }: { row: MatrixRow }) {
         {row.slug}
       </a>
       <span className="ck-matrix-record ck-mono ck-dim" title={row.track.summary}>
-        <span className="ck-label">all-time</span>
+        <span className="ck-label">All-time</span>
         <span>
           floor <span className={row.track.unscored ? "ck-dim" : "ck-pos"}>{row.track.floor}</span>
         </span>
@@ -573,7 +573,7 @@ function OpenCallsDrilldown({
     <section className="ck-frame m-2">
       <div className="ck-header">
         <h3 className="ck-title ck-title-ik">
-          <Ik name="seal" /> open calls
+          <Ik name="seal" /> Open calls
         </h3>
         <span className="flex items-center gap-3">
           <span className="ck-mono ck-dim">
@@ -593,11 +593,11 @@ function OpenCallsDrilldown({
               (anyBuyable ? " A boxed price is one you can buy: click it." : "")
             }
           >
-            locked price
+            Locked price
           </span>
-          <span>market</span>
-          <span>seats</span>
-          <span>sale closes</span>
+          <span>Market</span>
+          <span>Seats</span>
+          <span>Sale closes</span>
         </li>
         {calls.map((call) => (
           <li key={call.onchainCallId} className="border-b border-[var(--color-border)]">

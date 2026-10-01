@@ -51,6 +51,7 @@ import {
   PHASE_TEXT,
   windowPhaseText,
 } from "./MarketWindowGroup.js";
+import { sentenceCase } from "../../lib/display-format.js";
 import { SkeletonBar } from "./PanelSkeleton.js";
 
 /**
@@ -476,8 +477,8 @@ export function CompactMarketsGrid({ limit }: { limit?: number }) {
               aria-label="Markets that have no window yet"
               className="border-b border-[var(--color-border)]"
             >
-              <header className="px-2 py-1 bg-[var(--color-surface)]">
-                <h3 className="ck-mono ck-dim m-0">no window yet</h3>
+              <header className="px-2 py-1">
+                <h3 className="ck-colhead m-0">No window yet</h3>
               </header>
               <ul className="m-0 p-0 list-none">
                 {unscheduled.map((market) => (
@@ -540,15 +541,11 @@ function MatrixHeader({
               onPick(option);
             }}
             className={
-              "ck-mono min-h-[40px] max-lg:min-h-[44px] inline-flex items-center px-3 no-underline " +
-              "border border-[var(--color-border)] -ml-px first:ml-0 " +
-              "focus-visible:outline-offset-[-2px] motion-safe:transition-colors " +
-              (option === view
-                ? "ck-pos bg-[var(--color-raised)] border-[var(--color-border-vis)]"
-                : "ck-dim hover:text-[var(--color-display)]")
+              "ck-seg no-underline max-lg:min-h-[44px] " +
+              (option === view ? "ck-seg-active" : "")
             }
           >
-            {option}
+            {sentenceCase(option)}
           </a>
         ))}
       </nav>
@@ -585,17 +582,17 @@ function ResolvedBoard({
 }) {
   if (page === null) {
     return (
-      <p className="px-2 py-2 ck-mono ck-dim">
-        [resolved markets are unavailable right now]
+      <p className="px-2 py-2 ck-mono ck-empty">
+        Resolved markets are unavailable right now
       </p>
     );
   }
   if (rows.length === 0) {
     return (
-      <p className="px-2 py-2 ck-mono ck-dim">
+      <p className="px-2 py-2 ck-mono ck-empty">
         {page.rows.length > 0
-          ? "[no resolved markets match your filters]"
-          : "[nothing has resolved today yet]"}
+          ? "No resolved markets match your filters"
+          : "Nothing has resolved today yet"}
       </p>
     );
   }
@@ -619,8 +616,8 @@ function ResolvedBoard({
         >
           {/* Collapsed by default: a settled window is history, so the board
               opens as a scannable index of windows rather than 50 rows. */}
-          <summary className="mmr-window-summary flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 bg-[var(--color-surface)]">
-            <h3 className="ck-mono ck-pos font-bold m-0">
+          <summary className="mmr-window-summary flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1">
+            <h3 className="ck-colhead m-0">
               <time
                 dateTime={endedAt}
                 title={formatLocalDateTime(endedAt) ?? undefined}
@@ -628,7 +625,7 @@ function ResolvedBoard({
                 {formatLocalTimeLabel(endedAt) ?? endedAt}
               </time>
             </h3>
-            <span className="ck-badge ck-dim">{PHASE_TEXT.resolved}</span>
+            <span className="ck-colhead">{PHASE_TEXT.resolved}</span>
             <span className="ck-mono ck-dim">
               {bucket.length} {bucket.length === 1 ? "market" : "markets"}
             </span>
@@ -665,11 +662,11 @@ function EmptyLive({
   onClear: () => void;
 }) {
   return (
-    <div className="px-2 py-2 flex flex-wrap items-center gap-2 ck-mono ck-dim">
-      <span>
+    <div className="px-2 py-2 flex flex-wrap items-center gap-2 ck-mono">
+      <span className="ck-empty">
         {hasMarkets
-          ? "[no live markets match your filters]"
-          : "[no markets are open right now]"}
+          ? "No live markets match your filters"
+          : "No markets are open right now"}
       </span>
       {hasMarkets && (
         <button
@@ -694,7 +691,7 @@ function MarketsSkeleton() {
       <div aria-hidden="true">
       {[0, 1].map((group) => (
         <section key={group} className="border-b border-[var(--color-border-vis)]">
-          <div className="flex items-center gap-3 px-2 py-1 bg-[var(--color-surface)] min-h-[28px]">
+          <div className="flex items-center gap-3 px-2 py-1 min-h-[28px]">
             <SkeletonBar className="h-[12px] w-[110px]" />
             <SkeletonBar className="h-[12px] w-[64px]" />
           </div>
@@ -838,8 +835,8 @@ function groupBucketsByProvider<B extends { grouping: MarketGrouping }>(
  *  than one venue is showing; the filter bar names the venue otherwise. */
 function ProviderHeader({ label }: { label: string }) {
   return (
-    <header className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--color-border-vis)] bg-[var(--color-surface)]">
-      <h3 className="ck-mono ck-pos font-bold m-0">{label}</h3>
+    <header className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--color-border-vis)]">
+      <h3 className="ck-mono m-0">{label}</h3>
     </header>
   );
 }

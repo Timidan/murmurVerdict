@@ -38,6 +38,11 @@ import { getControllerWalletForAgent } from "../src/verdict/auth/controller-wall
 import { mintRuntimeKey } from "../src/verdict/auth/runtime-keys.js";
 import { agentsRepo, marketsRepo, openDb } from "../src/verdict/db.js";
 import { loadDeployment } from "../src/integrations/deployments.js";
+import {
+  AGENT_GATEWAY_PATH,
+  buildAgentSealedCallBody,
+} from "../src/integrations/agent-side-cofhe-sealer-support.js";
+import { fetchMeta, sealVerdict } from "./agent-side-cofhe-sealer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
@@ -127,6 +132,8 @@ async function main(): Promise<void> {
 
   const inflight = new Map<string, InFlight>();
   const bet = new Set<string>(); // market_ids already bet this run
+  // Murmur's published binding targets; the verdict is sealed against them here.
+  const meta = await fetchMeta(DAEMON);
 
   const resolvedCount = (): number =>
     (db.prepare("SELECT COUNT(*) n FROM submissions WHERE agent_id=? AND status='resolved'").get(agent.agent_id) as { n: number }).n;
@@ -213,7 +220,7 @@ async function main(): Promise<void> {
       if (active >= MAX_ACTIVE) break;
       const mid = c.m.market_id.toLowerCase();
       try {
-        await submitOne(db, agent.agent_id, accountId, wallet, agentWallet, c.m, c.question, c.endMs, inflight);
+        await submitOne(db, agent.agent_id, accountId, wallet, agentWallet, c.m, c.question, c.endMs, inflight, meta, rpcUrl);
         bet.add(mid);
         active++;
       } catch (err) {
@@ -273,6 +280,8 @@ async function submitOne(
   question: string,
   endMs: number,
   inflight: Map<string, InFlight>,
+  meta: Awaited<ReturnType<typeof fetchMeta>>,
+  rpcUrl: string,
 ): Promise<void> {
   const mid = market.market_id.toLowerCase();
   // Per-market runtime key (policy scopes to this one market).
@@ -301,15 +310,27 @@ async function submitOne(
   const binaryIndex = randomBytes(1)[0] % 2; // 0=Up, 1=Down
   const confidenceBps = 5100 + (randomBytes(2).readUInt16BE(0) % 4400); // 5100-9500
   const clientNonce = ("0x" + randomBytes(32).toString("hex")) as Hex;
-  const body = {
-    marketRef: { protocol: "polymarket-gamma", sourceId: mid, configVersion: market.market_config_version },
-    client_order_id: `bettor-${randomUUID()}`,
-    client_nonce: clientNonce,
-    privacy_mode: "murmur_sealed_fhenix",
-    verdict: { binary_index: binaryIndex, confidence_bps: confidenceBps },
-    public_strategy_tag: "auto-bettor",
-  };
-  const res = await fetch(`${DAEMON}/v2/gateway/calls/seal`, {
+  // Sealed in this process against Murmur's published relayer and contract:
+  // the daemon relays ciphertext and never holds the prediction.
+  const sealed = await sealVerdict({
+    binaryIndex,
+    confidenceBps,
+    chainId: meta.chainId,
+    relayerAddress: meta.relayerAddress,
+    contractAddress: meta.contractAddress,
+    confidenceBounds: meta.confidenceBounds,
+    rpcUrl,
+  });
+  const body = buildAgentSealedCallBody({
+    binaryInput: sealed.binary_index_input,
+    confidenceInput: sealed.confidence_input,
+    configVersion: market.market_config_version,
+    marketSourceId: mid,
+    clientNonce,
+    clientOrderId: `bettor-${randomUUID()}`,
+    strategyTag: "auto-bettor",
+  });
+  const res = await fetch(`${DAEMON}${AGENT_GATEWAY_PATH}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Murmur-Runtime-Key": minted.secret },
     body: JSON.stringify(body),

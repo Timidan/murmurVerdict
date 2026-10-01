@@ -8,6 +8,15 @@ export * from "./market-registry-schema.js";
 export const SCHEMA_VERSION = 1 as const;
 export const SCORING_VERSION = 1 as const;
 
+// Mirrors MurmurSealedVerdicts.publishReveal: a revealed value outside these
+// bounds terminalizes the call as invalid. Every copy of the band reads from here.
+export const CONFIDENCE_BPS_MIN = 5100;
+export const CONFIDENCE_BPS_MAX = 9500;
+export const VERDICT_BOUNDS = {
+  binary_index: { min: 0, max: 1 },
+  confidence_bps: { min: CONFIDENCE_BPS_MIN, max: CONFIDENCE_BPS_MAX },
+} as const;
+
 // ─── Identity ────────────────────────────────────────────────────────────────
 
 //   benchmark     — murmur-run baselines. Not marketplace-eligible; they sit

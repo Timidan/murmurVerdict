@@ -5,7 +5,6 @@ import { ThemeToggle } from "../ThemeToggle.js";
 import { MMark } from "../MMark.js";
 import { MobileNav, isNavItemActive, type NavItem } from "./MobileNav.js";
 import { NAV_CHORDS } from "./nav-chords.js";
-import { formatLocalClock } from "../../lib/date-time-format.js";
 
 interface CompactTopbarProps {
   /** Free-text crumb shown after the system identifier (e.g. "LB / TIER:ALL"). */
@@ -48,13 +47,12 @@ const NAV_ICONS: Record<NavHref, NavIconName> = {
 const CHORD_KEY: Record<NavHref, string> = NAV_CHORDS;
 
 /**
- * Shared app chrome. Below `lg` the nav, clock and theme toggle collapse into
+ * Shared app chrome. Below `lg` the nav and theme toggle collapse into
  * <MobileNav/>; the crumb slot truncates so it can't widen the page.
  */
 export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
   const stream = useStream();
   const live = stream.status === "open";
-  const [now, setNow] = useState(() => new Date());
   const currentPath = useActiveNavPath();
 
   // Bumped on route change to replay the active glyph's animation; 0 on load.
@@ -66,11 +64,6 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
       setActivationStamp((s) => s + 1);
     }
   }, [currentPath]);
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
 
   return (
     /* `mmr-topbar` lets compact.css grow the bar for pinned tips on hoverless devices. */
@@ -121,20 +114,13 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
       {/* No min-w-0: squeezes are absorbed by the left rail's truncating crumb.
           Rail padding must stay equal both sides (28px) or the nav goes off-centre. */}
       <div className="flex-1 basis-0 flex h-full items-center justify-end gap-4 pl-3 pr-4">
-        {/* Local time with its zone, matching the market windows. */}
-        <span
-          aria-hidden="true"
-          className="hidden lg:inline-flex mmr-topbar-meta ck-dim tabular-nums"
-        >
-          {formatLocalClock(now) ?? ""}
-        </span>
         <div className="hidden lg:flex h-full items-center">
           <ThemeToggle />
         </div>
         <span
           role="status"
           aria-live="polite"
-          className={"mmr-topbar-meta font-bold " + (live ? "ck-pos" : "ck-neg")}
+          className={"mmr-topbar-meta " + (live ? "ck-pos" : "ck-neg")}
         >
           {live
             ? "live"

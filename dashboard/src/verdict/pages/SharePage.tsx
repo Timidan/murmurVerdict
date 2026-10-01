@@ -79,7 +79,7 @@ export function SharePage({ slug }: { slug: string }) {
       {/* HERO STRIP ─────────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-3 flex flex-col gap-1">
         <span className="ck-label ck-dim">
-          share
+          Share
         </span>
         <span className="ck-mono">
           {agent ? agent.display_name : slug}{" "}
@@ -91,7 +91,7 @@ export function SharePage({ slug }: { slug: string }) {
         {error && <InlineError error={error} className="px-3 py-2 ck-mono" />}
 
         {/* OG PREVIEW — full bleed */}
-        <Panel title="social card" meta="1200×630">
+        <Panel title="Social card" meta="1200×630">
           <div className="p-2 flex flex-col gap-1">
             <div className="ck-frame">
               <img
@@ -113,7 +113,7 @@ export function SharePage({ slug }: { slug: string }) {
         </Panel>
 
         {/* SHARE ACTIONS */}
-        <Panel title="share it">
+        <Panel title="Share it">
           <div className="p-3 flex flex-wrap items-center gap-4">
             <a
               href={tweetUrl}
@@ -144,13 +144,13 @@ export function SharePage({ slug }: { slug: string }) {
 
         {/* EMBED SNIPPETS */}
         <Snippet
-          title="markdown — for a readme or GitHub"
+          title="Markdown — for a readme or GitHub"
           value={markdownEmbed}
           label={copyLabel("markdown", "copy")}
           onCopy={() => copy("markdown", markdownEmbed)}
         />
         <Snippet
-          title="html — for Notion, Discord, or a web page"
+          title="HTML — for Notion, Discord, or a web page"
           value={htmlEmbed}
           label={copyLabel("html", "copy")}
           onCopy={() => copy("html", htmlEmbed)}

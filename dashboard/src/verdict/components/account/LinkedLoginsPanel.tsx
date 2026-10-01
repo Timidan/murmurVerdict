@@ -272,7 +272,7 @@ export function LinkedLoginsPanel() {
     <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="link" /> linked logins
+          <Ik name="link" /> Linked logins
         </span>
         <span className="ck-mono ck-dim">{usable.length} linked</span>
       </div>

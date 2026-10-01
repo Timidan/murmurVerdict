@@ -31,6 +31,8 @@ import {
   cofheVerifierError,
 } from "../src/integrations/agent-side-cofhe-sealer-support.js";
 
+import { CONFIDENCE_BPS_MAX, CONFIDENCE_BPS_MIN } from "../src/verdict/schema.js";
+
 // The SDK doesn't echo securityZone/utype per input; send what we asked the verifier to sign.
 const COFHE_SECURITY_ZONE = 0;
 
@@ -40,12 +42,19 @@ interface MetaResponse {
     relayer_address?: string | null;
     contract_address?: string | null;
   };
+  verdict_bounds?: { confidence_bps?: { min?: number; max?: number } };
 }
 
-async function fetchMeta(apiBase: string): Promise<{
+export interface ConfidenceBounds {
+  min: number;
+  max: number;
+}
+
+export async function fetchMeta(apiBase: string): Promise<{
   chainId: number;
   relayerAddress: Address;
   contractAddress: Address;
+  confidenceBounds: ConfidenceBounds;
 }> {
   const response = await fetch(`${apiBase}/v1/meta`);
   if (!response.ok) {
@@ -62,24 +71,51 @@ async function fetchMeta(apiBase: string): Promise<{
         "proof binding is unavailable",
     );
   }
+  // The deployment publishes the band the contract enforces; a daemon that
+  // predates the field gets the same numbers from the shared constant.
+  const published = meta.verdict_bounds?.confidence_bps;
+  const confidenceBounds: ConfidenceBounds =
+    Number.isInteger(published?.min) && Number.isInteger(published?.max)
+      ? { min: published!.min!, max: published!.max! }
+      : { min: CONFIDENCE_BPS_MIN, max: CONFIDENCE_BPS_MAX };
   return {
     chainId,
     relayerAddress: getAddress(relayerAddress),
     contractAddress: getAddress(contractAddress),
+    confidenceBounds,
   };
 }
 
-async function sealVerdict(input: {
+export async function sealVerdict(input: {
   binaryIndex: number;
   confidenceBps: number;
   chainId: number;
   relayerAddress: Address;
   contractAddress: Address;
   rpcUrl: string;
+  /** From fetchMeta. Defaults to the shared constant for callers that skip it. */
+  confidenceBounds?: ConfidenceBounds;
 }): Promise<{
   binary_index_input: CofheInput;
   confidence_input: CofheInput;
 }> {
+  // Nothing downstream can catch this: the daemon relays ciphertext and the
+  // contract only sees the value at reveal, when the submit gas is already spent.
+  const bounds = input.confidenceBounds ?? { min: CONFIDENCE_BPS_MIN, max: CONFIDENCE_BPS_MAX };
+  if (input.binaryIndex !== 0 && input.binaryIndex !== 1) {
+    throw new Error(`binary index must be 0 or 1, got ${input.binaryIndex}`);
+  }
+  if (
+    !Number.isInteger(input.confidenceBps) ||
+    input.confidenceBps < bounds.min ||
+    input.confidenceBps > bounds.max
+  ) {
+    throw new Error(
+      `confidence_bps ${input.confidenceBps} is outside ${bounds.min}-${bounds.max}: the ` +
+        "sealed-verdicts contract would reject it at reveal, losing the call and the gas " +
+        "its submit spent. Refusing to seal it.",
+    );
+  }
   if (input.chainId !== cofheBaseSepolia.id) {
     throw new Error(
       `unsupported CoFHE chain ${input.chainId}; this tool supports Base Sepolia ${cofheBaseSepolia.id}`,
@@ -160,8 +196,8 @@ function parseArguments(): {
   if (!Number.isInteger(binaryIndex) || (binaryIndex !== 0 && binaryIndex !== 1)) {
     throw new Error("binary-index must be 0 or 1");
   }
-  if (!Number.isInteger(confidenceBps) || confidenceBps < 0 || confidenceBps > 10_000) {
-    throw new Error("confidence-bps must be an integer from 0 to 10000");
+  if (!Number.isInteger(confidenceBps)) {
+    throw new Error("confidence-bps must be an integer; sealVerdict checks it against the published band");
   }
   if (!Number.isInteger(configVersion) || configVersion < 1) {
     throw new Error("config-version must be a positive integer");
@@ -188,7 +224,7 @@ async function main(): Promise<void> {
   const signingPrivateKey = requiredEnv("MURMUR_RUNTIME_KEY_SIGNING_PK");
   const audience = requiredEnv("MURMUR_POP_AUDIENCE");
   const rpcUrl = requiredEnv("FHENIX_RPC_URL");
-  const { chainId, relayerAddress, contractAddress } = await fetchMeta(apiBase);
+  const { chainId, relayerAddress, contractAddress, confidenceBounds } = await fetchMeta(apiBase);
   const sealed = await sealVerdict({
     binaryIndex: args.binaryIndex,
     confidenceBps: args.confidenceBps,
@@ -196,6 +232,7 @@ async function main(): Promise<void> {
     relayerAddress,
     contractAddress,
     rpcUrl,
+    confidenceBounds,
   });
   const body = buildAgentSealedCallBody({
     binaryInput: sealed.binary_index_input,

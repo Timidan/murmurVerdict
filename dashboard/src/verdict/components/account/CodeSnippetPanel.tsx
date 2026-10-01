@@ -29,9 +29,9 @@ export interface CodeSnippetPanelProps {
 const ALL_LANGUAGES: SnippetLanguage[] = ["typescript", "python", "curl"];
 
 const TAB_LABEL: Record<SnippetLanguage, string> = {
-  typescript: "TS",
-  python: "PY",
-  curl: "CURL",
+  typescript: "TypeScript",
+  python: "Python",
+  curl: "curl",
 };
 
 /** Configured API base URL, else the page origin (dev proxies /v1). */

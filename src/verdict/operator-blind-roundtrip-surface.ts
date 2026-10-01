@@ -6,12 +6,13 @@ import {
   normalizeCofheCtHashToHex32,
 } from "../integrations/fhenix-gateway-cofhe-normalize.js";
 import { OPERATOR_BLIND_FIXTURE_MARKET_ID } from "./operator-blind-fixture-surface.js";
+import { CONFIDENCE_BPS_MAX, CONFIDENCE_BPS_MIN } from "./schema.js";
 
 export const OPERATOR_BLIND_ROUNDTRIP_CHAIN_ID = 84532;
 export const OPERATOR_BLIND_DEFAULT_MARKET_ID =
   OPERATOR_BLIND_FIXTURE_MARKET_ID as Hex;
-export const OPERATOR_BLIND_SENTINEL_CONFIDENCE_MIN = 5100;
-export const OPERATOR_BLIND_SENTINEL_CONFIDENCE_MAX = 9500;
+export const OPERATOR_BLIND_SENTINEL_CONFIDENCE_MIN = CONFIDENCE_BPS_MIN;
+export const OPERATOR_BLIND_SENTINEL_CONFIDENCE_MAX = CONFIDENCE_BPS_MAX;
 export const OPERATOR_BLIND_SENTINEL_BINARY_INDEX = 0;
 
 export const OPERATOR_BLIND_FHENIX_SEALED_HANDLE_KEYS = {

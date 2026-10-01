@@ -1,7 +1,12 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { agentsRepo } from "./repos/agents-repo.js";
-import { ERROR_CODES, VerdictError } from "./schema.js";
+import {
+  ERROR_CODES,
+  VerdictError,
+  CONFIDENCE_BPS_MAX,
+  CONFIDENCE_BPS_MIN,
+} from "./schema.js";
 import {
   FhenixEventVerificationError,
 } from "../integrations/fhenix-events.js";
@@ -27,7 +32,7 @@ export const FhenixRevealBodySchema = z
   .object({
     call_id: z.string().uuid(),
     binary_index: z.union([z.literal(0), z.literal(1)]),
-    confidence_bps: z.number().int().min(5100).max(9500),
+    confidence_bps: z.number().int().min(CONFIDENCE_BPS_MIN).max(CONFIDENCE_BPS_MAX),
     revealed_at: z.string().datetime({ offset: false }),
     reveal_tx_hash: Hex32Schema,
     reveal_log_index: z.number().int().nonnegative(),

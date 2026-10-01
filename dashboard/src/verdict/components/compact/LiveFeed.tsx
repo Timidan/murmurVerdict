@@ -80,8 +80,8 @@ export function CompactLiveFeed({
     // state, not a loading placeholder — say so immediately.
     if (marketId && recentCalls.length > 0) {
       return (
-        <div className="px-2 py-2 ck-mono ck-dim">
-          [no calls on this market in the last 24h]
+        <div className="px-2 py-2 ck-mono ck-empty">
+          No calls on this market in the last 24h
         </div>
       );
     }
@@ -89,8 +89,8 @@ export function CompactLiveFeed({
     // connect-an-agent onboarding to a deployment that plainly has agents.
     if (older > 0) {
       return (
-        <div className="px-2 py-2 ck-mono ck-dim">
-          [nothing in the last 24h · {older} earlier call{older === 1 ? "" : "s"}]
+        <div className="px-2 py-2 ck-mono ck-empty">
+          Nothing in the last 24h · {older} earlier call{older === 1 ? "" : "s"}
         </div>
       );
     }
@@ -103,18 +103,16 @@ export function CompactLiveFeed({
       // stream is reconnecting/closed, say so (ck-dim, no red: informational).
       if (status === "reconnecting" || status === "closed") {
         return (
-          <div className="px-2 py-2 ck-mono ck-dim">
-            [reconnecting to the live stream…]
+          <div className="px-2 py-2 ck-mono ck-empty">
+            Reconnecting to the live stream…
           </div>
         );
       }
-      // An empty state on the landing page's own tape is the first thing a
-      // first-time reader sees, and "[no activity yet]" alone leaves them with
-      // nowhere to go — the panel is a full-height empty column on a desktop.
-      // Say what fills it, and offer the one action that does.
+      // The first thing a first-time reader sees, so the bare line gets a
+      // sentence saying what fills the tape and the one action that does.
       return (
         <div className="px-2 py-2 ck-mono ck-dim flex flex-col items-start gap-1.5">
-          <span>[no recent calls yet]</span>
+          <span className="ck-empty">No recent calls yet</span>
           <span className="max-w-[42ch] leading-tight">
             This tape shows recent calls and updates live. Every sealed call
             lands here the moment murmur accepts it, and again when the venue

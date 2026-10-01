@@ -49,30 +49,30 @@ export function CompactMiniLB({ limit = 12 }: { limit?: number }) {
     <ul className="m-0 p-0 list-none">
       <li className="grid grid-cols-[24px_1fr_64px_52px_56px_44px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span title="rank">#</span>
-        <span title="the agent handle">agent</span>
+        <span title="the agent handle">Agent</span>
         <span className="flex justify-end">
           <FormulaTip
-            label="score"
+            label="Score"
             plain="the agent's average call score, less a penalty for uneven results. Higher is better."
             formula="score = mean(call score) − stdev(call score) / √n"
           />
         </span>
         <span className="flex justify-end">
           <FormulaTip
-            label="win%"
+            label="Win%"
             plain="wins as a share of wins plus losses. Void calls are left out."
             formula="win % = wins / (wins + losses)"
           />
         </span>
         <span className="flex justify-end">
           <FormulaTip
-            label="trend"
+            label="Trend"
             plain="not live yet. this column will chart recent call scores, oldest first."
             formula="trend = recent call scores, in order"
           />
         </span>
         <span className="text-right" title="open — calls that are sealed and have not resolved yet">
-          open
+          Open
         </span>
       </li>
       {rows.map((row) => {

@@ -17,10 +17,17 @@ import Database from "better-sqlite3";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mintRuntimeKey } from "../src/verdict/auth/runtime-keys.js";
 import { canonicalize, canonicalHash } from "../src/receipts/canonical.js";
+import {
+  AGENT_GATEWAY_PATH,
+  buildAgentSealedCallBody,
+} from "../src/integrations/agent-side-cofhe-sealer-support.js";
+import { fetchMeta, sealVerdict } from "./agent-side-cofhe-sealer.js";
 
 const DAEMON = process.env.DAEMON_URL ?? "http://localhost:8080";
 const DB_PATH = process.env.VERDICT_DB_PATH ?? "data/verdict.db";
 const CHAIN_ID = Number(process.env.FHENIX_CHAIN_ID ?? 84532);
+// Sealing happens here, in this process. The daemon never sees the verdict.
+const RPC_URL = process.env.FHENIX_RPC_URL ?? "";
 
 interface OpenMarket {
   market_id: string;
@@ -89,6 +96,9 @@ async function main(): Promise<void> {
     );
     return;
   }
+  if (!RPC_URL) throw new Error("FHENIX_RPC_URL is required: sealing runs locally now");
+  const meta = await fetchMeta(DAEMON);
+
   console.log(`${agent.display_slug}: submitting to ${open.length} open market(s)\n`);
 
   for (const market of open) {
@@ -117,21 +127,26 @@ async function main(): Promise<void> {
 
     const binaryIndex = randomBytes(1)[0] % 2;
     const confidenceBps = 5100 + (randomBytes(2).readUInt16BE(0) % 4400);
-    const res = await fetch(`${DAEMON}/v2/gateway/calls/seal`, {
+    const sealed = await sealVerdict({
+      binaryIndex,
+      confidenceBps,
+      chainId: meta.chainId,
+      relayerAddress: meta.relayerAddress,
+      contractAddress: meta.contractAddress,
+      confidenceBounds: meta.confidenceBounds,
+      rpcUrl: RPC_URL,
+    });
+    const res = await fetch(`${DAEMON}${AGENT_GATEWAY_PATH}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Murmur-Runtime-Key": minted.secret },
-      body: JSON.stringify({
-        marketRef: {
-          protocol: "polymarket-gamma",
-          sourceId: mid,
-          configVersion: market.market_config_version,
-        },
-        client_order_id: `manual-test-${randomUUID()}`,
-        client_nonce: ("0x" + randomBytes(32).toString("hex")) as `0x${string}`,
-        privacy_mode: "murmur_sealed_fhenix",
-        verdict: { binary_index: binaryIndex, confidence_bps: confidenceBps },
-        public_strategy_tag: "manual-test",
-      }),
+      body: JSON.stringify(buildAgentSealedCallBody({
+        binaryInput: sealed.binary_index_input,
+        confidenceInput: sealed.confidence_input,
+        configVersion: market.market_config_version,
+        marketSourceId: mid,
+        clientOrderId: `manual-test-${randomUUID()}`,
+        strategyTag: "manual-test",
+      })),
     });
     const body = (await res.json()) as { attempt_id?: string; error?: string; message?: string };
     const secondsLeft = Math.round((market.early_access_cutoff_at_ms - Date.now()) / 1000);

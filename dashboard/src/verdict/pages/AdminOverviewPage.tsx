@@ -13,6 +13,7 @@ import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { LogoLoader } from "../components/LogoLoader.js";
+import { sentenceCase } from "../lib/display-format.js";
 
 /**
  * /admin/overview: operator health cockpit. Renders the six admin snapshots as
@@ -141,7 +142,7 @@ export function AdminOverviewPage() {
 
       {/* CONTROL STRIP ───────────────────────────────── */}
       <section className="border-b border-[var(--color-border)] px-3 py-2 flex items-center justify-between flex-wrap gap-2">
-        <span className="ck-title">operator health</span>
+        <span className="ck-title">Operator health</span>
         <div className="flex items-center gap-3 flex-wrap">
           <button
             className="ck-btn ck-btn-bracket"
@@ -181,7 +182,7 @@ export function AdminOverviewPage() {
         {loaded && <StatusBanner health={overall} cards={cards} />}
 
         {loaded && (
-          <Panel title="health cards" meta={`${cards.length}`}>
+          <Panel title="Health cards" meta={`${cards.length}`}>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-[var(--color-border)]">
               {cards.map((card) => (
                 <HealthCard key={card.title} card={card} />
@@ -235,7 +236,7 @@ function gatewayCard(s: GatewayOperatorSnapshot | null): OverviewCard {
       { label: "due", value: due, tone: "dim" },
       { label: "stuck", value: stuck, tone: stuck > 0 ? "neg" : "dim" },
       { label: "terminal", value: failed, tone: failed > 0 ? "neg" : "dim" },
-      { label: "rpc errs", value: rpcErrors, tone: rpcErrors > 0 ? "neg" : "dim" },
+      { label: "RPC errs", value: rpcErrors, tone: rpcErrors > 0 ? "neg" : "dim" },
     ],
     href: "#/admin/gateway",
   };
@@ -393,7 +394,7 @@ function StatusBanner({ health, cards }: { health: Health; cards: OverviewCard[]
   return (
     <div className="border-b border-[var(--color-border)] px-3 py-2 flex items-center gap-3 flex-wrap">
       <HealthDot health={health} />
-      <span className={`ck-label ${healthTextClass(health)}`}>{label}</span>
+      <span className={`ck-label ${healthTextClass(health)}`}>{sentenceCase(label)}</span>
       <span className="ck-mono ck-dim">{detail}</span>
     </div>
   );
@@ -403,7 +404,7 @@ function HealthCard({ card }: { card: OverviewCard }) {
   const body = (
     <div className="bg-[var(--color-bg)] px-4 py-3 h-full flex flex-col gap-3 transition-colors duration-[var(--dur-fast)] ease-out hover:bg-[var(--color-surface)]">
       <div className="flex items-center justify-between gap-3">
-        <span className="ck-title">{card.title}</span>
+        <span className="ck-title">{sentenceCase(card.title)}</span>
         <HealthDot health={card.health} />
       </div>
       <div className={`ck-mono text-2xl tabular-nums ${healthTextClass(card.health)}`}>{card.status}</div>
@@ -411,7 +412,7 @@ function HealthCard({ card }: { card: OverviewCard }) {
         <div className="grid grid-cols-2 gap-x-4 gap-y-2 mt-auto pt-2">
           {card.stats.map((s) => (
             <div key={s.label} className="flex items-baseline justify-between gap-2">
-              <span className="ck-label">{s.label}</span>
+              <span className="ck-label">{sentenceCase(s.label)}</span>
               <span className={`ck-mono tabular-nums ${statToneClass(s.tone)}`}>{s.value}</span>
             </div>
           ))}
@@ -484,7 +485,7 @@ function TokenPrompt({
       <main className="flex-1 flex items-center justify-center px-4">
         <section className="ck-frame w-full max-w-[480px]">
           <div className="ck-header">
-            <span className="ck-label ck-pos">admin token</span>
+            <span className="ck-label ck-pos">Admin token</span>
             <span className="ck-mono ck-dim">admin</span>
           </div>
           <div className="px-4 py-6 flex flex-col gap-4">
@@ -501,7 +502,7 @@ function TokenPrompt({
               }}
               className="flex flex-col gap-4"
             >
-              <label htmlFor="admin-overview-token" className="ck-label">admin token</label>
+              <label htmlFor="admin-overview-token" className="ck-label">Admin token</label>
               <input
                 id="admin-overview-token"
                 type="password"

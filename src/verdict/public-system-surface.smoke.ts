@@ -266,6 +266,7 @@ try {
   assert.equal(meta.paid_inference.nanopay?.gateway, "circle");
   assert.equal(meta.paid_inference.nanopay?.endpoint, "/v2/nanopay/infer/{pipelineId}");
   assert.equal(meta.paid_inference.nanopay?.mounted, true);
+  assert.deepEqual(meta.verdict_bounds, { binary_index: { min: 0, max: 1 }, confidence_bps: { min: 5100, max: 9500 } });
   assert.equal(meta.paid_inference.market_taxonomy.live_resolution_classes.includes("price_direction"), true);
   assert.deepEqual(meta.verified_volume_24h, {
     count: 1,

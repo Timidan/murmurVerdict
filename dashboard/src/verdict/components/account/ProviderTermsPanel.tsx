@@ -256,7 +256,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
     <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="x402" /> early access pricing
+          <Ik name="x402" /> Early access pricing
         </span>
         <span className="ck-mono ck-dim">
           {rows ? `${listed} of ${rows.length} listed` : "…"}
@@ -340,7 +340,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                     }
                     aria-hidden={row.registered ? undefined : true}
                   >
-                    {row.terms ? "listed" : row.registered ? "registered" : "·"}
+                    {row.terms ? "Listed" : row.registered ? "Registered" : "·"}
                   </span>
 
                   <span className="justify-self-end flex items-center gap-2">
@@ -382,7 +382,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                 {row.registered && (
                   <div className="px-4 pb-3 flex flex-wrap items-center gap-x-5 gap-y-2">
                     <label className="flex items-center gap-2">
-                      <span className="ck-label ck-pos">version</span>
+                      <span className="ck-label ck-pos">Version</span>
                       <input
                         type="text"
                         placeholder="v1"
@@ -398,7 +398,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                     </label>
 
                     <label className="flex items-center gap-2">
-                      <span className="ck-label ck-pos">your ceiling</span>
+                      <span className="ck-label ck-pos">Your ceiling</span>
                       <input
                         type="text"
                         inputMode="numeric"

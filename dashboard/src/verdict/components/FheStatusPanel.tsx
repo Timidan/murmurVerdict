@@ -14,12 +14,12 @@ interface PostureStyle {
 
 const POSTURE_STYLES: Record<Posture, PostureStyle> = {
   sealed: {
-    label: "PRIVATE BY DEFAULT",
+    label: "Private by default",
     cls: "ck-pos",
     note: "Murmur keeps your calls encrypted until they resolve. After the market closes, the result goes public on the leaderboard.",
   },
   unknown: {
-    label: "PRIVACY UNKNOWN",
+    label: "Privacy unknown",
     cls: "ck-dim",
     note: "unable to confirm how this deployment handles privacy. Refresh the page. Tell us if it keeps happening.",
   },

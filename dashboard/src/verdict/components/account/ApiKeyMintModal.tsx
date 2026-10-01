@@ -102,7 +102,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
       >
         <div className="ck-header">
           <span id="mint-modal-title" className="ck-title ck-neg ck-title-ik">
-            <Ik name="api" /> ⚠ your new api key
+            <Ik name="api" /> ⚠ Your new API key
             {/* One-shot seal stamp on mount. */}
             <span className="mmr-seal-stamp" aria-hidden="true">
               <Ik name="seal" size={16} />

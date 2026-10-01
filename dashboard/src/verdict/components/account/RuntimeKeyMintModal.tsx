@@ -27,9 +27,9 @@ export interface RuntimeKeyMintModalProps {
 type MintTab = "prompt" | "key" | "env";
 
 const TAB_LABEL: Record<MintTab, string> = {
-  prompt: "AGENT PROMPT",
-  key: "KEY",
-  env: ".ENV",
+  prompt: "Agent prompt",
+  key: "Key",
+  env: ".env",
 };
 
 const TAB_ORDER: MintTab[] = ["prompt", "key", "env"];
@@ -196,7 +196,7 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
       >
         <header className="flex items-center justify-between">
           <h3 id="runtime-key-mint-title" className="ck-title ck-title-ik">
-            <Ik name="runtime-key" /> your new runtime key
+            <Ik name="runtime-key" /> Your new runtime key
             {/* One-shot seal stamp on mount. */}
             <span className="mmr-seal-stamp" aria-hidden="true">
               <Ik name="seal" size={16} />
@@ -281,19 +281,19 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
 
         {/* META ───────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 gap-2 text-[12px]">
-          <KV k="created" v={<TimeAgo iso={result.created_at} />} />
+          <KV k="Created" v={<TimeAgo iso={result.created_at} />} />
           <KV
-            k="expires"
+            k="Expires"
             v={result.expires_at ? <TimeAgo iso={result.expires_at} /> : "never"}
             tone={result.expires_at ? "pos" : "dim"}
           />
-          <KV k="policy hash" v={shortId(result.policy_hash, 12, 4)} title={result.policy_hash} />
+          <KV k="Policy hash" v={shortId(result.policy_hash, 12, 4)} title={result.policy_hash} />
           <KV
-            k="request signing"
+            k="Request signing"
             v={signingPrivateKey ? "on — the signing key is in the .ENV tab, shown once" : "off — the key alone is enough"}
             tone={signingPrivateKey ? "pos" : "dim"}
           />
-          {result.warning && <KV k="note" v={result.warning} tone="neg" />}
+          {result.warning && <KV k="Note" v={result.warning} tone="neg" />}
         </div>
 
         {/* CONFIRM + DONE ─────────────────────────────────────── */}

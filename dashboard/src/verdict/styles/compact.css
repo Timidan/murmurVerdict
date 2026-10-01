@@ -44,69 +44,46 @@
   background: color-mix(in srgb, var(--color-primary), transparent 97%);
 }
 
-/* ── Cockpit type ladder (T1 → T3) ───────────────────────────────────────────
-   Three roles used to share ck-label (panel titles, column headers, field
-   labels), so a section heading read identically to a single-datum label — and
-   both sat BELOW body/data (15px). The ladder below assigns each role its own
-   tier so scanning has a clear top-down rhythm while staying pure Space-Mono
-   terminal (lowercase idiom preserved; differentiation is size + ink + tracking
-   + a leading marker on titles, not a font swap).
-
-     T1  ck-title    18px · display ink · leading marker   → panel / section titles
-     ——  (body/data  16px · primary/display ink            → the content itself)
-     T3  ck-label    13px · secondary   · 0.04em           → inline field labels
-     T2  ck-colhead  12px · disabled    · 0.09em           → table column headers (quiet scaffold)
+/* ── Cockpit type ladder ─────────────────────────────────────────────────────
+   Three text styles, nothing else:
+     display  Doto 800 — ck-title 20px, ck-num-key 18px, ck-stat-value,
+              ck-stat-hero, ck-steprail-num
+     body     mono 400 16px — the shell base and ck-mono; the content itself
+     label    mono 400 sentence case — ck-label 13px, ck-colhead 12px
 
    12px is the floor for the whole cockpit (owner ruling, 2026-08-08): ck-colhead
    sits ON it, and nothing — hint, timestamp, badge, pinned nav tip — goes under.
-
-   (Doto exception: ck-steprail-num — 900 / clamp(22-30px) / -0.02em — /install
-   rail numerals only, owner-approved 2026-08-06.)
    ──────────────────────────────────────────────────────────────────────────── */
 
-/* T1 — Panel / section title. The loudest chrome inside the content area. */
+/* Panel / section title — the one display face inside the content area. */
 .mmr-shell .ck-title {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 18px;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 20px;
   line-height: 1;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   color: var(--color-display);
   display: inline-flex;
   align-items: center;
 }
-/* Leading marker — a small solid square (monochrome, Nothing's geometric
-   language) that visually anchors a title as the head of a region. Kept in
-   display ink, NOT the reserved accent, so "color stays an event". */
-.mmr-shell .ck-title::before {
-  content: "";
-  flex: none;
-  width: 6px;
-  height: 6px;
-  margin-right: 8px;
-  /* Follows the title's own ink so a toned title (e.g. a destructive red modal
-     heading via ck-neg) keeps a matching marker. */
-  background: currentColor;
-}
 
-/* T3 — Inline field label. Names one datum next to its value. */
+/* Inline field label. Names one datum next to its value. */
 .mmr-shell .ck-label {
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: 400;
   font-size: 13px;
   line-height: 1.25;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   color: var(--color-secondary);
 }
 
-/* T2 — Table column header. Recedes: dimmer tone + wider tracking than a field
-   label, so a header row reads as quiet scaffolding, not data. */
+/* Table column header. Recedes: dimmer tone, one size down from a field label. */
 .mmr-shell .ck-colhead {
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: 400;
   font-size: 12px;
   line-height: 1.25;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.02em;
   color: var(--color-disabled);
 }
 
@@ -127,7 +104,7 @@
   font-size: 30px;
   letter-spacing: -0.02em;
   line-height: 1;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--color-display);
 }
 
@@ -164,7 +141,7 @@
 
 .mmr-shell .mmr-topbar-crumb {
   color: var(--color-primary);
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .mmr-shell .mmr-nav-cluster {
@@ -410,7 +387,7 @@
    (e.g. `attested`). */
 .mmr-shell .ck-badge {
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: 400;
   /* Deliberately NOT notched by the 2026-08-08 raise: the ladder puts badges
      in the same quiet 12px band as colheads, hints and timestamps, and the
      badge was already sitting there. It is on the floor, not under it. */
@@ -482,6 +459,12 @@
   width: 100%;
   max-width: 1100px;
   margin-inline: auto;
+  padding-inline: 16px;
+}
+
+/* Paragraph measure — prose caps itself well inside the page width. */
+.mmr-shell .ck-prose {
+  max-width: 60ch;
 }
 
 /* Terminal-style frame: hairline borders, no radius. */
@@ -493,25 +476,37 @@
   border: 1px solid var(--color-border-vis);
 }
 
-/* Header strip on each panel. */
+/* Header strip on a framed box — modals, code windows, the detail drawer.
+   Open sections use .ck-section-head below instead. */
 .mmr-shell .ck-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* Floor derived from the title, not chosen: box-sizing is border-box
-     shell-wide, so min-height has to carry the chrome too —
-       18px ck-title line box (T1, line-height 1)
-     + 6px + 6px padding
-     + 1px border-bottom
-     = 31px.
-     (Was 30px on the same arithmetic when the title was 17px; before that
-     3px/6px for a 13px label.) Headers whose right slot is taller than the
-     title — 16px ck-mono at 1.4 = 22.4px — set their own height and never
-     touch this floor; it exists for title-only headers. */
+  /* Floor derived from the title, not chosen (border-box): 20px ck-title line
+     box + 6px + 6px padding + 1px border = 33px. Headers whose right slot is
+     taller set their own height; this floor is for title-only headers. */
   padding: 6px 8px;
-  min-height: 31px;
+  min-height: 33px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
+}
+
+/* Open section — no frame, no fill: a title over a hairline rule, and the
+   content underneath grows with the document. */
+.mmr-shell .ck-section {
+  display: flex;
+  flex-direction: column;
+}
+.mmr-shell .ck-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0 6px;
+  /* Floor so side-by-side heads align whether or not one carries buttons. */
+  min-height: 42px;
+  border-bottom: 1px solid var(--color-border-vis);
+  margin-bottom: 4px;
 }
 
 .mmr-shell .ck-btn {
@@ -520,7 +515,7 @@
   gap: 4px;
   padding: 4px 10px;
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: 400;
   font-size: 15px;
   letter-spacing: 0.03em;
   color: var(--color-primary);
@@ -638,6 +633,7 @@
 /* Touch tap floor: controls grow to 44px boxes; fine pointers keep the dense desktop sizing. */
 @media (pointer: coarse) {
   .mmr-shell .ck-btn,
+  .mmr-shell .ck-seg,
   .mmr-shell .ck-tab,
   .mmr-shell .ck-sidetab,
   .mmr-shell button.ck-label,
@@ -763,22 +759,22 @@
    elements that carry both classes. */
 .mmr-shell .ck-value {
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 400;
 }
 .mmr-shell .ck-value-sm {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 400;
 }
 .mmr-shell .ck-value-lg {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 /* State tag — 12px chrome naming a list row's own state beside its control. */
 .mmr-shell .ck-tag {
   font-family: var(--font-mono);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.04em;
   color: var(--color-disabled);
 }
@@ -793,7 +789,7 @@
    class placed after it can win. */
 .mmr-shell .ck-tile-value {
   font-size: 17px;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1.1;
 }
 @container (min-width: 340px) {
@@ -818,8 +814,8 @@
    can be loud. */
 .mmr-shell .ck-stat-hero {
   display: block;
-  font-family: var(--font-mono);
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-weight: 800;
   font-size: 40px;
   line-height: 0.9;
   letter-spacing: -0.03em;
@@ -829,6 +825,117 @@
 @container (min-width: 340px) {
   .mmr-shell .ck-stat-hero {
     font-size: 54px;
+  }
+}
+
+/* Row key number — the one figure a data row is ranked on. */
+.mmr-shell .ck-num-key {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 18px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-display);
+}
+
+/* Empty state — a prompt line, not a boxed notice. */
+.mmr-shell .ck-empty {
+  color: var(--color-disabled);
+}
+/* Alt-text form: the marker is decoration, kept out of the accessible name. */
+.mmr-shell .ck-empty::before {
+  content: "> " / "";
+}
+/* A disclosure summary uses the same marker; the native triangle would double it. */
+.mmr-shell summary.ck-empty {
+  list-style: none;
+}
+.mmr-shell summary.ck-empty::-webkit-details-marker {
+  display: none;
+}
+
+/* Whole row inactive (upcoming window, provisional rank): one ink, no box. */
+.mmr-shell .ck-row-off,
+.mmr-shell .ck-row-off * {
+  color: var(--color-disabled);
+}
+
+/* Inline proportion bar — dotted fill, so it reads as data, not chrome. */
+.mmr-shell .ck-bar {
+  display: inline-block;
+  position: relative;
+  width: 40px;
+  height: 6px;
+  background: var(--color-border);
+  vertical-align: middle;
+}
+.mmr-shell .ck-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--w, 0%);
+  background: repeating-linear-gradient(
+    90deg,
+    var(--color-secondary) 0 2px,
+    transparent 2px 3px
+  );
+}
+
+/* Segment control — filter/view toggles. No box: the chosen segment is the
+   only one carrying a fill, so a row of them reads as one control. */
+.mmr-shell .ck-seg {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--color-secondary);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.mmr-shell .ck-seg:hover,
+.mmr-shell .ck-seg:focus-visible {
+  color: var(--color-display);
+}
+.mmr-shell .ck-seg-active {
+  background: var(--color-display);
+  color: var(--color-bg);
+}
+
+/* ── Stat strip ──────────────────────────────────────────────────────────────
+   The page's KPI row: a hairline grid. Each cell draws its right and bottom
+   edge and the strip the top and left, so a wrapped short row leaves no block. */
+.mmr-shell .ck-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  border-top: 1px solid var(--color-border);
+  border-left: 1px solid var(--color-border);
+}
+.mmr-shell .ck-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 8px 12px;
+  text-align: center;
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+.mmr-shell .ck-stat-value {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(24px, 3vw, 32px);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-display);
+}
+@media (max-width: 639px) {
+  .mmr-shell .ck-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1209,32 +1316,21 @@
 }
 
 /* ── icon-bearing panel titles ───────────────────────────────────────────────
-   Title-marker upgrade (icon-adoption spec, 2026-08-07): a semantic glyph
-   REPLACES the generic ::before square on titles that have one — same slot,
-   one marker per title, never two. Titles without a mapped glyph keep the
-   square.
-
-   The glyph is given NO colour of its own. Exactly like the square it replaces,
-   it follows the title's own ink through currentColor, so a toned title (e.g. a
-   destructive ck-neg modal heading) keeps a matching marker and the reserved
-   accent stays an event. (Owner ruling, 2026-08-07.) */
+   A semantic glyph in front of the title, carrying no colour of its own: it
+   follows the title's ink through currentColor, so a toned title (e.g. a
+   destructive ck-neg modal heading) keeps a matching marker. */
 .mmr-shell .ck-title.ck-title-ik {
   display: inline-flex;
   align-items: center;
   gap: 7px;
 }
-.mmr-shell .ck-title.ck-title-ik::before { content: none; }
 
 /* Nav-tier (24px) markers in title slots overhang their line box, so the glyph
-   reads one tier up without growing the row — optical-size promotion, not row
-   growth. The offset is exactly the overhang: the T1 title's line box is 18px
-   (font-size 18, line-height 1), the glyph is 24, so it sticks out (24−18)/2 =
-   3px top and bottom and −3px margin-block cancels precisely that, leaving the
-   marker's outer box equal to the title's line box. (It was −4px against a
-   17px title, where the same cancellation would have been −3.5 and the extra
-   half-pixel bought a whole one.) Scoped by rendered width so the 16px inline
-   markers, which are already shorter than the line box, are untouched. */
-.mmr-shell .ck-title-ik svg[width="24"] { margin-block: -3px; }
+   reads one tier up without growing the row. The offset is exactly the
+   overhang: the title's line box is 20px, the glyph 24, so −2px margin-block
+   cancels it. Scoped by rendered width so the 16px inline markers, already
+   shorter than the line box, are untouched. */
+.mmr-shell .ck-title-ik svg[width="24"] { margin-block: -2px; }
 
 /* ── columns-land nav activation ─────────────────────────────────────────────
    Owner-approved motion (2026-08-07, "i like columns land"): when a nav link

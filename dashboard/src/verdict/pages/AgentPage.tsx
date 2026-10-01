@@ -11,6 +11,7 @@ import {
 import { Ik, IkNav, IkHero, type HeroIconName } from "../icons.js";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
+import { StatStrip, Stat } from "../components/compact/StatStrip.js";
 import { CompactSparkline } from "../components/compact/Sparkline.js";
 import { FormulaTip } from "../components/compact/FormulaTip.js";
 import { ErrorState } from "../components/compact/ErrorState.js";
@@ -42,8 +43,11 @@ const CALL_LIMIT = 100;
 /** Said once, appended everywhere a statistic on this page is defined. */
 const SCOPE_NOTE = `Counted from the agent's newest ${CALL_LIMIT} calls.`;
 
-/** The win% definition, stated identically in the ribbon and in the summary. */
+/** The win% definition, stated identically in the strip and in the summary. */
 const WIN_RATE_PLAIN = `wins as a share of wins plus losses. Void calls are left out. ${SCOPE_NOTE}`;
+
+/** Separator on the identity line — decoration, kept out of the reading. */
+const SEP = <span aria-hidden="true">·</span>;
 
 export function AgentPage({ slug }: { slug: string }) {
   const [agent, setAgent] = useState<AgentProfile | null>(null);
@@ -205,13 +209,15 @@ export function AgentPage({ slug }: { slug: string }) {
       : null;
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="flex-1 flex flex-col">
       <TopbarCrumb><span>
             agents <span className="ck-dim mx-1">/</span>
             <span className="ck-pos">{agent?.display_slug ?? slug}</span>
           </span></TopbarCrumb>
 
-      <h1 className="sr-only">agent {agent?.display_name ?? `@${slug}`}</h1>
+      {/* The identity block below carries the h1 once the agent lands; an error
+          page still needs one. */}
+      {!agent && <h1 className="sr-only">agent @{slug}</h1>}
 
       {notFound && (
         <ErrorState kind="not_found" what="agent" id={slug} detail={error ?? undefined} />
@@ -221,68 +227,30 @@ export function AgentPage({ slug }: { slug: string }) {
       )}
 
       {agent && (
-        <>
-          {/* IDENTITY RIBBON ─────────────────────────────────── */}
-          {/* Identity first, stats after. Eight EQUAL columns gave `handle` 180px at
-              1440 for a value that needs 218, so the agent's own name was the one
-              thing on its profile that truncated. The two identity cells now take
-              a wider share and the six numeric cells split the rest; each of those
-              needs ~121px for its widest label ("recent score"). */}
-          <section className="grid grid-cols-2 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1.4fr)_repeat(6,minmax(0,1fr))] border-b border-[var(--color-border)]">
-            <RCell label="handle" value={`@${agent.display_slug}`} />
-            <RCell label="name" value={agent.display_name} />
-            <RCell label="kind" value={<KindGlyph kind={agent.kind} />} tone={kindTone(agent.kind)} />
-            <RCell
-              label={
-                /* Not a 30-day window: the fetch batch is the newest CALL_LIMIT
-                   CALLS and the value averages the scored rows within it. The
-                   plain line states that actual window, no date predicate. */
-                <FormulaTip
-                  label="recent score"
-                  plain={`the average score across this agent's scored calls. ${SCOPE_NOTE}`}
-                  formula="recent score = sum(call score) / scored calls"
-                />
-              }
-              value={stats ? formatScore(stats.avgScore) : "—"}
-              tone={(stats?.avgScore ?? 0) >= 0 ? "pos" : "neg"}
-            />
-            <RCell
-              label={
-                <FormulaTip
-                  label="win%"
-                  plain={WIN_RATE_PLAIN}
-                  formula="win % = wins / (wins + losses)"
-                />
-              }
-              value={stats ? formatWR(stats.winRate) : "—"}
-            />
-            <RCell
-              label="scored"
-              value={stats ? String(stats.resolved) : "—"}
-              title={`calls that finished and earned a score. ${SCOPE_NOTE}`}
-            />
-            <RCell
-              label="open"
-              value={stats ? String(stats.pending) : "—"}
-              tone="dim"
-              title={`calls that are sealed and have not resolved yet. ${SCOPE_NOTE}`}
-            />
-            <RCell
-              label={
-                <FormulaTip
-                  label="win streak"
-                  plain={`wins in a row, counting back from the newest call. ${SCOPE_NOTE}`}
-                  formula="win streak = wins from the newest call until the first loss"
-                />
-              }
-              value={stats ? String(stats.streak) : "—"}
-            />
+        <div className="ck-page flex-1 flex flex-col pt-2">
+          {/* IDENTITY — the handle at display size, everything else on one line. */}
+          <section className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h1 className="t-display-sm m-0">@{agent.display_slug}</h1>
+            <a
+              href={`#/share/${agent.display_slug}`}
+              className="ck-btn ck-btn-bracket ml-auto"
+            >
+              share
+            </a>
+            {/* Wave 1 — shadow CLAIM CTA removed alongside the deleted
+                /agents/:slug/claim route. Shadow agents are no longer
+                self-claimable; contact an operator. */}
           </section>
 
-          {/* IDENTITY META + ACTIONS ─────────────────────────── */}
-          <div className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--color-border)] flex-wrap">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 ck-mono ck-dim">
+            <span>{agent.display_name}</span>
+            {SEP}
+            <KindGlyph kind={agent.kind} />
             {agent.wallet_address && (
-              <OwnerAuthorizedPill explorerUrl={ownerExplorerUrl} />
+              <>
+                {SEP}
+                <OwnerAuthorizedPill explorerUrl={ownerExplorerUrl} />
+              </>
             )}
             {/* The explorer follows the agent's own chain. This link was pinned
                 to mainnet Basescan under a tooltip that said Base Sepolia. */}
@@ -305,84 +273,120 @@ export function AgentPage({ slug }: { slug: string }) {
                 {shortId(agent.wallet_address, 8, 6)}
               </span>
             )}
-            <span className="ck-label ck-dim">
-              since {agent.created_at.slice(0, 10)}
-            </span>
-            <span className="ml-auto flex items-center gap-1">
-              <a href={`#/share/${agent.display_slug}`} className="ck-btn ck-btn-bracket">
-                share
-              </a>
-              {/* Wave 1 — shadow CLAIM CTA removed alongside the
-                  deleted /agents/:slug/claim route. Shadow agents are
-                  no longer self-claimable; contact an operator (admin
-                  claim CLI lands in Wave 5). */}
-            </span>
+            {SEP}
+            <span>since {agent.created_at.slice(0, 10)}</span>
           </div>
 
           {agent.bio && (
-            <div className="px-2 py-1 border-b border-[var(--color-border)] ck-mono ck-dim leading-tight">
+            <p className="m-0 mt-1.5 ck-mono ck-dim ck-prose leading-tight">
               {agent.bio}
-            </div>
+            </p>
           )}
 
-          {/* MAIN GRID ───────────────────────────────────────── */}
-          <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)] min-h-0">
-            <Panel
-              title={<><IkNav name="feed" /> call log</>}
-              meta={
-                calls ? (
-                  <span title={`the agent's newest calls, ${CALL_LIMIT} at most`}>
-                    {calls.length}
-                  </span>
-                ) : (
-                  ""
-                )
+          <StatStrip className="mt-4">
+            <Stat
+              label={
+                /* Not a 30-day window: the fetch batch is the newest CALL_LIMIT
+                   CALLS and the value averages the scored rows within it. */
+                <FormulaTip
+                  label="Recent score"
+                  plain={`the average score across this agent's scored calls. ${SCOPE_NOTE}`}
+                  formula="recent score = sum(call score) / scored calls"
+                />
               }
-              className="lg:border-r-0"
-            >
-              {calls === null && !callsFailed && <PanelSkeleton rows={6} />}
-              {callsFailed && (
-                <InlineError
-                  error="the call log did not load. reload the page to try again."
-                  className="px-2 py-2 ck-mono"
+              value={stats ? formatScore(stats.avgScore) : null}
+              tone={(stats?.avgScore ?? 0) >= 0 ? "default" : "neg"}
+            />
+            <Stat
+              label={
+                <FormulaTip
+                  label="Win%"
+                  plain={WIN_RATE_PLAIN}
+                  formula="win % = wins / (wins + losses)"
                 />
-              )}
-              {calls !== null && calls.length === 0 && (
-                <div className="px-2 py-2 ck-mono ck-dim">[no calls yet]</div>
-              )}
-              {calls !== null && calls.length > 0 && <CallHistory calls={calls} />}
-            </Panel>
-
-            <Panel
-              title={<><IkNav name="market" /> markets</>}
-              meta={grid ? (gridTotal > grid.length ? `${grid.length} of ${gridTotal}` : `${grid.length}`) : ""}
-              className="lg:border-r-0"
-            >
-              {grid === null && !gridFailed && <PanelSkeleton rows={5} />}
-              {gridFailed && (
-                <InlineError
-                  error="the market results did not load. reload the page to try again."
-                  className="px-2 py-2 ck-mono"
+              }
+              value={stats ? formatWR(stats.winRate) : null}
+            />
+            <Stat
+              label="Scored"
+              value={stats ? String(stats.resolved) : null}
+              title={`calls that finished and earned a score. ${SCOPE_NOTE}`}
+            />
+            <Stat
+              label="Open"
+              value={stats ? String(stats.pending) : null}
+              title={`calls that are sealed and have not resolved yet. ${SCOPE_NOTE}`}
+            />
+            <Stat
+              label={
+                <FormulaTip
+                  label="Win streak"
+                  plain={`wins in a row, counting back from the newest call. ${SCOPE_NOTE}`}
+                  formula="win streak = wins from the newest call until the first loss"
                 />
-              )}
-              {grid !== null && grid.length === 0 && (
-                <div className="px-2 py-2 ck-mono ck-dim">[no market results yet]</div>
-              )}
-              {grid !== null && grid.length > 0 && <GridTable rows={grid} />}
-              {/* The venue mints a market every window, so this list had no
-                  bound anywhere. It ends where the cap does, and says so. */}
-              {grid !== null && gridTotal > grid.length && (
-                <p className="px-2 py-1.5 m-0 ck-mono ck-dim border-t border-[var(--color-border)]">
-                  showing the top {grid.length} of {gridTotal} markets by floor
-                </p>
-              )}
-            </Panel>
+              }
+              value={stats ? String(stats.streak) : null}
+            />
+          </StatStrip>
 
-            <Panel title={<><Ik name="verdict" /> summary</>}>
+          {/* MAIN GRID — log and markets stacked, summary in the rail. */}
+          <main className="mt-2 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_280px] gap-x-8 gap-y-6 items-start">
+            <div className="min-w-0 flex flex-col gap-6">
+              <Panel
+                title={<><IkNav name="feed" /> Call log</>}
+                meta={
+                  calls ? (
+                    <span title={`the agent's newest calls, ${CALL_LIMIT} at most`}>
+                      {calls.length}
+                    </span>
+                  ) : (
+                    ""
+                  )
+                }
+              >
+                {calls === null && !callsFailed && <PanelSkeleton rows={6} />}
+                {callsFailed && (
+                  <InlineError
+                    error="the call log did not load. reload the page to try again."
+                    className="px-2 py-2 ck-mono"
+                  />
+                )}
+                {calls !== null && calls.length === 0 && (
+                  <div className="px-2 py-2 ck-mono ck-empty">No calls yet</div>
+                )}
+                {calls !== null && calls.length > 0 && <CallHistory calls={calls} />}
+              </Panel>
+
+              <Panel
+                title={<><IkNav name="market" /> Markets</>}
+                meta={grid ? (gridTotal > grid.length ? `${grid.length} of ${gridTotal}` : `${grid.length}`) : ""}
+              >
+                {grid === null && !gridFailed && <PanelSkeleton rows={5} />}
+                {gridFailed && (
+                  <InlineError
+                    error="the market results did not load. reload the page to try again."
+                    className="px-2 py-2 ck-mono"
+                  />
+                )}
+                {grid !== null && grid.length === 0 && (
+                  <div className="px-2 py-2 ck-mono ck-empty">No market results yet</div>
+                )}
+                {grid !== null && grid.length > 0 && <GridTable rows={grid} />}
+                {/* The venue mints a market every window, so this list had no
+                    bound anywhere. It ends where the cap does, and says so. */}
+                {grid !== null && gridTotal > grid.length && (
+                  <p className="px-2 py-1.5 m-0 ck-mono ck-dim border-t border-[var(--color-border)]">
+                    showing the top {grid.length} of {gridTotal} markets by floor
+                  </p>
+                )}
+              </Panel>
+            </div>
+
+            <Panel title={<><Ik name="verdict" /> Summary</>}>
               <SidebarStats stats={stats} agent={agent} />
             </Panel>
           </main>
-        </>
+        </div>
       )}
     </div>
   );
@@ -395,16 +399,16 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
   const { open } = useDetailDrawer();
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[1fr_64px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
-        <span>market</span>
-        <span className="text-right" title="the agent's score on this market">score</span>
-        <span className="text-right" title="wins as a share of wins plus losses">win %</span>
-        <span className="text-right" title="the last few call scores, oldest first">trend</span>
+      <li className="grid grid-cols-[1fr_84px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+        <span>Market</span>
+        <span className="text-right" title="the agent's score on this market">Score</span>
+        <span className="text-right" title="wins as a share of wins plus losses">Win %</span>
+        <span className="text-right" title="the last few call scores, oldest first">Trend</span>
       </li>
       {rows.map((r) => (
         <li
           key={r.market_id}
-          className="relative grid grid-cols-[1fr_64px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[1fr_84px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           <a
             href={`#/markets/${encodeURIComponent(r.market_id)}`}
@@ -430,10 +434,15 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
               the same problem the hex id had. The series truncates; the window
               never does. */}
           <MarketCell label={r.market_label} marketId={r.market_id} />
+          {/* Doto carries no em dash, so a scoreless row stays in mono. */}
           <span
             className={
-              "ck-mono text-right " +
-              ((r.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg")
+              "text-right " +
+              (r.verdict_score === null || r.verdict_score === undefined
+                ? "ck-mono ck-dim"
+                : r.verdict_score >= 0
+                  ? "ck-num-key"
+                  : "ck-num-key ck-neg")
             }
           >
             {formatScore(r.verdict_score)}
@@ -554,7 +563,7 @@ function SidebarStats({
       {/* HERO — the one display-tier number on the profile. */}
       <div className="px-2 py-3 @[340px]:px-4 @[340px]:py-5">
         <FormulaTip
-          label="win rate"
+          label="Win rate"
           // Word for word the ribbon's win% tip: one definition, stated
           // identically everywhere the number appears.
           plain={WIN_RATE_PLAIN}
@@ -611,8 +620,8 @@ function SidebarStats({
           /* `stats` is null while the call log is loading or after it failed —
              claiming "no scored calls yet" there states a fact murmur does not
              have. */
-          <div className="mt-1.5 ck-colhead">
-            {stats === null ? "[the call log has not loaded]" : "[no scored calls yet]"}
+          <div className="mt-1.5 ck-colhead ck-empty">
+            {stats === null ? "The call log has not loaded" : "No scored calls yet"}
           </div>
         )}
       </div>
@@ -623,7 +632,7 @@ function SidebarStats({
       <div className="grid grid-cols-3 gap-px bg-[var(--color-border)] border-t border-[var(--color-border)]">
         <StatTile
           icon="avg-score"
-          label="avg"
+          label="Avg"
           value={stats ? formatScore(stats.avgScore) : "—"}
           tone={(stats?.avgScore ?? 0) >= 0 ? "ink" : "neg"}
           tip={{
@@ -634,14 +643,14 @@ function SidebarStats({
         />
         <StatTile
           icon="win-streak"
-          label="streak"
+          label="Streak"
           value={n(stats?.streak)}
           tone={countTone(stats?.streak, "ink")}
           title={`wins in a row, counting back from the newest call. ${SCOPE_NOTE}`}
         />
         <StatTile
           icon="all-calls"
-          label="calls"
+          label="Calls"
           value={n(stats?.total)}
           tone="ink"
           title={`the agent's newest calls, ${CALL_LIMIT} at most. Older calls are not read here.`}
@@ -655,7 +664,7 @@ function SidebarStats({
           className="flex justify-between gap-2 px-2 py-1.5 @[340px]:px-4 border-t border-[var(--color-border)] ck-colhead"
           title="calls that earned no score: void, rejected or missed reveal, or under dispute"
         >
-          <span>unscored</span>
+          <span>Unscored</span>
           {/* All three are zero in this branch — unless there is no call log to
               count, in which case the tally is unknown, not zero. The narrow
               sidecar has no room for the tally, and "none" says the same. */}
@@ -668,21 +677,21 @@ function SidebarStats({
         <div className="grid grid-cols-3 gap-px bg-[var(--color-border)] border-t border-[var(--color-border)]">
           <StatTile
             icon="outcome-void"
-            label="void"
+            label="Void"
             value={n(stats?.voids)}
             tone="dim"
             title="calls that settled with no winner, so they earn no score"
           />
           <StatTile
             icon="outcome-failed"
-            label="failed"
+            label="Failed"
             value={n(stats?.failed)}
             tone="dim"
             title="calls murmur rejected, or that missed their reveal"
           />
           <StatTile
             icon="outcome-other"
-            label="other"
+            label="Other"
             value={n(stats?.other)}
             tone="dim"
             title="calls in any other state — sent, checked, or under dispute"
@@ -821,56 +830,14 @@ function MarketCell({
       </span>
     );
   }
+  // Wrapping, not truncating: the series name is what tells one row from the
+  // next, so a narrow column takes a second line rather than eliding it.
   return (
-    <span
-      className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-2 min-w-0"
-      title={title}
-    >
-      <span className="ck-mono ck-pos truncate">{head}</span>
+    <span className="flex flex-wrap items-baseline gap-x-2 min-w-0" title={title}>
+      <span className="ck-mono ck-pos">{head}</span>
       <span className="ck-colhead whitespace-nowrap">{tail}</span>
     </span>
   );
-}
-
-function RCell({
-  label,
-  value,
-  tone = "default",
-  title: titleOverride,
-}: {
-  label: ReactNode;
-  value: ReactNode;
-  tone?: "pos" | "neg" | "dim" | "default";
-  /** Plain-language definition for a bare label that has no FormulaTip. */
-  title?: string;
-}) {
-  const toneClass =
-    tone === "pos" ? "ck-pos" : tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
-  // Only string/number values get a native hover title — a glyph value carries
-  // its own tooltip and would stringify to "[object Object]".
-  const title =
-    titleOverride ??
-    (typeof value === "string" || typeof value === "number" ? String(value) : undefined);
-  return (
-    <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5 min-w-0">
-      <span className="ck-label">{label}</span>
-      <span
-        className={"ck-mono ck-value truncate " + toneClass}
-        title={title}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function kindTone(kind: AgentProfile["kind"]): "pos" | "neg" | "dim" | "default" {
-  // `agent` is the canonical Privy-owned default and reads as
-  // the positive tone; `attested` is the sentinel (red) tier; everything
-  // else (benchmark, internal_test, stale legacy values) reads dim.
-  if (kind === "agent") return "pos";
-  if (kind === "attested") return "neg";
-  return "dim";
 }
 
 function humanChain(chainId: string | null | undefined): string {

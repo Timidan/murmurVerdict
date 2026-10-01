@@ -71,13 +71,13 @@ export function AgentProfilePanel({
     <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="agent" /> profile
+          <Ik name="agent" /> Profile
         </span>
       </div>
 
       <div className="px-4 py-4 flex flex-col gap-4">
         <label className="flex flex-col gap-1">
-          <span className="ck-label ck-pos">handle</span>
+          <span className="ck-label ck-pos">Handle</span>
           <span className="flex items-center gap-2">
             <span
               className="ck-mono ck-dim border border-[var(--color-border)] px-2 py-1"
@@ -97,7 +97,7 @@ export function AgentProfilePanel({
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="ck-label ck-pos">name</span>
+          <span className="ck-label ck-pos">Name</span>
           <input
             type="text"
             value={displayName}
@@ -112,7 +112,7 @@ export function AgentProfilePanel({
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="ck-label ck-pos">bio</span>
+          <span className="ck-label ck-pos">Bio</span>
           <textarea
             value={bio}
             onChange={(e) => setBio(e.currentTarget.value)}

@@ -121,10 +121,10 @@ export function CallDetail({
       {data && (
         <>
           <div className={statWrap}>
-            <Stat label="privacy" value={subjectLabel} mono title={privacyTitle} />
-            <Stat label="outcome" value={outcomeText} tone={outcomeTone} />
+            <Stat label="Privacy" value={subjectLabel} mono title={privacyTitle} />
+            <Stat label="Outcome" value={outcomeText} tone={outcomeTone} />
             <Stat
-              label="score"
+              label="Score"
               value={formatScore(data.resolution?.call_score)}
               mono
               title="How good this call was. It pays the agent for being right and confident, and charges it for being wrong and confident."
@@ -134,13 +134,13 @@ export function CallDetail({
           <Panel
             title={
               <>
-                <Ik name="verdict" /> the call
+                <Ik name="verdict" /> The call
               </>
             }
             className={panelCls}
           >
             <Kv
-              k="call id"
+              k="Call ID"
               v={
                 <span title={data.submission.call_id}>
                   {shortId(data.submission.call_id, 8, 5)}
@@ -149,7 +149,7 @@ export function CallDetail({
               mono
             />
             <Kv
-              k="agent id"
+              k="Agent ID"
               v={
                 <span title={data.submission.agent_id}>
                   {shortId(data.submission.agent_id, 8, 5)}
@@ -159,13 +159,13 @@ export function CallDetail({
             />
             {data.submission.privacy_mode && (
               <div className="flex items-center justify-between px-2 py-1">
-                <span className="ck-label ck-dim">privacy</span>
+                <span className="ck-label ck-dim">Privacy</span>
                 <PrivacyTierBadge mode={data.submission.privacy_mode} />
               </div>
             )}
             {data.submission.commit_hash && (
               <Kv
-                k="commit hash"
+                k="Commit hash"
                 v={
                   <span title={data.submission.commit_hash}>
                     {shortId(data.submission.commit_hash, 8, 5)}
@@ -180,7 +180,7 @@ export function CallDetail({
                   <>
                     {/* The venue's label, else the index; never an inferred direction. */}
                     <Kv
-                      k="side"
+                      k="Side"
                       v={
                         data.fhenix.revealed_verdict.outcome_label ??
                         `outcome ${data.fhenix.revealed_verdict.binary_index}`
@@ -188,40 +188,40 @@ export function CallDetail({
                       title="which of the venue's two outcomes this agent called. The venue names the pair; murmur records the index."
                     />
                     <Kv
-                      k="confidence"
+                      k="Confidence"
                       v={`${(data.fhenix.revealed_verdict.confidence_bps / 100).toFixed(2)}%`}
                     />
                   </>
                 ) : (
                   <>
-                    <Kv k="side" v="sealed" tone="ck-dim" />
-                    <Kv k="confidence" v="sealed" tone="ck-dim" />
+                    <Kv k="Side" v="sealed" tone="ck-dim" />
+                    <Kv k="Confidence" v="sealed" tone="ck-dim" />
                   </>
                 )}
               </>
             )}
             {data.submission.submitted_at && (
               <Kv
-                k="sent"
+                k="Sent"
                 /* Absolute times: the lifecycle stamps sit within a minute. */
                 v={<TimeAgo iso={data.submission.submitted_at} absolute />}
                 title="when the agent sent this call"
               />
             )}
             <Kv
-              k="accepted"
+              k="Accepted"
               v={<TimeAgo iso={data.submission.accepted_at} absolute />}
               title="when murmur accepted the call and sealed it"
             />
             {data.submission.strategy_tag && (
-              <Kv k="strategy" v={data.submission.strategy_tag} />
+              <Kv k="Strategy" v={data.submission.strategy_tag} />
             )}
           </Panel>
 
           <Panel
             title={
               <>
-                <Ik name="resolve" /> resolution
+                <Ik name="resolve" /> Resolution
               </>
             }
             className={panelCls}
@@ -230,17 +230,17 @@ export function CallDetail({
             {data.t0 && (
               <>
                 <Kv
-                  k="anchor time"
+                  k="Anchor time"
                   v={<TimeAgo iso={data.t0.t0} absolute />}
                   title="when the price was read at the start of this call"
                 />
                 <Kv
-                  k="anchor price"
+                  k="Anchor price"
                   v={data.t0.p0}
                   title="the starting price this call is measured from"
                 />
                 <Kv
-                  k="price source"
+                  k="Price source"
                   v={data.t0.feed}
                   title="the price feed that gave the anchor price"
                 />
@@ -250,41 +250,41 @@ export function CallDetail({
             {data.resolution ? (
               <>
                 <Kv
-                  k="market closed"
+                  k="Market closed"
                   v={<TimeAgo iso={data.resolution.t1} absolute />}
                   title="when the market closed and the call became scorable"
                 />
                 {/* Venue calls carry no closing price or feed. */}
                 {data.resolution.p1 !== null && data.resolution.p1 !== undefined && (
                   <Kv
-                    k="closing price"
+                    k="Closing price"
                     v={data.resolution.p1}
                     title="the closing price, compared against the anchor price to score the call"
                   />
                 )}
                 {data.resolution.t1_feed !== null && data.resolution.t1_feed !== undefined && (
                   <Kv
-                    k="price source"
+                    k="Price source"
                     v={data.resolution.t1_feed}
                     title="the price feed that gave the closing price"
                   />
                 )}
                 {data.resolution.call_score !== null && (
                   <Kv
-                    k="score"
+                    k="Score"
                     v={formatScore(data.resolution.call_score)}
                     title="How good this call was. It pays the agent for being right and confident, and charges it for being wrong and confident."
                   />
                 )}
                 <Kv
-                  k="scored"
+                  k="Scored"
                   v={<TimeAgo iso={data.resolution.resolved_at} absolute />}
                   title="when murmur scored this call"
                 />
               </>
             ) : (
               <Kv
-                k="scored"
+                k="Scored"
                 v={
                   isPendingCallStatus(data.submission.status)
                     ? "not yet — the market has not settled"
@@ -298,7 +298,7 @@ export function CallDetail({
           <Panel
             title={
               <>
-                <Ik name="seal" /> on-chain proof
+                <Ik name="seal" /> On-chain proof
               </>
             }
             className={page ? undefined : "-mt-px"}
@@ -306,12 +306,12 @@ export function CallDetail({
             {data.fhenix ? (
               <>
                 <Kv
-                  k="chain"
+                  k="Chain"
                   v={humanChain(data.fhenix.chain_id)}
                   title={String(data.fhenix.chain_id)}
                 />
                 <Kv
-                  k="contract"
+                  k="Contract"
                   v={
                     <ExplorerLink
                       address={data.fhenix.contract_address}
@@ -322,7 +322,7 @@ export function CallDetail({
                   mono
                 />
                 <Kv
-                  k="on-chain call id"
+                  k="On-chain call ID"
                   v={
                     <span className="ck-mono ck-pos" title={data.fhenix.onchain_call_id}>
                       {shortId(data.fhenix.onchain_call_id, 9, 6)}
@@ -333,34 +333,34 @@ export function CallDetail({
                 />
                 <KvDivider />
                 <Kv
-                  k="reveal"
+                  k="Reveal"
                   v={revealWord(data.fhenix.reveal_status)}
                   tone={revealTone(data.fhenix.reveal_status)}
                   title="whether the sealed call has been opened yet"
                 />
                 <Kv
-                  k="reveal opens"
+                  k="Reveal opens"
                   v={<TimeAgo iso={data.fhenix.reveal_open_at} absolute />}
                   tone="ck-dim"
                   title="the earliest moment this call can be opened"
                 />
                 {data.fhenix.revealed_at && (
-                  <Kv k="revealed" v={<TimeAgo iso={data.fhenix.revealed_at} absolute />} />
+                  <Kv k="Revealed" v={<TimeAgo iso={data.fhenix.revealed_at} absolute />} />
                 )}
                 {data.fhenix.terminal_at && (
                   <Kv
-                    k="closed"
+                    k="Closed"
                     v={<TimeAgo iso={data.fhenix.terminal_at} absolute />}
                     tone="ck-dim"
                     title="when this call reached its final state on chain"
                   />
                 )}
                 {data.fhenix.invalid_reason && (
-                  <Kv k="why it failed" v={data.fhenix.invalid_reason} tone="ck-neg" />
+                  <Kv k="Why it failed" v={data.fhenix.invalid_reason} tone="ck-neg" />
                 )}
               </>
             ) : (
-              <Kv k="on-chain" v="this call is not on chain yet" tone="ck-dim" />
+              <Kv k="On-chain" v="this call is not on chain yet" tone="ck-dim" />
             )}
           </Panel>
         </>

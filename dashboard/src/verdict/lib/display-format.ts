@@ -75,3 +75,8 @@ export function formatRelativeTime(iso: string, nowMs: number): string {
   else unit = `${Math.floor(s / (365 * 86400))}y`;
   return diff >= 0 ? `${unit} ago` : `in ${unit}`;
 }
+
+/** Sentence case for a lowercase label: "live tape" → "Live tape". */
+export function sentenceCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}

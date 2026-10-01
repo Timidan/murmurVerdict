@@ -14,7 +14,7 @@ import { readRouteQuery, buildRouteQueryUrl } from "../../route.js";
 import { Ik, type IconName } from "../../icons.js";
 import { PanelSkeleton } from "./PanelSkeleton.js";
 import { useFocusTrap } from "./useFocusTrap.js";
-import { shortId } from "../../lib/display-format.js";
+import { sentenceCase, shortId } from "../../lib/display-format.js";
 
 /**
  * Shared in-context detail drawer — a right sheet that shows an entity's detail
@@ -211,7 +211,7 @@ export function DetailDrawer() {
           {/* Title-marker upgrade (P2): the entity's own glyph replaces the
               generic ::before square, same as every panel title. */}
           <span className="ck-title ck-title-ik">
-            <Ik name={meta.icon} /> {meta.title}
+            <Ik name={meta.icon} /> {sentenceCase(meta.title)}
           </span>
           <span className="flex items-center gap-3">
             <span className="ck-mono ck-dim truncate max-w-[140px]" title={entity.id}>

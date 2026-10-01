@@ -21,6 +21,7 @@ import {
   RESOLUTION_CLASSES,
   SCHEMA_VERSION,
   SCORING_VERSION,
+  VERDICT_BOUNDS,
 } from "./schema.js";
 import { nowIso } from "./time.js";
 
@@ -253,6 +254,9 @@ export function publicMetaSurface(deps: PublicMetaDeps) {
     // Murmur lists no assets of its own; `assets` stays for wire compatibility.
     assets: [],
     venues: ["polymarket-gamma"],
+    // What a sealed verdict may contain. The contract enforces it at reveal,
+    // and Murmur cannot check ciphertext earlier, so agents must read this first.
+    verdict_bounds: VERDICT_BOUNDS,
     verified_volume_24h: get24hVerifiedVolume(deps.db, deps.servedAt),
     paid_inference: {
       current_venue: "polymarket-gamma",

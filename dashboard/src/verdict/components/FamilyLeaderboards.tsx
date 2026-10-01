@@ -69,11 +69,11 @@ export function FamilyLeaderboards() {
   }, [view]);
 
   return (
-    <div className="border border-[var(--color-border-vis)]">
-      <div className="ck-header flex items-center gap-2 px-2 py-1">
+    <div>
+      <div className="ck-section-head gap-2">
         {/* ck-title-ik: the glyph replaces the ::before square. */}
         <span className="ck-title ck-title-ik">
-          <IkNav name="market" /> families
+          <IkNav name="market" /> Families
         </span>
         <span
           className="ck-mono ck-dim"
@@ -85,7 +85,7 @@ export function FamilyLeaderboards() {
       <div className="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)]">
         <FamilyChip
           active={view === "cross"}
-          label="all families"
+          label="All families"
           onClick={() => setView("cross")}
         />
         {families?.map((f) => (
@@ -138,10 +138,11 @@ function FamilyChip({
       onClick={onClick}
       title={title}
       aria-pressed={active}
-      className={"ck-btn ck-btn-bracket " + (active ? "ck-btn-active" : "")}
+      className={"ck-seg " + (active ? "ck-seg-active" : "")}
     >
       {label}
-      {sub ? <span className="ck-dim ml-1">{sub}</span> : null}
+      {/* The chosen chip is filled, so its ratio follows the label's ink. */}
+      {sub ? <span className={active ? "ml-1" : "ck-dim ml-1"}>{sub}</span> : null}
     </button>
   );
 }
@@ -155,8 +156,8 @@ function SkelRows() {
 function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
   if (rows.length === 0) {
     return (
-      <div className="px-2 py-3 ck-mono ck-dim">
-        no agent holds a rank in two or more families yet
+      <div className="px-2 py-3 ck-mono ck-empty">
+        No agent holds a rank in two or more families yet
       </div>
     );
   }
@@ -164,15 +165,15 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
     <ul className="m-0 p-0 list-none ck-mono">
       <li className="ck-fam-row px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
-        <span>agent</span>
+        <span>Agent</span>
         <span className="text-right" title="the agent's score across every family">
-          score
+          Score
         </span>
         <span
           className="text-right"
           title="the share of families this agent holds a rank in"
         >
-          families
+          Families
         </span>
       </li>
       {rows.map((r, i) => (
@@ -190,7 +191,7 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
           >
             {r.display_slug}
           </a>
-          <span className="ck-dim text-right">{formatScore(r.general_score)}</span>
+          <span className="ck-num-key text-right">{formatScore(r.general_score)}</span>
           <span
             className="ck-dim text-right"
             title={`holds a rank in ${Math.round(r.coverage_ratio * 100)}% of families`}
@@ -206,22 +207,22 @@ function CrossRows({ rows }: { rows: AgentCrossFamilyRow[] }) {
 function FamilyRows({ rows }: { rows: AgentFamilyRow[] }) {
   if (rows.length === 0) {
     return (
-      <div className="px-2 py-3 ck-mono ck-dim">no agents yet</div>
+      <div className="px-2 py-3 ck-mono ck-empty">No agents yet</div>
     );
   }
   return (
     <ul className="m-0 p-0 list-none ck-mono">
       <li className="ck-fam-row px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>#</span>
-        <span>agent</span>
+        <span>Agent</span>
         <span className="text-right" title="the agent's score in this family">
-          score
+          Score
         </span>
         <span
           className="text-right"
           title="scored — calls that finished and earned a score"
         >
-          scored
+          Scored
         </span>
       </li>
       {rows.map((r, i) => (
@@ -239,7 +240,7 @@ function FamilyRows({ rows }: { rows: AgentFamilyRow[] }) {
           >
             {r.display_slug}
           </a>
-          <span className="ck-dim text-right">{formatScore(r.verdict_score)}</span>
+          <span className="ck-num-key text-right">{formatScore(r.verdict_score)}</span>
           <span className="ck-dim text-right">{r.resolved_calls}</span>
         </li>
       ))}

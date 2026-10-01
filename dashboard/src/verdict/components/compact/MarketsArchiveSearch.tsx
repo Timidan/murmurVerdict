@@ -208,7 +208,7 @@ export function MarketsArchiveSearch({
       >
         <span className="ck-mono flex flex-col gap-1 w-[32ch] max-w-full min-w-0">
           <label htmlFor={inputId} className="ck-label">
-            search the archive
+            Search the archive
           </label>
           <input
             id={inputId}
@@ -224,7 +224,7 @@ export function MarketsArchiveSearch({
         </span>
         <span className="flex flex-col gap-1">
           <label htmlFor={dayId} className="ck-label">
-            ended on
+            Ended on
           </label>
           <input
             id={dayId}
@@ -267,15 +267,15 @@ export function MarketsArchiveSearch({
           <InlineError error={state.error} className="px-2 py-2 ck-mono" />
         )}
         {!state.error && state.settledFor !== null && visible.length === 0 && (
-          <p className="px-2 py-2 ck-mono ck-dim">
+          <p className="px-2 py-2 ck-mono ck-empty">
             {state.rows.length > 0
-              ? "[no results for the assets you picked]"
-              : "[no archived markets found]"}
+              ? "No results for the assets you picked"
+              : "No archived markets found"}
           </p>
         )}
         {!state.error && state.settledFor === null && !state.loading && (
-          <p className="px-2 py-2 ck-mono ck-dim">
-            [the archive holds every market murmur has finished with]
+          <p className="px-2 py-2 ck-mono ck-empty">
+            The archive holds every market murmur has finished with
           </p>
         )}
         <ul className="m-0 p-0 list-none">

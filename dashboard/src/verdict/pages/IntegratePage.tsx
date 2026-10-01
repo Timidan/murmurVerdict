@@ -192,7 +192,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           {/* 21px page-h1, as on MarketDetailPage; t-display-sm would switch to
               Doto, reserved for the /install rail numerals. */}
           <h1 className="ck-pos text-[21px] font-bold mb-1">
-            integrate · {slug}
+            Integrate · {slug}
           </h1>
           {/* One line each; detail lives in the controls' title=. */}
           {promptCarriesKey && (
@@ -256,16 +256,16 @@ export function IntegratePage({ slug }: IntegratePageProps) {
               onPick={setSection}
               note={promptCarriesKey ? "holds the key" : null}
             >
-              prompt
+              Prompt
             </RailTab>
             <RailTab id="code" current={section} onPick={setSection}>
-              code
+              Code
             </RailTab>
             <RailTab id="files" current={section} onPick={setSection}>
-              files
+              Files
             </RailTab>
             <RailTab id="manage" current={section} onPick={setSection}>
-              manage
+              Manage
             </RailTab>
           </div>
 
@@ -318,7 +318,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <Pane active={section === "files"}>
               <section className="ck-frame">
                 <div className="ck-header">
-                  <span className="ck-title">files to read</span>
+                  <span className="ck-title">Files to read</span>
                 </div>
                 <ul className="divide-y divide-[var(--color-border)]">
                   <li>
@@ -378,7 +378,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
             <Pane active={section === "manage"}>
               <section className="ck-frame">
                 <div className="ck-header">
-                  <span className="ck-title">manage</span>
+                  <span className="ck-title">Manage</span>
                 </div>
                 <ul className="divide-y divide-[var(--color-border)]">
                   <li>
@@ -590,7 +590,7 @@ function AgentPromptPanel({
   return (
     <section className="ck-frame">
       <div className="ck-header">
-        <span className="ck-title">the prompt for your agent</span>
+        <span className="ck-title">The prompt for your agent</span>
         <span className="flex items-center gap-2">
           {copyFallback && (
             <span className="text-[12px] ck-dim" aria-live="polite">

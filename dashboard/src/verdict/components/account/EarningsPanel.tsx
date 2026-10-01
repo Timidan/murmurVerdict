@@ -129,7 +129,7 @@ export function EarningsPanel({ slug }: { slug: string }) {
     <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="x402" /> earnings
+          <Ik name="x402" /> Earnings
         </span>
         <span className="ck-mono ck-dim">
           {earnings ? `${lifetimeSales} sales` : "…"}
@@ -173,7 +173,7 @@ export function EarningsPanel({ slug }: { slug: string }) {
 
         {earnings && earnings.sales.length > 0 && (
           <div className="flex flex-col gap-2">
-            <h3 className="ck-label ck-pos">sales</h3>
+            <h3 className="ck-label ck-pos">Sales</h3>
             <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
               {earnings.sales.map((sale) => (
                 <li
@@ -276,13 +276,13 @@ function MoneyStrip({
       </div>
       <div className="grid grid-cols-3 gap-3">
         <Figure
-          label="accrued"
+          label="Accrued"
           value={formatAtoms(total.lifetime_accrued_net, total.currency)}
           tone="pos"
           title="What your sales earned you, after murmur's fee."
         />
         <Figure
-          label="paid"
+          label="Paid"
           value={formatAtoms(total.lifetime_paid_net, total.currency)}
           tone="plain"
           title={
@@ -382,7 +382,7 @@ function WithdrawRow({
     <div className="flex flex-col gap-1 border-t border-[var(--color-border)] pt-2 mt-1">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex flex-col">
-          <span className="ck-label ck-dim">available to withdraw</span>
+          <span className="ck-label ck-dim">Available to withdraw</span>
           <span className={"ck-mono " + (available > 0n ? "ck-pos" : "ck-dim")}>
             {formatAtoms(balance.available_atoms, balance.currency)}{" "}
             <CurrencyMark currency={balance.currency} className="ck-dim text-[12px]" />
@@ -432,7 +432,7 @@ function WithdrawRow({
 function WithdrawalList({ rows }: { rows: ProviderWithdrawalsView["withdrawals"] }) {
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="ck-label ck-pos">withdrawals</h3>
+      <h3 className="ck-label ck-pos">Withdrawals</h3>
       <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
         {rows.map((row) => (
           <li key={row.id} className="grid grid-cols-[1fr_auto] items-baseline gap-3 px-3 py-2">
@@ -510,7 +510,7 @@ function PayoutJournal({
 }) {
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="ck-label ck-pos">payouts</h3>
+      <h3 className="ck-label ck-pos">Payouts</h3>
       {!payouts ? (
         // Unloaded is not the same as empty, so it says neither.
         <p className="ck-dim text-[12px]">

@@ -14,7 +14,7 @@ export function NotFoundPage({ path }: NotFoundPageProps) {
       <TopbarCrumb>404</TopbarCrumb>
       <main className="px-2 py-3 ck-mono">
         <div className="ck-label ck-dim mb-1">404</div>
-        <div className="ck-title">page not found</div>
+        <div className="ck-title">Page not found</div>
         <div className="ck-mono ck-dim mt-1 max-w-[52ch] truncate" title={attempted}>
           {attempted}
         </div>

@@ -1,4 +1,8 @@
-import { FEED_PACKET_KINDS } from "../schema.js";
+import {
+  FEED_PACKET_KINDS,
+  CONFIDENCE_BPS_MAX,
+  CONFIDENCE_BPS_MIN,
+} from "../schema.js";
 import type { OpenApiPathMap } from "./types.js";
 
 export function gatewayOpenApiPaths(input: {
@@ -161,7 +165,7 @@ export function gatewayOpenApiPaths(input: {
                     required: ["binary_index", "confidence_bps"],
                     properties: {
                       binary_index: { type: "integer", minimum: 0, maximum: 1 },
-                      confidence_bps: { type: "integer", minimum: 5100, maximum: 9500 },
+                      confidence_bps: { type: "integer", minimum: CONFIDENCE_BPS_MIN, maximum: CONFIDENCE_BPS_MAX },
                     },
                     additionalProperties: false,
                   },

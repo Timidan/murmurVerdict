@@ -2,7 +2,7 @@
 /**
  * Operator-blind FHE round-trip release gate: runs one sealed call on live Base Sepolia and asserts
  * the daemon API response and dashboard DOM stay opaque until publishReveal lands.
- * Checks HTTP and DOM only, not stored state; the daemon sees plaintext at /v2/gateway/calls/seal by design.
+ * Checks HTTP and DOM only, not stored state; the verdict is sealed in this process and the daemon only ever relays ciphertext.
  * Run `tsx tools/operator-blind-roundtrip.ts` after tools/seed-operator-blind-fixtures.ts. No mocks.
  */
 
@@ -21,6 +21,12 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { deriveAddressFromKey } from "../src/integrations/derived-addresses.js";
+import {
+  AGENT_GATEWAY_PATH,
+  buildAgentSealedCallBody,
+} from "../src/integrations/agent-side-cofhe-sealer-support.js";
+import type { GatewaySealedCallBody } from "../src/integrations/fhenix-gateway-schemas.js";
+import { fetchMeta, sealVerdict } from "./agent-side-cofhe-sealer.js";
 import { baseSepolia } from "viem/chains";
 
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
@@ -267,22 +273,6 @@ interface GatewayCallResponse {
   idempotent_hit: boolean;
 }
 
-interface GatewaySealedCallBody {
-  marketRef: {
-    protocol: string;
-    sourceId: string;
-    configVersion: number;
-  };
-  client_order_id: string;
-  client_nonce: Hex;
-  privacy_mode: "murmur_sealed_fhenix";
-  verdict: {
-    binary_index: number;
-    confidence_bps: number;
-  };
-  public_strategy_tag: string;
-}
-
 async function postGatewayCall(
   gatewayUrl: string,
   runtimeKey: string,
@@ -519,7 +509,8 @@ async function main() {
     }
     ok("snapshot-0: baseline taken (daemon reachable, runId not present yet)");
 
-    // 2. Gateway submit: the daemon seals the verdict and its broadcaster sends submitSealedFor.
+    // 2. Gateway submit: this process seals the verdict; the daemon's broadcaster
+    // sends submitSealedFor and never sees the sentinel values.
     const marketId = env.marketId;
     log(`using seeded gateway marketId=${marketId} agentAddress=${env.agentAddress}`);
     log(`initializing @cofhe/sdk client (chain=${CHAIN_ID})`);
@@ -535,22 +526,32 @@ async function main() {
     });
 
     const clientNonce = makeOperatorBlindClientNonce({ runId });
+    // Bind the proof to Murmur's PUBLISHED relayer and contract, read from
+    // /v1/meta, exactly as an outside agent would.
+    const sealTargets = await fetchMeta(env.daemonUrl);
+    const sealedSentinel = await sealVerdict({
+      binaryIndex: sentinelBinaryIndex,
+      confidenceBps: sentinelConfidence,
+      chainId: sealTargets.chainId,
+      relayerAddress: sealTargets.relayerAddress,
+      contractAddress: sealTargets.contractAddress,
+      confidenceBounds: sealTargets.confidenceBounds,
+      rpcUrl: env.baseRpcUrl,
+    });
     const gatewayBody: GatewaySealedCallBody = {
-      marketRef: {
-        protocol: env.marketProtocol,
-        sourceId: marketId,
+      ...buildAgentSealedCallBody({
+        binaryInput: sealedSentinel.binary_index_input,
+        confidenceInput: sealedSentinel.confidence_input,
         configVersion: 1,
-      },
-      client_order_id: operatorBlindClientOrderId(runId, clientNonce),
-      client_nonce: clientNonce,
-      privacy_mode: "murmur_sealed_fhenix",
-      verdict: {
-        binary_index: sentinelBinaryIndex,
-        confidence_bps: sentinelConfidence,
-      },
-      public_strategy_tag: "release-gate",
+        marketSourceId: marketId,
+        clientNonce,
+        clientOrderId: operatorBlindClientOrderId(runId, clientNonce),
+        strategyTag: "release-gate",
+      }),
+      // The fixture market's protocol is configurable; keep the env value.
+      marketRef: { protocol: env.marketProtocol, sourceId: marketId, configVersion: 1 },
     };
-    const gatewayUrl = `${env.daemonUrl}/v2/gateway/calls/seal`;
+    const gatewayUrl = `${env.daemonUrl}${AGENT_GATEWAY_PATH}`;
 
     // Wait for the submission window: the contract reverts before submissionOpenAt and after submissionCloseAt.
     // Poll the schedule first; a lagging RPC replica can return an all-zero tuple right after seeding.
@@ -592,7 +593,7 @@ async function main() {
           `tools/seed-operator-blind-fixtures.ts immediately before this script.`,
       );
     }
-    log(`POST /v2/gateway/calls/seal marketId=${marketId} nonce=${clientNonce}`);
+    log(`POST ${AGENT_GATEWAY_PATH} marketId=${marketId} nonce=${clientNonce}`);
     const accepted = await submitGatewayCallAndWaitForAccepted(
       gatewayUrl,
       env.runtimeKey,

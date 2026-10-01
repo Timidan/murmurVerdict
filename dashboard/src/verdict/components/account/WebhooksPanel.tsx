@@ -124,7 +124,7 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
     <section className="ck-frame">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="webhook" /> webhooks
+          <Ik name="webhook" /> Webhooks
         </span>
         <span className="ck-mono ck-dim">{rows.length} active</span>
       </div>
@@ -151,7 +151,7 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
             }}
           >
             <label className="ck-mono flex flex-col gap-1 w-[40ch] max-w-full min-w-0">
-              <span className="ck-label ck-pos">url</span>
+              <span className="ck-label ck-pos">URL</span>
               <input
                 type="url"
                 value={url}
@@ -162,7 +162,7 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="ck-label ck-pos">agent</span>
+              <span className="ck-label ck-pos">Agent</span>
               <select
                 value={scope}
                 onChange={(e) => setScope(e.currentTarget.value)}
@@ -298,7 +298,7 @@ function WebhookSecretModal({
       >
         <div className="ck-header">
           <span id="webhook-secret-title" className="ck-title ck-title-ik">
-            <Ik name="webhook" /> your signing secret
+            <Ik name="webhook" /> Your signing secret
           </span>
         </div>
         <div className="px-4 py-4 flex flex-col gap-3">

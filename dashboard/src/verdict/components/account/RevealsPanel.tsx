@@ -89,7 +89,7 @@ export function RevealsPanel({ slug }: { slug: string }) {
     <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="seal" /> reveals
+          <Ik name="seal" /> Reveals
         </span>
         <span className="flex items-center gap-3">
           {/* Same bracket-toggle idiom as the ladder's tier control. */}
@@ -185,7 +185,7 @@ function RevealRow({
         </span>
       </span>
       <span className="text-right">
-        <span className="ck-label ck-dim block">deadline</span>
+        <span className="ck-label ck-dim block">Deadline</span>
         <span
           className="ck-mono text-[12px]"
           title={

@@ -12,7 +12,7 @@ import {
   formatLocalDayLabel,
   localDayKey,
 } from "../../lib/date-time-format.js";
-import { shortId } from "../../lib/display-format.js";
+import { sentenceCase, shortId } from "../../lib/display-format.js";
 import { formatScore } from "../../lib/score-format.js";
 import { isPlainLeftClick, useDetailDrawer } from "./DetailDrawer.js";
 
@@ -206,7 +206,7 @@ export function CallHistory({ calls }: { calls: AgentCallRow[] }) {
           active={active === SUMMARY_TAB}
           onSelect={() => setTab(SUMMARY_TAB)}
         >
-          all <span className="ck-dim">·</span> summary
+          All <span className="ck-dim">·</span> summary
         </TabButton>
         {visibleDays.map((d) => (
           <TabButton
@@ -214,13 +214,13 @@ export function CallHistory({ calls }: { calls: AgentCallRow[] }) {
             active={active === d.key}
             onSelect={() => setTab(d.key)}
           >
-            {d.label} <span className="ck-dim">·</span>{" "}
+            {sentenceCase(d.label)} <span className="ck-dim">·</span>{" "}
             <span className="tabular-nums">{d.calls.length}</span>
           </TabButton>
         ))}
         {restDays > 0 && (
           <TabButton onSelect={() => setAllDays(true)}>
-            show {restDays} more {restDays === 1 ? "day" : "days"}
+            Show {restDays} more {restDays === 1 ? "day" : "days"}
           </TabButton>
         )}
       </div>
@@ -296,7 +296,7 @@ function DaySummary({ days }: { days: DayBucket[] }) {
             <span className="ck-mono ck-neg">
               {d.losses === 1 ? "1 loss" : `${d.losses} losses`}
             </span>
-            <span className="ml-auto ck-label">avg score</span>
+            <span className="ml-auto ck-label">Avg score</span>
             <span
               className="ck-mono"
               title="the average score across this day's scored calls"
@@ -391,7 +391,7 @@ function CallRow({ call }: { call: AgentCallRow }) {
       <span className={"ck-mono text-right " + tone}>
         {formatScore(call.call_score ?? null)}
       </span>
-      <span className={"ck-label truncate " + tone}>{word}</span>
+      <span className={"ck-label truncate " + tone}>{sentenceCase(word)}</span>
       <CallTip call={call} />
       {/* Last in the row and last in the DOM, so the narrow grid can drop it to
           its own line without stranding the tooltip on a third row. */}

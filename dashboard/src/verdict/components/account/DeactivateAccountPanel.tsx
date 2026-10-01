@@ -44,7 +44,7 @@ export function DeactivateAccountPanel({
     <details className="ck-frame mmr-danger">
       <summary className="ck-header mmr-danger-summary">
         <span className="ck-title ck-title-ik">
-          <Ik name="kill-switch" /> close this account
+          <Ik name="kill-switch" /> Close this account
         </span>
         <span className="flex items-center gap-2">
           <span className="ck-mono ck-dim">no undo</span>
@@ -80,7 +80,7 @@ export function DeactivateAccountPanel({
           }}
         >
           <label htmlFor="account-close-confirm" className="ck-label">
-            type close my account to confirm
+            Type close my account to confirm
           </label>
           <input
             id="account-close-confirm"

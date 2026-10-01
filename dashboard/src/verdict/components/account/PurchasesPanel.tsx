@@ -193,7 +193,7 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
     <section className="ck-frame">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="x402" /> purchases
+          <Ik name="x402" /> Purchases
         </span>
         <span className="ck-mono ck-dim">
           {view ? (view.authenticated ? "full history" : "granted only") : "…"}
@@ -212,7 +212,7 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
 
         {options.length > 1 ? (
           <div className="flex items-center gap-2">
-            <span className="ck-label">wallet</span>
+            <span className="ck-label">Wallet</span>
             <Select.Root
               value={address ?? ""}
               onValueChange={setPicked}

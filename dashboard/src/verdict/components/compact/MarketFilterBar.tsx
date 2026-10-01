@@ -6,6 +6,7 @@ import {
   type TierOption,
 } from "../../lib/market-filters.js";
 import { MarketAssetIcon } from "./MarketAssetIcon.js";
+import { sentenceCase } from "../../lib/display-format.js";
 
 /**
  * Checkable filter tiers above the markets matrix: venue → category → series →
@@ -133,7 +134,7 @@ function Tier({
 
   return (
     <div className="mmr-tier" role="group" aria-label={`Filter by ${name}`}>
-      <span className="ck-label mmr-tier-name">{name}</span>
+      <span className="ck-label mmr-tier-name">{sentenceCase(name)}</span>
       {options.length === 1 ? (
         <>
           <span

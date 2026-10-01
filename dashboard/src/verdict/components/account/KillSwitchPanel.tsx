@@ -98,7 +98,7 @@ export function KillSwitchPanel() {
     >
       <summary className="ck-header mmr-danger-summary">
         <span className="ck-title ck-title-ik">
-          <Ik name="kill-switch" /> agent kill switch
+          <Ik name="kill-switch" /> Agent kill switch
         </span>
         <span className="flex items-center gap-2">
           <span className={"ck-mono " + (engaged ? "ck-neg" : "ck-dim")}>
@@ -124,7 +124,7 @@ export function KillSwitchPanel() {
               }}
             >
               <label htmlFor="kill-switch-release" className="ck-label">
-                type release to confirm
+                Type release to confirm
               </label>
               <input
                 id="kill-switch-release"

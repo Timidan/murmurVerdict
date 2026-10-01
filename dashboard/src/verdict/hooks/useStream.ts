@@ -32,6 +32,8 @@ export interface StreamSnapshot {
   leaderboard: LeaderboardUpdateEvent | null;
   /** Last stats heartbeat. */
   stats: StatsTickEvent | null;
+  /** Client receive time of that heartbeat — the page's "updated Ns ago". */
+  statsAt: number | null;
   /** Most recent N calls (newest first). Capped to keep memory steady on long sessions. */
   recentCalls: Array<CallAcceptedEvent | CallResolvedEvent>;
   /**
@@ -57,6 +59,7 @@ let snapshot: StreamSnapshot = {
   status: "connecting",
   leaderboard: null,
   stats: null,
+  statsAt: null,
   recentCalls: [],
   markets: {},
 };
@@ -74,7 +77,7 @@ function applyEvent(event: VerdictEvent): void {
   if (event.type === "leaderboard.update") {
     snapshot = { ...snapshot, leaderboard: event };
   } else if (event.type === "stats.tick") {
-    snapshot = { ...snapshot, stats: event };
+    snapshot = { ...snapshot, stats: event, statsAt: Date.now() };
   } else if (event.type === "markets.update") {
     // Per-market delta — keyed map so consumers filter cheaply by market_id.
     snapshot = {

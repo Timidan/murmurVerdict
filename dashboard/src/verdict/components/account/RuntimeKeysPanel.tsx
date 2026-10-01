@@ -161,7 +161,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     <section className="ck-frame w-full px-4 py-4 flex flex-col gap-3">
       <header className="flex items-center justify-between">
         <h3 className="ck-title ck-title-ik">
-          <Ik name="runtime-key" /> runtime keys · {slug}
+          <Ik name="runtime-key" /> Runtime keys · {slug}
         </h3>
         <span className="text-[12px] ck-dim">
           {/* Before the keys are known the count is unknown, not zero. */}
@@ -211,10 +211,10 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
       {!loading && keys.length > 0 && (
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
           <li className="hidden md:grid md:grid-cols-[140px_1fr_120px_130px_142px] gap-2 ck-colhead">
-            <span>key</span>
-            <span>label</span>
-            <span>created</span>
-            <span>connection</span>
+            <span>Key</span>
+            <span>Label</span>
+            <span>Created</span>
+            <span>Connection</span>
             <span className="text-right"></span>
           </li>
           {keys.map((k) => {

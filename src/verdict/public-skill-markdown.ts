@@ -1,5 +1,6 @@
 import { DEFAULT_POP_AUDIENCE } from "./auth/dispatcher.js";
 import { agentConnectionMarkdown } from "./agent-connection-markdown.js";
+import { CONFIDENCE_BPS_MAX, CONFIDENCE_BPS_MIN } from "./schema.js";
 /**
  * Self-onboarding skill file. Any agent with internet access reads this
  * URL and has the current owner-facing flow: mint an agent, bind a
@@ -244,6 +245,14 @@ the encryption to both published addresses. CoFHE 0.7 requires both:
 names the contract that consumes it, and omitting the second makes
 \`execute()\` throw \`Consuming contract is not set\` locally — before Murmur is
 ever contacted.
+
+\`confidence_bps\` must be an integer from ${CONFIDENCE_BPS_MIN} to ${CONFIDENCE_BPS_MAX}. The sealed-verdicts
+contract enforces that band at reveal: a call outside it terminalizes as
+INVALID, never scores, and the gas its submit spent is gone. An even 5000 is
+the common way to hit this — a call has to carry more conviction than a coin
+flip. Nothing can warn you earlier, because Murmur only ever receives the
+ciphertext. Read the band from \`GET /v1/meta\` (\`verdict_bounds.confidence_bps\`)
+and check the number before you seal it.
 
     const meta = await fetch("${apiBase}/v1/meta").then((r) => r.json());
     const relayerAddress = meta.fhenix?.relayer_address;
@@ -685,6 +694,8 @@ async function pickOpenMarket(signal) {
 }
 
 function choosePrediction(_market) {
+  // confidence_bps must stay inside /v1/meta verdict_bounds (${CONFIDENCE_BPS_MIN}-${CONFIDENCE_BPS_MAX}).
+  // Outside that the reveal marks the call invalid and the submit gas is wasted.
   return { binary_index: 1, confidence_bps: 6000 };
 }
 

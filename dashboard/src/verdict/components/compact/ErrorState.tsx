@@ -1,3 +1,5 @@
+import { sentenceCase } from "../../lib/display-format.js";
+
 /**
  * Shared compact error / not-found surface: status word, plain headline, the
  * looked-up id, recovery links, and the raw detail collapsed in <details>.
@@ -15,9 +17,9 @@ interface ErrorStateProps {
 }
 
 export function ErrorState({ kind, what, id, detail }: ErrorStateProps) {
-  const status = kind === "not_found" ? "404" : "error";
+  const status = kind === "not_found" ? "404" : "Error";
   const headline =
-    kind === "not_found" ? `${what} not found` : `we could not load this ${what}`;
+    kind === "not_found" ? sentenceCase(`${what} not found`) : `We could not load this ${what}`;
   const oneLiner =
     kind === "not_found"
       ? `Nothing is registered under this ${what} id. It may be retired, renamed, or mistyped.`
@@ -39,7 +41,7 @@ export function ErrorState({ kind, what, id, detail }: ErrorStateProps) {
       {detail && (
         <details className="mt-3">
           <summary className="ck-label ck-dim cursor-pointer select-none">
-            technical detail
+            Technical detail
           </summary>
           <pre className="details-fade ck-mono ck-dim mt-1 whitespace-pre-wrap break-all leading-tight">
             {detail}

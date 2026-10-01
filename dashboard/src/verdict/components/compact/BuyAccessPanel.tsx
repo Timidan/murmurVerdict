@@ -367,7 +367,7 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
       <span className="flex items-center justify-between gap-3">
         <span className="ck-label ck-dim inline-flex items-center gap-1.5">
           <Ik name="x402" />
-          early access
+          Early access
         </span>
         {/* Always closeable, including mid-wait. Closing stops the polling
             (the `live` ref), it does not stop the purchase: a paid grant lands

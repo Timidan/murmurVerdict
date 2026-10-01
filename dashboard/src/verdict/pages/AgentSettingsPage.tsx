@@ -116,25 +116,25 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
           <nav className="ck-sidetab-rail" aria-label="agent settings tabs">
             {/* payout is the default tab (route.ts); keep it first. */}
             <TabLink slug={slug} tab="payout" active={tab === "payout"} note={payoutNote}>
-              payout
+              Payout
             </TabLink>
             <TabLink slug={slug} tab="pricing" active={tab === "pricing"}>
-              pricing
+              Pricing
             </TabLink>
             <TabLink slug={slug} tab="earnings" active={tab === "earnings"}>
-              earnings
+              Earnings
             </TabLink>
             <TabLink slug={slug} tab="reveals" active={tab === "reveals"}>
-              reveals
+              Reveals
             </TabLink>
             <TabLink slug={slug} tab="wallet" active={tab === "wallet"} note={walletNote}>
-              wallet
+              Wallet
             </TabLink>
             <TabLink slug={slug} tab="runtime" active={tab === "runtime"}>
-              runtime keys
+              Runtime keys
             </TabLink>
             <TabLink slug={slug} tab="keys" active={tab === "keys"}>
-              api keys
+              API keys
             </TabLink>
             <TabLink
               slug={slug}
@@ -142,7 +142,7 @@ export function AgentSettingsPage({ slug, tab }: AgentSettingsPageProps) {
               active={tab === "profile"}
               note={agent?.retired_at ? "retired" : undefined}
             >
-              profile
+              Profile
             </TabLink>
           </nav>
 

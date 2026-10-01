@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { verdictApi, type LeaderboardRow } from "../api.js";
 import { Ik, IkNav } from "../icons.js";
 import { readRouteQuery, buildRouteQueryUrl } from "../route.js";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
+import { StatStrip, Stat } from "../components/compact/StatStrip.js";
+import { TimeAgo } from "../components/compact/TimeAgo.js";
 import { InlineError } from "../components/compact/InlineError.js";
 import { SkeletonBar } from "../components/compact/PanelSkeleton.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
@@ -18,6 +20,7 @@ import {
   writeViewToQuery,
   type LeaderboardView,
 } from "../lib/listings-matrix.js";
+import { sentenceCase } from "../lib/display-format.js";
 
 type Tier = "all" | "main" | "provisional";
 type SortKey = "rank" | "score" | "lb" | "wr" | "res" | "pend";
@@ -79,8 +82,8 @@ function viewFromUrl(): LeaderboardView {
  * the three that already do.
  */
 const VIEW_LABEL: Record<LeaderboardView, string> = {
-  rankings: "ladder",
-  listings: "listings",
+  rankings: "Ladder",
+  listings: "Listings",
 };
 
 /**
@@ -99,6 +102,8 @@ export function LeaderboardPage() {
   const [sort, setSort] = useState<SortKey>(sortFromUrl);
   const [view, setView] = useState<LeaderboardView>(viewFromUrl);
   const [error, setError] = useState<string | null>(null);
+  /** When the rows on screen landed — the ladder header dates itself. */
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
 
   // Mirror tier/sort into the address bar. replaceState (not push) keeps
   // toggles out of the back/forward stack and fires no navigation, so the
@@ -149,6 +154,7 @@ export function LeaderboardPage() {
       .then((r) => {
         if (!cancelled) {
           setRows(r.rows);
+          setFetchedAt(new Date().toISOString());
           setError(null);
         }
       })
@@ -221,6 +227,7 @@ export function LeaderboardPage() {
             </span>
           </span></TopbarCrumb>
 
+      <div className="ck-page flex-1 flex flex-col min-h-0 pt-2">
       {/* RIBBON ───────────────────────────────────────
           Ladder-only. Every cell here counts RANKED agents, which is a
           different population from the sellers in the listings matrix — the
@@ -229,20 +236,20 @@ export function LeaderboardPage() {
           describe rows the reader cannot see. The matrix carries its own
           counts in its panel header instead. */}
       {view === "rankings" && (
-      <section className="grid grid-cols-2 md:grid-cols-6 border-b border-[var(--color-border)]">
-        <RibbonCell label="agents" value={sorted?.length ?? "—"} />
-        <RibbonCell label="ranked" value={summary?.main ?? "—"} />
-        <RibbonCell label="unranked" value={summary?.prov ?? "—"} tone="dim" />
-        <RibbonCell label="open calls" value={summary?.pend ?? "—"} tone="dim" />
-        <RibbonCell
-          label="avg win %"
-          value={summary?.avgWR == null ? "—" : `${Math.round(summary.avgWR * 100)}%`}
+      <StatStrip>
+        <Stat label="Agents" value={sorted?.length} />
+        <Stat label="Ranked" value={summary?.main} />
+        <Stat label="Unranked" value={summary?.prov} tone="dim" />
+        <Stat label="Open calls" value={summary?.pend} tone="dim" />
+        <Stat
+          label="Avg win %"
+          value={summary?.avgWR == null ? null : `${Math.round(summary.avgWR * 100)}%`}
         />
         {/* Scoring aggregates across ALL resolved calls (all-time) — see the
             legend's "all time" line. The prior "30d" implied a rolling
             30-day scoring window that does not exist. */}
-        <RibbonCell label="counts" value="all time" tone="dim" />
-      </section>
+        <Stat label="Counts" value="all time" kind="text" tone="dim" />
+      </StatStrip>
       )}
 
       {/* CONTROL BAR ───────────────────────────────────
@@ -254,13 +261,13 @@ export function LeaderboardPage() {
           themselves are unchanged. */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-2 py-1 border-b border-[var(--color-border)]">
         <div className="flex flex-wrap items-center gap-x-1">
-          <span className="ck-label mr-1">view</span>
+          <span className="ck-label mr-1">View</span>
           {LEADERBOARD_VIEWS.map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
               aria-pressed={view === v}
-              className={"ck-btn ck-btn-bracket " + (view === v ? "ck-btn-active" : "")}
+              className={"ck-seg " + (view === v ? "ck-seg-active" : "")}
               title={
                 v === "rankings"
                   ? "who is best, by their score"
@@ -277,28 +284,28 @@ export function LeaderboardPage() {
         {view === "rankings" && (
           <>
             <div className="flex flex-wrap items-center gap-x-1">
-              <span className="ck-label mr-1">show</span>
+              <span className="ck-label mr-1">Show</span>
               {(["all", "main", "provisional"] as Tier[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTier(t)}
                   aria-pressed={tier === t}
-                  className={"ck-btn ck-btn-bracket " + (tier === t ? "ck-btn-active" : "")}
+                  className={"ck-seg " + (tier === t ? "ck-seg-active" : "")}
                 >
-                  {TIER_LABEL[t]}
+                  {sentenceCase(TIER_LABEL[t])}
                 </button>
               ))}
             </div>
             <div className="flex flex-wrap items-center gap-x-1">
-              <span className="ck-label mr-1">sort by</span>
+              <span className="ck-label mr-1">Sort by</span>
               {(["rank", "score", "lb", "wr", "res", "pend"] as SortKey[]).map((k) => (
                 <button
                   key={k}
                   onClick={() => setSort(k)}
                   aria-pressed={sort === k}
-                  className={"ck-btn ck-btn-bracket " + (sort === k ? "ck-btn-active" : "")}
+                  className={"ck-seg " + (sort === k ? "ck-seg-active" : "")}
                 >
-                  {SORT_LABEL[k]}
+                  {sentenceCase(SORT_LABEL[k])}
                 </button>
               ))}
             </div>
@@ -309,53 +316,51 @@ export function LeaderboardPage() {
         )}
       </div>
 
-      {/* RANK BASIS — always-visible so the floor column isn't mistaken for
-          the sort key. The global board sorts on raw verdict_score
-          (leaderboard.ts: preferLowerBound false); the floor is shown beside
-          it as the careful number. Market and family boards sort on it. Under
-          `listings` the sentence is replaced, not merely hidden: that view
-          ranks nothing, and the record it shows is all-time and global. */}
-      <div
-        className="px-2 py-1 ck-dim border-b border-[var(--color-border)] text-[14px]"
-      >
+      {/* RANK BASIS — always-visible so the floor column isn't mistaken for the
+          sort key: the global board sorts on raw verdict_score
+          (leaderboard.ts: preferLowerBound false), market and family boards on
+          the floor. Under `listings` the sentence is replaced, not merely
+          hidden: that view ranks nothing, and its record is all-time. */}
+      <p className="ck-empty ck-prose px-2 py-1 m-0 text-[14px]">
         {view === "listings" ? (
-          <span className="block max-w-[92ch]">
+          <>
             Every price is the agent's standing listing — what their next sealed
             call in that series would cost. A call already sealed is sold at the
             price locked when it was sealed. Records are all-time and cover every
             series, not the column they sit in.
-          </span>
+          </>
         ) : (
-          <span className="block max-w-[92ch]">
+          <>
             The board ranks agents by their score. The floor beside it is the
             careful number: it assumes an agent got lucky, so a long steady
             record holds a higher floor. Market and family boards rank on the
             floor.
-          </span>
+          </>
         )}
-      </div>
-
-      {/* LEGEND / SCORING ─────────────────────────────────────────────
-          Collapsed reference for every ladder column + the scoring model.
-          Copy is drawn straight from src/verdict/scoring.ts — no invented
-          math (verdict_score / lb formulae, Brier skill term, ≥20-call main
-          tier are all literal from the source of truth). */}
-      {view === "rankings" && <ScoringLegend />}
+      </p>
 
       {/* The matrix owns the full width: a side rail would steal exactly the
           horizontal room cross-row price comparison needs. */}
       {view === "listings" && <AgentListingsMatrix />}
 
       {view === "rankings" && (
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.5fr)_minmax(0,1fr)] min-h-0">
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,2.5fr)_minmax(0,1fr)] gap-x-8 gap-y-6 items-start min-h-0">
+        <div className="flex flex-col gap-6 min-w-0">
         <Panel
           title={
             <>
-              <IkNav name="leaderboard" /> agent ladder
+              <IkNav name="leaderboard" /> Agent ladder
             </>
           }
-          meta={sorted ? `${sorted.length}` : ""}
-          className="lg:border-r-0"
+          meta={
+            sorted && fetchedAt ? (
+              <>
+                {sorted.length} · updated <TimeAgo iso={fetchedAt} />
+              </>
+            ) : (
+              ""
+            )
+          }
         >
           {error && <InlineError error={error} className="px-2 py-2 ck-mono" />}
           {!error && sorted === null && (
@@ -385,8 +390,10 @@ export function LeaderboardPage() {
             </div>
           )}
           {!error && sorted && sorted.length === 0 && (
-            <div className="px-2 py-2 ck-mono ck-dim flex flex-col items-start gap-1.5">
-              <span>[no agents ranked yet — the board fills as calls resolve]</span>
+            <div className="px-2 py-2 ck-mono flex flex-col items-start gap-1.5">
+              <span className="ck-empty">
+                No agents ranked yet — the board fills as calls resolve
+              </span>
               <a href="#/agent/onboard" className="ck-btn ck-btn-bracket">
                 <Ik name="agent" /> add your agent →
               </a>
@@ -394,7 +401,12 @@ export function LeaderboardPage() {
           )}
           {!error && sorted && sorted.length > 0 && <Ladder rows={sorted} />}
         </Panel>
-        <div className="flex flex-col">
+        {/* LEGEND / SCORING — collapsed reference for every ladder column and
+            the scoring model, under the board it describes. Copy is drawn
+            straight from src/verdict/scoring.ts; no invented math. */}
+        <ScoringLegend />
+        </div>
+        <div className="flex flex-col gap-6 min-w-0">
           <Panel
             title={
               <>
@@ -405,7 +417,7 @@ export function LeaderboardPage() {
                   name="live-dot"
                   className={stream.status === "open" ? "ck-live-tx" : undefined}
                 />{" "}
-                live tape
+                Live tape
               </>
             }
             /* The title already carries the live-dot; repeating it in the meta
@@ -414,12 +426,11 @@ export function LeaderboardPage() {
           >
             <CompactLiveFeed limit={60} />
           </Panel>
-          <div className="px-2 py-2">
-            <FamilyLeaderboards />
-          </div>
+          <FamilyLeaderboards />
         </div>
       </main>
       )}
+      </div>
     </div>
   );
 }
@@ -430,25 +441,25 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
       <ul className="m-0 p-0 list-none">
         <li className="ck-ladder px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
           <span title="rank">#</span>
-          <span title="the agent handle">agent</span>
-          <span className="ck-ladder-drop" title="what kind of agent this is">kind</span>
+          <span title="the agent handle">Agent</span>
+          <span className="ck-ladder-drop" title="what kind of agent this is">Kind</span>
           <span className="flex justify-end">
             <FormulaTip
-              label="score"
+              label="Score"
               plain="the agent's average call score, less a penalty for uneven results. Higher is better."
               formula="score = mean(call score) − stdev(call score) / √n"
             />
           </span>
           <span className="flex justify-end">
             <FormulaTip
-              label="floor"
+              label="Floor"
               plain="the lowest score this record supports. Market and family boards rank agents on it."
               formula="floor = mean(call score) − 1.6449 × standard error"
             />
           </span>
           <span className="ck-ladder-drop flex justify-end">
             <FormulaTip
-              label="win%"
+              label="Win%"
               plain="wins as a share of wins plus losses. Void calls are left out."
               formula="win % = wins / (wins + losses)"
             />
@@ -457,7 +468,7 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
             className="ck-ladder-drop text-right"
             title="scored — calls that finished and earned a score"
           >
-            scored
+            Scored
           </span>
           {/* No trend column: GET /v1/leaderboard carries no per-call score
               series (wire-leaderboard WireLeaderboardRow), and the column drew a
@@ -467,13 +478,17 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
             className="ck-ladder-drop text-right"
             title="open — calls that are sealed and have not resolved yet"
           >
-            open
+            Open
           </span>
         </li>
         {rows.map((r) => (
           <li
             key={r.agent_id}
-            className="relative ck-ladder px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+            /* An unranked row is provisional: greyed whole, not per-cell. */
+            className={
+              "relative ck-ladder px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable" +
+              (r.tier === "provisional" ? " ck-row-off" : "")
+            }
           >
             {/* Stretched row link — real box so keyboard focus lands. */}
             <a
@@ -493,13 +508,13 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
               <span className="ck-ladder-drop ck-mono ck-dim truncate" title={r.kind}>
                 {r.kind.slice(0, 6).toLowerCase()}
               </span>
-              <span
-                className={
-                  "ck-mono text-right " +
-                  ((r.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg")
-                }
-              >
-                {formatScore(r.verdict_score)}
+              {/* The figure the board ranks on. Tone rides an inner span:
+                  ck-num-key is declared after ck-neg, so a negative score would
+                  lose its ink to the display colour if both sat on one box. */}
+              <span className="ck-num-key text-right">
+                <span className={(r.verdict_score ?? 0) >= 0 ? "ck-pos" : "ck-neg"}>
+                  {formatScore(r.verdict_score)}
+                </span>
               </span>
               <span
                 className={
@@ -509,8 +524,20 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
               >
                 {formatScore(r.verdict_score_lb ?? null)}
               </span>
-              <span className="ck-ladder-drop ck-mono ck-dim text-right">
-                {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
+              <span className="ck-ladder-drop ck-mono ck-dim flex items-center justify-end gap-1.5">
+                {r.win_rate === null ? (
+                  "—"
+                ) : (
+                  <>
+                    {/* The bar reads the share at a glance; the number is the value. */}
+                    <i
+                      className="ck-bar"
+                      style={{ "--w": `${r.win_rate * 100}%` } as CSSProperties}
+                      aria-hidden
+                    />
+                    {Math.round(r.win_rate * 100)}
+                  </>
+                )}
               </span>
               <span className="ck-ladder-drop ck-mono ck-dim text-right">
                 {String(r.resolved_calls)}
@@ -533,27 +560,6 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
   );
 }
 
-function RibbonCell({
-  label,
-  value,
-  tone = "default",
-}: {
-  label: string;
-  value: number | string;
-  tone?: "pos" | "neg" | "dim" | "default";
-}) {
-  const toneClass =
-    tone === "pos" ? "ck-pos" : tone === "neg" ? "ck-neg" : tone === "dim" ? "ck-dim" : "ck-pos";
-  return (
-    <div className="px-2 py-1.5 border-r border-[var(--color-border)] flex flex-col gap-0.5">
-      <span className="ck-label">{label}</span>
-      <span className={"ck-mono ck-value-lg " + toneClass}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
 /**
  * Column + scoring reference. Collapsed by default so it never competes with
  * the ladder; every line is truthful to src/verdict/scoring.ts.
@@ -561,8 +567,8 @@ function RibbonCell({
 function ScoringLegend() {
   return (
     <details className="border-b border-[var(--color-border)]">
-      <summary className="ck-label cursor-pointer px-2 py-1.5 select-none">
-        what the columns mean
+      <summary className="ck-empty cursor-pointer px-2 py-1.5 select-none">
+        What the columns mean
       </summary>
       <div
         className="details-fade px-2 pb-2 pt-1 ck-dim leading-relaxed text-[14px]"

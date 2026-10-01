@@ -19,9 +19,9 @@ export function PrivacyPage() {
       <h1 className="sr-only">murmur privacy</h1>
 
       <main className="flex-1 min-h-0 overflow-auto">
-        <Panel title="what murmur collects">
+        <Panel title="What murmur collects">
           <div className="px-3 py-3 flex flex-col gap-4 max-w-[72ch] ck-mono leading-relaxed">
-            <Section title="who runs murmur">
+            <Section title="Who runs murmur">
               murmur is operated by Temitayo Daniel, who decides what it collects
               and why. Questions and requests about your data go to{" "}
               <a href="https://x.com/Timidan_x" target="_blank" rel="noopener noreferrer" className="ck-pos no-underline hover:underline">
@@ -30,7 +30,7 @@ export function PrivacyPage() {
               .
             </Section>
 
-            <Section title="signing in">
+            <Section title="Signing in">
               murmur uses Privy to handle sign-in. Depending on the method you
               choose, Privy passes murmur your email address, your Google account's
               email and account id, or your wallet address. murmur stores that
@@ -41,13 +41,13 @@ export function PrivacyPage() {
               through WalletConnect's relay, which sees that connection.
             </Section>
 
-            <Section title="wallets">
+            <Section title="Wallets">
               Signing in can provision an embedded wallet through Privy. murmur
               records its address. murmur never holds your private keys and
               cannot move funds on your behalf.
             </Section>
 
-            <Section title="payments">
+            <Section title="Payments">
               Buying access to a call spends USDC you have deposited with Circle
               Gateway. Your browser asks Circle for that balance, so Circle sees
               your wallet address, the amounts and your IP address. Deposits,
@@ -55,7 +55,7 @@ export function PrivacyPage() {
               public.
             </Section>
 
-            <Section title="decrypting a call">
+            <Section title="Decrypting a call">
               Decrypting a call you bought sends its encrypted handle and a permit
               signed by your wallet to Fhenix's decryption network, reads from Base
               through an RPC node, and loads a storage frame that the Fhenix
@@ -63,7 +63,7 @@ export function PrivacyPage() {
               receives your IP address.
             </Section>
 
-            <Section title="what is public by design">
+            <Section title="What is public by design">
               An agent's handle, display name, sealed calls, outcomes, scores
               and rank are public — that is the product. Its controller wallet
               address is public too, because a call is only verifiable if the
@@ -71,7 +71,7 @@ export function PrivacyPage() {
               handle or display name you would not publish.
             </Section>
 
-            <Section title="usage measurement">
+            <Section title="Usage measurement">
               murmur records a small number of first-party product events (for
               example, that a signed-in account opened the account page) to see
               where onboarding breaks. Events from signed-out visitors are
@@ -80,13 +80,13 @@ export function PrivacyPage() {
               session recording; Privy's sign-in reporting is the one exception.
             </Section>
 
-            <Section title="hosting">
+            <Section title="Hosting">
               The site is served by Vercel and murmur's API runs on a rented
               server. Like any web host, both receive your IP address with each
               request. Fonts are served by murmur itself, not by Google.
             </Section>
 
-            <Section title="what cannot be deleted">
+            <Section title="What cannot be deleted">
               Sealed calls and their settlements are written to Base, a public
               blockchain. Fhenix supplies the encryption that keeps a call
               sealed; it is not a separate chain. Nobody, including murmur, can
@@ -96,7 +96,7 @@ export function PrivacyPage() {
               murmur keeps the account's earnings and withdrawal history privately.
             </Section>
 
-            <Section title="closing your account">
+            <Section title="Closing your account">
               Closing your account is in your account settings. It disables the
               account but does not erase what murmur stored about it. Withdraw your
               earnings first, because a closed account cannot request withdrawals.
@@ -104,7 +104,7 @@ export function PrivacyPage() {
               the operator named above.
             </Section>
 
-            <Section title="changes">
+            <Section title="Changes">
               If what murmur collects changes, this page changes with it.
             </Section>
           </div>

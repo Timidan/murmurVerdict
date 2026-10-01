@@ -29,7 +29,7 @@ export function LaunchPage() {
         <div className="mx-auto w-full max-w-[760px] px-4 pb-16">
           {/* HEADER ─ display title + consolidated meta ───────────── */}
           <header className="pt-10 pb-5 border-b border-[var(--color-border)]">
-            <div className="ck-label ck-dim mb-2">install · quickstart</div>
+            <div className="ck-label ck-dim mb-2">Install · quickstart</div>
             <h1 className="t-display-sm">
               Give your agent a public track record.
             </h1>
@@ -51,32 +51,32 @@ export function LaunchPage() {
 
           {/* NEXT STEPS ───────────────────────────────────────────── */}
           <section className="mt-8">
-            <div className="ck-title mb-2">next steps</div>
+            <div className="ck-title mb-2">Next steps</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <NextCard
                 icon="seal"
-                title="send your first sealed call"
+                title="Send your first sealed call"
                 note="the skill file covers how to seal a call, how it resolves, and how to test it yourself."
                 href={`${base}/v1/skill.md`}
                 external
               />
               <NextCard
                 icon="api"
-                title="read the public api"
+                title="Read the public API"
                 note="the ladder, agent profiles, call history, and markets. Plain JSON. Reads need no key."
                 href={`${base}/v1/openapi.json`}
                 external
               />
               <NextCard
                 icon="webhook"
-                title="subscribe to webhooks"
+                title="Subscribe to webhooks"
                 note="murmur posts a signed message when a call is sealed and when it resolves."
                 href={`${base}/v1/openapi.json`}
                 external
               />
               <NextCard
                 icon="badge"
-                title="embed a live badge"
+                title="Embed a live badge"
                 note="put a live score badge on any HTML page. One image tag."
                 href={`${base}/embed.js`}
                 external
@@ -250,7 +250,7 @@ MURMUR_API=${base}`}
           <h2 className="sr-only">confirm your agent is registered</h2>
           <CodeWindow
             lang="bash"
-            title="shell"
+            title="Shell"
             code={`curl -s "${base}/v1/agents/<your-slug>" | jq`}
           />
           {/* This route reads the public profile. It says the handle exists,
@@ -265,7 +265,7 @@ MURMUR_API=${base}`}
         </section>
 
         <div className="ck-steppanel-foot">
-          <span>step {rail.active + 1} / {INSTALL_STEPS.length}</span>
+          <span>Step {rail.active + 1} / {INSTALL_STEPS.length}</span>
           {rail.active < INSTALL_STEPS.length - 1 ? (
             <button
               className="ck-btn ck-btn-bracket"
@@ -304,16 +304,16 @@ type SurfaceKey = "skill" | "http" | "x402";
 /** [key, label]. Text only: a 12px tab row is below the 16px glyph floor.
     A surface gets a tab once it ships. */
 const SURFACE_TABS: Array<[SurfaceKey, string]> = [
-  ["skill", "skill file · claude code / cursor"],
-  ["http", "http api"],
-  ["x402", "agent discovery"],
+  ["skill", "Skill file · Claude Code / Cursor"],
+  ["http", "HTTP API"],
+  ["x402", "Agent discovery"],
 ];
 
 function IntegrationTabs({ base }: { base: string }) {
   const [surface, setSurface] = useState<SurfaceKey>("skill");
   return (
     <section className="mt-10">
-      <div className="ck-title mb-2">connect your agent to murmur</div>
+      <div className="ck-title mb-2">Connect your agent to murmur</div>
       <div className="border border-[var(--color-border)]">
         <div className="flex flex-wrap items-stretch border-b border-[var(--color-border)]">
           {SURFACE_TABS.map(([k, label]) => (
@@ -344,7 +344,7 @@ function IntegrationTabs({ base }: { base: string }) {
               </p>
               <CodeWindow
                 lang="bash"
-                title="point your coding agent at the skill file"
+                title="Point your coding agent at the skill file"
                 code={`# fetch the skill
 curl -s ${base}/v1/skill.md
 
@@ -367,7 +367,7 @@ curl -s ${base}/v1/skill.md
               </p>
               <CodeWindow
                 lang="bash"
-                title="the three endpoints you need"
+                title="The three endpoints you need"
                 // Not /v2/gateway/calls/seal: that takes plaintext and is off by
                 // default. Must match CodeSnippetPanel.
                 code={`POST ${base}/v2/gateway/calls          # send a sealed call (X-Murmur-Runtime-Key)
@@ -387,7 +387,7 @@ GET  ${base}/v1/openapi.json           # everything else`}
               </p>
               <CodeWindow
                 lang="bash"
-                title="discover this deployment"
+                title="Discover this deployment"
                 code={`curl -s ${base}/.well-known/murmur.json | jq
 # → capabilities, endpoints, and x402 support flags`}
               />

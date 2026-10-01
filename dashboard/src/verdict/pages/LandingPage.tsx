@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { TopbarCrumb } from "../components/compact/TopbarCrumb.js";
 import { Panel } from "../components/compact/Panel.js";
+import { Stat, StatStrip } from "../components/compact/StatStrip.js";
+import { TimeAgo } from "../components/compact/TimeAgo.js";
 import { CompactLiveFeed } from "../components/compact/LiveFeed.js";
 import { CompactMarketsGrid } from "../components/compact/MarketsGrid.js";
 import { useStream } from "../hooks/useStream.js";
@@ -8,16 +10,11 @@ import { useFunnelEmit } from "../hooks/useFunnelEmit.js";
 import { formatAtoms } from "../lib/atoms-format.js";
 
 /**
- * COMPACT landing — cockpit mode. Three panels visible at once on desktop:
- *   ┌─ STATS RIBBON ────────────────────────────────────────────────┐
- *   │  ACC24  RES24  WINS  LOSS  VOID                                │
- *   ├─ LEADERBOARD ──── LIVE FEED ──── MARKETS MATRIX ───────────────┤
- *   │  top-12 (mono)   recent N evts   per-(asset,hzn) ladder         │
- *   └────────────────────────────────────────────────────────────────┘
- * No hero, no marketing copy, no rounded corners.
+ * COMPACT overview — the live counter, the all-time record strip, then the
+ * live tape beside the markets matrix. No hero, no marketing copy.
  */
 export function LandingPage() {
-  const { stats, status } = useStream();
+  const { stats, statsAt, status } = useStream();
   const emitFunnel = useFunnelEmit();
 
   // funnel pageview. Best-effort: only fires when Privy is
@@ -28,7 +25,7 @@ export function LandingPage() {
   }, [emitFunnel]);
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="ck-page flex-1 flex flex-col pt-2">
       {/* Span wrap lets the touch crumb rule ellipsize it (bare text cannot). */}
       <TopbarCrumb><span>home / overview</span></TopbarCrumb>
 
@@ -39,7 +36,8 @@ export function LandingPage() {
           ~10s without rerouting the page. */}
       <LiveCounter
         value={stats?.resolved_24h ?? null}
-        label="verdicts scored · last 24h"
+        label="Verdicts scored · last 24h"
+        updatedAt={statsAt}
         sublabel={
           stats
             ? `${stats.accepted_24h} sealed · ${stats.wins_24h} wins · ${stats.losses_24h} losses · ${stats.void_24h} void`
@@ -55,45 +53,42 @@ export function LandingPage() {
       />
 
       {/* ALL-TIME RECORD. Payouts and registrations come from stats.tick. */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 border-b border-[var(--color-border)] divide-y sm:divide-y-0 sm:divide-x divide-[var(--color-border)]">
-        <RecordCell
-          label="usdc paid to providers"
+      <StatStrip>
+        <Stat
+          label="USDC paid to providers"
           value={stats ? formatAtoms(stats.provider_paid_usdc_atoms, "USDC") : null}
           note="all time. net of reversals"
           title="Sum of recorded provider payouts in USDC, less reversals."
         />
-        <RecordCell
-          label="calls sealed"
+        <Stat
+          label="Calls sealed"
           value={stats?.calls_sealed?.toLocaleString("en-US") ?? null}
           note="all time"
           title="All accepted sealed calls, including calls that have since been revealed or resolved."
         />
-        <RecordCell
-          label="agents registered"
+        <Stat
+          label="Agents registered"
           value={stats?.agents_registered?.toLocaleString("en-US") ?? null}
           note="all time. deleted ones included"
           title="Every agent and attested agent ever registered. Benchmark and test agents are left out."
         />
-      </section>
+      </StatStrip>
 
-      {/* MAIN GRID ──────────────────────────────────────────────
-          V15 — the leaderboard panel moved out (it has its own page,
-          linked from the topbar). Live tape left, markets matrix right
-          with the extra room + its rich filter bar. */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.9fr)] min-h-0">
+      {/* MAIN GRID — live tape left, markets matrix right with the extra room
+          plus its filter bar. The leaderboard has its own page. */}
+      <main className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.9fr)] gap-x-8 gap-y-6 items-start">
         <Panel
-          title="live tape"
+          title="Live tape"
           meta={
             stats
               ? `${stats.accepted_24h + stats.resolved_24h} in 24h`
               : ""
           }
-          className="lg:border-r-0"
         >
           <CompactLiveFeed limit={50} />
         </Panel>
         <Panel
-          title="markets"
+          title="Markets"
           actions={
             <span className="flex items-center gap-1">
               <a href="#/install" className="ck-btn ck-btn-bracket">
@@ -123,17 +118,28 @@ function LiveCounter({
   value,
   label,
   sublabel,
+  updatedAt,
 }: {
   value: number | null;
   label: string;
   sublabel: string;
+  /** Client receive time of the last stats.tick; null before the first one. */
+  updatedAt: number | null;
 }) {
   return (
-    <section className="border-b border-[var(--color-border)] flex items-end justify-between px-4 py-3 gap-4">
+    <section className="border-b border-[var(--color-border)] flex items-end justify-between py-3 gap-4">
       <div className="flex flex-col gap-0.5 min-w-0">
-        <span className="ck-label">{label}</span>
-        <span className="ck-dim text-[12px] truncate" title={sublabel}>
+        <span className="ck-colhead">{label}</span>
+        {/* Wraps rather than truncates: the freshness stamp is the tail of this
+            line and a narrow column would clip it away. */}
+        <span className="ck-dim text-[12px]" title={sublabel}>
           {sublabel}
+          {updatedAt !== null && (
+            <>
+              {" · updated "}
+              <TimeAgo iso={new Date(updatedAt).toISOString()} />
+            </>
+          )}
         </span>
       </div>
       <div
@@ -155,26 +161,5 @@ function LiveCounter({
         )}
       </div>
     </section>
-  );
-}
-
-/** One all-time figure. `null` renders a dash: loading, or not tracked. */
-function RecordCell({
-  label,
-  value,
-  note,
-  title,
-}: {
-  label: string;
-  value: string | null;
-  note: string;
-  title: string;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5 px-4 py-2 min-w-0" title={title}>
-      <span className="ck-label">{label}</span>
-      <span className="ck-mono text-[20px] truncate">{value ?? "—"}</span>
-      <span className="ck-dim text-[12px] truncate">{note}</span>
-    </div>
   );
 }
