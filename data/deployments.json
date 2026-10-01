@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "chainId": 421614,
+    "contractName": "MurmurSealedVerdicts",
+    "address": "0xdbe64c92cd0c2766536ebf2dfb06bcd47074c858",
+    "deployedAt": "2026-10-01T20:30:14.717Z",
+    "txHash": "0x0e998584eaff66eb7705e3f80b6926f63bc15c56fedba1f8dd6d410d9b4fdeee",
+    "blockNumber": 314751215
+  }
+]

@@ -38,6 +38,7 @@ try {
 
   const env = { DEPLOYMENTS_MANIFEST_PATH: path };
   assert.equal(manifestPath(env), path);
+  assert.equal(manifestPath({ DEPLOYMENTS_MANIFEST_PATH: "" }), join(process.cwd(), "data", "deployments.json"));
   assert.deepEqual(parseFhenixAddressInput(""), { kind: "empty" });
   assert.deepEqual(parseFhenixAddressInput(` ${overrideSealed} `), {
     kind: "address",

@@ -112,7 +112,7 @@ export function resolveFhenixChainId(
 
 export function manifestPath(env: NodeJS.ProcessEnv = process.env): string {
   return (
-    env.DEPLOYMENTS_MANIFEST_PATH ??
+    env.DEPLOYMENTS_MANIFEST_PATH?.trim() ||
     join(process.cwd(), "data", "deployments.json")
   );
 }
