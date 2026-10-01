@@ -252,8 +252,7 @@ export function AgentPage({ slug }: { slug: string }) {
                 <OwnerAuthorizedPill explorerUrl={ownerExplorerUrl} />
               </>
             )}
-            {/* The explorer follows the agent's own chain. This link was pinned
-                to mainnet Basescan under a tooltip that said Base Sepolia. */}
+            {/* The explorer follows the agent's own chain. */}
             {agent.wallet_address && ownerExplorerUrl && (
               <a
                 href={ownerExplorerUrl}
@@ -841,16 +840,16 @@ function MarketCell({
 }
 
 function humanChain(chainId: string | null | undefined): string {
-  // CAIP-2 → human label. Base is the canonical deploy target.
-  const id = chainId ?? "eip155:8453";
+  // CAIP-2 → human label. Arbitrum Sepolia is the canonical deploy target.
+  const id = chainId ?? "eip155:421614";
   if (id === "eip155:8453") return "BASE";
-  if (id === "eip155:84532") return "BASE SEPOLIA";
+  if (id === "eip155:421614") return "ARBITRUM SEPOLIA";
   return id.toUpperCase();
 }
 
 function blockExplorerAddressUrl(address: string, chainId: string): string | null {
   if (chainId === "eip155:8453") return `https://basescan.org/address/${address}`;
-  if (chainId === "eip155:84532") return `https://sepolia.basescan.org/address/${address}`;
+  if (chainId === "eip155:421614") return `https://sepolia.arbiscan.io/address/${address}`;
   return null;
 }
 

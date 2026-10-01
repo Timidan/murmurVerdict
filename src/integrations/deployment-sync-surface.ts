@@ -221,7 +221,7 @@ export function renderDeploymentSyncHelp(): string {
     "prints latest contract addresses, and patches .env Fhenix deployment keys.",
     "",
     "Environment:",
-    "  SYNC_CHAIN_ID                Chain id to sync (default: 84532)",
+    "  SYNC_CHAIN_ID                Chain id to sync (default: 421614)",
     "  DEPLOYMENTS_MANIFEST_PATH    Manifest path (default: data/deployments.json)",
   ].join("\n");
 }

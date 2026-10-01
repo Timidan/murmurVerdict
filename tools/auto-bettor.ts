@@ -28,9 +28,9 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
-import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { arbSepolia as cofheArbitrumSepolia } from "@cofhe/sdk/chains";
 
 import { canonicalHash, canonicalize } from "../src/receipts/canonical.js";
 import { getAccountForAgent } from "../src/verdict/auth/accounts.js";
@@ -47,7 +47,7 @@ import { fetchMeta, sealVerdict } from "./agent-side-cofhe-sealer.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 
-const CHAIN_ID = 84532;
+const CHAIN_ID = 421614;
 // Read from the daemon's deployment manifest so reveals hit the contract submissions went to.
 const CONTRACT = (() => {
   const deployment = loadDeployment(CHAIN_ID, "MurmurSealedVerdicts");
@@ -117,15 +117,15 @@ async function main(): Promise<void> {
   if (!wallet) throw new Error("agent has no controller wallet");
 
   const account = privateKeyToAccount(revealKey);
-  const publicClient = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
-  const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http(rpcUrl) });
+  const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(rpcUrl) });
+  const walletClient = createWalletClient({ account, chain: arbitrumSepolia, transport: http(rpcUrl) });
   const bal = await publicClient.getBalance({ address: account.address });
   log(`reveal EOA ${account.address} balance=${(Number(bal) / 1e18).toFixed(4)} ETH`);
   if (bal < 20_000_000_000_000_000n) throw new Error("reveal EOA underfunded (<0.02 ETH)");
 
   log("connecting @cofhe/sdk (reveal account) …");
   const cofheClient = createCofheClient(
-    createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }),
+    createCofheConfig({ environment: "node", supportedChains: [cofheArbitrumSepolia] }),
   );
   await cofheClient.connect(publicClient as never, walletClient as never);
   const selfAcp = await cofheClient.acp.createSelf({ type: "self", issuer: account.address });
@@ -410,7 +410,7 @@ async function revealOne(
   const state = call[7];
 
   if (state === 1) {
-    const openTx = await walletClient.writeContract({ address: CONTRACT, abi: ABI, functionName: "openReveal", args: [oc], chain: baseSepolia, account: walletClient.account! });
+    const openTx = await walletClient.writeContract({ address: CONTRACT, abi: ABI, functionName: "openReveal", args: [oc], chain: arbitrumSepolia, account: walletClient.account! });
     await publicClient.waitForTransactionReceipt({ hash: openTx });
     f.phase = "opened";
     log(`openReveal ${f.callId.slice(0, 8)} tx=${openTx.slice(0, 12)}`);
@@ -442,7 +442,7 @@ async function revealOne(
     abi: ABI,
     functionName: "publishReveal",
     args: [oc, Number(bin.decryptedValue), Number(conf.decryptedValue), bin.signature, conf.signature],
-    chain: baseSepolia,
+    chain: arbitrumSepolia,
     account: walletClient.account!,
   });
   await publicClient.waitForTransactionReceipt({ hash: pubTx });

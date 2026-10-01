@@ -1,8 +1,8 @@
 import { createPublicClient, createWalletClient, custom, http, type Address, type Hex } from "viem";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 
 const FACILITATOR_URL = "https://gateway-api-testnet.circle.com";
-const CIRCLE_DOMAIN = 6;
+const CIRCLE_DOMAIN = 3;
 const USDC_DECIMALS = 1_000_000n;
 
 const ERC20_ABI = [
@@ -70,25 +70,25 @@ export function clearGatewayDeposit(quote: GatewayQuote, address: string): void 
 
 export async function gatewayDepositReverted(hash: Hex): Promise<boolean> {
   try {
-    const receipt = await createPublicClient({ chain: baseSepolia, transport: http() }).getTransactionReceipt({ hash });
+    const receipt = await createPublicClient({ chain: arbitrumSepolia, transport: http() }).getTransactionReceipt({ hash });
     return receipt.status === "reverted";
   } catch {
     return false;
   }
 }
 
-function requireBaseSepolia(quote: GatewayQuote): asserts quote is GatewayQuote {
-  if (quote.chainId !== baseSepolia.id) {
-    throw new Error(`Gateway deposits are available only on Base Sepolia (84532), not chain ${quote.chainId}.`);
+function requireArbitrumSepolia(quote: GatewayQuote): asserts quote is GatewayQuote {
+  if (quote.chainId !== arbitrumSepolia.id) {
+    throw new Error(`Gateway deposits are available only on Arbitrum Sepolia (421614), not chain ${quote.chainId}.`);
   }
 }
 
 function providerClients(provider: Eip1193Provider, address: string) {
   return {
-    publicClient: createPublicClient({ chain: baseSepolia, transport: http() }),
+    publicClient: createPublicClient({ chain: arbitrumSepolia, transport: http() }),
     walletClient: createWalletClient({
       account: address as Address,
-      chain: baseSepolia,
+      chain: arbitrumSepolia,
       transport: custom(provider),
     }),
   };
@@ -134,9 +134,9 @@ export async function depositGatewayUsdc(
   shortfall: bigint,
   onSubmitted: (hash: Hex) => void,
 ): Promise<Hex> {
-  requireBaseSepolia(quote);
+  requireArbitrumSepolia(quote);
   if (shortfall <= 0n) throw new Error("No Gateway deposit is needed.");
-  await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x14a34" }] });
+  await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x66eee" }] });
   const { publicClient, walletClient } = providerClients(provider, address);
   const asset = quote.asset as Address;
   const gateway = quote.gateway as Address;
@@ -159,14 +159,14 @@ export async function decryptGrantedCall(args: {
   binaryIndexCtHash: string;
   confidenceCtHash: string;
 }): Promise<{ binaryIndex: bigint; confidenceBps: bigint }> {
-  if (args.chainId !== baseSepolia.id) throw new Error(`This browser supports CoFHE decrypt only on Base Sepolia (84532), not chain ${args.chainId}.`);
-  const [{ createCofheClient, createCofheConfig }, { baseSepolia: cofheBaseSepolia }, { FheTypes }] = await Promise.all([
+  if (args.chainId !== arbitrumSepolia.id) throw new Error(`This browser supports CoFHE decrypt only on Arbitrum Sepolia (421614), not chain ${args.chainId}.`);
+  const [{ createCofheClient, createCofheConfig }, { arbSepolia: cofheArbitrumSepolia }, { FheTypes }] = await Promise.all([
     import("@cofhe/sdk/web"),
     import("@cofhe/sdk/chains"),
     import("@cofhe/sdk"),
   ]);
   const { publicClient, walletClient } = providerClients(args.provider, args.address);
-  const cofhe = createCofheClient(createCofheConfig({ supportedChains: [cofheBaseSepolia] }));
+  const cofhe = createCofheClient(createCofheConfig({ supportedChains: [cofheArbitrumSepolia] }));
   await cofhe.connect(publicClient as never, walletClient as never);
   const permit = await cofhe.acp.createSelf({ type: "self", issuer: args.address });
   const deadline = Date.now() + 60_000;

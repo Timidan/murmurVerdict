@@ -25,7 +25,7 @@ import { fetchMeta, sealVerdict } from "./agent-side-cofhe-sealer.js";
 
 const DAEMON = process.env.DAEMON_URL ?? "http://localhost:8080";
 const DB_PATH = process.env.VERDICT_DB_PATH ?? "data/verdict.db";
-const CHAIN_ID = Number(process.env.FHENIX_CHAIN_ID ?? 84532);
+const CHAIN_ID = Number(process.env.FHENIX_CHAIN_ID ?? 421614);
 // Sealing happens here, in this process. The daemon never sees the verdict.
 const RPC_URL = process.env.FHENIX_RPC_URL ?? "";
 

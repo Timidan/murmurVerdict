@@ -20,7 +20,7 @@ import {
   type DeploymentSyncBroadcastSource,
 } from "../integrations/deployment-sync-surface.js";
 
-const CHAIN_ID = Number(process.env.SYNC_CHAIN_ID ?? "84532");
+const CHAIN_ID = Number(process.env.SYNC_CHAIN_ID ?? "421614");
 const BROADCAST_ROOT = join(process.cwd(), "contracts", "broadcast");
 
 /// Forge writes per-script directories: contracts/broadcast/<Script>.s.sol/<chainId>/run-latest.json

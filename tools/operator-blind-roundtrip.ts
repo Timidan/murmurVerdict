@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Operator-blind FHE round-trip release gate: runs one sealed call on live Base Sepolia and asserts
+ * Operator-blind FHE round-trip release gate: runs one sealed call on live Arbitrum Sepolia and asserts
  * the daemon API response and dashboard DOM stay opaque until publishReveal lands.
  * Checks HTTP and DOM only, not stored state; the verdict is sealed in this process and the daemon only ever relays ciphertext.
  * Run `tsx tools/operator-blind-roundtrip.ts` after tools/seed-operator-blind-fixtures.ts. No mocks.
@@ -27,10 +27,10 @@ import {
 } from "../src/integrations/agent-side-cofhe-sealer-support.js";
 import type { GatewaySealedCallBody } from "../src/integrations/fhenix-gateway-schemas.js";
 import { fetchMeta, sealVerdict } from "./agent-side-cofhe-sealer.js";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
-import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { arbSepolia as cofheArbitrumSepolia } from "@cofhe/sdk/chains";
 import { ACPUtils } from "@cofhe/sdk/acps";
 import type { ACP } from "@cofhe/sdk/acps";
 
@@ -83,7 +83,7 @@ function printHelp(): void {
       "Runs the live operator-blind FHE round-trip release gate.",
       "",
       "Required env:",
-      "  BASE_RPC_URL",
+      "  ARBITRUM_RPC_URL",
       "  FHENIX_GATEWAY_RELAYER_PRIVATE_KEY",
       "  OPERATOR_BLIND_RUNTIME_KEY",
       "  DAEMON_URL",
@@ -122,7 +122,7 @@ function fromSurface<T>(fn: () => T): T {
 
 // ── env-var pre-flight; any missing required var aborts. ──────
 interface PreflightEnv {
-  baseRpcUrl: string;
+  arbitrumRpcUrl: string;
   relayerKey: Hex;
   runtimeKey: string;
   daemonUrl: string;
@@ -133,8 +133,8 @@ interface PreflightEnv {
 }
 
 function preflightEnv(): PreflightEnv {
-  const baseRpcUrl = (process.env.BASE_RPC_URL ?? "").trim();
-  if (!baseRpcUrl) die("pre-flight", "BASE_RPC_URL is required");
+  const arbitrumRpcUrl = (process.env.ARBITRUM_RPC_URL ?? "").trim();
+  if (!arbitrumRpcUrl) die("pre-flight", "ARBITRUM_RPC_URL is required");
   const relayerKeyRaw = (process.env.FHENIX_GATEWAY_RELAYER_PRIVATE_KEY ?? "").trim();
   if (!relayerKeyRaw) die("pre-flight", "FHENIX_GATEWAY_RELAYER_PRIVATE_KEY is required");
   if (!/^0x[0-9a-fA-F]{64}$/.test(relayerKeyRaw)) {
@@ -175,7 +175,7 @@ function preflightEnv(): PreflightEnv {
   const marketProtocol =
     (process.env.OPERATOR_BLIND_MARKET_PROTOCOL ?? "polymarket-gamma").trim();
 
-  return { baseRpcUrl, relayerKey, runtimeKey, daemonUrl, dashboardUrl, agentAddress, marketId, marketProtocol };
+  return { arbitrumRpcUrl, relayerKey, runtimeKey, daemonUrl, dashboardUrl, agentAddress, marketId, marketProtocol };
 }
 
 async function probeUrl(label: string, url: string, expectStatuses: number[] = [200]): Promise<void> {
@@ -462,11 +462,11 @@ async function main() {
 
   // ── viem clients
   const account = privateKeyToAccount(env.relayerKey);
-  const publicClient = createPublicClient({ chain: baseSepolia, transport: http(env.baseRpcUrl) });
+  const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(env.arbitrumRpcUrl) });
   const walletClient = createWalletClient({
     account,
-    chain: baseSepolia,
-    transport: http(env.baseRpcUrl),
+    chain: arbitrumSepolia,
+    transport: http(env.arbitrumRpcUrl),
   });
 
   // ── playwright browser
@@ -516,7 +516,7 @@ async function main() {
     log(`initializing @cofhe/sdk client (chain=${CHAIN_ID})`);
     const cofheConfig = createCofheConfig({
       environment: "node",
-      supportedChains: [cofheBaseSepolia],
+      supportedChains: [cofheArbitrumSepolia],
     });
     const cofheClient = createCofheClient(cofheConfig);
     await cofheClient.connect(publicClient as never, walletClient as never);
@@ -536,7 +536,7 @@ async function main() {
       relayerAddress: sealTargets.relayerAddress,
       contractAddress: sealTargets.contractAddress,
       confidenceBounds: sealTargets.confidenceBounds,
-      rpcUrl: env.baseRpcUrl,
+      rpcUrl: env.arbitrumRpcUrl,
     });
     const gatewayBody: GatewaySealedCallBody = {
       ...buildAgentSealedCallBody({

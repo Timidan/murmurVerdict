@@ -256,7 +256,7 @@ export async function loadDaemonRuntimeAdapters(
     });
     const network =
       np.acceptNetworks?.[0] ??
-      (np.network === "mainnet" ? "eip155:8453" : "eip155:84532");
+      `eip155:${np.bindingDomain.chainId}`;
     entitlementAccess = {
       access: fhenixRuntime.grantAccess,
       broker: createGatewayEntitlementBroker({

@@ -19,14 +19,14 @@
  *
  * Required env:
  *   SUBSCRIBER_PRIVATE_KEY   the buyer (pays USDC, receives decrypt access)
- *   BASE_RPC_URL             Base Sepolia RPC
+ *   ARBITRUM_RPC_URL          Arbitrum Sepolia RPC
  *   MURMUR_DAEMON_URL        default http://localhost:8080
  *
  * Usage: tsx tools/subscriber-buy-access.ts <onchainCallId>
  */
 import "dotenv/config";
 import { createPublicClient, getAddress, http, parseAbi } from "viem";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { BatchEvmScheme, GatewayClient } from "@circle-fin/x402-batching/client";
 import { subscriberAuthMessage } from "../src/verdict/gateway-purchases-surface.js";
@@ -79,9 +79,9 @@ console.log(
 
 // ── 2. the batched scheme spends a GATEWAY balance, not the wallet balance ──
 const gateway = new GatewayClient({
-  chain: "baseSepolia",
+  chain: "arbitrumSepolia",
   privateKey: key as `0x${string}`,
-  ...(process.env.BASE_RPC_URL ? { rpcUrl: process.env.BASE_RPC_URL } : {}),
+  ...(process.env.ARBITRUM_RPC_URL ? { rpcUrl: process.env.ARBITRUM_RPC_URL } : {}),
 });
 const show = (v: unknown) =>
   JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
@@ -100,9 +100,8 @@ const show = (v: unknown) =>
 //                                 12000 just spent was invisible on-chain.
 //
 //   REST /v1/balances             what is SPENDABLE right now. Deposits become
-//                                 spendable only after Circle waits ~65 blocks
-//                                 (roughly 13–19 minutes on Base), and spends
-//                                 are deducted immediately on a successful
+//                                 spendable only after Circle confirms them,
+//                                 and spends are deducted immediately on a successful
 //                                 /settle.
 //
 // Only the second answers "can this purchase succeed", so it is the number the
@@ -113,8 +112,8 @@ const show = (v: unknown) =>
 // "fix" that just replaced a true answer with a flattering one.
 const needed = BigInt(requirements.amount);
 const chainClient = createPublicClient({
-  chain: baseSepolia,
-  transport: http(process.env.BASE_RPC_URL),
+  chain: arbitrumSepolia,
+  transport: http(process.env.ARBITRUM_RPC_URL),
 });
 const gatewayWallet = getAddress(
   (requirements as unknown as { extra?: { verifyingContract?: string } }).extra
@@ -124,12 +123,12 @@ const gatewayWallet = getAddress(
 /**
  * Circle's cross-chain domain id, which is NOT the EVM chain id.
  *
- * Base Sepolia only. The deposit client and the diagnostic RPC client above
- * are both pinned to baseSepolia, so accepting a mainnet challenge here would
+ * Arbitrum Sepolia only. The deposit client and the diagnostic RPC client above
+ * are both pinned to arbitrumSepolia, so accepting a mainnet challenge here would
  * read mainnet funds while depositing testnet USDC. This is a testnet buyer
  * tool; it says so by refusing rather than by half-supporting mainnet.
  */
-const CIRCLE_DOMAIN_BY_CHAIN: Record<number, number> = { 84532: 6 };
+const CIRCLE_DOMAIN_BY_CHAIN: Record<number, number> = { 421614: 3 };
 
 // Circle's own facilitator, matching what the daemon settles against
 // (daemon-runtime-adapters picks Circle's fixed URL and offers no override).
@@ -145,8 +144,8 @@ async function spendableAtoms(): Promise<bigint> {
   const domain = CIRCLE_DOMAIN_BY_CHAIN[chainId];
   if (domain === undefined) {
     throw new Error(
-      `this tool only buys on Base Sepolia (84532); the challenge is for chain ` +
-        `${chainId}. Its deposit and RPC clients are pinned to Base Sepolia, so ` +
+      `this tool only buys on Arbitrum Sepolia (421614); the challenge is for chain ` +
+        `${chainId}. Its deposit and RPC clients are pinned to Arbitrum Sepolia, so ` +
         `running it here would read one chain's funds and spend another's.`,
     );
   }
@@ -200,13 +199,13 @@ if (available < needed) {
   // Deposit AT MOST ONCE per run, then wait for it to become spendable.
   //
   // Depositing on every short balance was the trap: Circle makes a deposit
-  // spendable only after ~65 blocks, so a re-run inside that window saw the
+  // spendable only after confirmation, so a re-run inside that window saw the
   // same short balance and deposited 20× again, while the payment still failed
   // insufficient_balance. Money in, nothing bought, repeatedly.
   if (deposited !== null && deposited - available >= needed) {
     console.log(
       `[buy] NOT depositing: ${deposited - available} atoms are already on-chain but ` +
-        `not yet spendable. Circle needs ~65 blocks (13-19 min) after a deposit.`,
+        `not yet spendable. Waiting for Circle to confirm the deposit.`,
     );
   } else {
     const topUp = (Number(needed) / 1e6) * 20;

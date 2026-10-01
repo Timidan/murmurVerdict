@@ -43,7 +43,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
-import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { arbSepolia as cofheArbitrumSepolia } from "@cofhe/sdk/chains";
 import { FheTypes } from "@cofhe/sdk";
 
 import { COFHE_404_RETRY_TIMEOUT_MS } from "../src/integrations/cofhe-decrypt-tuning.js";
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   // 2. Connect the subscriber wallet and build a SELF ACP (not a shared ACP):
   //    the threshold output is sealed to this wallet's key only.
   const client = createCofheClient(
-    createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }),
+    createCofheConfig({ environment: "node", supportedChains: [cofheArbitrumSepolia] }),
   );
   await client.connect(publicClient as never, walletClient as never);
   const acp = await client.acp.createSelf({ type: "self", issuer: account.address });

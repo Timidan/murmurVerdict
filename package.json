@@ -26,7 +26,7 @@
     "smoke:nanopay": "tsx src/daemon/nanopay-runtime.smoke.ts && tsx src/verdict/nanopay-preflight.smoke.ts && tsx src/verdict/nanopay-payment-gate.smoke.ts && tsx src/verdict/nanopay-settlement-surface.smoke.ts && tsx src/verdict/nanopay-durable-settlement.check.ts",
     "smoke:contracts": "node tools/assert-submodules.mjs && PATH=\"$HOME/.foundry/bin:$PATH\" forge test --root contracts",
     "verify:readiness": "npm run lint && npm run dashboard:build && SMOKE_STRICT=1 npm run smoke:all && npm run smoke:contracts",
-    "deploy:contracts": "PATH=\"$HOME/.foundry/bin:$PATH\" bash -c 'cd contracts && forge script script/DeployMurmurSealedVerdicts.s.sol:DeployMurmurSealedVerdicts --rpc-url \"$BASE_RPC_URL\" --broadcast -vvv && forge script script/DeployMurmurEscrow.s.sol:DeployMurmurEscrow --rpc-url \"$BASE_RPC_URL\" --broadcast -vvv'",
+    "deploy:contracts": "tsx tools/deploy-contracts.ts",
     "sync:deployments": "tsx src/scripts/sync-deployments.ts",
     "verify:deployments": "tsx src/scripts/verify-deployments.ts",
     "dashboard": "vite --config dashboard/vite.config.ts",

@@ -126,8 +126,8 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
   }, []);
 
   const refreshFunding = useCallback(async (quote: ReturnType<typeof quoteFromChallenge>) => {
-    if (quote.challenge.chainId !== 84532) {
-      setFunding({ kind: "error", message: `Gateway funding is available only on Base Sepolia (84532), not chain ${quote.challenge.chainId}.` });
+    if (quote.challenge.chainId !== 421614) {
+      setFunding({ kind: "error", message: `Gateway funding is available only on Arbitrum Sepolia (421614), not chain ${quote.challenge.chainId}.` });
       return;
     }
     setFunding({ kind: "checking" });
@@ -336,7 +336,7 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
     let submitted = false;
     try {
       // Privy returns a fresh provider after a chain switch, so switch before retrieving it.
-      await wallet.switchChain("0x14a34");
+      await wallet.switchChain("0x66eee");
       const provider = await wallet.getEthereumProvider();
       const transactionHash = await depositGatewayUsdc(provider, wallet.address, {
         chainId: state.quote.challenge.chainId,
@@ -440,7 +440,7 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
             </span>
           </p>
           <p className="ck-dim m-0 break-all">
-            fund this wallet with Base Sepolia ETH for gas and USDC: <span className="ck-mono">{wallet.address}</span>{" "}
+            fund this wallet with Arbitrum Sepolia ETH for gas and USDC: <span className="ck-mono">{wallet.address}</span>{" "}
             <button type="button" className="ck-btn ck-btn-bracket" onClick={() => void navigator.clipboard.writeText(wallet.address)}>copy</button>
           </p>
 
@@ -549,15 +549,15 @@ export function DecryptCall({ wallet, onchainCallId, marketId }: {
       if (
         response.status !== 200 ||
         details.grant?.onchainGranted !== true ||
-        details.chainId !== 84532 ||
+        details.chainId !== 421614 ||
         details.callId?.toLowerCase() !== onchainCallId.toLowerCase() ||
         !/^0x[\da-f]{40}$/i.test(details.contract ?? "") ||
         !binary ||
         !confidence
       ) {
-        throw new Error("This call is not ready to decrypt for this wallet on Base Sepolia.");
+        throw new Error("This call is not ready to decrypt for this wallet on Arbitrum Sepolia.");
       }
-      await wallet.switchChain("0x14a34");
+      await wallet.switchChain("0x66eee");
       const provider = await wallet.getEthereumProvider();
       const result = await decryptGrantedCall({ provider, address: wallet.address, chainId: details.chainId, binaryIndexCtHash: binary, confidenceCtHash: confidence });
       if (result.binaryIndex !== 0n && result.binaryIndex !== 1n) throw new Error(`Invalid binary outcome index ${result.binaryIndex}.`);

@@ -21,7 +21,7 @@ import {
 } from "./schema.js";
 import { nowIso } from "./time.js";
 
-export const OPERATOR_BLIND_FIXTURE_CHAIN_ID = 84532;
+export const OPERATOR_BLIND_FIXTURE_CHAIN_ID = 421614;
 export const OPERATOR_BLIND_FIXTURE_CHAIN_CAIP =
   `eip155:${OPERATOR_BLIND_FIXTURE_CHAIN_ID}`;
 export const OPERATOR_BLIND_FIXTURE_SLUG = "operator-blind-test";

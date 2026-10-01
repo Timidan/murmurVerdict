@@ -59,7 +59,7 @@ const BROADCAST_PENDING_GRACE_MS = 90_000;
 // ─── Configuration ──────────────────────────────────────────────────────────
 
 export interface PolymarketDiscoveryEngineConfig {
-  /** Expected chain (Base Sepolia = 84532); preflight refuses any other. */
+  /** Expected chain (Arbitrum Sepolia = 421614); preflight refuses any other. */
   chainId: number;
   tickSec: number;
   lookaheadMin: number;

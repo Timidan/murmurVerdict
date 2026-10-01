@@ -18,10 +18,10 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 import { randomBytes } from "node:crypto";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
-import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { arbSepolia as cofheArbitrumSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
 // The contract takes no securityZone/utype at runtime; utype is a compile-time brand on externalEuint*.
 const COFHE_SECURITY_ZONE = 0;
@@ -51,9 +51,9 @@ async function main(): Promise<void> {
   const CONF = 8800; // 88.00%
   const revealSec = Number(process.env.FLOW2_REVEAL_SEC ?? "240");
 
-  const publicClient = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
-  const relayerWallet = createWalletClient({ account: relayer, chain: baseSepolia, transport: http(rpcUrl) });
-  const grantorWallet = createWalletClient({ account: grantor, chain: baseSepolia, transport: http(rpcUrl) });
+  const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(rpcUrl) });
+  const relayerWallet = createWalletClient({ account: relayer, chain: arbitrumSepolia, transport: http(rpcUrl) });
+  const grantorWallet = createWalletClient({ account: grantor, chain: arbitrumSepolia, transport: http(rpcUrl) });
 
   const marketId = ("0x" + randomBytes(32).toString("hex")) as Hex;
   const clientNonce = ("0x" + randomBytes(32).toString("hex")) as Hex;
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   console.log(`[flow2] registerMarket ${marketId} publicRevealAt=${revealAfter} (+${revealSec}s)`);
   const regTx = await relayerWallet.writeContract({
     address: contract, abi: ABI, functionName: "registerMarket",
-    args: [marketId, schedule], chain: baseSepolia, account: relayer,
+    args: [marketId, schedule], chain: arbitrumSepolia, account: relayer,
   });
   await publicClient.waitForTransactionReceipt({ hash: regTx });
 
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
 
   // 2. seal (CoFHE encrypt) + submitSealedFor.
   console.log(`[flow2] connecting @cofhe/sdk + encrypting inputs (binaryIndex=${BIN}, confidenceBps=${CONF})`);
-  const cofhe = createCofheClient(createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }));
+  const cofhe = createCofheClient(createCofheConfig({ environment: "node", supportedChains: [cofheArbitrumSepolia] }));
   await cofhe.connect(publicClient as never, relayerWallet as never);
   await cofhe.acp.createSelf({ type: "self", issuer: relayer.address });
   // Returns [...ctHashes, batchSignature]; one signature bound to the consuming contract.
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
       binCtHash, confCtHash, batchSignature,
       clientNonce,
     ] as never,
-    chain: baseSepolia, account: relayer,
+    chain: arbitrumSepolia, account: relayer,
   });
   const subRcpt = await publicClient.waitForTransactionReceipt({ hash: subTx });
   let callId: Hex | null = null;
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
   console.log(`[flow2] grantDecryptAccess(${callId}, ${subscriber}) from grantor ${grantor.address}`);
   const grantTx = await grantorWallet.writeContract({
     address: contract, abi: ABI, functionName: "grantDecryptAccess",
-    args: [callId, subscriber], chain: baseSepolia, account: grantor,
+    args: [callId, subscriber], chain: arbitrumSepolia, account: grantor,
   });
   await publicClient.waitForTransactionReceipt({ hash: grantTx });
 

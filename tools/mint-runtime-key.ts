@@ -84,7 +84,7 @@ async function main(): Promise<void> {
 
   const policy = {
     allowed_intents: ["sealed_call"],
-    allowed_chain_ids: [84532],
+    allowed_chain_ids: [421614],
     allowed_market_ids: [marketId],
     max_calls_per_hour: 1000,
     max_calls_per_day: 10000,

@@ -2,7 +2,7 @@
 import "dotenv/config";
 
 import { Encryptable } from "@cofhe/sdk";
-import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { arbSepolia as cofheArbitrumSepolia } from "@cofhe/sdk/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
@@ -12,7 +12,7 @@ import {
   http,
   type Address,
 } from "viem";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 
 import {
   normalizeCofheBytesHex,
@@ -116,19 +116,19 @@ export async function sealVerdict(input: {
         "its submit spent. Refusing to seal it.",
     );
   }
-  if (input.chainId !== cofheBaseSepolia.id) {
+  if (input.chainId !== cofheArbitrumSepolia.id) {
     throw new Error(
-      `unsupported CoFHE chain ${input.chainId}; this tool supports Base Sepolia ${cofheBaseSepolia.id}`,
+      `unsupported CoFHE chain ${input.chainId}; this tool supports Arbitrum Sepolia ${cofheArbitrumSepolia.id}`,
     );
   }
 
   const publicClient = createPublicClient({
-    chain: baseSepolia,
+    chain: arbitrumSepolia,
     transport: http(input.rpcUrl),
   });
   const client = createCofheClient(createCofheConfig({
     environment: "node",
-    supportedChains: [cofheBaseSepolia],
+    supportedChains: [cofheArbitrumSepolia],
   }));
   await client.connect(
     publicClient as never,

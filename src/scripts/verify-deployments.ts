@@ -1,11 +1,11 @@
 import "dotenv/config";
 import { createPublicClient, http, getAddress, parseAbi } from "viem";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 import { loadDeployment } from "../integrations/deployments.js";
 import { deriveAddressFromKey } from "../integrations/derived-addresses.js";
 
-const CHAIN_ID = 84532;
-const EXPECTED_USDC = getAddress("0x036CbD53842c5426634e7929541eC2318f3dCF7e");
+const CHAIN_ID = 421614;
+const EXPECTED_USDC = getAddress("0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d");
 
 const VERDICTS_ABI = parseAbi([
   "function owner() view returns (address)",
@@ -34,13 +34,14 @@ async function main() {
     keyName: "FHENIX_GATEWAY_RELAYER_PRIVATE_KEY",
   });
 
-  const rpc = process.env.FHENIX_RPC_URL || process.env.BASE_RPC_URL;
+  const rpc = process.env.FHENIX_RPC_URL || process.env.ARBITRUM_RPC_URL;
   if (!rpc) {
-    console.error("FHENIX_RPC_URL or BASE_RPC_URL must be set");
+    console.error("FHENIX_RPC_URL or ARBITRUM_RPC_URL must be set");
     process.exit(1);
   }
 
-  const client = createPublicClient({ chain: baseSepolia, transport: http(rpc) });
+  const client = createPublicClient({ chain: arbitrumSepolia, transport: http(rpc) });
+  if (await client.getChainId() !== CHAIN_ID) throw new Error("RPC must serve Arbitrum Sepolia (421614)");
 
   let failures = 0;
   function assertEq(label: string, actual: string, expected: string) {
@@ -54,8 +55,8 @@ async function main() {
 
   const verdicts = loadDeployment(CHAIN_ID, "MurmurSealedVerdicts");
   const escrow = loadDeployment(CHAIN_ID, "MurmurEscrow");
-  if (!verdicts || !escrow) {
-    console.error("manifest missing one or both contracts");
+  if (!verdicts) {
+    console.error("manifest missing MurmurSealedVerdicts on Arbitrum Sepolia");
     process.exit(1);
   }
 
@@ -128,19 +129,23 @@ async function main() {
     failures++;
   }
 
-  console.log(`[verify] MurmurEscrow @ ${escrow.address}`);
-  const eOwner = await client.readContract({
-    address: getAddress(escrow.address), abi: ESCROW_ABI, functionName: "owner",
-  });
-  const eUsdc = await client.readContract({
-    address: getAddress(escrow.address), abi: ESCROW_ABI, functionName: "USDC",
-  });
-  const eSink = await client.readContract({
-    address: getAddress(escrow.address), abi: ESCROW_ABI, functionName: "protocolFeeSink",
-  });
-  assertEq("escrow.owner", eOwner, EXPECTED_OWNER);
-  assertEq("escrow.USDC", eUsdc, EXPECTED_USDC);
-  assertEq("escrow.protocolFeeSink", eSink, EXPECTED_OWNER);
+  if (escrow) {
+    console.log(`[verify] MurmurEscrow @ ${escrow.address}`);
+    const eOwner = await client.readContract({
+      address: getAddress(escrow.address), abi: ESCROW_ABI, functionName: "owner",
+    });
+    const eUsdc = await client.readContract({
+      address: getAddress(escrow.address), abi: ESCROW_ABI, functionName: "USDC",
+    });
+    const eSink = await client.readContract({
+      address: getAddress(escrow.address), abi: ESCROW_ABI, functionName: "protocolFeeSink",
+    });
+    assertEq("escrow.owner", eOwner, EXPECTED_OWNER);
+    assertEq("escrow.USDC", eUsdc, EXPECTED_USDC);
+    assertEq("escrow.protocolFeeSink", eSink, EXPECTED_OWNER);
+  } else {
+    console.log("· MurmurEscrow not deployed; the x402 flow does not use it");
+  }
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");

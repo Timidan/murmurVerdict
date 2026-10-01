@@ -1,5 +1,5 @@
 import { Encryptable } from "@cofhe/sdk";
-import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { arbSepolia as cofheArbitrumSepolia } from "@cofhe/sdk/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
 import type {
   PublicClient,
@@ -41,7 +41,7 @@ export class SdkMurmurOwnedCofheSealer implements MurmurOwnedCofheSealer {
   private readonly client = createCofheClient(
     createCofheConfig({
       environment: "node",
-      supportedChains: [cofheBaseSepolia],
+      supportedChains: [cofheArbitrumSepolia],
     }),
   );
 

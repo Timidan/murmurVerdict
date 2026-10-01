@@ -21,7 +21,7 @@ export interface NanopayRouterDeps {
   readonly sellerAddress: `0x${string}`;
   /** Clock supplied by Nanopay Runtime for paid-settlement persistence. */
   readonly now: () => Date;
-  /** Optional CAIP-2 allowlist, e.g. `["eip155:84532"]`; omitted accepts every Gateway network. */
+  /** Optional CAIP-2 allowlist, e.g. `["eip155:421614"]`; omitted accepts every Gateway network. */
   readonly acceptNetworks?: string[];
   /**
    * Per-call dollar price (e.g. "$0.001") for `gateway.require(price)`, shared by all pipelines.

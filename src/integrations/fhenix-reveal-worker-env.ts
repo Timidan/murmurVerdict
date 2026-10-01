@@ -9,7 +9,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
-import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { arbSepolia as cofheArbitrumSepolia } from "@cofhe/sdk/chains";
 
 import {
   parseFhenixAddressInput,
@@ -189,7 +189,7 @@ export function loadFhenixRevealWorkerEnvConfig(
   });
 
   const cofheClient = createCofheClient(
-    createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }),
+    createCofheConfig({ environment: "node", supportedChains: [cofheArbitrumSepolia] }),
   );
   const decryptor = new CofheRevealDecryptor(
     cofheClient,

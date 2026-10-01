@@ -4,9 +4,9 @@
  *  publishReveal, then confirm the public plaintext matches. */
 import { createPublicClient, createWalletClient, http, parseAbi, getAddress, type Hex, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 import { createCofheClient, createCofheConfig } from "@cofhe/sdk/node";
-import { baseSepolia as cofheBaseSepolia } from "@cofhe/sdk/chains";
+import { arbSepolia as cofheArbitrumSepolia } from "@cofhe/sdk/chains";
 
 const ABI = parseAbi([
   "function openReveal(bytes32 callId)",
@@ -21,9 +21,9 @@ async function main() {
   const contract = getAddress(env("FLOW2_CONTRACT"));
   const callId = env("FLOW2_CALL_ID") as Hex;
   const account = privateKeyToAccount(env("REVEAL_PRIVATE_KEY") as Hex);
-  const publicClient = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
-  const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http(rpcUrl) });
-  const cofhe = createCofheClient(createCofheConfig({ environment: "node", supportedChains: [cofheBaseSepolia] }));
+  const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(rpcUrl) });
+  const walletClient = createWalletClient({ account, chain: arbitrumSepolia, transport: http(rpcUrl) });
+  const cofhe = createCofheClient(createCofheConfig({ environment: "node", supportedChains: [cofheArbitrumSepolia] }));
   await cofhe.connect(publicClient as never, walletClient as never);
   const acp = await cofhe.acp.createSelf({ type: "self", issuer: account.address });
 
@@ -34,7 +34,7 @@ async function main() {
   }
   let call = (await publicClient.readContract({ address: contract, abi: ABI, functionName: "getCall", args: [callId] })) as readonly [Address, Hex, bigint, Hex, Hex, number, number, number];
   if (call[7] === 1) {
-    const openTx = await walletClient.writeContract({ address: contract, abi: ABI, functionName: "openReveal", args: [callId], chain: baseSepolia, account });
+    const openTx = await walletClient.writeContract({ address: contract, abi: ABI, functionName: "openReveal", args: [callId], chain: arbitrumSepolia, account });
     await publicClient.waitForTransactionReceipt({ hash: openTx });
     console.log(`[reveal] openReveal ok`);
     call = (await publicClient.readContract({ address: contract, abi: ABI, functionName: "getCall", args: [callId] })) as typeof call;
@@ -49,7 +49,7 @@ async function main() {
   const bin = await dec(BigInt(call[3]));
   const conf = await dec(BigInt(call[4]));
   console.log(`[reveal] decryptForTx: binaryIndex=${bin.decryptedValue} confidenceBps=${conf.decryptedValue} (sig lens ${bin.signature.length}/${conf.signature.length})`);
-  const pubTx = await walletClient.writeContract({ address: contract, abi: ABI, functionName: "publishReveal", args: [callId, Number(bin.decryptedValue), Number(conf.decryptedValue), bin.signature, conf.signature], chain: baseSepolia, account });
+  const pubTx = await walletClient.writeContract({ address: contract, abi: ABI, functionName: "publishReveal", args: [callId, Number(bin.decryptedValue), Number(conf.decryptedValue), bin.signature, conf.signature], chain: arbitrumSepolia, account });
   const pubRcpt = await publicClient.waitForTransactionReceipt({ hash: pubTx });
   console.log(`[reveal] publishReveal tx ${pubTx} status=${pubRcpt.status}`);
   const after = (await publicClient.readContract({ address: contract, abi: ABI, functionName: "getCall", args: [callId] })) as typeof call;

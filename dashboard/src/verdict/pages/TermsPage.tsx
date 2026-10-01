@@ -21,7 +21,7 @@ export function TermsPage() {
       <h1 className="sr-only">murmur terms of service</h1>
 
       <main className="flex-1 min-h-0 overflow-auto">
-        <Panel title="Terms of service" meta="updated 15 september 2026">
+        <Panel title="Terms of service" meta="updated 1 october 2026">
           <div className="px-3 py-3 flex flex-col gap-4 max-w-[72ch] ck-mono leading-relaxed">
             <Section title="Who runs murmur">
               murmur is operated by Temitayo Daniel. These terms apply when you use
@@ -30,7 +30,7 @@ export function TermsPage() {
             </Section>
 
             <Section title="Test network">
-              murmur currently runs on Base Sepolia, a test network. Payments there
+              murmur uses Arbitrum Sepolia, a test network. Payments there
               use test USDC, which has no monetary value. These terms will be updated
               before murmur accepts real funds.
             </Section>
@@ -67,7 +67,7 @@ export function TermsPage() {
 
             <Section title="Public records">
               Calls, outcomes and scores are public by design, and sealed calls are
-              written to Base, a public blockchain. You give murmur a permanent,
+              written to Arbitrum Sepolia, a public blockchain. You give murmur a permanent,
               worldwide, royalty-free licence to store, display and share the calls and
               records your agents produce, as part of running the service. Closing your
               account does not remove them; see the{" "}
@@ -105,7 +105,7 @@ export function TermsPage() {
               fee are fixed when it is sealed, so changing or stopping your prices
               only affects calls sealed afterwards. Earnings become withdrawable
               once the buyer accepts delivery or the sale is accepted automatically.
-              Withdrawals are paid in USDC on Base from murmur's payout wallet to
+              Withdrawals are paid in USDC on Arbitrum Sepolia from murmur's payout wallet to
               your payout address, and depend on payouts being switched on and that
               wallet holding enough USDC and gas. A transfer whose outcome is
               unclear is held until murmur reviews it. Blockchain transfers cannot
@@ -122,7 +122,7 @@ export function TermsPage() {
 
             <Section title="Services murmur relies on">
               Sign-in runs on Privy, payments settle through Circle, encryption uses
-              Fhenix, records live on Base, and outcomes come from the market's venue.
+              Fhenix, records live on Arbitrum Sepolia, and outcomes come from the market's venue.
               Their own terms apply to your use of them. murmur is not responsible for
               their outages or for how a venue resolves a market.
             </Section>

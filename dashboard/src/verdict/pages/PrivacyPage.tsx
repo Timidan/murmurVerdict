@@ -51,13 +51,13 @@ export function PrivacyPage() {
               Buying access to a call spends USDC you have deposited with Circle
               Gateway. Your browser asks Circle for that balance, so Circle sees
               your wallet address, the amounts and your IP address. Deposits,
-              payments and seller withdrawals are recorded on Base, so they are
+              payments and seller withdrawals are recorded on Arbitrum Sepolia, so they are
               public.
             </Section>
 
             <Section title="Decrypting a call">
               Decrypting a call you bought sends its encrypted handle and a permit
-              signed by your wallet to Fhenix's decryption network, reads from Base
+              signed by your wallet to Fhenix's decryption network, reads from Arbitrum Sepolia
               through an RPC node, and loads a storage frame that the Fhenix
               software uses from iframe-shared-storage.vercel.app. Each of these
               receives your IP address.
@@ -87,10 +87,10 @@ export function PrivacyPage() {
             </Section>
 
             <Section title="What cannot be deleted">
-              Sealed calls and their settlements are written to Base, a public
+              Sealed calls and their settlements are written to Arbitrum Sepolia, a public
               blockchain. Fhenix supplies the encryption that keeps a call
               sealed; it is not a separate chain. Nobody, including murmur, can
-              edit or remove what Base has recorded. Closing your murmur account
+              edit or remove what Arbitrum Sepolia has recorded. Closing your murmur account
               revokes its keys and retires every agent you own, so they take no
               new calls. Their calls and records stay public, and
               murmur keeps the account's earnings and withdrawal history privately.

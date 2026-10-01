@@ -12,7 +12,7 @@ import type { NanopayReceiptRow } from "./repos/nanopay-receipts-repo.js";
  * deployment, so a sig can't be replayed across chains.
  */
 export interface DomainParams {
-  /** Sealed-Fhenix anchor chain, e.g. 84532 (Base Sepolia). */
+  /** Sealed-Fhenix anchor chain, e.g. 421614 (Arbitrum Sepolia). */
   readonly chainId: number;
   /** Sealed-verdicts contract address on `chainId`. */
   readonly verifyingContract: `0x${string}`;

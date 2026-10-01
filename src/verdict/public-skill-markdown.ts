@@ -105,7 +105,7 @@ Ask Murmur for the exact wallet-binding message:
       -H "Content-Type: application/json" \\
       -d '{
         "wallet_address": "0x<40 hex>",
-        "chain_id": "eip155:84532",
+        "chain_id": "eip155:421614",
         "wallet_kind": "embedded",
         "provider": "privy"
       }'
@@ -117,7 +117,7 @@ Have the embedded Controller Wallet sign the returned \`message\`, then bind:
       -H "Content-Type: application/json" \\
       -d '{
         "wallet_address": "0x<40 hex>",
-        "chain_id": "eip155:84532",
+        "chain_id": "eip155:421614",
         "wallet_kind": "embedded",
         "provider": "privy",
         "authorization_issued_at": "<challenge.authorization_issued_at>",
@@ -439,7 +439,7 @@ command, redirect, pipe, or inline \`VAR=value\`:
 \`\`\`dotenv
 SUBSCRIBER_PRIVATE_KEY=0x...
 MURMUR_DAEMON_URL=${apiBase}
-BASE_RPC_URL=https://...
+ARBITRUM_RPC_URL=https://...
 FHENIX_RPC_URL=https://...
 FHENIX_SEALED_VERDICTS_ADDRESS=0x...
 \`\`\`
@@ -455,7 +455,7 @@ curl -s "${apiBase}/v1/meta" | jq '.fhenix'
 
 \`fhenix.contract_address\` is \`FHENIX_SEALED_VERDICTS_ADDRESS\`, and
 \`fhenix.chain_id\` names the chain \`FHENIX_RPC_URL\` must serve. On a
-deployment where that chain is Base Sepolia, the same URL as \`BASE_RPC_URL\`
+deployment where that chain is Arbitrum Sepolia, the same URL as \`ARBITRUM_RPC_URL\`
 works for both.
 
 Then \`chmod 600 .env\` and add it to \`.gitignore\`. Never put the key on a
@@ -817,7 +817,7 @@ command line:
 \`\`\`dotenv
 SUBSCRIBER_PRIVATE_KEY=0x...
 MURMUR_DAEMON_URL=${apiBase}
-BASE_RPC_URL=https://...
+ARBITRUM_RPC_URL=https://...
 FHENIX_RPC_URL=https://...
 FHENIX_SEALED_VERDICTS_ADDRESS=0x...
 \`\`\`
@@ -828,7 +828,7 @@ closed without them. Get both from the deployment you are buying from —
 \`curl -s "${apiBase}/v1/meta" | jq '.fhenix'\` gives you
 \`fhenix.contract_address\` (that is \`FHENIX_SEALED_VERDICTS_ADDRESS\`) and
 \`fhenix.chain_id\`, the chain your \`FHENIX_RPC_URL\` has to serve. Where
-that chain is Base Sepolia, one RPC URL covers both. Do NOT take the address
+that chain is Arbitrum Sepolia, one RPC URL covers both. Do NOT take the address
 from a repo checkout: \`data/deployments.json\` describes whichever deployment
 that checkout belongs to, and reading the wrong contract shows up as a call you
 were never granted.

@@ -431,7 +431,7 @@ function KvDivider() {
 function humanChain(chainId: number | string): string {
   const id = typeof chainId === "number" ? chainId : Number(chainId);
   if (id === 8453) return "base";
-  if (id === 84532) return "base sepolia";
+  if (id === 421614) return "arbitrum sepolia";
   return `chain ${id}`;
 }
 
@@ -492,7 +492,7 @@ function ExplorerLink({
   const id = typeof chainId === "number" ? chainId : Number(chainId);
   let base: string | null = null;
   if (id === 8453) base = "https://basescan.org";
-  else if (id === 84532) base = "https://sepolia.basescan.org";
+  else if (id === 421614) base = "https://sepolia.arbiscan.io";
   if (!base) {
     return <span className="ck-mono ck-pos break-all">{address}</span>;
   }

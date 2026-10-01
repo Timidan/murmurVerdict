@@ -39,7 +39,7 @@ process.stdout.write("murmur x402 batch payment smoke\n");
 const PAYER = "0x1111111111111111111111111111111111111111";
 const SELLER = "0x2222222222222222222222222222222222222222";
 const GATEWAY_WALLET = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
-const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const USDC = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d";
 const CALL_ID = `0x${"ab".repeat(32)}`;
 
 /** A 402 exactly as entitlementAccessResponse builds it. */
@@ -49,7 +49,7 @@ function challengeBody(over: Record<string, unknown> = {}) {
     accepts: [
       {
         scheme: "exact",
-        network: "eip155:84532",
+        network: "eip155:421614",
         asset: USDC,
         amount: "70000",
         payTo: SELLER,
@@ -83,7 +83,7 @@ assert.ok(parsed.ok, "a well-formed 402 parses");
 assert.equal(parsed.challenge.priceAtoms, "70000");
 assert.equal(parsed.challenge.currency, "USDC");
 assert.equal(parsed.challenge.pricingVersion, "v2");
-assert.equal(parsed.challenge.chainId, 84532, "the chain id comes from eip155:<id>");
+assert.equal(parsed.challenge.chainId, 421614, "the chain id comes from eip155:<id>");
 assert.equal(parsed.challenge.requirements.extra.verifyingContract, GATEWAY_WALLET);
 
 // ─── …and refusing everything else ──────────────────────────────────────────

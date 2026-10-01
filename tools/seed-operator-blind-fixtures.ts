@@ -18,7 +18,7 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 
 import { resolveFhenixContractAddress } from "../src/integrations/deployments.js";
 import { deriveAddressFromKey } from "../src/integrations/derived-addresses.js";
@@ -100,13 +100,13 @@ interface OnchainRegistration {
  * SAME instants, or the acceptance guard refuses every seeded call.
  */
 async function registerOnchainMarket(): Promise<OnchainRegistration> {
-  const rpcUrl = (process.env.FHENIX_RPC_URL || process.env.BASE_RPC_URL || "").trim();
-  if (!rpcUrl) throw new Error("FHENIX_RPC_URL or BASE_RPC_URL is required");
+  const rpcUrl = (process.env.FHENIX_RPC_URL || process.env.ARBITRUM_RPC_URL || "").trim();
+  if (!rpcUrl) throw new Error("FHENIX_RPC_URL or ARBITRUM_RPC_URL is required");
   const ownerKey = requiredHexPrivateKey("FHENIX_GATEWAY_RELAYER_PRIVATE_KEY");
   const account = privateKeyToAccount(ownerKey);
   const address = contractAddress();
-  const publicClient = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
-  const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http(rpcUrl) });
+  const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(rpcUrl) });
+  const walletClient = createWalletClient({ account, chain: arbitrumSepolia, transport: http(rpcUrl) });
 
   // The on-chain market id must equal the DB fixture's. Registration is one-shot, so skip if already registered.
   const onchainMarketId = OPERATOR_BLIND_FIXTURE_MARKET_ID as Hex;

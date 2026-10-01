@@ -1,5 +1,10 @@
 # Murmur Verdict
 
+This copy targets **Arbitrum Sepolia (421614)** with fresh contracts and application
+state. See [ARBITRUM.md](ARBITRUM.md) for configuration, deployment, and verification.
+The empty deployment manifest is intentional until a real deployment is confirmed;
+historical Base results in this repository do not verify this Arbitrum deployment.
+
 <!-- MARKEE:START:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 > 🪧🪧🪧🪧🪧🪧🪧 MARKEE 🪧🪧🪧🪧🪧🪧🪧
 >

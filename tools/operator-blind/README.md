@@ -1,5 +1,9 @@
 # Operator-Blind FHE Round-Trip — Release-Gate Script
 
+> **Arbitrum copy:** the tool now targets Arbitrum Sepolia (421614) and reads
+> `ARBITRUM_RPC_URL`. Follow [the Arbitrum runbook](../../ARBITRUM.md).
+> Base network references and past results below are historical evidence only.
+
 > **NOTE:** the Lean V1 / V2 invariants model a PREVIOUS contract revision and
 > do NOT cover the current six-instant schedule contract. See
 > `contracts/proofs/MurmurFV/README.md`. This script's runtime evidence stands

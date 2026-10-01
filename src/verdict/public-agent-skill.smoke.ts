@@ -178,7 +178,7 @@ assert.ok(
 // ─── The Path B env has to be the env the tools actually require ────────────
 //
 // Both documents told a buyer to write SUBSCRIBER_PRIVATE_KEY /
-// MURMUR_DAEMON_URL / BASE_RPC_URL and then run BOTH tools. The unseal tool
+// MURMUR_DAEMON_URL / ARBITRUM_RPC_URL and then run BOTH tools. The unseal tool
 // requireEnv()s two more — FHENIX_RPC_URL and FHENIX_SEALED_VERDICTS_ADDRESS —
 // so following the instructions exactly threw "missing required env" on the
 // step that reads what was just bought. The dotenv block is the contract.
@@ -193,7 +193,7 @@ for (const [where, doc] of [
   for (const name of [
     "SUBSCRIBER_PRIVATE_KEY",
     "MURMUR_DAEMON_URL",
-    "BASE_RPC_URL",
+    "ARBITRUM_RPC_URL",
     "FHENIX_RPC_URL",
     "FHENIX_SEALED_VERDICTS_ADDRESS",
   ]) {

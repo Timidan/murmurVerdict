@@ -3,7 +3,8 @@ import { gatewayBalance, gatewayShortfall } from "./browser-call-access.js";
 
 const originalFetch = globalThis.fetch;
 try {
-  globalThis.fetch = (async (url: string | URL) => {
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    assert.equal(JSON.parse(String(init?.body)).sources[0].domain, 3, "funding queries use Circle Arbitrum domain 3");
     if (String(url).endsWith("/v1/balances")) {
       return new Response(JSON.stringify({ balances: [{ balance: "0.010000" }] }), { status: 200 });
     }

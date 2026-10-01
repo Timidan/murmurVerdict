@@ -4,6 +4,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { PrivyProvider as VendorPrivyProvider } from "@privy-io/react-auth";
+import { arbitrumSepolia } from "viem/chains";
 import { PRIVY_APP_ID, isPrivyConfigured, privyAppId } from "./privy-config.js";
 
 // Public-route code must import these from ./privy-config.js, not here, to avoid the SDK.
@@ -66,6 +67,8 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
     <VendorPrivyProvider
       appId={PRIVY_APP_ID}
       config={{
+        defaultChain: arbitrumSepolia,
+        supportedChains: [arbitrumSepolia],
         loginMethods: ["email", "google", "wallet"],
         appearance: {
           theme: modalTheme,
