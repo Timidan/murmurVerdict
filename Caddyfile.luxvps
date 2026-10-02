@@ -1,0 +1,18 @@
+:80 {
+	@api path /v1/* /v2/* /share/* /embed.js
+	handle @api {
+		reverse_proxy daemon:8080 {
+			# The shared edge replaces this with the verified client address.
+			header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
+			header_up X-Forwarded-Proto https
+			flush_interval -1
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

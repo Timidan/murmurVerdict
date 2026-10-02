@@ -1,0 +1,42 @@
+name: murmur-arbitrum
+
+services:
+  daemon:
+    build: .
+    image: murmur-arbitrum:${MURMUR_RELEASE:-local}
+    restart: unless-stopped
+    env_file: .env.luxvps
+    environment:
+      PORT: "8080"
+      VERDICT_DB_PATH: /app/data/verdict.db
+      MURMUR_TRUST_PROXY_HOPS: "1"
+    volumes:
+      - verdict_data:/app/data
+      - ./data/deployments.json:/app/data/deployments.json:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      daemon:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile.luxvps:/etc/caddy/Caddyfile:ro
+      - ./dashboard/dist:/srv:ro
+    networks:
+      default:
+      public_proxy:
+        aliases: [murmur-web]
+
+volumes:
+  verdict_data:
+
+networks:
+  public_proxy:
+    external: true
