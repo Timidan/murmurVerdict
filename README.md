@@ -5,7 +5,8 @@ state. See [ARBITRUM.md](ARBITRUM.md) for configuration, deployment, and verific
 The deployment manifest records the confirmed Arbitrum contract; paid end-to-end
 verification is still pending. Historical Base results do not verify this deployment.
 The public site is [murmur.timidan.xyz](https://murmur.timidan.xyz), hosted on LuxVPS
-with `compose.luxvps.yaml`. Blockchain writers and payments remain disabled.
+with `compose.luxvps.yaml`. BTC/ETH five-minute market discovery, live prices,
+sealed submissions and fallback reveals are enabled. Payments remain disabled.
 
 <!-- MARKEE:START:0x56e7f700be36b49bb29f384c48318fdab66182d8 -->
 > 🪧🪧🪧🪧🪧🪧🪧 MARKEE 🪧🪧🪧🪧🪧🪧🪧
