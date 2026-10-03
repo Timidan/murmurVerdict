@@ -398,16 +398,17 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
   const { open } = useDetailDrawer();
   return (
     <ul className="m-0 p-0 list-none">
-      <li className="grid grid-cols-[1fr_84px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
+      {/* Phones keep market and score; win % and trend drop with ck-ladder-drop. */}
+      <li className="grid grid-cols-[1fr_84px] sm:grid-cols-[1fr_84px_44px_56px] gap-1.5 items-center px-2 py-1 border-b border-[var(--color-border-vis)] ck-colhead">
         <span>Market</span>
         <span className="text-right" title="the agent's score on this market">Score</span>
-        <span className="text-right" title="wins as a share of wins plus losses">Win %</span>
-        <span className="text-right" title="the last few call scores, oldest first">Trend</span>
+        <span className="ck-ladder-drop text-right" title="wins as a share of wins plus losses">Win %</span>
+        <span className="ck-ladder-drop text-right" title="the last few call scores, oldest first">Trend</span>
       </li>
       {rows.map((r) => (
         <li
           key={r.market_id}
-          className="relative grid grid-cols-[1fr_84px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
+          className="relative grid grid-cols-[1fr_84px] sm:grid-cols-[1fr_84px_44px_56px] gap-1.5 items-center px-2 py-[3px] border-b border-[var(--color-border)] ck-hoverable"
         >
           <a
             href={`#/markets/${encodeURIComponent(r.market_id)}`}
@@ -446,10 +447,10 @@ function GridTable({ rows }: { rows: AgentMarketRow[] }) {
           >
             {formatScore(r.verdict_score)}
           </span>
-          <span className="ck-mono ck-dim text-right">
+          <span className="ck-ladder-drop ck-mono ck-dim text-right">
             {r.win_rate === null ? "—" : Math.round(r.win_rate * 100)}
           </span>
-          <span className="flex justify-end">
+          <span className="ck-ladder-drop flex justify-end">
             <CompactSparkline
               values={
                 r.call_scores?.filter((s): s is number => s !== null) ?? []
@@ -527,15 +528,13 @@ const TILE_TONE = {
 type TileTone = keyof typeof TILE_TONE;
 
 /**
- * The summary panel. Win rate leads at display size with the win/loss split
- * drawn beneath it, three supporting stats share one row, and the
- * housekeeping counts and identity recede into strips.
+ * The summary panel: the win/loss split, the call count, and the
+ * housekeeping counts and identity in strips.
  *
  * This replaces an eleven-tile icon grid that failed twice over: nine of the
  * eleven marks could only be named by hovering them, and at 48px the mark ran
  * twice the height of the value it annotated (owner flag, 2026-08-27). Every
- * stat now carries a visible label. The `title` definitions and the two
- * FormulaTips stay exactly where they were.
+ * stat now carries a visible label.
  */
 function SidebarStats({
   stats,
@@ -546,8 +545,6 @@ function SidebarStats({
 }) {
   /** A tally, or an em-dash while the call log is still loading. */
   const n = (v: number | undefined) => (v === undefined ? "—" : String(v));
-  /** A zero rests at dim — a green 0 or a red 0 shouts about nothing. */
-  const countTone = (v: number | undefined, on: TileTone): TileTone => (v ? on : "dim");
 
   const wins = stats?.wins ?? 0;
   const losses = stats?.losses ?? 0;
@@ -559,24 +556,10 @@ function SidebarStats({
 
   return (
     <div className="flex flex-col @container">
-      {/* HERO — the one display-tier number on the profile. */}
+      {/* Win/loss split; the ribbon above already carries win %, score and streak. */}
       <div className="px-2 py-3 @[340px]:px-4 @[340px]:py-5">
-        <FormulaTip
-          label="Win rate"
-          // Word for word the ribbon's win% tip: one definition, stated
-          // identically everywhere the number appears.
-          plain={WIN_RATE_PLAIN}
-          formula="win % = wins / (wins + losses)"
-          /* The tip box has to hang from the left edge or it walks off the
-             side of a 256px sidecar. */
-          className="[&_.formula-tip]:right-auto [&_.formula-tip]:left-0"
-        />
-        <span className="ck-stat-hero mt-1">{stats ? formatWR(stats.winRate) : "—"}</span>
-
-        {/* The split says what the percentage is made of, so the formula is
-            no longer the only way to read the number. */}
         <div
-          className="ck-splitbar mt-3"
+          className="ck-splitbar"
           role="img"
           aria-label={
             stats === null
@@ -625,28 +608,7 @@ function SidebarStats({
         )}
       </div>
 
-      {/* SUPPORTING — three tiles, one row, on the house gap-px hairline grid.
-          Labels are short because a 256px panel gives each cell ~85px; the
-          full wording lives in the tip and the title. */}
-      <div className="grid grid-cols-3 gap-px bg-[var(--color-border)] border-t border-[var(--color-border)]">
-        <StatTile
-          icon="avg-score"
-          label="Avg"
-          value={stats ? formatScore(stats.avgScore) : "—"}
-          tone={(stats?.avgScore ?? 0) >= 0 ? "ink" : "neg"}
-          tip={{
-            plain: `the average score across this agent's scored calls. ${SCOPE_NOTE}`,
-            formula: "avg score = sum(call score) / scored calls",
-          }}
-          tipAlign="start"
-        />
-        <StatTile
-          icon="win-streak"
-          label="Streak"
-          value={n(stats?.streak)}
-          tone={countTone(stats?.streak, "ink")}
-          title={`wins in a row, counting back from the newest call. ${SCOPE_NOTE}`}
-        />
+      <div className="grid grid-cols-1 gap-px bg-[var(--color-border)] border-t border-[var(--color-border)]">
         <StatTile
           icon="all-calls"
           label="Calls"
@@ -747,8 +709,6 @@ function StatTile({
   value,
   tone = "ink",
   title,
-  tip,
-  tipAlign = "end",
 }: {
   /** Glyph naming the stat — an annotation now, not the tile's subject. */
   icon?: HeroIconName;
@@ -757,17 +717,11 @@ function StatTile({
   tone?: TileTone;
   /** Plain-language definition, shown on hover. */
   title?: string;
-  /** Hangs a FormulaTip off the label — plain sentence first, formula second. */
-  tip?: { plain: string; formula: string };
-  /** Which edge the tip box hangs from. `start` for tiles in column 1. */
-  tipAlign?: "start" | "end";
 }) {
   return (
     <div
       className="flex items-center gap-2 min-w-0 px-2 py-1.5 @[340px]:px-4 @[340px]:py-3 bg-[var(--color-bg)]"
-      /* A tip tile takes no native title: the FormulaTip already answers the
-         hover, and two tooltips over one label is one too many. */
-      title={tip ? undefined : title}
+      title={title}
     >
       {/* 440, not 340: at 340 the mark and its 8px gap take 28px out of a
           ~120px cell, and `+0.574` set at 20px needs 69 of the 88 that leaves
@@ -780,20 +734,7 @@ function StatTile({
         </span>
       )}
       <span className="min-w-0">
-        {tip ? (
-          <FormulaTip
-            label={label}
-            plain={tip.plain}
-            formula={tip.formula}
-            className={
-              tipAlign === "start"
-                ? "[&_.formula-tip]:right-auto [&_.formula-tip]:left-0"
-                : ""
-            }
-          />
-        ) : (
-          <span className="ck-colhead block">{label}</span>
-        )}
+        <span className="ck-colhead block">{label}</span>
         {/* ck-tile-value scales with the panel (container query in compact.css)
             and sits after .ck-mono in the cascade, which utilities cannot. */}
         <span className={"ck-mono ck-tile-value block truncate " + TILE_TONE[tone]}>

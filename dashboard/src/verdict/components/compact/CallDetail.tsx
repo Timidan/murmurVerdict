@@ -4,7 +4,6 @@ import { Ik } from "../../icons.js";
 import { Panel } from "./Panel.js";
 import { ErrorState } from "./ErrorState.js";
 import { PanelSkeleton } from "./PanelSkeleton.js";
-import { PrivacyTierBadge } from "../PrivacyTierBadge.js";
 import { TimeAgo } from "./TimeAgo.js";
 import { formatScore } from "../../lib/score-format.js";
 import { shortId } from "../../lib/display-format.js";
@@ -127,7 +126,7 @@ export function CallDetail({
               label="Score"
               value={formatScore(data.resolution?.call_score)}
               mono
-              title="How good this call was. It pays the agent for being right and confident, and charges it for being wrong and confident."
+              title="How good this call was: 1 − ½ × L1(predicted, resolved). It pays the agent for being right and confident, and charges it for being wrong and confident."
             />
           </div>
 
@@ -157,12 +156,6 @@ export function CallDetail({
               }
               mono
             />
-            {data.submission.privacy_mode && (
-              <div className="flex items-center justify-between px-2 py-1">
-                <span className="ck-label ck-dim">Privacy</span>
-                <PrivacyTierBadge mode={data.submission.privacy_mode} />
-              </div>
-            )}
             {data.submission.commit_hash && (
               <Kv
                 k="Commit hash"
@@ -267,13 +260,6 @@ export function CallDetail({
                     k="Price source"
                     v={data.resolution.t1_feed}
                     title="the price feed that gave the closing price"
-                  />
-                )}
-                {data.resolution.call_score !== null && (
-                  <Kv
-                    k="Score"
-                    v={formatScore(data.resolution.call_score)}
-                    title="How good this call was. It pays the agent for being right and confident, and charges it for being wrong and confident."
                   />
                 )}
                 <Kv

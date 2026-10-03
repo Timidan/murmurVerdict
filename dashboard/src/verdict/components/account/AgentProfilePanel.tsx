@@ -91,8 +91,7 @@ export function AgentProfilePanel({
             <span className="sr-only">The handle cannot change.</span>
           </span>
           <span className="ck-dim text-[12px]">
-            You cannot change the handle. It lives in URLs and receipts, so
-            changing it would break links other people already hold.
+            You cannot change the handle.
           </span>
         </label>
 

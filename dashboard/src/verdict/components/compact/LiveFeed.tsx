@@ -154,6 +154,7 @@ export function CompactLiveFeed({
             <TimeAgo
               iso={isResolved ? evt.resolved_at : evt.accepted_at}
               className="ck-mono ck-dim truncate"
+              compact
             />
             {/* The event kind was "acc" / "res" — two three-letter tokens the
                 reader had to decode. The glyphs are the ones the panel titles
@@ -201,7 +202,7 @@ export function CompactLiveFeed({
               }
             >
               {evt.type === "call.accepted"
-                ? "sealed"
+                ? "—"
                 : evt.call_score !== null && evt.call_score !== undefined
                   ? formatScore(evt.call_score)
                   : "—"}

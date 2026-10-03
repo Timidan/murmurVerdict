@@ -675,7 +675,7 @@ export function matrixGridTemplate(columnCount: number): {
 } {
   const cols = Math.max(0, columnCount);
   return {
-    gridTemplateColumns: `${ROW_HEAD_WIDTH_PX}px repeat(${cols}, minmax(${SERIES_COL_MIN_PX}px, 1fr))`,
+    gridTemplateColumns: `var(--matrix-head, ${ROW_HEAD_WIDTH_PX}px) repeat(${cols}, minmax(${SERIES_COL_MIN_PX}px, 1fr))`,
     minWidth: `${ROW_HEAD_WIDTH_PX + cols * SERIES_COL_MIN_PX}px`,
   };
 }

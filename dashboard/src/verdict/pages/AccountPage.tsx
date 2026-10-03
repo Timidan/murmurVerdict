@@ -92,12 +92,13 @@ export function AccountPage() {
               <IkNav name="agent" /> Your agents
             </span>
             <span className="flex items-center gap-3">
-              <span className="ck-mono ck-dim">
-                {listed ? `${account.agents.length} owned` : "— owned"}
-              </span>
-              <a href="#/agent/onboard" className="ck-btn ck-btn-bracket ck-pos">
-                <Ik name="agent" />
-                + add an agent
+              <a
+                href="#/agent/onboard"
+                className="ck-btn ck-btn-bracket ck-pos"
+                title="add an agent"
+                aria-label="add an agent"
+              >
+                <Ik name="agent" />+
               </a>
               <button
                 type="button"
@@ -158,7 +159,7 @@ export function AccountPage() {
           />
         </section>
 
-        <div className="md:col-span-6">
+        <div className="md:col-span-6 empty:hidden">
           <FheStatusPanel />
         </div>
       </main>

@@ -546,10 +546,6 @@ export function AgentOnboardPage() {
         )}
       </section>
 
-      <p className="ck-dim text-xs mt-6">
-        Your bot gets one secret key on the next screen. Keep it somewhere
-        safe. it will not be shown again.
-      </p>
 
       {minted && mintedSlug && (
         <RuntimeKeyMintModal
@@ -576,9 +572,6 @@ function Shell({ children }: { children: React.ReactNode }) {
         <h1 className="ck-title ck-title-ik">
           <IkNav name="agent" /> Create an agent
         </h1>
-        <p className="ck-dim text-sm">
-          Pick a handle. murmur makes a secret key for your bot to use.
-        </p>
         {children}
       </main>
     </div>

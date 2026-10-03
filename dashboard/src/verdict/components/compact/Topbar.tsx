@@ -85,14 +85,15 @@ export function CompactTopbar({ crumb, crumbSlotRef }: CompactTopbarProps) {
         >
           <MMark size={28} decorative />
         </a>
+        {/* Phones drop the crumb: it truncates to noise; each page heads itself. */}
         {crumb ? (
-          <div className="mmr-topbar-crumb-slot min-w-0 ml-1 flex items-center lg:max-w-[360px] overflow-hidden">
+          <div className="mmr-topbar-crumb-slot min-w-0 ml-1 hidden sm:flex items-center lg:max-w-[360px] overflow-hidden">
             <span className="mmr-topbar-crumb truncate min-w-0">{crumb}</span>
           </div>
         ) : (
           <div
             ref={crumbSlotRef}
-            className="mmr-topbar-crumb-slot mmr-topbar-crumb min-w-0 flex items-center lg:max-w-[360px] overflow-hidden truncate"
+            className="mmr-topbar-crumb-slot mmr-topbar-crumb min-w-0 hidden sm:flex items-center lg:max-w-[360px] overflow-hidden truncate"
           />
         )}
       </div>

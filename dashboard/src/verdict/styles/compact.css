@@ -278,7 +278,7 @@
    horizontal room than 44px icons do, so the cluster spaces out to clear the
    widest neighbours (dashboard|leaderboard); hover devices keep the tighter
    icon rhythm and reveal one label at a time. */
-@media (hover: none) {
+@media (hover: none) and (min-width: 1024px) {
   /* The bar has to CARRY the pinned tips, not let them hang out of it.
      A tip sits 68-88px below the bar's top edge, and the bar is 64px, so on
      every hoverless ≥1024px device (an iPad in landscape is the common one)
@@ -348,6 +348,9 @@
     flex-shrink: 1;
     min-width: 0;
   }
+}
+/* Phones and tablets keep the 64px bar; only the crumb ellipsis applies. */
+@media (hover: none) {
   /* Crumb atoms ellipsize instead of hard-clipping: the slot is a flex row, so text-overflow lives on its blockified span children. */
   .mmr-shell .mmr-topbar-crumb-slot > span,
   .mmr-shell .mmr-topbar-crumb-slot > span > span:last-child {
@@ -1266,29 +1269,6 @@
   }
 }
 
-.mmr-shell .ck-stephint {
-  border: 1px solid var(--color-border);
-  border-top: 0;
-  min-height: 27px;
-  padding: 5px 14px;
-  display: flex;
-  align-items: center;
-  font-size: 12px;
-  color: var(--color-secondary);
-}
-.mmr-shell .ck-stephint-text {
-  opacity: 0;
-  transform: translateX(-4px);
-  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
-}
-.mmr-shell .ck-stephint-text.ck-show {
-  opacity: 1;
-  transform: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .mmr-shell .ck-stephint-text { transform: none; transition-property: opacity; }
-}
-
 .mmr-shell .ck-steppanel-frame {
   border: 1px solid var(--color-border);
   border-top: 0;
@@ -1547,11 +1527,11 @@
   display: grid;
   align-items: center;
   gap: 6px;
-  grid-template-columns: 8px 76px 36px 64px minmax(0, 1fr) 64px 32px;
+  grid-template-columns: 8px 44px 36px 64px minmax(0, 1fr) 64px 32px;
 }
 @media (max-width: 639px) {
   .mmr-shell .ck-tape {
-    grid-template-columns: 8px 64px 56px minmax(0, 1fr) 56px 32px;
+    grid-template-columns: 8px 40px 64px minmax(0, 1fr) 64px 32px;
   }
 }
 
@@ -1642,6 +1622,15 @@
 }
 .mmr-shell .ck-matrix-record > * {
   white-space: nowrap;
+}
+/* Phones: a narrow frozen column; the record moves to the handle's tooltip. */
+@media (max-width: 639px) {
+  .mmr-shell .ck-matrix {
+    --matrix-head: 144px;
+  }
+  .mmr-shell .ck-matrix-record {
+    display: none;
+  }
 }
 
 .mmr-shell .ck-matrix-sub {

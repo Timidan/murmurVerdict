@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   fetchMarket,
   fetchMarketCalls,
@@ -245,24 +245,23 @@ export function MarketDetailPage({
                 {split ? split.head : assetSlug.toUpperCase()}
               </h1>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 ck-mono ck-dim">
-                {split?.tail && (
-                  <>
-                    <span title={endsTitle}>{split.tail}</span>
-                    {SEP}
-                  </>
-                )}
-                {!isVenue && (
-                  <>
-                    <span>horizon {horizon}</span>
-                    {SEP}
-                  </>
-                )}
-                <span title={marketId}>market id {midTruncateId(marketId)}</span>
-                {isVenue && (
-                  <>
-                    {SEP}
-                    {venueUrl ? (
+                {[
+                  split?.tail && (
+                    <span key="tail" title={endsTitle}>
+                      {split.tail}
+                    </span>
+                  ),
+                  !isVenue && <span key="horizon">horizon {horizon}</span>,
+                  // The full page's breadcrumb already names the id.
+                  isDrawer && (
+                    <span key="id" title={marketId}>
+                      market id {midTruncateId(marketId)}
+                    </span>
+                  ),
+                  isVenue &&
+                    (venueUrl ? (
                       <a
+                        key="venue"
                         href={venueUrl}
                         target="_blank"
                         rel="noopener noreferrer"
@@ -273,10 +272,16 @@ export function MarketDetailPage({
                         <span aria-hidden="true" className="ck-dim text-[12px]">↗</span>
                       </a>
                     ) : (
-                      <VenueGlyph venue={venueName(market)} size={16} />
-                    )}
-                  </>
-                )}
+                      <VenueGlyph key="venue" venue={venueName(market)} size={16} />
+                    )),
+                ]
+                  .filter(Boolean)
+                  .map((fact, i) => (
+                    <Fragment key={i}>
+                      {i > 0 && SEP}
+                      {fact}
+                    </Fragment>
+                  ))}
               </div>
             </section>
           )}
@@ -392,12 +397,6 @@ export function MarketDetailPage({
                   <IkNav name="leaderboard" /> Agent ladder
                 </>
               }
-              meta={agents ? `${agents.length}` : ""}
-              actions={
-                <a href="#/dashboard" className="ck-btn ck-btn-bracket">
-                  all markets
-                </a>
-              }
             >
               {agents === null && <PanelSkeleton rows={6} />}
               {agents !== null && agents.length === 0 && (
@@ -405,8 +404,10 @@ export function MarketDetailPage({
               )}
               {agents !== null && agents.length > 0 && <Ladder rows={agents} />}
             </Panel>
-            {/* RIGHT COLUMN — sealed-verdicts feed above the live tape. */}
+            {/* RIGHT COLUMN — one call list: the live tape while the market runs,
+                the durable record once it has closed. */}
             <div className="min-w-0 flex flex-col gap-6">
+              {endsIsPast ? (
               <Panel
                 title={
                   <>
@@ -424,6 +425,7 @@ export function MarketDetailPage({
                 )}
                 {calls !== null && calls.length > 0 && <VerdictsFeed rows={calls} />}
               </Panel>
+              ) : (
               <Panel
                 title={
                   <>
@@ -439,6 +441,7 @@ export function MarketDetailPage({
               >
                 <CompactLiveFeed limit={60} marketId={marketId} />
               </Panel>
+              )}
             </div>
           </main>
         </>

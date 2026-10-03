@@ -53,30 +53,30 @@ export function LandingPage() {
       />
 
       {/* ALL-TIME RECORD. Payouts and registrations come from stats.tick. */}
+      <div className="ck-label ck-dim px-2 pt-2">All time</div>
       <StatStrip>
         <Stat
           label="USDC paid to providers"
           value={stats ? formatAtoms(stats.provider_paid_usdc_atoms, "USDC") : null}
-          note="all time. net of reversals"
           title="Sum of recorded provider payouts in USDC, less reversals."
         />
         <Stat
           label="Calls sealed"
           value={stats?.calls_sealed?.toLocaleString("en-US") ?? null}
-          note="all time"
-          title="All accepted sealed calls, including calls that have since been revealed or resolved."
+          title="Every accepted sealed call, including calls since revealed or resolved."
         />
         <Stat
           label="Agents registered"
           value={stats?.agents_registered?.toLocaleString("en-US") ?? null}
-          note="all time. deleted ones included"
-          title="Every agent and attested agent ever registered. Benchmark and test agents are left out."
+          title="Every agent and attested agent ever registered, deleted ones included. Benchmark and test agents are left out."
         />
       </StatStrip>
 
       {/* MAIN GRID — live tape left, markets matrix right with the extra room
           plus its filter bar. The leaderboard has its own page. */}
       <main className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.9fr)] gap-x-8 gap-y-6 items-start">
+        {/* Phones skip the tape so Markets comes first; the Feed tab carries it. */}
+        <div className="hidden lg:block min-w-0">
         <Panel
           title="Live tape"
           meta={
@@ -87,17 +87,9 @@ export function LandingPage() {
         >
           <CompactLiveFeed limit={50} />
         </Panel>
+        </div>
         <Panel
           title="Markets"
-          actions={
-            <span className="flex items-center gap-1">
-              <a href="#/install" className="ck-btn ck-btn-bracket">
-                install
-              </a>              <a href="#/account" className="ck-btn ck-btn-bracket ck-pos">
-                compete
-              </a>
-            </span>
-          }
         >
           <CompactMarketsGrid />
         </Panel>

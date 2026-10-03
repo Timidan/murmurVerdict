@@ -62,7 +62,6 @@ import {
   encodePaymentHeader,
   parseAccessChallenge,
 } from "../../lib/x402-batch-payment.js";
-import { shortId } from "../../lib/display-format.js";
 import { formatAtoms } from "../../lib/atoms-format.js";
 import { clearGatewayDeposit, decryptGrantedCall, depositGatewayUsdc, gatewayBalance, gatewayDepositReverted, gatewayShortfall, saveGatewayDeposit, savedGatewayDeposit } from "../../lib/browser-call-access.js";
 import { parseMarketConfig } from "../../lib/market-meta.js";
@@ -433,12 +432,6 @@ function BuyAccessBody({ call, onClose }: { call: OpenCallView; onClose: () => v
 
       {configured && ready && authenticated && wallet && (
         <>
-          <p className="ck-dim m-0">
-            paying as{" "}
-            <span className="ck-mono" title={wallet.address}>
-              {shortId(wallet.address, 8, 6)}
-            </span>
-          </p>
           <p className="ck-dim m-0 break-all">
             fund this wallet with Arbitrum Sepolia ETH for gas and USDC: <span className="ck-mono">{wallet.address}</span>{" "}
             <button type="button" className="ck-btn ck-btn-bracket" onClick={() => void navigator.clipboard.writeText(wallet.address)}>copy</button>

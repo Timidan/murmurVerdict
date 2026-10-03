@@ -13,7 +13,7 @@ export function SharePage({ slug }: { slug: string }) {
   const ogUrl = `${base}/v1/og/${slug}.svg`;
   const badgeUrl = `${base}/v1/badge/${slug}.svg`;
   // Share the daemon's `/share/:slug` externally: scrapers ignore the hash, and
-  // it serves per-agent OG tags then redirects browsers to `#/share/<slug>`.
+  // it serves per-agent OG tags then redirects browsers to the agent's profile.
   const shareUrl = `${base}/share/${slug}`;
 
   const [agent, setAgent] = useState<AgentProfile | null>(null);
@@ -101,14 +101,6 @@ export function SharePage({ slug }: { slug: string }) {
                 loading="eager"
               />
             </div>
-            <a
-              href={ogUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="ck-mono ck-dim break-all no-underline hover:text-[var(--color-display)]"
-            >
-              {ogUrl}
-            </a>
           </div>
         </Panel>
 

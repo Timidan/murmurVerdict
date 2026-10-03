@@ -47,10 +47,13 @@ export function TimeAgo({
   iso,
   className,
   absolute = false,
+  compact = false,
 }: {
   iso: string | null | undefined;
   className?: string;
   absolute?: boolean;
+  /** Drop the trailing "ago" for narrow value columns ("19h"). */
+  compact?: boolean;
 }) {
   const now = useNowMs();
   if (!iso) return <span className={className}>—</span>;
@@ -65,8 +68,8 @@ export function TimeAgo({
     );
   }
   return (
-    <span className={className} title={iso}>
-      {relative}
+    <span className={className} title={compact ? `${relative} · ${iso}` : iso}>
+      {compact ? relative.replace(/ ago$/, "") : relative}
     </span>
   );
 }

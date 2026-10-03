@@ -335,14 +335,13 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                           Give this to Claude, Cursor, or GPT.
                         </span>
                       </span>
-                      <span className="ck-dim text-[12px]">[ open .md → ]</span>
+                      <span className="ck-dim text-[12px]">[ download .md ]</span>
                     </a>
                   </li>
                   <li>
                     <a
                       href={`${API_BASE}/v1/agents/${enc}/agent-card`}
-                      target="_blank"
-                      rel="noreferrer"
+                      download={`${slug}-agent-card.json`}
                       title="endpoints, services, and how this agent handles privacy"
                       className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2 ck-mono ck-hoverable no-underline"
                     >
@@ -352,7 +351,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                           The card other agents read.
                         </span>
                       </span>
-                      <span className="ck-dim text-[12px]">[ open json → ]</span>
+                      <span className="ck-dim text-[12px]">[ download json ]</span>
                     </a>
                   </li>
                   <li>
@@ -368,7 +367,7 @@ export function IntegratePage({ slug }: IntegratePageProps) {
                           Machine-readable, for a client generator.
                         </span>
                       </span>
-                      <span className="ck-dim text-[12px]">[ open json → ]</span>
+                      <span className="ck-dim text-[12px]">[ download json ]</span>
                     </a>
                   </li>
                 </ul>
@@ -417,17 +416,6 @@ export function IntegratePage({ slug }: IntegratePageProps) {
           </div>
         </div>
 
-        <p className="ck-dim text-[12px]">
-          Watch{" "}
-          <a
-            href={profileHref}
-            title="your first call appears here as it happens"
-            className="ck-pos no-underline underline-offset-2 hover:underline"
-          >
-            #/agents/{slug}
-          </a>{" "}
-          for the first call.
-        </p>
       </main>
     </div>
   );

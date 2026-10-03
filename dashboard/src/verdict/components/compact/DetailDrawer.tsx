@@ -214,24 +214,26 @@ export function DetailDrawer() {
             <Ik name={meta.icon} /> {sentenceCase(meta.title)}
           </span>
           <span className="flex items-center gap-3">
-            <span className="ck-mono ck-dim truncate max-w-[140px]" title={entity.id}>
+            <span className="ck-mono ck-dim truncate max-w-[140px] hidden sm:inline" title={entity.id}>
               {shortId(entity.id, 8, 4)}
             </span>
             <a
               href={meta.permalink(entity.id)}
               className="ck-btn ck-btn-bracket no-underline"
               title="open the full page — this link is shareable"
+              aria-label="open the full page"
             >
-              open full page ↗
+              <Ik name="external-link" />
             </a>
             <button
               ref={closeRef}
               type="button"
               onClick={close}
               aria-label={`close ${meta.title} detail`}
+              title="close"
               className="ck-btn ck-btn-bracket"
             >
-              close
+              ×
             </button>
           </span>
         </div>

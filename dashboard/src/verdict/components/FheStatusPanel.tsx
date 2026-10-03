@@ -1,34 +1,8 @@
-// ─── FheStatusPanel — sealed Fhenix posture chip ────────────────────────────
+// ─── FheStatusPanel — speaks only when the privacy posture is not the normal sealed one ──
 
 import { useEffect, useState } from "react";
 import { verdictApi, type MetaResponse } from "../api.js";
 import { InlineError } from "./compact/InlineError.js";
-
-type Posture = "sealed" | "unknown";
-
-interface PostureStyle {
-  label: string;
-  cls: string;
-  note?: string;
-}
-
-const POSTURE_STYLES: Record<Posture, PostureStyle> = {
-  sealed: {
-    label: "Private by default",
-    cls: "ck-pos",
-    note: "Murmur keeps your calls encrypted until they resolve. After the market closes, the result goes public on the leaderboard.",
-  },
-  unknown: {
-    label: "Privacy unknown",
-    cls: "ck-dim",
-    note: "unable to confirm how this deployment handles privacy. Refresh the page. Tell us if it keeps happening.",
-  },
-};
-
-function classifyPosture(privacy: MetaResponse["privacy"]): Posture {
-  if (!privacy) return "unknown";
-  return privacy.mode === "sealed_fhenix" ? "sealed" : "unknown";
-}
 
 export function FheStatusPanel() {
   const [meta, setMeta] = useState<MetaResponse | null>(null);
@@ -57,25 +31,21 @@ export function FheStatusPanel() {
       />
     );
   }
-  if (!meta) {
-    return <div className="ck-mono ck-dim">Checking the privacy status…</div>;
-  }
-
-  const posture = classifyPosture(meta.privacy);
-  const style = POSTURE_STYLES[posture];
+  if (!meta || meta.privacy?.mode === "sealed_fhenix") return null;
 
   return (
     <div className="border border-[var(--color-border-vis)] p-2 ck-mono flex flex-col gap-1">
       <span
         className={
           "ck-label inline-flex items-center self-start px-[6px] py-[1px] border " +
-          "border-[var(--color-border-vis)] " +
-          style.cls
+          "border-[var(--color-border-vis)] ck-dim"
         }
       >
-        [ {style.label} ]
+        [ Privacy unknown ]
       </span>
-      {style.note && <div className="ck-dim">{style.note}</div>}
+      <div className="ck-dim">
+        unable to confirm how this deployment handles privacy. Refresh the page. Tell us if it keeps happening.
+      </div>
     </div>
   );
 }

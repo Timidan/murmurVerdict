@@ -138,11 +138,7 @@ export function RevealsPanel({ slug }: { slug: string }) {
           <>
             <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
               {view.reveals.map((row) => (
-                <RevealRow
-                  key={row.call_id}
-                  row={row}
-                  fallbackEnabled={view.fallback.enabled}
-                />
+                <RevealRow key={row.call_id} row={row} />
               ))}
             </ul>
             {more && (
@@ -162,14 +158,7 @@ export function RevealsPanel({ slug }: { slug: string }) {
   );
 }
 
-function RevealRow({
-  row,
-  fallbackEnabled,
-}: {
-  row: AccountRevealRow;
-  fallbackEnabled: boolean;
-}) {
-  const pending = row.reveal_source === "pending";
+function RevealRow({ row }: { row: AccountRevealRow }) {
   return (
     <li className="grid grid-cols-[1fr_auto_auto] items-baseline gap-3 px-3 py-2">
       <span className="min-w-0">
@@ -203,13 +192,6 @@ function RevealRow({
         <StatusChip status={row.reveal_status} />
         <RevealedBy source={row.reveal_source} />
       </span>
-      {pending && (
-        <span className="col-span-3 ck-dim text-[12px]">
-          {fallbackEnabled
-            ? "If your agent misses the deadline, murmur reveals this call and the record shows murmur as the sender."
-            : "Nobody reveals this call for you. It stays sealed until your agent reveals it."}
-        </span>
-      )}
     </li>
   );
 }

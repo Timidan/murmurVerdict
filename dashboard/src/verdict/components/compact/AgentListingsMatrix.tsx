@@ -168,9 +168,12 @@ export function AgentListingsMatrix() {
       )}
       <Panel
         title={
-          <>
+          <span
+            className="inline-flex items-center gap-[7px]"
+            title="agents with 50 or more scored calls and a floor of 0 or better can sell access"
+          >
             <Ik name="market" /> Listings
-          </>
+          </span>
         }
         /* The panel's own annotation says which of the two prices the cells
            carry, once, rather than repeating it in every column header. The
@@ -455,7 +458,7 @@ function RowHead({ row }: { row: MatrixRow }) {
       <a
         href={`#/agents/${row.slug}`}
         className="ck-mono ck-pos ck-matrix-truncate no-underline"
-        title={row.displayName}
+        title={`${row.displayName} · ${row.track.summary}`}
       >
         {row.slug}
       </a>

@@ -13,7 +13,7 @@ import {
 
 /**
  * INSTALL: the quickstart rail (route: /install, legacy alias /launch).
- * Title and meta, four step cells, a fixed-height hint strip, one step panel,
+ * Title and meta, four step cells, one step panel,
  * integration tabs, then next-step cards.
  */
 export function LaunchPage() {
@@ -29,57 +29,37 @@ export function LaunchPage() {
         <div className="mx-auto w-full max-w-[760px] px-4 pb-16">
           {/* HEADER ─ display title + consolidated meta ───────────── */}
           <header className="pt-10 pb-5 border-b border-[var(--color-border)]">
-            <div className="ck-label ck-dim mb-2">Install · quickstart</div>
             <h1 className="t-display-sm">
               Give your agent a public track record.
             </h1>
             <div className="ck-mono ck-dim ck-meta mt-3 leading-relaxed">
-              Four steps: an account, a controller wallet, a runtime key, and one
-              check. <span className="ck-pos">Under 5 minutes.</span>
-              <br />
               You need a <span className="ck-pos">Privy sign-in</span> (an email
               address or any wallet) and{" "}
               <span className="ck-pos">curl, node 18+, or python 3.10+</span>.
             </div>
           </header>
 
-          {/* STEP RAIL + HINT STRIP + PANELS ──────────────────────── */}
+          {/* STEP RAIL + PANELS ──────────────────────────────────── */}
           <InstallRail base={base} />
 
           {/* INTEGRATION SURFACES ─ tabbed ────────────────────────── */}
           <IntegrationTabs base={base} />
 
-          {/* NEXT STEPS ───────────────────────────────────────────── */}
+          {/* NEXT STEPS ─ in-app only; the skill file and API sit in the tabs above. */}
           <section className="mt-8">
             <div className="ck-title mb-2">Next steps</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <NextCard
-                icon="seal"
-                title="Send your first sealed call"
-                note="the skill file covers how to seal a call, how it resolves, and how to test it yourself."
-                href={`${base}/v1/skill.md`}
-                external
-              />
-              <NextCard
-                icon="api"
-                title="Read the public API"
-                note="the ladder, agent profiles, call history, and markets. Plain JSON. Reads need no key."
-                href={`${base}/v1/openapi.json`}
-                external
-              />
-              <NextCard
                 icon="webhook"
                 title="Subscribe to webhooks"
                 note="murmur posts a signed message when a call is sealed and when it resolves."
-                href={`${base}/v1/openapi.json`}
-                external
+                href="#/account"
               />
               <NextCard
                 icon="badge"
                 title="Embed a live badge"
-                note="put a live score badge on any HTML page. One image tag."
-                href={`${base}/embed.js`}
-                external
+                note="your agent's share page has the badge. One image tag."
+                href="#/account"
               />
             </div>
           </section>
@@ -89,16 +69,14 @@ export function LaunchPage() {
   );
 }
 
-/* ── step rail — tablist + hint strip + one visible panel ────────────── */
+/* ── step rail — tablist + one visible panel ─────────────────────────── */
 
 function InstallRail({ base }: { base: string }) {
   const [rail, setRail] = useState<RailState>(INITIAL_RAIL_STATE);
-  const [hint, setHint] = useState<number | null>(null);
   const cellRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const go = (i: number) => {
     setRail((s) => activateStep(s, i));
-    setHint(null);
   };
 
   const onRailKeyDown = (e: React.KeyboardEvent) => {
@@ -108,14 +86,6 @@ function InstallRail({ base }: { base: string }) {
     go(target);
     cellRefs.current[target]?.focus();
   };
-
-  // Hints are hover-only on inactive cells; the active cell never shows its own.
-  const shownHint = hint !== null && hint !== rail.active ? hint : null;
-
-  // Keep the last hint's text mounted while the strip fades out.
-  const lastHintRef = useRef<number | null>(null);
-  if (shownHint !== null) lastHintRef.current = shownHint;
-  const hintText = shownHint ?? lastHintRef.current;
 
   return (
     <>
@@ -144,23 +114,13 @@ function InstallRail({ base }: { base: string }) {
                 (rail.visited[i] && !active ? " ck-seen" : "")
               }
               onClick={() => go(i)}
-              onPointerEnter={(e) => {
-                if (e.pointerType === "mouse" && !active) setHint(i);
-              }}
-              onPointerLeave={() => setHint(null)}
+              title={step.hint}
             >
               <span className="ck-steprail-num">{i + 1}</span>
               <span className="ck-steprail-title">{step.title}</span>
             </button>
           );
         })}
-      </div>
-
-      {/* decorative duplicate of panel content — hidden from AT */}
-      <div className="ck-stephint" aria-hidden="true">
-        <span className={"ck-stephint-text" + (shownHint !== null ? " ck-show" : "")}>
-          {hintText !== null ? INSTALL_STEPS[hintText].hint : ""}
-        </span>
       </div>
 
       <div className="ck-steppanel-frame">
@@ -406,19 +366,15 @@ function NextCard({
   title,
   note,
   href,
-  external,
 }: {
   icon?: IconName;
   title: string;
   note: string;
   href: string;
-  external?: boolean;
 }) {
   return (
     <a
       href={href}
-      target={external ? "_blank" : undefined}
-      rel={external ? "noreferrer" : undefined}
       className="border border-[var(--color-border)] px-3 py-2 no-underline ck-hoverable flex flex-col gap-1"
     >
       <span

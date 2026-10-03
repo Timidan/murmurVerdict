@@ -161,7 +161,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
     <section className="ck-frame w-full px-4 py-4 flex flex-col gap-3">
       <header className="flex items-center justify-between">
         <h3 className="ck-title ck-title-ik">
-          <Ik name="runtime-key" /> Runtime keys · {slug}
+          <Ik name="runtime-key" /> Runtime keys
         </h3>
         <span className="text-[12px] ck-dim">
           {/* Before the keys are known the count is unknown, not zero. */}
@@ -233,7 +233,7 @@ export function RuntimeKeysPanel({ slug, agent }: RuntimeKeysPanelProps) {
                   className="ck-dim truncate text-right md:text-left"
                   title={k.policy_hash}
                 >
-                  {k.label ?? "—"} · h:{k.policy_hash.slice(0, 8)}
+                  {k.label ?? "—"}
                 </span>
                 <TimeAgo iso={k.created_at} className="ck-dim text-[12px]" />
                 <span className="col-span-2 md:col-span-1">

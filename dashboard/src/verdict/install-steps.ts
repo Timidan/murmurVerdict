@@ -7,7 +7,7 @@
 export type RailStep = {
   /** rail cell label, lowercase idiom */
   title: string;
-  /** one-liner shown in the hint strip on hover/focus of an inactive cell */
+  /** one-liner shown as the rail cell's tooltip */
   hint: string;
 };
 

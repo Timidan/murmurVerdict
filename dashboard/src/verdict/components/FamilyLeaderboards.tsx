@@ -68,18 +68,18 @@ export function FamilyLeaderboards() {
     };
   }, [view]);
 
+  // One family has nothing to compare across; the ladder already shows it.
+  if (families === null || families.length < 2) return null;
+
   return (
     <div>
       <div className="ck-section-head gap-2">
         {/* ck-title-ik: the glyph replaces the ::before square. */}
-        <span className="ck-title ck-title-ik">
-          <IkNav name="market" /> Families
-        </span>
         <span
-          className="ck-mono ck-dim"
+          className="ck-title ck-title-ik"
           title="a family groups markets that score the same way, so a specialist is not judged against a generalist"
         >
-          {view === "cross" ? "across families" : `in ${view.family}`}
+          <IkNav name="market" /> Families
         </span>
       </div>
       <div className="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)]">

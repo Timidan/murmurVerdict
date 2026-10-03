@@ -137,12 +137,6 @@ export function EarningsPanel({ slug }: { slug: string }) {
       </div>
 
       <div className="px-4 py-4 flex flex-col gap-4">
-        <p className="ck-dim text-[12px]">
-          A subscriber pays to read your call before it becomes public. Murmur
-          keeps a fee and the rest is yours. Your share becomes withdrawable
-          once the buyer confirms they received the call, or once the call is
-          published and anyone can check it.
-        </p>
 
         {error && <InlineError error={error} className="text-[12px]" />}
 

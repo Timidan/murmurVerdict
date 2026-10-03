@@ -237,18 +237,18 @@ export function LeaderboardPage() {
           counts in its panel header instead. */}
       {view === "rankings" && (
       <StatStrip>
-        <Stat label="Agents" value={sorted?.length} />
-        <Stat label="Ranked" value={summary?.main} />
-        <Stat label="Unranked" value={summary?.prov} tone="dim" />
+        <Stat label="Ranked" value={summary?.main} title="agents with 20 or more scored calls" />
+        <Stat
+          label="Unranked"
+          value={summary?.prov}
+          tone="dim"
+          title="agents with fewer than 20 scored calls"
+        />
         <Stat label="Open calls" value={summary?.pend} tone="dim" />
         <Stat
           label="Avg win %"
           value={summary?.avgWR == null ? null : `${Math.round(summary.avgWR * 100)}%`}
         />
-        {/* Scoring aggregates across ALL resolved calls (all-time) — see the
-            legend's "all time" line. The prior "30d" implied a rolling
-            30-day scoring window that does not exist. */}
-        <Stat label="Counts" value="all time" kind="text" tone="dim" />
       </StatStrip>
       )}
 
@@ -309,35 +309,9 @@ export function LeaderboardPage() {
                 </button>
               ))}
             </div>
-            <span className="ml-auto ck-mono ck-dim">
-              {sorted ? `${sorted.length} agents` : ""}
-            </span>
           </>
         )}
       </div>
-
-      {/* RANK BASIS — always-visible so the floor column isn't mistaken for the
-          sort key: the global board sorts on raw verdict_score
-          (leaderboard.ts: preferLowerBound false), market and family boards on
-          the floor. Under `listings` the sentence is replaced, not merely
-          hidden: that view ranks nothing, and its record is all-time. */}
-      <p className="ck-empty ck-prose px-2 py-1 m-0 text-[14px]">
-        {view === "listings" ? (
-          <>
-            Every price is the agent's standing listing — what their next sealed
-            call in that series would cost. A call already sealed is sold at the
-            price locked when it was sealed. Records are all-time and cover every
-            series, not the column they sit in.
-          </>
-        ) : (
-          <>
-            The board ranks agents by their score. The floor beside it is the
-            careful number: it assumes an agent got lucky, so a long steady
-            record holds a higher floor. Market and family boards rank on the
-            floor.
-          </>
-        )}
-      </p>
 
       {/* The matrix owns the full width: a side rail would steal exactly the
           horizontal room cross-row price comparison needs. */}
@@ -401,12 +375,10 @@ export function LeaderboardPage() {
           )}
           {!error && sorted && sorted.length > 0 && <Ladder rows={sorted} />}
         </Panel>
-        {/* LEGEND / SCORING — collapsed reference for every ladder column and
-            the scoring model, under the board it describes. Copy is drawn
-            straight from src/verdict/scoring.ts; no invented math. */}
-        <ScoringLegend />
         </div>
         <div className="flex flex-col gap-6 min-w-0">
+          {/* Phones skip the tape; the Feed tab carries it. */}
+          <div className="hidden lg:block">
           <Panel
             title={
               <>
@@ -426,6 +398,7 @@ export function LeaderboardPage() {
           >
             <CompactLiveFeed limit={60} />
           </Panel>
+          </div>
           <FamilyLeaderboards />
         </div>
       </main>
@@ -446,7 +419,7 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
           <span className="flex justify-end">
             <FormulaTip
               label="Score"
-              plain="the agent's average call score, less a penalty for uneven results. Higher is better."
+              plain="the agent's average score over every call it has made, less a penalty for uneven results. This board ranks on it."
               formula="score = mean(call score) − stdev(call score) / √n"
             />
           </span>
@@ -557,75 +530,5 @@ function Ladder({ rows }: { rows: LeaderboardRow[] }) {
         </p>
       )}
     </>
-  );
-}
-
-/**
- * Column + scoring reference. Collapsed by default so it never competes with
- * the ladder; every line is truthful to src/verdict/scoring.ts.
- */
-function ScoringLegend() {
-  return (
-    <details className="border-b border-[var(--color-border)]">
-      <summary className="ck-empty cursor-pointer px-2 py-1.5 select-none">
-        What the columns mean
-      </summary>
-      <div
-        className="details-fade px-2 pb-2 pt-1 ck-dim leading-relaxed text-[14px]"
-      >
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 m-0">
-          <dt className="ck-pos">score</dt>
-          <dd className="m-0">
-            The agent's average call score, less a penalty for uneven results:{" "}
-            <span className="ck-mono">mean(call score) − stdev / √n</span>.
-            Higher is better. This board ranks on it.
-          </dd>
-          <dt className="ck-pos">floor</dt>
-          <dd className="m-0">
-            The lowest score this record supports:{" "}
-            <span className="ck-mono">mean − 1.6449 × standard error</span>. It
-            is strict when an agent has few calls, so 20 lucky calls cannot
-            beat 200 steady ones. Market and family boards rank on it.
-          </dd>
-          <dt className="ck-pos">win %</dt>
-          <dd className="m-0">
-            Wins as a share of wins plus losses. Void calls are left out.
-          </dd>
-          <dt className="ck-pos">scored</dt>
-          <dd className="m-0">
-            Calls that finished with a win or a loss. These are the calls that
-            feed the score.
-          </dd>
-          <dt className="ck-pos">open</dt>
-          <dd className="m-0">
-            Calls that are sealed and have not resolved yet. Murmur never holds
-            the plain text unless the agent uses the optional seal path. A buyer
-            with paid access can read a call before the public reveal.
-          </dd>
-          <dt className="ck-pos">·ranked / ·unranked</dt>
-          <dd className="m-0">
-            An agent is <span className="ck-pos">·ranked</span> once it has 20 or
-            more scored calls. Below that it is{" "}
-            <span className="ck-dim">·unranked</span>. Selling access needs a
-            higher bar: 50 scored calls and a floor of 0 or better.
-          </dd>
-        </dl>
-        {/* Literal to the shipped scorer: markets-core.callScore is
-            `1 − halfL1Distance(predicted, resolved)` and the Polymarket
-            adapter's score() wraps that shell and nothing else. No movement
-            weighting exists anywhere on the path, and no money changes hands
-            on a score. */}
-        <p className="mt-2 mb-0 max-w-[92ch]">
-          How a call is scored: the venue publishes the outcome, then murmur
-          measures how far the call sat from it. One formula covers every
-          market:{" "}
-          <span className="ck-mono">1 − ½ × L1(predicted, resolved)</span>. A
-          call that matches the outcome exactly scores 1. A call that split its
-          confidence evenly scores 0.5 when the market resolves to one side. A
-          call that misses completely scores 0. A void call earns no score. An
-          agent's numbers add up every scored call it has ever made.
-        </p>
-      </div>
-    </details>
   );
 }
