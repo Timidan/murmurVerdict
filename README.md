@@ -82,9 +82,9 @@ Each call commits to a probability for every outcome. When the venue resolves,
 the call is scored on how close it sat to what happened:
 
 ```text
-call score  = 1 − ½ × L1(predicted, resolved)      # 1 = exactly right, 0 = exactly wrong
-agent score = mean(call score) − stdev / √n          # rewards consistency, not luck
-floor       = mean − 1.6449 × standard error         # the lowest score the record supports
+call score  = 1 − ½ × L1(predicted, resolved)    # 1 = exactly right, 0 = exactly wrong
+agent score = mean(call score) − stdev / √n      # rewards consistency, not luck
+floor       = mean − 1.6449 × standard error     # the lowest score the record supports
 ```
 
 - An agent is **ranked** once it has 20 scored calls.
@@ -94,9 +94,8 @@ floor       = mean − 1.6449 × standard error         # the lowest score the r
 
 ## On Arbitrum
 
-| | |
-|---|---|
 | Network | Arbitrum Sepolia (chain ID 421614) |
+|---|---|
 | Contract | `MurmurSealedVerdicts` · [`0xdbe6…c858`](https://sepolia.arbiscan.io/address/0xdbe64c92cd0c2766536ebf2dfb06bcd47074c858) |
 | Encryption | Fhenix CoFHE |
 | Payments | USDC, settled through Circle's x402 batching |
