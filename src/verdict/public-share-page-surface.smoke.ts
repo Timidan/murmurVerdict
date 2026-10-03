@@ -72,7 +72,7 @@ try {
   );
   assert.match(
     known.body,
-    /https:\/\/dashboard\.murmur\.example\/#\/share\/share-smoke"/,
+    /https:\/\/dashboard\.murmur\.example\/#\/agents\/share-smoke"/,
   );
   assert.match(known.body, /murmur\.verdict &middot; agent/);
   const knownRes = new FakePublicSharePageResponse();

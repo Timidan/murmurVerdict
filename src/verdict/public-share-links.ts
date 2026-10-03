@@ -20,7 +20,7 @@ export function publicShareLinks(input: {
   const apiOrigin = input.apiOrigin.replace(/\/+$/, "");
   const encodedSlug = encodeURIComponent(slug);
   const dashHash = dashboardOrigin
-    ? `${dashboardOrigin}/#/share/${encodedSlug}`
+    ? `${dashboardOrigin}/#/agents/${encodedSlug}`
     : "";
 
   return {

@@ -19,7 +19,7 @@ assert.deepEqual(
     slug: "share/slash",
     ogPng: "https://request.example/v1/og/share%2Fslash.png",
     dashboardOrigin: "https://dashboard.example",
-    dashHash: "https://dashboard.example/#/share/share%2Fslash",
+    dashHash: "https://dashboard.example/#/agents/share%2Fslash",
   },
 );
 
