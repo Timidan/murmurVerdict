@@ -280,8 +280,8 @@ export function PurchasesPanel({ agents }: { agents: AccountAgent[] }) {
           <>
             {!view.authenticated && (
               <p className="ck-dim text-[12px]">
-                Granted purchases only. Purchases still in flight, and any money
-                owed back, are hidden until you sign.
+                Purchases still in flight, and any money owed back, are hidden
+                until you sign.
               </p>
             )}
             <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">

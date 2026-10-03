@@ -129,7 +129,7 @@ export function CompactLiveFeed({
 
   return (
     <>
-    <ul role="log" aria-relevant="additions" className="m-0 p-0 list-none">
+    <ul role="log" aria-relevant="additions" className="ck-tape-list m-0 p-0 list-none">
       {rows.map((evt) => {
         const isResolved = evt.type === "call.resolved";
         const rowKey = evt.call_id;
@@ -161,7 +161,7 @@ export function CompactLiveFeed({
                 already use for the same two ideas, and the accessible name
                 carries the word. */}
             <span
-              className="inline-flex items-center ck-dim ck-ladder-drop"
+              className="inline-flex items-center ck-dim"
               title={isResolved ? "scored" : "sealed"}
             >
               <Ik name={isResolved ? "resolve" : "seal"} />
@@ -229,7 +229,7 @@ export function CompactLiveFeed({
 function FeedSkeleton() {
   // Hairline skeleton matching the row grid. No spinner per DESIGN.md §10.
   return (
-    <ul className="m-0 p-0 list-none">
+    <ul className="ck-tape-list m-0 p-0 list-none">
       {[0, 1, 2, 3, 4].map((i) => (
         <li
           key={i}
@@ -237,7 +237,7 @@ function FeedSkeleton() {
         >
           <span className="inline-block w-[5px] h-[5px] bg-[var(--color-border)]" />
           <SkeletonBar className="h-[8px] w-[44px]" />
-          <SkeletonBar className="h-[8px] w-[24px] ck-ladder-drop" />
+          <SkeletonBar className="h-[8px] w-[24px]" />
           <SkeletonBar className="h-[8px] w-[32px]" />
           <SkeletonBar className="h-[10px] w-[70%]" />
           <SkeletonBar className="h-[8px] w-[44px] justify-self-end" />

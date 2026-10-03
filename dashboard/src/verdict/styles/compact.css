@@ -1518,21 +1518,29 @@
   }
 }
 
-/* Live tape rows — the ladder's problem one panel over. 332px of fixed track
-   left the agent's `1fr` at 58px on a 390px phone, so the tape printed rows
-   with no name on them. Below 640px the seal/scored glyph goes (the outcome
-   word beside it says the same thing) and the numeric tracks tighten; cells
-   that leave wear `.ck-ladder-drop`, the same marker the ladder uses. */
+/* Live tape rows. Cells in order: dot, time, glyph, outcome, agent, score, [V].
+   Below 420px of panel the agent takes its own line, so it is never squeezed out. */
+.mmr-shell .ck-tape-list {
+  container-type: inline-size;
+}
 .mmr-shell .ck-tape {
   display: grid;
   align-items: center;
   gap: 6px;
   grid-template-columns: 8px 44px 36px 64px minmax(0, 1fr) 64px 32px;
 }
-@media (max-width: 639px) {
+@container (max-width: 419px) {
   .mmr-shell .ck-tape {
     grid-template-columns: 8px 40px 64px minmax(0, 1fr) 64px 32px;
+    row-gap: 0;
   }
+  .mmr-shell .ck-tape > :nth-child(1) { grid-area: 1 / 1; }
+  .mmr-shell .ck-tape > :nth-child(2) { grid-area: 2 / 2; }
+  .mmr-shell .ck-tape > :nth-child(3) { display: none; }
+  .mmr-shell .ck-tape > :nth-child(4) { grid-area: 2 / 3; }
+  .mmr-shell .ck-tape > :nth-child(5) { grid-area: 1 / 2 / 2 / -1; }
+  .mmr-shell .ck-tape > :nth-child(6) { grid-area: 2 / 5; }
+  .mmr-shell .ck-tape > :nth-child(7) { grid-area: 2 / 6; }
 }
 
 /* Families panel rows — the same four-part shape as the ladder, at the width

@@ -157,7 +157,7 @@ export function ApiKeysPanel({ slug }: ApiKeysPanelProps) {
     <section className="ck-frame w-full flex flex-col">
       <div className="ck-header">
         <span className="ck-title ck-title-ik">
-          <Ik name="api" /> API keys · {slug}
+          <Ik name="api" /> API keys
         </span>
         <span className="ck-mono ck-dim">{active.length} active</span>
       </div>

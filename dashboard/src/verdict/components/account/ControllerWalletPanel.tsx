@@ -278,15 +278,11 @@ export function ControllerWalletPanel({ slug, agent, onAgentChanged }: Controlle
           )}
           {state === "bound" && (
             <>
-              <p className="ck-dim text-[12px]">
-                You can sign again at any time. It resets the clock and keeps
-                your runtime keys minting without a gap.
-              </p>
               <button
                 className="ck-btn ck-btn-bracket self-start"
                 onClick={reattest}
                 disabled={busy !== "idle" || !ready}
-                title="sign a fresh attestation for this controller wallet"
+                title="sign a fresh attestation for this controller wallet. It resets the clock and keeps your runtime keys minting without a gap."
               >
                 <Ik name="attest" />
                 {busy === "idle" ? "sign again now" : <BusyLabel busy={busy} />}

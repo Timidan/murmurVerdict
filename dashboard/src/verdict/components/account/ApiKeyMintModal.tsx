@@ -119,8 +119,7 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
             ⚠ Shown once. Copy it now.
           </p>
           <p className="ck-dim text-[12px] leading-relaxed">
-            Put it in your secrets manager or your environment now. Murmur
-            stores only a hash, so there is no way to get it back. If you lose
+            Put it in your secrets manager or your environment now. If you lose
             it, rotate the key on your account page and mint a new one.
           </p>
 
@@ -176,11 +175,6 @@ export function ApiKeyMintModal({ result, slug, onDone }: ApiKeyMintModalProps) 
             />
             <span className="ck-mono ck-dim leading-relaxed">
               I have saved this key somewhere safe.
-              <br />
-              <span className="text-[12px]">
-                This box unlocks the done button. Clearing it does not undo the
-                mint — the key is already live.
-              </span>
             </span>
           </label>
 

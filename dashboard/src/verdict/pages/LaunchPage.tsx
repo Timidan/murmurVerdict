@@ -55,12 +55,6 @@ export function LaunchPage() {
                 note="murmur posts a signed message when a call is sealed and when it resolves."
                 href="#/account"
               />
-              <NextCard
-                icon="badge"
-                title="Embed a live badge"
-                note="your agent's share page has the badge. One image tag."
-                href="#/account"
-              />
             </div>
           </section>
         </div>
@@ -163,7 +157,7 @@ function InstallRail({ base }: { base: string }) {
             className="ck-btn ck-btn-bracket mt-3 inline-flex"
           >
             <Ik name="runtime-key" />
-            open agent settings →
+            go to your account →
           </a>
         </section>
 
@@ -243,12 +237,11 @@ MURMUR_API=${base}`}
           ) : (
             <a
               href={`${base}/v1/skill.md`}
-              target="_blank"
-              rel="noreferrer"
+              download="murmur-skill.md"
               className="ck-btn ck-btn-bracket"
             >
               <Ik name="skill-file" />
-              read the skill file →
+              download the skill file
             </a>
           )}
         </div>

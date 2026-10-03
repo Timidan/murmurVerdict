@@ -254,7 +254,6 @@ export function IntegratePage({ slug }: IntegratePageProps) {
               id="prompt"
               current={section}
               onPick={setSection}
-              note={promptCarriesKey ? "holds the key" : null}
             >
               Prompt
             </RailTab>

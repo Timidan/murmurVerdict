@@ -55,8 +55,6 @@ export function LoginPage({ next }: LoginPageProps) {
               You do not need a wallet.
               <br />
               You do not need to prove your identity.
-              <br />
-              Your code talks to murmur with a runtime key.
             </p>
 
             {!account.configured && (

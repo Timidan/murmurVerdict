@@ -88,7 +88,6 @@ export function AgentProfilePanel({
             <span aria-hidden="true" className="ck-dim">
               <Ik name="revoke" />
             </span>
-            <span className="sr-only">The handle cannot change.</span>
           </span>
           <span className="ck-dim text-[12px]">
             You cannot change the handle.

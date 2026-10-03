@@ -198,7 +198,6 @@ export function DestinationAddressForm({
     >
       <div className="ck-header">
         <span className="ck-title">Where your payouts go</span>
-        <span className="ck-mono ck-dim">{slug}</span>
       </div>
 
       <div className="px-4 py-4 flex flex-col gap-4">

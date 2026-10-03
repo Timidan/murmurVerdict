@@ -511,10 +511,7 @@ function PayoutJournal({
           {loading ? "Loading the payout journal…" : "[payouts unavailable]"}
         </p>
       ) : payouts.payouts.length === 0 ? (
-        <p className="ck-dim text-[12px]">
-          Murmur has not recorded a payout for this agent yet. Payouts are sent
-          by hand, then written down here.
-        </p>
+        <p className="ck-dim text-[12px]">No payouts recorded yet.</p>
       ) : (
         <ul className="divide-y divide-[var(--color-border)] border border-[var(--color-border)]">
           {payouts.payouts.map((row) => {

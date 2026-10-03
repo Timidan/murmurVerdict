@@ -160,7 +160,7 @@ export function RevealsPanel({ slug }: { slug: string }) {
 
 function RevealRow({ row }: { row: AccountRevealRow }) {
   return (
-    <li className="grid grid-cols-[1fr_auto_auto] items-baseline gap-3 px-3 py-2">
+    <li className="grid grid-cols-[1fr_auto] sm:grid-cols-[1fr_auto_auto] items-baseline gap-x-3 gap-y-1 px-3 py-2">
       <span className="min-w-0">
         <a
           href={`#/calls/${encodeURIComponent(row.call_id)}`}
@@ -173,7 +173,7 @@ function RevealRow({ row }: { row: AccountRevealRow }) {
           opens {formatLocalDateTime(row.reveal_open_at) ?? row.reveal_open_at}
         </span>
       </span>
-      <span className="text-right">
+      <span className="order-last col-span-2 sm:order-none sm:col-span-1 sm:text-right">
         <span className="ck-label ck-dim block">Deadline</span>
         <span
           className="ck-mono text-[12px]"

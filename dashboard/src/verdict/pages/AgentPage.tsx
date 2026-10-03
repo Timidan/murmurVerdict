@@ -249,7 +249,7 @@ export function AgentPage({ slug }: { slug: string }) {
             {agent.wallet_address && (
               <>
                 {SEP}
-                <OwnerAuthorizedPill explorerUrl={ownerExplorerUrl} />
+                <OwnerAuthorizedPill />
               </>
             )}
             {/* The explorer follows the agent's own chain. */}
@@ -479,35 +479,18 @@ interface AgentStats {
   streak: number;
 }
 
-function OwnerAuthorizedPill({ explorerUrl }: { explorerUrl: string | null }) {
-  const className =
-    "inline-flex items-center gap-1 border border-[var(--color-border-vis)] " +
-    "px-1.5 py-[1px] text-[12px] leading-tight lowercase text-[var(--color-secondary)] " +
-    "no-underline hover:bg-[var(--color-display)] hover:text-[var(--color-bg)] " +
-    "hover:border-[var(--color-display)]";
-
-  const content = <span>owner verified</span>;
-  const explain =
-    "a controller wallet signed for this profile, so a real owner stands behind it";
-
-  if (!explorerUrl) {
-    return (
-      <span className={className} title={explain}>
-        {content}
-      </span>
-    );
-  }
-
+// Not a link: the wallet address beside it already opens the explorer.
+function OwnerAuthorizedPill() {
   return (
-    <a
-      href={explorerUrl}
-      target="_blank"
-      rel="noreferrer"
-      className={className}
-      title={explain}
+    <span
+      className={
+        "inline-flex items-center gap-1 border border-[var(--color-border-vis)] " +
+        "px-1.5 py-[1px] text-[12px] leading-tight lowercase text-[var(--color-secondary)]"
+      }
+      title="a controller wallet signed for this profile, so a real owner stands behind it"
     >
-      {content}
-    </a>
+      owner verified
+    </span>
   );
 }
 

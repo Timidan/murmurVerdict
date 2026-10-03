@@ -114,7 +114,7 @@ export function CodeSnippetPanel({
   return (
     <section {...containerProps}>
       {showHeader && (
-        <div className="ck-header">
+        <div className="ck-header flex-wrap gap-y-1">
           <span className="flex items-center gap-1">
             {langs.map((l) => (
               <button

@@ -26,7 +26,7 @@ import { formatScore } from "../lib/score-format.js";
  */
 const titlePending = (live: boolean) => (
   <>
-    <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> Recent open calls
+    <Ik name="live-dot" className={live ? "ck-live-tx" : undefined} /> Open calls
   </>
 );
 /* Every panel is the last 24h now: the feed builder bounds all three lists by
@@ -36,7 +36,7 @@ const titlePending = (live: boolean) => (
    which settle without earning a score. */
 const TITLE_RESOLVED = (
   <>
-    <Ik name="resolve" /> Recent outcomes
+    <Ik name="resolve" /> Outcomes
   </>
 );
 /** The rows on screen, against the window they came from. `total` is the 24h
@@ -44,12 +44,12 @@ const TITLE_RESOLVED = (
  *  so instead of passing the cap off as the whole window. */
 const shownMeta = (shown: number, total?: number) => (
   <span title="calls on screen, out of the last 24h. The feed carries at most 20 per panel.">
-    {total !== undefined && total > shown ? `${shown} of ${total}` : shown} in the last 24h
+    {total !== undefined && total > shown ? `${shown} of ${total}` : shown} in 24h
   </span>
 );
 const TITLE_ACCEPTED = (
   <>
-    <IkNav name="confirm-live" /> Sealed · recent
+    <IkNav name="confirm-live" /> Sealed
   </>
 );
 
@@ -111,7 +111,7 @@ export function TodayPage() {
   return (
     <div className="flex-1 flex flex-col">
       <TopbarCrumb><span className="inline-flex items-center gap-1.5">
-            <Ik name="feed" /> <span className="sr-only">feed </span>recent
+            <Ik name="feed" /> feed
           </span></TopbarCrumb>
 
       {error && (

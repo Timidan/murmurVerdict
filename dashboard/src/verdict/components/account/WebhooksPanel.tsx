@@ -199,7 +199,7 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
             {rows.map((row) => (
               <li
                 key={row.id}
-                className="grid grid-cols-[1fr_auto_auto] items-center gap-3 px-3 py-2"
+                className="grid grid-cols-[1fr_auto] sm:grid-cols-[1fr_auto_auto] items-center gap-x-3 gap-y-1 px-3 py-2"
               >
                 <span className="min-w-0">
                   <span className="ck-mono truncate block" title={row.url}>
@@ -210,7 +210,7 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
                     {formatLocalDateTime(row.created_at) ?? row.created_at}
                   </span>
                 </span>
-                <span className="text-right text-[12px]">
+                <span className="order-last col-span-2 text-[12px] sm:order-none sm:col-span-1 sm:text-right">
                   <span className={row.failure_count > 0 ? "ck-neg" : "ck-dim"}>
                     {row.delivery_count} sent · {row.failure_count} failed
                   </span>
@@ -233,7 +233,6 @@ export function WebhooksPanel({ agents }: { agents: AccountAgent[] }) {
                   aria-label={`delete the webhook for ${row.url}`}
                 >
                   <Ik name="revoke" />
-                  delete
                 </button>
               </li>
             ))}

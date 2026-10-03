@@ -24,10 +24,12 @@ import {
   useMemo,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 
 import { verdictApi, type MarketplaceListings } from "../../api.js";
 import { Ik } from "../../icons.js";
+import { FormulaTip } from "./FormulaTip.js";
 import {
   availabilityLine,
   buildListingsMatrix,
@@ -168,12 +170,9 @@ export function AgentListingsMatrix() {
       )}
       <Panel
         title={
-          <span
-            className="inline-flex items-center gap-[7px]"
-            title="agents with 50 or more scored calls and a floor of 0 or better can sell access"
-          >
+          <>
             <Ik name="market" /> Listings
-          </span>
+          </>
         }
         /* The panel's own annotation says which of the two prices the cells
            carry, once, rather than repeating it in every column header. The
@@ -188,22 +187,18 @@ export function AgentListingsMatrix() {
           <p className="px-2 py-2 m-0 ck-mono ck-dim">[{empty}]</p>
         )}
         {!catalogError && catalog !== null && !empty && filteredEmpty && (
-          <p className="px-2 py-2 m-0 ck-mono ck-dim">
-            [{filteredEmpty}]{" "}
-            <button
-              type="button"
-              onClick={() => setFilters(DEFAULT_LISTINGS_FILTERS)}
-              className="ck-btn ck-btn-bracket"
-            >
-              reset filters
-            </button>
-          </p>
+          <p className="px-2 py-2 m-0 ck-mono ck-dim">[{filteredEmpty}]</p>
         )}
         {!catalogError && catalog !== null && !empty && !filteredEmpty && (
           <div className="ck-matrix" style={gridStyle} role="table" aria-label="agent listings by series">
             <div className="ck-matrix-row" role="row">
               <div className="ck-matrix-corner ck-colhead" role="columnheader">
-                Agent · all-time record
+                <FormulaTip
+                  label="Agent · all-time record"
+                  plain="agents with 50 or more scored calls and a floor of 0 or better can sell access."
+                  formula="sell = scored calls ≥ 50 and floor ≥ 0"
+                  className="[&_.formula-tip]:right-auto [&_.formula-tip]:left-0"
+                />
               </div>
               {shown.columns.map((column) => (
                 <ColumnHead key={column.venueSeriesId} column={column} />
@@ -276,7 +271,7 @@ function Price({ display, currency }: { display: string; currency: string }) {
  * The panel header count. It describes the rows ON SCREEN, so a narrowed view
  * says so rather than repeating the deployment's totals.
  */
-function panelMeta(matrix: ListingsMatrix, shown: ListingsMatrix): string {
+function panelMeta(matrix: ListingsMatrix, shown: ListingsMatrix): ReactNode {
   const sellers =
     shown.rows.length === matrix.rows.length
       ? `${matrix.rows.length} seller${matrix.rows.length === 1 ? "" : "s"}`
@@ -285,7 +280,15 @@ function panelMeta(matrix: ListingsMatrix, shown: ListingsMatrix): string {
     shown.columns.length === matrix.columns.length
       ? `${matrix.columns.length} series`
       : `${shown.columns.length} of ${matrix.columns.length} series`;
-  return `${sellers} · ${series} · next-call list price`;
+  // Phones keep only the price note; the counts crowd the title.
+  return (
+    <>
+      <span className="hidden sm:inline">
+        {sellers} · {series} ·{" "}
+      </span>
+      next-call list price
+    </>
+  );
 }
 
 /** What each key sorts ON. The DIRECTION is spelled out by the arrow beside it. */
@@ -580,7 +583,7 @@ function OpenCallsDrilldown({
         </h3>
         <span className="flex items-center gap-3">
           <span className="ck-mono ck-dim">
-            {slug} · {seriesTitle} · locked price
+            {slug} · {seriesTitle}
             {anyBuyable ? " · click one to buy" : ""}
           </span>
           <button type="button" onClick={onClose} className="ck-btn ck-btn-bracket">

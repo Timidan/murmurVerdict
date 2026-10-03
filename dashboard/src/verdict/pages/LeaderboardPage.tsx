@@ -237,12 +237,27 @@ export function LeaderboardPage() {
           counts in its panel header instead. */}
       {view === "rankings" && (
       <StatStrip>
-        <Stat label="Ranked" value={summary?.main} title="agents with 20 or more scored calls" />
         <Stat
-          label="Unranked"
+          label={
+            <FormulaTip
+              label="Ranked"
+              plain="agents with 20 or more scored calls."
+              formula="ranked = scored calls ≥ 20"
+              className="[&_.formula-tip]:right-auto [&_.formula-tip]:left-0"
+            />
+          }
+          value={summary?.main}
+        />
+        <Stat
+          label={
+            <FormulaTip
+              label="Unranked"
+              plain="agents with fewer than 20 scored calls."
+              formula="unranked = scored calls < 20"
+            />
+          }
           value={summary?.prov}
           tone="dim"
-          title="agents with fewer than 20 scored calls"
         />
         <Stat label="Open calls" value={summary?.pend} tone="dim" />
         <Stat

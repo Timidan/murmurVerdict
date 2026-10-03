@@ -284,8 +284,8 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                 key={series}
                 className="border-t border-[var(--color-border)] first:border-t-0"
               >
-                <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] sm:grid-cols-[minmax(0,1fr)_100px_80px_auto] items-center gap-x-3 gap-y-2 px-4 py-3">
-                  <div className="col-span-3 sm:col-span-1 min-w-0">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(0,1fr)_100px_80px_auto] items-center gap-x-3 gap-y-2 px-4 py-3">
+                  <div className="col-span-2 sm:col-span-1 min-w-0">
                     <span
                       className="ck-mono ck-value ck-pos block truncate"
                       title={
@@ -343,7 +343,7 @@ export function ProviderTermsPanel({ slug }: { slug: string }) {
                     {row.terms ? "Listed" : row.registered ? "Registered" : "·"}
                   </span>
 
-                  <span className="justify-self-end flex items-center gap-2">
+                  <span className="col-span-2 sm:col-span-1 justify-self-end flex items-center gap-2">
                     {row.terms && (
                       <button
                         type="button"

@@ -8,7 +8,6 @@ import type { RuntimeKeyMintResponse } from "../../api.js";
 import { Ik } from "../../icons.js";
 import { stashJustMinted } from "../../pages/IntegratePage.js";
 import { fetchAgentPromptTemplate, injectRuntimeCredentials } from "../../lib/agent-prompt.js";
-import { shortId } from "../../lib/display-format.js";
 import { TimeAgo } from "../compact/TimeAgo.js";
 import { useFocusTrap } from "../compact/useFocusTrap.js";
 
@@ -280,14 +279,13 @@ export function RuntimeKeyMintModal({ result, slug, signingPrivateKey, onDone }:
         </div>
 
         {/* META ───────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-2 text-[12px]">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[12px]">
           <KV k="Created" v={<TimeAgo iso={result.created_at} />} />
           <KV
             k="Expires"
             v={result.expires_at ? <TimeAgo iso={result.expires_at} /> : "never"}
             tone={result.expires_at ? "pos" : "dim"}
           />
-          <KV k="Policy hash" v={shortId(result.policy_hash, 12, 4)} title={result.policy_hash} />
           <KV
             k="Request signing"
             v={signingPrivateKey ? "on — the signing key is in the .ENV tab, shown once" : "off — the key alone is enough"}
@@ -340,7 +338,7 @@ function KV({ k, v, tone, title }: { k: string; v: ReactNode; tone?: "dim" | "ne
   return (
     <div className="grid grid-cols-[130px_1fr] gap-2">
       <span className="ck-label">{k}</span>
-      <span className={`${toneClass} truncate`} title={title}>{v}</span>
+      <span className={`${toneClass} min-w-0 break-words`} title={title}>{v}</span>
     </div>
   );
 }

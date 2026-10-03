@@ -178,7 +178,7 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
         return (
           <li
             key={a.agent_id}
-            className="grid grid-cols-[1fr_auto_auto_auto] items-center px-3 py-2 gap-3"
+            className="grid grid-cols-[1fr_auto_auto] sm:grid-cols-[1fr_auto_auto_auto] items-center px-3 py-2 gap-x-3 gap-y-1"
           >
             <div className="min-w-0">
               <div className="ck-mono ck-pos truncate">
@@ -188,7 +188,10 @@ function AgentList({ agents }: { agents: AccountAgent[] }) {
                 {a.display_name ?? "—"}
               </div>
             </div>
-            <ReattestChip controllerWallet={a.controller_wallet} walletHref={walletHref} />
+            {/* Phones: the renewal chip takes its own line under the identity. */}
+            <div className="order-last col-span-3 sm:order-none sm:col-span-1">
+              <ReattestChip controllerWallet={a.controller_wallet} walletHref={walletHref} />
+            </div>
             <TierBadge kind={(a.kind as AgentKind | null) ?? "agent"} />
             <a href={settingsHref} className="ck-btn ck-btn-bracket">
               view
