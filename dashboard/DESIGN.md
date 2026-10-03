@@ -28,7 +28,7 @@ All values from `dashboard/src/styles.css` `@theme` block.
 
 | Family | Var | Use | Constraint |
 |---|---|---|---|
-| **Doto** | `--font-display` | Display only — hero counters, mega numerals | **36px+**, with exactly two sanctioned exceptions: `t-display-sm` clamp(24–30px) as the `/install` H1 tier, and `ck-steprail-num` clamp(22–30px) for the `/install` rail numerals (owner-approved 2026-08-06). Inside `.mmr-shell` the rail numerals are the ONLY Doto — everything else in the cockpit is Space Mono. (Nothing discipline; Ndot 57 stand-in via Google Fonts variable axis) |
+| **Doto** | `--font-display` | Display only — hero counters, mega numerals | **36px+**, numerals only, never a sentence (an external reviewer found Doto headlines hard to read, 2026-10-02). One sanctioned exception: `ck-steprail-num` clamp(22–30px) for the `/install` rail numerals (owner-approved 2026-08-06). Inside `.mmr-shell` KPI figures (`ck-stat-value`, `ck-stat-hero`) are the only other Doto; titles, labels and row scores are Space Mono. Doto's period reads as "+" below ~24px, so small decimals stay mono. (Nothing discipline; Ndot 57 stand-in via Google Fonts variable axis) |
 | **Space Grotesk** | `--font-sans` | UI, body, headings | Default sans |
 | **Space Mono** | `--font-mono` | Labels, data, ALL CAPS chrome, every numeric value | All caps for labels; `font-variant-numeric: tabular-nums` for data |
 

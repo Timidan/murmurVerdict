@@ -14,7 +14,7 @@ if (!process.env.VITE_SITE_URL && process.env.VERCEL_PROJECT_PRODUCTION_URL) {
  *
  * `og:image` and `twitter:image` MUST be absolute: Twitter, Slack, Discord and
  * most other unfurlers fetch them without a document base, so a root-relative
- * `/brand/murmur-og-dark-v1.png` resolves against their own host and the card silently
+ * `/brand/murmur-og-dark-v2.png` resolves against their own host and the card silently
  * renders with no image. Same for `og:url`.
  *
  * The origin is a build-time input and is INTENTIONALLY unset by default —

@@ -40,8 +40,23 @@ export function Stat({
   return (
     <div className="ck-stat" title={title}>
       <span className="ck-colhead">{label}</span>
-      <span className={valueClass + toneClass}>{missing ? "—" : value}</span>
+      <span className={valueClass + toneClass}>
+        {missing ? "—" : valueClass === "ck-stat-value" && typeof value === "string" ? withMonoPoint(value) : value}
+      </span>
       {note && <span className="ck-dim text-[12px]">{note}</span>}
     </div>
+  );
+}
+
+// Doto's period reads as "+", so a decimal figure keeps Doto digits around a mono point.
+function withMonoPoint(text: string) {
+  const i = text.indexOf(".");
+  if (i < 0) return text;
+  return (
+    <>
+      {text.slice(0, i)}
+      <span className="ck-mono-point">.</span>
+      {text.slice(i + 1)}
+    </>
   );
 }

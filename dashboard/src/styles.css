@@ -331,7 +331,7 @@ option:hover {
      ck-stat-hero, ck-steprail-num. */
   .t-display    { font-family: var(--font-display); font-weight: 700; line-height: 0.85; letter-spacing: -0.04em; font-size: clamp(96px, 14vw, 200px); color: var(--color-display); }
   .t-display-md { font-family: var(--font-display); font-weight: 700; line-height: 0.9;  letter-spacing: -0.03em; font-size: clamp(64px, 9vw,  128px); color: var(--color-display); }
-  .t-display-sm { font-family: var(--font-display); font-weight: 700; line-height: 0.95; letter-spacing: -0.02em; font-size: clamp(24px, 4vw, 30px);   color: var(--color-display); }
+  .t-display-sm { font-family: var(--font-sans);    font-weight: 500; line-height: 1.1;  letter-spacing: -0.02em; font-size: clamp(24px, 4vw, 30px);   color: var(--color-display); }
 
   /* HEADING — Space Grotesk medium. Page section titles. */
   .t-heading    { font-family: var(--font-sans); font-weight: 500; font-size: 26px; line-height: 1.2;  letter-spacing: -0.01em; color: var(--color-display); }

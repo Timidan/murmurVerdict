@@ -55,13 +55,13 @@
    sits ON it, and nothing — hint, timestamp, badge, pinned nav tip — goes under.
    ──────────────────────────────────────────────────────────────────────────── */
 
-/* Panel / section title — the one display face inside the content area. */
+/* Panel / section title. Words stay in the mono; Doto is for big numerals (DESIGN.md 2.1). */
 .mmr-shell .ck-title {
-  font-family: var(--font-display);
-  font-weight: 800;
-  font-size: 20px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 18px;
   line-height: 1;
-  letter-spacing: 0;
+  letter-spacing: 0.01em;
   color: var(--color-display);
   display: inline-flex;
   align-items: center;
@@ -830,8 +830,9 @@
 
 /* Row key number — the one figure a data row is ranked on. */
 .mmr-shell .ck-num-key {
-  font-family: var(--font-display);
-  font-weight: 800;
+  /* Mono, not Doto: at 18px Doto's decimal point reads as a "+". */
+  font-family: var(--font-mono);
+  font-weight: 700;
   font-size: 18px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -924,6 +925,9 @@
   text-align: center;
   border-right: 1px solid var(--color-border);
   border-bottom: 1px solid var(--color-border);
+}
+.mmr-shell .ck-mono-point {
+  font-family: var(--font-mono);
 }
 .mmr-shell .ck-stat-value {
   font-family: var(--font-display);
