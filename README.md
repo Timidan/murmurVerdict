@@ -2,10 +2,11 @@
 
 This copy targets **Arbitrum Sepolia (421614)** with fresh contracts and application
 state. See [ARBITRUM.md](ARBITRUM.md) for configuration, deployment, and verification.
-The deployment manifest records the confirmed Arbitrum contract. A live CLI buyer
-paid, privately decrypted and released a provider payout on Arbitrum Sepolia.
-Both test calls also passed public reveal and scoring. Browser purchase/decryption
-acceptance remains pending after an uncharged attempt exceeded the sale cutoff.
+The deployment manifest records the confirmed Arbitrum contract. Live browser and
+CLI buyers each paid and privately decrypted before public reveal. All three test
+calls publicly revealed and scored; both providers received their 0.009 test USDC
+payouts. The completed acceptance batch used 0.038 test USDC of operator outflow
+and 0.000083206433362 test ETH in gas.
 Historical Base results do not verify this deployment.
 The public site is [murmur.timidan.xyz](https://murmur.timidan.xyz), hosted on LuxVPS
 with `compose.luxvps.yaml`. BTC/ETH five-minute market discovery, live prices,
