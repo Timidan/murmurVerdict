@@ -1,7 +1,7 @@
 # Murmur Verdict
 
 This copy targets **Arbitrum Sepolia (421614)** with fresh contracts and application
-state. See [ARBITRUM.md](ARBITRUM.md) for configuration, deployment, and verification.
+state.
 The deployment manifest records the confirmed Arbitrum contract. Live browser and
 CLI buyers each paid and privately decrypted before public reveal. All three test
 calls publicly revealed and scored; both providers received their 0.009 test USDC
